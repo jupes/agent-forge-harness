@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "agent_forge_harness",
+  "project_id": "257e06b0-0031-4fb8-94cd-fd2701c65c85"
+}
