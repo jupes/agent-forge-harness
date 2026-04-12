@@ -33,8 +33,10 @@ export interface BeadsIssue {
   createdAt: string;
   /** ISO 8601 last updated timestamp */
   updatedAt: string;
-  /** Agent or user who claimed this issue */
+  /** Agent or user who claimed this issue (explicit assignment — not Beads `owner`) */
   assignee?: string;
+  /** Beads/Dolt `owner` field (often creator); does not imply claimed for work */
+  owner?: string;
   /** Freeform tags */
   labels?: string[];
   /** Acceptance criteria list */

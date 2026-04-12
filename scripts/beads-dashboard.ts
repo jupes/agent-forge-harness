@@ -59,7 +59,8 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   const updatedAt = raw.updated_at ?? raw.updatedAt ?? createdAt;
   const description = raw.acceptance_criteria ?? raw.description;
   const priority = mapNumericPriority(raw.priority);
-  const assignee = raw.assignee ?? raw.owner;
+  /** `owner` from export is metadata (creator); only `assignee` counts as claimed for derived.ready. */
+  const assignee = raw.assignee;
 
   return {
     id: raw.id,
@@ -72,6 +73,7 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
     ...(priority !== undefined ? { priority } : {}),
     ...(parent !== undefined ? { parent } : {}),
     ...(raw.repo !== undefined ? { repo: raw.repo } : {}),
+    ...(raw.owner !== undefined ? { owner: raw.owner } : {}),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(raw.labels !== undefined ? { labels: raw.labels } : {}),
   };

@@ -12,7 +12,7 @@ import {
 import type { BeadsDependency, BeadsIssue } from "../types/beads";
 
 describe("normalizeBdExportRow", () => {
-  test("maps acceptance_criteria, issue_type, parent-child, owner→assignee", () => {
+  test("maps owner as metadata and assignee only when set (owner does not fill assignee)", () => {
     const row = {
       id: "T-1",
       title: "Do thing",
@@ -32,8 +32,21 @@ describe("normalizeBdExportRow", () => {
     expect(issue.priority).toBe("high");
     expect(issue.description).toBe("AC text");
     expect(issue.parent).toBe("EPIC-1");
-    expect(issue.assignee).toBe("agent-1");
-    expect(issue.description).toBe("AC text");
+    expect(issue.owner).toBe("agent-1");
+    expect(issue.assignee).toBeUndefined();
+  });
+
+  test("maps explicit assignee when present", () => {
+    const issue = normalizeBdExportRow({
+      id: "T-2",
+      title: "Claimed",
+      status: "open",
+      created_at: "2026-01-01T00:00:00Z",
+      owner: "creator",
+      assignee: "worker-1",
+    });
+    expect(issue.owner).toBe("creator");
+    expect(issue.assignee).toBe("worker-1");
   });
 
   test("unknown status becomes open; unknown type becomes task", () => {
