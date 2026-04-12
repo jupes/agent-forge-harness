@@ -4,32 +4,50 @@
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bd prime 2>/dev/null || true"
-          }
-        ]
-      }
-    ],
     "PreCompact": [
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "bd prime 2>/dev/null || true"
+            "command": "bd prime 2\u003e/dev/null || true",
+            "type": "command"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "bd prime",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime 2\u003e/dev/null || true",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "bd prime",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
       }
     ],
     "TaskCompleted": [
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "bun run .claude/hooks/quality-gate.ts"
+            "command": "bun run .claude/hooks/quality-gate.ts",
+            "type": "command"
           }
         ]
       }
@@ -38,8 +56,8 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "bun run .claude/hooks/quality-gate.ts"
+            "command": "bun run .claude/hooks/quality-gate.ts",
+            "type": "command"
           }
         ]
       }

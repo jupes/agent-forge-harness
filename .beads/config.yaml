@@ -30,3 +30,5 @@ templates:
 defaults:
   priority: medium
   assignee: null
+
+dolt.shared-server: true
