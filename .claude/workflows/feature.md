@@ -51,6 +51,18 @@ grep -r "export (default|function|const)" src/components/ --include="*.tsx" -l
 
 ---
 
+## Step 2.5 — Pre-Task Alignment *(when running under a Lead Agent)*
+
+If this task was spawned by a Lead Agent, an alignment document will have been provided at `.tmp/work/<TASK-ID>-alignment.md`. Read it before planning.
+
+- Your scope is defined by the **Worker Commitment** section — implement exactly that, no more
+- The **Acceptance Criteria (agreed)** section defines what done means — trace every criterion to a test or manual verification step
+- If you discover a discrepancy between the alignment document and the Beads issue: **stop and report to the lead** before writing any code
+
+If no alignment document exists (standalone task, no lead), skip this step.
+
+---
+
 ## Step 3 — Plan
 
 Write a plan to `.tmp/work/<TASK-ID>-plan.md`.
