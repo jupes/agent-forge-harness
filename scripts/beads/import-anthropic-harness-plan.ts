@@ -2,6 +2,10 @@
 /**
  * Creates Beads issues for the Anthropic "long-running harness" integration plan.
  *
+ * **Idempotent:** safe to run multiple times. Reuses an existing epic (same title),
+ * review task, and phase tasks under that epic when present; only creates missing
+ * issues and missing `blocks` dependencies.
+ *
  * Prerequisites: working `bd` with a Dolt-backed database (embedded Dolt needs CGO;
  * on Windows without CGO, install `dolt` and run `bd init --non-interactive --shared-server` or `--server`).
  *
@@ -12,59 +16,198 @@
 
 import { execFileSync } from "child_process";
 
+const EPIC_TITLE = "Epic: Integrate Anthropic long-running harness learnings";
+const EPIC_TITLE_QUERY = "Anthropic long-running harness learnings";
+const REVIEW_TITLE = "Review Anthropic harness integration plan and adjust scope";
+
 type Envelope =
-  | { ok: true; data: { epicId: string; reviewId: string; phaseIds: string[] }; error: null }
+  | {
+      ok: true;
+      data: {
+        epicId: string;
+        reviewId: string;
+        phaseIds: string[];
+        created: { epic: boolean; review: boolean; phases: boolean[] };
+      };
+      error: null;
+    }
   | { ok: false; data: null; error: string };
 
 interface BdCreateJson {
   id?: string;
 }
 
-/** `bd create --json` may emit pretty-printed multi-line JSON; stderr may be empty. */
-function parseBdCreateJsonOutput(out: string): BdCreateJson | null {
-  const trimmed = out.trim();
-  if (!trimmed) return null;
-
-  const tryParse = (chunk: string): BdCreateJson | null => {
-    try {
-      const parsed: unknown = JSON.parse(chunk);
-      if (typeof parsed === "object" && parsed !== null && "id" in parsed) {
-        return parsed as BdCreateJson;
-      }
-    } catch {
-      /* try next strategy */
-    }
-    return null;
-  };
-
-  const whole = tryParse(trimmed);
-  if (whole) return whole;
-
-  const first = trimmed.indexOf("{");
-  const last = trimmed.lastIndexOf("}");
-  if (first !== -1 && last > first) {
-    return tryParse(trimmed.slice(first, last + 1));
-  }
-
-  return null;
+interface BdListIssue {
+  id: string;
+  title: string;
+  issue_type?: string;
+  status?: string;
 }
 
-function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: false; error: string } {
+interface BdDepRow {
+  id: string;
+  dependency_type?: string;
+}
+
+function execBd(args: string[]): { ok: true; stdout: string } | { ok: false; error: string } {
   try {
-    const out = execFileSync("bd", args, {
+    const stdout = execFileSync("bd", args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     }).trim();
-    const json = parseBdCreateJsonOutput(out);
-    if (!json) {
-      return { ok: false, error: `bd returned no parseable JSON object. Raw output:\n${out.slice(0, 2000)}` };
-    }
-    return { ok: true, json };
+    return { ok: true, stdout };
   } catch (e: unknown) {
-    const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
+    const err = e as { stderr?: string; stdout?: string; message?: string };
     const combined = `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() || (err.message ?? String(e));
     return { ok: false, error: combined };
+  }
+}
+
+/** Parse JSON object or array from bd stdout (may be pretty-printed; may have log noise). */
+function parseJsonLoose(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("empty bd output");
+
+  const tryParse = (chunk: string): unknown => JSON.parse(chunk) as unknown;
+
+  try {
+    return tryParse(trimmed);
+  } catch {
+    /* continue */
+  }
+
+  const sliceBalanced = (open: string, close: string): string | null => {
+    const first = trimmed.indexOf(open);
+    const last = trimmed.lastIndexOf(close);
+    if (first === -1 || last <= first) return null;
+    return trimmed.slice(first, last + 1);
+  };
+
+  const objSlice = sliceBalanced("{", "}");
+  if (objSlice) {
+    try {
+      return tryParse(objSlice);
+    } catch {
+      /* continue */
+    }
+  }
+
+  const arrSlice = sliceBalanced("[", "]");
+  if (arrSlice) {
+    try {
+      return tryParse(arrSlice);
+    } catch {
+      /* continue */
+    }
+  }
+
+  throw new Error("no parseable JSON in bd output");
+}
+
+/** `bd create --json` may emit pretty-printed multi-line JSON. */
+function parseBdCreateJsonOutput(out: string): BdCreateJson | null {
+  try {
+    const parsed: unknown = parseJsonLoose(out);
+    if (typeof parsed === "object" && parsed !== null && "id" in parsed) {
+      return parsed as BdCreateJson;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: false; error: string } {
+  const run = execBd(args);
+  if (!run.ok) return run;
+  const json = parseBdCreateJsonOutput(run.stdout);
+  if (!json) {
+    return {
+      ok: false,
+      error: `bd returned no parseable issue JSON. Raw output:\n${run.stdout.slice(0, 2000)}`,
+    };
+  }
+  return { ok: true, json };
+}
+
+function listIssues(extraArgs: string[]): { ok: true; issues: BdListIssue[] } | { ok: false; error: string } {
+  const args = ["list", "--json", "--flat", "--limit", "200", ...extraArgs];
+  const run = execBd(args);
+  if (!run.ok) return run;
+  try {
+    const parsed: unknown = parseJsonLoose(run.stdout);
+    if (!Array.isArray(parsed)) {
+      return { ok: false, error: "bd list --json did not return an array" };
+    }
+    const issues = parsed as BdListIssue[];
+    return { ok: true, issues };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function findEpicId(): { ok: true; id: string | null } | { ok: false; error: string } {
+  const listed = listIssues([
+    "--type",
+    "epic",
+    "--title-contains",
+    EPIC_TITLE_QUERY,
+    "--status",
+    "open",
+  ]);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  const exact = listed.issues.find((i) => i.title === EPIC_TITLE && (i.issue_type === "epic" || !i.issue_type));
+  return { ok: true, id: exact?.id ?? null };
+}
+
+function findChildByParentAndTitle(
+  parentId: string,
+  exactTitle: string,
+): { ok: true; id: string | null } | { ok: false; error: string } {
+  const listed = listIssues(["--parent", parentId]);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  const matches = listed.issues.filter((i) => i.title === exactTitle);
+  if (matches.length === 0) return { ok: true, id: null };
+  const open = matches.find((m) => m.status === "open" || m.status === "in_progress" || m.status === "blocked");
+  return { ok: true, id: (open ?? matches[0]).id };
+}
+
+function listDownstreamDeps(issueId: string): { ok: true; deps: BdDepRow[] } | { ok: false; error: string } {
+  const run = execBd(["dep", "list", issueId, "--json"]);
+  if (!run.ok) return run;
+  try {
+    const parsed: unknown = parseJsonLoose(run.stdout);
+    if (!Array.isArray(parsed)) {
+      return { ok: false, error: "bd dep list --json did not return an array" };
+    }
+    return { ok: true, deps: parsed as BdDepRow[] };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function hasBlocksDep(blocked: string, dependsOn: string): boolean {
+  const listed = listDownstreamDeps(blocked);
+  if (!listed.ok) return false;
+  return listed.deps.some((d) => d.id === dependsOn && (d.dependency_type === "blocks" || !d.dependency_type));
+}
+
+function depEnsure(blocked: string, dependsOn: string): { ok: true } | { ok: false; error: string } {
+  if (hasBlocksDep(blocked, dependsOn)) {
+    return { ok: true };
+  }
+  try {
+    execFileSync("bd", ["dep", "add", blocked, dependsOn], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    });
+    return { ok: true };
+  } catch (e: unknown) {
+    const err = e as { stderr?: string; stdout?: string; message?: string };
+    const msg = `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() || (err.message ?? String(e));
+    return { ok: false, error: msg };
   }
 }
 
@@ -98,49 +241,54 @@ function createIssue(params: {
   return { ok: true, id };
 }
 
-function depAdd(blocked: string, dependsOn: string): { ok: true } | { ok: false; error: string } {
-  try {
-    execFileSync("bd", ["dep", "add", blocked, dependsOn], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 60_000,
-    });
-    return { ok: true };
-  } catch (e: unknown) {
-    const err = e as { stderr?: string; stdout?: string; message?: string };
-    const msg = `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() || (err.message ?? String(e));
-    return { ok: false, error: msg };
-  }
-}
-
 function main(): Envelope {
-  const epic = createIssue({
-    title: "Epic: Integrate Anthropic long-running harness learnings",
-    type: "epic",
-    description:
-      "Apply patterns from Anthropic engineering post on harness design for long-running apps (generator/evaluator separation, planner, session handoff, rubric, conditional ceremony). Reference: https://www.anthropic.com/engineering/harness-design-long-running-apps",
-    labels: ["harness", "anthropic-long-running"],
-  });
-  if (!epic.ok) {
-    return {
-      ok: false,
-      data: null,
-      error: `Failed to create epic (is Beads initialized?). ${epic.error}`,
-    };
+  const created = { epic: false, review: false, phases: [] as boolean[] };
+
+  const epicLookup = findEpicId();
+  if (!epicLookup.ok) {
+    return { ok: false, data: null, error: `Cannot list issues (needed for idempotency): ${epicLookup.error}` };
+  }
+  let epicId = epicLookup.id;
+  if (!epicId) {
+    const epic = createIssue({
+      title: EPIC_TITLE,
+      type: "epic",
+      description:
+        "Apply patterns from Anthropic engineering post on harness design for long-running apps (generator/evaluator separation, planner, session handoff, rubric, conditional ceremony). Reference: https://www.anthropic.com/engineering/harness-design-long-running-apps",
+      labels: ["harness", "anthropic-long-running"],
+    });
+    if (!epic.ok) {
+      return {
+        ok: false,
+        data: null,
+        error: `Failed to create epic (is Beads initialized?). ${epic.error}`,
+      };
+    }
+    epicId = epic.id;
+    created.epic = true;
   }
 
-  const review = createIssue({
-    title: "Review Anthropic harness integration plan and adjust scope",
-    type: "task",
-    parent: epic.id,
-    acceptance:
-      "Plan reviewed against repo reality; phases confirmed or edited; execution order agreed; comment worklog on epic with summary.",
-    description:
-      "Read prior assistant plan (context: anthropic harness-design-long-running-apps). Decide skip/keep per phase, note risks, then close this task before implementation phases.",
-    labels: ["harness", "planning"],
-  });
-  if (!review.ok) {
-    return { ok: false, data: null, error: `Failed to create review task: ${review.error}` };
+  const reviewLookup = findChildByParentAndTitle(epicId, REVIEW_TITLE);
+  if (!reviewLookup.ok) {
+    return { ok: false, data: null, error: `Cannot list children of epic: ${reviewLookup.error}` };
+  }
+  let reviewId = reviewLookup.id;
+  if (!reviewId) {
+    const review = createIssue({
+      title: REVIEW_TITLE,
+      type: "task",
+      parent: epicId,
+      acceptance:
+        "Plan reviewed against repo reality; phases confirmed or edited; execution order agreed; comment worklog on epic with summary.",
+      description:
+        "Read prior assistant plan (context: anthropic harness-design-long-running-apps). Decide skip/keep per phase, note risks, then close this task before implementation phases.",
+      labels: ["harness", "planning"],
+    });
+    if (!review.ok) {
+      return { ok: false, data: null, error: `Failed to create review task: ${review.error}` };
+    }
+    reviewId = review.id;
+    created.review = true;
   }
 
   const phases: { title: string; acceptance: string }[] = [
@@ -178,29 +326,40 @@ function main(): Envelope {
 
   const phaseIds: string[] = [];
   for (const p of phases) {
-    const t = createIssue({
-      title: p.title,
-      type: "task",
-      parent: epic.id,
-      acceptance: p.acceptance,
-      labels: ["harness", "anthropic-long-running"],
-    });
-    if (!t.ok) {
-      return { ok: false, data: null, error: `Failed to create phase task "${p.title}": ${t.error}` };
+    const phaseLookup = findChildByParentAndTitle(epicId, p.title);
+    if (!phaseLookup.ok) {
+      return { ok: false, data: null, error: `Cannot list phase candidates: ${phaseLookup.error}` };
     }
-    phaseIds.push(t.id);
-  }
-
-  for (const pid of phaseIds) {
-    const d = depAdd(pid, review.id);
-    if (!d.ok) {
-      return { ok: false, data: null, error: `Failed to link phase ${pid} -> review: ${d.error}` };
+    let pid = phaseLookup.id;
+    let phaseCreated = false;
+    if (!pid) {
+      const t = createIssue({
+        title: p.title,
+        type: "task",
+        parent: epicId,
+        acceptance: p.acceptance,
+        labels: ["harness", "anthropic-long-running"],
+      });
+      if (!t.ok) {
+        return { ok: false, data: null, error: `Failed to create phase task "${p.title}": ${t.error}` };
+      }
+      pid = t.id;
+      phaseCreated = true;
     }
+    phaseIds.push(pid);
+    created.phases.push(phaseCreated);
   }
 
   const [p0, p1, p2, p3, p4, p5] = phaseIds;
   if (!p0 || !p1 || !p2 || !p3 || !p4 || !p5) {
     return { ok: false, data: null, error: "Internal error: expected six phase issues" };
+  }
+
+  for (const pid of phaseIds) {
+    const d = depEnsure(pid, reviewId);
+    if (!d.ok) {
+      return { ok: false, data: null, error: `Failed to ensure phase ${pid} depends on review: ${d.error}` };
+    }
   }
 
   const chain: [string, string][] = [
@@ -211,19 +370,19 @@ function main(): Envelope {
     [p5, p3],
   ];
   for (const [blocked, dependsOn] of chain) {
-    const d = depAdd(blocked, dependsOn);
+    const d = depEnsure(blocked, dependsOn);
     if (!d.ok) {
       return {
         ok: false,
         data: null,
-        error: `Failed dependency ${dependsOn} -> ${blocked}: ${d.error}`,
+        error: `Failed to ensure dependency ${dependsOn} -> ${blocked}: ${d.error}`,
       };
     }
   }
 
   return {
     ok: true,
-    data: { epicId: epic.id, reviewId: review.id, phaseIds },
+    data: { epicId, reviewId, phaseIds, created },
     error: null,
   };
 }
