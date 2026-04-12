@@ -1,0 +1,103 @@
+{
+  "env": {
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bd prime 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bd prime 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run .claude/hooks/quality-gate.ts"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run .claude/hooks/quality-gate.ts"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "bun *",
+      "git status",
+      "git diff",
+      "git log",
+      "git branch",
+      "git checkout",
+      "git add",
+      "git commit",
+      "git pull",
+      "git push",
+      "git merge",
+      "git rebase",
+      "git stash",
+      "git worktree",
+      "git fetch",
+      "gh pr *",
+      "gh issue *",
+      "gh repo *",
+      "gh api *",
+      "bd sync",
+      "bd ready",
+      "bd show",
+      "bd close",
+      "bd create",
+      "bd comments",
+      "bd update",
+      "bd dep",
+      "bd doctor",
+      "bd prime",
+      "bd dolt push",
+      "grep *",
+      "jq *",
+      "wc *",
+      "ls *",
+      "find *",
+      "cat *",
+      "head *",
+      "tail *"
+    ],
+    "deny": [
+      "rm -rf *",
+      "git push --force",
+      "git push -f",
+      "git clean -fdx",
+      "npm publish",
+      "bun publish",
+      "bd doctor --fix",
+      "bd config"
+    ]
+  },
+  "teammate": {
+    "mode": "tmux"
+  }
+}

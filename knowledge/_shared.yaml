@@ -1,0 +1,64 @@
+# knowledge/_shared.yaml
+# Cross-repo conventions and integration map shared across all repos.
+# Agents load this alongside the per-repo YAML before exploring code.
+
+shared_conventions:
+  commit_format:
+    pattern: "<type>(<scope>): <short description>"
+    types: [feat, fix, refactor, test, docs, chore, build]
+    body: "What and why, not how. Optional."
+    footer: "Refs: <TASK-ID>"
+    example: "feat(auth): add refresh token rotation
+
+Rotate tokens on each use.
+
+Refs: T-42"
+
+  branch_naming:
+    pattern: "<type>/<task-id>-<short-description>"
+    examples:
+      - "feat/T-42-refresh-tokens"
+      - "fix/T-17-login-redirect"
+      - "chore/T-55-update-deps"
+      - "epic/EPIC-3-user-permissions"
+
+  pr_requirements:
+    - All CI checks pass before merge
+    - At least one reviewer approval
+    - Tests cover all new code paths
+    - No secrets or credentials in diff
+    - PR body includes Summary, Test Plan, and AC Trace
+    - Screenshots for any UI changes
+
+  testing_standards:
+    unit: "Test every exported function and hook in isolation"
+    integration: "Test full flows end-to-end for critical paths"
+    file_naming: "Adjacent to source: *.test.ts or *.spec.ts"
+    coverage: "New code must have tests; no task closed without test evidence"
+    framework: "Bun test runner (bun test)"
+
+  code_standards:
+    typescript: "strict mode — tsconfig.json has strict: true"
+    no_any: "Never use any without a // justification: comment on the same line"
+    no_console: "No console.log in committed code; use structured logging"
+    no_todos: "No TODO comments; file a Beads task instead"
+    no_commented_code: "Delete dead code; git history preserves it"
+    error_handling: "All async operations must handle errors; no silent failures"
+
+integration_map:
+  # Fill in as repos are added
+  # apis: []
+  # shared_types: []
+  # events: []
+  note: "Run /sync-knowledge --all to populate this section from actual codebases."
+
+common_patterns:
+  file_structure:
+    - "src/api/ — HTTP handlers and API calls"
+    - "src/hooks/ — React hooks (frontend repos)"
+    - "src/types/ — Shared TypeScript interfaces"
+    - "src/utils/ — Pure utility functions"
+    - "src/components/ — UI components (frontend)"
+    - "src/middleware/ — Express/Next middleware"
+  state_management: "Hooks-first; avoid global state unless necessary"
+  error_types: "Extend Error class for domain-specific errors; include error codes"
