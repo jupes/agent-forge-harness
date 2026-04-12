@@ -26,6 +26,18 @@ If knowledge files are missing or stale (>50 commits behind HEAD):
 
 ---
 
+## Step 1b — Planner mode *(short or vague prompts)*
+
+If the user input is **only one to four sentences** with **no** Beads task id and **no** detailed spec:
+
+1. Read `.claude/agents/planner.md` and adopt the **Planner** role **before** deep exploration.
+2. Expand the prompt into a **product spec** (overview, numbered features / user stories, **non-goals**, testable signals). Save to `.tmp/work/<slug>-product-spec.md`.
+3. Use that spec as the source of truth for exploration in Step 3 and the implementation plan in Step 4.
+
+If the user already provided a detailed spec or `bd show` task context, skip this step.
+
+---
+
 ## Step 2 — Reuse Verification
 
 Search for existing implementations before planning anything new:

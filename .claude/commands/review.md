@@ -44,6 +44,8 @@ Before reviewing, understand intent:
 
 Evaluate the diff against all four tiers. Rate each finding.
 
+For **UI-facing** changes, also apply `.claude/protocols/evaluation-rubric.md` (visual design / originality vs generic patterns) in addition to the tiers below — surface HIGH findings when polish or product depth misses stated intent, not only when code is broken.
+
 ### Blocker — Must fix. Blocks PASS.
 
 | Category | What to look for |
