@@ -84,6 +84,7 @@ After all workers complete:
 4. Confirm all Beads tasks are closed with test evidence
 5. **Spawn a fresh Evaluator Agent** to validate output correctness — never reuse a worker to evaluate its own output. Pass the evaluator:
    - The alignment document (`.tmp/work/<TASK-ID>-alignment.md`) as the evaluation baseline
+   - `.claude/protocols/evaluation-rubric.md` — shared dimensions, hard FAIL rules, and skepticism defaults
    - The output artifacts (files changed, commits made)
    - The worker's summary (for reference only — do not treat self-reported quality checks as verified evidence)
 
@@ -126,6 +127,21 @@ Select the cheapest model capable of the task:
 
 Pass model preference in the Task() prompt when downgrading from opus:
 > "Use model: haiku for this task — it is a simple file search."
+
+---
+
+## Conditional ceremony (cost vs load-bearing)
+
+Match **process weight** to **risk** and **model capability**. When unsure, keep alignment + evaluator; when waste is obvious, document what you skipped in the epic comment.
+
+| Situation | Alignment (Step 2.5) | Evaluator pass (Step 5) |
+|-----------|----------------------|---------------------------|
+| Fix-tier / ≤3 files / mechanical change | Skip unless interfaces shared | Skip unless high risk |
+| Feature with shared interfaces or cross-repo | **Required** | **Required** |
+| UI-heavy or subjective quality in AC | **Required** | **Required**; apply `.claude/protocols/evaluation-rubric.md` UI dimensions |
+| Strong model + narrow diff + tests fully cover AC | Optional shortened alignment | Single `/review` may suffice if findings are triaged |
+
+**Session handoffs**: After a context reset or session swap on the same epic, ensure `.tmp/work/session-handoff.md` exists or Beads `worklog:` carries equivalent state (see `.claude/protocols/session-handoff.md`).
 
 ---
 

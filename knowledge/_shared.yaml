@@ -52,6 +52,22 @@ integration_map:
   # events: []
   note: "Run /sync-knowledge --all to populate this section from actual codebases."
 
+anthropic_long_running_harness:
+  reference: "https://www.anthropic.com/engineering/harness-design-long-running-apps"
+  summary:
+    - "Separate generator and evaluator; pre-align scope in writing before implementation."
+    - "Structured file artifacts (.tmp/work, protocols) beat ad-hoc chat for handoffs."
+    - "Skeptical external QA beats self-evaluation; calibrate with rubrics and examples."
+    - "Re-evaluate harness ceremony as models improve — remove steps that stop being load-bearing."
+  context_resets_vs_compaction:
+    reset_with_handoff: "After a full context reset, start a new agent from `.tmp/work/session-handoff.md` (see `.claude/protocols/session-handoff.md`) plus Beads — not from memory alone."
+    compaction: "In-session compaction preserves continuity but may not eliminate premature wrap-up; use handoffs when continuity breaks."
+  evaluator_cost_heuristic:
+    full_alignment_and_evaluator: "Cross-cutting features, UI-heavy work, shared interfaces, or high-risk correctness."
+    lighten: "Fix workflow tier (≤3 files), mechanical chores, or tasks where automated tests fully cover AC."
+    optional_e2e: "Browser-heavy AC may warrant sub-repo E2E (e.g. Playwright) when already supported — see `.claude/protocols/evaluation-rubric.md`."
+  beads_import_script: "bun run scripts/beads/import-anthropic-harness-plan.ts — requires working local `bd` + Dolt (CGO embedded or `dolt` in PATH for server mode)."
+
 common_patterns:
   file_structure:
     - "src/api/ — HTTP handlers and API calls"

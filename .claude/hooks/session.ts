@@ -7,8 +7,11 @@
  */
 
 import { execSync } from "child_process";
-import { appendFileSync } from "fs";
+import { appendFileSync, existsSync } from "fs";
+import { join } from "path";
 import { getSessionLogPath } from "./utils/constants.ts";
+
+const SESSION_HANDOFF_PATH = join(process.cwd(), ".tmp", "work", "session-handoff.md");
 
 function run(cmd: string): string {
   try {
@@ -46,6 +49,11 @@ if (bdSync) {
 }
 
 if (event === "SessionStart") {
+  if (existsSync(SESSION_HANDOFF_PATH)) {
+    console.log(
+      `\n[session] Continuity: read ${SESSION_HANDOFF_PATH} (see .claude/protocols/session-handoff.md) before editing code.\n`,
+    );
+  }
   // Print orientation info
   const ready = run("bd ready 2>/dev/null | head -5");
   if (ready) {

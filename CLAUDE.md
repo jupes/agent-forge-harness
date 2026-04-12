@@ -122,6 +122,16 @@ bd dolt push               # Push beads data to remote
 
 ---
 
+## Session start and continuity
+
+When resuming after a **long pause**, **context reset**, or **new agent session** on the same Beads work:
+
+1. Run `bd ready` / `bd show <id>` as usual.
+2. If `.tmp/work/session-handoff.md` exists, **read it before coding** (see `.claude/protocols/session-handoff.md`). It does not override Beads AC or alignment docs — reconcile conflicts explicitly.
+3. Update or remove the handoff when milestones change so the next session is not misled.
+
+---
+
 ## Session Completion Protocol
 
 Every session must end with ALL of the following:
@@ -143,7 +153,7 @@ Every session must end with ALL of the following:
 ```
 agent-forge-harness/
 ├── .claude/            # Agent system (brain)
-│   ├── agents/         # lead.md, worker.md
+│   ├── agents/         # lead.md, worker.md, planner.md, evaluator.md
 │   ├── commands/       # Slash command definitions
 │   ├── workflows/      # fix.md, feature.md, epic.md
 │   ├── hooks/          # quality-gate.ts, session.ts

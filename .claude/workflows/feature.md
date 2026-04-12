@@ -192,7 +192,7 @@ Otherwise, spawn a fresh Evaluator Agent — **never self-evaluate**:
 ```
 Task(
   description: "Evaluate output for <TASK-ID>",
-  prompt: "You are the Evaluator Agent. Follow .claude/agents/evaluator.md.
+  prompt: "You are the Evaluator Agent. Follow .claude/agents/evaluator.md and .claude/protocols/evaluation-rubric.md.
 
 Evaluate the output produced for this task:
 - Alignment document (evaluation baseline): .tmp/work/<TASK-ID>-alignment.md
@@ -212,6 +212,15 @@ Produce the structured verdict. Do not write, edit, or commit anything."
 | FAIL — BLOCKER | Fix all blockers, re-run quality gates, respawn evaluator |
 | FAIL — HIGH only | Fix all high findings, respawn evaluator |
 | FAIL — MEDIUM/LOW only | Create Beads follow-up tasks for each, proceed to Step 9 |
+
+### Refine vs pivot (after FAIL)
+
+When the evaluator’s critique shows the current approach is wrong (e.g. repeated HIGH on the same theme, unusable UX, or misaligned scope):
+
+- **Refine** — keep the same architecture and incrementally address findings; same Beads task if AC unchanged.
+- **Pivot** — materially change design or scope; **stop** and get Lead / user agreement; file a **new** Beads task or update AC before more code.
+
+If pivoting, update `.tmp/work/<TASK-ID>-alignment.md` (or supersede it with a new alignment) so the next evaluator pass judges the **new** contract.
 
 Log the verdict as a Beads comment:
 ```bash
