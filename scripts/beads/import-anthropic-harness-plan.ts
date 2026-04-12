@@ -169,8 +169,10 @@ function findChildByParentAndTitle(
   if (!listed.ok) return { ok: false, error: listed.error };
   const matches = listed.issues.filter((i) => i.title === exactTitle);
   if (matches.length === 0) return { ok: true, id: null };
+  const first = matches[0];
+  if (!first) return { ok: true, id: null };
   const open = matches.find((m) => m.status === "open" || m.status === "in_progress" || m.status === "blocked");
-  return { ok: true, id: (open ?? matches[0]).id };
+  return { ok: true, id: (open ?? first).id };
 }
 
 function listDownstreamDeps(issueId: string): { ok: true; deps: BdDepRow[] } | { ok: false; error: string } {
