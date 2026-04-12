@@ -95,19 +95,22 @@ function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   }
   const createdAt = raw.created_at ?? raw.createdAt ?? new Date().toISOString();
   const updatedAt = raw.updated_at ?? raw.updatedAt ?? createdAt;
+  const description = raw.acceptance_criteria ?? raw.description;
+  const priority = mapNumericPriority(raw.priority);
+
   return {
     id: raw.id,
     type: normalizeIssueType(raw.issue_type ?? raw.type),
     title: raw.title,
-    description: raw.acceptance_criteria ?? raw.description,
     status: normalizeStatus(raw.status),
-    priority: mapNumericPriority(raw.priority),
-    parent,
-    repo: raw.repo,
     createdAt,
     updatedAt,
-    assignee: raw.assignee,
-    labels: raw.labels,
+    ...(description !== undefined ? { description } : {}),
+    ...(priority !== undefined ? { priority } : {}),
+    ...(parent !== undefined ? { parent } : {}),
+    ...(raw.repo !== undefined ? { repo: raw.repo } : {}),
+    ...(raw.assignee !== undefined ? { assignee: raw.assignee } : {}),
+    ...(raw.labels !== undefined ? { labels: raw.labels } : {}),
   };
 }
 
