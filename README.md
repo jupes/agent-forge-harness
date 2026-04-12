@@ -4,6 +4,16 @@ A composable, agentic coding system for development teams using [Claude Code](ht
 
 Small primitives — workflows, agent roles, quality gates, issue tracking, knowledge files — that chain into a self-coordinating development process.
 
+## Overview
+
+This repo is the **Agent Forge “harness”**: opinionated **markdown workflows**, **slash commands**, **hook scripts**, **Beads-backed issue tracking**, and **`knowledge/` YAML** that sit *around* your real product repositories (including optional **multi-repo** management under `repos/`). It does not run your app in production; it **coordinates how agents and humans work** — scope routing (fix vs feature vs epic), quality checks, commits, pushes, PRs, and where domain truth is written down before diving into code.
+
+**In practice:** you install dependencies, register repos and Beads, open Claude Code in this workspace, and drive work with `/go`, `/plan`, `/ship`, and the other commands below. TypeScript utilities (mostly **Bun**) implement hooks and repo/worktree helpers.
+
+**Best suited for:** teams using Claude Code who want **shared process**, **AC-driven tasks**, **knowledge-first exploration**, and optional **several git repos** from one control plane.
+
+**Fuller narrative** (architecture, strengths, limits, customization layers): [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md).
+
 ---
 
 ## Prerequisites
@@ -124,6 +134,8 @@ agent-forge-harness/
 
 ## Customization
 
+Start with [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md) for **what to change first** (knowledge vs commands vs hooks) and how to keep upstream merges sane.
+
 ### Add a repo
 ```bash
 # In Claude Code:
@@ -136,15 +148,15 @@ agent-forge-harness/
 
 ### Add a skill
 ```bash
-mkdir -p .claude/skills/my-skill
-# Create .claude/skills/my-skill/SKILL.md
-# Or use the meta-skill: "Create a new skill for X"
+bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts my-skill "One-line description"
+# Edit .claude/skills/my-skill/SKILL.md — replace TODO sections
 ```
 
-### Adjust workflows
-- Change quality gate thresholds in each workflow `.md` file
-- Adjust conditional skip rules in `.claude/workflows/feature.md`
-- Change WIP limit in `.claude/workflows/epic.md` (default: 3)
+### Adjust workflows and gates
+- Edit `.claude/workflows/*.md` — steps, when to plan vs ship, epic WIP (default: 3 in `epic.md`)
+- Edit `.claude/hooks/quality-gate.ts` — checks must stay aligned with what `/ship` and agents promise
+- Edit `.claude/agents/*.md` — lead vs worker responsibilities
+- Edit `.claude/settings.json` — which hooks run on which Claude Code events
 
 ---
 
