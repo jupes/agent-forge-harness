@@ -6,6 +6,7 @@
   "scripts": {
     "setup": "bun run scripts/setup.ts",
     "build-pages": "bun run scripts/build-pages.ts",
+    "dashboard": "bun run scripts/dashboard.ts",
     "worktree": "bun run scripts/worktree.ts",
     "repo": "bun run .claude/skills/syncing-repos/scripts/repo.ts",
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
