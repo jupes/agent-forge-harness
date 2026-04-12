@@ -163,13 +163,14 @@ The static site under `docs/` can show a Beads overview when `docs/data/beads.js
 bun run build-pages
 ```
 
-**Local preview (no Python):** build data and serve `docs/` with Bun (needed because browsers block `fetch` to `data/` from `file://`):
+**Local preview (no Python):** [Vite](https://vitejs.dev/) dev server with **live reload** when you edit `docs/` (HTML/JS/CSS). It runs `build-pages` on startup and again whenever `.beads/*.jsonl` changes (via [chokidar](https://github.com/paulmillr/chokidar), so gitignored Beads exports still trigger a refresh).
 
 ```bash
+bun install   # once, to install vite + chokidar
 bun run dashboard
 ```
 
-Then open the printed URL (default `http://127.0.0.1:8787/`). Options: `PORT=9000 bun run dashboard`, `bun run dashboard -- --no-build` to skip rebuilding, `DASHBOARD_HOST=0.0.0.0` to listen on all interfaces.
+Then open the URL Vite prints (default `http://127.0.0.1:8787/`). Options: `PORT=9000 bun run dashboard`, `DASHBOARD_HOST=0.0.0.0 bun run dashboard` to listen on all interfaces, `DASHBOARD_NO_BUILD=1 bun run dashboard` to skip the initial `build-pages` run (serve existing `docs/data/beads.json` only).
 
 ### 8. Optional — parallel epics (git worktrees)
 
