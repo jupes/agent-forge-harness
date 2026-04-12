@@ -1,5 +1,5 @@
-// Agent Forge Dashboard — app.js
-// Loads data/beads.json and renders the Beads issue dashboard.
+// Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
+import { toggleExpandedState, buildIssueDetailPanelHtml } from "./issue-detail.mjs";
 
 const STATUS_COLOR = {
   open: "#3fb950",
@@ -11,10 +11,29 @@ const STATUS_COLOR = {
 const TYPE_ICON = {
   epic: "⚡",
   feature: "✨",
-  task: "☑",
+  task: "📄",
   bug: "🐛",
   chore: "🔧",
 };
+
+function esc(str) {
+  return String(str != null ? str : "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function typeCell(type) {
+  const icon = TYPE_ICON[type] || "";
+  const label = esc(type || "");
+  if (!label && !icon) return "—";
+  return (
+    '<span class="type-pill">' +
+    (icon ? '<span class="type-icon" aria-hidden="true">' + icon + "</span>" : "") +
+    (label ? '<span class="type-label">' + label + "</span>" : "") +
+    "</span>"
+  );
+}
 
 const PRIORITY_COLOR = {
   critical: "#f78166",
@@ -25,6 +44,8 @@ const PRIORITY_COLOR = {
 
 let data = null;
 let activeView = "dashboard";
+/** @type {string | null} */
+let expandedIssueId = null;
 
 async function loadData() {
   try {
@@ -39,13 +60,6 @@ async function loadData() {
       '<p style="color:#8b949e;font-size:0.85rem;margin-top:0.5rem">' + err.message + "</p>" +
       "</div>";
   }
-}
-
-function esc(str) {
-  return String(str != null ? str : "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }
 
 function statusBadge(status) {
@@ -79,12 +93,13 @@ function renderDashboard() {
   if (ready.length === 0) {
     html += '<p style="color:#8b949e">No ready tasks.</p>';
   } else {
-    html += "<table><thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Priority</th><th>Repo</th></tr></thead><tbody>";
-    ready.forEach(function(i) {
+    html +=
+      '<table class="issue-table"><thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+    ready.forEach(function (i) {
       html += "<tr>";
       html += "<td><code>" + esc(i.id) + "</code></td>";
       html += "<td>" + esc(i.title) + "</td>";
-      html += "<td>" + (TYPE_ICON[i.type] || "") + " " + esc(i.type) + "</td>";
+      html += '<td class="type-col">' + typeCell(i.type) + "</td>";
       html += "<td>" + priorityBadge(i.priority) + "</td>";
       html += "<td>" + esc(i.repo || "—") + "</td>";
       html += "</tr>";
@@ -95,7 +110,7 @@ function renderDashboard() {
   if (blocked > 0) {
     html += "<h3>Blocked (" + blocked + ")</h3>";
     html += "<table><thead><tr><th>ID</th><th>Title</th><th>Status</th></tr></thead><tbody>";
-    (derived.blocked || []).slice(0, 10).forEach(function(i) {
+    (derived.blocked || []).slice(0, 10).forEach(function (i) {
       html += "<tr><td><code>" + esc(i.id) + "</code></td><td>" + esc(i.title) + "</td><td>" + statusBadge("blocked") + "</td></tr>";
     });
     html += "</tbody></table>";
@@ -111,31 +126,56 @@ function renderList() {
   const filter = filterEl ? filterEl.value : "all";
   const search = searchEl ? searchEl.value.toLowerCase() : "";
 
-  const issues = (data.issues || []).filter(function(i) {
+  const issues = (data.issues || []).filter(function (i) {
     const matchStatus = filter === "all" || i.status === filter;
-    const matchSearch = !search || i.title.toLowerCase().indexOf(search) !== -1 || i.id.toLowerCase().indexOf(search) !== -1;
+    const matchSearch =
+      !search || i.title.toLowerCase().indexOf(search) !== -1 || i.id.toLowerCase().indexOf(search) !== -1;
     return matchStatus && matchSearch;
   });
 
+  if (expandedIssueId && !issues.some(function (i) {
+    return i.id === expandedIssueId;
+  })) {
+    expandedIssueId = null;
+  }
+
   let html = '<div class="filter-row">';
-  html += '<input id="search-input" type="text" placeholder="Search..." oninput="render()" value="' + esc(search) + '" style="padding:0.4rem 0.75rem;background:#1c2333;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:0.875rem">';
-  html += '<select id="filter-status" onchange="render()" style="padding:0.4rem 0.75rem;background:#1c2333;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:0.875rem">';
-  ["all", "open", "in_progress", "blocked", "closed"].forEach(function(s) {
+  html +=
+    '<input id="search-input" type="text" placeholder="Search..." oninput="window.__dashboardRender()" value="' +
+    esc(search) +
+    '" style="padding:0.4rem 0.75rem;background:#1c2333;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:0.875rem">';
+  html +=
+    '<select id="filter-status" onchange="window.__dashboardRender()" style="padding:0.4rem 0.75rem;background:#1c2333;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:0.875rem">';
+  ["all", "open", "in_progress", "blocked", "closed"].forEach(function (s) {
     html += '<option value="' + s + '"' + (filter === s ? " selected" : "") + ">" + (s === "all" ? "All statuses" : s) + "</option>";
   });
   html += "</select></div>";
 
   html += '<p style="color:#8b949e;font-size:0.85rem;margin-bottom:0.75rem">' + issues.length + " issues</p>";
-  html += "<table><thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>";
-  issues.slice(0, 100).forEach(function(i) {
-    html += "<tr>";
+  html +=
+    '<table class="issue-table issue-table-expandable"><thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+  issues.slice(0, 100).forEach(function (i) {
+    const isOpen = expandedIssueId === i.id;
+    html +=
+      '<tr class="issue-summary-row' +
+      (isOpen ? " is-expanded" : "") +
+      '" data-issue-id="' +
+      esc(i.id) +
+      '" role="button" tabindex="0" aria-expanded="' +
+      (isOpen ? "true" : "false") +
+      '">';
     html += "<td><code>" + esc(i.id) + "</code></td>";
     html += "<td>" + esc(i.title) + "</td>";
-    html += "<td>" + (TYPE_ICON[i.type] || "") + " " + esc(i.type) + "</td>";
+    html += '<td class="type-col">' + typeCell(i.type) + "</td>";
     html += "<td>" + statusBadge(i.status) + "</td>";
     html += "<td>" + priorityBadge(i.priority) + "</td>";
     html += "<td>" + esc(i.repo || "—") + "</td>";
     html += "</tr>";
+    html += '<tr class="issue-detail-gap"><td colspan="6">';
+    html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
+    html += '<div class="issue-detail-anim-inner">';
+    html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
+    html += "</div></div></td></tr>";
   });
   html += "</tbody></table>";
   return html;
@@ -147,26 +187,39 @@ function renderEpics() {
   if (epics.length === 0) {
     return '<div class="empty-state">No epics yet. Create one: <code>bd create --type epic --title "My Epic"</code></div>';
   }
-  return epics.map(function(epic) {
-    const children = (data.issues || []).filter(function(i) { return i.parent === epic.id; });
-    const closedCount = children.filter(function(i) { return i.status === "closed"; }).length;
-    const pct = children.length > 0 ? Math.round((closedCount / children.length) * 100) : 0;
+  return epics
+    .map(function (epic) {
+      const children = (data.issues || []).filter(function (i) {
+        return i.parent === epic.id;
+      });
+      const closedCount = children.filter(function (i) {
+        return i.status === "closed";
+      }).length;
+      const pct = children.length > 0 ? Math.round((closedCount / children.length) * 100) : 0;
 
-    let html = '<div class="epic-card">';
-    html += '<div class="epic-header">';
-    html += "<code>" + esc(epic.id) + "</code>";
-    html += "<strong>" + esc(epic.title) + "</strong>";
-    html += statusBadge(epic.status);
-    if (epic.due) html += '<span style="color:#8b949e;font-size:0.8rem">Due: ' + epic.due.slice(0, 10) + "</span>";
-    html += "</div>";
-    html += '<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>';
-    html += '<div style="font-size:0.8rem;color:#8b949e;margin-top:0.25rem">' + closedCount + "/" + children.length + " tasks · " + pct + "%</div>";
-    if (epic.description) {
-      html += '<p style="color:#8b949e;font-size:0.875rem;margin-top:0.5rem">' + esc(epic.description.slice(0, 200)) + "</p>";
-    }
-    html += "</div>";
-    return html;
-  }).join("");
+      let html = '<div class="epic-card">';
+      html += '<div class="epic-header">';
+      html += "<code>" + esc(epic.id) + "</code>";
+      html += "<strong>" + esc(epic.title) + "</strong>";
+      html += statusBadge(epic.status);
+      if (epic.due) html += '<span style="color:#8b949e;font-size:0.8rem">Due: ' + epic.due.slice(0, 10) + "</span>";
+      html += "</div>";
+      html += '<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>';
+      html +=
+        '<div style="font-size:0.8rem;color:#8b949e;margin-top:0.25rem">' +
+        closedCount +
+        "/" +
+        children.length +
+        " tasks · " +
+        pct +
+        "%</div>";
+      if (epic.description) {
+        html += '<p style="color:#8b949e;font-size:0.875rem;margin-top:0.5rem">' + esc(epic.description.slice(0, 200)) + "</p>";
+      }
+      html += "</div>";
+      return html;
+    })
+    .join("");
 }
 
 function renderCommands() {
@@ -187,12 +240,12 @@ function renderCommands() {
   ];
 
   let html = "<table><thead><tr><th>Command</th><th>Description</th></tr></thead><tbody>";
-  commands.forEach(function(c) {
+  commands.forEach(function (c) {
     html += "<tr><td><code>" + esc(c[0]) + "</code></td><td>" + esc(c[1]) + "</td></tr>";
   });
   html += "</tbody></table><h3>Workflow Tiers</h3>";
   html += "<table><thead><tr><th>Workflow</th><th>Scope</th><th>Process</th></tr></thead><tbody>";
-  workflows.forEach(function(w) {
+  workflows.forEach(function (w) {
     html += "<tr><td><strong>" + w[0] + "</strong></td><td>" + w[1] + "</td><td>" + w[2] + "</td></tr>";
   });
   html += "</tbody></table>";
@@ -201,10 +254,37 @@ function renderCommands() {
 
 function setView(view) {
   activeView = view;
-  document.querySelectorAll("nav a[data-view]").forEach(function(a) {
+  if (view !== "list") expandedIssueId = null;
+  document.querySelectorAll("nav a[data-view]").forEach(function (a) {
     a.classList.toggle("active", a.dataset.view === view);
   });
   render();
+}
+
+function wireIssueListExpand(root) {
+  root.querySelectorAll(".issue-summary-row").forEach(function (row) {
+    row.addEventListener("click", function () {
+      const id = row.getAttribute("data-issue-id");
+      if (!id) return;
+      expandedIssueId = toggleExpandedState(expandedIssueId, id);
+      render();
+    });
+    row.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      const id = row.getAttribute("data-issue-id");
+      if (!id) return;
+      expandedIssueId = toggleExpandedState(expandedIssueId, id);
+      render();
+    });
+  });
+  root.querySelectorAll(".issue-detail-close").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      expandedIssueId = null;
+      render();
+    });
+  });
 }
 
 function render() {
@@ -218,15 +298,22 @@ function render() {
   };
   const v = views[activeView] || views.dashboard;
   if (title) title.textContent = v.label;
-  if (content) content.innerHTML = v.fn();
+  if (content) {
+    content.innerHTML = v.fn();
+    if (activeView === "list") {
+      wireIssueListExpand(content);
+    }
+  }
 }
+
+window.__dashboardRender = render;
 
 const REBUILD_PAGES_PATH = "/__agent-forge/rebuild-pages";
 
 function wireRebuildDataButton() {
   const btn = document.getElementById("btn-rebuild-pages");
   if (!btn) return;
-  btn.addEventListener("click", async function() {
+  btn.addEventListener("click", async function () {
     btn.disabled = true;
     var prev = btn.textContent;
     btn.textContent = "Rebuilding…";
@@ -244,10 +331,7 @@ function wireRebuildDataButton() {
       await loadData();
       render();
     } catch (err) {
-      var msg =
-        (err && err.message) ||
-        String(err) ||
-        "Unknown error";
+      var msg = (err && err.message) || String(err) || "Unknown error";
       window.alert(
         "Could not rebuild dashboard data.\n\n" +
           msg +
@@ -260,9 +344,9 @@ function wireRebuildDataButton() {
   });
 }
 
-document.addEventListener("DOMContentLoaded", function() {
-  document.querySelectorAll("nav a[data-view]").forEach(function(a) {
-    a.addEventListener("click", function(e) {
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("nav a[data-view]").forEach(function (a) {
+    a.addEventListener("click", function (e) {
       e.preventDefault();
       setView(a.dataset.view);
     });

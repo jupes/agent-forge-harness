@@ -146,6 +146,210 @@
 
     tr:hover td { color: var(--text); background: var(--surface); }
 
+    /* Type column: keep icon + word on one line, comfortable spacing */
+    .issue-table th.type-col,
+    .issue-table td.type-col {
+      min-width: 6.5rem;
+      width: 1%;
+      white-space: nowrap;
+      vertical-align: middle;
+      padding-left: 0.75rem;
+      padding-right: 1rem;
+    }
+
+    .type-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      white-space: nowrap;
+      line-height: 1.25;
+    }
+
+    .type-pill .type-icon {
+      flex-shrink: 0;
+      line-height: 1;
+      font-size: 1.05em;
+    }
+
+    .type-pill .type-label {
+      color: var(--text-muted);
+    }
+
+    tr:hover td.type-col .type-label {
+      color: var(--text);
+    }
+
+    /* All Issues — expandable detail row */
+    .issue-summary-row {
+      cursor: pointer;
+    }
+
+    .issue-summary-row:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .issue-table-expandable tr.issue-detail-gap td {
+      padding: 0;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .issue-table-expandable tr.issue-detail-gap:hover td {
+      background: var(--bg);
+      color: var(--text-muted);
+    }
+
+    .issue-detail-anim {
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.35s ease;
+    }
+
+    .issue-detail-anim.is-open {
+      grid-template-rows: 1fr;
+    }
+
+    .issue-detail-anim-inner {
+      min-height: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .issue-detail-panel {
+      pointer-events: auto;
+      padding: 0.9rem 1.1rem 1.15rem;
+      background: var(--surface-2);
+      border-top: 1px solid var(--border);
+    }
+
+    .issue-detail-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.65rem;
+    }
+
+    .issue-detail-heading {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+    }
+
+    .issue-detail-close {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      line-height: 1;
+      color: var(--text-muted);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .issue-detail-close:hover {
+      color: var(--text);
+      border-color: var(--accent);
+      background: var(--surface);
+    }
+
+    .issue-detail-dl-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+
+    .issue-detail-kv {
+      display: grid;
+      grid-template-columns: minmax(7rem, 10rem) 1fr;
+      gap: 0.35rem 0.85rem;
+      font-size: 0.8125rem;
+      align-items: start;
+    }
+
+    .issue-detail-kv dt {
+      margin: 0;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .issue-detail-kv dd {
+      margin: 0;
+      color: var(--text);
+    }
+
+    .issue-detail-prose {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .issue-detail-section {
+      margin-top: 1rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .issue-detail-section h5 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin: 0 0 0.5rem;
+    }
+
+    .issue-detail-ac {
+      margin: 0;
+      padding-left: 1.1rem;
+      color: var(--text);
+    }
+
+    .issue-detail-comments,
+    .issue-detail-deps {
+      margin: 0;
+      padding-left: 1rem;
+      list-style: disc;
+      color: var(--text);
+    }
+
+    .issue-detail-comments li,
+    .issue-detail-deps li {
+      margin-bottom: 0.5rem;
+    }
+
+    .issue-detail-meta {
+      display: block;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-bottom: 0.2rem;
+    }
+
+    .issue-detail-comment-body {
+      margin: 0;
+      font-family: inherit;
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+    }
+
+    .issue-detail-dep-rel {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .issue-detail-dep-type {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
     code {
       font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
       font-size: 0.82em;
@@ -272,6 +476,6 @@
   </div>
 </main>
 
-<script src="js/app.js"></script>
+<script type="module" src="js/app.mjs"></script>
 </body>
 </html>
