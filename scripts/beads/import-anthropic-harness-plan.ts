@@ -20,6 +20,35 @@ interface BdCreateJson {
   id?: string;
 }
 
+/** `bd create --json` may emit pretty-printed multi-line JSON; stderr may be empty. */
+function parseBdCreateJsonOutput(out: string): BdCreateJson | null {
+  const trimmed = out.trim();
+  if (!trimmed) return null;
+
+  const tryParse = (chunk: string): BdCreateJson | null => {
+    try {
+      const parsed: unknown = JSON.parse(chunk);
+      if (typeof parsed === "object" && parsed !== null && "id" in parsed) {
+        return parsed as BdCreateJson;
+      }
+    } catch {
+      /* try next strategy */
+    }
+    return null;
+  };
+
+  const whole = tryParse(trimmed);
+  if (whole) return whole;
+
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first !== -1 && last > first) {
+    return tryParse(trimmed.slice(first, last + 1));
+  }
+
+  return null;
+}
+
 function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: false; error: string } {
   try {
     const out = execFileSync("bd", args, {
@@ -27,14 +56,10 @@ function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: fal
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     }).trim();
-    const line = out
-      .split("\n")
-      .map((l) => l.trim())
-      .find((l) => l.startsWith("{") && l.endsWith("}"));
-    if (!line) {
-      return { ok: false, error: `bd returned no JSON object. Raw output:\n${out.slice(0, 2000)}` };
+    const json = parseBdCreateJsonOutput(out);
+    if (!json) {
+      return { ok: false, error: `bd returned no parseable JSON object. Raw output:\n${out.slice(0, 2000)}` };
     }
-    const json = JSON.parse(line) as BdCreateJson;
     return { ok: true, json };
   } catch (e: unknown) {
     const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
