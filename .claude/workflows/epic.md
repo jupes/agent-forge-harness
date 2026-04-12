@@ -54,6 +54,13 @@ For tasks in the same batch, verify no two workers will edit the same file:
 # If overlap detected: serialize those two tasks (add dependency)
 ```
 
+### 2b.5. Pre-task alignment
+For each task in the batch, run the 3-way alignment protocol (see `.claude/agents/lead.md` Step 2.5) before spawning workers:
+- Spawn a Worker in planning mode + Evaluator in alignment mode for each task
+- Reconcile any disagreements on scope or success criteria
+- Save alignment documents to `.tmp/work/<TASK-ID>-alignment.md`
+- Do not spawn implementation workers until alignment is confirmed for all tasks in the batch
+
 ### 2c. Interface contracts
 For each batch, identify shared interfaces:
 - Which tasks produce exports that other tasks consume?
