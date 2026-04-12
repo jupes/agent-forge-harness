@@ -163,6 +163,14 @@ The static site under `docs/` can show a Beads overview when `docs/data/beads.js
 bun run build-pages
 ```
 
+**Local preview (no Python):** build data and serve `docs/` with Bun (needed because browsers block `fetch` to `data/` from `file://`):
+
+```bash
+bun run dashboard
+```
+
+Then open the printed URL (default `http://127.0.0.1:8787/`). Options: `PORT=9000 bun run dashboard`, `bun run dashboard -- --no-build` to skip rebuilding, `DASHBOARD_HOST=0.0.0.0` to listen on all interfaces.
+
 ### 8. Optional — parallel epics (git worktrees)
 
 Epic workflow uses isolated worktrees:
