@@ -9,7 +9,7 @@
 import { execSync } from "child_process";
 import { appendFileSync, existsSync } from "fs";
 import { join } from "path";
-import { getSessionLogPath } from "./utils/constants.ts";
+import { getSessionLogPath } from "./utils/constants";
 
 const SESSION_HANDOFF_PATH = join(process.cwd(), ".tmp", "work", "session-handoff.md");
 

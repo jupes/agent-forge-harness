@@ -7,10 +7,11 @@
  * Outputs structured JSON for agent consumption.
  */
 
-import { execSync, spawnSync } from "child_process";
+import { execSync } from "child_process";
 import { existsSync, readFileSync, appendFileSync } from "fs";
 import { join } from "path";
-import { getQualityGateLogPath } from "./utils/constants.ts";
+import { Glob } from "bun";
+import { getQualityGateLogPath } from "./utils/constants";
 
 interface CheckResult {
   name: string;
@@ -53,8 +54,18 @@ function hasScript(name: string): boolean {
 }
 
 function hasTestFiles(): boolean {
-  const result = run('find . -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.spec.ts" -o -name "*.spec.tsx" | grep -v node_modules | head -1');
-  return result.ok && result.output.length > 0;
+  const cwd = process.cwd();
+  const patterns = ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"];
+  for (const pattern of patterns) {
+    const glob = new Glob(pattern);
+    for (const file of glob.scanSync({ cwd, onlyFiles: true })) {
+      const norm = file.replaceAll("\\", "/");
+      if (norm.includes("node_modules/")) continue;
+      if (norm.startsWith("repos/") || norm.startsWith("trees/")) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 const event = process.env["CLAUDE_HOOK_EVENT"] ?? "TaskCompleted";
@@ -66,14 +77,22 @@ const blockingFailures: string[] = [];
 // Check 1: TypeScript typecheck
 {
   const r = run("bun run typecheck");
-  checks.push({ name: "typecheck", passed: r.ok, output: r.ok ? undefined : r.output.slice(0, 800) });
+  checks.push({
+    name: "typecheck",
+    passed: r.ok,
+    ...(r.ok ? {} : { output: r.output.slice(0, 800) }),
+  });
   if (!r.ok) blockingFailures.push("typecheck");
 }
 
 // Check 2: Lint (skip if no lint script)
 if (hasScript("lint")) {
   const r = run("bun run lint");
-  checks.push({ name: "lint", passed: r.ok, output: r.ok ? undefined : r.output.slice(0, 800) });
+  checks.push({
+    name: "lint",
+    passed: r.ok,
+    ...(r.ok ? {} : { output: r.output.slice(0, 800) }),
+  });
   if (!r.ok) blockingFailures.push("lint");
 } else {
   checks.push({ name: "lint", passed: true, skipped: true, skipReason: "no lint script in package.json" });
@@ -82,7 +101,11 @@ if (hasScript("lint")) {
 // Check 3: Tests (skip if no test files)
 if (hasTestFiles()) {
   const r = run("bun test");
-  checks.push({ name: "tests", passed: r.ok, output: r.ok ? undefined : r.output.slice(0, 1200) });
+  checks.push({
+    name: "tests",
+    passed: r.ok,
+    ...(r.ok ? {} : { output: r.output.slice(0, 1200) }),
+  });
   if (!r.ok) blockingFailures.push("tests");
 } else {
   checks.push({ name: "tests", passed: true, skipped: true, skipReason: "no test files found" });
@@ -92,7 +115,11 @@ if (hasTestFiles()) {
 {
   const r = run("git status --porcelain");
   const clean = r.ok && r.output.trim() === "";
-  checks.push({ name: "clean-tree", passed: clean, output: clean ? undefined : r.output.slice(0, 400) });
+  checks.push({
+    name: "clean-tree",
+    passed: clean,
+    ...(clean ? {} : { output: r.output.slice(0, 400) }),
+  });
   if (!clean) blockingFailures.push("clean-tree");
 }
 
@@ -118,7 +145,9 @@ if (event === "TaskCompleted") {
     checks.push({
       name: "test-evidence",
       passed: hasRecentTests,
-      output: hasRecentTests ? undefined : "No test files in recent commits — ensure tests were committed",
+      ...(hasRecentTests
+        ? {}
+        : { output: "No test files in recent commits — ensure tests were committed" }),
     });
     if (!hasRecentTests) blockingFailures.push("test-evidence");
   }

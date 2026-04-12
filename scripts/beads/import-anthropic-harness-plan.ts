@@ -15,6 +15,7 @@
  */
 
 import { execFileSync } from "child_process";
+import { parseBdCreateJsonOutput, parseJsonLoose, type BdCreateJson } from "./bd-json-parse";
 
 const EPIC_TITLE = "Epic: Integrate Anthropic long-running harness learnings";
 const EPIC_TITLE_QUERY = "Anthropic long-running harness learnings";
@@ -32,10 +33,6 @@ type Envelope =
       error: null;
     }
   | { ok: false; data: null; error: string };
-
-interface BdCreateJson {
-  id?: string;
-}
 
 interface BdListIssue {
   id: string;
@@ -62,60 +59,6 @@ function execBd(args: string[]): { ok: true; stdout: string } | { ok: false; err
     const combined = `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() || (err.message ?? String(e));
     return { ok: false, error: combined };
   }
-}
-
-/** Parse JSON object or array from bd stdout (may be pretty-printed; may have log noise). */
-function parseJsonLoose(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("empty bd output");
-
-  const tryParse = (chunk: string): unknown => JSON.parse(chunk) as unknown;
-
-  try {
-    return tryParse(trimmed);
-  } catch {
-    /* continue */
-  }
-
-  const sliceBalanced = (open: string, close: string): string | null => {
-    const first = trimmed.indexOf(open);
-    const last = trimmed.lastIndexOf(close);
-    if (first === -1 || last <= first) return null;
-    return trimmed.slice(first, last + 1);
-  };
-
-  const objSlice = sliceBalanced("{", "}");
-  if (objSlice) {
-    try {
-      return tryParse(objSlice);
-    } catch {
-      /* continue */
-    }
-  }
-
-  const arrSlice = sliceBalanced("[", "]");
-  if (arrSlice) {
-    try {
-      return tryParse(arrSlice);
-    } catch {
-      /* continue */
-    }
-  }
-
-  throw new Error("no parseable JSON in bd output");
-}
-
-/** `bd create --json` may emit pretty-printed multi-line JSON. */
-function parseBdCreateJsonOutput(out: string): BdCreateJson | null {
-  try {
-    const parsed: unknown = parseJsonLoose(out);
-    if (typeof parsed === "object" && parsed !== null && "id" in parsed) {
-      return parsed as BdCreateJson;
-    }
-  } catch {
-    return null;
-  }
-  return null;
 }
 
 function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: false; error: string } {
