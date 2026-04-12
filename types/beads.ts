@@ -1,6 +1,7 @@
 /**
  * Shared TypeScript types for the Beads issue tracking system.
- * These types mirror the Beads JSONL schema stored in .beads/issues.jsonl.
+ * These types mirror the dashboard payload from scripts/build-pages.ts
+ * (JSONL and/or normalized `bd export` records).
  */
 
 export type IssueType = "epic" | "feature" | "task" | "bug" | "chore";
