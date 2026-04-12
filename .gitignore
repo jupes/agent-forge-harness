@@ -1,0 +1,34 @@
+# Sub-repos (managed separately, cloned via syncing-repos skill)
+repos/*
+!repos/repos.json
+
+# Git worktrees (created per parallel worker by epic workflow)
+trees/
+
+# Temporary agent work files
+.tmp/
+
+# Beads runtime files (Dolt backend)
+.beads/*.db
+.beads/*.db-wal
+.beads/*.db-shm
+.beads/.daemon*
+.beads/.dolt/
+.beads/issues.jsonl
+
+# Dashboard generated data
+docs/data/beads.json
+
+# Standard
+node_modules/
+.env
+.env.local
+.idea/
+.vscode/
+*.DS_Store
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# Bun lockfile (commit this if you want reproducible installs)
+# bun.lockb

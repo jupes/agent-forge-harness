@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "types": ["bun-types"],
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "paths": {
+      "@/types/*": ["./types/*"]
+    }
+  },
+  "include": [
+    "scripts/**/*.ts",
+    ".claude/hooks/**/*.ts",
+    ".claude/skills/**/*.ts",
+    "types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "trees",
+    "repos"
+  ]
+}

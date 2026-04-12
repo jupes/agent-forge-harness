@@ -1,0 +1,20 @@
+{
+  "name": "agent-forge-harness",
+  "version": "0.1.0",
+  "description": "Composable agentic coding system for development teams using Claude Code",
+  "private": true,
+  "scripts": {
+    "setup": "bun run scripts/setup.ts",
+    "build-pages": "bun run scripts/build-pages.ts",
+    "worktree": "bun run scripts/worktree.ts",
+    "repo": "bun run .claude/skills/syncing-repos/scripts/repo.ts",
+    "quality-gate": "bun run .claude/hooks/quality-gate.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
