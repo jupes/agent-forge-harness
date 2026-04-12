@@ -157,7 +157,7 @@ Then generate or refresh knowledge for each service (from Claude Code, `/sync-kn
 
 ### 7. Optional — GitHub Pages dashboard
 
-The static site under `docs/` can show a Beads overview when `docs/data/beads.json` exists. The `build-pages` script reads **JSONL** issue export paths under `.beads/` (see `scripts/build-pages.ts`). If your workflow produces `.beads/issues.jsonl` (or you export from Beads in a compatible format), regenerate data and open `docs/index.html` locally or publish the `docs/` folder:
+The static site under `docs/` can show a Beads overview when `docs/data/beads.json` exists. The `build-pages` script prefers **`.beads/*.jsonl`** when those files contain issues; otherwise it runs **`bd export --no-memories`** so **Dolt-backed Beads** (the default today) still populates the dashboard. `bd` must be on `PATH`. Regenerate data and open via `bun run dashboard` or publish the `docs/` folder:
 
 ```bash
 bun run build-pages

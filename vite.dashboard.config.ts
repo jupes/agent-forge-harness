@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import chokidar from "chokidar";
 
@@ -9,8 +10,9 @@ const repoRoot = __dirname;
 const docsRoot = path.join(repoRoot, "docs");
 
 /**
- * Re-run build-pages when Beads JSONL exports change, then full-reload the browser.
- * Uses chokidar (not Vite's watcher) so .gitignored `.beads/*.jsonl` still triggers updates.
+ * Re-run build-pages when Beads data changes, then full-reload the browser.
+ * Watches `.beads/` (Dolt + JSONL) with chokidar so .gitignored paths still trigger updates;
+ * debounced to avoid rebuild storms from Dolt internals.
  */
 function beadsDataReloadPlugin(): Plugin {
   return {
@@ -30,13 +32,26 @@ function beadsDataReloadPlugin(): Plugin {
         runBuildPages();
       }
 
-      const jsonlPaths = ["issues.jsonl", "deps.jsonl", "comments.jsonl"].map((name) =>
-        path.join(repoRoot, ".beads", name),
-      );
+      const beadsDir = path.join(repoRoot, ".beads");
+      if (!existsSync(beadsDir)) {
+        return;
+      }
 
-      const watcher = chokidar.watch(jsonlPaths, {
+      const watcher = chokidar.watch(beadsDir, {
         ignoreInitial: true,
-        awaitWriteFinish: { stabilityThreshold: 250, pollInterval: 50 },
+        depth: 10,
+        awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
+        ignored: [
+          "**/dolt-server.log",
+          "**/dolt-server.pid",
+          "**/dolt-server.port",
+          "**/bd.sock*",
+          "**/.exclusive-lock",
+          "**/sync-state.json",
+          "**/push-state.json",
+          "**/interactions.jsonl",
+          "**/last-touched",
+        ],
       });
 
       const onBeadsFileChange = () => {
@@ -44,11 +59,21 @@ function beadsDataReloadPlugin(): Plugin {
         server.ws.send({ type: "full-reload", path: "*" });
       };
 
-      watcher.on("add", onBeadsFileChange);
-      watcher.on("change", onBeadsFileChange);
-      watcher.on("unlink", onBeadsFileChange);
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      const schedule = () => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          debounce = null;
+          onBeadsFileChange();
+        }, 700);
+      };
+
+      watcher.on("add", schedule);
+      watcher.on("change", schedule);
+      watcher.on("unlink", schedule);
 
       server.httpServer?.on("close", () => {
+        if (debounce) clearTimeout(debounce);
         void watcher.close();
       });
     },
