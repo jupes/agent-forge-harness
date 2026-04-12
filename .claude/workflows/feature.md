@@ -180,45 +180,50 @@ If changes affect UI:
 
 ---
 
-## Step 8 — Review *(conditional)*
+## Step 8 — Evaluator Review
 
-**Skip review if ALL of the following are true**:
+**Skip entirely if ALL of the following are true**:
 - Task type is `bug` or `chore`
 - ≤3 files changed
 - ≤100 lines changed
 
-Otherwise, perform a risk-tiered self-review:
+Otherwise, spawn a fresh Evaluator Agent — **never self-evaluate**:
 
-### Review checklist
+```
+Task(
+  description: "Evaluate output for <TASK-ID>",
+  prompt: "You are the Evaluator Agent. Follow .claude/agents/evaluator.md.
 
-**Blocker (must fix — blocks PASS)**:
-- [ ] No security vulnerabilities (injection, path traversal, auth bypass, secrets)
-- [ ] No data loss risk (destructive operations without confirmation)
-- [ ] No credentials or tokens in code
+Evaluate the output produced for this task:
+- Alignment document (evaluation baseline): .tmp/work/<TASK-ID>-alignment.md
+  (if no alignment doc exists, use the Beads issue as baseline: bd show <TASK-ID>)
+- Files changed: <list from git diff --name-only HEAD~1..HEAD>
+- Worker summary: <paste your Worker Summary output here>
 
-**High (must fix — blocks PASS)**:
-- [ ] All error cases handled (no silent failures)
-- [ ] No `any` types without justification comments
-- [ ] All tests passing
-- [ ] No breaking changes to public interfaces without migration
+Produce the structured verdict. Do not write, edit, or commit anything."
+)
+```
 
-**Medium (create follow-up task)**:
-- [ ] Code is readable without excessive comments
-- [ ] Edge cases have test coverage
-- [ ] Performance is acceptable for expected load
+### Acting on the verdict
 
-**Low (optional)**:
-- [ ] Variable names are clear
-- [ ] Documentation is up to date
+| Verdict | Action |
+|---------|--------|
+| PASS | Proceed to Step 9 |
+| FAIL — BLOCKER | Fix all blockers, re-run quality gates, respawn evaluator |
+| FAIL — HIGH only | Fix all high findings, respawn evaluator |
+| FAIL — MEDIUM/LOW only | Create Beads follow-up tasks for each, proceed to Step 9 |
 
-If Blocker or High findings exist: fix them before shipping.
-For Medium: create a Beads follow-up task.
-Log review result: `bd comments add <TASK-ID> "review: PASS — 0B/0H/2M/1L"`
+Log the verdict as a Beads comment:
+```bash
+bd comments add <TASK-ID> "review: PASS — 0B/0H/2M/1L"
+# or
+bd comments add <TASK-ID> "review: FAIL — 1B/1H/0M/0L — reworking"
+```
 
 ### Maximum rework iterations: 2
-If you cannot resolve Blocker/High issues within 2 iterations:
-1. Revert the implementation
-2. File a Beads bug with findings
+If BLOCKER or HIGH findings persist after 2 evaluator passes:
+1. Revert the implementation: `git revert HEAD --no-edit`
+2. File a Beads bug with the evaluator's findings attached
 3. Escalate to lead agent
 
 ---
@@ -281,5 +286,5 @@ Include this matrix in the PR body.
 | Tests | Yes | — |
 | Clean tree | Yes | — |
 | Approval | — | Skip for bugs ≤120min, chores ≤3files |
-| Review | — | Skip for bugs/chores ≤3files ≤100lines |
+| Evaluator review | — | Skip for bugs/chores ≤3files ≤100lines |
 | Visual verify | — | Frontend only |

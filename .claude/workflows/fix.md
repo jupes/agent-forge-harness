@@ -95,8 +95,9 @@ If you cannot fix within 2 attempts:
 
 ---
 
-## Step 5 — Security Scan
+## Step 5 — Security Scan + Evaluator *(conditional)*
 
+### Security scan
 Lightweight diff scan on your changes:
 
 ```bash
@@ -111,6 +112,26 @@ Check for:
 - **XSS**: unescaped user input in HTML/JSX
 
 If any blocker is found: fix before proceeding. Do NOT ship with security issues.
+
+### Evaluator spawn *(skip for trivial fixes: ≤2 files, ≤50 lines, type is `bug` or `chore`)*
+
+For anything above the trivial threshold, spawn a fresh Evaluator Agent before shipping — **do not self-evaluate**:
+
+```
+Task(
+  description: "Evaluate output for <TASK-ID>",
+  prompt: "You are the Evaluator Agent. Follow .claude/agents/evaluator.md.
+
+Evaluate the output produced for this fix:
+- Baseline: bd show <TASK-ID> (use the Beads issue AC as the evaluation spec)
+- Files changed: <list from git diff --name-only HEAD~1..HEAD>
+- Worker summary: <paste your summary here>
+
+Produce the structured verdict. Do not write, edit, or commit anything."
+)
+```
+
+On FAIL: fix BLOCKER/HIGH findings, re-run security scan, respawn evaluator. Maximum 2 iterations — then revert and file a bug.
 
 ---
 
@@ -162,3 +183,4 @@ git status                 # Verify clean state
 | Tests | `bun test` | Yes (if tests exist) |
 | Clean tree | `git status` | Yes |
 | Security scan | Manual diff review | Yes |
+| Evaluator review | Evaluator Agent `Task()` | Skip for trivial (≤2 files, ≤50 lines) |

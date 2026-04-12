@@ -129,7 +129,7 @@ bd comments add <TASK-ID> "worklog: merged in batch for <EPIC-ID>"
 
 ---
 
-## Step 3.5 — Integration Verify
+## Step 3.5 — Integration Verify + Evaluator
 
 After each batch merges:
 
@@ -138,7 +138,28 @@ bun run typecheck     # All merged code typechecks together
 bun test              # Full test suite
 ```
 
-If integration fails after merging:
+Then spawn one Evaluator Agent per completed task in the batch — **never reuse the worker that built it**:
+
+```
+Task(
+  description: "Evaluate output for <TASK-ID>",
+  prompt: "You are the Evaluator Agent. Follow .claude/agents/evaluator.md.
+
+Evaluate the output for this task:
+- Alignment document (evaluation baseline): .tmp/work/<TASK-ID>-alignment.md
+- Files changed: <list from git diff --name-only <pre-merge-sha>..HEAD -- repos/<repo>/>
+- Worker summary: <paste worker's summary>
+
+Produce the structured verdict. Do not write, edit, or commit anything."
+)
+```
+
+Evaluator results feed back to the lead:
+- PASS → proceed to next batch
+- FAIL (BLOCKER/HIGH) → spawn a targeted fix worker before continuing; do not merge next batch until resolved
+- FAIL (MEDIUM/LOW only) → create follow-up Beads tasks, proceed to next batch
+
+If integration itself fails after merging:
 1. Identify which worker's changes caused the conflict
 2. Fix inline if trivial (type mismatch, wrong import path)
 3. If structural: revert the offending merge and spawn a targeted fix worker before continuing to next batch
