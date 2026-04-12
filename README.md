@@ -129,7 +129,7 @@ gh auth login
 
    at session end alongside `git push`. If your install provides `bd sync`, you can use it at session start/end as described in `CLAUDE.md` / `AGENTS.md`.
 
-5. Optional: install the sample **Anthropic harness integration** epic + phased tasks (after `bd` works):
+5. Optional: install the sample **Anthropic harness integration** epic + phased tasks (after `bd` works). **Idempotent** — safe to re-run; reuses the same epic/tasks by title and only adds missing deps or children.
 
    ```bash
    bun run beads:import-anthropic-plan

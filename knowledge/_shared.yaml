@@ -66,7 +66,7 @@ anthropic_long_running_harness:
     full_alignment_and_evaluator: "Cross-cutting features, UI-heavy work, shared interfaces, or high-risk correctness."
     lighten: "Fix workflow tier (≤3 files), mechanical chores, or tasks where automated tests fully cover AC."
     optional_e2e: "Browser-heavy AC may warrant sub-repo E2E (e.g. Playwright) when already supported — see `.claude/protocols/evaluation-rubric.md`."
-  beads_import_script: "bun run scripts/beads/import-anthropic-harness-plan.ts — requires working local `bd` + Dolt (CGO embedded or `dolt` in PATH for server mode)."
+  beads_import_script: "bun run scripts/beads/import-anthropic-harness-plan.ts — idempotent; requires working local `bd` + Dolt (CGO embedded or `dolt` in PATH for server mode)."
 
 common_patterns:
   file_structure:
