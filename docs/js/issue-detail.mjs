@@ -76,7 +76,8 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
   if (issue.due) addRow("Due", escapeHtml(String(issue.due)));
   if (issue.createdAt) addRow("Created", escapeHtml(String(issue.createdAt)));
   if (issue.updatedAt) addRow("Updated", escapeHtml(String(issue.updatedAt)));
-  if (issue.assignee) addRow("Assignee", escapeHtml(String(issue.assignee)));
+  if (issue.owner) addRow("Owner", escapeHtml(String(issue.owner)));
+  if (issue.assignee) addRow("Assignee (claimed)", escapeHtml(String(issue.assignee)));
   if (Array.isArray(issue.labels) && issue.labels.length) {
     addRow("Labels", issue.labels.map(function (l) { return escapeHtml(String(l)); }).join(", "));
   }
