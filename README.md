@@ -20,37 +20,168 @@ This repo is the **Agent Forge “harness”**: opinionated **markdown workflows
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| [Bun](https://bun.sh) | TypeScript runtime & package manager | `curl -fsSL https://bun.sh/install \| bash` |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding CLI | `npm install -g @anthropic-ai/claude-code` |
-| [gh](https://cli.github.com) | GitHub CLI | `brew install gh` |
-| [bd (Beads)](https://github.com/steveyegge/beads) | AI-native issue tracker | See Beads repo |
-| Git | Version control | Pre-installed |
+| [Bun](https://bun.sh) | Runs setup, hooks, and scripts | [Install Bun](https://bun.sh/docs/installation) (macOS/Linux/WSL: `curl -fsSL https://bun.sh/install \| bash`; Windows: installer from site) |
+| [TypeScript](https://www.typescriptlang.org/) | `bun run typecheck` (used by `quality-gate.ts`) | `bun add -d typescript` in this repo after `bun install` |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Slash commands, hooks, agents | `npm install -g @anthropic-ai/claude-code` |
+| [GitHub CLI `gh`](https://cli.github.com) | PRs, `gh pr`, repo flows in commands | `brew install gh`, [WinGet](https://github.com/cli/cli#windows), etc. |
+| [Beads `bd`](https://github.com/steveyegge/beads) | Issue graph (`bd create`, `bd ready`, …) | Follow the Beads install docs for your OS |
+| [Dolt](https://github.com/dolthub/dolt) | SQL server for Beads when embedded Dolt is unavailable (typical on **Windows** without CGO) | e.g. `winget install DoltHub.Dolt` — then ensure `dolt` is on `PATH` (open a **new** terminal after install, or refresh `PATH` — see **Beads** below) |
+| Git | Version control | Usually preinstalled |
 
 ---
 
-## Setup
+## Getting everything running
+
+Do these in order the first time you clone the harness. Skip steps that do not apply (for example sub-repos if you only use this repo).
+
+### 1. Clone and install JavaScript dependencies
 
 ```bash
-# 1. Clone this repo
 git clone https://github.com/jupes/agent-forge-harness.git
 cd agent-forge-harness
-
-# 2. Install dependencies
 bun install
+```
 
-# 3. Run the setup wizard
+Install the TypeScript compiler so hooks and local checks can run `tsc`:
+
+```bash
+bun add -d typescript
+```
+
+Confirm:
+
+```bash
+bun run typecheck
+```
+
+### 2. Run the setup wizard
+
+Interactive (recommended once):
+
+```bash
 bun run setup
+```
 
-# 4. Initialize sub-repos
-bun run repo init --human
+It can prompt for project name, GitHub org, and repos to register in `repos/repos.json`. Non-interactive CI-style run:
 
-# 5. Initialize Beads
-bd init
-bd sync
+```bash
+bun run setup --non-interactive
+```
 
-# 6. Open Claude Code
+### 3. GitHub CLI authentication
+
+Several flows use `gh` (for example PR creation in `/ship`):
+
+```bash
+gh auth login
+```
+
+### 4. Beads (issue tracker)
+
+1. Install the **`bd`** CLI per [Beads installation](https://github.com/steveyegge/beads).
+2. From the repo root, check health and fix common gaps:
+
+   ```bash
+   bd doctor
+   ```
+
+   If the doctor suggests it, set your role (once per machine user):
+
+   ```bash
+   git config beads.role maintainer
+   ```
+
+   If it recommends **git hooks** for Beads, install them (safe to re-run):
+
+   ```bash
+   bd hooks install
+   ```
+
+3. **Initialize the database** (first time only, or on a new clone without `.beads` data):
+
+   - **macOS / Linux** (embedded Dolt / CGO available):  
+
+     ```bash
+     bd init --non-interactive --role maintainer
+     ```
+
+   - **Windows** (typical `bd` builds need an external Dolt server): install **Dolt**, then open a **new** terminal so `PATH` includes `dolt`, and run:
+
+     ```bash
+     bd init --non-interactive --role maintainer --shared-server
+     ```
+
+     If `bd` still reports `dolt is not installed (not found in PATH)`, reload `PATH` in the current shell and retry:
+
+     ```powershell
+     $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+     dolt version
+     bd init --non-interactive --role maintainer --shared-server
+     ```
+
+   If this repo already has customized `CLAUDE.md` / hooks and you only need the database, add `--skip-hooks` to avoid duplicate hook registration.
+
+4. **Sync / push issue data** depends on your `bd` version and team setup. Follow `bd doctor` output and [Beads docs](https://github.com/steveyegge/beads). Many setups use:
+
+   ```bash
+   bd dolt push
+   ```
+
+   at session end alongside `git push`. If your install provides `bd sync`, you can use it at session start/end as described in `CLAUDE.md` / `AGENTS.md`.
+
+5. Optional: install the sample **Anthropic harness integration** epic + phased tasks (after `bd` works):
+
+   ```bash
+   bun run beads:import-anthropic-plan
+   ```
+
+### 5. Claude Code in this workspace
+
+Open the **repository root** in Claude Code so it picks up `.claude/settings.json`, commands, and hooks:
+
+```bash
 claude
 ```
+
+If `bd init` just changed hooks or settings, **restart Claude Code** once so it reloads configuration.
+
+### 6. Optional — multi-repo (`repos/`)
+
+If you registered URLs in `repos/repos.json` during setup:
+
+```bash
+bun run repo init --human
+```
+
+Then generate or refresh knowledge for each service (from Claude Code, `/sync-knowledge <repo>` or `--all`). See [`.claude/skills/syncing-repos/SKILL.md`](.claude/skills/syncing-repos/SKILL.md).
+
+### 7. Optional — GitHub Pages dashboard
+
+The static site under `docs/` can show a Beads overview when `docs/data/beads.json` exists. The `build-pages` script reads **JSONL** issue export paths under `.beads/` (see `scripts/build-pages.ts`). If your workflow produces `.beads/issues.jsonl` (or you export from Beads in a compatible format), regenerate data and open `docs/index.html` locally or publish the `docs/` folder:
+
+```bash
+bun run build-pages
+```
+
+### 8. Optional — parallel epics (git worktrees)
+
+Epic workflow uses isolated worktrees:
+
+```bash
+bun run worktree create feat/my-worker-branch
+bun run worktree list
+```
+
+See `scripts/worktree.ts` and `.claude/workflows/epic.md`.
+
+### 9. Smoke checklist
+
+| Check | Command / action |
+|--------|------------------|
+| TypeScript | `bun run typecheck` |
+| Beads | `bd doctor`, then `bd ready` or `bd list` |
+| Hooks | In Claude Code, confirm hooks run (or run `bun run quality-gate` manually) |
+| Git + GitHub | `git status`, `gh auth status` |
 
 ---
 
@@ -112,14 +243,14 @@ The system auto-selects one of three workflows based on task scope:
 ```
 agent-forge-harness/
 ├── .claude/
-│   ├── agents/         # lead.md, worker.md — agent role definitions
+│   ├── agents/         # lead.md, worker.md, planner.md, evaluator.md
 │   ├── commands/       # /go, /plan, /ship, /status, /review, etc.
 │   ├── workflows/      # fix.md, feature.md, epic.md
 │   ├── hooks/          # quality-gate.ts, session.ts
-│   ├── protocols/      # Interface contracts for parallel workers
+│   ├── protocols/      # Interface contracts, session handoff, evaluation rubric
 │   ├── skills/         # Reusable expertise packages
 │   └── settings.json   # Hooks, permissions, env vars
-├── .beads/             # Issue tracking (JSONL + Dolt)
+├── .beads/             # Issue tracking (Beads + Dolt; see Beads docs)
 ├── knowledge/          # Domain YAML files
 │   ├── _shared.yaml    # Cross-repo conventions
 │   └── repos/          # Per-repo knowledge files
