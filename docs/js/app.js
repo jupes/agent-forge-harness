@@ -221,6 +221,45 @@ function render() {
   if (content) content.innerHTML = v.fn();
 }
 
+const REBUILD_PAGES_PATH = "/__agent-forge/rebuild-pages";
+
+function wireRebuildDataButton() {
+  const btn = document.getElementById("btn-rebuild-pages");
+  if (!btn) return;
+  btn.addEventListener("click", async function() {
+    btn.disabled = true;
+    var prev = btn.textContent;
+    btn.textContent = "Rebuilding…";
+    try {
+      var res = await fetch(REBUILD_PAGES_PATH, { method: "POST" });
+      var body = {};
+      try {
+        body = await res.json();
+      } catch {
+        body = {};
+      }
+      if (!res.ok) {
+        throw new Error((body && body.error) || res.statusText || "Request failed");
+      }
+      await loadData();
+      render();
+    } catch (err) {
+      var msg =
+        (err && err.message) ||
+        String(err) ||
+        "Unknown error";
+      window.alert(
+        "Could not rebuild dashboard data.\n\n" +
+          msg +
+          "\n\nThis button only works while `bun run dashboard` (Vite) is running.\nOtherwise run: bun run build-pages",
+      );
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", function() {
   document.querySelectorAll("nav a[data-view]").forEach(function(a) {
     a.addEventListener("click", function(e) {
@@ -228,5 +267,6 @@ document.addEventListener("DOMContentLoaded", function() {
       setView(a.dataset.view);
     });
   });
+  wireRebuildDataButton();
   loadData();
 });

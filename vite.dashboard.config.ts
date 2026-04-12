@@ -9,6 +9,47 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
 const docsRoot = path.join(repoRoot, "docs");
 
+const REBUILD_PATH = "/__agent-forge/rebuild-pages";
+
+/**
+ * POST {REBUILD_PATH} — run `scripts/build-pages.ts` (same as `bun run build-pages`).
+ * Used by the dashboard nav button; only active under `bun run dashboard` (Vite dev).
+ */
+function rebuildPagesApiPlugin(): Plugin {
+  return {
+    name: "agent-forge-rebuild-pages-api",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = (req.url ?? "").split("?")[0] ?? "";
+        if (pathname !== REBUILD_PATH) {
+          next();
+          return;
+        }
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: "Method not allowed — use POST" }));
+          return;
+        }
+        const r = spawnSync("bun", [path.join(repoRoot, "scripts", "build-pages.ts")], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        res.setHeader("Content-Type", "application/json");
+        if (r.status !== 0) {
+          res.statusCode = 500;
+          const err = (r.stderr || r.stdout || `build-pages exited with status ${r.status}`).slice(0, 8000);
+          res.end(JSON.stringify({ ok: false, error: err }));
+          return;
+        }
+        res.statusCode = 200;
+        res.end(JSON.stringify({ ok: true }));
+      });
+    },
+  };
+}
+
 /**
  * Re-run build-pages when Beads data changes, then full-reload the browser.
  * Watches `.beads/` (Dolt + JSONL) with chokidar so .gitignored paths still trigger updates;
@@ -89,5 +130,5 @@ export default defineConfig({
     strictPort: false,
     host: process.env["DASHBOARD_HOST"] ?? "127.0.0.1",
   },
-  plugins: [beadsDataReloadPlugin()],
+  plugins: [rebuildPagesApiPlugin(), beadsDataReloadPlugin()],
 });
