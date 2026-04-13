@@ -1,3 +1,9 @@
 {
-  "repos": []
+  "repos": [
+    {
+      "name": "realmwalkerai",
+      "url": "C:/Users/Erich Staehling/Documents/GitHub/RealmWalkerAI",
+      "defaultBranch": "main"
+    }
+  ]
 }

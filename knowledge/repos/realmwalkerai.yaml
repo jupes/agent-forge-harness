@@ -1,0 +1,89 @@
+# knowledge/repos/realmwalkerai.yaml
+# Auto-generated (sync-knowledge equivalent) — harness registration for RealmWalkerAI
+# Last updated: 2026-04-13
+# Commit: 391f0ba6295c7c99befcd099d78f2092d21d8c91
+
+overview:
+  name: realmwalkerai
+  description: >
+    Next.js tabletop-themed web app: Google sign-in via NextAuth v5, landing UI for RealmWalker.
+    At registered HEAD the codebase is a thin shell (auth + marketing page); local working copies
+    may carry additional uncommitted features (chat, DB, agents) ahead of git.
+  purpose: frontend
+  tech_stack:
+    runtime: bun
+    framework: Next.js 15 (App Router)
+    language: TypeScript
+    key_libraries:
+      - "next-auth@5 beta": Google OAuth and session helpers
+      - "tailwindcss@4": styling via @tailwindcss/postcss
+      - "react@19 / react-dom@19": UI
+
+architecture:
+  structure: |
+    app/
+      actions.ts              Server actions (signIn / signOut wrappers)
+      api/auth/[...nextauth]/ NextAuth route handlers
+      globals.css             Tailwind + theme tokens
+      layout.tsx / page.tsx   Root layout and landing
+      providers.tsx           SessionProvider
+    auth.ts                   NextAuth config (Google provider, dev AUTH_SECRET fallback)
+  entry_points:
+    - app/page.tsx: Landing, Google sign-in / sign-out, tabletop-themed copy
+    - app/api/auth/[...nextauth]/route.ts: NextAuth GET/POST
+    - auth.ts: NextAuth factory (handlers, signIn, signOut, auth)
+  key_components:
+    - name: Google OAuth
+      path: auth.ts
+      description: Google provider; supports AUTH_GOOGLE_* or GOOGLE_CLIENT_* env names
+
+patterns:
+  error_handling: >
+    Standard Next.js server components and server actions; auth uses explicit dev fallback
+    for AUTH_SECRET with console warning when unset in development.
+  state_management: >
+    Server-first; client uses minimal interactivity via forms to server actions.
+  module_organization: >
+    App Router under app/; shared auth in root auth.ts; path alias @/ per tsconfig.
+  authentication: >
+    NextAuth.js v5 with Google provider; trustHost true; secret from AUTH_SECRET / NEXTAUTH_SECRET.
+  testing: >
+    No test script or tests directory at registered commit; package.json exposes lint only.
+
+conventions:
+  commit_format: "Conventional-style messages observed in git log (feat/refactor/chore prefixes)."
+  branch_naming: "Not documented in-repo at this commit; follow harness _shared.yaml defaults."
+  pr_requirements:
+    - Align with team GitHub workflow when repository gains CI
+  coding_standards:
+    - TypeScript strict project references (see tsconfig.json)
+    - ESLint via eslint-config-next
+
+integration_points:
+  apis: []
+  shared_types: []
+  events: []
+
+key_files:
+  - path: auth.ts
+    description: NextAuth configuration and exported handlers/session helpers.
+    key_exports:
+      - handlers: Route handlers for [...nextauth]
+      - auth: Server session accessor
+  - path: app/page.tsx
+    description: Public landing and authenticated header with sign-in/out actions.
+    key_exports:
+      - default (Home): Async server component
+  - path: app/actions.ts
+    description: Server actions wrapping signIn/signOut for forms.
+    key_exports:
+      - signInWithGoogle: Form action
+      - signOutUser: Form action
+  - path: package.json
+    description: Bun 1.3.x, Next 15, scripts for dev/build/start/lint.
+
+recent_changes:
+  - "391f0ba: Refactor authentication handling; .env.example and layout font paths; UNLICENSED"
+  - "9f4a38e: Auth env handling, .env.example clarity, layout fonts, license"
+  - "1182e05: Initial project structure and setup"
+  - "a87f27a: Initial commit"
