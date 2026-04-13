@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { folderNameForSkill } from "../docs/js/skill-builder.mjs";
+import { folderNameForSkill } from "@docs/skill-builder";
 
 describe("folderNameForSkill", () => {
   test("maps spaces to kebab-case", () => {
