@@ -7,7 +7,7 @@
  * Commands: init, status, refresh, reset, branch create <name>, branch cleanup, stacked-rebase <branches...>
  */
 
-import { execSync, spawnSync } from "child_process";
+import { execFileSync, execSync, spawnSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 
@@ -107,9 +107,20 @@ if (command === "init") {
       results.push({ name: repo.name, ok: r.ok, action: "pulled", path: repoPath });
       if (!r.ok) errors.push({ repo: repo.name, message: r.output });
     } else {
-      const r = run(`git clone ${repo.url} ${repo.name}`, REPOS_DIR);
-      results.push({ name: repo.name, ok: r.ok, action: "cloned", path: repoPath, branch: repo.defaultBranch });
-      if (!r.ok) errors.push({ repo: repo.name, message: r.output });
+      try {
+        execFileSync("git", ["clone", repo.url, repo.name], {
+          cwd: REPOS_DIR,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 120_000,
+        });
+        results.push({ name: repo.name, ok: true, action: "cloned", path: repoPath, branch: repo.defaultBranch });
+      } catch (err: unknown) {
+        const e = err as { stdout?: string; stderr?: string; message?: string };
+        const msg = [e.stderr, e.stdout].filter(Boolean).join("\n").trim() || e.message || String(err);
+        results.push({ name: repo.name, ok: false, action: "cloned", path: repoPath, branch: repo.defaultBranch });
+        errors.push({ repo: repo.name, message: msg });
+      }
     }
   }
 } else if (command === "status") {
