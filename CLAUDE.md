@@ -40,6 +40,7 @@ Your role for each task is defined by the workflow you are following.
 | `/triage` | Deadline management + capacity planning |
 | `/ask [question]` | Query domain knowledge files |
 | `/sync-knowledge` | Auto-generate knowledge YAML from codebase |
+| `/add-bead <text>` | Quick `bd create` from free text (title + optional description) |
 
 Workflow files live in `.claude/workflows/`. Command files live in `.claude/commands/`.
 

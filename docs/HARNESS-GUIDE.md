@@ -18,7 +18,7 @@ The harness lives mostly under `.claude/` (agents, slash commands, workflows, ho
 
 | Concern | Mechanism |
 |--------|-----------|
-| **How work starts** | Slash commands such as `/go`, `/plan`, `/ship` defined in `.claude/commands/` |
+| **How work starts** | Slash commands such as `/go`, `/plan`, `/ship`, `/add-bead` defined in `.claude/commands/` |
 | **How much process applies** | Workflows in `.claude/workflows/` (fix vs feature vs epic) chosen by scope |
 | **Who does what** | Agent prompts in `.claude/agents/` (lead coordinates; workers implement, often in worktrees) |
 | **Quality before merge** | Hooks in `.claude/hooks/` (for example `quality-gate.ts`) tied to Claude Code events in `settings.json` |
@@ -36,7 +36,7 @@ Together, these pieces nudge behavior toward **typed, tested, small commits**, *
 
 At a high level:
 
-1. **You (or the lead agent)** describe work via `/go`, `/plan`, or an epic batch.
+1. **You (or the lead agent)** describe work via `/go`, `/plan`, `/add-bead`, or an epic batch.
 2. The harness **classifies scope** and loads the matching **workflow** markdown (checklists, gates, when to plan vs ship).
 3. **Workers** follow `worker.md` (and repo-specific `AGENTS.md` under `repos/…`) to implement changes; larger epics may use **isolated worktrees**.
 4. **Hooks** run checks (typecheck, lint if present, tests if test files exist, tree cleanliness, and task-oriented checks) and emit **structured JSON** for automation or logs.
