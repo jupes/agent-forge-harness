@@ -72,7 +72,11 @@ Supporting systems:
 
 ### CLI Quick Reference
 ```bash
-bd sync                    # Pull/push issue data — run at session start and end
+bd dolt pull               # Pull issue data from Dolt remote — typical at session start
+bd dolt push               # Push issue data to Dolt remote — typical at session end with git push
+bd dolt commit             # Commit pending Dolt changes (when your setup / bd doctor says you need it)
+bd backup sync             # Push configured Dolt-native backups (not the same as day-to-day issue sync)
+bd federation sync         # Only if you use federation / peer sync mode
 bd ready                   # List unblocked, unclaimed tasks
 bd show <id>               # View issue details and AC
 bd create --type task --title "..." --repo <repo>
@@ -81,8 +85,9 @@ bd update <id> --ac "..."  # Add acceptance criteria
 bd close <id>              # Mark complete
 bd comments add <id> "worklog: description"
 bd dep add <id> --blocks <other-id>
-bd dolt push               # Push beads data to remote
 ```
+
+Note: **`bd sync` is not part of current `bd` releases** — upstream removed it in favor of **`bd dolt pull` / `bd dolt push`** (see [gastownhall/beads#2435](https://github.com/gastownhall/beads/issues/2435)). Follow `bd doctor` for your install.
 
 ### Issue Hierarchy
 - **Epic** — Problem, goals, plan (strategic)
@@ -126,7 +131,7 @@ bd dolt push               # Push beads data to remote
 
 When resuming after a **long pause**, **context reset**, or **new agent session** on the same Beads work:
 
-1. Run `bd ready` / `bd show <id>` as usual.
+1. Run `bd dolt pull` when you use a Dolt remote (then `bd ready` / `bd show <id>` as usual).
 2. If `.tmp/work/session-handoff.md` exists, **read it before coding** (see `.claude/protocols/session-handoff.md`). It does not override Beads AC or alignment docs — reconcile conflicts explicitly.
 3. Update or remove the handoff when milestones change so the next session is not misled.
 
@@ -139,7 +144,7 @@ Every session must end with ALL of the following:
 1. File Beads issues for any remaining unfinished work
 2. Run quality gates: `bun run typecheck && bun run lint && bun test`
 3. Update issue statuses (close finished, update in-progress)
-4. **Push to remote**: `git pull --rebase && bd dolt push && git push`
+4. **Push to remote**: `git pull --rebase` then `bd dolt commit` if needed, then `bd dolt push && git push`
 5. Clean up stashes; prune merged branches
 6. Verify `git status` shows "up to date with origin"
 7. Write a brief handoff comment on the active Beads epic
@@ -202,7 +207,7 @@ bd close <id>         # Complete work
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **PUSH TO REMOTE** - This is MANDATORY (run `bd dolt commit` before `bd dolt push` only when `bd doctor` / your workflow requires an explicit Dolt commit):
    ```bash
    git pull --rebase
    bd dolt push

@@ -1,5 +1,6 @@
 // Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
 import { toggleExpandedState, buildIssueDetailPanelHtml } from "./issue-detail.mjs";
+import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
 
 const STATUS_COLOR = {
   open: "#3fb950",
@@ -252,6 +253,10 @@ function renderCommands() {
   return html;
 }
 
+function renderSkillBuilder() {
+  return renderSkillBuilderHtml();
+}
+
 function setView(view) {
   activeView = view;
   if (view !== "list") expandedIssueId = null;
@@ -295,6 +300,7 @@ function render() {
     list: { label: "All Issues", fn: renderList },
     epics: { label: "Epics", fn: renderEpics },
     commands: { label: "Commands", fn: renderCommands },
+    "skill-builder": { label: "Skill builder", fn: renderSkillBuilder },
   };
   const v = views[activeView] || views.dashboard;
   if (title) title.textContent = v.label;
@@ -302,6 +308,9 @@ function render() {
     content.innerHTML = v.fn();
     if (activeView === "list") {
       wireIssueListExpand(content);
+    }
+    if (activeView === "skill-builder") {
+      wireSkillBuilder(content);
     }
   }
 }
