@@ -4,6 +4,8 @@ A composable, agentic coding system for development teams using [Claude Code](ht
 
 Small primitives — workflows, agent roles, quality gates, issue tracking, knowledge files — that chain into a self-coordinating development process.
 
+![agent-forge-demo](https://github.com/user-attachments/assets/3c5439fc-cff3-4162-b7ed-326752fb4013)
+
 ## Overview
 
 This repo is the **Agent Forge “harness”**: opinionated **markdown workflows**, **slash commands**, **hook scripts**, **Beads-backed issue tracking**, and **`knowledge/` YAML** that sit *around* your real product repositories (including optional **multi-repo** management under `repos/`). It does not run your app in production; it **coordinates how agents and humans work** — scope routing (fix vs feature vs epic), quality checks, commits, pushes, PRs, and where domain truth is written down before diving into code.
