@@ -4,7 +4,8 @@ A composable, agentic coding system for development teams using [Claude Code](ht
 
 Small primitives — workflows, agent roles, quality gates, issue tracking, knowledge files — that chain into a self-coordinating development process.
 
-![agent-forge-demo](https://github.com/user-attachments/assets/3c5439fc-cff3-4162-b7ed-326752fb4013)
+![agent-forge-demo-hq](https://github.com/user-attachments/assets/69e177cc-c45e-4196-8e35-4c35f933f0a2)
+
 
 ## Overview
 
