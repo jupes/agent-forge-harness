@@ -68,7 +68,7 @@ Agents must check `ok` before using `data`. Never `JSON.parse` without a try/cat
 
 At the beginning of every session:
 
-1. `bd sync` — pull latest issue data from remote
+1. `bd dolt pull` — pull latest issue data from the Dolt remote when your team uses one (skip if local-only; follow `bd doctor`)
 2. `git status` — verify clean working tree
 3. `git pull --rebase` — get latest commits
 4. Check `bd ready` to orient on available work
@@ -83,7 +83,7 @@ Before ending any session, complete ALL steps:
 1. File Beads issues for unfinished work
 2. Run quality gates: `bun run typecheck && bun test`
 3. Close/update Beads issues
-4. Run: `git pull --rebase && bd dolt push && git push`
+4. Run: `git pull --rebase` then `bd dolt commit` only if your workflow requires it, then `bd dolt push && git push`
 5. Verify `git status` output confirms "up to date with origin/main"
 
 **If `git push` fails: investigate and resolve. Do not stop until it succeeds.**
@@ -193,7 +193,7 @@ bd close <id>         # Complete work
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **PUSH TO REMOTE** - This is MANDATORY (run `bd dolt commit` before `bd dolt push` only when `bd doctor` / your workflow requires an explicit Dolt commit):
    ```bash
    git pull --rebase
    bd dolt push

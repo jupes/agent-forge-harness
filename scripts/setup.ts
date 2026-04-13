@@ -88,7 +88,7 @@ async function main() {
   console.log(`  Repos: ${reposData.repos.length}`);
   console.log("\nNext steps:");
   console.log("  1. bun run repo init --human   (clone sub-repos)");
-  console.log("  2. bd init && bd sync           (initialize Beads)");
+  console.log("  2. bd init && bd dolt pull      (initialize Beads; pull remote issue data when configured)");
   console.log("  3. claude                        (open Claude Code)");
   console.log("  4. /status                       (check workspace)");
 }

@@ -121,13 +121,15 @@ gh auth login
 
    If this repo already has customized `CLAUDE.md` / hooks and you only need the database, add `--skip-hooks` to avoid duplicate hook registration.
 
-4. **Sync / push issue data** depends on your `bd` version and team setup. Follow `bd doctor` output and [Beads docs](https://github.com/steveyegge/beads). Many setups use:
+4. **Sync / push issue data** uses **Dolt** commands (the legacy **`bd sync` command was removed** upstream; use `bd dolt pull` / `bd dolt push` instead — see [gastownhall/beads#2435](https://github.com/gastownhall/beads/issues/2435)). Follow `bd doctor` and [Beads docs](https://github.com/steveyegge/beads). Typical flows:
 
    ```bash
-   bd dolt push
+   bd dolt pull    # session start / before picking up remote issue changes
+   bd dolt commit  # only when your setup needs an explicit Dolt commit
+   bd dolt push    # session end with git push — see CLAUDE.md / AGENTS.md
    ```
 
-   at session end alongside `git push`. If your install provides `bd sync`, you can use it at session start/end as described in `CLAUDE.md` / `AGENTS.md`.
+   **Backups** (separate from day-to-day issue sync): `bd backup sync` after `bd backup init …` per Beads docs. **Federation** setups: `bd federation sync` when you use that mode.
 
 5. Optional: install the sample **Anthropic harness integration** epic + phased tasks (after `bd` works). **Idempotent** — safe to re-run; reuses the same epic/tasks by title and only adds missing deps or children.
 

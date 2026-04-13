@@ -40,7 +40,7 @@ At a high level:
 2. The harness **classifies scope** and loads the matching **workflow** markdown (checklists, gates, when to plan vs ship).
 3. **Workers** follow `worker.md` (and repo-specific `AGENTS.md` under `repos/…`) to implement changes; larger epics may use **isolated worktrees**.
 4. **Hooks** run checks (typecheck, lint if present, tests if test files exist, tree cleanliness, and task-oriented checks) and emit **structured JSON** for automation or logs.
-5. **Beads** records tasks, AC, dependencies, and comments; **`bd sync` / `bd dolt push`** keep the graph aligned with collaborators.
+5. **Beads** records tasks, AC, dependencies, and comments; **`bd dolt pull` / `bd dolt push`** (and `bd dolt commit` when required) keep the graph aligned with collaborators — not the removed **`bd sync`** command ([gastownhall/beads#2435](https://github.com/gastownhall/beads/issues/2435)). Use **`bd backup sync`** / **`bd federation sync`** only for those respective setups.
 6. **`/ship`** and session rules push toward **commit → push → PR** with evidence.
 
 Supporting scripts (for example `quality-gate.ts`, `worktree.ts`, `repo` via skills) are ordinary TypeScript run with **Bun**, so you can extend them like any internal tooling.
