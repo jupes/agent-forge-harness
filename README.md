@@ -221,6 +221,7 @@ Other commands:
 /ask how does auth work    # Query knowledge files
 /triage                    # Deadline + capacity overview
 /sync-knowledge my-api     # Regenerate knowledge YAML
+/add-bead Fix login redirect on expired session  # New Beads issue from one line
 ```
 
 ---
@@ -237,6 +238,7 @@ Other commands:
 | `/triage` | Deadline management and capacity planning |
 | `/ask [question]` | Query domain knowledge with staleness detection |
 | `/sync-knowledge [repo\|--all]` | Auto-generate per-repo knowledge YAML |
+| `/add-bead <text>` | Create a Beads issue from free text (`bd create` + show new id) |
 
 ---
 
@@ -258,7 +260,7 @@ The system auto-selects one of three workflows based on task scope:
 agent-forge-harness/
 ├── .claude/
 │   ├── agents/         # lead.md, worker.md, planner.md, evaluator.md
-│   ├── commands/       # /go, /plan, /ship, /status, /review, etc.
+│   ├── commands/       # /go, /plan, /ship, /add-bead, /status, /review, etc.
 │   ├── workflows/      # fix.md, feature.md, epic.md
 │   ├── hooks/          # quality-gate.ts, session.ts
 │   ├── protocols/      # Interface contracts, session handoff, evaluation rubric
