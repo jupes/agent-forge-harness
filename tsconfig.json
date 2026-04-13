@@ -13,7 +13,8 @@
     "outDir": "dist",
     "rootDir": ".",
     "paths": {
-      "@/types/*": ["./types/*"]
+      "@/types/*": ["./types/*"],
+      "@docs/skill-builder": ["./docs/js/skill-builder.mjs"]
     }
   },
   "include": [
