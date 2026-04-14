@@ -106,8 +106,25 @@ function sortByUpdatedDesc(a, b) {
   return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
 }
 
+/** Colspan for expandable issue tables (summary row + detail row). */
+const ISSUE_TABLE_COLSPAN = 8;
+
+/**
+ * @param {unknown} iso
+ * @returns {string}
+ */
+function formatIssueDate(iso) {
+  const s = String(iso != null ? iso : "").trim();
+  if (!s) return "—";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return esc(s);
+  return esc(
+    d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+  );
+}
+
 const EXPANDABLE_ISSUE_HEAD =
-  '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+  '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class="date-col">Created</th><th class="date-col">Updated</th></tr></thead><tbody>';
 
 /**
  * Expandable issue table (same UX as All Issues). Caller must run wireIssueListExpand on container.
@@ -135,8 +152,10 @@ function renderExpandableIssueTable(issues, max) {
     html += "<td>" + statusBadge(i.status) + "</td>";
     html += "<td>" + priorityBadge(i.priority) + "</td>";
     html += "<td>" + esc(i.repo || "—") + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.createdAt) + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.updatedAt) + "</td>";
     html += "</tr>";
-    html += '<tr class="issue-detail-gap"><td colspan="6">';
+    html += '<tr class="issue-detail-gap"><td colspan="' + ISSUE_TABLE_COLSPAN + '">';
     html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
     html += '<div class="issue-detail-anim-inner">';
     html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
@@ -223,8 +242,7 @@ function renderList() {
   html += "</select></div>";
 
   html += '<p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:0.75rem">' + issues.length + " issues</p>";
-  html +=
-    '<table class="issue-table issue-table-expandable"><thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+  html += '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
   issues.slice(0, 100).forEach(function (i) {
     const isOpen = expandedIssueId === i.id;
     html +=
@@ -241,8 +259,10 @@ function renderList() {
     html += "<td>" + statusBadge(i.status) + "</td>";
     html += "<td>" + priorityBadge(i.priority) + "</td>";
     html += "<td>" + esc(i.repo || "—") + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.createdAt) + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.updatedAt) + "</td>";
     html += "</tr>";
-    html += '<tr class="issue-detail-gap"><td colspan="6">';
+    html += '<tr class="issue-detail-gap"><td colspan="' + ISSUE_TABLE_COLSPAN + '">';
     html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
     html += '<div class="issue-detail-anim-inner">';
     html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
