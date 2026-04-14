@@ -206,6 +206,18 @@
       color: var(--text);
     }
 
+    .issue-table th.date-col,
+    .issue-table td.date-col {
+      white-space: nowrap;
+      font-size: 0.78rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+    }
+
+    tr:hover td.date-col {
+      color: var(--text);
+    }
+
     /* All Issues — expandable detail row */
     .issue-summary-row {
       cursor: pointer;
