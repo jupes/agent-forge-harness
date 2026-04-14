@@ -59,7 +59,7 @@ When **both** generator and evaluator see these criteria, bias feedback toward *
 
 ## Generator rules
 
-1. Pick **one** clear visual metaphor (e.g. “ledger”, “workshop”, “terminal calm”) and thread it through nav, surfaces, and accents.
+1. Pick **one** clear visual metaphor (e.g. “mission control”, “workshop”, “terminal calm”) and thread it through nav, surfaces, and accents.
 2. **Avoid** the banned patterns in Originality unless the spec explicitly demands them.
 3. After a first pass, self-check against all four bullets in writing before requesting evaluator review.
 
@@ -77,4 +77,4 @@ When **both** generator and evaluator see these criteria, bias feedback toward *
 
 - Anthropic article (full context): https://www.anthropic.com/engineering/harness-design-long-running-apps  
 - Harness evaluator rubric: `.claude/protocols/evaluation-rubric.md`  
-- Example dashboard applying this lens: `docs/index.html` (Agent Forge static dashboard)
+- Example dashboard applying this lens: `docs/index.html` (Agent Forge static dashboard — NASA retro / space-console theme)
