@@ -3,11 +3,14 @@ import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml 
 import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
 
 const STATUS_COLOR = {
-  open: "#3fb950",
-  in_progress: "#58a6ff",
-  closed: "#8b949e",
-  blocked: "#f78166",
+  open: "#3dff9c",
+  in_progress: "#ffe94d",
+  closed: "#aeb8ce",
+  blocked: "#ff4757",
 };
+
+/** Green checkmark inside the closed status pill only */
+const STATUS_CLOSED_CHECK = "#34f097";
 
 const TYPE_ICON = {
   epic: "⚡",
@@ -37,10 +40,10 @@ function typeCell(type) {
 }
 
 const PRIORITY_COLOR = {
-  critical: "#f78166",
-  high: "#f0a500",
-  medium: "#58a6ff",
-  low: "#8b949e",
+  critical: "#ff3838",
+  high: "#ffb020",
+  medium: "#6ec6ff",
+  low: "#8aa4c8",
 };
 
 let data = null;
@@ -58,19 +61,36 @@ async function loadData() {
     document.getElementById("content").innerHTML =
       '<div class="empty-state">' +
       "<p>No data loaded. Run <code>bun run build-pages</code> to generate dashboard data.</p>" +
-      '<p style="color:#8b949e;font-size:0.85rem;margin-top:0.5rem">' + err.message + "</p>" +
+      '<p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.5rem">' + err.message + "</p>" +
       "</div>";
   }
 }
 
 function statusBadge(status) {
-  const color = STATUS_COLOR[status] || "#8b949e";
-  return '<span class="badge" style="background:' + color + '20;color:' + color + ';border:1px solid ' + color + '40">' + status + "</span>";
+  const s = String(status != null ? status : "");
+  if (s === "closed") {
+    const fg = STATUS_COLOR.closed;
+    return (
+      '<span class="badge badge-status-closed" style="display:inline-flex;align-items:center;gap:0.32em;background:' +
+      fg +
+      "26;color:" +
+      fg +
+      ";border:1px solid " +
+      fg +
+      '55"><span style="color:' +
+      STATUS_CLOSED_CHECK +
+      ';font-weight:800;line-height:1;font-size:1.05em" aria-hidden="true">\u2713</span><span>closed</span></span>'
+    );
+  }
+  const color = STATUS_COLOR[s] || "#8aa4c8";
+  return (
+    '<span class="badge" style="background:' + color + "20;color:" + color + ";border:1px solid " + color + '40">' + esc(s) + "</span>"
+  );
 }
 
 function priorityBadge(priority) {
   if (!priority) return "";
-  const color = PRIORITY_COLOR[priority] || "#8b949e";
+  const color = PRIORITY_COLOR[priority] || "#8aa4c8";
   return '<span class="badge" style="color:' + color + '">' + priority + "</span>";
 }
 
@@ -86,8 +106,25 @@ function sortByUpdatedDesc(a, b) {
   return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
 }
 
+/** Colspan for expandable issue tables (summary row + detail row). */
+const ISSUE_TABLE_COLSPAN = 8;
+
+/**
+ * @param {unknown} iso
+ * @returns {string}
+ */
+function formatIssueDate(iso) {
+  const s = String(iso != null ? iso : "").trim();
+  if (!s) return "—";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return esc(s);
+  return esc(
+    d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+  );
+}
+
 const EXPANDABLE_ISSUE_HEAD =
-  '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+  '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class="date-col">Created</th><th class="date-col">Updated</th></tr></thead><tbody>';
 
 /**
  * Expandable issue table (same UX as All Issues). Caller must run wireIssueListExpand on container.
@@ -96,7 +133,7 @@ const EXPANDABLE_ISSUE_HEAD =
 function renderExpandableIssueTable(issues, max) {
   const slice = (issues || []).slice(0, max);
   if (slice.length === 0) {
-    return '<p style="color:#8b949e">None.</p>';
+    return '<p style="color:var(--text-muted)">None.</p>';
   }
   let html = '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
   slice.forEach(function (i) {
@@ -115,8 +152,10 @@ function renderExpandableIssueTable(issues, max) {
     html += "<td>" + statusBadge(i.status) + "</td>";
     html += "<td>" + priorityBadge(i.priority) + "</td>";
     html += "<td>" + esc(i.repo || "—") + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.createdAt) + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.updatedAt) + "</td>";
     html += "</tr>";
-    html += '<tr class="issue-detail-gap"><td colspan="6">';
+    html += '<tr class="issue-detail-gap"><td colspan="' + ISSUE_TABLE_COLSPAN + '">';
     html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
     html += '<div class="issue-detail-anim-inner">';
     html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
@@ -143,15 +182,15 @@ function renderDashboard() {
   const closedRecent = closedAll.slice(0, 25);
 
   let html = '<div class="stat-row">';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#3fb950">' + open + '</div><div class="stat-label">Open</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#3dff9c">' + open + '</div><div class="stat-label">Open</div></div>';
   html +=
-    '<div class="stat-card"><div class="stat-num" style="color:#58a6ff">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#f78166">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#8b949e">' + closed + '</div><div class="stat-label">Closed</div></div>';
+    '<div class="stat-card"><div class="stat-num" style="color:#ffe94d">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#ff4757">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#aeb8ce">' + closed + '</div><div class="stat-label">Closed</div></div>';
   html += "</div>";
 
   html +=
-    '<p style="color:#8b949e;font-size:0.85rem;margin:0 0 1.25rem">Beads is the issue graph tracked with <code style="font-size:0.9em">bd</code> (epics, tasks, dependencies). This dashboard shows a built snapshot: status counts and lists of ready, in-progress, blocked, and recently closed work.</p>';
+    '<p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 1.25rem">Beads is the issue graph tracked with <code style="font-size:0.9em">bd</code> (epics, tasks, dependencies). This dashboard shows a built snapshot: status counts and lists of ready, in-progress, blocked, and recently closed work.</p>';
 
   html += "<h3>Ready to Work (" + readyAll.length + ")</h3>";
   html += renderExpandableIssueTable(ready, 15);
@@ -194,17 +233,16 @@ function renderList() {
   html +=
     '<input id="search-input" type="text" placeholder="Search..." oninput="window.__dashboardRender()" value="' +
     esc(search) +
-    '" style="padding:0.4rem 0.75rem;background:#1c2333;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:0.875rem">';
+    '" style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem">';
   html +=
-    '<select id="filter-status" onchange="window.__dashboardRender()" style="padding:0.4rem 0.75rem;background:#1c2333;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:0.875rem">';
+    '<select id="filter-status" onchange="window.__dashboardRender()" style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem">';
   ["all", "open", "in_progress", "blocked", "closed"].forEach(function (s) {
     html += '<option value="' + s + '"' + (filter === s ? " selected" : "") + ">" + (s === "all" ? "All statuses" : s) + "</option>";
   });
   html += "</select></div>";
 
-  html += '<p style="color:#8b949e;font-size:0.85rem;margin-bottom:0.75rem">' + issues.length + " issues</p>";
-  html +=
-    '<table class="issue-table issue-table-expandable"><thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+  html += '<p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:0.75rem">' + issues.length + " issues</p>";
+  html += '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
   issues.slice(0, 100).forEach(function (i) {
     const isOpen = expandedIssueId === i.id;
     html +=
@@ -221,8 +259,10 @@ function renderList() {
     html += "<td>" + statusBadge(i.status) + "</td>";
     html += "<td>" + priorityBadge(i.priority) + "</td>";
     html += "<td>" + esc(i.repo || "—") + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.createdAt) + "</td>";
+    html += '<td class="date-col">' + formatIssueDate(i.updatedAt) + "</td>";
     html += "</tr>";
-    html += '<tr class="issue-detail-gap"><td colspan="6">';
+    html += '<tr class="issue-detail-gap"><td colspan="' + ISSUE_TABLE_COLSPAN + '">';
     html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
     html += '<div class="issue-detail-anim-inner">';
     html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
@@ -253,11 +293,11 @@ function renderEpics() {
       html += issueIdCopyControlHtml(epic.id);
       html += "<strong>" + esc(epic.title) + "</strong>";
       html += statusBadge(epic.status);
-      if (epic.due) html += '<span style="color:#8b949e;font-size:0.8rem">Due: ' + epic.due.slice(0, 10) + "</span>";
+      if (epic.due) html += '<span style="color:var(--text-muted);font-size:0.8rem">Due: ' + epic.due.slice(0, 10) + "</span>";
       html += "</div>";
       html += '<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>';
       html +=
-        '<div style="font-size:0.8rem;color:#8b949e;margin-top:0.25rem">' +
+        '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">' +
         closedCount +
         "/" +
         children.length +
@@ -265,7 +305,7 @@ function renderEpics() {
         pct +
         "%</div>";
       if (epic.description) {
-        html += '<p style="color:#8b949e;font-size:0.875rem;margin-top:0.5rem">' + esc(epic.description.slice(0, 200)) + "</p>";
+        html += '<p style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem">' + esc(epic.description.slice(0, 200)) + "</p>";
       }
       html += "</div>";
       return html;

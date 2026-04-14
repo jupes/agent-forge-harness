@@ -4,28 +4,42 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Agent Forge — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Exo+2:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0d1117;
-      --surface: #161b22;
-      --surface-2: #1c2333;
-      --border: #30363d;
-      --text: #e6edf3;
-      --text-muted: #8b949e;
-      --accent: #58a6ff;
-      --accent-2: #3fb950;
-      --accent-3: #d2a8ff;
-      --accent-4: #f78166;
+      /* NASA retro / space-race console — deep space, mission orange, telemetry cyan */
+      --bg: #050810;
+      --bg-elevated: #0a1020;
+      --surface: #0d1528;
+      --surface-2: #121f38;
+      --border: #2a3f6b;
+      --text: #e8f0ff;
+      --text-muted: #7d9cc9;
+      --accent: #ff5a2c;
+      --accent-hover: #ff7a4f;
+      --accent-2: #3ee0d0;
+      --accent-3: #9bb7ff;
+      --accent-4: #ff6b6b;
+      --glow-focus: rgba(255, 90, 44, 0.18);
+      --panel-shine: rgba(62, 224, 208, 0.06);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-      background: var(--bg);
+      font-family: "Exo 2", system-ui, sans-serif;
+      font-optical-sizing: auto;
+      background:
+        radial-gradient(ellipse 130% 70% at 50% -30%, rgba(30, 80, 140, 0.45), transparent 58%),
+        radial-gradient(ellipse 80% 50% at 100% 80%, rgba(255, 90, 44, 0.07), transparent 50%),
+        radial-gradient(ellipse 50% 35% at 0% 60%, rgba(62, 224, 208, 0.06), transparent 45%),
+        var(--bg);
       color: var(--text);
       line-height: 1.6;
       font-size: 15px;
+      min-height: 100vh;
     }
 
     /* Navigation */
@@ -35,8 +49,9 @@
       left: 0;
       width: 220px;
       height: 100vh;
-      background: var(--surface);
+      background: linear-gradient(180deg, var(--surface) 0%, var(--bg-elevated) 100%);
       border-right: 1px solid var(--border);
+      box-shadow: inset -1px 0 0 var(--panel-shine);
       overflow-y: auto;
       z-index: 100;
       padding: 1.25rem 0 1rem;
@@ -44,11 +59,16 @@
 
     nav .nav-title {
       padding: 0 1.25rem 1rem;
-      font-size: 1rem;
+      font-family: "Orbitron", system-ui, sans-serif;
+      font-size: 0.78rem;
       font-weight: 700;
-      color: var(--accent);
+      letter-spacing: 0.22em;
+      line-height: 1.35;
+      text-transform: uppercase;
+      color: var(--accent-2);
       border-bottom: 1px solid var(--border);
       margin-bottom: 0.75rem;
+      text-shadow: 0 0 24px rgba(62, 224, 208, 0.35);
     }
 
     nav a {
@@ -89,8 +109,12 @@
     }
 
     .page-header h1 {
-      font-size: 1.6rem;
-      font-weight: 700;
+      font-family: "Orbitron", system-ui, sans-serif;
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
     }
 
     /* Stat cards */
@@ -102,11 +126,14 @@
     }
 
     .stat-card {
-      background: var(--surface);
+      background: linear-gradient(165deg, var(--surface) 0%, var(--surface-2) 100%);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 1.25rem;
       text-align: center;
+      box-shadow:
+        0 0 0 1px rgba(62, 224, 208, 0.08),
+        0 3px 0 rgba(0, 0, 0, 0.35);
     }
 
     .stat-num {
@@ -176,6 +203,18 @@
     }
 
     tr:hover td.type-col .type-label {
+      color: var(--text);
+    }
+
+    .issue-table th.date-col,
+    .issue-table td.date-col {
+      white-space: nowrap;
+      font-size: 0.78rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+    }
+
+    tr:hover td.date-col {
       color: var(--text);
     }
 
@@ -260,6 +299,11 @@
       color: var(--text);
       border-color: var(--accent);
       background: var(--surface);
+    }
+
+    .issue-detail-close:focus-visible {
+      outline: 2px solid var(--accent-2);
+      outline-offset: 2px;
     }
 
     .issue-detail-dl-wrap {
@@ -351,25 +395,29 @@
     }
 
     code {
-      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      font-family: "SF Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace;
       font-size: 0.82em;
       background: var(--surface-2);
       padding: 0.15em 0.4em;
-      border-radius: 4px;
-      color: #f0a500;
+      border-radius: 3px;
+      color: var(--accent-2);
+      border: 1px solid var(--border);
     }
 
     h3 {
-      font-size: 1.1rem;
+      font-family: "Orbitron", sans-serif;
+      font-size: 0.72rem;
       font-weight: 600;
-      color: var(--text);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent-3);
       margin: 1.5rem 0 0.75rem;
     }
 
     .badge {
       display: inline-block;
       padding: 0.15rem 0.5rem;
-      border-radius: 999px;
+      border-radius: 2px;
       font-size: 0.72rem;
       font-weight: 600;
     }
@@ -384,11 +432,12 @@
 
     /* Epic cards */
     .epic-card {
-      background: var(--surface);
+      background: linear-gradient(165deg, var(--surface) 0%, var(--surface-2) 100%);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 1.25rem;
       margin-bottom: 1rem;
+      box-shadow: 0 0 0 1px var(--panel-shine);
     }
 
     .epic-header {
@@ -397,6 +446,18 @@
       gap: 0.75rem;
       flex-wrap: wrap;
       margin-bottom: 0.75rem;
+    }
+
+    .epic-header .issue-id-copy {
+      flex-shrink: 0;
+    }
+
+    /* ID column: keep long Beads ids on one line (avoid awkward mid-id wraps) */
+    .issue-table th:first-child,
+    .issue-table td:first-child {
+      white-space: nowrap;
+      width: 1%;
+      vertical-align: middle;
     }
 
     /* Copy issue ID (tables, detail panel, epic header) */
@@ -412,22 +473,25 @@
       color: inherit;
       text-align: left;
       vertical-align: middle;
+      white-space: nowrap;
+      max-width: none;
     }
 
     button.issue-id-copy:hover {
-      background: rgba(88, 166, 255, 0.14);
+      background: var(--glow-focus);
       color: var(--text);
     }
 
     button.issue-id-copy:focus-visible {
-      outline: 2px solid var(--accent);
+      outline: 2px solid var(--accent-2);
       outline-offset: 2px;
     }
 
     button.issue-id-copy code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.88em;
-      color: var(--accent);
+      color: var(--accent-2);
+      white-space: nowrap;
     }
 
     #copy-toast {
@@ -437,11 +501,13 @@
       z-index: 10000;
       max-width: min(90vw, 28rem);
       padding: 0.75rem 1.15rem;
-      border-radius: 10px;
+      border-radius: 4px;
       background: var(--surface-2);
-      border: 1px solid var(--accent);
+      border: 1px solid var(--accent-2);
       color: var(--text);
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      box-shadow:
+        0 0 20px rgba(62, 224, 208, 0.15),
+        0 8px 28px rgba(0, 0, 0, 0.5);
       font-size: 0.9rem;
       text-align: center;
       pointer-events: none;
@@ -464,7 +530,7 @@
 
     .progress-bar-fill {
       height: 100%;
-      background: var(--accent-2);
+      background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
       border-radius: 3px;
       transition: width 0.3s ease;
     }
@@ -510,11 +576,11 @@
     /* Skill builder */
     .skill-form-card {
       max-width: 36rem;
-      background: var(--surface);
+      background: linear-gradient(165deg, var(--surface) 0%, var(--bg-elevated) 100%);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 6px;
       padding: 1.5rem 1.5rem 1.35rem;
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
     }
 
     .skill-form .sb-field {
@@ -529,7 +595,7 @@
       margin-bottom: 0.35rem;
     }
 
-    .sb-req { color: var(--accent-4); }
+    .sb-req { color: var(--accent); }
 
     .skill-form input[type="text"],
     .skill-form textarea {
@@ -548,7 +614,7 @@
     .skill-form textarea:focus {
       outline: none;
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.18);
+      box-shadow: 0 0 0 3px var(--glow-focus);
     }
 
     .sb-hint {
@@ -597,19 +663,22 @@
       padding: 0.65rem 1.35rem;
       font-size: 0.9rem;
       font-weight: 600;
-      color: #fff;
-      background: linear-gradient(135deg, var(--accent) 0%, #388bfd 100%);
+      font-family: "Orbitron", sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #050810;
+      background: linear-gradient(135deg, #ff8f5c 0%, var(--accent) 42%, #c42a06 100%);
       border: none;
-      border-radius: 8px;
+      border-radius: 4px;
       cursor: pointer;
       overflow: hidden;
       transition: transform 0.15s ease, box-shadow 0.2s ease;
-      box-shadow: 0 4px 14px rgba(88, 166, 255, 0.35);
+      box-shadow: 0 4px 22px rgba(255, 90, 44, 0.42);
     }
 
     .sb-submit:hover:not(:disabled) {
       transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(88, 166, 255, 0.45);
+      box-shadow: 0 6px 28px rgba(255, 90, 44, 0.55);
     }
 
     .sb-submit:disabled {
@@ -622,8 +691,8 @@
       display: none;
       width: 1rem;
       height: 1rem;
-      border: 2px solid rgba(255, 255, 255, 0.35);
-      border-top-color: #fff;
+      border: 2px solid rgba(5, 8, 16, 0.22);
+      border-top-color: #050810;
       border-radius: 50%;
       animation: sb-spin 0.65s linear infinite;
     }
@@ -642,15 +711,15 @@
 
     @keyframes sb-form-glow {
       0% {
-        box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
+        box-shadow: 0 0 0 0 rgba(62, 224, 208, 0);
         transform: scale(1);
       }
       40% {
-        box-shadow: 0 0 0 10px rgba(63, 185, 80, 0.12);
+        box-shadow: 0 0 0 10px rgba(62, 224, 208, 0.14);
         transform: scale(1.01);
       }
       100% {
-        box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
+        box-shadow: 0 0 0 0 rgba(62, 224, 208, 0);
         transform: scale(1);
       }
     }
@@ -661,7 +730,7 @@
 
     @keyframes sb-card-success {
       0% { border-color: var(--border); }
-      35% { border-color: var(--accent-2); box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.25); }
+      35% { border-color: var(--accent-2); box-shadow: 0 0 0 2px rgba(62, 224, 208, 0.28); }
       100% { border-color: var(--border); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22); }
     }
 
@@ -698,7 +767,7 @@
       width: 100%;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 6px;
       padding: 1.5rem 1.5rem 1.25rem;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
       transform: scale(0.94) translateY(12px);
@@ -712,8 +781,11 @@
     }
 
     .sb-modal-title {
-      font-size: 1.15rem;
+      font-family: "Orbitron", sans-serif;
+      font-size: 0.95rem;
       font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
       margin: 0 0 0.65rem;
       color: var(--accent-2);
     }
