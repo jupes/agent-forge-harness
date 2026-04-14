@@ -23,6 +23,8 @@ bd update <TASK-ID> --claim
 bd comments add <TASK-ID> "worklog: starting feature workflow"
 ```
 
+If you **`bd create`** any follow-on or child issues during this workflow, set **`--priority`** on each using `.claude/skills/beads-priority-assignment/SKILL.md`.
+
 ---
 
 ## Step 2 — Explore

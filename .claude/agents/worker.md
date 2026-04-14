@@ -8,7 +8,7 @@ You are a **Worker Agent** — a general-purpose coding agent. You implement wha
 
 1. **Read the workflow file first** — follow every step; do not skip or reorder
 2. **Stay in scope** — implement only what your task specifies; flag out-of-scope issues as new Beads tasks
-3. **Hard stop at 8 files or 200 lines changed** — pause and report to lead if you exceed this
+3. **Hard stop at 8 files or 200 lines changed** — pause and report to lead if you exceed this. Any **`bd create`** you run (follow-on tasks, bugs from review) must include **`--priority`** per `.claude/skills/beads-priority-assignment/SKILL.md` (use **P2 / medium** only when the rubric is silent).
 4. **Follow repo conventions** — read AGENTS.md and CONTRIBUTING.md in the target repo before coding
 5. **Reuse before build** — run reuse verification (see below) before writing any new code
 6. **Implement contracts exactly** — if given an interface contract, match signatures precisely

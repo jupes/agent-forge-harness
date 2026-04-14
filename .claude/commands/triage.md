@@ -74,6 +74,8 @@ bd create \
 bd comments add <new-bug-id> "design: CI failure detected by /triage. PR: #<n>. Failures: <ci check names>"
 ```
 
+**Priority policy:** keep **`high`** for merge-blocking CI on important branches; use **`critical`** only when production or security is directly at risk. When re-ranking work, use `.claude/skills/beads-priority-assignment/SKILL.md`.
+
 Only create if a bug for this PR doesn't already exist:
 ```bash
 bd ready | grep -i "PR #<n>"   # Skip if already filed

@@ -26,6 +26,8 @@ bd update <EPIC-ID> --claim
 bd comments add <EPIC-ID> "worklog: starting epic workflow"
 ```
 
+When creating or adjusting child tasks, assign **`--priority`** per `.claude/skills/beads-priority-assignment/SKILL.md` so workers and `/triage` see an honest queue.
+
 ---
 
 ## Step 2 — Batch Plan

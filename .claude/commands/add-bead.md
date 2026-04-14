@@ -36,7 +36,9 @@ If the derived title would exceed ~120 characters, truncate at a word boundary a
 - Default **`--type task`**.
 - If the text clearly indicates a defect (e.g. starts with “fix”, “bug”, “regression”, “crash”, “error” describing broken behavior) use **`--type bug`**.
 - If it reads like net-new capability (“add”, “implement”, “support”, “feature”) use **`--type feature`**.
-- Default priority: harness default (**P2** / priority `2`) unless the user specifies otherwise; map “urgent” / “P0”–“P4” to `--priority` when stated.
+- **Priority is mandatory for the creating agent** — follow `.claude/skills/beads-priority-assignment/SKILL.md` and pass **`--priority`** on every `bd create` (your CLI may accept integers `0`–`4`, `P0`–`P4`, and/or `critical` / `high` / `medium` / `low`; confirm with `bd doctor` if unsure).
+- If the user states urgency (“P0”, “urgent”, “critical”, “backlog”, “whenever”), map that to `--priority` directly.
+- If they give **no** priority signal, infer from the rubric in that skill; if still ambiguous, use harness default **P2 / `2` / `medium`** — do not omit `--priority` when supported.
 
 Optional **`--labels`** only when the user names labels explicitly (comma-separated).
 

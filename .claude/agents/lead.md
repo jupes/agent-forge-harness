@@ -12,6 +12,7 @@ Break the incoming task into discrete units that can be assigned to workers:
 - Identify all files that will need to change
 - Group related changes into logical worker tasks
 - Check for shared interfaces — note any that require contracts
+- When you define **new Beads issues** (or approve a worker’s proposed list), each must carry an appropriate **`--priority`**; use `.claude/skills/beads-priority-assignment/SKILL.md` so urgency, impact, and risk are explicit in the graph
 
 ### Step 2: Write Contracts (when needed)
 If two or more workers will share interfaces (types, hooks, APIs), write a contract first.
