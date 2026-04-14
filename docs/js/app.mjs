@@ -74,48 +74,98 @@ function priorityBadge(priority) {
   return '<span class="badge" style="color:' + color + '">' + priority + "</span>";
 }
 
+/** Claimed or explicit in_progress — excludes “ready” open issues without assignee. */
+function issuesInProgress(all) {
+  const list = Array.isArray(all) ? all : [];
+  return list.filter(function (i) {
+    return i.status === "in_progress" || (i.status === "open" && i.assignee);
+  });
+}
+
+function sortByUpdatedDesc(a, b) {
+  return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+}
+
+const EXPANDABLE_ISSUE_HEAD =
+  '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
+
+/**
+ * Expandable issue table (same UX as All Issues). Caller must run wireIssueListExpand on container.
+ * @param {unknown[]} issues
+ */
+function renderExpandableIssueTable(issues, max) {
+  const slice = (issues || []).slice(0, max);
+  if (slice.length === 0) {
+    return '<p style="color:#8b949e">None.</p>';
+  }
+  let html = '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
+  slice.forEach(function (i) {
+    const isOpen = expandedIssueId === i.id;
+    html +=
+      '<tr class="issue-summary-row' +
+      (isOpen ? " is-expanded" : "") +
+      '" data-issue-id="' +
+      esc(i.id) +
+      '" role="button" tabindex="0" aria-expanded="' +
+      (isOpen ? "true" : "false") +
+      '">';
+    html += "<td><code>" + esc(i.id) + "</code></td>";
+    html += "<td>" + esc(i.title) + "</td>";
+    html += '<td class="type-col">' + typeCell(i.type) + "</td>";
+    html += "<td>" + statusBadge(i.status) + "</td>";
+    html += "<td>" + priorityBadge(i.priority) + "</td>";
+    html += "<td>" + esc(i.repo || "—") + "</td>";
+    html += "</tr>";
+    html += '<tr class="issue-detail-gap"><td colspan="6">';
+    html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
+    html += '<div class="issue-detail-anim-inner">';
+    html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
+    html += "</div></div></td></tr>";
+  });
+  html += "</tbody></table>";
+  return html;
+}
+
 function renderDashboard() {
   if (!data) return '<div class="empty-state">No data</div>';
   const { derived } = data;
   const open = ((derived.byStatus || {}).open || []).length;
-  const inProgress = ((derived.byStatus || {}).in_progress || []).length;
+  const inProgressCount = ((derived.byStatus || {}).in_progress || []).length;
   const closed = ((derived.byStatus || {}).closed || []).length;
   const blocked = (derived.blocked || []).length;
-  const ready = (derived.ready || []).slice(0, 10);
+  const readyAll = derived.ready || [];
+  const ready = readyAll.slice(0, 15);
+  const inProgressAll = issuesInProgress(data.issues).sort(sortByUpdatedDesc);
+  const inProgressIssues = inProgressAll.slice(0, 25);
+  const blockedAll = derived.blocked || [];
+  const blockedList = blockedAll.slice(0, 15);
+  const closedAll = ((derived.byStatus || {}).closed || []).slice().sort(sortByUpdatedDesc);
+  const closedRecent = closedAll.slice(0, 25);
 
   let html = '<div class="stat-row">';
   html += '<div class="stat-card"><div class="stat-num" style="color:#3fb950">' + open + '</div><div class="stat-label">Open</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#58a6ff">' + inProgress + '</div><div class="stat-label">In Progress</div></div>';
+  html +=
+    '<div class="stat-card"><div class="stat-num" style="color:#58a6ff">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
   html += '<div class="stat-card"><div class="stat-num" style="color:#f78166">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
   html += '<div class="stat-card"><div class="stat-num" style="color:#8b949e">' + closed + '</div><div class="stat-label">Closed</div></div>';
   html += "</div>";
 
-  html += "<h3>Ready to Work (" + ready.length + ")</h3>";
-  if (ready.length === 0) {
-    html += '<p style="color:#8b949e">No ready tasks.</p>';
-  } else {
-    html +=
-      '<table class="issue-table"><thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Priority</th><th>Repo</th></tr></thead><tbody>';
-    ready.forEach(function (i) {
-      html += "<tr>";
-      html += "<td><code>" + esc(i.id) + "</code></td>";
-      html += "<td>" + esc(i.title) + "</td>";
-      html += '<td class="type-col">' + typeCell(i.type) + "</td>";
-      html += "<td>" + priorityBadge(i.priority) + "</td>";
-      html += "<td>" + esc(i.repo || "—") + "</td>";
-      html += "</tr>";
-    });
-    html += "</tbody></table>";
+  html +=
+    '<p style="color:#8b949e;font-size:0.85rem;margin:0 0 1.25rem">Click any row for full detail (description, AC, comments, dependencies).</p>';
+
+  html += "<h3>Ready to Work (" + readyAll.length + ")</h3>";
+  html += renderExpandableIssueTable(ready, 15);
+
+  html += "<h3>In Progress (" + inProgressAll.length + ")</h3>";
+  html += renderExpandableIssueTable(inProgressIssues, 25);
+
+  if (blockedAll.length > 0) {
+    html += "<h3>Blocked (" + blockedAll.length + ")</h3>";
+    html += renderExpandableIssueTable(blockedList, 15);
   }
 
-  if (blocked > 0) {
-    html += "<h3>Blocked (" + blocked + ")</h3>";
-    html += "<table><thead><tr><th>ID</th><th>Title</th><th>Status</th></tr></thead><tbody>";
-    (derived.blocked || []).slice(0, 10).forEach(function (i) {
-      html += "<tr><td><code>" + esc(i.id) + "</code></td><td>" + esc(i.title) + "</td><td>" + statusBadge("blocked") + "</td></tr>";
-    });
-    html += "</tbody></table>";
-  }
+  html += "<h3>Recently closed (" + closedAll.length + ")</h3>";
+  html += renderExpandableIssueTable(closedRecent, 25);
 
   return html;
 }
@@ -259,7 +309,7 @@ function renderSkillBuilder() {
 
 function setView(view) {
   activeView = view;
-  if (view !== "list") expandedIssueId = null;
+  if (view !== "list" && view !== "dashboard") expandedIssueId = null;
   document.querySelectorAll("nav a[data-view]").forEach(function (a) {
     a.classList.toggle("active", a.dataset.view === view);
   });
@@ -306,7 +356,7 @@ function render() {
   if (title) title.textContent = v.label;
   if (content) {
     content.innerHTML = v.fn();
-    if (activeView === "list") {
+    if (activeView === "list" || activeView === "dashboard") {
       wireIssueListExpand(content);
     }
     if (activeView === "skill-builder") {
