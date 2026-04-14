@@ -24,6 +24,41 @@ export interface BdExportRow {
   owner?: string;
   labels?: string[];
   dependencies?: Array<{ issue_id: string; depends_on_id: string; type: string }>;
+  /** Present on `bd export` rows; used to decide whether to call `bd comments <id>`. */
+  comment_count?: number;
+}
+
+/** One element from `bd comments <id> --json` (field names match upstream CLI). */
+export interface BdCommentJson {
+  issue_id?: string;
+  author?: string;
+  text?: string;
+  created_at?: string;
+}
+
+/**
+ * Parse stdout from `bd comments <issueId> --json` into normalized dashboard comments.
+ */
+export function parseBdCommentsJson(json: string, fallbackIssueId: string): BeadsComment[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: BeadsComment[] = [];
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as BdCommentJson;
+    const issueId = typeof o.issue_id === "string" && o.issue_id.length > 0 ? o.issue_id : fallbackIssueId;
+    const body = typeof o.text === "string" ? o.text : "";
+    const author = typeof o.author === "string" ? o.author : "";
+    const createdAt =
+      typeof o.created_at === "string" && o.created_at.length > 0 ? o.created_at : new Date().toISOString();
+    out.push({ issueId, body, author, createdAt });
+  }
+  return out;
 }
 
 export function mapNumericPriority(p: number | undefined): IssuePriority | undefined {
