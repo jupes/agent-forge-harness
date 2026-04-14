@@ -1,3 +1,14 @@
 {
-  "repos": []
+  "repos": [
+    {
+      "name": "a2a",
+      "url": "https://github.com/google/A2A.git",
+      "defaultBranch": "main"
+    },
+    {
+      "name": "a2ui",
+      "url": "https://github.com/google/A2UI.git",
+      "defaultBranch": "main"
+    }
+  ]
 }

@@ -100,7 +100,7 @@ if (hasScript("lint")) {
 
 // Check 3: Tests (skip if no test files)
 if (hasTestFiles()) {
-  const r = run("bun test");
+  const r = run(hasScript("test") ? "bun run test" : "bun test scripts");
   checks.push({
     name: "tests",
     passed: r.ok,
