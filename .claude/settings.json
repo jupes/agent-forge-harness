@@ -84,7 +84,7 @@
       "gh issue *",
       "gh repo *",
       "gh api *",
-      "bd sync",
+      "bd dolt pull",
       "bd ready",
       "bd show",
       "bd close",
