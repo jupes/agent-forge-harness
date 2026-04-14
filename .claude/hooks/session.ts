@@ -2,8 +2,8 @@
 /**
  * session.ts
  *
- * Triggered on SessionStart and session stop events.
- * Logs session metadata, syncs Beads data on start and stop.
+ * Triggered on SessionStart / SessionEnd (when wired in settings).
+ * Logs session metadata; syncs Beads via `bd dolt pull` / `bd dolt push` per CLAUDE.md (not removed `bd sync`).
  */
 
 import { execSync } from "child_process";
@@ -42,10 +42,17 @@ try {
   // Non-fatal
 }
 
-// Sync Beads on start and stop
-const bdSync = run("bd sync 2>&1");
-if (bdSync) {
-  console.log(`[session] bd sync: ${bdSync.slice(0, 200)}`);
+// Beads / Dolt: pull at session start, push at session end (non-fatal if no remote or auth)
+if (event === "SessionStart") {
+  const pullOut = run("bd dolt pull 2>&1");
+  if (pullOut) {
+    console.log(`[session] bd dolt pull: ${pullOut.slice(0, 200)}`);
+  }
+} else if (event === "SessionEnd") {
+  const pushOut = run("bd dolt push 2>&1");
+  if (pushOut) {
+    console.log(`[session] bd dolt push: ${pushOut.slice(0, 200)}`);
+  }
 }
 
 if (event === "SessionStart") {
