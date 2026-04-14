@@ -1,0 +1,73 @@
+# knowledge/repos/a2a.yaml
+# Auto-generated for Agent Forge harness (initial /sync-knowledge-style pass)
+# Last updated: 2026-04-14
+# Commit: 3947dacff8095b658b8f367ffb272de6cb2c5c23
+
+overview:
+  name: a2a
+  description: >
+    Google's Agent2Agent (A2A) open protocol: interoperability between opaque agentic
+    applications (discovery, modalities, long-running collaboration without exposing
+    internal state). This repo holds the specification, docs, ADRs, and tooling—not a
+    single application server.
+  purpose: library
+  upstream: https://github.com/google/A2A
+  tech_stack:
+    runtime: python
+    framework: mkdocs
+    language: protobuf
+    key_libraries:
+      - buf: Protocol Buffers build / lint (see specification/)
+      - a2a-sdk: Published Python SDK (see README badges)
+
+harness_integration:
+  registry_entry: repos/repos.json → name "a2a", defaultBranch main
+  clone: Public HTTPS; read-only clone needs no GitHub token.
+  local_path: repos/a2a (gitignored clone; run `bun run repo init --repo a2a`)
+
+architecture:
+  structure: |
+    specification/   Proto + JSON schema + buf config (a2a.proto, json/)
+    docs/            MkDocs site source
+    adrs/            Architecture decision records
+    scripts/         Doc build and maintenance scripts
+  entry_points:
+    - specification/a2a.proto: Core protocol definition
+    - README.md: Project overview and links
+    - mkdocs.yml: Documentation site config
+  key_components:
+    - A2A protocol spec: specification/ — source of truth for wire format and RPCs
+    - Documentation: docs/ + scripts/build_docs.sh — full site generation pipeline
+
+patterns:
+  error_handling: N/A at spec-repo level; follow Google / CNCF-style review for spec changes.
+  state_management: N/A
+  module_organization: Specs and generated JSON schema live under specification/; narrative docs under docs/.
+  authentication: Protocol addresses secure collaboration between agents; see spec for security model.
+  testing: CONTRIBUTING.md references Docker-backed local lint for docs; follow upstream CI.
+
+conventions:
+  commit_format: Conventional commits (see git history: docs(...), chore(...), etc.)
+  branch_naming: GitHub PR workflow to main
+  pr_requirements:
+    - Google CLA and review process per CONTRIBUTING.md
+    - MkDocs/doc builds per CONTRIBUTING.md when touching documentation
+  coding_standards:
+    - Python 3.10+ and uv for doc venv (CONTRIBUTING.md)
+    - Prettier / Ruff config present at repo root for tooling alignment
+
+integration_points:
+  apis:
+    - description: A2A complements MCP; agents expose/call A2A endpoints per spec
+  events: []
+  shared_types: JSON schemas under specification/json derived from proto
+
+recent_activity:
+  - "3947dac docs(GOVERNANCE.md): How to add new TSC members (#1571)"
+  - "8dda73b docs: Add Rust SDK to list of official SDKs (#1729)"
+  - "b9f03d4 docs: update code snippet markers to match refactored sample identifiers (#1732)"
+
+notes: >
+  Agent Forge does not vendor Google CLA or TSC process—follow upstream when contributing
+  directly to google/A2A. For harness-only work, treat this clone as read reference unless
+  you intentionally fork.

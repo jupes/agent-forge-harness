@@ -9,7 +9,7 @@
     "dashboard": "vite --config vite.dashboard.config.ts",
     "worktree": "bun run scripts/worktree.ts",
     "repo": "bun run .claude/skills/syncing-repos/scripts/repo.ts",
-    "test": "bun test",
+    "test": "bun test scripts",
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
     "beads:import-anthropic-plan": "bun run scripts/beads/import-anthropic-harness-plan.ts",
     "typecheck": "tsc --noEmit"

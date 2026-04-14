@@ -1,0 +1,76 @@
+# knowledge/repos/a2ui.yaml
+# Auto-generated for Agent Forge harness (initial /sync-knowledge-style pass)
+# Last updated: 2026-04-14
+# Commit: 1bd13917e2dc03c340288df4ed0480e97e61684b
+
+overview:
+  name: a2ui
+  description: >
+    Google's A2UI (Agent-to-User Interface): open format and renderers for declarative,
+    updatable agent-generated UIs. Agents emit JSON describing UI intent; trusted client
+    catalogs map that to native widgets (Flutter, Angular, Lit, React, etc.). v0.8 public
+    preview—spec and implementations still evolving.
+  purpose: library
+  upstream: https://github.com/google/A2UI
+  tech_stack:
+    runtime: mixed
+    framework: multi-renderer
+    language: typescript
+    key_libraries:
+      - renderers/: Per-framework client renderers
+      - agent_sdks/: Agent-side tooling and samples
+      - specification/: Versioned spec (v0_8, v0_9, v0_10)
+
+harness_integration:
+  registry_entry: repos/repos.json → name "a2ui", defaultBranch main
+  clone: Public HTTPS; read-only clone needs no GitHub token.
+  local_path: repos/a2ui (gitignored clone; run `bun run repo init --repo a2ui`)
+
+architecture:
+  structure: |
+    specification/   Versioned JSON schema / spec sources (v0_8, v0_9, v0_10)
+    renderers/       Client implementations (e.g. Lit, Flutter, Angular)
+    agent_sdks/      Agent integrations and sample apps
+    samples/         Example UIs and flows
+    docs/            Documentation and assets
+    tools/           Supporting tooling
+  entry_points:
+    - README.md: Philosophy, status, and architecture overview
+    - specification/v0_8 (etc.): Normative spec for a given preview generation
+    - renderers/: Where host apps integrate native catalogs
+  key_components:
+    - Declarative UI JSON: described in specification; consumed by renderers
+    - MCP-style samples: agent_sdks/ includes calculator and MCP-oriented examples
+
+patterns:
+  error_handling: Host apps validate payloads against trusted catalogs; agents never ship executable UI code.
+  state_management: Flat component list with IDs for incremental LLM-friendly updates (per README).
+  module_organization: Spec version directories; renderer and SDK trees separated.
+  authentication: Trust boundary is the client's component catalog and sandbox policy—not raw agent code execution.
+  testing: Follow STYLE_GUIDE.md (Python + TypeScript) and upstream CI for contributions.
+
+conventions:
+  commit_format: Mixed conventional prefixes (feat, chore, fix) per git history
+  branch_naming: PRs target main on google/A2UI
+  pr_requirements:
+    - Google CLA required (CONTRIBUTING.md)
+    - Google Open Source Community Guidelines
+    - STYLE_GUIDE.md for Python and TypeScript
+  coding_standards:
+    - License headers on new files
+    - gts / Google TS style where TypeScript is used
+
+integration_points:
+  apis:
+    - description: A2UI payloads interoperate with agent runtimes and chat hosts; see samples/ and docs/
+  events: []
+  shared_types: Versioned schemas under specification/
+
+recent_activity:
+  - "1bd13917 chore(license): fix license header formatting in mcp_app.html (#1164)"
+  - "9dbb4344 chore: Migrate Calculator MCP App to be TS-based code and leverage the AppBridge (#1158)"
+  - "51f8947f Delete core Angular contact sample and references (#1141)"
+
+notes: >
+  Public preview (v0.8): expect breaking changes across spec bumps—pin a specification/
+  subdirectory when prototyping. Google CLA applies before upstream PRs.
