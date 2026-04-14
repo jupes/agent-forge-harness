@@ -15,6 +15,7 @@ import { execFileSync } from "child_process";
 import type { BeadsIssue, BeadsComment, BeadsDependency, BeadsPayload } from "../types/beads";
 import {
   issuesAndDepsFromExportRows,
+  parseBdCommentsJson,
   parseBdExportStdout,
   payloadFromIssuesDepsComments,
 } from "./beads-dashboard";
@@ -50,7 +51,23 @@ function loadFromBdExport(): {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const rows = parseBdExportStdout(stdout);
-  return { ...issuesAndDepsFromExportRows(rows), comments: [] };
+  const { issues, deps } = issuesAndDepsFromExportRows(rows);
+  const comments: BeadsComment[] = [];
+  for (const row of rows) {
+    const n = row.comment_count;
+    if (typeof n !== "number" || n <= 0) continue;
+    try {
+      const cOut = execFileSync("bd", ["comments", row.id, "--json"], {
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      comments.push(...parseBdCommentsJson(cOut, row.id));
+    } catch {
+      /* skip — comment fetch is best-effort per issue */
+    }
+  }
+  return { issues, deps, comments };
 }
 
 let issues = readJsonl<BeadsIssue>(ISSUES_FILE);
@@ -91,6 +108,7 @@ writeFileSync(OUTPUT_FILE, JSON.stringify(payload, null, 2));
 
 console.log(`✓ Built docs/data/beads.json`);
 console.log(`  Issues: ${issues.length}`);
+console.log(`  Comments: ${comments.length}`);
 console.log(`  Ready: ${derived.ready.length}`);
 console.log(`  Blocked: ${derived.blocked.length}`);
 console.log(`  Deps: ${deps.length}`);
