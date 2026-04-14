@@ -151,7 +151,7 @@ function renderDashboard() {
   html += "</div>";
 
   html +=
-    '<p style="color:#8b949e;font-size:0.85rem;margin:0 0 1.25rem">Click an issue ID to copy it. Click a row (outside the ID) for full detail — description, AC, comments, dependencies.</p>';
+    '<p style="color:#8b949e;font-size:0.85rem;margin:0 0 1.25rem">Beads is the issue graph tracked with <code style="font-size:0.9em">bd</code> (epics, tasks, dependencies). This dashboard shows a built snapshot: status counts and lists of ready, in-progress, blocked, and recently closed work.</p>';
 
   html += "<h3>Ready to Work (" + readyAll.length + ")</h3>";
   html += renderExpandableIssueTable(ready, 15);
