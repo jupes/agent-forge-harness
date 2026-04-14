@@ -7,6 +7,7 @@ import {
   normalizeBdExportRow,
   normalizeIssueType,
   normalizeStatus,
+  parseBdCommentsJson,
   parseBdExportStdout,
 } from "./beads-dashboard";
 import type { BeadsDependency, BeadsIssue } from "../types/beads";
@@ -90,6 +91,34 @@ describe("collectBlockDeps", () => {
     ];
     const deps = collectBlockDeps(rows);
     expect(deps).toEqual([{ from: "A", to: "B", type: "blocks" }]);
+  });
+});
+
+describe("parseBdCommentsJson", () => {
+  test("maps bd CLI fields to BeadsComment", () => {
+    const json = JSON.stringify([
+      {
+        issue_id: "T-1",
+        author: "u",
+        text: "worklog: hi",
+        created_at: "2026-01-02T00:00:00Z",
+      },
+    ]);
+    const got = parseBdCommentsJson(json, "T-1");
+    expect(got).toEqual([
+      { issueId: "T-1", author: "u", body: "worklog: hi", createdAt: "2026-01-02T00:00:00Z" },
+    ]);
+  });
+
+  test("uses fallback issue id when issue_id missing", () => {
+    const json = JSON.stringify([{ author: "a", text: "x", created_at: "2026-01-01T00:00:00Z" }]);
+    const got = parseBdCommentsJson(json, "FALL");
+    expect(got).toHaveLength(1);
+    expect(got[0]?.issueId).toBe("FALL");
+  });
+
+  test("returns empty on invalid JSON", () => {
+    expect(parseBdCommentsJson("not json", "I")).toEqual([]);
   });
 });
 

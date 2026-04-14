@@ -5,6 +5,7 @@ import {
   issueIdCopyControlHtml,
   toggleExpandedState,
   commentsForIssue,
+  workBranchesFromCommentBodies,
   depsTouchingIssue,
   buildIssueDetailPanelHtml,
 } from "../../docs/js/issue-detail.mjs";
@@ -53,6 +54,21 @@ describe("toggleExpandedState", () => {
   });
 });
 
+describe("workBranchesFromCommentBodies", () => {
+  test("collects Branch token and backtick feat paths, deduped in order", () => {
+    const branches = workBranchesFromCommentBodies([
+      { body: "worklog: Branch feat/a-task — done" },
+      { body: "see `feat/a-task` and `fix/b-bug`" },
+      { body: "noise feat/not-a-branch-word" },
+    ]);
+    expect(branches).toEqual(["feat/a-task", "fix/b-bug"]);
+  });
+
+  test("returns empty when no branch-shaped tokens", () => {
+    expect(workBranchesFromCommentBodies([{ body: "worklog: no branch here" }])).toEqual([]);
+  });
+});
+
 describe("commentsForIssue", () => {
   test("filters and sorts by createdAt", () => {
     const list = [
@@ -95,6 +111,7 @@ describe("buildIssueDetailPanelHtml", () => {
     expect(html).toContain("&lt;x&gt;");
     expect(html).not.toContain("<x>");
     expect(html).toContain("T-99");
+    expect(html).toContain("No comments in this export.");
   });
 
   test("renders comments and dependency copy for blocked issue", () => {
@@ -111,8 +128,26 @@ describe("buildIssueDetailPanelHtml", () => {
       deps: [{ from: "T-1", to: "T-2", type: "blocks" }],
     });
     expect(html).toContain("worklog: hi");
+    expect(html).not.toContain("No comments in this export.");
     expect(html).toContain("Blocked by");
     expect(html).toContain("T-2");
+  });
+
+  test("renders work branch section when comments mention Branch feat/…", () => {
+    const issue = {
+      id: "T-9",
+      type: "task",
+      title: "W",
+      status: "open",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+    const html = buildIssueDetailPanelHtml(issue, {
+      comments: [{ issueId: "T-9", body: "worklog: Branch feat/z-impl", author: "a", createdAt: "2026-01-02T00:00:00Z" }],
+      deps: [],
+    });
+    expect(html).toContain("Work branches (from comments)");
+    expect(html).toContain("feat/z-impl");
   });
 
   test("renders Blocks when issue is the blocker", () => {

@@ -53,6 +53,50 @@ export function commentsForIssue(issueId, comments) {
     });
 }
 
+/**
+ * Best-effort branch names from worklogs (e.g. "Branch feat/foo", `` `feat/bar` ``).
+ * @param {Array<{ body?: string }>} comments
+ * @returns {string[]}
+ */
+export function workBranchesFromCommentBodies(comments) {
+  const list = Array.isArray(comments) ? comments : [];
+  const seen = new Set();
+  const ordered = [];
+
+  function normalizeBranchToken(s) {
+    const t = String(s || "").trim();
+    if (!t) return null;
+    const m = t.match(/^((?:feat|fix|chore|epic)\/[a-z0-9._/-]+)/i);
+    return m ? m[1] : null;
+  }
+
+  function add(raw) {
+    const br = normalizeBranchToken(raw);
+    if (!br || br.length > 200 || seen.has(br)) return;
+    seen.add(br);
+    ordered.push(br);
+  }
+
+  const patterns = [
+    /\b[Bb]ranch\s+`([^`\n]+)`/g,
+    /\b[Bb]ranch\s+([^\s`,.;:\n]+)/g,
+    /`((?:feat|fix|chore|epic)\/[^`\s]+)`/gi,
+  ];
+
+  for (const c of list) {
+    const text = String(c.body || "");
+    for (let pi = 0; pi < patterns.length; pi++) {
+      const p = patterns[pi];
+      const r = new RegExp(p.source, p.flags);
+      let m;
+      while ((m = r.exec(text)) !== null) {
+        add(m[1] || m[0]);
+      }
+    }
+  }
+  return ordered;
+}
+
 /** @param {unknown[]} deps */
 export function depsTouchingIssue(issueId, deps) {
   const list = Array.isArray(deps) ? deps : [];
@@ -115,25 +159,40 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
     addRow("Description / AC text", "<div class=\"issue-detail-prose\">" + escapeHtml(String(issue.description)) + "</div>");
   }
 
-  let commentsBlock = "";
-  if (comments.length > 0) {
-    commentsBlock =
-      '<section class="issue-detail-section"><h5>Comments</h5><ul class="issue-detail-comments">' +
-      comments
-        .map(function (c) {
-          return (
-            "<li><span class=\"issue-detail-meta\">" +
-            escapeHtml(String(c.author || "")) +
-            " · " +
-            escapeHtml(String(c.createdAt || "")) +
-            "</span><pre class=\"issue-detail-comment-body\">" +
-            escapeHtml(String(c.body || "")) +
-            "</pre></li>"
-          );
+  const branches = workBranchesFromCommentBodies(comments);
+  let branchesBlock = "";
+  if (branches.length > 0) {
+    branchesBlock =
+      '<section class="issue-detail-section"><h5>Work branches (from comments)</h5><ul class="issue-detail-branches">' +
+      branches
+        .map(function (b) {
+          return "<li><code>" + escapeHtml(b) + "</code></li>";
         })
         .join("") +
       "</ul></section>";
   }
+
+  let commentsBlock = "";
+  commentsBlock =
+    '<section class="issue-detail-section"><h5>Comments</h5>' +
+    (comments.length > 0
+      ? '<ul class="issue-detail-comments">' +
+        comments
+          .map(function (c) {
+            return (
+              "<li><span class=\"issue-detail-meta\">" +
+              escapeHtml(String(c.author || "")) +
+              " · " +
+              escapeHtml(String(c.createdAt || "")) +
+              "</span><pre class=\"issue-detail-comment-body\">" +
+              escapeHtml(String(c.body || "")) +
+              "</pre></li>"
+            );
+          })
+          .join("") +
+        "</ul>"
+      : '<p class="issue-detail-empty">No comments in this export.</p>') +
+    "</section>";
 
   let depsBlock = "";
   if (deps.length > 0) {
@@ -169,6 +228,7 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
     '<div class="issue-detail-dl-wrap">' +
     rows.join("") +
     "</div>" +
+    branchesBlock +
     commentsBlock +
     depsBlock +
     "</div>"

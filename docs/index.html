@@ -356,7 +356,8 @@
     }
 
     .issue-detail-comments,
-    .issue-detail-deps {
+    .issue-detail-deps,
+    .issue-detail-branches {
       margin: 0;
       padding-left: 1rem;
       list-style: disc;
@@ -364,8 +365,15 @@
     }
 
     .issue-detail-comments li,
-    .issue-detail-deps li {
+    .issue-detail-deps li,
+    .issue-detail-branches li {
       margin-bottom: 0.5rem;
+    }
+
+    .issue-detail-empty {
+      margin: 0;
+      font-size: 0.8rem;
+      color: var(--text-muted);
     }
 
     .issue-detail-meta {
