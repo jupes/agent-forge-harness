@@ -425,6 +425,18 @@
       margin-bottom: 0.75rem;
     }
 
+    .epic-header .issue-id-copy {
+      flex-shrink: 0;
+    }
+
+    /* ID column: keep long Beads ids on one line (avoid awkward mid-id wraps) */
+    .issue-table th:first-child,
+    .issue-table td:first-child {
+      white-space: nowrap;
+      width: 1%;
+      vertical-align: middle;
+    }
+
     /* Copy issue ID (tables, detail panel, epic header) */
     button.issue-id-copy {
       appearance: none;
@@ -438,6 +450,8 @@
       color: inherit;
       text-align: left;
       vertical-align: middle;
+      white-space: nowrap;
+      max-width: none;
     }
 
     button.issue-id-copy:hover {
@@ -454,6 +468,7 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.88em;
       color: var(--accent);
+      white-space: nowrap;
     }
 
     #copy-toast {
