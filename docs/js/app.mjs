@@ -1,5 +1,5 @@
 // Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
-import { toggleExpandedState, buildIssueDetailPanelHtml } from "./issue-detail.mjs";
+import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml } from "./issue-detail.mjs";
 import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
 
 const STATUS_COLOR = {
@@ -109,7 +109,7 @@ function renderExpandableIssueTable(issues, max) {
       '" role="button" tabindex="0" aria-expanded="' +
       (isOpen ? "true" : "false") +
       '">';
-    html += "<td><code>" + esc(i.id) + "</code></td>";
+    html += "<td>" + issueIdCopyControlHtml(i.id) + "</td>";
     html += "<td>" + esc(i.title) + "</td>";
     html += '<td class="type-col">' + typeCell(i.type) + "</td>";
     html += "<td>" + statusBadge(i.status) + "</td>";
@@ -151,7 +151,7 @@ function renderDashboard() {
   html += "</div>";
 
   html +=
-    '<p style="color:#8b949e;font-size:0.85rem;margin:0 0 1.25rem">Click any row for full detail (description, AC, comments, dependencies).</p>';
+    '<p style="color:#8b949e;font-size:0.85rem;margin:0 0 1.25rem">Click an issue ID to copy it. Click a row (outside the ID) for full detail — description, AC, comments, dependencies.</p>';
 
   html += "<h3>Ready to Work (" + readyAll.length + ")</h3>";
   html += renderExpandableIssueTable(ready, 15);
@@ -215,7 +215,7 @@ function renderList() {
       '" role="button" tabindex="0" aria-expanded="' +
       (isOpen ? "true" : "false") +
       '">';
-    html += "<td><code>" + esc(i.id) + "</code></td>";
+    html += "<td>" + issueIdCopyControlHtml(i.id) + "</td>";
     html += "<td>" + esc(i.title) + "</td>";
     html += '<td class="type-col">' + typeCell(i.type) + "</td>";
     html += "<td>" + statusBadge(i.status) + "</td>";
@@ -250,7 +250,7 @@ function renderEpics() {
 
       let html = '<div class="epic-card">';
       html += '<div class="epic-header">';
-      html += "<code>" + esc(epic.id) + "</code>";
+      html += issueIdCopyControlHtml(epic.id);
       html += "<strong>" + esc(epic.title) + "</strong>";
       html += statusBadge(epic.status);
       if (epic.due) html += '<span style="color:#8b949e;font-size:0.8rem">Due: ' + epic.due.slice(0, 10) + "</span>";
@@ -316,9 +316,81 @@ function setView(view) {
   render();
 }
 
+/** @type {ReturnType<typeof setTimeout> | null} */
+let copyToastTimer = null;
+
+/**
+ * @param {string} message
+ */
+function showCopyToast(message) {
+  const el = document.getElementById("copy-toast");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.add("is-visible");
+  el.setAttribute("aria-hidden", "false");
+  if (copyToastTimer) clearTimeout(copyToastTimer);
+  copyToastTimer = setTimeout(function () {
+    el.classList.remove("is-visible");
+    el.setAttribute("aria-hidden", "true");
+    copyToastTimer = null;
+  }, 2600);
+}
+
+/**
+ * @param {string} text
+ * @returns {Promise<boolean>}
+ */
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delegated clicks on `.issue-id-copy` inside `#content` (survives re-renders).
+ */
+function wireIssueIdCopyDelegation() {
+  const root = document.getElementById("content");
+  if (!root || root.dataset.copyDelegationWired === "1") return;
+  root.dataset.copyDelegationWired = "1";
+  root.addEventListener("click", function (e) {
+    const btn = e.target && /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy");
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const text = btn.getAttribute("data-copy-text");
+    if (!text) return;
+    void copyTextToClipboard(text).then(function (ok) {
+      showCopyToast(ok ? "Copied: " + text : "Could not copy — try selecting the ID manually.");
+    });
+  });
+}
+
 function wireIssueListExpand(root) {
   root.querySelectorAll(".issue-summary-row").forEach(function (row) {
-    row.addEventListener("click", function () {
+    row.addEventListener("click", function (e) {
+      if (e.target && /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy")) return;
       const id = row.getAttribute("data-issue-id");
       if (!id) return;
       expandedIssueId = toggleExpandedState(expandedIssueId, id);
@@ -326,6 +398,7 @@ function wireIssueListExpand(root) {
     });
     row.addEventListener("keydown", function (e) {
       if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target && /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy")) return;
       e.preventDefault();
       const id = row.getAttribute("data-issue-id");
       if (!id) return;
@@ -404,6 +477,7 @@ function wireRebuildDataButton() {
 }
 
 document.addEventListener("DOMContentLoaded", function () {
+  wireIssueIdCopyDelegation();
   document.querySelectorAll("nav a[data-view]").forEach(function (a) {
     a.addEventListener("click", function (e) {
       e.preventDefault();

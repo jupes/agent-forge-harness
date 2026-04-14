@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   escapeHtml,
+  issueIdCopyControlHtml,
   toggleExpandedState,
   commentsForIssue,
   depsTouchingIssue,
@@ -16,6 +17,21 @@ describe("escapeHtml", () => {
   test("handles nullish", () => {
     expect(escapeHtml(null)).toBe("");
     expect(escapeHtml(undefined)).toBe("");
+  });
+});
+
+describe("issueIdCopyControlHtml", () => {
+  test("renders button with escaped id in data-copy-text and code", () => {
+    const html = issueIdCopyControlHtml('T-1&"');
+    expect(html).toContain('class="issue-id-copy"');
+    expect(html).toContain("data-copy-text=");
+    expect(html).toContain("T-1&amp;&quot;");
+    expect(html).toContain("<code>");
+  });
+
+  test("returns empty string for empty id", () => {
+    expect(issueIdCopyControlHtml("")).toBe("");
+    expect(issueIdCopyControlHtml(null)).toBe("");
   });
 });
 
@@ -74,6 +90,8 @@ describe("buildIssueDetailPanelHtml", () => {
     };
     const html = buildIssueDetailPanelHtml(issue, { comments: [], deps: [] });
     expect(html).toContain("issue-detail-close");
+    expect(html).toContain("issue-id-copy");
+    expect(html).toContain("data-copy-text=");
     expect(html).toContain("&lt;x&gt;");
     expect(html).not.toContain("<x>");
     expect(html).toContain("T-99");
