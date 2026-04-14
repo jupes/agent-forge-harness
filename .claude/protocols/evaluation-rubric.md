@@ -6,6 +6,8 @@ Design goals: reduce false PASS (especially self-leniency), make **subjective** 
 
 Source inspiration: [Anthropic — Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps).
 
+For **generator / evaluator** prompts on UI-heavy work, use `.claude/skills/ui-originality-criteria/SKILL.md` (design quality, originality, craft, functionality).
+
 ---
 
 ## Dimensions
