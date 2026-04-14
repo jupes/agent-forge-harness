@@ -4,10 +4,13 @@ import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
 
 const STATUS_COLOR = {
   open: "#3dff9c",
-  in_progress: "#5cf5ff",
-  closed: "#ff4757",
-  blocked: "#ffc14d",
+  in_progress: "#ffe94d",
+  closed: "#aeb8ce",
+  blocked: "#ff4757",
 };
+
+/** Green checkmark inside the closed status pill only */
+const STATUS_CLOSED_CHECK = "#34f097";
 
 const TYPE_ICON = {
   epic: "⚡",
@@ -64,8 +67,25 @@ async function loadData() {
 }
 
 function statusBadge(status) {
-  const color = STATUS_COLOR[status] || "#8aa4c8";
-  return '<span class="badge" style="background:' + color + '20;color:' + color + ';border:1px solid ' + color + '40">' + status + "</span>";
+  const s = String(status != null ? status : "");
+  if (s === "closed") {
+    const fg = STATUS_COLOR.closed;
+    return (
+      '<span class="badge badge-status-closed" style="display:inline-flex;align-items:center;gap:0.32em;background:' +
+      fg +
+      "26;color:" +
+      fg +
+      ";border:1px solid " +
+      fg +
+      '55"><span style="color:' +
+      STATUS_CLOSED_CHECK +
+      ';font-weight:800;line-height:1;font-size:1.05em" aria-hidden="true">\u2713</span><span>closed</span></span>'
+    );
+  }
+  const color = STATUS_COLOR[s] || "#8aa4c8";
+  return (
+    '<span class="badge" style="background:' + color + "20;color:" + color + ";border:1px solid " + color + '40">' + esc(s) + "</span>"
+  );
 }
 
 function priorityBadge(priority) {
@@ -145,9 +165,9 @@ function renderDashboard() {
   let html = '<div class="stat-row">';
   html += '<div class="stat-card"><div class="stat-num" style="color:#3dff9c">' + open + '</div><div class="stat-label">Open</div></div>';
   html +=
-    '<div class="stat-card"><div class="stat-num" style="color:#5cf5ff">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#ffc14d">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#ff4757">' + closed + '</div><div class="stat-label">Closed</div></div>';
+    '<div class="stat-card"><div class="stat-num" style="color:#ffe94d">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#ff4757">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#aeb8ce">' + closed + '</div><div class="stat-label">Closed</div></div>';
   html += "</div>";
 
   html +=
