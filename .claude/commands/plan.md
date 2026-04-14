@@ -188,8 +188,11 @@ bd create \
   --type task \
   --title "<step description>" \
   --repo <repo> \
+  --priority <value> \
   --ac "<acceptance criterion from the step>"
 ```
+
+Pick **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md` (critical-path or high-risk steps → **high** / **critical**; later optional steps → **medium** / **low**).
 
 Add sequential dependencies (step 2 requires step 1):
 ```bash
@@ -198,9 +201,11 @@ bd dep add <step-2-id> --requires <step-1-id>
 
 If there are 4+ tasks: create a parent feature:
 ```bash
-bd create --type feature --title "<overall feature title>"
+bd create --type feature --title "<overall feature title>" --priority <value>
 # then add parent relationship to each task
 ```
+
+Use the same skill for the parent feature priority (often **medium** unless the plan is release-blocking).
 
 Report: "Created N Beads tasks. Run /go to start work."
 

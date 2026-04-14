@@ -162,7 +162,7 @@ When working inside `repos/<repo-name>/`:
 - Read `repos/<repo-name>/AGENTS.md` first — it overrides these defaults
 - Read `repos/<repo-name>/CONTRIBUTING.md` if it exists
 - Follow the sub-repo's own commit format, branch naming, and test commands
-- Create Beads issues with `bd create --repo ./repos/<repo-name>`
+- Create Beads issues with `bd create --repo ./repos/<repo-name> --priority <value>` (choose **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md`)
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker

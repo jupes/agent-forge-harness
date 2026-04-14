@@ -65,16 +65,19 @@ When input is a file path, parse the spec and create Beads tasks:
      --type <bug|feature|task|chore> \
      --title "<derived title>" \
      --repo <repo from spec or ask> \
+     --priority <value> \
      --ac "<acceptance criterion if identifiable>"
    ```
+   Set **`<value>`** using `.claude/skills/beads-priority-assignment/SKILL.md`.
 4. If items have clear dependencies (item B requires item A), add them:
    ```bash
    bd dep add <B-id> --requires <A-id>
    ```
 5. If there are 3+ related items: create an epic to group them
    ```bash
-   bd create --type epic --title "<overall goal>"
+   bd create --type epic --title "<overall goal>" --priority <value>
    ```
+   Epic **`<value>`**: same skill — reflect overall urgency of the group.
 6. Report what was created, then route
 
 ---

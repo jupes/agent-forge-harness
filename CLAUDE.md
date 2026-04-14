@@ -65,7 +65,7 @@ Supporting systems:
 - `.beads/` — Issue tracking (JSONL + Dolt backend)
 - `.claude/hooks/` — Lifecycle automation
 - `.claude/protocols/` — Interface contracts for parallel workers
-- `.claude/skills/` — Reusable expertise packages
+- `.claude/skills/` — Reusable expertise packages (including **beads-priority-assignment** for issue priority)
 
 ---
 
@@ -80,7 +80,7 @@ bd backup sync             # Push configured Dolt-native backups (not the same a
 bd federation sync         # Only if you use federation / peer sync mode
 bd ready                   # List unblocked, unclaimed tasks
 bd show <id>               # View issue details and AC
-bd create --type task --title "..." --repo <repo>
+bd create --type task --title "..." --repo <repo> [--priority <0–4|P0–P4|critical|high|medium|low>]
 bd update <id> --claim     # Claim work
 bd update <id> --ac "..."  # Add acceptance criteria
 bd close <id>              # Mark complete
@@ -106,6 +106,7 @@ Note: **`bd sync` is not part of current `bd` releases** — upstream removed it
 
 ### Rules
 - Create a Beads task before claiming any work
+- **Set priority on every new issue** — agents choose `--priority` when creating or triaging work (read `.claude/skills/beads-priority-assignment/SKILL.md`). Use **`P2` / `2` / `medium`** only when the rubric gives no signal; do not omit priority when your `bd` supports it.
 - Update issue status as you work (`in_progress` → `closed`)
 - Never close an issue without verified acceptance criteria
 - Multi-repo: create epics here, tasks in the owning sub-repo via `bd create --repo ./repos/<repo>`
