@@ -13,6 +13,23 @@ export function escapeHtml(str) {
 }
 
 /**
+ * Clickable issue id control: copies `data-copy-text` on click (wired in app.mjs).
+ * @param {unknown} issueId
+ * @returns {string}
+ */
+export function issueIdCopyControlHtml(issueId) {
+  const id = String(issueId != null ? issueId : "");
+  if (!id) return "";
+  return (
+    '<button type="button" class="issue-id-copy" data-copy-text="' +
+    escapeHtml(id) +
+    '" title="Copy issue ID"><code>' +
+    escapeHtml(id) +
+    "</code></button>"
+  );
+}
+
+/**
  * Toggle which issue id is expanded in the list.
  * @param {string | null} currentExpandedId
  * @param {string} clickedIssueId
@@ -66,12 +83,12 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
     );
   }
 
-  addRow("ID", "<code>" + escapeHtml(String(issue.id)) + "</code>");
+  addRow("ID", issueIdCopyControlHtml(issue.id));
   addRow("Type", escapeHtml(String(issue.type ?? "")));
   addRow("Title", escapeHtml(String(issue.title ?? "")));
   addRow("Status", escapeHtml(String(issue.status ?? "")));
   if (issue.priority) addRow("Priority", escapeHtml(String(issue.priority)));
-  if (issue.parent) addRow("Parent", "<code>" + escapeHtml(String(issue.parent)) + "</code>");
+  if (issue.parent) addRow("Parent", issueIdCopyControlHtml(issue.parent));
   if (issue.repo) addRow("Repo", escapeHtml(String(issue.repo)));
   if (issue.due) addRow("Due", escapeHtml(String(issue.due)));
   if (issue.createdAt) addRow("Created", escapeHtml(String(issue.createdAt)));

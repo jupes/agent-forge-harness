@@ -399,6 +399,62 @@
       margin-bottom: 0.75rem;
     }
 
+    /* Copy issue ID (tables, detail panel, epic header) */
+    button.issue-id-copy {
+      appearance: none;
+      background: transparent;
+      border: none;
+      padding: 0.2rem 0.45rem;
+      margin: -0.1rem 0;
+      cursor: pointer;
+      border-radius: 6px;
+      font: inherit;
+      color: inherit;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    button.issue-id-copy:hover {
+      background: rgba(88, 166, 255, 0.14);
+      color: var(--text);
+    }
+
+    button.issue-id-copy:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    button.issue-id-copy code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      color: var(--accent);
+    }
+
+    #copy-toast {
+      position: fixed;
+      bottom: 1.35rem;
+      left: 50%;
+      z-index: 10000;
+      max-width: min(90vw, 28rem);
+      padding: 0.75rem 1.15rem;
+      border-radius: 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      font-size: 0.9rem;
+      text-align: center;
+      pointer-events: none;
+      transform: translateX(-50%) translateY(140%);
+      opacity: 0;
+      transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease;
+    }
+
+    #copy-toast.is-visible {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
     .progress-bar-bg {
       height: 6px;
       background: var(--surface-2);
@@ -739,6 +795,8 @@
     <div class="empty-state">Loading...</div>
   </div>
 </main>
+
+<div id="copy-toast" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true"></div>
 
 <script type="module" src="js/app.mjs"></script>
 </body>
