@@ -3,10 +3,10 @@ import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml 
 import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
 
 const STATUS_COLOR = {
-  open: "#7cb896",
-  in_progress: "#d9a441",
-  closed: "#9a9188",
-  blocked: "#e8927a",
+  open: "#5ee0a8",
+  in_progress: "#3ee0d0",
+  closed: "#7d93b8",
+  blocked: "#ff8a5c",
 };
 
 const TYPE_ICON = {
@@ -37,10 +37,10 @@ function typeCell(type) {
 }
 
 const PRIORITY_COLOR = {
-  critical: "#e8927a",
-  high: "#d9a441",
-  medium: "#7aabdf",
-  low: "#9a9188",
+  critical: "#ff6b6b",
+  high: "#ffb020",
+  medium: "#6eb3ff",
+  low: "#7d93b8",
 };
 
 let data = null;
@@ -64,13 +64,13 @@ async function loadData() {
 }
 
 function statusBadge(status) {
-  const color = STATUS_COLOR[status] || "#9a9188";
+  const color = STATUS_COLOR[status] || "#7d93b8";
   return '<span class="badge" style="background:' + color + '20;color:' + color + ';border:1px solid ' + color + '40">' + status + "</span>";
 }
 
 function priorityBadge(priority) {
   if (!priority) return "";
-  const color = PRIORITY_COLOR[priority] || "#9a9188";
+  const color = PRIORITY_COLOR[priority] || "#7d93b8";
   return '<span class="badge" style="color:' + color + '">' + priority + "</span>";
 }
 
@@ -143,11 +143,11 @@ function renderDashboard() {
   const closedRecent = closedAll.slice(0, 25);
 
   let html = '<div class="stat-row">';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#7cb896">' + open + '</div><div class="stat-label">Open</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#5ee0a8">' + open + '</div><div class="stat-label">Open</div></div>';
   html +=
-    '<div class="stat-card"><div class="stat-num" style="color:#d9a441">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#e8927a">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#9a9188">' + closed + '</div><div class="stat-label">Closed</div></div>';
+    '<div class="stat-card"><div class="stat-num" style="color:#3ee0d0">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#ff8a5c">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
+  html += '<div class="stat-card"><div class="stat-num" style="color:#7d93b8">' + closed + '</div><div class="stat-label">Closed</div></div>';
   html += "</div>";
 
   html +=
