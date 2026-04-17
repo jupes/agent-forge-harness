@@ -50,6 +50,8 @@ let data = null;
 let activeView = "dashboard";
 /** @type {string | null} */
 let expandedIssueId = null;
+/** Epic id, or "all" for no filter. Shared between Dashboard + All Issues. */
+let initiativeFilter = "all";
 
 async function loadData() {
   try {
@@ -104,6 +106,82 @@ function issuesInProgress(all) {
 
 function sortByUpdatedDesc(a, b) {
   return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+}
+
+/** Epics (aka initiatives), sorted by title for stable dropdown order. */
+function listEpics() {
+  const all = (data && data.issues) || [];
+  return all
+    .filter(function (i) { return i.type === "epic"; })
+    .slice()
+    .sort(function (a, b) {
+      return String(a.title || "").localeCompare(String(b.title || ""));
+    });
+}
+
+/**
+ * Set of issue IDs belonging to an epic (the epic itself + all transitive
+ * descendants via the `parent` field). Handles multi-level nesting
+ * (epic → feature → task) and defends against accidental parent cycles.
+ * @param {string} epicId
+ * @returns {Set<string>}
+ */
+function computeInitiativeMembers(epicId) {
+  const members = new Set();
+  if (!epicId) return members;
+  const all = (data && data.issues) || [];
+  const childrenByParent = new Map();
+  all.forEach(function (i) {
+    if (!i.parent) return;
+    let arr = childrenByParent.get(i.parent);
+    if (!arr) { arr = []; childrenByParent.set(i.parent, arr); }
+    arr.push(i.id);
+  });
+  const stack = [epicId];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (members.has(id)) continue;
+    members.add(id);
+    const kids = childrenByParent.get(id);
+    if (kids) kids.forEach(function (k) { stack.push(k); });
+  }
+  return members;
+}
+
+/**
+ * Apply current initiative filter to an issue list. Returns the list unchanged
+ * when the filter is "all" or the selected epic no longer exists.
+ * @template {{ id: string }} T
+ * @param {T[]} issues
+ * @returns {T[]}
+ */
+function applyInitiativeFilter(issues) {
+  if (!Array.isArray(issues) || initiativeFilter === "all") return issues || [];
+  const members = computeInitiativeMembers(initiativeFilter);
+  if (members.size === 0) return issues;
+  return issues.filter(function (i) { return members.has(i.id); });
+}
+
+/**
+ * `<select>` for choosing an initiative. Emits into a shared module handler
+ * so Dashboard + All Issues stay in sync on re-render.
+ */
+function initiativeSelectHtml() {
+  const epics = listEpics();
+  const selected = initiativeFilter;
+  let html =
+    '<label style="display:inline-flex;align-items:center;gap:0.45rem;color:var(--text-muted);font-size:0.85rem">' +
+    '<span>Initiative</span>' +
+    '<select id="filter-initiative" onchange="window.__dashboardSetInitiative(this.value)" ' +
+    'style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem;max-width:22rem">';
+  html += '<option value="all"' + (selected === "all" ? " selected" : "") + ">All initiatives</option>";
+  epics.forEach(function (e) {
+    const label = e.title ? e.title + "  (" + e.id + ")" : e.id;
+    html +=
+      '<option value="' + esc(e.id) + '"' + (selected === e.id ? " selected" : "") + ">" + esc(label) + "</option>";
+  });
+  html += "</select></label>";
+  return html;
 }
 
 /** Colspan for expandable issue tables (summary row + detail row). */
@@ -168,20 +246,31 @@ function renderExpandableIssueTable(issues, max) {
 function renderDashboard() {
   if (!data) return '<div class="empty-state">No data</div>';
   const { derived } = data;
-  const open = ((derived.byStatus || {}).open || []).length;
-  const inProgressCount = ((derived.byStatus || {}).in_progress || []).length;
-  const closed = ((derived.byStatus || {}).closed || []).length;
-  const blocked = (derived.blocked || []).length;
-  const readyAll = derived.ready || [];
+  const openAllUnfiltered = (derived.byStatus || {}).open || [];
+  const inProgressUnfiltered = (derived.byStatus || {}).in_progress || [];
+  const readyUnfiltered = derived.ready || [];
+  const blockedUnfiltered = derived.blocked || [];
+  const closedUnfiltered = (derived.byStatus || {}).closed || [];
+
+  const openAll = applyInitiativeFilter(openAllUnfiltered);
+  const inProgressAll = applyInitiativeFilter(issuesInProgress(data.issues)).sort(sortByUpdatedDesc);
+  const readyAll = applyInitiativeFilter(readyUnfiltered);
+  const blockedAll = applyInitiativeFilter(blockedUnfiltered);
+  const closedAll = applyInitiativeFilter(closedUnfiltered).slice().sort(sortByUpdatedDesc);
+
   const ready = readyAll.slice(0, 15);
-  const inProgressAll = issuesInProgress(data.issues).sort(sortByUpdatedDesc);
   const inProgressIssues = inProgressAll.slice(0, 25);
-  const blockedAll = derived.blocked || [];
   const blockedList = blockedAll.slice(0, 15);
-  const closedAll = ((derived.byStatus || {}).closed || []).slice().sort(sortByUpdatedDesc);
   const closedRecent = closedAll.slice(0, 25);
 
-  let html = '<div class="stat-row">';
+  const open = openAll.length;
+  const inProgressCount = initiativeFilter === "all" ? inProgressUnfiltered.length : inProgressAll.length;
+  const closed = closedAll.length;
+  const blocked = blockedAll.length;
+
+  let html = '<div class="filter-row">' + initiativeSelectHtml() + "</div>";
+
+  html += '<div class="stat-row">';
   html += '<div class="stat-card"><div class="stat-num" style="color:#3dff9c">' + open + '</div><div class="stat-label">Open</div></div>';
   html +=
     '<div class="stat-card"><div class="stat-num" style="color:#ffe94d">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
@@ -216,7 +305,7 @@ function renderList() {
   const filter = filterEl ? filterEl.value : "all";
   const search = searchEl ? searchEl.value.toLowerCase() : "";
 
-  const issues = (data.issues || []).filter(function (i) {
+  const issues = applyInitiativeFilter(data.issues || []).filter(function (i) {
     const matchStatus = filter === "all" || i.status === filter;
     const matchSearch =
       !search || i.title.toLowerCase().indexOf(search) !== -1 || i.id.toLowerCase().indexOf(search) !== -1;
@@ -229,7 +318,7 @@ function renderList() {
     expandedIssueId = null;
   }
 
-  let html = '<div class="filter-row">';
+  let html = '<div class="filter-row" style="flex-wrap:wrap">';
   html +=
     '<input id="search-input" type="text" placeholder="Search..." oninput="window.__dashboardRender()" value="' +
     esc(search) +
@@ -239,7 +328,9 @@ function renderList() {
   ["all", "open", "in_progress", "blocked", "closed"].forEach(function (s) {
     html += '<option value="' + s + '"' + (filter === s ? " selected" : "") + ">" + (s === "all" ? "All statuses" : s) + "</option>";
   });
-  html += "</select></div>";
+  html += "</select>";
+  html += initiativeSelectHtml();
+  html += "</div>";
 
   html += '<p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:0.75rem">' + issues.length + " issues</p>";
   html += '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
@@ -479,6 +570,12 @@ function render() {
 }
 
 window.__dashboardRender = render;
+
+window.__dashboardSetInitiative = function (value) {
+  initiativeFilter = value || "all";
+  expandedIssueId = null;
+  render();
+};
 
 const REBUILD_PAGES_PATH = "/__agent-forge/rebuild-pages";
 
