@@ -59,3 +59,7 @@ Save as:
 1. **Read this file first** in the new session (after `bd ready` / task pick), before editing code.
 2. If it **conflicts** with Beads AC or alignment docs, **Beads + alignment win** — update this handoff after reconciling.
 3. When closing out a milestone, **delete or replace** the handoff so stale state does not mislead a future session.
+
+## Wisps and retention
+
+`.tmp/work/*` is treated as **wisps** (short-lived). See `.claude/protocols/tmp-work-ttl.md` for the default TTL, the `bun run tmp:cleanup` sweep, and which names are never auto-swept.
