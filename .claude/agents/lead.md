@@ -13,6 +13,7 @@ Break the incoming task into discrete units that can be assigned to workers:
 - Group related changes into logical worker tasks
 - Check for shared interfaces — note any that require contracts
 - When you define **new Beads issues** (or approve a worker’s proposed list), each must carry an appropriate **`--priority`**; use `.claude/skills/beads-priority-assignment/SKILL.md` so urgency, impact, and risk are explicit in the graph
+- For epics with a populated dependency graph, run `bun run beads:bundles <EPIC-ID>` to get a convoy-style batch plan (parallel-safe groups derived from `blocks`/`requires` deps, skipping closed work). Use it as a starting point for the Step 2 batch schedule; file exclusivity (2b) may still force serialization.
 
 ### Step 2: Write Contracts (when needed)
 If two or more workers will share interfaces (types, hooks, APIs), write a contract first.
