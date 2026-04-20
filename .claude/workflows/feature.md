@@ -206,6 +206,8 @@ Produce the structured verdict. Do not write, edit, or commit anything."
 )
 ```
 
+After the verdict, if **`AGENT_FORGE_EVAL_VERDICT=strict`** is in effect for this session, write **`.tmp/work/<TASK-ID>-verdict.json`** per **`.claude/protocols/evaluation-verdict.md`** (machine-readable counts + PASS/FAIL). Optional for default (non-strict) runs.
+
 ### Acting on the verdict
 
 | Verdict | Action |
@@ -266,7 +268,7 @@ gh pr create \
 
 ## Beads
 Closes <TASK-ID>" \
-  --base main
+  --base master
 
 # Close Beads task
 bd close <TASK-ID>

@@ -58,6 +58,8 @@ Assign a severity to every gap or violation:
 
 Produce the structured output defined below. A task is **PASS** only when there are zero BLOCKER or HIGH findings.
 
+When the team uses **`AGENT_FORGE_EVAL_VERDICT=strict`** (see `.claude/hooks/quality-gate.ts`), also write **`.tmp/work/<TASK-ID>-verdict.json`** so hooks can gate completion. Use the JSON schema in **`.claude/protocols/evaluation-verdict.md`** — counts must match the verdict narrative; `taskId` must match the Beads id under review.
+
 ---
 
 ## Evaluation Rules
