@@ -5,6 +5,21 @@
 
 export const EVAL_VERDICT_SCHEMA_VERSION = 1 as const;
 
+/**
+ * Named dimensions allowed in `attestations` (Gas Town / Wasteland "stamps" analog).
+ * Scores are integers in [0, 5]. All fields are optional; extras are rejected.
+ */
+export const ATTESTATION_DIMENSIONS = [
+  "quality",
+  "reliability",
+  "creativity",
+  "maintainability",
+  "ux",
+] as const;
+export type AttestationDimension = (typeof ATTESTATION_DIMENSIONS)[number];
+
+export type EvalAttestations = Partial<Record<AttestationDimension, number>>;
+
 export type EvalVerdictParsed = {
   schemaVersion: typeof EVAL_VERDICT_SCHEMA_VERSION;
   taskId: string;
@@ -16,6 +31,7 @@ export type EvalVerdictParsed = {
     low: number;
   };
   summary?: string;
+  attestations?: EvalAttestations;
 };
 
 export type ParseEvalVerdictResult =
@@ -24,6 +40,10 @@ export type ParseEvalVerdictResult =
 
 function isNonNegInt(n: unknown): n is number {
   return typeof n === "number" && Number.isInteger(n) && n >= 0;
+}
+
+function isStampScore(n: unknown): n is number {
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 5;
 }
 
 /**
@@ -77,6 +97,32 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
     value.summary = o.summary;
   } else if (o.summary !== undefined) {
     return { ok: false, error: "summary must be a string when present" };
+  }
+  if (o.attestations !== undefined) {
+    if (typeof o.attestations !== "object" || o.attestations === null || Array.isArray(o.attestations)) {
+      return { ok: false, error: "attestations must be an object when present" };
+    }
+    const src = o.attestations as Record<string, unknown>;
+    const attestations: EvalAttestations = {};
+    for (const key of Object.keys(src)) {
+      if (!ATTESTATION_DIMENSIONS.includes(key as AttestationDimension)) {
+        return {
+          ok: false,
+          error: `attestations.${key} is not a known dimension (${ATTESTATION_DIMENSIONS.join("|")})`,
+        };
+      }
+      const v = src[key];
+      if (!isStampScore(v)) {
+        return {
+          ok: false,
+          error: `attestations.${key} must be an integer 0..5`,
+        };
+      }
+      attestations[key as AttestationDimension] = v;
+    }
+    if (Object.keys(attestations).length > 0) {
+      value.attestations = attestations;
+    }
   }
   return { ok: true, value };
 }
