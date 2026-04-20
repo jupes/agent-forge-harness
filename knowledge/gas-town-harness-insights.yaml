@@ -5,6 +5,7 @@
 meta:
   title: "Gas Town → Agent Forge harness: evaluator loops & molecules"
   bead: agent-forge-harness-6x1
+  follow_on_epic: agent-forge-harness-c8u
   status: research
   last_updated: "2026-04-20"
   sources:
