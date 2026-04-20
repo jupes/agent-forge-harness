@@ -202,6 +202,37 @@ function formatIssueDate(iso) {
   );
 }
 
+/** Local label for payload `generatedAt` (sidebar); `title` holds raw ISO. */
+function formatSnapshotGeneratedAt(iso) {
+  const s = String(iso != null ? iso : "").trim();
+  if (!s) return { label: "—", title: "" };
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return { label: s, title: s };
+  const label = d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  return { label, title: s };
+}
+
+function syncNavRebuildWidget() {
+  const el = document.getElementById("nav-data-generated-at");
+  if (!el) return;
+  if (!data || !data.generatedAt) {
+    el.textContent = "Snapshot: not loaded";
+    el.removeAttribute("title");
+    return;
+  }
+  const { label, title } = formatSnapshotGeneratedAt(data.generatedAt);
+  el.textContent = "Snapshot built: " + label;
+  if (title) el.setAttribute("title", "ISO: " + title);
+  else el.removeAttribute("title");
+}
+
 const EXPANDABLE_ISSUE_HEAD =
   '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class="date-col">Created</th><th class="date-col">Updated</th></tr></thead><tbody>';
 
@@ -553,6 +584,7 @@ function wireIssueListExpand(root) {
 }
 
 function render() {
+  syncNavRebuildWidget();
   const content = document.getElementById("content");
   const title = document.getElementById("view-title");
   const views = {
@@ -596,7 +628,7 @@ function wireRebuildDataButton() {
   btn.addEventListener("click", async function () {
     btn.disabled = true;
     var prev = btn.textContent;
-    btn.textContent = "Rebuilding…";
+    btn.textContent = "Refreshing…";
     try {
       var res = await fetch(REBUILD_PAGES_PATH, { method: "POST" });
       var body = {};
@@ -613,9 +645,9 @@ function wireRebuildDataButton() {
     } catch (err) {
       var msg = (err && err.message) || String(err) || "Unknown error";
       window.alert(
-        "Could not rebuild dashboard data.\n\n" +
+        "Could not refresh the data snapshot.\n\n" +
           msg +
-          "\n\nThis button only works while `bun run dashboard` (Vite) is running.\nOtherwise run: bun run build-pages",
+          "\n\nThis button talks to the Vite dev server only. If you opened files directly or use GitHub Pages, run in the repo root:\n\n  bun run build-pages\n\nthen reload the page.",
       );
     } finally {
       btn.disabled = false;

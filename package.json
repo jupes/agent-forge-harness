@@ -13,6 +13,7 @@
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
     "beads:import-anthropic-plan": "bun run scripts/beads/import-anthropic-harness-plan.ts",
     "beads:bundles": "bun run scripts/beads/convoy-bundles.ts",
+    "molecules:check": "bun run scripts/molecules/check.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
