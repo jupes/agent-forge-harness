@@ -3,7 +3,8 @@
  * quality-gate.ts
  *
  * Triggered on TaskCompleted and TeammateIdle events.
- * Runs 6 checks; exits with code 2 to block completion if any fail.
+ * Runs core checks plus optional strict evaluator verdict (see AGENT_FORGE_EVAL_VERDICT).
+ * Exits with code 2 to block completion if any fail.
  * Outputs structured JSON for agent consumption.
  */
 
@@ -12,6 +13,7 @@ import { existsSync, readFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { Glob } from "bun";
 import { getQualityGateLogPath } from "./utils/constants";
+import { parseEvalVerdictJson, verdictBlocksShip } from "../../scripts/eval-verdict";
 
 interface CheckResult {
   name: string;
@@ -150,6 +152,90 @@ if (event === "TaskCompleted") {
         : { output: "No test files in recent commits — ensure tests were committed" }),
     });
     if (!hasRecentTests) blockingFailures.push("test-evidence");
+  }
+
+  // Check 7 (optional): strict evaluator verdict JSON
+  {
+    const mode = (process.env["AGENT_FORGE_EVAL_VERDICT"] ?? "").trim().toLowerCase();
+    if (mode === "strict") {
+      if (!taskId) {
+        checks.push({
+          name: "eval-verdict",
+          passed: false,
+          output: "AGENT_FORGE_EVAL_VERDICT=strict requires CLAUDE_TASK_ID",
+        });
+        blockingFailures.push("eval-verdict");
+      } else {
+        const verdictPath = join(process.cwd(), ".tmp", "work", `${taskId}-verdict.json`);
+        if (!existsSync(verdictPath)) {
+          checks.push({
+            name: "eval-verdict",
+            passed: false,
+            output: `Missing verdict file: ${verdictPath}`,
+          });
+          blockingFailures.push("eval-verdict");
+        } else {
+          let text: string;
+          try {
+            text = readFileSync(verdictPath, "utf8");
+          } catch {
+            checks.push({
+              name: "eval-verdict",
+              passed: false,
+              output: `Could not read verdict file: ${verdictPath}`,
+            });
+            blockingFailures.push("eval-verdict");
+            text = "";
+          }
+          if (text.trim() === "" && blockingFailures.includes("eval-verdict")) {
+            // read already failed
+          } else if (text.trim() === "") {
+            checks.push({
+              name: "eval-verdict",
+              passed: false,
+              output: `Empty verdict file: ${verdictPath}`,
+            });
+            blockingFailures.push("eval-verdict");
+          } else {
+            const pr = parseEvalVerdictJson(text);
+            if (!pr.ok) {
+              checks.push({ name: "eval-verdict", passed: false, output: pr.error });
+              blockingFailures.push("eval-verdict");
+            } else if (pr.value.taskId !== taskId) {
+              checks.push({
+                name: "eval-verdict",
+                passed: false,
+                output: `verdict taskId "${pr.value.taskId}" !== CLAUDE_TASK_ID "${taskId}"`,
+              });
+              blockingFailures.push("eval-verdict");
+            } else if (verdictBlocksShip(pr.value)) {
+              checks.push({
+                name: "eval-verdict",
+                passed: false,
+                output: `verdict FAIL with blocker/high — ${JSON.stringify(pr.value.findings)}`,
+              });
+              blockingFailures.push("eval-verdict");
+            } else {
+              checks.push({
+                name: "eval-verdict",
+                passed: true,
+                output: `${pr.value.verdict} B=${pr.value.findings.blocker} H=${pr.value.findings.high}`,
+              });
+            }
+          }
+        }
+      }
+    } else {
+      checks.push({
+        name: "eval-verdict",
+        passed: true,
+        skipped: true,
+        skipReason:
+          mode === ""
+            ? "set AGENT_FORGE_EVAL_VERDICT=strict to require .tmp/work/<TASK-ID>-verdict.json"
+            : `AGENT_FORGE_EVAL_VERDICT="${mode}" is not strict`,
+      });
+    }
   }
 }
 

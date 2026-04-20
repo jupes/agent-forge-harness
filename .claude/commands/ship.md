@@ -32,6 +32,8 @@ bun run lint                 # Lint (skip if no lint script in package.json)
 bun test                     # Tests (skip if no test files exist)
 ```
 
+**Strict evaluator verdict (optional):** If `AGENT_FORGE_EVAL_VERDICT=strict` is set in the environment where hooks run, ensure **`.tmp/work/<TASK-ID>-verdict.json`** exists and matches **`.claude/protocols/evaluation-verdict.md`** before treating the task as shippable. The quality gate hook enforces this on `TaskCompleted` when `CLAUDE_TASK_ID` is set.
+
 **If any check fails**:
 1. Report which check failed and the exact error
 2. Fix the issue
@@ -90,11 +92,11 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`
 Check if the current branch has a stack relationship:
 ```bash
 gh pr list --state open --json number,headRefName,baseRefName
-git log --oneline main..HEAD
+git log --oneline master..HEAD
 ```
 
 - **If current branch is based off another feature branch**: set `--base <that-branch>` in PR creation
-- **If current branch is based off main**: set `--base main`
+- **If current branch is based off master**: set `--base master`
 
 ---
 
@@ -126,7 +128,7 @@ gh pr create \
 <what this does and why — derived from commit message and task description>
 
 ## Changes
-$(git diff --stat main..HEAD | head -20)
+$(git diff --stat master..HEAD | head -20)
 
 ## Test Plan
 - [ ] Tests added or updated
