@@ -57,4 +57,47 @@ describe("parseEvalVerdictJson", () => {
     const r = parseEvalVerdictJson("{");
     expect(r.ok).toBe(false);
   });
+
+  test("accepts attestations within 0..5 for known dimensions", () => {
+    const r = parseEvalVerdictJson(
+      JSON.stringify({
+        schemaVersion: 1,
+        taskId: "x",
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        attestations: { quality: 4, reliability: 5, creativity: 3 },
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.attestations?.quality).toBe(4);
+      expect(r.value.attestations?.reliability).toBe(5);
+    }
+  });
+
+  test("rejects out-of-range attestation score", () => {
+    const r = parseEvalVerdictJson(
+      JSON.stringify({
+        schemaVersion: 1,
+        taskId: "x",
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        attestations: { quality: 7 },
+      }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  test("rejects unknown attestation dimension", () => {
+    const r = parseEvalVerdictJson(
+      JSON.stringify({
+        schemaVersion: 1,
+        taskId: "x",
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        attestations: { vibes: 5 },
+      }),
+    );
+    expect(r.ok).toBe(false);
+  });
 });
