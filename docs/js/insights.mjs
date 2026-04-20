@@ -90,21 +90,60 @@ function buildCounts(issues) {
   });
   /** @type {Map<string, number>} */
   const counts = new Map();
+  /** @type {Map<string, Map<string, number>>} */
+  const byType = new Map();
   closed.forEach(function (i) {
     const k = dayKeyUTC(i.updatedAt);
     if (!k) return;
     counts.set(k, (counts.get(k) || 0) + 1);
+    const t = i.type || "other";
+    let m = byType.get(k);
+    if (!m) { m = new Map(); byType.set(k, m); }
+    m.set(t, (m.get(t) || 0) + 1);
   });
-  return { counts: counts, total: closed.length };
+  return { counts: counts, byType: byType, total: closed.length };
 }
 
-function buildDailySeries(counts) {
+function buildDailySeries(counts, byType) {
   const keys = Array.from(counts.keys()).sort();
   if (!keys.length) return [];
   const days = rangeDays(keys[0], keys[keys.length - 1]);
   return days.map(function (k) {
-    return { day: k, count: counts.get(k) || 0 };
+    return { day: k, count: counts.get(k) || 0, byType: byType.get(k) || new Map() };
   });
+}
+
+/**
+ * Stable-ordered list of issue types that actually appear in the data.
+ * Known types first (in a friendly order), then any extras alphabetically.
+ */
+function typesPresent(byType) {
+  const set = new Set();
+  byType.forEach(function (m) {
+    m.forEach(function (_n, t) { set.add(t); });
+  });
+  const known = ["task", "feature", "bug", "chore", "epic"];
+  const ordered = [];
+  known.forEach(function (t) {
+    if (set.has(t)) { ordered.push(t); set.delete(t); }
+  });
+  Array.from(set).sort().forEach(function (t) { ordered.push(t); });
+  return ordered;
+}
+
+const TYPE_COLORS = {
+  task: "#6ec6ff",
+  feature: "#3dff9c",
+  bug: "#ff4757",
+  chore: "#ffe94d",
+  epic: "#ff80d4",
+};
+const TYPE_FALLBACK = ["#8aa4c8", "#9d7cff", "#c9ff7c", "#ff9d7c", "#7cffe0"];
+
+function colorForType(type, fallbackIndex) {
+  const known = /** @type {Record<string,string>} */ (TYPE_COLORS)[type];
+  if (known) return known;
+  return TYPE_FALLBACK[fallbackIndex % TYPE_FALLBACK.length];
 }
 
 /**
@@ -152,9 +191,16 @@ function summarize(series, counts, total) {
   return { total: total, last7: last7, avg: avg, best: best, dayCount: series.length };
 }
 
-export function renderInsightsHtml() {
+/**
+ * @param {string} [filterHtml] Optional chrome (e.g. initiative dropdown) injected above the KPIs.
+ */
+export function renderInsightsHtml(filterHtml) {
+  const chrome = filterHtml
+    ? '<div class="filter-row" style="margin-bottom:1rem">' + filterHtml + "</div>"
+    : "";
   return (
     '<div id="insights-root" data-loaded="0">' +
+    chrome +
     '<div class="stat-row" id="insights-stats" style="margin-bottom:1.25rem"></div>' +
     "<h3>Beads closed over time</h3>" +
     '<p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 0.75rem">' +
@@ -208,42 +254,67 @@ function showError(root, err) {
     ". The KPI cards above still reflect the current data.";
 }
 
-function buildDailyChartConfig(series) {
+function buildDailyChartConfig(series, types) {
+  const datasets = types.map(function (t, idx) {
+    const color = colorForType(t, idx);
+    return {
+      label: t,
+      data: series.map(function (s) { return s.byType.get(t) || 0; }),
+      backgroundColor: color,
+      borderColor: color,
+      borderWidth: 0,
+      borderRadius: 2,
+      stack: "closed",
+      hoverBackgroundColor: color,
+    };
+  });
   return {
     type: "bar",
     data: {
       labels: series.map(function (s) { return s.day; }),
-      datasets: [{
-        label: "Closed",
-        data: series.map(function (s) { return s.count; }),
-        backgroundColor: "rgba(61,255,156,0.7)",
-        borderColor: "rgba(61,255,156,1)",
-        borderWidth: 1,
-        borderRadius: 2,
-        hoverBackgroundColor: "rgba(61,255,156,0.95)",
-      }],
+      datasets: datasets,
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 300 },
+      interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: true,
+          position: "bottom",
+          labels: {
+            color: COLOR_AXIS,
+            boxWidth: 10,
+            boxHeight: 10,
+            font: { family: "ui-monospace, monospace", size: 11 },
+            padding: 12,
+          },
+        },
         tooltip: {
           backgroundColor: COLOR_TIP_BG,
           borderColor: COLOR_TIP_BORDER,
           borderWidth: 1,
           titleColor: "#e6ecf5",
           bodyColor: "#e6ecf5",
+          footerColor: "#e6ecf5",
           padding: 8,
-          displayColors: false,
           callbacks: {
-            label: function (ctx) { return ctx.parsed.y + " closed"; },
+            label: function (ctx) {
+              if (!ctx.parsed || !ctx.parsed.y) return null;
+              return ctx.dataset.label + ": " + ctx.parsed.y;
+            },
+            footer: function (items) {
+              let total = 0;
+              items.forEach(function (it) { total += it.parsed.y || 0; });
+              return "Total: " + total;
+            },
           },
         },
       },
       scales: {
         x: {
+          stacked: true,
           ticks: {
             color: COLOR_AXIS,
             maxRotation: 0,
@@ -255,6 +326,7 @@ function buildDailyChartConfig(series) {
           border: { color: COLOR_GRID },
         },
         y: {
+          stacked: true,
           beginAtZero: true,
           ticks: {
             color: COLOR_AXIS,
@@ -362,7 +434,8 @@ export async function wireInsights(root, data) {
 
   const issues = data && Array.isArray(data.issues) ? data.issues : [];
   const built = buildCounts(issues);
-  const series = buildDailySeries(built.counts);
+  const series = buildDailySeries(built.counts, built.byType);
+  const types = typesPresent(built.byType);
   const s = summarize(series, built.counts, built.total);
   renderStatsCards(root, s);
 
@@ -376,9 +449,9 @@ export async function wireInsights(root, data) {
   }
 
   const dailyCanvas = root.querySelector("#chart-closed-daily");
-  if (dailyCanvas && series.length) {
+  if (dailyCanvas && series.length && types.length) {
     try {
-      chartInstances.push(new Chart(dailyCanvas, buildDailyChartConfig(series)));
+      chartInstances.push(new Chart(dailyCanvas, buildDailyChartConfig(series, types)));
     } catch (err) {
       showError(root, err);
     }
