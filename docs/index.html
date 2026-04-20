@@ -95,6 +95,23 @@
       color: var(--text-muted);
     }
 
+    nav .nav-meta-line {
+      margin: 0 0 0.5rem;
+      line-height: 1.45;
+    }
+
+    nav .nav-meta-line:last-child {
+      margin-bottom: 0;
+    }
+
+    nav .nav-meta-generated {
+      margin: 0.45rem 0 0;
+      font-size: 0.72rem;
+      color: var(--accent-2);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
     /* Main */
     main {
       margin-left: 220px;
@@ -862,9 +879,11 @@
   <a href="#" data-view="skill-builder">Skill builder</a>
   <a href="#" data-view="insights">Insights</a>
   <div class="nav-meta">
-    <div>Live reload: <code>bun run dashboard</code> (Vite).</div>
-    <button type="button" id="btn-rebuild-pages" class="rebuild-btn" title="Runs build-pages (works with Vite dev server only)">Rebuild data</button>
-    <div style="margin-top:0.35rem;font-size:0.75rem;color:var(--text-muted)">CLI: <code>bun run build-pages</code></div>
+    <p class="nav-meta-line">Dev server: <code>bun run dashboard</code> (Vite). Watches <code>.beads/</code> and reloads when the snapshot file updates.</p>
+    <button type="button" id="btn-rebuild-pages" class="rebuild-btn"
+      title="Regenerate docs/data/beads.json from Beads (JSONL or bd export). Only works while this Vite dev server is running; otherwise run bun run build-pages in a terminal.">Refresh snapshot</button>
+    <p class="nav-meta-generated" id="nav-data-generated-at" aria-live="polite">Snapshot: not loaded</p>
+    <p class="nav-meta-line">Static copy or no Vite? Run <code>bun run build-pages</code>, then reload the page.</p>
   </div>
 </nav>
 
