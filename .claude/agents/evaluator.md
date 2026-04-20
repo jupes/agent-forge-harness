@@ -60,6 +60,8 @@ Produce the structured output defined below. A task is **PASS** only when there 
 
 When the team uses **`AGENT_FORGE_EVAL_VERDICT=strict`** (see `.claude/hooks/quality-gate.ts`), also write **`.tmp/work/<TASK-ID>-verdict.json`** so hooks can gate completion. Use the JSON schema in **`.claude/protocols/evaluation-verdict.md`** — counts must match the verdict narrative; `taskId` must match the Beads id under review.
 
+You **may** also fill in the optional `attestations` object (Wasteland-style stamps: `quality`, `reliability`, `creativity`, `maintainability`, `ux` — integer 0..5). These are advisory multi-axis signals for dashboards; they never block ship on their own.
+
 ---
 
 ## Evaluation Rules
