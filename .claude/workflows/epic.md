@@ -28,6 +28,17 @@ bd comments add <EPIC-ID> "worklog: starting epic workflow"
 
 When creating or adjusting child tasks, assign **`--priority`** per `.claude/skills/beads-priority-assignment/SKILL.md` so workers and `/triage` see an honest queue.
 
+### Optional — staleness patrol (EL-02)
+
+Long-running epics can accumulate **stale `in_progress` or claimed-`open`** work (no `updatedAt` movement). Run a lightweight patrol (same “actively worked” definition as the dashboard):
+
+```bash
+bun run beads:stale
+# or: STALE_DAYS=14 bun run beads:stale
+```
+
+Emits JSON `{ ok, data: { thresholdDays, items: [...] }, error }` with `daysSinceUpdated` from **`updatedAt` only** (not comment activity — avoids N×`bd comments` noise). For each flagged id, consider `bd comments add <id> "worklog: stale patrol — confirm still active or unblock"` or re-triage. Solo harness users may raise `STALE_DAYS` if this feels chatty.
+
 ---
 
 ## Step 2 — Batch Plan
