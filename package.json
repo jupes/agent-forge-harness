@@ -12,6 +12,7 @@
     "test": "bun test scripts",
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
     "beads:import-anthropic-plan": "bun run scripts/beads/import-anthropic-harness-plan.ts",
+    "beads:stale": "bun run scripts/beads/stale-work-patrol.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
