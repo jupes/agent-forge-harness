@@ -1,6 +1,7 @@
 // Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
 import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml } from "./issue-detail.mjs";
 import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
+import { renderInsightsHtml, wireInsights } from "./insights.mjs";
 
 const STATUS_COLOR = {
   open: "#3dff9c",
@@ -438,150 +439,9 @@ function renderSkillBuilder() {
   return renderSkillBuilderHtml();
 }
 
-/** Daily bucket key in UTC (YYYY-MM-DD). */
-function dayKeyUTC(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toISOString().slice(0, 10);
-}
-
-/** Inclusive list of YYYY-MM-DD UTC days between two day keys. */
-function dayRange(startKey, endKey) {
-  const out = [];
-  if (!startKey || !endKey) return out;
-  const start = new Date(startKey + "T00:00:00Z").getTime();
-  const end = new Date(endKey + "T00:00:00Z").getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return out;
-  for (let t = start; t <= end; t += 86400000) {
-    out.push(new Date(t).toISOString().slice(0, 10));
-  }
-  return out;
-}
-
-/** Build daily closed-bead series + summary stats. */
-function buildClosedOverTime(issues) {
-  const closed = (Array.isArray(issues) ? issues : []).filter(function (i) {
-    return i && i.status === "closed" && i.updatedAt;
-  });
-  const counts = new Map();
-  closed.forEach(function (i) {
-    const k = dayKeyUTC(i.updatedAt);
-    if (!k) return;
-    counts.set(k, (counts.get(k) || 0) + 1);
-  });
-  const keys = Array.from(counts.keys()).sort();
-  const days = keys.length ? dayRange(keys[0], keys[keys.length - 1]) : [];
-  const series = days.map(function (k) {
-    return { day: k, count: counts.get(k) || 0 };
-  });
-  const total = closed.length;
-  const today = new Date();
-  const sevenAgo = new Date(today.getTime() - 7 * 86400000).toISOString().slice(0, 10);
-  const last7 = series.reduce(function (acc, s) {
-    return s.day > sevenAgo ? acc + s.count : acc;
-  }, 0);
-  const avg = days.length ? total / days.length : 0;
-  let best = { day: "", count: 0 };
-  series.forEach(function (s) {
-    if (s.count > best.count) best = s;
-  });
-  return { series: series, total: total, last7: last7, avg: avg, best: best, dayCount: days.length };
-}
-
-function renderInsightsChartSvg(series) {
-  if (!series.length) {
-    return '<div class="empty-state">No closed beads yet — run some work and come back.</div>';
-  }
-  const W = 880;
-  const H = 260;
-  const padL = 36;
-  const padR = 12;
-  const padT = 12;
-  const padB = 36;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
-  const max = Math.max.apply(null, series.map(function (s) { return s.count; }));
-  const yMax = Math.max(1, max);
-  const barGap = series.length > 60 ? 1 : 2;
-  const barW = Math.max(2, (innerW - barGap * (series.length - 1)) / series.length);
-  const fill = "#3dff9c";
-  const grid = "#2a3a55";
-  const axis = "#8aa4c8";
-
-  const yTicks = 4;
-  let gridLines = "";
-  let yLabels = "";
-  for (let t = 0; t <= yTicks; t++) {
-    const v = Math.round((yMax * t) / yTicks);
-    const y = padT + innerH - (innerH * t) / yTicks;
-    gridLines +=
-      '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y + '" y2="' + y +
-      '" stroke="' + grid + '" stroke-width="1" stroke-dasharray="2,3" />';
-    yLabels +=
-      '<text x="' + (padL - 6) + '" y="' + (y + 3) +
-      '" text-anchor="end" fill="' + axis + '" font-size="10" font-family="ui-monospace,monospace">' + v + "</text>";
-  }
-
-  let bars = "";
-  series.forEach(function (s, idx) {
-    const h = (s.count / yMax) * innerH;
-    const x = padL + idx * (barW + barGap);
-    const y = padT + innerH - h;
-    bars +=
-      '<rect x="' + x.toFixed(2) + '" y="' + y.toFixed(2) +
-      '" width="' + barW.toFixed(2) + '" height="' + h.toFixed(2) +
-      '" fill="' + fill + '" opacity="0.85">' +
-      "<title>" + s.day + ": " + s.count + " closed</title></rect>";
-  });
-
-  let xLabels = "";
-  const labelEvery = Math.max(1, Math.ceil(series.length / 8));
-  series.forEach(function (s, idx) {
-    if (idx % labelEvery !== 0 && idx !== series.length - 1) return;
-    const x = padL + idx * (barW + barGap) + barW / 2;
-    const short = s.day.slice(5);
-    xLabels +=
-      '<text x="' + x.toFixed(2) + '" y="' + (H - padB + 16) +
-      '" text-anchor="middle" fill="' + axis + '" font-size="10" font-family="ui-monospace,monospace">' + short + "</text>";
-  });
-
-  const axisLine =
-    '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + (padT + innerH) + '" y2="' + (padT + innerH) +
-    '" stroke="' + axis + '" stroke-width="1" />';
-
-  return (
-    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem 0.5rem 0.25rem">' +
-    '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" height="' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Beads closed per day">' +
-    gridLines + bars + axisLine + yLabels + xLabels +
-    "</svg></div>"
-  );
-}
-
 function renderInsights() {
   if (!data) return '<div class="empty-state">Loading...</div>';
-  const stats = buildClosedOverTime(data.issues);
-  const avgFmt = stats.avg ? stats.avg.toFixed(1) : "0";
-  const bestLabel = stats.best.count
-    ? stats.best.day + " (" + stats.best.count + ")"
-    : "—";
-
-  let html =
-    '<div class="stat-row" style="margin-bottom:1.25rem">' +
-    '<div class="stat-card"><div class="stat-num" style="color:#3dff9c">' + stats.total + '</div><div class="stat-label">Total closed</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:#6ec6ff">' + stats.last7 + '</div><div class="stat-label">Closed (last 7d)</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:#ffe94d">' + avgFmt + '</div><div class="stat-label">Avg / day</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:#ff80d4;font-size:1.4rem">' + esc(bestLabel) + '</div><div class="stat-label">Busiest day</div></div>' +
-    "</div>";
-
-  html += "<h3>Beads closed over time</h3>";
-  html +=
-    '<p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 0.75rem">' +
-    "Daily count of closed beads across the last " + stats.dayCount + " day(s) of activity. " +
-    'Bucketed by <code style="font-size:0.9em">updatedAt</code> in UTC (close-time proxy).' +
-    "</p>";
-  html += renderInsightsChartSvg(stats.series);
-  return html;
+  return renderInsightsHtml();
 }
 
 function setView(view) {
@@ -712,6 +572,9 @@ function render() {
     }
     if (activeView === "skill-builder") {
       wireSkillBuilder(content);
+    }
+    if (activeView === "insights") {
+      void wireInsights(content, data);
     }
   }
 }
