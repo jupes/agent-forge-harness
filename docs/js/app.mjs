@@ -441,7 +441,7 @@ function renderSkillBuilder() {
 
 function renderInsights() {
   if (!data) return '<div class="empty-state">Loading...</div>';
-  return renderInsightsHtml();
+  return renderInsightsHtml(initiativeSelectHtml());
 }
 
 function setView(view) {
@@ -574,7 +574,8 @@ function render() {
       wireSkillBuilder(content);
     }
     if (activeView === "insights") {
-      void wireInsights(content, data);
+      const filtered = data ? { issues: applyInitiativeFilter(data.issues || []) } : null;
+      void wireInsights(content, filtered);
     }
   }
 }
