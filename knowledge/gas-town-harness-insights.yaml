@@ -1,0 +1,153 @@
+# knowledge/gas-town-harness-insights.yaml
+# Research notes: Gas Town (Yegge + gastownhall/gastown) vs Agent Forge harness.
+# Bead: agent-forge-harness-6x1 — not auto-generated; refine or split into follow-on beads as you implement.
+
+meta:
+  title: "Gas Town → Agent Forge harness: evaluator loops & molecules"
+  bead: agent-forge-harness-6x1
+  status: research
+  last_updated: "2026-04-20"
+  sources:
+    - url: "https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04"
+      note: "MEOW stack, molecules as workflows, Formulas→protomolecules, NDI, hooks"
+    - url: "https://github.com/gastownhall/gastown"
+      note: "README + layout (Mayor, rigs, polecats, Refinery, Witness/Deacon, convoys, gt-model-eval)"
+    - path: "uploads/gastown-1.md"
+      note: "Local scrape; README section aligns with Medium on molecules & hooks"
+
+gas_town_concepts:
+  molecules:
+    summary: >
+      Molecules are durable, composable workflows (often with loops/gates) expressed in Beads,
+      instantiated from higher-level Formulas (TOML), macro-expanded to protomolecules, then
+      executed as wisps/mols. Work is "molecularized" so agents pick steps; molecules can bond
+      and be scheduled across swarms.
+    harness_analogy: >
+      A Beads epic/feature graph plus .claude/workflows/*.md is a *manual* molecule: steps exist
+      as issues and markdown, but there is no first-class formula language, checkpoint recovery,
+      or runtime composition beyond human/agent routing.
+  hooks:
+    summary: >
+      Per-worker persistent anchor (pinned bead) where molecules attach — survives restarts.
+    harness_analogy: >
+      Closest parallels: git worktrees + `.tmp/work/*` handoffs + Beads claim/AC; not a single
+      automated "hook" primitive in the harness repo itself.
+  refinery_merge_queue:
+    summary: >
+      Batches polecat output, runs verification gates, bisects failures — industrial merge path.
+    harness_analogy: >
+      `.claude/hooks/quality-gate.ts` + `/ship` intent; no merge queue or automatic bisect of
+      conflicting workers.
+  witness_deacon_dogs:
+    summary: >
+      Tiered watchdogs: per-rig lifecycle, cross-rig patrol, infra workers for recovery/triage.
+    harness_analogy: >
+      No always-on supervisor; session continuity is procedural (AGENTS.md, handoff file).
+  nondeterministic_idempotence:
+    summary: >
+      NDI — durable progress without requiring deterministic replay like Temporal; emphasizes
+      idempotent steps and ledger truth in Beads.
+    harness_analogy: >
+      Beads as source of truth + idempotent scripts aligns; harness does not formalize NDI or
+      step-level idempotency keys.
+
+evaluator_loop_insights:
+  - id: EL-01-external-pass
+    title: "Make evaluator loops explicit in workflows, not only in agent prompts"
+    gas_town_signal: >
+      Separation of generation vs verification is cultural *and* mechanical (Refinery gates,
+      Wasteland validators with multi-dimensional stamps — not self-attestation alone).
+    harness_today: >
+      `.claude/agents/evaluator.md` + `.claude/protocols/evaluation-rubric.md` + Lead alignment
+      are strong *prompt-level* contracts; hooks enforce gates but do not rerun an evaluator
+      model pass or structured verdict file on every ship.
+    candidate_changes:
+      - path: ".claude/workflows/feature.md"
+        idea: "Mandatory post-implementation step: Evaluator produces `.tmp/work/<TASK-ID>-verdict.md` (PASS/FAIL + findings) before `/ship`."
+      - path: ".claude/hooks/quality-gate.ts"
+        idea: "Optional gate: if verdict file missing or FAIL with BLOCKER/HIGH, block ship (feature-flagged env)."
+      - path: ".claude/commands/ship.md"
+        idea: "Document verifier artifact expectation when `EVALUATOR_LOOP=strict` (or similar)."
+    investigation_questions:
+      - "Do we want one evaluator *model* invocation, or human-only + automated checks?"
+      - "How many repair iterations before escalating to Lead (cap retries)?"
+      - "Should verdict schema be JSON for machine merge into Beads comments?"
+
+  - id: EL-02-patrol-evaluator
+    title: "Patrol-style evaluator for long-running epics"
+    gas_town_signal: "Deacon patrol cycles + Witness stall detection across rigs."
+    harness_today: "Epic workflow is Lead-driven; no daemon re-asks 'is this initiative still green?'"
+    candidate_changes:
+      - path: ".claude/workflows/epic.md"
+        idea: "Periodic checkpoint beads or `/triage`-like automation that attaches evaluator criteria to stale in_progress work."
+      - path: "scripts/"
+        idea: "Thin script: list issues in_progress > N days without comments → emit bd comment or task."
+    investigation_questions:
+      - "Which staleness signals: git activity, bd comments, PR state?"
+      - "Noise vs value for solo harness users?"
+
+  - id: EL-03-stamps-rubric
+    title: "Multi-axis attestation beyond pass/fail"
+    gas_town_signal: "Wasteland stamps — quality, reliability, creativity as dimensions."
+    harness_today: "Rubric tables + severity tiers; not stored as reusable attestations on closed beads."
+    candidate_changes:
+      - path: "types/beads.ts"
+        idea: "If bd metadata supports it: optional structured review payload on close (or comment JSON)."
+      - path: "docs/js/"
+        idea: "Dashboard could chart stamp dimensions later — out of scope for this research file."
+    investigation_questions:
+      - "Is attestations a Beads feature roadmap item vs harness-local JSON in comments?"
+
+molecule_insights:
+  - id: MO-01-formulas-as-skills
+    title: "Promote workflows to data: Formula-like molecule specs beside skills"
+    gas_town_signal: "Formulas (TOML) cook to protomolecules; loops/gates in one artifact."
+    harness_today: "Markdown workflows + slash commands; graph lives partly in Beads deps."
+    candidate_changes:
+      - path: ".claude/molecules/"
+        idea: "New directory: versioned TOML/YAML describing steps, gates, which agent role runs each step, Beads templates for spawned tasks."
+      - path: ".claude/skills/"
+        idea: "Skills remain reusable knowledge; molecules orchestrate which skills apply per step."
+    investigation_questions:
+      - "Parser/runtime in TypeScript (bun) vs documenting-only for humans?"
+      - "Mapping molecule step → `bd create` + `bd dep add` automation?"
+
+  - id: MO-02-wisps-ephemeral
+    title: "Ephemeral vs durable work units"
+    gas_town_signal: "Root-only wisps vs poured wisps with checkpoint sub-wisps."
+    harness_today: "Beads tasks are durable; `.tmp/work` is ephemeral."
+    candidate_changes:
+      - path: ".claude/protocols/session-handoff.md"
+        idea: "Define when a harness 'wisp' is a short-lived bd label or comment thread vs a full task."
+    investigation_questions:
+      - "Compaction/TTL for `.tmp/work` aligned to bead close?"
+
+  - id: MO-03-convoy-batching
+    title: "Batching related beads for one worker session"
+    gas_town_signal: "Convoys bundle beads for dispatch; mountain convoys get stall/skip logic."
+    harness_today: "`bd ready` lists atoms; Lead manually batches into worker alignment docs."
+    candidate_changes:
+      - path: ".claude/agents/lead.md"
+        idea: "Guidance for grouping beads with shared interface contract before delegating."
+      - path: "scripts/"
+        idea: "Optional helper: given epic id, emit suggested worker bundles from dependency graph."
+    investigation_questions:
+      - "Graph export from bd for harness scripts — schema stability?"
+
+repo_deep_dives_suggested:
+  description: >
+    Shallow pass used README + article; next passes should read code where orchestration lives.
+  gastown_paths:
+    - "cmd/gt — CLI entrypoints for dispatch, convoy, mayor"
+    - "internal/ — scheduler, witness, refinery implementations"
+    - "gt-model-eval/ — model evaluation loops (likely closest to harness evaluator interest)"
+    - "plugins/ — extension points"
+  harness_paths:
+    - ".claude/agents/{lead,worker,evaluator}.md"
+    - ".claude/hooks/quality-gate.ts"
+    - ".claude/workflows/{feature,fix,epic}.md"
+    - ".claude/protocols/evaluation-rubric.md"
+
+non_goals_for_this_note:
+  - "Replacing Beads or adopting Gas Town runtime inside this repo."
+  - "Re-implementing Wasteland federation — only borrow attestation *ideas* if desired."
