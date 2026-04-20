@@ -68,6 +68,11 @@ anthropic_long_running_harness:
     optional_e2e: "Browser-heavy AC may warrant sub-repo E2E (e.g. Playwright) when already supported — see `.claude/protocols/evaluation-rubric.md`."
   beads_import_script: "bun run scripts/beads/import-anthropic-harness-plan.ts — idempotent; requires working local `bd` + Dolt (CGO embedded or `dolt` in PATH for server mode)."
 
+research_notes:
+  gas_town_harness_insights:
+    path: "knowledge/gas-town-harness-insights.yaml"
+    summary: "Steve Yegge Gas Town + gastownhall/gastown README concepts mapped to Agent Forge (evaluator loops, molecules, gates); bead agent-forge-harness-6x1."
+
 common_patterns:
   file_structure:
     - "src/api/ — HTTP handlers and API calls"
