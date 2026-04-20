@@ -34,6 +34,21 @@ Optional machine-readable output from an **Evaluator** pass, used when **`AGENT_
 | `verdict` | yes | `"PASS"` or `"FAIL"` |
 | `findings.*` | yes | Non-negative integers: `blocker`, `high`, `medium`, `low` |
 | `summary` | no | String |
+| `attestations` | no | Object with integer scores `0..5` for any subset of `quality`, `reliability`, `creativity`, `maintainability`, `ux`. Informational — never blocks ship. Unknown keys are rejected. |
+
+### Attestations (optional, Wasteland-style stamps)
+
+```json
+{
+  "schemaVersion": 1,
+  "taskId": "agent-forge-harness-k1y",
+  "verdict": "PASS",
+  "findings": { "blocker": 0, "high": 0, "medium": 1, "low": 0 },
+  "attestations": { "quality": 4, "reliability": 5, "creativity": 3 }
+}
+```
+
+These are **advisory** multi-axis signals. The strict gate still only looks at `verdict` + `findings.blocker|high`. Dashboards and future analytics can chart these dimensions; evaluators may populate whichever apply to the task.
 
 ## Strict gate behavior
 
