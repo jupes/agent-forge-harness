@@ -9,6 +9,11 @@
       "name": "a2ui",
       "url": "https://github.com/google/A2UI.git",
       "defaultBranch": "main"
+    },
+    {
+      "name": "modelcontextprotocol",
+      "url": "https://github.com/modelcontextprotocol/modelcontextprotocol.git",
+      "defaultBranch": "main"
     }
   ]
 }
