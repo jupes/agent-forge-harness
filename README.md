@@ -175,7 +175,7 @@ bun install   # once, to install vite + chokidar
 bun run dashboard
 ```
 
-Then open the URL Vite prints (default `http://127.0.0.1:8787/`). In the sidebar, **Rebuild data** runs `build-pages` again (same as `bun run build-pages`) without leaving the browser. Options: `PORT=9000 bun run dashboard`, `DASHBOARD_HOST=0.0.0.0 bun run dashboard` to listen on all interfaces, `DASHBOARD_NO_BUILD=1 bun run dashboard` to skip the initial `build-pages` run (serve existing `docs/data/beads.json` only).
+Then open the URL Vite prints (default `http://127.0.0.1:8787/`). In the sidebar, **Refresh snapshot** runs `build-pages` again (same as `bun run build-pages`) without leaving the browser; the line below shows when `docs/data/beads.json` was generated. Options: `PORT=9000 bun run dashboard`, `DASHBOARD_HOST=0.0.0.0 bun run dashboard` to listen on all interfaces, `DASHBOARD_NO_BUILD=1 bun run dashboard` to skip the initial `build-pages` run (serve existing `docs/data/beads.json` only).
 
 ### 8. Optional — parallel epics (git worktrees)
 
