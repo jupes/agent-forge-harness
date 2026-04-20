@@ -12,6 +12,7 @@
     "test": "bun test scripts",
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
     "beads:import-anthropic-plan": "bun run scripts/beads/import-anthropic-harness-plan.ts",
+    "tmp:cleanup": "bun run scripts/tmp-work-cleanup.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
