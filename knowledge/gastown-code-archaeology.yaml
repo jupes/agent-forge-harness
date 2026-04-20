@@ -1,0 +1,125 @@
+# knowledge/gastown-code-archaeology.yaml
+# Deep-dive companion to knowledge/gas-town-harness-insights.yaml.
+# Source: https://github.com/gastownhall/gastown (read via GitHub raw + contents API on 2026-04-20).
+# Bead: agent-forge-harness-3r5 (epic agent-forge-harness-c8u).
+# NOT a clone — code references are paths + behavior summaries, not local files.
+
+meta:
+  title: "Gas Town code archaeology — gt-model-eval, internal/, cmd/gt"
+  source_repo: "gastownhall/gastown"
+  method: "GitHub raw README + contents API; no local clone"
+  last_updated: "2026-04-20"
+
+cmd_gt:
+  path: "cmd/gt"
+  files:
+    - "main.go (182 bytes — thin entrypoint calling into internal/cli)"
+    - "build_test.go"
+  observation: >
+    Whole product surface lives under internal/; cmd/gt is a 2-file shim. A harness
+    analog already exists in shape: slash commands + workflows + scripts. Nothing
+    to port here — confirms that Gas Town's "richness" is all inside internal/.
+
+gt_model_eval:
+  path: "gt-model-eval"
+  purpose: >
+    Promptfoo-based grid that compares Claude Opus / Sonnet / Haiku on patrol
+    agent decisions to decide which roles can be safely downgraded to cheaper
+    models. This IS the evaluator calibration layer that the Agent Forge
+    evaluator agent currently lacks.
+  mechanics:
+    providers:
+      - "anthropic:messages:claude-opus-4-6 (label Opus 4.6)"
+      - "anthropic:messages:claude-sonnet-4-5-20250929 (Sonnet 4.5)"
+      - "anthropic:messages:claude-haiku-4-5-20251001 (Haiku 4.5)"
+    grader: "Opus as judge (stricter than any test subject)"
+    test_shapes:
+      class_b: "Directive role_context — measures instruction following"
+      class_a: "Neutral role_context — measures reasoning from evidence only"
+    assertions:
+      - "is-json — every response must parse"
+      - "action / reason fields present + non-empty"
+      - "action ∈ allowed_actions (from test vars)"
+      - "cost ≤ 0.10 per test"
+      - "latency ≤ 15000 ms"
+    output_format: '{"action": "...", "reason": "..."}'
+    transform: "strip markdown fences before asserting JSON"
+  harness_applicability:
+    - id: GT-EVAL-01
+      idea: >
+        Reuse the exact shape for evaluator calibration on the harness: a small
+        promptfoo config exercising the evaluator role on a few fixture
+        diffs, scoring agreement with human verdicts. Compare to the
+        `scripts/eval-verdict.ts` schema we already have.
+      starter_fixtures:
+        - "A PR that trivially passes (zero findings)"
+        - "A PR with a BLOCKER (obvious bug)"
+        - "A PR with only MEDIUM polish notes (should not block ship)"
+      where_it_lives: "`.claude/evals/` (new dir), or `scripts/evals/` + promptfoo config"
+    - id: GT-EVAL-02
+      idea: >
+        Borrow the action/reason/allowed_actions envelope for future
+        `verdict.json` extensions — specifically, a structured reason field
+        that aligns with the rubric dimensions in evaluation-rubric.md.
+  takeaways:
+    - "The evaluator-as-grader pattern (Opus judging Sonnet/Haiku) is the cheap, reproducible method for calibrating automated verdicts."
+    - "Expressing every decision as structured JSON with action + reason + allowed_actions is a transferable contract; our verdict.json already matches this spirit."
+    - "Cost + latency thresholds per test are first-class, not afterthoughts — worth adding when we wire a real evaluator model loop."
+
+internal_modules:
+  path: "internal"
+  discovered_packages_of_interest:
+    - name: formula
+      analog: "Macro-expands Formulas (TOML) into protomolecules (see Yegge post). Closest conceptual match to the MO-01 molecules parser we just added."
+    - name: convoy
+      analog: "Implementation of batched bead dispatch. Direct counterpart to the MO-03 `beads:bundles` planner."
+    - name: refinery
+      analog: "Merge queue. Harness currently uses `/ship` + quality-gate, no queue."
+    - name: deacon
+      analog: "Background supervisor that runs patrol cycles — the EL-02 patrol is a pull-model analog (run `beads:stale` manually)."
+    - name: dog
+      analog: "Infra workers for maintenance. No harness analog yet — could map to scheduled scripts."
+    - name: polecat
+      analog: "Worker agents with persistent identity but ephemeral sessions. Harness has worktrees + worker.md prompt; no persistent per-agent 'identity' beyond git/branch."
+    - name: mayor
+      analog: "Top-level coordinator. Harness Lead agent fills this role, but the Mayor owns a tmux-backed interactive session."
+    - name: witness
+      analog: "(Not a separate internal/ dir in the listing; referenced in README / session.) Per-rig liveness monitor."
+    - name: hooks
+      analog: "Per-agent pinned bead anchor. We have `.claude/hooks/*.ts` which are lifecycle scripts — similar name, different concept."
+    - name: checkpoint
+      analog: "Durability for long-running molecules (NDI). No harness analog; `.tmp/work` + Beads closure is the lightweight substitute we documented in MO-02."
+    - name: scheduler
+      analog: "Capacity governor for concurrent polecat dispatch. Harness has no global concurrency limiter — Lead serializes via worktree grant."
+    - name: mail
+      analog: "Agent-to-agent messaging. Harness uses `.tmp/work/*` files + Beads comments."
+    - name: telemetry
+      analog: "Ops metrics. Harness ships a Vite dashboard for Beads; no live telemetry."
+  notes:
+    - "`internal/` has ~60 packages in a single Go module; granularity is much finer than Agent Forge's `.claude/*` markdown + `scripts/*.ts`."
+    - "Production-style separation of concerns (scheduler vs convoy vs refinery vs deacon) is the pattern the harness would adopt if it ever grew a runtime."
+
+recommendations:
+  immediate_small:
+    - id: GT-REC-01
+      where: "`scripts/evals/` + new promptfoo config (follow-up bead)"
+      what: "Copy gt-model-eval's assertion/transform pattern; run one fixture through Sonnet + Opus to benchmark evaluator agreement. No new deps in harness itself — run via `npx promptfoo eval`."
+    - id: GT-REC-02
+      where: "`.claude/protocols/evaluation-verdict.md`"
+      what: "Consider an optional `reason` (or `rationale`) string next to `summary`, mirroring action/reason envelope. Non-blocking for v1; record as future schema v2."
+  medium_term:
+    - id: GT-REC-03
+      where: "`.claude/molecules/` + future runtime"
+      what: "If molecules grow loops/gates, formalize a Formula layer (TOML or YAML) with a macro-expand step akin to internal/formula; emit a new Beads task per expanded step."
+    - id: GT-REC-04
+      where: "scripts/beads/convoy-bundles.ts"
+      what: "Teach it to honor `blocked-by`/`depends-on` alias styles from newer bd versions; compare behavior vs a live convoy export from Gas Town to sanity-check the scheduler."
+  not_in_scope_now:
+    - "Porting refinery / merge queue."
+    - "Replacing Beads with anything; the harness already uses Beads."
+    - "Running always-on Deacon; pull-model `beads:stale` covers solo-user needs."
+
+followups_to_file_if_desired:
+  - "P3 task: `scripts/evals/` Promptfoo eval harness for the evaluator agent (see GT-REC-01)."
+  - "P3 task: verdict schema v2 with optional `reason`/`action` envelope (GT-REC-02)."
+  - "P4 task: formalize a Formula (TOML) → molecule macro-expansion step (GT-REC-03)."
