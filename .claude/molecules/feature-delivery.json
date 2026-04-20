@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "id": "feature-delivery",
+  "title": "Feature delivery molecule",
+  "description": "Plan -> Align -> Build -> Evaluate -> Ship. Mirrors .claude/workflows/feature.md as data.",
+  "steps": [
+    {
+      "id": "plan",
+      "title": "Worker plans implementation",
+      "agent": "worker",
+      "produces": ["alignment-proposal"],
+      "consumes": [],
+      "depends_on": []
+    },
+    {
+      "id": "align",
+      "title": "Lead writes alignment document",
+      "agent": "lead",
+      "produces": ["alignment-doc"],
+      "consumes": ["alignment-proposal"],
+      "depends_on": ["plan"]
+    },
+    {
+      "id": "build",
+      "title": "Worker implements behind alignment",
+      "agent": "worker",
+      "produces": ["diff"],
+      "consumes": ["alignment-doc"],
+      "depends_on": ["align"]
+    },
+    {
+      "id": "quality",
+      "title": "Quality gates (typecheck, lint, tests, clean tree)",
+      "agent": "worker",
+      "produces": ["quality-report"],
+      "consumes": ["diff"],
+      "depends_on": ["build"],
+      "gate": { "kind": "quality-gate" }
+    },
+    {
+      "id": "evaluate",
+      "title": "Evaluator renders verdict",
+      "agent": "evaluator",
+      "produces": ["verdict"],
+      "consumes": ["diff", "quality-report"],
+      "depends_on": ["quality"],
+      "gate": { "kind": "eval-verdict" }
+    },
+    {
+      "id": "ship",
+      "title": "Commit, push feature branch, open PR into master",
+      "agent": "lead",
+      "produces": ["pull-request"],
+      "consumes": ["verdict"],
+      "depends_on": ["evaluate"]
+    }
+  ]
+}
