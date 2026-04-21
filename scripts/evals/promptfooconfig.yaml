@@ -1,0 +1,40 @@
+# Agent Forge evaluator calibration harness.
+# See scripts/evals/README.md before running.
+#
+# Usage:
+#   bun run evals:calibrate
+#   npx --yes promptfoo eval --config scripts/evals/promptfooconfig.yaml --repeat 3
+#
+# Requires ANTHROPIC_API_KEY.
+
+description: "Agent Forge evaluator verdict calibration"
+
+prompts:
+  - file://prompts/evaluator-verdict.txt
+
+providers:
+  # Subject: routine evaluator tier we expect to use day-to-day.
+  - id: anthropic:messages:claude-sonnet-4-5-20250929
+    label: "Sonnet 4.5 (subject)"
+    config:
+      temperature: 0.0
+      max_tokens: 1024
+
+defaultTest:
+  # Grader stronger than any subject (model-tier-policy.md).
+  options:
+    provider: anthropic:messages:claude-opus-4-6
+    transform: "output.replace(/^```(?:json)?\\s*\\n?/gm, '').replace(/\\n?```\\s*$/gm, '').trim()"
+  assert:
+    - type: is-json
+    - type: javascript
+      value: file://assertions.ts:verdictMatchesSchema
+    - type: javascript
+      value: file://assertions.ts:verdictMatchesFixture
+    - type: cost
+      threshold: 0.10
+    - type: latency
+      threshold: 15000
+
+tests:
+  - file://tests/verdict-cases.yaml
