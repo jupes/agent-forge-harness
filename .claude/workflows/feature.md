@@ -5,6 +5,8 @@ Use this workflow for single-task work that requires a plan: new features, signi
 **When to use**: >3 files, needs a plan, single coherent task.
 **Plan file required. Conditional approval and review steps.**
 
+**Model tier** — Start at Top tier for the initial plan / alignment, then drop to Default for implementation once AC is locked. Evaluator runs at a tier **≥** the build tier. Full rubric: `.claude/protocols/model-tier-policy.md`.
+
 ---
 
 ## Step 1 — Find Work
