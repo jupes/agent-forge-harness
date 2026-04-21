@@ -1,6 +1,6 @@
 # Model-tier policy
 
-Guidance for routing harness work to the cheapest model that still clears quality for that work. Informed by Yegge's `gt-model-eval` (Promptfoo comparison of Opus / Sonnet / Haiku on patrol decisions) — see `knowledge/gastown-code-archaeology.yaml` → `gt_model_eval`.
+Guidance for routing harness work to the cheapest model that still clears quality for that work. Informed by Yegge's `gt-model-eval` pattern of having a stronger grader judge a weaker subject — see `knowledge/gastown-code-archaeology.yaml` → `gt_model_eval` for the source observations. The harness no longer ships a live Promptfoo calibration harness; the grader-≥-subject rule below is convention, enforced by humans and the Evaluator Agent.
 
 This is **convention**, not automation. Cursor / Claude Code / CLI already expose model selection; this doc tells humans and agents **which tier to pick** and when to escalate.
 
@@ -58,7 +58,7 @@ Never silently escalate: leave a `worklog:` Beads comment noting the tier change
 
 ## Grader ≥ subject rule
 
-For any **Evaluator Agent** pass (see `.claude/agents/evaluator.md`) and any automated eval harness (future `scripts/evals/…` — GT-REC-01):
+For any **Evaluator Agent** pass (see `.claude/agents/evaluator.md`):
 
 - If subjects ran on Default tier, the grader must be **≥ Default**, typically Top.
 - If subjects ran on Top tier, the grader stays on Top. A same-tier grader is acceptable only when the task is purely mechanical (e.g. JSON shape conformance).
@@ -68,7 +68,7 @@ For any **Evaluator Agent** pass (see `.claude/agents/evaluator.md`) and any aut
 
 ## Cost + latency thresholds
 
-If you run an actual cost/latency eval, `gt-model-eval` uses `cost ≤ $0.10 / test` and `latency ≤ 15s` as first-class assertions. The harness ships an evaluator calibration harness at **`scripts/evals/`** (`bun run evals:calibrate`) with the same thresholds — tune per task class. Run results land in `scripts/evals/results.json` (gitignored) and a summary is surfaced on the dashboard Insights tab when present.
+If you run an ad-hoc cost/latency comparison, the `gt-model-eval` rule of thumb (`cost ≤ $0.10 / test`, `latency ≤ 15s`) is a reasonable starting point — tune per task class. The harness intentionally does not ship a live calibration runner; grader-≥-subject is enforced by convention and the Evaluator Agent's structured verdict (`.tmp/work/<TASK-ID>-verdict.json` via `scripts/eval-verdict.ts`).
 
 ---
 

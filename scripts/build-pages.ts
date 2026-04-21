@@ -19,14 +19,11 @@ import {
   parseBdExportStdout,
   payloadFromIssuesDepsComments,
 } from "./beads-dashboard";
-import { summarizePromptfooResults } from "./evals/summary";
 
 const ISSUES_FILE = join(process.cwd(), ".beads", "issues.jsonl");
 const DEPS_FILE = join(process.cwd(), ".beads", "deps.jsonl");
 const COMMENTS_FILE = join(process.cwd(), ".beads", "comments.jsonl");
 const OUTPUT_FILE = join(process.cwd(), "docs", "data", "beads.json");
-const EVALS_INPUT = join(process.cwd(), "scripts", "evals", "results.json");
-const EVALS_OUTPUT = join(process.cwd(), "docs", "data", "evals.json");
 
 function readJsonl<T>(path: string): T[] {
   if (!existsSync(path)) return [];
@@ -115,18 +112,3 @@ console.log(`  Comments: ${comments.length}`);
 console.log(`  Ready: ${derived.ready.length}`);
 console.log(`  Blocked: ${derived.blocked.length}`);
 console.log(`  Deps: ${deps.length}`);
-
-// Optional: surface evaluator calibration summary when `npx promptfoo eval --output scripts/evals/results.json` has been run.
-if (existsSync(EVALS_INPUT)) {
-  try {
-    const raw = JSON.parse(readFileSync(EVALS_INPUT, "utf8")) as unknown;
-    const summary = summarizePromptfooResults(raw);
-    writeFileSync(EVALS_OUTPUT, JSON.stringify(summary, null, 2));
-    console.log(`✓ Built docs/data/evals.json (${summary.totalCases} cases across ${summary.providers.length} provider(s))`);
-  } catch (e) {
-    console.warn(
-      "  (found scripts/evals/results.json but could not summarize — leaving docs/data/evals.json untouched):",
-      e instanceof Error ? e.message : String(e),
-    );
-  }
-}
