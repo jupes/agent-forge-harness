@@ -218,8 +218,79 @@ export function renderInsightsHtml(filterHtml) {
     '<canvas id="chart-calendar"></canvas>' +
     "</div>" +
     '<p id="insights-error" style="display:none;color:#ff4757;font-size:0.85rem;margin-top:0.75rem"></p>' +
+    '<h3 style="margin-top:1.5rem">Evaluator calibration</h3>' +
+    '<div id="insights-evals"></div>' +
     "</div>"
   );
+}
+
+function fmtUsd(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+  return "$" + (Math.round(n * 10000) / 10000).toFixed(4);
+}
+
+function fmtMs(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+  if (n < 1000) return Math.round(n) + " ms";
+  return (n / 1000).toFixed(2) + " s";
+}
+
+async function renderEvalsSection(root) {
+  const el = root.querySelector("#insights-evals");
+  if (!el) return;
+  let summary = null;
+  try {
+    const res = await fetch("data/evals.json", { cache: "no-store" });
+    if (res.ok) summary = await res.json();
+  } catch {
+    /* fall through to empty state */
+  }
+  if (!summary || typeof summary !== "object" || !Array.isArray(summary.providers)) {
+    el.innerHTML =
+      '<div class="empty-state" style="font-size:0.85rem">' +
+      "No calibration runs yet. Run " +
+      '<code style="font-size:0.9em">bun run evals:calibrate</code> and ' +
+      '<code style="font-size:0.9em">bun run build-pages</code>. ' +
+      "See <code>scripts/evals/README.md</code>." +
+      "</div>";
+    return;
+  }
+
+  let html =
+    '<div class="stat-row" style="margin-bottom:1rem">' +
+    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_BLUE + '">' +
+    (summary.totalCases | 0) + '</div><div class="stat-label">Total cases</div></div>' +
+    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_GREEN + '">' +
+    (summary.passCount | 0) + '</div><div class="stat-label">Passed</div></div>' +
+    '<div class="stat-card"><div class="stat-num" style="color:#ff4757">' +
+    (summary.failCount | 0) + '</div><div class="stat-label">Failed</div></div>' +
+    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_PINK + ';font-size:1.1rem">' +
+    esc(summary.grader || "—") + '</div><div class="stat-label">Grader</div></div>' +
+    "</div>";
+
+  if (summary.providers.length) {
+    html +=
+      '<table class="issue-table" style="margin-top:0.5rem">' +
+      "<thead><tr><th>Provider</th><th>Pass / Total</th><th>Avg cost</th><th>Avg latency</th></tr></thead>" +
+      "<tbody>";
+    summary.providers.forEach(function (p) {
+      html +=
+        "<tr>" +
+        "<td><code>" + esc(p.label || p.id) + "</code></td>" +
+        "<td>" + (p.passCount | 0) + " / " + (p.totalCases | 0) + "</td>" +
+        "<td>" + fmtUsd(p.avgCost) + "</td>" +
+        "<td>" + fmtMs(p.avgLatencyMs) + "</td>" +
+        "</tr>";
+    });
+    html += "</tbody></table>";
+  }
+  if (summary.generatedAt) {
+    html +=
+      '<p style="color:var(--text-muted);font-size:0.75rem;margin-top:0.5rem">' +
+      "Generated " + esc(summary.generatedAt) +
+      "</p>";
+  }
+  el.innerHTML = html;
 }
 
 function destroyCharts() {
@@ -466,6 +537,8 @@ export async function wireInsights(root, data) {
       showError(root, err);
     }
   }
+
+  void renderEvalsSection(root);
 
   root.setAttribute("data-loaded", "1");
 }
