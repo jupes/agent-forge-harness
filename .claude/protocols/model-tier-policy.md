@@ -68,7 +68,7 @@ For any **Evaluator Agent** pass (see `.claude/agents/evaluator.md`) and any aut
 
 ## Cost + latency thresholds
 
-If you run an actual cost/latency eval (see GT-REC-01 follow-up), `gt-model-eval` uses `cost ≤ $0.10 / test` and `latency ≤ 15s` as first-class assertions. Borrow those as starting thresholds for harness evaluator fixtures — tune per task class.
+If you run an actual cost/latency eval, `gt-model-eval` uses `cost ≤ $0.10 / test` and `latency ≤ 15s` as first-class assertions. The harness ships an evaluator calibration harness at **`scripts/evals/`** (`bun run evals:calibrate`) with the same thresholds — tune per task class. Run results land in `scripts/evals/results.json` (gitignored) and a summary is surfaced on the dashboard Insights tab when present.
 
 ---
 
