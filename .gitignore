@@ -18,11 +18,6 @@ trees/
 
 # Dashboard generated data
 docs/data/beads.json
-docs/data/evals.json
-
-# Evaluator calibration runs
-scripts/evals/results.json
-scripts/evals/results.html
 
 # Standard
 node_modules/
