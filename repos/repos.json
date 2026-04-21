@@ -14,6 +14,11 @@
       "name": "modelcontextprotocol",
       "url": "https://github.com/modelcontextprotocol/modelcontextprotocol.git",
       "defaultBranch": "main"
+    },
+    {
+      "name": "pages-home",
+      "url": "https://github.com/jupes/pages-home.git",
+      "defaultBranch": "master"
     }
   ]
 }
