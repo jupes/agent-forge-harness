@@ -25,6 +25,7 @@ Your role for each task is defined by the workflow you are following.
 8. **Beads is the graph** — All tracked work lives in `.beads/`. No TODO.md files. No inline TODO comments.
 9. **Knowledge-first exploration** — Read `knowledge/` YAML files before exploring source code.
 10. **Push before done** — Work is NOT complete until `git push` succeeds.
+11. **Cheapest model that holds quality** — Route each task to the lowest model tier that still clears the bar (see `.claude/protocols/model-tier-policy.md`). Evaluators/graders must be **≥** the tier that built the output; escalate on Blocker/High findings or AC drift and leave a `worklog:` comment noting why.
 
 ---
 
