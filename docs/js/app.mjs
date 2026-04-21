@@ -1,6 +1,7 @@
 // Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
 import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml } from "./issue-detail.mjs";
 import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
+import { renderBeadBuilderHtml, wireBeadBuilder } from "./bead-builder.mjs";
 import { renderInsightsHtml, wireInsights } from "./insights.mjs";
 
 const STATUS_COLOR = {
@@ -520,6 +521,10 @@ function renderSkillBuilder() {
   return renderSkillBuilderHtml();
 }
 
+function renderBeadBuilder() {
+  return renderBeadBuilderHtml();
+}
+
 function renderInsights() {
   if (!data) return '<div class="empty-state">Loading...</div>';
   return renderInsightsHtml(initiativeSelectHtml());
@@ -643,6 +648,7 @@ function render() {
     epics: { label: "Epics", fn: renderEpics },
     commands: { label: "Commands", fn: renderCommands },
     "skill-builder": { label: "Skill builder", fn: renderSkillBuilder },
+    "bead-builder": { label: "Bead builder", fn: renderBeadBuilder },
     insights: { label: "Insights", fn: renderInsights },
   };
   const v = views[activeView] || views.dashboard;
@@ -654,6 +660,9 @@ function render() {
     }
     if (activeView === "skill-builder") {
       wireSkillBuilder(content);
+    }
+    if (activeView === "bead-builder") {
+      wireBeadBuilder(content);
     }
     if (activeView === "insights") {
       const filtered = data ? { issues: applyInitiativeFilter(data.issues || []) } : null;
