@@ -15,6 +15,7 @@
     "tmp:cleanup": "bun run scripts/tmp-work-cleanup.ts",
     "beads:bundles": "bun run scripts/beads/convoy-bundles.ts",
     "molecules:check": "bun run scripts/molecules/check.ts",
+    "evals:calibrate": "npx --yes promptfoo eval --config scripts/evals/promptfooconfig.yaml",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
