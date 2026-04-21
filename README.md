@@ -2,7 +2,8 @@
 
 Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](https://github.com/gastownhall/beads) issue tracking, and `knowledge/` YAML around your real repos (optional multi-repo under `repos/`). It coordinates how agents and humans work—not your production runtime.
 
-![agent-forge-demo-hq](https://github.com/user-attachments/assets/69e177cc-c45e-4196-8e35-4c35f933f0a2)
+<img width="1800" height="836" alt="agent-forge-demo (5)" src="https://github.com/user-attachments/assets/d90bb957-4c78-4dcf-aa32-d694a06833fb" />
+
 
 **Deeper walkthrough:** [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md)
 
