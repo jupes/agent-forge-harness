@@ -5,6 +5,8 @@ Use this workflow for small, contained changes: bug fixes, minor updates, config
 **When to use**: ≤3 files, clear scope, no new architecture needed.
 **No plan file required. No approval step.**
 
+**Model tier** — Default tier fits most fixes. Drop to Cheap for mechanical edits (formatting, rename passes, trivial triage). Escalate to Top only if scope reveals a cross-cutting concern — in which case, consider promoting to Feature. See `.claude/protocols/model-tier-policy.md`.
+
 ---
 
 ## Step 0 — Ensure Bead
