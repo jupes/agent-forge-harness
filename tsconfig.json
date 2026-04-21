@@ -14,7 +14,8 @@
     "rootDir": ".",
     "paths": {
       "@/types/*": ["./types/*"],
-      "@docs/skill-builder": ["./docs/js/skill-builder.mjs"]
+      "@docs/skill-builder": ["./docs/js/skill-builder.mjs"],
+      "@docs/bead-builder": ["./docs/js/bead-builder.mjs"]
     }
   },
   "include": [
