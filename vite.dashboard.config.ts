@@ -126,6 +126,12 @@ export default defineConfig({
   root: docsRoot,
   /** `data/` lives under `docs/` from build-pages; no separate `public/` copy. */
   publicDir: false,
+  resolve: {
+    alias: {
+      "@docs/bead-builder": path.join(docsRoot, "js", "bead-builder.mjs"),
+      "@docs/skill-builder": path.join(docsRoot, "js", "skill-builder.mjs"),
+    },
+  },
   server: {
     port: Number(process.env["PORT"] ?? "8787"),
     strictPort: false,
