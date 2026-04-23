@@ -130,6 +130,10 @@ export default defineConfig({
     alias: {
       "@docs/bead-builder": path.join(docsRoot, "js", "bead-builder.mjs"),
       "@docs/skill-builder": path.join(docsRoot, "js", "skill-builder.mjs"),
+      // zimmerframe exports omit "default"; @preact/preset-vite dynamic-imports it for
+      // transform-hook-names — some runtimes error with "No exports main defined".
+      // See https://github.com/sveltejs/zimmerframe/pull/34
+      zimmerframe: path.join(repoRoot, "node_modules", "zimmerframe", "src", "walk.js"),
     },
   },
   server: {
