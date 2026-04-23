@@ -3,7 +3,9 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -22,7 +24,8 @@
     "scripts/**/*.ts",
     ".claude/hooks/**/*.ts",
     ".claude/skills/**/*.ts",
-    "types/**/*.ts"
+    "types/**/*.ts",
+    "docs/js/**/*.tsx"
   ],
   "exclude": [
     "node_modules",

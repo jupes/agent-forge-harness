@@ -3,6 +3,7 @@ import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml 
 import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
 import { renderBeadBuilderHtml, wireBeadBuilder } from "./bead-builder.mjs";
 import { renderInsightsHtml, wireInsights } from "./insights.mjs";
+import { createBridgeSelfTestVNode, mountIsland, unmountIsland } from "./preact-bridge.tsx";
 
 const STATUS_COLOR = {
   open: "#3dff9c",
@@ -715,6 +716,22 @@ function wireRebuildDataButton() {
   });
 }
 
+/**
+ * Exercises Preact mount/unmount in Vite dev only (no visible UI).
+ * @returns {void}
+ */
+function runPreactBridgeSelfTestIfDev() {
+  const meta = typeof import.meta !== "undefined" ? import.meta : null;
+  const env = meta && meta.env;
+  if (!env || !env.DEV) return;
+  const shell = document.createElement("div");
+  shell.hidden = true;
+  document.body.appendChild(shell);
+  mountIsland(shell, createBridgeSelfTestVNode());
+  unmountIsland(shell);
+  document.body.removeChild(shell);
+}
+
 document.addEventListener("DOMContentLoaded", function () {
   wireIssueIdCopyDelegation();
   document.querySelectorAll("nav a[data-view]").forEach(function (a) {
@@ -724,5 +741,6 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
   wireRebuildDataButton();
+  runPreactBridgeSelfTestIfDev();
   loadData();
 });
