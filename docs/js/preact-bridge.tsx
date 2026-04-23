@@ -31,6 +31,7 @@ export function mountIsland(container: HTMLElement, vnode: ComponentChild): void
 
 /** Remove a Preact tree from `container` and clear the DOM node. */
 export function unmountIsland(container: HTMLElement): void {
+  if (!mounted.has(container)) return;
   render(null, container);
   mounted.delete(container);
 }
