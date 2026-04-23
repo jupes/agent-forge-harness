@@ -19,6 +19,9 @@ trees/
 # Dashboard generated data
 docs/data/beads.json
 
+# Vite production build output (dashboard root is docs/)
+docs/dist/
+
 # Standard
 node_modules/
 .env

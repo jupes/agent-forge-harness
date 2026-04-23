@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin } from "vite";
+import preact from "@preact/preset-vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -130,5 +131,5 @@ export default defineConfig({
     strictPort: false,
     host: process.env["DASHBOARD_HOST"] ?? "127.0.0.1",
   },
-  plugins: [rebuildPagesApiPlugin(), beadsDataReloadPlugin()],
+  plugins: [preact(), rebuildPagesApiPlugin(), beadsDataReloadPlugin()],
 });
