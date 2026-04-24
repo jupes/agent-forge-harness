@@ -15,6 +15,9 @@ trees/
 .beads/.daemon*
 .beads/.dolt/
 .beads/issues.jsonl
+# Per-clone Beads identity — must NOT be shared across users.
+# Each clone regenerates its own project_id via `bd init` / `bd doctor --fix`.
+.beads/metadata.json
 
 # Dashboard generated data
 docs/data/beads.json
