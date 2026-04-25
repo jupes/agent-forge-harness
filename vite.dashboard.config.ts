@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin } from "vite";
+import preact from "@preact/preset-vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -125,10 +126,26 @@ export default defineConfig({
   root: docsRoot,
   /** `data/` lives under `docs/` from build-pages; no separate `public/` copy. */
   publicDir: false,
+  resolve: {
+    alias: {
+      "@docs/bead-builder": path.join(docsRoot, "js", "bead-builder.mjs"),
+      "@docs/skill-builder": path.join(docsRoot, "js", "skill-builder.mjs"),
+    },
+  },
   server: {
     port: Number(process.env["PORT"] ?? "8787"),
     strictPort: false,
     host: process.env["DASHBOARD_HOST"] ?? "127.0.0.1",
   },
-  plugins: [rebuildPagesApiPlugin(), beadsDataReloadPlugin()],
+  plugins: [
+    preact({
+      // Preset's transform-hook-names does `import("zimmerframe")` in the Node/Vite
+      // process; Vite aliases do not apply there. zimmerframe's exports lack "default",
+      // which breaks Bun (ERR_PACKAGE_PATH_NOT_EXPORTED). Disabling only hook-name
+      // labeling — preact/debug still injects in dev. See sveltejs/zimmerframe#34.
+      devToolsEnabled: false,
+    }),
+    rebuildPagesApiPlugin(),
+    beadsDataReloadPlugin(),
+  ],
 });

@@ -1,8 +1,10 @@
 // Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
 import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml } from "./issue-detail.mjs";
-import { renderSkillBuilderHtml, wireSkillBuilder } from "./skill-builder.mjs";
-import { renderBeadBuilderHtml, wireBeadBuilder } from "./bead-builder.mjs";
 import { renderInsightsHtml, wireInsights } from "./insights.mjs";
+import { createBridgeSelfTestVNode, mountIsland, unmountIsland } from "./preact-bridge.tsx";
+import { h } from "preact";
+import { BeadBuilderIsland } from "./islands/BeadBuilderIsland.tsx";
+import { SkillBuilderIsland } from "./islands/SkillBuilderIsland.tsx";
 
 const STATUS_COLOR = {
   open: "#3dff9c",
@@ -517,14 +519,6 @@ function renderCommands() {
   return html;
 }
 
-function renderSkillBuilder() {
-  return renderSkillBuilderHtml();
-}
-
-function renderBeadBuilder() {
-  return renderBeadBuilderHtml();
-}
-
 function renderInsights() {
   if (!data) return '<div class="empty-state">Loading...</div>';
   return renderInsightsHtml(initiativeSelectHtml());
@@ -647,26 +641,29 @@ function render() {
     list: { label: "All Issues", fn: renderList },
     epics: { label: "Epics", fn: renderEpics },
     commands: { label: "Commands", fn: renderCommands },
-    "skill-builder": { label: "Skill builder", fn: renderSkillBuilder },
-    "bead-builder": { label: "Bead builder", fn: renderBeadBuilder },
+    "skill-builder": { label: "Skill builder", fn: null },
+    "bead-builder": { label: "Bead builder", fn: null },
     insights: { label: "Insights", fn: renderInsights },
   };
   const v = views[activeView] || views.dashboard;
   if (title) title.textContent = v.label;
   if (content) {
-    content.innerHTML = v.fn();
-    if (activeView === "list" || activeView === "dashboard") {
-      wireIssueListExpand(content);
-    }
+    unmountIsland(content);
     if (activeView === "skill-builder") {
-      wireSkillBuilder(content);
-    }
-    if (activeView === "bead-builder") {
-      wireBeadBuilder(content);
-    }
-    if (activeView === "insights") {
-      const filtered = data ? { issues: applyInitiativeFilter(data.issues || []) } : null;
-      void wireInsights(content, filtered);
+      content.innerHTML = "";
+      mountIsland(content, h(SkillBuilderIsland, {}));
+    } else if (activeView === "bead-builder") {
+      content.innerHTML = "";
+      mountIsland(content, h(BeadBuilderIsland, {}));
+    } else {
+      content.innerHTML = v.fn();
+      if (activeView === "list" || activeView === "dashboard") {
+        wireIssueListExpand(content);
+      }
+      if (activeView === "insights") {
+        const filtered = data ? { issues: applyInitiativeFilter(data.issues || []) } : null;
+        void wireInsights(content, filtered);
+      }
     }
   }
 }
@@ -715,6 +712,22 @@ function wireRebuildDataButton() {
   });
 }
 
+/**
+ * Exercises Preact mount/unmount in Vite dev only (no visible UI).
+ * @returns {void}
+ */
+function runPreactBridgeSelfTestIfDev() {
+  const meta = typeof import.meta !== "undefined" ? import.meta : null;
+  const env = meta && meta.env;
+  if (!env || !env.DEV) return;
+  const shell = document.createElement("div");
+  shell.hidden = true;
+  document.body.appendChild(shell);
+  mountIsland(shell, createBridgeSelfTestVNode());
+  unmountIsland(shell);
+  document.body.removeChild(shell);
+}
+
 document.addEventListener("DOMContentLoaded", function () {
   wireIssueIdCopyDelegation();
   document.querySelectorAll("nav a[data-view]").forEach(function (a) {
@@ -724,5 +737,6 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
   wireRebuildDataButton();
+  runPreactBridgeSelfTestIfDev();
   loadData();
 });
