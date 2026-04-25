@@ -452,6 +452,10 @@ function renderCommands() {
       "/sync-knowledge",
       "Auto-generate knowledge YAML from the codebase (one repo by name, --all for repos.json, or current repo when inside a sub-repo).",
     ],
+    [
+      "/add-repo <url-or-path>",
+      "Register a sub-repo: update repos.json, clone into repos/, then sync knowledge. Follows the add-repo skill.",
+    ],
     ["/add-bead <text>", "Quick bd create from free text (title and optional description)."],
   ];
   const workflows = [
