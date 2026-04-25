@@ -74,6 +74,9 @@ let issues = readJsonl<BeadsIssue>(ISSUES_FILE);
 let deps = readJsonl<BeadsDependency>(DEPS_FILE);
 let comments = readJsonl<BeadsComment>(COMMENTS_FILE);
 
+/** When JSONL is empty we rely on `bd export`; if that throws, do not write a misleading empty snapshot. */
+let bdExportFailed: Error | null = null;
+
 if (issues.length === 0) {
   try {
     const fromBd = loadFromBdExport();
@@ -84,11 +87,21 @@ if (issues.length === 0) {
       console.log("  (loaded issues via `bd export --no-memories` — JSONL was empty)");
     }
   } catch (e) {
+    bdExportFailed = e instanceof Error ? e : new Error(String(e));
     console.warn(
-      "  (no JSONL issues and `bd export` failed — install bd in PATH or export manually):",
-      e instanceof Error ? e.message : String(e),
+      "  (no JSONL issues and `bd export` failed — install bd in PATH, start Dolt, or export manually):",
+      bdExportFailed.message,
     );
   }
+}
+
+if (issues.length === 0 && bdExportFailed) {
+  console.error(
+    "\nbuild-pages: refusing to write an empty dashboard snapshot because `bd export` failed.",
+    "\nFix: start the Beads Dolt server (`bd dolt start`), ensure `bd` is on PATH, then re-run `bun run build-pages`.",
+    "\n",
+  );
+  process.exit(1);
 }
 
 const { derived } = payloadFromIssuesDepsComments(issues, deps, comments);
