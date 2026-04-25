@@ -130,10 +130,6 @@ export default defineConfig({
     alias: {
       "@docs/bead-builder": path.join(docsRoot, "js", "bead-builder.mjs"),
       "@docs/skill-builder": path.join(docsRoot, "js", "skill-builder.mjs"),
-      // zimmerframe exports omit "default"; @preact/preset-vite dynamic-imports it for
-      // transform-hook-names — some runtimes error with "No exports main defined".
-      // See https://github.com/sveltejs/zimmerframe/pull/34
-      zimmerframe: path.join(repoRoot, "node_modules", "zimmerframe", "src", "walk.js"),
     },
   },
   server: {
@@ -141,5 +137,15 @@ export default defineConfig({
     strictPort: false,
     host: process.env["DASHBOARD_HOST"] ?? "127.0.0.1",
   },
-  plugins: [preact(), rebuildPagesApiPlugin(), beadsDataReloadPlugin()],
+  plugins: [
+    preact({
+      // Preset's transform-hook-names does `import("zimmerframe")` in the Node/Vite
+      // process; Vite aliases do not apply there. zimmerframe's exports lack "default",
+      // which breaks Bun (ERR_PACKAGE_PATH_NOT_EXPORTED). Disabling only hook-name
+      // labeling — preact/debug still injects in dev. See sveltejs/zimmerframe#34.
+      devToolsEnabled: false,
+    }),
+    rebuildPagesApiPlugin(),
+    beadsDataReloadPlugin(),
+  ],
 });
