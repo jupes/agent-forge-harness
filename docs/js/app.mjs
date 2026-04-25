@@ -4,6 +4,7 @@ import { renderInsightsHtml, wireInsights } from "./insights.mjs";
 import { createBridgeSelfTestVNode, mountIsland, unmountIsland } from "./preact-bridge.tsx";
 import { h } from "preact";
 import { BeadBuilderIsland } from "./islands/BeadBuilderIsland.tsx";
+import { CommandsIsland } from "./islands/CommandsIsland.tsx";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland.tsx";
 
 const STATUS_COLOR = {
@@ -439,86 +440,6 @@ function renderEpics() {
     .join("");
 }
 
-function renderCommands() {
-  const commands = [
-    ["/go [task]", "Smart router — classify scope and run the right workflow."],
-    ["/plan [idea]", "Explore codebase and produce an implementation plan."],
-    ["/ship [msg]", "Quality gates, then commit, push, and PR."],
-    ["/status", "Git state, ready work, blocked items, and PR health."],
-    ["/review [branch]", "Risk-tiered code review (Blocker / High / Medium / Low)."],
-    ["/triage", "Deadline management and capacity planning."],
-    ["/ask [question]", "Query domain knowledge files."],
-    [
-      "/sync-knowledge",
-      "Auto-generate knowledge YAML from the codebase (one repo by name, --all for repos.json, or current repo when inside a sub-repo).",
-    ],
-    ["/add-bead <text>", "Quick bd create from free text (title and optional description)."],
-  ];
-  const workflows = [
-    ["Fix", "≤3 files, clear scope", "Explore → Build → Check → Ship (no plan file)"],
-    ["Feature", "&gt;3 files or needs a plan", "Plan → Approve → Build → Review → Ship"],
-    ["Epic", "Multiple related tasks", "Lead coordinates; parallel workers in git worktrees where dependencies allow"],
-  ];
-  const skills = [
-    [
-      "add-repo",
-      "Registers a new sub-repo in the harness: updates repos.json, clones, and generates knowledge YAML. Use when onboarding a repository so agents can read curated context before exploring code.",
-    ],
-    [
-      "add-unit-tests",
-      "Adds focused Bun unit tests for mission-critical paths and meaningful edge cases, not blanket line coverage. Use when logic must not regress, when fixing bugs, or when a PR needs concrete test evidence.",
-    ],
-    [
-      "authoring-agent-skills",
-      "Meta-skill for creating new Agent Forge skills: structure, conventions, and optional scaffolds. Use whenever you want to package a repeatable workflow for agents instead of one-off instructions.",
-    ],
-    [
-      "beads-priority-assignment",
-      "Picks Beads issue priority (P0–P4 and equivalents) from urgency, impact, and risk. Use on every bd create or triage update so the queue reflects real severity.",
-    ],
-    [
-      "initiative-status-report",
-      "Builds structured weekly status reports: initiatives, progress, blockers, risks, and KPIs. Pulls from epics and git activity so stakeholders get a single readable snapshot.",
-    ],
-    [
-      "syncing-repos",
-      "Runs multi-repo git operations (init, refresh, branches, stacked rebase) with JSON-shaped output for automation. Targets repos listed in repos/repos.json.",
-    ],
-    [
-      "ui-originality-criteria",
-      "Grades and steers visible UI using coherence, originality, craft, and usability. Keeps subjective design review consistent for both builders and evaluators.",
-    ],
-  ];
-
-  let html =
-    '<p style="color:var(--text-muted);font-size:0.9rem;margin:0 0 1rem;max-width:52rem">Slash command prompts live in <code>.claude/commands/</code>; orchestration playbooks live in <code>.claude/workflows/</code>.</p>';
-  html += "<h3>Slash commands</h3>";
-  html += "<table><thead><tr><th>Command</th><th>Description</th></tr></thead><tbody>";
-  commands.forEach(function (c) {
-    html += "<tr><td><code>" + esc(c[0]) + "</code></td><td>" + esc(c[1]) + "</td></tr>";
-  });
-  html += "</tbody></table><h3>Workflow tiers</h3>";
-  html += "<table><thead><tr><th>Workflow</th><th>When to use</th><th>Process</th></tr></thead><tbody>";
-  workflows.forEach(function (w) {
-    html += "<tr><td><strong>" + w[0] + "</strong></td><td>" + w[1] + "</td><td>" + w[2] + "</td></tr>";
-  });
-  html += "</tbody></table>";
-  html += "<h3>Skills</h3>";
-  html +=
-    '<p style="color:var(--text-muted);font-size:0.9rem;margin:0 0 0.75rem;max-width:52rem">Reusable instructions under <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Agents load them when a task matches the skill.</p>';
-  html += "<table><thead><tr><th>Skill</th><th>Summary</th></tr></thead><tbody>";
-  skills.forEach(function (s) {
-    html += "<tr><td><code>" + esc(s[0]) + "</code></td><td>" + esc(s[1]) + "</td></tr>";
-  });
-  html += "</tbody></table>";
-  html += "<h3>Agents and hooks</h3>";
-  html +=
-    '<p style="margin:0 0 0.65rem;max-width:52rem"><strong>Agents</strong> — Role prompts in <code>.claude/agents/</code> shape how Claude Code behaves for a given job. The <strong>Lead</strong> agent decomposes work, aligns workers and evaluators, and verifies outcomes without writing production code. The <strong>Worker</strong> implements tasks inside the active workflow and repo conventions. The <strong>Planner</strong> turns a short prompt into a product-level spec (stories, non-goals, risks). The <strong>Evaluator</strong> judges deliverables against acceptance criteria and the shared evaluation rubric, including a pre-task alignment mode.</p>';
-  html +=
-    '<p style="margin:0;max-width:52rem"><strong>Hooks</strong> — Lifecycle callbacks configured in <code>.claude/settings.json</code> (and implemented as commands or Bun scripts under <code>.claude/hooks/</code>). They run automatically at events such as session start, after a task completes, or when a teammate goes idle. This repo wires <code>bd prime</code> on SessionStart and PreCompact, and <code>quality-gate.ts</code> on TaskCompleted and TeammateIdle to run quality checks and optional evaluator verdict gates. <code>session.ts</code> is available to log session metadata and sync Beads via <code>bd dolt pull</code> / <code>bd dolt push</code> when you add it to your hook configuration.</p>';
-  return html;
-}
-
 function renderInsights() {
   if (!data) return '<div class="empty-state">Loading...</div>';
   return renderInsightsHtml(initiativeSelectHtml());
@@ -640,7 +561,7 @@ function render() {
     dashboard: { label: "Dashboard", fn: renderDashboard },
     list: { label: "All Issues", fn: renderList },
     epics: { label: "Epics", fn: renderEpics },
-    commands: { label: "Commands", fn: renderCommands },
+    commands: { label: "Commands", fn: null },
     "skill-builder": { label: "Skill builder", fn: null },
     "bead-builder": { label: "Bead builder", fn: null },
     insights: { label: "Insights", fn: renderInsights },
@@ -655,6 +576,9 @@ function render() {
     } else if (activeView === "bead-builder") {
       content.innerHTML = "";
       mountIsland(content, h(BeadBuilderIsland, {}));
+    } else if (activeView === "commands") {
+      content.innerHTML = "";
+      mountIsland(content, h(CommandsIsland, {}));
     } else {
       content.innerHTML = v.fn();
       if (activeView === "list" || activeView === "dashboard") {
