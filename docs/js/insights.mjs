@@ -1,9 +1,6 @@
 // Agent Forge Dashboard — Insights view.
-// Uses Chart.js + chartjs-chart-matrix, lazy-loaded via UMD from jsdelivr.
-// UMD keeps Vite dev and raw GitHub Pages both happy (no bare-specifier resolution).
-
-const CHARTJS_URL = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js";
-const MATRIX_URL = "https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js";
+// Chart.js + chartjs-chart-matrix are bundled (dynamic import) so the Vite dashboard
+// runtime does not depend on third-party CDNs.
 
 const COLOR_GREEN = "#3dff9c";
 const COLOR_BLUE = "#6ec6ff";
@@ -18,7 +15,6 @@ const COLOR_TIP_BORDER = "#2a3a55";
 let chartReady = null;
 /** @type {Array<any>} */
 let chartInstances = [];
-let matrixLoaded = false;
 
 function esc(s) {
   return String(s != null ? s : "")
@@ -27,37 +23,22 @@ function esc(s) {
     .replace(/>/g, "&gt;");
 }
 
-function loadScript(url) {
-  return new Promise(function (resolve, reject) {
-    const existing = /** @type {HTMLScriptElement | null} */ (
-      document.querySelector('script[data-chartjs-url="' + url + '"]')
-    );
-    if (existing) {
-      existing.addEventListener("load", function () { resolve(); }, { once: true });
-      existing.addEventListener("error", function () { reject(new Error("Failed: " + url)); }, { once: true });
-      return;
-    }
-    const s = document.createElement("script");
-    s.src = url;
-    s.async = true;
-    s.setAttribute("data-chartjs-url", url);
-    s.onload = function () { resolve(); };
-    s.onerror = function () { reject(new Error("Failed: " + url)); };
-    document.head.appendChild(s);
-  });
-}
-
+/**
+ * Lazy-load Chart.js + matrix plugin from the app bundle (Vite resolves bare specifiers).
+ * @returns {Promise<any>}
+ */
 function ensureChartJs() {
   if (chartReady) return chartReady;
   chartReady = (async function () {
-    if (!/** @type {any} */ (window).Chart) {
-      await loadScript(CHARTJS_URL);
-    }
-    if (!matrixLoaded) {
-      await loadScript(MATRIX_URL);
-      matrixLoaded = true;
-    }
-    return /** @type {any} */ (window).Chart;
+    const chartModule = await import("chart.js");
+    const matrixModule = await import("chartjs-chart-matrix");
+    const Chart = chartModule.Chart;
+    Chart.register(
+      ...chartModule.registerables,
+      matrixModule.MatrixController,
+      matrixModule.MatrixElement,
+    );
+    return Chart;
   })().catch(function (err) {
     chartReady = null;
     throw err;
