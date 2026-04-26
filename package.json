@@ -27,6 +27,8 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "chart.js": "4.4.7",
+    "chartjs-chart-matrix": "2.0.1",
     "preact": "^10.29.1"
   }
 }
