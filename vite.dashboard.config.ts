@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, normalizePath, type Plugin } from "vite";
 import preact from "@preact/preset-vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,8 +128,9 @@ export default defineConfig({
   publicDir: false,
   resolve: {
     alias: {
-      "@docs/bead-builder": path.join(docsRoot, "js", "bead-builder.mjs"),
-      "@docs/skill-builder": path.join(docsRoot, "js", "skill-builder.mjs"),
+      // normalizePath: Windows backslashes in path.join can confuse Vite's import resolver.
+      "@docs/bead-builder": normalizePath(path.join(docsRoot, "js", "bead-builder.mjs")),
+      "@docs/skill-builder": normalizePath(path.join(docsRoot, "js", "skill-builder.mjs")),
     },
   },
   server: {

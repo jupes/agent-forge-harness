@@ -1,9 +1,12 @@
-// Agent Forge Dashboard — app (ES module; imports issue-detail helpers for list expand).
-import { toggleExpandedState, buildIssueDetailPanelHtml, issueIdCopyControlHtml } from "./issue-detail.mjs";
+// Agent Forge Dashboard — app (ES module; hybrid Preact islands + legacy HTML where noted).
+import { issueIdCopyControlHtml } from "./issue-detail.mjs";
 import { renderInsightsHtml, wireInsights } from "./insights.mjs";
+import { applyInitiativeFilter, listEpics } from "./issues-selection.mjs";
 import { createBridgeSelfTestVNode, mountIsland, unmountIsland } from "./preact-bridge.tsx";
 import { h } from "preact";
 import { BeadBuilderIsland } from "./islands/BeadBuilderIsland.tsx";
+import { CommandsIsland } from "./islands/CommandsIsland.tsx";
+import { IssuesViewsIsland } from "./islands/IssuesViewsIsland.tsx";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland.tsx";
 
 const STATUS_COLOR = {
@@ -56,6 +59,9 @@ let activeView = "dashboard";
 let expandedIssueId = null;
 /** Epic id, or "all" for no filter. Shared between Dashboard + All Issues. */
 let initiativeFilter = "all";
+/** All Issues view — kept in app state so Preact remounts do not reset filters. */
+let listStatusFilter = "all";
+let listSearchQuery = "";
 
 async function loadData() {
   try {
@@ -100,111 +106,6 @@ function priorityBadge(priority) {
   return '<span class="badge" style="color:' + color + '">' + priority + "</span>";
 }
 
-/** Claimed or explicit in_progress — excludes “ready” open issues without assignee. */
-function issuesInProgress(all) {
-  const list = Array.isArray(all) ? all : [];
-  return list.filter(function (i) {
-    return i.status === "in_progress" || (i.status === "open" && i.assignee);
-  });
-}
-
-function sortByUpdatedDesc(a, b) {
-  return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
-}
-
-/** Epics (aka initiatives), sorted by title for stable dropdown order. */
-function listEpics() {
-  const all = (data && data.issues) || [];
-  return all
-    .filter(function (i) { return i.type === "epic"; })
-    .slice()
-    .sort(function (a, b) {
-      return String(a.title || "").localeCompare(String(b.title || ""));
-    });
-}
-
-/**
- * Set of issue IDs belonging to an epic (the epic itself + all transitive
- * descendants via the `parent` field). Handles multi-level nesting
- * (epic → feature → task) and defends against accidental parent cycles.
- * @param {string} epicId
- * @returns {Set<string>}
- */
-function computeInitiativeMembers(epicId) {
-  const members = new Set();
-  if (!epicId) return members;
-  const all = (data && data.issues) || [];
-  const childrenByParent = new Map();
-  all.forEach(function (i) {
-    if (!i.parent) return;
-    let arr = childrenByParent.get(i.parent);
-    if (!arr) { arr = []; childrenByParent.set(i.parent, arr); }
-    arr.push(i.id);
-  });
-  const stack = [epicId];
-  while (stack.length > 0) {
-    const id = stack.pop();
-    if (members.has(id)) continue;
-    members.add(id);
-    const kids = childrenByParent.get(id);
-    if (kids) kids.forEach(function (k) { stack.push(k); });
-  }
-  return members;
-}
-
-/**
- * Apply current initiative filter to an issue list. Returns the list unchanged
- * when the filter is "all" or the selected epic no longer exists.
- * @template {{ id: string }} T
- * @param {T[]} issues
- * @returns {T[]}
- */
-function applyInitiativeFilter(issues) {
-  if (!Array.isArray(issues) || initiativeFilter === "all") return issues || [];
-  const members = computeInitiativeMembers(initiativeFilter);
-  if (members.size === 0) return issues;
-  return issues.filter(function (i) { return members.has(i.id); });
-}
-
-/**
- * `<select>` for choosing an initiative. Emits into a shared module handler
- * so Dashboard + All Issues stay in sync on re-render.
- */
-function initiativeSelectHtml() {
-  const epics = listEpics();
-  const selected = initiativeFilter;
-  let html =
-    '<label style="display:inline-flex;align-items:center;gap:0.45rem;color:var(--text-muted);font-size:0.85rem">' +
-    '<span>Initiative</span>' +
-    '<select id="filter-initiative" onchange="window.__dashboardSetInitiative(this.value)" ' +
-    'style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem;max-width:22rem">';
-  html += '<option value="all"' + (selected === "all" ? " selected" : "") + ">All initiatives</option>";
-  epics.forEach(function (e) {
-    const label = e.title ? e.title + "  (" + e.id + ")" : e.id;
-    html +=
-      '<option value="' + esc(e.id) + '"' + (selected === e.id ? " selected" : "") + ">" + esc(label) + "</option>";
-  });
-  html += "</select></label>";
-  return html;
-}
-
-/** Colspan for expandable issue tables (summary row + detail row). */
-const ISSUE_TABLE_COLSPAN = 8;
-
-/**
- * @param {unknown} iso
- * @returns {string}
- */
-function formatIssueDate(iso) {
-  const s = String(iso != null ? iso : "").trim();
-  if (!s) return "—";
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return esc(s);
-  return esc(
-    d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
-  );
-}
-
 /** Local label for payload `generatedAt` (sidebar); `title` holds raw ISO. */
 function formatSnapshotGeneratedAt(iso) {
   const s = String(iso != null ? iso : "").trim();
@@ -234,168 +135,6 @@ function syncNavRebuildWidget() {
   el.textContent = "Snapshot built: " + label;
   if (title) el.setAttribute("title", "ISO: " + title);
   else el.removeAttribute("title");
-}
-
-const EXPANDABLE_ISSUE_HEAD =
-  '<thead><tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class="date-col">Created</th><th class="date-col">Updated</th></tr></thead><tbody>';
-
-/**
- * Expandable issue table (same UX as All Issues). Caller must run wireIssueListExpand on container.
- * @param {unknown[]} issues
- */
-function renderExpandableIssueTable(issues, max) {
-  const slice = (issues || []).slice(0, max);
-  if (slice.length === 0) {
-    return '<p style="color:var(--text-muted)">None.</p>';
-  }
-  let html = '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
-  slice.forEach(function (i) {
-    const isOpen = expandedIssueId === i.id;
-    html +=
-      '<tr class="issue-summary-row' +
-      (isOpen ? " is-expanded" : "") +
-      '" data-issue-id="' +
-      esc(i.id) +
-      '" role="button" tabindex="0" aria-expanded="' +
-      (isOpen ? "true" : "false") +
-      '">';
-    html += "<td>" + issueIdCopyControlHtml(i.id) + "</td>";
-    html += "<td>" + esc(i.title) + "</td>";
-    html += '<td class="type-col">' + typeCell(i.type) + "</td>";
-    html += "<td>" + statusBadge(i.status) + "</td>";
-    html += "<td>" + priorityBadge(i.priority) + "</td>";
-    html += "<td>" + esc(i.repo || "—") + "</td>";
-    html += '<td class="date-col">' + formatIssueDate(i.createdAt) + "</td>";
-    html += '<td class="date-col">' + formatIssueDate(i.updatedAt) + "</td>";
-    html += "</tr>";
-    html += '<tr class="issue-detail-gap"><td colspan="' + ISSUE_TABLE_COLSPAN + '">';
-    html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
-    html += '<div class="issue-detail-anim-inner">';
-    html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
-    html += "</div></div></td></tr>";
-  });
-  html += "</tbody></table>";
-  return html;
-}
-
-function renderDashboard() {
-  if (!data) return '<div class="empty-state">No data</div>';
-  const { derived } = data;
-  const openAllUnfiltered = (derived.byStatus || {}).open || [];
-  const inProgressUnfiltered = (derived.byStatus || {}).in_progress || [];
-  const readyUnfiltered = derived.ready || [];
-  const blockedUnfiltered = derived.blocked || [];
-  const closedUnfiltered = (derived.byStatus || {}).closed || [];
-
-  const openAll = applyInitiativeFilter(openAllUnfiltered);
-  const inProgressAll = applyInitiativeFilter(issuesInProgress(data.issues)).sort(sortByUpdatedDesc);
-  const readyAll = applyInitiativeFilter(readyUnfiltered);
-  const blockedAll = applyInitiativeFilter(blockedUnfiltered);
-  const closedAll = applyInitiativeFilter(closedUnfiltered).slice().sort(sortByUpdatedDesc);
-
-  const ready = readyAll.slice(0, 15);
-  const inProgressIssues = inProgressAll.slice(0, 25);
-  const blockedList = blockedAll.slice(0, 15);
-  const closedRecent = closedAll.slice(0, 25);
-
-  const open = openAll.length;
-  const inProgressCount = initiativeFilter === "all" ? inProgressUnfiltered.length : inProgressAll.length;
-  const closed = closedAll.length;
-  const blocked = blockedAll.length;
-
-  let html = '<div class="filter-row">' + initiativeSelectHtml() + "</div>";
-
-  html += '<div class="stat-row">';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#3dff9c">' + open + '</div><div class="stat-label">Open</div></div>';
-  html +=
-    '<div class="stat-card"><div class="stat-num" style="color:#ffe94d">' + inProgressCount + '</div><div class="stat-label">In Progress</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#ff4757">' + blocked + '</div><div class="stat-label">Blocked</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="color:#aeb8ce">' + closed + '</div><div class="stat-label">Closed</div></div>';
-  html += "</div>";
-
-  html +=
-    '<p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 1.25rem">Beads is the issue graph tracked with <code style="font-size:0.9em">bd</code> (epics, tasks, dependencies). This dashboard shows a built snapshot: status counts and lists of ready, in-progress, blocked, and recently closed work.</p>';
-
-  html += "<h3>In Progress (" + inProgressAll.length + ")</h3>";
-  html += renderExpandableIssueTable(inProgressIssues, 25);
-
-  html += "<h3>Ready to Work (" + readyAll.length + ")</h3>";
-  html += renderExpandableIssueTable(ready, 15);
-
-  if (blockedAll.length > 0) {
-    html += "<h3>Blocked (" + blockedAll.length + ")</h3>";
-    html += renderExpandableIssueTable(blockedList, 15);
-  }
-
-  html += "<h3>Recently closed (" + closedAll.length + ")</h3>";
-  html += renderExpandableIssueTable(closedRecent, 25);
-
-  return html;
-}
-
-function renderList() {
-  if (!data) return '<div class="empty-state">No data</div>';
-  const filterEl = document.getElementById("filter-status");
-  const searchEl = document.getElementById("search-input");
-  const filter = filterEl ? filterEl.value : "all";
-  const search = searchEl ? searchEl.value.toLowerCase() : "";
-
-  const issues = applyInitiativeFilter(data.issues || []).filter(function (i) {
-    const matchStatus = filter === "all" || i.status === filter;
-    const matchSearch =
-      !search || i.title.toLowerCase().indexOf(search) !== -1 || i.id.toLowerCase().indexOf(search) !== -1;
-    return matchStatus && matchSearch;
-  });
-
-  if (expandedIssueId && !issues.some(function (i) {
-    return i.id === expandedIssueId;
-  })) {
-    expandedIssueId = null;
-  }
-
-  let html = '<div class="filter-row" style="flex-wrap:wrap">';
-  html +=
-    '<input id="search-input" type="text" placeholder="Search..." oninput="window.__dashboardRender()" value="' +
-    esc(search) +
-    '" style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem">';
-  html +=
-    '<select id="filter-status" onchange="window.__dashboardRender()" style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem">';
-  ["all", "open", "in_progress", "blocked", "closed"].forEach(function (s) {
-    html += '<option value="' + s + '"' + (filter === s ? " selected" : "") + ">" + (s === "all" ? "All statuses" : s) + "</option>";
-  });
-  html += "</select>";
-  html += initiativeSelectHtml();
-  html += "</div>";
-
-  html += '<p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:0.75rem">' + issues.length + " issues</p>";
-  html += '<table class="issue-table issue-table-expandable">' + EXPANDABLE_ISSUE_HEAD;
-  issues.slice(0, 100).forEach(function (i) {
-    const isOpen = expandedIssueId === i.id;
-    html +=
-      '<tr class="issue-summary-row' +
-      (isOpen ? " is-expanded" : "") +
-      '" data-issue-id="' +
-      esc(i.id) +
-      '" role="button" tabindex="0" aria-expanded="' +
-      (isOpen ? "true" : "false") +
-      '">';
-    html += "<td>" + issueIdCopyControlHtml(i.id) + "</td>";
-    html += "<td>" + esc(i.title) + "</td>";
-    html += '<td class="type-col">' + typeCell(i.type) + "</td>";
-    html += "<td>" + statusBadge(i.status) + "</td>";
-    html += "<td>" + priorityBadge(i.priority) + "</td>";
-    html += "<td>" + esc(i.repo || "—") + "</td>";
-    html += '<td class="date-col">' + formatIssueDate(i.createdAt) + "</td>";
-    html += '<td class="date-col">' + formatIssueDate(i.updatedAt) + "</td>";
-    html += "</tr>";
-    html += '<tr class="issue-detail-gap"><td colspan="' + ISSUE_TABLE_COLSPAN + '">';
-    html += '<div class="issue-detail-anim' + (isOpen ? " is-open" : "") + '">';
-    html += '<div class="issue-detail-anim-inner">';
-    html += buildIssueDetailPanelHtml(i, { comments: data.comments, deps: data.deps });
-    html += "</div></div></td></tr>";
-  });
-  html += "</tbody></table>";
-  return html;
 }
 
 function renderEpics() {
@@ -439,93 +178,29 @@ function renderEpics() {
     .join("");
 }
 
-function renderCommands() {
-  const commands = [
-    ["/go [task]", "Smart router — classify scope and run the right workflow."],
-    ["/plan [idea]", "Explore codebase and produce an implementation plan."],
-    ["/ship [msg]", "Quality gates, then commit, push, and PR."],
-    ["/status", "Git state, ready work, blocked items, and PR health."],
-    ["/review [branch]", "Risk-tiered code review (Blocker / High / Medium / Low)."],
-    ["/triage", "Deadline management and capacity planning."],
-    ["/ask [question]", "Query domain knowledge files."],
-    [
-      "/sync-knowledge",
-      "Auto-generate knowledge YAML from the codebase (one repo by name, --all for repos.json, or current repo when inside a sub-repo).",
-    ],
-    [
-      "/add-repo <url-or-path>",
-      "Register a sub-repo: update repos.json, clone into repos/, then sync knowledge. Follows the add-repo skill.",
-    ],
-    ["/add-bead <text>", "Quick bd create from free text (title and optional description)."],
-  ];
-  const workflows = [
-    ["Fix", "≤3 files, clear scope", "Explore → Build → Check → Ship (no plan file)"],
-    ["Feature", "&gt;3 files or needs a plan", "Plan → Approve → Build → Review → Ship"],
-    ["Epic", "Multiple related tasks", "Lead coordinates; parallel workers in git worktrees where dependencies allow"],
-  ];
-  const skills = [
-    [
-      "add-repo",
-      "Registers a new sub-repo in the harness: updates repos.json, clones, and generates knowledge YAML. Use when onboarding a repository so agents can read curated context before exploring code.",
-    ],
-    [
-      "add-unit-tests",
-      "Adds focused Bun unit tests for mission-critical paths and meaningful edge cases, not blanket line coverage. Use when logic must not regress, when fixing bugs, or when a PR needs concrete test evidence.",
-    ],
-    [
-      "authoring-agent-skills",
-      "Meta-skill for creating new Agent Forge skills: structure, conventions, and optional scaffolds. Use whenever you want to package a repeatable workflow for agents instead of one-off instructions.",
-    ],
-    [
-      "beads-priority-assignment",
-      "Picks Beads issue priority (P0–P4 and equivalents) from urgency, impact, and risk. Use on every bd create or triage update so the queue reflects real severity.",
-    ],
-    [
-      "initiative-status-report",
-      "Builds structured weekly status reports: initiatives, progress, blockers, risks, and KPIs. Pulls from epics and git activity so stakeholders get a single readable snapshot.",
-    ],
-    [
-      "syncing-repos",
-      "Runs multi-repo git operations (init, refresh, branches, stacked rebase) with JSON-shaped output for automation. Targets repos listed in repos/repos.json.",
-    ],
-    [
-      "ui-originality-criteria",
-      "Grades and steers visible UI using coherence, originality, craft, and usability. Keeps subjective design review consistent for both builders and evaluators.",
-    ],
-  ];
-
+/** Initiative `<select>` HTML for Insights (legacy string shell until Insights island owns it). */
+function initiativeSelectHtmlForInsights() {
+  const issues = (data && data.issues) || [];
+  const epics = listEpics(issues);
+  const selected = initiativeFilter;
   let html =
-    '<p style="color:var(--text-muted);font-size:0.9rem;margin:0 0 1rem;max-width:52rem">Slash command prompts live in <code>.claude/commands/</code>; orchestration playbooks live in <code>.claude/workflows/</code>.</p>';
-  html += "<h3>Slash commands</h3>";
-  html += "<table><thead><tr><th>Command</th><th>Description</th></tr></thead><tbody>";
-  commands.forEach(function (c) {
-    html += "<tr><td><code>" + esc(c[0]) + "</code></td><td>" + esc(c[1]) + "</td></tr>";
+    '<label style="display:inline-flex;align-items:center;gap:0.45rem;color:var(--text-muted);font-size:0.85rem">' +
+    '<span>Initiative</span>' +
+    '<select id="filter-initiative" onchange="window.__dashboardSetInitiative(this.value)" ' +
+    'style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem;max-width:22rem">';
+  html += '<option value="all"' + (selected === "all" ? " selected" : "") + ">All initiatives</option>";
+  epics.forEach(function (e) {
+    const label = e.title ? e.title + "  (" + e.id + ")" : e.id;
+    html +=
+      '<option value="' + esc(e.id) + '"' + (selected === e.id ? " selected" : "") + ">" + esc(label) + "</option>";
   });
-  html += "</tbody></table><h3>Workflow tiers</h3>";
-  html += "<table><thead><tr><th>Workflow</th><th>When to use</th><th>Process</th></tr></thead><tbody>";
-  workflows.forEach(function (w) {
-    html += "<tr><td><strong>" + w[0] + "</strong></td><td>" + w[1] + "</td><td>" + w[2] + "</td></tr>";
-  });
-  html += "</tbody></table>";
-  html += "<h3>Skills</h3>";
-  html +=
-    '<p style="color:var(--text-muted);font-size:0.9rem;margin:0 0 0.75rem;max-width:52rem">Reusable instructions under <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Agents load them when a task matches the skill.</p>';
-  html += "<table><thead><tr><th>Skill</th><th>Summary</th></tr></thead><tbody>";
-  skills.forEach(function (s) {
-    html += "<tr><td><code>" + esc(s[0]) + "</code></td><td>" + esc(s[1]) + "</td></tr>";
-  });
-  html += "</tbody></table>";
-  html += "<h3>Agents and hooks</h3>";
-  html +=
-    '<p style="margin:0 0 0.65rem;max-width:52rem"><strong>Agents</strong> — Role prompts in <code>.claude/agents/</code> shape how Claude Code behaves for a given job. The <strong>Lead</strong> agent decomposes work, aligns workers and evaluators, and verifies outcomes without writing production code. The <strong>Worker</strong> implements tasks inside the active workflow and repo conventions. The <strong>Planner</strong> turns a short prompt into a product-level spec (stories, non-goals, risks). The <strong>Evaluator</strong> judges deliverables against acceptance criteria and the shared evaluation rubric, including a pre-task alignment mode.</p>';
-  html +=
-    '<p style="margin:0;max-width:52rem"><strong>Hooks</strong> — Lifecycle callbacks configured in <code>.claude/settings.json</code> (and implemented as commands or Bun scripts under <code>.claude/hooks/</code>). They run automatically at events such as session start, after a task completes, or when a teammate goes idle. This repo wires <code>bd prime</code> on SessionStart and PreCompact, and <code>quality-gate.ts</code> on TaskCompleted and TeammateIdle to run quality checks and optional evaluator verdict gates. <code>session.ts</code> is available to log session metadata and sync Beads via <code>bd dolt pull</code> / <code>bd dolt push</code> when you add it to your hook configuration.</p>';
+  html += "</select></label>";
   return html;
 }
 
 function renderInsights() {
   if (!data) return '<div class="empty-state">Loading...</div>';
-  return renderInsightsHtml(initiativeSelectHtml());
+  return renderInsightsHtml(initiativeSelectHtmlForInsights());
 }
 
 function setView(view) {
@@ -608,43 +283,15 @@ function wireIssueIdCopyDelegation() {
   });
 }
 
-function wireIssueListExpand(root) {
-  root.querySelectorAll(".issue-summary-row").forEach(function (row) {
-    row.addEventListener("click", function (e) {
-      if (e.target && /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy")) return;
-      const id = row.getAttribute("data-issue-id");
-      if (!id) return;
-      expandedIssueId = toggleExpandedState(expandedIssueId, id);
-      render();
-    });
-    row.addEventListener("keydown", function (e) {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      if (e.target && /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy")) return;
-      e.preventDefault();
-      const id = row.getAttribute("data-issue-id");
-      if (!id) return;
-      expandedIssueId = toggleExpandedState(expandedIssueId, id);
-      render();
-    });
-  });
-  root.querySelectorAll(".issue-detail-close").forEach(function (btn) {
-    btn.addEventListener("click", function (e) {
-      e.stopPropagation();
-      expandedIssueId = null;
-      render();
-    });
-  });
-}
-
 function render() {
   syncNavRebuildWidget();
   const content = document.getElementById("content");
   const title = document.getElementById("view-title");
   const views = {
-    dashboard: { label: "Dashboard", fn: renderDashboard },
-    list: { label: "All Issues", fn: renderList },
+    dashboard: { label: "Dashboard", fn: null },
+    list: { label: "All Issues", fn: null },
     epics: { label: "Epics", fn: renderEpics },
-    commands: { label: "Commands", fn: renderCommands },
+    commands: { label: "Commands", fn: null },
     "skill-builder": { label: "Skill builder", fn: null },
     "bead-builder": { label: "Bead builder", fn: null },
     insights: { label: "Insights", fn: renderInsights },
@@ -659,13 +306,93 @@ function render() {
     } else if (activeView === "bead-builder") {
       content.innerHTML = "";
       mountIsland(content, h(BeadBuilderIsland, {}));
+    } else if (activeView === "commands") {
+      content.innerHTML = "";
+      mountIsland(content, h(CommandsIsland, {}));
+    } else if (activeView === "dashboard") {
+      if (!data) {
+        content.innerHTML = '<div class="empty-state">No data</div>';
+      } else {
+        content.innerHTML = "";
+        mountIsland(
+          content,
+          h(IssuesViewsIsland, {
+            variant: "dashboard",
+            payload: data,
+            initiativeFilter: initiativeFilter,
+            onInitiativeChange: function (v) {
+              initiativeFilter = v || "all";
+              expandedIssueId = null;
+              render();
+            },
+            expandedIssueId: expandedIssueId,
+            onExpandedChange: function (id) {
+              expandedIssueId = id;
+              render();
+            },
+            listStatusFilter: listStatusFilter,
+            listSearchQuery: listSearchQuery,
+            onListStatusChange: function (v) {
+              listStatusFilter = v;
+              render();
+            },
+            onListSearchChange: function (v) {
+              listSearchQuery = v;
+              render();
+            },
+          }),
+        );
+      }
+    } else if (activeView === "list") {
+      if (!data) {
+        content.innerHTML = '<div class="empty-state">No data</div>';
+      } else {
+        const issues = data.issues || [];
+        const filtered = applyInitiativeFilter(issues, initiativeFilter).filter(function (i) {
+          const matchStatus = listStatusFilter === "all" || i.status === listStatusFilter;
+          const q = listSearchQuery.toLowerCase();
+          const matchSearch = !q || i.title.toLowerCase().indexOf(q) !== -1 || i.id.toLowerCase().indexOf(q) !== -1;
+          return matchStatus && matchSearch;
+        });
+        if (expandedIssueId && !filtered.some(function (i) {
+          return i.id === expandedIssueId;
+        })) {
+          expandedIssueId = null;
+        }
+        content.innerHTML = "";
+        mountIsland(
+          content,
+          h(IssuesViewsIsland, {
+            variant: "list",
+            payload: data,
+            initiativeFilter: initiativeFilter,
+            onInitiativeChange: function (v) {
+              initiativeFilter = v || "all";
+              expandedIssueId = null;
+              render();
+            },
+            expandedIssueId: expandedIssueId,
+            onExpandedChange: function (id) {
+              expandedIssueId = id;
+              render();
+            },
+            listStatusFilter: listStatusFilter,
+            listSearchQuery: listSearchQuery,
+            onListStatusChange: function (v) {
+              listStatusFilter = v;
+              render();
+            },
+            onListSearchChange: function (v) {
+              listSearchQuery = v;
+              render();
+            },
+          }),
+        );
+      }
     } else {
       content.innerHTML = v.fn();
-      if (activeView === "list" || activeView === "dashboard") {
-        wireIssueListExpand(content);
-      }
       if (activeView === "insights") {
-        const filtered = data ? { issues: applyInitiativeFilter(data.issues || []) } : null;
+        const filtered = data ? { issues: applyInitiativeFilter(data.issues || [], initiativeFilter) } : null;
         void wireInsights(content, filtered);
       }
     }
