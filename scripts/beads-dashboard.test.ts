@@ -81,6 +81,27 @@ describe("normalizeBdExportRow", () => {
     expect(issue.spent).toBe(30);
     expect(issue.closedBy).toBe("PR-123");
   });
+
+  test("infers repo slug from modern beads id when repo field is absent", () => {
+    const issue = normalizeBdExportRow({
+      id: "agent-forge-harness-5an.65",
+      title: "Missing explicit repo",
+      status: "open",
+      created_at: "2026-01-01T00:00:00Z",
+    });
+    expect(issue.repo).toBe("agent-forge-harness");
+  });
+
+  test("preserves explicit repo field over inferred id prefix", () => {
+    const issue = normalizeBdExportRow({
+      id: "agent-forge-harness-5an.65",
+      title: "Explicit repo wins",
+      status: "open",
+      created_at: "2026-01-01T00:00:00Z",
+      repo: "./repos/custom-repo",
+    });
+    expect(issue.repo).toBe("./repos/custom-repo");
+  });
 });
 
 describe("mapNumericPriority", () => {
