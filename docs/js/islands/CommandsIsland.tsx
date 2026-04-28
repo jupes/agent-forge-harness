@@ -48,33 +48,114 @@ const WORKFLOWS: [string, string, string][] = [
 
 const SKILLS: [string, string][] = [
   ["add-repo", "Register a new sub-repo in the harness knowledge base."],
-  ["add-unit-tests", "Add focused Bun unit tests for mission-critical behavior and edge cases."],
-  ["authoring-agent-skills", "Meta-skill for creating and structuring new Agent Forge skills."],
-  ["beads-priority-assignment", "Choose Beads issue priority from urgency, impact, and risk."],
-  ["caveman", "Strip a problem to first principles and implement the smallest robust path."],
-  ["design-an-interface", "Design API/interface shapes with clear invariants and trade-offs."],
-  ["domain-model", "Model domain concepts, boundaries, contexts, and durable terminology."],
-  ["edit-article", "Rewrite and tighten long-form technical writing for clarity and flow."],
-  ["github-triage", "Triage GitHub issues and comments into actionable, durable work items."],
-  ["git-guardrails-claude-code", "Apply safe git guardrails for non-interactive agent workflows."],
-  ["grill-me", "Stress-test a plan or design by probing assumptions and weak spots."],
-  ["improve-codebase-architecture", "Analyze and deepen module boundaries and architectural coherence."],
-  ["initiative-status-report", "Generate weekly initiative reports with progress, blockers, risks, and KPIs."],
-  ["migrate-to-shoehorn", "Plan and execute migrations toward Shoehorn-style architecture constraints."],
-  ["obsidian-vault", "Capture durable project notes and decisions in an Obsidian-friendly format."],
-  ["qa", "Run focused quality assurance checks and summarize risk by severity."],
-  ["request-refactor-plan", "Request and structure a refactor plan before touching risky code."],
-  ["scaffold-exercises", "Generate scoped learning exercises from code and project context."],
-  ["setup-pre-commit", "Set up pre-commit hooks with repo-aware package manager detection."],
-  ["syncing-repos", "Run multi-repo git operations with JSON output for automation."],
-  ["tdd", "Execute red-green-refactor in vertical slices with behavior-first tests."],
-  ["to-issues", "Break a plan/PRD into independent vertical-slice Beads issues."],
-  ["to-prd", "Synthesize context into a PRD and file it as a Beads feature/epic."],
-  ["triage-issue", "Triage an issue into clear scope, constraints, and next actions."],
-  ["ubiquitous-language", "Align domain vocabulary across code, docs, and discussion."],
-  ["ui-originality-criteria", "Grade and steer UI quality by coherence, originality, craft, and usability."],
-  ["ui-screenshot", "Capture UI screenshots for PRs using Playwright MCP browser tools."],
-  ["zoom-out", "Expand local changes into system-level context before making decisions."],
+  [
+    "add-unit-tests",
+    "Add focused Bun unit tests for mission-critical behavior and edge cases.",
+  ],
+  [
+    "authoring-agent-skills",
+    "Meta-skill for creating and structuring new Agent Forge skills.",
+  ],
+  [
+    "beads-priority-assignment",
+    "Choose Beads issue priority from urgency, impact, and risk.",
+  ],
+  [
+    "caveman",
+    "Strip a problem to first principles and implement the smallest robust path.",
+  ],
+  [
+    "design-an-interface",
+    "Design API/interface shapes with clear invariants and trade-offs.",
+  ],
+  [
+    "domain-model",
+    "Model domain concepts, boundaries, contexts, and durable terminology.",
+  ],
+  [
+    "edit-article",
+    "Rewrite and tighten long-form technical writing for clarity and flow.",
+  ],
+  [
+    "github-triage",
+    "Triage GitHub issues and comments into actionable, durable work items.",
+  ],
+  [
+    "git-guardrails-claude-code",
+    "Apply safe git guardrails for non-interactive agent workflows.",
+  ],
+  [
+    "grill-me",
+    "Stress-test a plan or design by probing assumptions and weak spots.",
+  ],
+  [
+    "improve-codebase-architecture",
+    "Analyze and deepen module boundaries and architectural coherence.",
+  ],
+  [
+    "initiative-status-report",
+    "Generate weekly initiative reports with progress, blockers, risks, and KPIs.",
+  ],
+  [
+    "migrate-to-shoehorn",
+    "Plan and execute migrations toward Shoehorn-style architecture constraints.",
+  ],
+  [
+    "obsidian-vault",
+    "Capture durable project notes and decisions in an Obsidian-friendly format.",
+  ],
+  [
+    "qa",
+    "Run focused quality assurance checks and summarize risk by severity.",
+  ],
+  [
+    "request-refactor-plan",
+    "Request and structure a refactor plan before touching risky code.",
+  ],
+  [
+    "scaffold-exercises",
+    "Generate scoped learning exercises from code and project context.",
+  ],
+  [
+    "setup-pre-commit",
+    "Set up pre-commit hooks with repo-aware package manager detection.",
+  ],
+  [
+    "syncing-repos",
+    "Run multi-repo git operations with JSON output for automation.",
+  ],
+  [
+    "tdd",
+    "Execute red-green-refactor in vertical slices with behavior-first tests.",
+  ],
+  [
+    "to-issues",
+    "Break a plan/PRD into independent vertical-slice Beads issues.",
+  ],
+  [
+    "to-prd",
+    "Synthesize context into a PRD and file it as a Beads feature/epic.",
+  ],
+  [
+    "triage-issue",
+    "Triage an issue into clear scope, constraints, and next actions.",
+  ],
+  [
+    "ubiquitous-language",
+    "Align domain vocabulary across code, docs, and discussion.",
+  ],
+  [
+    "ui-originality-criteria",
+    "Grade and steer UI quality by coherence, originality, craft, and usability.",
+  ],
+  [
+    "ui-screenshot",
+    "Capture UI screenshots for PRs using Playwright MCP browser tools.",
+  ],
+  [
+    "zoom-out",
+    "Expand local changes into system-level context before making decisions.",
+  ],
 ];
 
 SKILLS.sort((a, b) => a[0].localeCompare(b[0]));
