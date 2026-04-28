@@ -1,8 +1,8 @@
-import { defineConfig, normalizePath, type Plugin } from "vite";
+import { defineConfig, normalizePath, type Plugin, type ViteDevServer } from "vite";
 import preact from "@preact/preset-vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import chokidar from "chokidar";
 
@@ -11,6 +11,7 @@ const repoRoot = __dirname;
 const docsRoot = path.join(repoRoot, "docs");
 
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
+const PLANS_API_PREFIX = "/__agent-forge/plans-api";
 
 /**
  * POST {REBUILD_PATH} — run `scripts/build-pages.ts` (same as `bun run build-pages`).
@@ -122,6 +123,175 @@ function beadsDataReloadPlugin(): Plugin {
   };
 }
 
+type SessionContextFile = { activePlanId?: string; updatedAt?: string };
+
+/**
+ * HTTP API + file watch for harness `plans/` (drafts, committed, session-context).
+ * Only active under `bun run dashboard`. Plan review page fetches these routes in dev.
+ */
+function plansHarnessPlugin(repoRoot: string): Plugin {
+  const plansRoot = path.join(repoRoot, "plans");
+  const draftsDir = path.join(plansRoot, "drafts");
+  const committedDir = path.join(plansRoot, "committed");
+  const sessionPath = path.join(plansRoot, "session-context.json");
+
+  const idRe = /^[a-zA-Z0-9._-]+$/;
+
+  function listIdsInDir(dir: string): string[] {
+    try {
+      if (!existsSync(dir)) return [];
+      return readdirSync(dir)
+        .filter((f) => f.endsWith(".md"))
+        .map((f) => f.replace(/\.md$/i, ""))
+        .filter((id) => idRe.test(id))
+        .sort();
+    } catch {
+      return [];
+    }
+  }
+
+  function readSessionActivePlanId(): string | null {
+    if (!existsSync(sessionPath)) return null;
+    try {
+      const raw = readFileSync(sessionPath, "utf8");
+      const j = JSON.parse(raw) as SessionContextFile;
+      const id = j.activePlanId;
+      if (typeof id === "string" && idRe.test(id)) return id;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function resolvePlanPath(bucket: "drafts" | "committed", planId: string): string | null {
+    if (!idRe.test(planId)) return null;
+    const baseDir = bucket === "drafts" ? draftsDir : committedDir;
+    const resolved = path.normalize(path.resolve(baseDir, `${planId}.md`));
+    const allowedRoot = path.normalize(path.resolve(baseDir));
+    const rel = path.relative(allowedRoot, resolved);
+    if (rel.startsWith(`..${path.sep}`) || rel === ".." || path.isAbsolute(rel)) return null;
+    if (!existsSync(resolved)) return null;
+    return resolved;
+  }
+
+  function configurePlansRoutes(server: ViteDevServer): void {
+    server.middlewares.use((req, res, next) => {
+      const rawUrl = req.url ?? "";
+      let pathname = "";
+      try {
+        pathname = new URL(rawUrl, "http://vite.local").pathname;
+      } catch {
+        pathname = rawUrl.split("?")[0] ?? "";
+      }
+
+      if (!pathname.startsWith(PLANS_API_PREFIX)) {
+        next();
+        return;
+      }
+
+      const sendJson = (status: number, body: unknown): void => {
+        res.statusCode = status;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify(body));
+      };
+
+      if (pathname === `${PLANS_API_PREFIX}/catalog`) {
+        if (req.method !== "GET") {
+          sendJson(405, { ok: false, error: "Method not allowed" });
+          return;
+        }
+        const draftIds = listIdsInDir(draftsDir);
+        const committedIds = listIdsInDir(committedDir);
+        const ids = new Set<string>([...draftIds, ...committedIds]);
+        sendJson(200, {
+          ok: true,
+          data: {
+            draftIds,
+            committedIds,
+            planIds: [...ids].sort(),
+            activePlanId: readSessionActivePlanId(),
+          },
+          error: null,
+        });
+        return;
+      }
+
+      if (pathname === `${PLANS_API_PREFIX}/raw`) {
+        if (req.method !== "GET") {
+          sendJson(405, { ok: false, error: "Method not allowed" });
+          return;
+        }
+        let bucket = "";
+        let planId = "";
+        try {
+          const u = new URL(rawUrl, "http://vite.local");
+          bucket = u.searchParams.get("bucket") ?? "";
+          planId = u.searchParams.get("id") ?? "";
+        } catch {
+          bucket = "";
+          planId = "";
+        }
+        if (bucket !== "drafts" && bucket !== "committed") {
+          sendJson(400, { ok: false, error: "bucket must be drafts or committed", data: null });
+          return;
+        }
+        const abs = resolvePlanPath(bucket, planId);
+        if (!abs) {
+          sendJson(404, { ok: false, error: "plan file not found", data: null });
+          return;
+        }
+        try {
+          const text = readFileSync(abs, "utf8");
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end(text);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          sendJson(500, { ok: false, error: msg, data: null });
+        }
+        return;
+      }
+
+      sendJson(404, { ok: false, error: "Unknown plans API route", data: null });
+    });
+
+    if (!existsSync(plansRoot)) {
+      return;
+    }
+
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        debounce = null;
+        server.ws.send({ type: "full-reload", path: "*" });
+      }, 450);
+    };
+
+    const watcher = chokidar.watch(plansRoot, {
+      ignoreInitial: true,
+      depth: 10,
+      awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    });
+
+    watcher.on("add", scheduleReload);
+    watcher.on("change", scheduleReload);
+    watcher.on("unlink", scheduleReload);
+
+    server.httpServer?.on("close", () => {
+      if (debounce) clearTimeout(debounce);
+      void watcher.close();
+    });
+  }
+
+  return {
+    name: "agent-forge-plans-harness",
+    configureServer(server) {
+      configurePlansRoutes(server);
+    },
+  };
+}
+
 export default defineConfig({
   root: docsRoot,
   /** `data/` lives under `docs/` from build-pages; no separate `public/` copy. */
@@ -148,5 +318,6 @@ export default defineConfig({
     }),
     rebuildPagesApiPlugin(),
     beadsDataReloadPlugin(),
+    plansHarnessPlugin(repoRoot),
   ],
 });

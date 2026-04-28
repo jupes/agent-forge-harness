@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plan review — Agent Forge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Exo+2:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #050810;
+      --surface: #0d1528;
+      --surface-2: #121f38;
+      --border: #2a3f6b;
+      --text: #e8f0ff;
+      --text-muted: #7d9cc9;
+      --accent: #ff5a2c;
+      --accent-2: #3ee0d0;
+      --accent-3: #9bb7ff;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: "Exo 2", system-ui, sans-serif;
+      background:
+        radial-gradient(ellipse 130% 70% at 50% -30%, rgba(30, 80, 140, 0.45), transparent 58%),
+        radial-gradient(ellipse 80% 50% at 100% 80%, rgba(255, 90, 44, 0.07), transparent 50%),
+        radial-gradient(ellipse 50% 35% at 0% 60%, rgba(62, 224, 208, 0.06), transparent 45%),
+        var(--bg);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 220px;
+      height: 100vh;
+      background: linear-gradient(180deg, var(--surface) 0%, #0a1020 100%);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 1.25rem 0 1rem;
+      z-index: 50;
+    }
+
+    nav .nav-title {
+      padding: 0 1.25rem 1rem;
+      font-family: "Orbitron", system-ui, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent-2);
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.75rem;
+    }
+
+    nav a {
+      display: block;
+      padding: 0.4rem 1.25rem;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      border-left: 3px solid transparent;
+      transition: color 0.1s, border-color 0.1s, background 0.1s;
+    }
+
+    nav a:hover { color: var(--text); background: var(--surface-2); border-left-color: var(--accent); }
+
+    nav a.nav-active {
+      color: var(--text);
+      background: var(--surface-2);
+      border-left-color: var(--accent);
+    }
+
+    main {
+      margin-left: 220px;
+      padding: 2rem 2.5rem 4rem;
+      max-width: 1100px;
+    }
+
+    .page-header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .page-header h1 {
+      font-family: "Orbitron", sans-serif;
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    code {
+      font-family: ui-monospace, monospace;
+      font-size: 0.82em;
+      background: var(--surface-2);
+      padding: 0.15em 0.35em;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--accent-2);
+    }
+
+    /* Plan review island */
+    .plan-review-banner {
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border: 1px solid rgba(250, 93, 93, 0.55);
+      border-radius: 8px;
+      background: rgba(74, 22, 35, 0.35);
+      font-size: 0.875rem;
+      max-width: 72ch;
+    }
+
+    .plan-review-banner-soft {
+      border-color: rgba(157, 183, 255, 0.45);
+      background: rgba(34, 42, 72, 0.65);
+      color: var(--text-muted);
+    }
+
+    .plan-review-toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) auto auto auto;
+      gap: 1rem;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: linear-gradient(165deg, var(--surface) 0%, var(--surface-2) 100%);
+    }
+
+    .plan-review-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+
+    .plan-review-label {
+      letter-spacing: 0.06em;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      color: var(--accent-3);
+    }
+
+    .plan-review-select {
+      padding: 0.4rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #050a16;
+      color: var(--text);
+      font: inherit;
+    }
+
+    .plan-review-follow {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.875rem;
+      color: var(--text);
+    }
+
+    .plan-review-follow input {
+      accent-color: var(--accent);
+    }
+
+    .plan-review-btn {
+      padding: 0.4rem 0.75rem;
+      font: inherit;
+      font-size: 0.8rem;
+      border-radius: 6px;
+      cursor: pointer;
+      background: rgba(255, 90, 44, 0.2);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+
+    .plan-review-btn:hover { background: rgba(255, 90, 44, 0.35); color: var(--text); }
+
+    .plan-review-btn-secondary {
+      background: var(--surface-2);
+      color: var(--accent-2);
+      border-color: var(--accent-2);
+    }
+
+    .plan-review-tabs {
+      display: flex;
+      gap: 0.35rem;
+    }
+
+    .plan-review-tab {
+      padding: 0.4rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .plan-review-tab:hover { color: var(--text); border-color: var(--accent); }
+
+    .plan-review-tab-active {
+      border-color: var(--accent);
+      color: var(--text);
+      background: rgba(255, 90, 44, 0.12);
+    }
+
+    .plan-review-meta {
+      grid-column: 1 / -1;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .plan-review-pre,
+    .plan-review-diff-pre {
+      padding: 1rem 1.1rem;
+      font-size: 0.8125rem;
+      line-height: 1.45;
+      background: #040911;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: auto;
+      max-height: 70vh;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .plan-review-pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    .plan-review-empty-msg {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .plan-diff-add { color: #4ff5a8; }
+    .plan-diff-del { color: #ff7b7b; }
+    .plan-diff-same { color: var(--text-muted); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-title">Agent Forge</div>
+  <a href="index.html">Dashboard</a>
+  <a href="plan-review.html" class="nav-active">Plan review</a>
+</nav>
+
+<main>
+  <div class="page-header">
+    <h1>Plan review</h1>
+  </div>
+  <p style="color:var(--text-muted);font-size:0.875rem;margin:0 0 1rem;max-width:70ch">
+    Live draft and diff against <code>plans/committed</code>. This view needs <code>bun run dashboard</code> at the harness
+    root. Set the active plan in <code>plans/session-context.json</code> (copy from
+    <code>session-context.json.example</code>) to auto-follow the session.
+  </p>
+  <div id="plan-review-root" class="plan-review-shell">
+    <p class="plan-review-empty-msg" style="padding:1rem">Loading…</p>
+  </div>
+</main>
+
+<script type="module" src="js/plan-review.mjs"></script>
+</body>
+</html>

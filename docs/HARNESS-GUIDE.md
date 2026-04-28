@@ -10,7 +10,7 @@ For command syntax and setup steps, see the [README](../README.md). For day-to-d
 
 **Agent Forge Harness** is a **configuration and convention layer** around [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It is not a replacement for your editors, CI, or product codebases. It is a **repeatable operating system** for AI-assisted software work: how tasks are picked up, how scope is classified, how quality is checked, how work is tracked, and how context is stored so agents (and humans) do not start from zero every session.
 
-The harness lives mostly under `.claude/` (agents, slash commands, workflows, hooks, skills, protocols), plus **`knowledge/`** (curated domain YAML), **`.beads/`** (Beads issue data), **`repos/`** (optional registered sub-repositories), and small **Bun/TypeScript** utilities in `scripts/` and hook code.
+The harness lives mostly under `.claude/` (agents, slash commands, workflows, hooks, skills, protocols), plus **`knowledge/`** (curated domain YAML), **`plans/`** (durable plan drafts and committed plan snapshots), **`.beads/`** (Beads issue data), **`repos/`** (optional registered sub-repositories), and small **Bun/TypeScript** utilities in `scripts/` and hook code.
 
 ---
 
@@ -23,6 +23,7 @@ The harness lives mostly under `.claude/` (agents, slash commands, workflows, ho
 | **Who does what** | Agent prompts in `.claude/agents/` (lead coordinates; workers implement, often in worktrees) |
 | **Quality before merge** | Hooks in `.claude/hooks/` (for example `quality-gate.ts`) tied to Claude Code events in `settings.json` |
 | **What “true” is for the product** | `knowledge/` YAML, optionally refreshed from code via `/sync-knowledge` |
+| **Where durable plan artifacts live** | `plans/drafts/` (active plans) and `plans/committed/` (baseline snapshots) |
 | **What must get done** | Beads (`.beads/`, `bd` CLI) as the issue graph — epics, features, tasks, dependencies, AC |
 | **Multi-repo coordination** | `repos/repos.json` + the `syncing-repos` skill (`bun run repo …`) |
 | **Portable expertise** | Skills in `.claude/skills/<name>/SKILL.md` (and optional scripts) |
@@ -107,6 +108,12 @@ Think in **layers** so upgrades from upstream stay mergeable.
 ### 7. Dashboard
 
 - **`docs/`** — static GitHub Pages dashboard; `bun run build-pages` regenerates `docs/data/beads.json` from Beads JSONL for visualization.
+
+### 8. Plan storage contract
+
+- Use the root `plans/` tree for durable plan files consumed by review UX and tooling.
+- Keep ephemeral artifacts (`alignment`, `verdict`, session handoff) in `.tmp/work/`.
+- Follow naming conventions documented in [`plans/README.md`](../plans/README.md).
 
 ---
 
