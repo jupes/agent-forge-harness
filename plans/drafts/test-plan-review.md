@@ -13,4 +13,4 @@ Synthetic plan used to verify draft view, diff vs `plans/committed/`, and git hi
 ## Notes
 
 - Baseline copy at `plans/committed/test-plan-review.md` is still **v1** — use for “Diff vs committed”.
-- **History (git):** choose `plans/drafts/test-plan-review.md`; you should see **four** commits including this one.
+- **History (git):** in Plan review, set **History file** to **`plans/drafts/test-plan-review.md`** (not `committed`). The draft has **four** commits (rev1–rev4); the committed path only has the **single** v1 import commit, so its history table shows one revision instead of four.

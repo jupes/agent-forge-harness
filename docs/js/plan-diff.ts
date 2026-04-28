@@ -55,3 +55,24 @@ export function diffPlanLines(oldText: string, newText: string): PlanDiffRow[] {
   }
   return stack.reverse();
 }
+
+/** One row for side-by-side view: old (left) vs new (right). */
+export type PlanSideBySideRow = {
+  left: { line: string; role: "del" | "ctx" } | null;
+  right: { line: string; role: "add" | "ctx" } | null;
+};
+
+/** Map unified line diff to paired columns (left = old, right = new). */
+export function planDiffToSideBySide(rows: PlanDiffRow[]): PlanSideBySideRow[] {
+  const out: PlanSideBySideRow[] = [];
+  for (const r of rows) {
+    if (r.kind === "same") {
+      out.push({ left: { line: r.line, role: "ctx" }, right: { line: r.line, role: "ctx" } });
+    } else if (r.kind === "del") {
+      out.push({ left: { line: r.line, role: "del" }, right: null });
+    } else {
+      out.push({ left: null, right: { line: r.line, role: "add" } });
+    }
+  }
+  return out;
+}

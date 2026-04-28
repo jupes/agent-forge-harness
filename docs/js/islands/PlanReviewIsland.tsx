@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { diffPlanLines, type PlanDiffRow } from "../plan-diff";
+import { diffPlanLines, planDiffToSideBySide, type PlanSideBySideRow } from "../plan-diff";
 
 const CATALOG_URL = "/__agent-forge/plans-api/catalog";
 const STORAGE_AUTO_FOLLOW = "agent-forge-plan-review:autoFollow";
@@ -118,7 +118,94 @@ async function fetchGitHistory(
   }
 }
 
-/** `ref` is a full git object name, or `WORKING` (must match Vite `git-content` for the working tree). */
+function planSbsRowKind(row: PlanSideBySideRow): "deletion" | "addition" | "context" {
+  if (row.left?.role === "del" && !row.right) return "deletion";
+  if (row.right?.role === "add" && !row.left) return "addition";
+  return "context";
+}
+
+/**
+ * GitHub-style side-by-side: full-line tints, − / + gutters, accent bar on the changed
+ * side, hatched "no line" on the opposite column.
+ */
+function PlanDiffSideBySide({
+  rows,
+  leftLabel,
+  rightLabel,
+}: {
+  rows: PlanSideBySideRow[];
+  leftLabel: string;
+  rightLabel: string;
+}) {
+  return (
+    <div className="plan-sbs" role="region" aria-label="Side by side diff">
+      <div className="plan-sbs-header">
+        <div className="plan-sbs-header-cell">{leftLabel}</div>
+        <div className="plan-sbs-header-cell">{rightLabel}</div>
+      </div>
+      <div className="plan-sbs-body">
+        {rows.map((row, idx) => {
+          const kind = planSbsRowKind(row);
+          const leftChunk =
+            kind === "deletion" ? "plan-sbs-chunk--remove" : kind === "addition" ? "plan-sbs-chunk--void" : "plan-sbs-chunk--context";
+          const rightChunk =
+            kind === "addition" ? "plan-sbs-chunk--add" : kind === "deletion" ? "plan-sbs-chunk--void" : "plan-sbs-chunk--context";
+          return (
+            <div className={`plan-sbs-row plan-sbs-row--${kind}`} key={idx}>
+              <div className={`plan-sbs-cell plan-sbs-left ${leftChunk}`}>
+                {row.left ? (
+                  <>
+                    <span
+                      className={
+                        "plan-sbs-gutter" +
+                        (row.left.role === "del" ? " plan-sbs-gutter--remove" : " plan-sbs-gutter--neutral")
+                      }
+                      aria-hidden
+                    >
+                      {row.left.role === "del" ? "−" : "\u00a0"}
+                    </span>
+                    <span className="plan-sbs-text">{row.left.line}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="plan-sbs-gutter plan-sbs-gutter--void" aria-hidden />
+                    <span className="plan-sbs-text plan-sbs-text--void" aria-hidden>
+                      {"\u00a0"}
+                    </span>
+                  </>
+                )}
+              </div>
+              <div className={`plan-sbs-cell plan-sbs-right ${rightChunk}`}>
+                {row.right ? (
+                  <>
+                    <span
+                      className={
+                        "plan-sbs-gutter" +
+                        (row.right.role === "add" ? " plan-sbs-gutter--add" : " plan-sbs-gutter--neutral")
+                      }
+                      aria-hidden
+                    >
+                      {row.right.role === "add" ? "+" : "\u00a0"}
+                    </span>
+                    <span className="plan-sbs-text">{row.right.line}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="plan-sbs-gutter plan-sbs-gutter--void" aria-hidden />
+                    <span className="plan-sbs-text plan-sbs-text--void" aria-hidden>
+                      {"\u00a0"}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 async function fetchPlanRef(
   bucket: "drafts" | "committed",
   planId: string,
@@ -315,10 +402,12 @@ export function PlanReviewIsland() {
     };
   }, [selectedPlanId, apiReachable, view, historyBucket, olderRef, newerRef]);
 
-  const baselineDiffRows = useMemo(() => diffPlanLines(committedText, draftText), [committedText, draftText]);
-
-  const historyDiffRows = useMemo(
-    () => diffPlanLines(historyOlderText, historyNewerText),
+  const baselineSbs = useMemo(
+    () => planDiffToSideBySide(diffPlanLines(committedText, draftText)),
+    [committedText, draftText],
+  );
+  const historySbs = useMemo(
+    () => planDiffToSideBySide(diffPlanLines(historyOlderText, historyNewerText)),
     [historyOlderText, historyNewerText],
   );
 
@@ -470,24 +559,13 @@ export function PlanReviewIsland() {
               diff.
             </p>
           ) : (
-            <pre className="plan-review-diff-pre">
-              {baselineDiffRows.map((row: PlanDiffRow, idx: number) => {
-                const cls =
-                  row.kind === "add"
-                    ? "plan-diff-add"
-                    : row.kind === "del"
-                      ? "plan-diff-del"
-                      : "plan-diff-same";
-                const prefix = row.kind === "add" ? "+ " : row.kind === "del" ? "- " : "  ";
-                return (
-                  <span key={idx} className={`plan-diff-line ${cls}`}>
-                    {prefix}
-                    {row.line}
-                    {"\n"}
-                  </span>
-                );
-              })}
-            </pre>
+            <div className="plan-review-diff-outer">
+              <PlanDiffSideBySide
+                rows={baselineSbs}
+                leftLabel="Committed baseline (older, left)"
+                rightLabel="Draft (newer, right)"
+              />
+            </div>
           )}
         </div>
       ) : (
@@ -535,6 +613,11 @@ export function PlanReviewIsland() {
                 ))}
               </select>
             </label>
+            <p className="plan-review-history-hint">
+              History is <strong>per file path</strong>. <code>plans/drafts/{selectedPlanId}.md</code> and{" "}
+              <code>plans/committed/{selectedPlanId}.md</code> each have their own git log — the draft usually shows more commits
+              than the committed baseline (often one snapshot). Switch &quot;History file&quot; above to see the other path.
+            </p>
           </div>
 
           {!gitAvailable ? (
@@ -593,24 +676,9 @@ export function PlanReviewIsland() {
           ) : olderRef === newerRef ? (
             <p className="plan-review-empty-msg">Choose two different revisions to see a diff.</p>
           ) : (
-            <pre className="plan-review-diff-pre">
-              {historyDiffRows.map((row: PlanDiffRow, idx: number) => {
-                const cls =
-                  row.kind === "add"
-                    ? "plan-diff-add"
-                    : row.kind === "del"
-                      ? "plan-diff-del"
-                      : "plan-diff-same";
-                const prefix = row.kind === "add" ? "+ " : row.kind === "del" ? "- " : "  ";
-                return (
-                  <span key={idx} className={`plan-diff-line ${cls}`}>
-                    {prefix}
-                    {row.line}
-                    {"\n"}
-                  </span>
-                );
-              })}
-            </pre>
+            <div className="plan-review-diff-outer">
+              <PlanDiffSideBySide rows={historySbs} leftLabel="Older (left)" rightLabel="Newer (right)" />
+            </div>
           )}
         </div>
       )}

@@ -18,6 +18,18 @@
       --accent: #ff5a2c;
       --accent-2: #3ee0d0;
       --accent-3: #9bb7ff;
+      /* GitHub-like split diff (dark) */
+      --sbs-context-bg: rgba(13, 17, 23, 0.55);
+      --sbs-context-fg: #b1c4de;
+      --sbs-remove-bg: rgba(248, 81, 73, 0.22);
+      --sbs-remove-fg: #ffdedb;
+      --sbs-remove-border: #f85149;
+      --sbs-add-bg: rgba(46, 160, 67, 0.2);
+      --sbs-add-fg: #c7f5d1;
+      --sbs-add-border: #3fb950;
+      --sbs-void-fg: #5a6a82;
+      --sbs-void-hatch-1: rgba(45, 60, 85, 0.4);
+      --sbs-void-hatch-2: rgba(8, 12, 20, 0.9);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -293,12 +305,160 @@
     .plan-diff-del { color: #ff7b7b; }
     .plan-diff-same { color: var(--text-muted); }
 
+    .plan-review-diff-outer {
+      max-height: 70vh;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #040911;
+    }
+
+    .plan-sbs {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, monospace;
+    }
+
+    .plan-sbs-header {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #0d1117;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .plan-sbs-header-cell {
+      padding: 0.5rem 0.75rem 0.5rem 0.4rem;
+      font-size: 0.75rem;
+      color: #8b9ab5;
+      font-weight: 600;
+    }
+
+    .plan-sbs-header-cell + .plan-sbs-header-cell {
+      padding-left: 0.4rem;
+    }
+
+    .plan-sbs-body {
+      border-top: 1px solid rgba(48, 54, 61, 0.8);
+    }
+
+    .plan-sbs-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+    }
+
+    .plan-sbs-row:last-child { border-bottom: 0; }
+
+    .plan-sbs-cell {
+      display: flex;
+      align-items: stretch;
+      min-height: 1.5em;
+      padding: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border-right: 1px solid rgba(48, 54, 61, 0.6);
+    }
+
+    .plan-sbs-right { border-right: 0; }
+
+    .plan-sbs-gutter {
+      flex: 0 0 1.1rem;
+      min-width: 1.1rem;
+      text-align: center;
+      user-select: none;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      padding: 0.1rem 0.15rem 0.1rem 0.1rem;
+      border-right: 1px solid rgba(48, 54, 61, 0.4);
+    }
+
+    .plan-sbs-gutter--void {
+      border-right-color: rgba(48, 54, 61, 0.3);
+    }
+
+    .plan-sbs-gutter--remove {
+      color: var(--sbs-remove-border);
+      font-weight: 700;
+    }
+
+    .plan-sbs-gutter--add {
+      color: var(--sbs-add-border);
+      font-weight: 700;
+    }
+
+    .plan-sbs-gutter--neutral {
+      color: var(--sbs-void-fg);
+    }
+
+    .plan-sbs-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 0.1rem 0.45rem 0.1rem 0.4rem;
+      line-height: 1.5;
+    }
+
+    .plan-sbs-text--void { padding: 0.1rem 0.4rem; }
+
+    /* Unchanged: subtle band so edits pop next to it */
+    .plan-sbs-chunk--context {
+      color: var(--sbs-context-fg);
+      background: var(--sbs-context-bg);
+    }
+
+    /* Removed line (left): GitHub red band + left bar */
+    .plan-sbs-chunk--remove {
+      color: var(--sbs-remove-fg);
+      background: var(--sbs-remove-bg);
+      box-shadow: inset 3px 0 0 0 var(--sbs-remove-border);
+    }
+
+    .plan-sbs-chunk--remove .plan-sbs-gutter { background: rgba(248, 81, 73, 0.1); }
+
+    /* Added line (right): green band + left bar in the cell (column separator side) */
+    .plan-sbs-chunk--add {
+      color: var(--sbs-add-fg);
+      background: var(--sbs-add-bg);
+      box-shadow: inset 3px 0 0 0 var(--sbs-add-border);
+    }
+
+    .plan-sbs-chunk--add .plan-sbs-gutter { background: rgba(46, 160, 67, 0.1); }
+
+    /* Opposite column: hatched "no line" (GitHub-style) */
+    .plan-sbs-chunk--void {
+      color: var(--sbs-void-fg);
+      background-color: #06080d;
+      background-image: repeating-linear-gradient(
+        -45deg,
+        var(--sbs-void-hatch-1),
+        var(--sbs-void-hatch-1) 1px,
+        var(--sbs-void-hatch-2) 1px,
+        var(--sbs-void-hatch-2) 5px
+      );
+    }
+
+    .plan-sbs-chunk--void .plan-sbs-gutter {
+      background: rgba(0, 0, 0, 0.15);
+    }
+
     .plan-review-history-controls {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 1rem;
       margin-bottom: 1rem;
       align-items: end;
+    }
+
+    .plan-review-history-hint {
+      grid-column: 1 / -1;
+      margin: 0;
+      padding: 0.5rem 0.25rem 0 0.25rem;
+      font-size: 0.8rem;
+      line-height: 1.45;
+      color: var(--text-muted);
+      max-width: 80ch;
     }
 
     .plan-review-select-wide {
