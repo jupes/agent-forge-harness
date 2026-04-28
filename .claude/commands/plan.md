@@ -31,7 +31,7 @@ If knowledge files are missing or stale (>50 commits behind HEAD):
 If the user input is **only one to four sentences** with **no** Beads task id and **no** detailed spec:
 
 1. Read `.claude/agents/planner.md` and adopt the **Planner** role **before** deep exploration.
-2. Expand the prompt into a **product spec** (overview, numbered features / user stories, **non-goals**, testable signals). Save to `.tmp/work/<slug>-product-spec.md`.
+2. Expand the prompt into a **product spec** (overview, numbered features / user stories, **non-goals**, testable signals). Save to `plans/drafts/<slug>-product-spec.md`.
 3. Use that spec as the source of truth for exploration in Step 3 and the implementation plan in Step 4.
 
 If the user already provided a detailed spec or `bd show` task context, skip this step.
@@ -78,7 +78,7 @@ For large scope (cross-cutting concern):
 
 ## Step 4 — Write Plan
 
-Write to `.tmp/work/<TASK-ID>-plan.md` (create `.tmp/work/` if needed).
+Write to `plans/drafts/<TASK-ID>.md` (create `plans/drafts/` if needed).
 If no task ID: use a slug from the description.
 
 ### Plan format:
@@ -165,7 +165,7 @@ export function useUserSettings(userId: string): {
 
 Output a summary to the user:
 ```
-Plan ready: .tmp/work/<TASK-ID>-plan.md
+Plan ready: plans/drafts/<TASK-ID>.md
 
 Summary: <2-sentence description>
 Scope: <n> files (<n> new, <n> modified), ~<n> minutes

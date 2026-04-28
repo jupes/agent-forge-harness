@@ -26,6 +26,7 @@
     ".claude/skills/**/*.ts",
     "types/**/*.ts",
     "docs/js/**/*.tsx",
+    "docs/js/**/*.ts",
     "docs/js/**/*.d.mts"
   ],
   "exclude": [

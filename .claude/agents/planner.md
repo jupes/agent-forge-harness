@@ -37,5 +37,5 @@ Produce a structured spec containing:
 
 ## Handoff
 
-- Save the spec to `.tmp/work/<slug>-product-spec.md` when invoked from `/plan`, or attach to the Beads epic / feature as the description body.
+- Save the spec to `plans/drafts/<slug>-product-spec.md` when invoked from `/plan`, or attach to the Beads epic / feature as the description body.
 - Downstream **Lead** agents decompose into Beads tasks; **Workers** follow workflows and alignment docs.

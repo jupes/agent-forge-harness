@@ -24,6 +24,13 @@ export function createBridgeSelfTestVNode(): ComponentChild {
 export function mountIsland(container: HTMLElement, vnode: ComponentChild): void {
   if (mounted.has(container)) {
     unmountIsland(container);
+  } else {
+    // Preact diffs the new tree against existing `firstChild`; any extra placeholder
+    // siblings (e.g. a static "Loading…" in HTML) would stay at the end of the
+    // container. Clear the container so the island is the only content.
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
   }
   render(vnode, container);
   mounted.add(container);
