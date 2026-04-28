@@ -5,7 +5,7 @@ description: Multi-repo git operations — init, reset, status, branch managemen
 
 # syncing-repos
 
-Manages multiple sub-repos registered in `repos/repos.json`. All operations emit JSON so agents can parse results.
+Manages multiple sub-repos registered in **local** `repos/repos.json` (gitignored; bootstrap from `repos/repos.json.example`). All operations emit JSON so agents can parse results.
 
 ## When to Use
 
