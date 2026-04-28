@@ -1,7 +1,7 @@
 // Plan review page — Preact island + sidebar snapshot / rebuild (mirrors index.html nav affordances).
 import { h } from "preact";
-import { mountIsland } from "./preact-bridge.tsx";
 import { PlanReviewIsland } from "./islands/PlanReviewIsland.tsx";
+import { mountIsland } from "./preact-bridge.tsx";
 
 const REBUILD_PAGES_PATH = "/__agent-forge/rebuild-pages";
 

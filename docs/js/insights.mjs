@@ -57,7 +57,8 @@ function rangeDays(startKey, endKey) {
   const out = [];
   const start = new Date(startKey + "T00:00:00Z").getTime();
   const end = new Date(endKey + "T00:00:00Z").getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return out;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start)
+    return out;
   for (let t = start; t <= end; t += 86400000) {
     out.push(new Date(t).toISOString().slice(0, 10));
   }
@@ -79,7 +80,10 @@ function buildCounts(issues) {
     counts.set(k, (counts.get(k) || 0) + 1);
     const t = i.type || "other";
     let m = byType.get(k);
-    if (!m) { m = new Map(); byType.set(k, m); }
+    if (!m) {
+      m = new Map();
+      byType.set(k, m);
+    }
     m.set(t, (m.get(t) || 0) + 1);
   });
   return { counts: counts, byType: byType, total: closed.length };
@@ -90,7 +94,11 @@ function buildDailySeries(counts, byType) {
   if (!keys.length) return [];
   const days = rangeDays(keys[0], keys[keys.length - 1]);
   return days.map(function (k) {
-    return { day: k, count: counts.get(k) || 0, byType: byType.get(k) || new Map() };
+    return {
+      day: k,
+      count: counts.get(k) || 0,
+      byType: byType.get(k) || new Map(),
+    };
   });
 }
 
@@ -101,14 +109,23 @@ function buildDailySeries(counts, byType) {
 function typesPresent(byType) {
   const set = new Set();
   byType.forEach(function (m) {
-    m.forEach(function (_n, t) { set.add(t); });
+    m.forEach(function (_n, t) {
+      set.add(t);
+    });
   });
   const known = ["task", "feature", "bug", "chore", "epic"];
   const ordered = [];
   known.forEach(function (t) {
-    if (set.has(t)) { ordered.push(t); set.delete(t); }
+    if (set.has(t)) {
+      ordered.push(t);
+      set.delete(t);
+    }
   });
-  Array.from(set).sort().forEach(function (t) { ordered.push(t); });
+  Array.from(set)
+    .sort()
+    .forEach(function (t) {
+      ordered.push(t);
+    });
   return ordered;
 }
 
@@ -133,11 +150,17 @@ function colorForType(type, fallbackIndex) {
  */
 function buildCalendarCells(counts, weeks) {
   const today = new Date();
-  const todayUTC = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const todayUTC = Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate(),
+  );
   const totalDays = weeks * 7;
   const todayWeekday = new Date(todayUTC).getUTCDay();
   const padLeft = 6 - todayWeekday;
-  const oldestUTC = todayUTC - (totalDays - 1 + (todayWeekday === 6 ? 0 : todayWeekday + 1)) * 86400000;
+  const oldestUTC =
+    todayUTC -
+    (totalDays - 1 + (todayWeekday === 6 ? 0 : todayWeekday + 1)) * 86400000;
   const cells = [];
   let maxV = 0;
   let cursor = oldestUTC;
@@ -159,7 +182,9 @@ function buildCalendarCells(counts, weeks) {
 }
 
 function summarize(series, counts, total) {
-  const sevenAgoKey = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const sevenAgoKey = new Date(Date.now() - 7 * 86400000)
+    .toISOString()
+    .slice(0, 10);
   let last7 = 0;
   counts.forEach(function (v, k) {
     if (k > sevenAgoKey) last7 += v;
@@ -169,7 +194,13 @@ function summarize(series, counts, total) {
   series.forEach(function (s) {
     if (s.count > best.count) best = s;
   });
-  return { total: total, last7: last7, avg: avg, best: best, dayCount: series.length };
+  return {
+    total: total,
+    last7: last7,
+    avg: avg,
+    best: best,
+    dayCount: series.length,
+  };
 }
 
 /**
@@ -177,7 +208,9 @@ function summarize(series, counts, total) {
  */
 export function renderInsightsHtml(filterHtml) {
   const chrome = filterHtml
-    ? '<div class="filter-row" style="margin-bottom:1rem">' + filterHtml + "</div>"
+    ? '<div class="filter-row" style="margin-bottom:1rem">' +
+      filterHtml +
+      "</div>"
     : "";
   return (
     '<div id="insights-root" data-loaded="0">' +
@@ -205,7 +238,11 @@ export function renderInsightsHtml(filterHtml) {
 
 function destroyCharts() {
   chartInstances.forEach(function (c) {
-    try { c.destroy(); } catch { /* noop */ }
+    try {
+      c.destroy();
+    } catch {
+      /* noop */
+    }
   });
   chartInstances = [];
 }
@@ -216,14 +253,26 @@ function renderStatsCards(root, s) {
   const avgFmt = s.avg ? s.avg.toFixed(1) : "0";
   const bestLabel = s.best.count ? s.best.day + " (" + s.best.count + ")" : "—";
   el.innerHTML =
-    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_GREEN + '">' + s.total +
+    '<div class="stat-card"><div class="stat-num" style="color:' +
+    COLOR_GREEN +
+    '">' +
+    s.total +
     '</div><div class="stat-label">Total closed</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_BLUE + '">' + s.last7 +
+    '<div class="stat-card"><div class="stat-num" style="color:' +
+    COLOR_BLUE +
+    '">' +
+    s.last7 +
     '</div><div class="stat-label">Closed (last 7d)</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_YELLOW + '">' + avgFmt +
+    '<div class="stat-card"><div class="stat-num" style="color:' +
+    COLOR_YELLOW +
+    '">' +
+    avgFmt +
     '</div><div class="stat-label">Avg / day</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:' + COLOR_PINK + ';font-size:1.4rem">' +
-    esc(bestLabel) + '</div><div class="stat-label">Busiest day</div></div>';
+    '<div class="stat-card"><div class="stat-num" style="color:' +
+    COLOR_PINK +
+    ';font-size:1.4rem">' +
+    esc(bestLabel) +
+    '</div><div class="stat-label">Busiest day</div></div>';
 }
 
 function showError(root, err) {
@@ -231,7 +280,8 @@ function showError(root, err) {
   if (!errEl) return;
   errEl.style.display = "block";
   errEl.textContent =
-    "Failed to load Chart.js: " + ((err && err.message) || String(err)) +
+    "Failed to load Chart.js: " +
+    ((err && err.message) || String(err)) +
     ". The KPI cards above still reflect the current data.";
 }
 
@@ -240,7 +290,9 @@ function buildDailyChartConfig(series, types) {
     const color = colorForType(t, idx);
     return {
       label: t,
-      data: series.map(function (s) { return s.byType.get(t) || 0; }),
+      data: series.map(function (s) {
+        return s.byType.get(t) || 0;
+      }),
       backgroundColor: color,
       borderColor: color,
       borderWidth: 0,
@@ -252,7 +304,9 @@ function buildDailyChartConfig(series, types) {
   return {
     type: "bar",
     data: {
-      labels: series.map(function (s) { return s.day; }),
+      labels: series.map(function (s) {
+        return s.day;
+      }),
       datasets: datasets,
     },
     options: {
@@ -287,7 +341,9 @@ function buildDailyChartConfig(series, types) {
             },
             footer: function (items) {
               let total = 0;
-              items.forEach(function (it) { total += it.parsed.y || 0; });
+              items.forEach(function (it) {
+                total += it.parsed.y || 0;
+              });
               return "Total: " + total;
             },
           },
@@ -327,30 +383,32 @@ function buildCalendarChartConfig(cells, maxV, numCols) {
   return {
     type: "matrix",
     data: {
-      datasets: [{
-        label: "closed/day",
-        data: cells,
-        parsing: false,
-        backgroundColor: function (ctx) {
-          const v = ctx.raw && typeof ctx.raw.v === "number" ? ctx.raw.v : 0;
-          if (!v || !maxV) return "rgba(138,164,200,0.08)";
-          const ratio = Math.min(1, v / maxV);
-          const alpha = 0.22 + ratio * 0.78;
-          return "rgba(61,255,156," + alpha.toFixed(3) + ")";
+      datasets: [
+        {
+          label: "closed/day",
+          data: cells,
+          parsing: false,
+          backgroundColor: function (ctx) {
+            const v = ctx.raw && typeof ctx.raw.v === "number" ? ctx.raw.v : 0;
+            if (!v || !maxV) return "rgba(138,164,200,0.08)";
+            const ratio = Math.min(1, v / maxV);
+            const alpha = 0.22 + ratio * 0.78;
+            return "rgba(61,255,156," + alpha.toFixed(3) + ")";
+          },
+          borderColor: "rgba(0,0,0,0)",
+          borderWidth: 0,
+          width: function (ctx) {
+            const a = ctx.chart.chartArea;
+            if (!a) return 10;
+            return Math.max(6, (a.right - a.left) / numCols - 2);
+          },
+          height: function (ctx) {
+            const a = ctx.chart.chartArea;
+            if (!a) return 10;
+            return Math.max(6, (a.bottom - a.top) / 7 - 2);
+          },
         },
-        borderColor: "rgba(0,0,0,0)",
-        borderWidth: 0,
-        width: function (ctx) {
-          const a = ctx.chart.chartArea;
-          if (!a) return 10;
-          return Math.max(6, (a.right - a.left) / numCols - 2);
-        },
-        height: function (ctx) {
-          const a = ctx.chart.chartArea;
-          if (!a) return 10;
-          return Math.max(6, (a.bottom - a.top) / 7 - 2);
-        },
-      }],
+      ],
     },
     options: {
       responsive: true,
@@ -395,7 +453,9 @@ function buildCalendarChartConfig(cells, maxV, numCols) {
             stepSize: 1,
             color: COLOR_AXIS,
             font: { family: "ui-monospace, monospace", size: 10 },
-            callback: function (v) { return weekdayLabels[v] || ""; },
+            callback: function (v) {
+              return weekdayLabels[v] || "";
+            },
           },
           grid: { display: false },
           border: { display: false },
@@ -432,7 +492,9 @@ export async function wireInsights(root, data) {
   const dailyCanvas = root.querySelector("#chart-closed-daily");
   if (dailyCanvas && series.length && types.length) {
     try {
-      chartInstances.push(new Chart(dailyCanvas, buildDailyChartConfig(series, types)));
+      chartInstances.push(
+        new Chart(dailyCanvas, buildDailyChartConfig(series, types)),
+      );
     } catch (err) {
       showError(root, err);
     }
@@ -442,7 +504,12 @@ export async function wireInsights(root, data) {
   if (calCanvas) {
     const cal = buildCalendarCells(built.counts, 12);
     try {
-      chartInstances.push(new Chart(calCanvas, buildCalendarChartConfig(cal.cells, cal.maxV, cal.numCols)));
+      chartInstances.push(
+        new Chart(
+          calCanvas,
+          buildCalendarChartConfig(cal.cells, cal.maxV, cal.numCols),
+        ),
+      );
     } catch (err) {
       showError(root, err);
     }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Convoy-style bundle planner (MO-03).
  *
@@ -12,11 +13,14 @@
  * Emits `{ ok, data: { epicId, batches, unbatched, closed }, error }`.
  */
 
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { execFileSync } from "child_process";
-import type { BeadsIssue, BeadsDependency } from "../../types/beads";
-import { issuesAndDepsFromExportRows, parseBdExportStdout } from "../beads-dashboard";
+import type { BeadsDependency, BeadsIssue } from "../../types/beads";
+import {
+  issuesAndDepsFromExportRows,
+  parseBdExportStdout,
+} from "../beads-dashboard";
 
 const ISSUES_FILE = join(process.cwd(), ".beads", "issues.jsonl");
 const DEPS_FILE = join(process.cwd(), ".beads", "deps.jsonl");
@@ -53,7 +57,10 @@ function loadGraph(): { issues: BeadsIssue[]; deps: BeadsDependency[] } {
 }
 
 /** Issues in the parent-child subtree rooted at epicId (bead `parent` field). */
-export function collectSubtree(issues: BeadsIssue[], epicId: string): BeadsIssue[] {
+export function collectSubtree(
+  issues: BeadsIssue[],
+  epicId: string,
+): BeadsIssue[] {
   const childrenByParent = new Map<string, BeadsIssue[]>();
   for (const i of issues) {
     const p = i.parent;
@@ -142,7 +149,11 @@ function main(): void {
   if (!epicId) {
     console.log(
       JSON.stringify(
-        { ok: false, data: null, error: "usage: bun run beads:bundles <EPIC-ID>" },
+        {
+          ok: false,
+          data: null,
+          error: "usage: bun run beads:bundles <EPIC-ID>",
+        },
         null,
         2,
       ),

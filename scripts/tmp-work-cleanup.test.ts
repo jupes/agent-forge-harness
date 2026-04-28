@@ -11,7 +11,10 @@ const mkClosed = (id: string): BeadsIssue => ({
   updatedAt: "2026-01-10T00:00:00Z",
 });
 
-const mkOpen = (id: string): BeadsIssue => ({ ...mkClosed(id), status: "open" });
+const mkOpen = (id: string): BeadsIssue => ({
+  ...mkClosed(id),
+  status: "open",
+});
 
 describe("classifyFile", () => {
   test("skips session-handoff.md", () => {
@@ -20,7 +23,12 @@ describe("classifyFile", () => {
   });
 
   test("skips <EPIC>-interfaces.md", () => {
-    const r = classifyFile("agent-forge-harness-c8u-interfaces.md", 100, new Map(), 14);
+    const r = classifyFile(
+      "agent-forge-harness-c8u-interfaces.md",
+      100,
+      new Map(),
+      14,
+    );
     expect(r).toBeNull();
   });
 
@@ -32,24 +40,14 @@ describe("classifyFile", () => {
   test("deletes closed task above TTL", () => {
     const m = new Map<string, BeadsIssue>();
     m.set("agent-forge-harness-jq3", mkClosed("agent-forge-harness-jq3"));
-    const r = classifyFile(
-      "agent-forge-harness-jq3-verdict.json",
-      20,
-      m,
-      14,
-    );
+    const r = classifyFile("agent-forge-harness-jq3-verdict.json", 20, m, 14);
     expect(r?.action).toBe("delete");
   });
 
   test("skips open task even if old", () => {
     const m = new Map<string, BeadsIssue>();
     m.set("agent-forge-harness-jq3", mkOpen("agent-forge-harness-jq3"));
-    const r = classifyFile(
-      "agent-forge-harness-jq3-alignment.md",
-      99,
-      m,
-      14,
-    );
+    const r = classifyFile("agent-forge-harness-jq3-alignment.md", 99, m, 14);
     expect(r?.action).toBe("skip");
     expect(r?.reason).toContain("status=open");
   });
@@ -57,12 +55,7 @@ describe("classifyFile", () => {
   test("skips closed but under TTL", () => {
     const m = new Map<string, BeadsIssue>();
     m.set("agent-forge-harness-jq3", mkClosed("agent-forge-harness-jq3"));
-    const r = classifyFile(
-      "agent-forge-harness-jq3-plan.md",
-      5,
-      m,
-      14,
-    );
+    const r = classifyFile("agent-forge-harness-jq3-plan.md", 5, m, 14);
     expect(r?.action).toBe("skip");
   });
 });

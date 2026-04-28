@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { applyInitiativeFilter, computeInitiativeMembers, listEpics } from "../docs/js/issues-selection.mjs";
+import {
+  applyInitiativeFilter,
+  computeInitiativeMembers,
+  listEpics,
+} from "../docs/js/issues-selection.mjs";
 import type { BeadsIssue } from "../types/beads";
 
 const issues: BeadsIssue[] = [

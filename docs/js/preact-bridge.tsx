@@ -1,5 +1,4 @@
-import { type ComponentChild, h } from "preact";
-import { render } from "preact";
+import { type ComponentChild, h, render } from "preact";
 
 const mounted = new WeakSet<HTMLElement>();
 
@@ -21,7 +20,10 @@ export function createBridgeSelfTestVNode(): ComponentChild {
  * Mount a Preact tree into `container`, replacing any prior content.
  * Callers should use stable container elements (one island per container).
  */
-export function mountIsland(container: HTMLElement, vnode: ComponentChild): void {
+export function mountIsland(
+  container: HTMLElement,
+  vnode: ComponentChild,
+): void {
   if (mounted.has(container)) {
     unmountIsland(container);
   } else {
