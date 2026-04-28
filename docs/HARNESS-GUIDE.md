@@ -99,7 +99,7 @@ Think in **layers** so upgrades from upstream stay mergeable.
 
 ### 5. Multi-repo registry
 
-- **`repos/repos.json`** — add entries, then `bun run repo init` (see [add-repo skill](../.claude/skills/add-repo/SKILL.md)).
+- **`repos/repos.json`** — local registry (gitignored); copy `repos/repos.json.example` to `repos/repos.json`, add entries, then `bun run repo init` (see [add-repo skill](../.claude/skills/add-repo/SKILL.md)).
 
 ### 6. Claude Code wiring
 

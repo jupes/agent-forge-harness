@@ -42,7 +42,16 @@ const REPOS_DIR = join(process.cwd(), "repos");
 
 function loadRepos(): RepoConfig[] {
   if (!existsSync(REPOS_FILE)) {
-    console.error(JSON.stringify({ ok: false, error: `repos.json not found at ${REPOS_FILE}` }));
+    const example = join(REPOS_DIR, "repos.json.example");
+    const hint = existsSync(example)
+      ? ` Copy ${example} to ${REPOS_FILE} and customize entries.`
+      : ` Create ${REPOS_FILE} with a {"repos":[]} root object.`;
+    console.error(
+      JSON.stringify({
+        ok: false,
+        error: `repos.json not found at ${REPOS_FILE}.${hint}`,
+      }),
+    );
     process.exit(1);
   }
   const data: RepoRegistry = JSON.parse(readFileSync(REPOS_FILE, "utf8"));

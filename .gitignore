@@ -1,6 +1,6 @@
 # Sub-repos (managed separately, cloned via syncing-repos skill)
 repos/*
-!repos/repos.json
+!repos/repos.json.example
 
 # Git worktrees (created per parallel worker by epic workflow)
 trees/

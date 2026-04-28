@@ -41,7 +41,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
    bun run typecheck
    ```
 
-2. **Wizard:** `bun run setup` (use `--non-interactive` for defaults/CI).
+2. **Wizard:** `bun run setup` (use `--non-interactive` for defaults/CI). For multi-repo, copy `repos/repos.json.example` to `repos/repos.json` and add URLs (local-only; do not commit `repos/repos.json`).
 
 3. **GitHub CLI:** `gh auth login` when you use PR automation.
 
@@ -55,7 +55,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 | Goal | Command / note |
 |------|----------------|
-| Clone registered repos | After URLs in `repos/repos.json`: `bun run repo init --human` |
+| Clone registered repos | After URLs in local `repos/repos.json` (from `repos/repos.json.example`): `bun run repo init --human` |
 | Knowledge YAML | `/sync-knowledge <repo>` or `--all` — see [.claude/skills/syncing-repos/SKILL.md](.claude/skills/syncing-repos/SKILL.md) |
 | GitHub Pages data | `bun run build-pages` (needs `bd` on PATH) |
 | Local dashboard | `bun run dashboard` — Vite + live reload; Beads dashboard + **Plan review** (`docs/plan-review.html`: drafts, baseline diff, **git revision history / compare**). Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD` |
@@ -101,7 +101,7 @@ agent-forge-harness/
 ├── .beads/           # Beads data (see repo .beads README)
 ├── knowledge/        # _shared.yaml, repos/*.yaml
 ├── plans/            # durable plan drafts + committed snapshots
-├── repos/            # clones (often gitignored); repos.json registry
+├── repos/            # clones + local repos.json (gitignored); repos.json.example template
 ├── scripts/          # Bun utilities
 ├── types/            # shared TS (e.g. beads types)
 └── docs/             # dashboard / Pages
@@ -111,7 +111,7 @@ agent-forge-harness/
 
 ## Customize
 
-Change **knowledge** before code, then **workflows** / **quality-gate.ts** / **agents** as needed. **Add a repo:** extend `repos/repos.json`, `bun run repo init --human`, `/sync-knowledge`. **Add a skill:** `bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts <name> "description"`. Details: [HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md).
+Change **knowledge** before code, then **workflows** / **quality-gate.ts** / **agents** as needed. **Add a repo:** extend local `repos/repos.json` (never commit it), `bun run repo init --human`, `/sync-knowledge`. **Add a skill:** `bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts <name> "description"`. Details: [HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md).
 
 Plan artifacts should use the root `plans/` contract: write active drafts to `plans/drafts/` and store baseline snapshots in `plans/committed/`.
 
