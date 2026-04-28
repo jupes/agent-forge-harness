@@ -20,6 +20,12 @@ export interface BdExportRow {
   updated_at?: string;
   createdAt?: string;
   updatedAt?: string;
+  due?: string;
+  due_at?: string;
+  estimate?: number | string;
+  spent?: number | string;
+  closed_by?: string;
+  closedBy?: string;
   assignee?: string;
   owner?: string;
   labels?: string[];
@@ -82,6 +88,13 @@ export function normalizeIssueType(raw: string | undefined): IssueType {
   return "task";
 }
 
+function asOptionalNumber(raw: number | string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   let parent: string | undefined;
   for (const d of raw.dependencies ?? []) {
@@ -94,6 +107,10 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   const updatedAt = raw.updated_at ?? raw.updatedAt ?? createdAt;
   const description = raw.acceptance_criteria ?? raw.description;
   const priority = mapNumericPriority(raw.priority);
+  const due = raw.due ?? raw.due_at;
+  const estimate = asOptionalNumber(raw.estimate);
+  const spent = asOptionalNumber(raw.spent);
+  const closedBy = raw.closed_by ?? raw.closedBy;
   /** `owner` from export is metadata (creator); only `assignee` counts as claimed for derived.ready. */
   const assignee = raw.assignee;
 
@@ -111,19 +128,25 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
     ...(raw.owner !== undefined ? { owner: raw.owner } : {}),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(raw.labels !== undefined ? { labels: raw.labels } : {}),
+    ...(due !== undefined ? { due } : {}),
+    ...(estimate !== undefined ? { estimate } : {}),
+    ...(spent !== undefined ? { spent } : {}),
+    ...(closedBy !== undefined ? { closedBy } : {}),
   };
 }
 
 export function collectBlockDeps(rows: BdExportRow[]): BeadsDependency[] {
+  const allowedTypes = new Set<BeadsDependency["type"]>(["blocks", "requires", "relates"]);
   const seen = new Set<string>();
   const out: BeadsDependency[] = [];
   for (const r of rows) {
     for (const d of r.dependencies ?? []) {
-      if (d.type !== "blocks") continue;
-      const key = `${d.issue_id}\t${d.depends_on_id}`;
+      if (!allowedTypes.has(d.type as BeadsDependency["type"])) continue;
+      const type = d.type as BeadsDependency["type"];
+      const key = `${d.issue_id}\t${d.depends_on_id}\t${type}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ from: d.issue_id, to: d.depends_on_id, type: "blocks" });
+      out.push({ from: d.issue_id, to: d.depends_on_id, type });
     }
   }
   return out;
@@ -169,6 +192,7 @@ export function buildDerivedFromIssuesAndDeps(issues: BeadsIssue[], deps: BeadsD
 
   const blockedIds = new Set<string>();
   for (const dep of deps) {
+    if (dep.type !== "blocks" && dep.type !== "requires") continue;
     const blocker = issues.find((i) => i.id === dep.to);
     if (blocker && blocker.status !== "closed") {
       blockedIds.add(dep.from);
