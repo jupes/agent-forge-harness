@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { BeadsDependency, BeadsIssue } from "../types/beads";
 import {
   buildDerivedFromIssuesAndDeps,
+  buildEpicFlowByEpic,
   collectBlockDeps,
   issuesAndDepsFromExportRows,
   mapNumericPriority,
@@ -176,8 +177,18 @@ describe("issuesAndDepsFromExportRows", () => {
           { issue_id: "T-1", depends_on_id: "T-3", type: "requires" },
         ],
       },
-      { id: "T-2", title: "blocker", status: "open", created_at: "2026-01-01T00:00:00Z" },
-      { id: "T-3", title: "related", status: "open", created_at: "2026-01-01T00:00:00Z" },
+      {
+        id: "T-2",
+        title: "blocker",
+        status: "open",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "T-3",
+        title: "related",
+        status: "open",
+        created_at: "2026-01-01T00:00:00Z",
+      },
     ]);
     expect(issues).toHaveLength(3);
     expect(deps).toEqual([
@@ -240,5 +251,111 @@ describe("buildDerivedFromIssuesAndDeps", () => {
   test("normalizeIssueType / normalizeStatus helpers", () => {
     expect(normalizeIssueType("EPIC")).toBe("epic");
     expect(normalizeStatus("in_progress")).toBe("in_progress");
+  });
+});
+
+describe("buildEpicFlowByEpic", () => {
+  test("builds child nodes with summaries and relation edges", () => {
+    const issues: BeadsIssue[] = [
+      {
+        id: "EPIC-1",
+        title: "Epic",
+        type: "epic",
+        status: "open",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "F-1",
+        title: "Feature one",
+        type: "feature",
+        parent: "EPIC-1",
+        status: "in_progress",
+        description: "Fallback summary",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: "T-1",
+        title: "Task one",
+        type: "task",
+        parent: "EPIC-1",
+        status: "open",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+      {
+        id: "B-1",
+        title: "Open blocker",
+        type: "bug",
+        status: "open",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+    ];
+    const deps: BeadsDependency[] = [
+      { from: "F-1", to: "T-1", type: "requires" },
+      { from: "F-1", to: "B-1", type: "blocks" },
+      { from: "F-1", to: "T-1", type: "requires" },
+      { from: "T-1", to: "EPIC-1", type: "relates" },
+    ];
+    const comments = [
+      {
+        issueId: "F-1",
+        author: "agent",
+        body: "worklog: connected api and dashboard flow",
+        createdAt: "2026-01-04T00:00:00Z",
+      },
+    ];
+
+    const got = buildEpicFlowByEpic(issues, deps, comments)["EPIC-1"];
+    expect(got).toBeDefined();
+    expect(got?.nodes.map((n) => n.issueId)).toEqual(["F-1", "T-1"]);
+    expect(got?.nodes[0]?.summary).toBe("connected api and dashboard flow");
+    expect(got?.nodes[0]?.blockers).toEqual(["T-1", "B-1"]);
+    expect(got?.edges).toEqual([
+      { from: "F-1", to: "T-1", relation: "requires" },
+      { from: "F-1", to: "B-1", relation: "blocks" },
+      { from: "T-1", to: "EPIC-1", relation: "relates" },
+    ]);
+  });
+
+  test("uses description fallback and default summary when comments/description missing", () => {
+    const issues: BeadsIssue[] = [
+      {
+        id: "EPIC-2",
+        title: "Epic 2",
+        type: "epic",
+        status: "open",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "T-2",
+        title: "Task two",
+        type: "task",
+        parent: "EPIC-2",
+        status: "open",
+        description: "desc fallback",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "T-3",
+        title: "Task three",
+        type: "task",
+        parent: "EPIC-2",
+        status: "open",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    const got = buildEpicFlowByEpic(issues, [], [])["EPIC-2"];
+    expect(got?.nodes.find((n) => n.issueId === "T-2")?.summary).toBe(
+      "desc fallback",
+    );
+    expect(got?.nodes.find((n) => n.issueId === "T-3")?.summary).toBe(
+      "No summarized changes yet.",
+    );
   });
 });
