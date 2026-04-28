@@ -201,7 +201,16 @@ function plansHarnessPlugin(repoRoot: string): Plugin {
     if (!rel) return [];
     const out = spawnSync(
       "git",
-      ["log", "--follow", "--max-count=120", "--pretty=format:%H%n%ci%n%s%n<<<REC>>>", "--", rel],
+      [
+        "log",
+        "--all",
+        "--full-history",
+        "--follow",
+        "--max-count=120",
+        "--pretty=format:%H%n%ci%n%s%n<<<REC>>>",
+        "--",
+        rel,
+      ],
       {
         cwd: root,
         encoding: "utf8",
