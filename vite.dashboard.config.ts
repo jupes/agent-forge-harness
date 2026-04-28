@@ -13,6 +13,9 @@ const docsRoot = path.join(repoRoot, "docs");
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
 const PLANS_API_PREFIX = "/__agent-forge/plans-api";
 
+/** Must match `PlanReviewIsland` / `fetchPlanRef(..., "WORKING")` — git-content disk sentinel. */
+const PLANS_GIT_WORKING_REF = "WORKING";
+
 /**
  * POST {REBUILD_PATH} — run `scripts/build-pages.ts` (same as `bun run build-pages`).
  * Used by the dashboard nav button; only active under `bun run dashboard` (Vite dev).
@@ -359,7 +362,7 @@ function plansHarnessPlugin(repoRoot: string): Plugin {
           return;
         }
         const refUp = refParam.trim().toUpperCase();
-        if (refUp === "WORKING" || refParam === "") {
+        if (refUp === PLANS_GIT_WORKING_REF || refParam === "") {
           const abs = resolvePlanPath(bucket, planId);
           if (!abs) {
             sendJson(404, { ok: false, error: "plan file not found on disk", data: null });
