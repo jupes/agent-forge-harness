@@ -1,9 +1,11 @@
-import { join } from "path";
 import { mkdirSync } from "fs";
+import { join } from "path";
 
 export const LOG_BASE_DIR = join(
   process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/tmp",
-  ".claude", "logs", "agent-forge"
+  ".claude",
+  "logs",
+  "agent-forge",
 );
 
 export function ensureSessionLogDir(): string {

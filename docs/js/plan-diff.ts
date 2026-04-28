@@ -8,7 +8,9 @@ export type PlanDiffRow = {
 };
 
 export function splitLines(a: string): string[] {
-  return String(a ?? "").replace(/\r\n/g, "\n").split("\n");
+  return String(a ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n");
 }
 
 /** Myers-style diff built via LCS DP on lines (stable for typical markdown sizes). */
@@ -18,7 +20,9 @@ export function diffPlanLines(oldText: string, newText: string): PlanDiffRow[] {
   const n = A.length;
   const m = B.length;
 
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  const dp: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array(m + 1).fill(0),
+  );
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
       const aLine = A[i - 1];
@@ -37,11 +41,20 @@ export function diffPlanLines(oldText: string, newText: string): PlanDiffRow[] {
   while (i > 0 || j > 0) {
     const aLine = i > 0 ? A[i - 1] : undefined;
     const bLine = j > 0 ? B[j - 1] : undefined;
-    if (i > 0 && j > 0 && aLine !== undefined && bLine !== undefined && aLine === bLine) {
+    if (
+      i > 0 &&
+      j > 0 &&
+      aLine !== undefined &&
+      bLine !== undefined &&
+      aLine === bLine
+    ) {
       stack.push({ kind: "same", line: aLine });
       i -= 1;
       j -= 1;
-    } else if (i > 0 && (j === 0 || (dp[i - 1]?.[j] ?? 0) >= (dp[i]?.[j - 1] ?? 0))) {
+    } else if (
+      i > 0 &&
+      (j === 0 || (dp[i - 1]?.[j] ?? 0) >= (dp[i]?.[j - 1] ?? 0))
+    ) {
       if (aLine === undefined) break;
       stack.push({ kind: "del", line: aLine });
       i -= 1;
@@ -67,7 +80,10 @@ export function planDiffToSideBySide(rows: PlanDiffRow[]): PlanSideBySideRow[] {
   const out: PlanSideBySideRow[] = [];
   for (const r of rows) {
     if (r.kind === "same") {
-      out.push({ left: { line: r.line, role: "ctx" }, right: { line: r.line, role: "ctx" } });
+      out.push({
+        left: { line: r.line, role: "ctx" },
+        right: { line: r.line, role: "ctx" },
+      });
     } else if (r.kind === "del") {
       out.push({ left: { line: r.line, role: "del" }, right: null });
     } else {

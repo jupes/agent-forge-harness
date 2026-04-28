@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { diffPlanLines, planDiffToSideBySide, type PlanSideBySideRow } from "../plan-diff";
+import {
+  diffPlanLines,
+  type PlanSideBySideRow,
+  planDiffToSideBySide,
+} from "../plan-diff";
 
 const CATALOG_URL = "/__agent-forge/plans-api/catalog";
 const STORAGE_AUTO_FOLLOW = "agent-forge-plan-review:autoFollow";
@@ -50,7 +54,11 @@ function shortSha(sha: string): string {
   return sha.length > 8 ? sha.slice(0, 7) : sha;
 }
 
-async function fetchCatalog(): Promise<{ catalog: CatalogPayload | null; apiReachable: boolean; error: string | null }> {
+async function fetchCatalog(): Promise<{
+  catalog: CatalogPayload | null;
+  apiReachable: boolean;
+  error: string | null;
+}> {
   try {
     const res = await fetch(CATALOG_URL);
     if (!res.ok) {
@@ -79,7 +87,10 @@ async function fetchCatalog(): Promise<{ catalog: CatalogPayload | null; apiReac
   }
 }
 
-async function fetchRaw(bucket: "drafts" | "committed", planId: string): Promise<{ ok: boolean; text: string }> {
+async function fetchRaw(
+  bucket: "drafts" | "committed",
+  planId: string,
+): Promise<{ ok: boolean; text: string }> {
   try {
     const q = new URLSearchParams({ bucket, id: planId });
     const res = await fetch(`/__agent-forge/plans-api/raw?${q.toString()}`);
@@ -95,16 +106,27 @@ async function fetchRaw(bucket: "drafts" | "committed", planId: string): Promise
 async function fetchGitHistory(
   planId: string,
   bucket: "drafts" | "committed",
-): Promise<{ versions: GitPlanVersion[]; gitAvailable: boolean; error: string | null }> {
+): Promise<{
+  versions: GitPlanVersion[];
+  gitAvailable: boolean;
+  error: string | null;
+}> {
   try {
     const q = new URLSearchParams({ id: planId, bucket });
-    const res = await fetch(`/__agent-forge/plans-api/git-history?${q.toString()}`);
-    const body = (await res.json()) as GitHistoryEnvelope | { ok: false; error: string };
+    const res = await fetch(
+      `/__agent-forge/plans-api/git-history?${q.toString()}`,
+    );
+    const body = (await res.json()) as
+      | GitHistoryEnvelope
+      | { ok: false; error: string };
     if (!("ok" in body) || !body.ok || !("data" in body) || !body.data) {
       return {
         versions: [],
         gitAvailable: false,
-        error: "ok" in body && "error" in body && typeof body.error === "string" ? body.error : "history request failed",
+        error:
+          "ok" in body && "error" in body && typeof body.error === "string"
+            ? body.error
+            : "history request failed",
       };
     }
     return {
@@ -118,7 +140,9 @@ async function fetchGitHistory(
   }
 }
 
-function planSbsRowKind(row: PlanSideBySideRow): "deletion" | "addition" | "context" {
+function planSbsRowKind(
+  row: PlanSideBySideRow,
+): "deletion" | "addition" | "context" {
   if (row.left?.role === "del" && !row.right) return "deletion";
   if (row.right?.role === "add" && !row.left) return "addition";
   return "context";
@@ -147,9 +171,17 @@ function PlanDiffSideBySide({
         {rows.map((row, idx) => {
           const kind = planSbsRowKind(row);
           const leftChunk =
-            kind === "deletion" ? "plan-sbs-chunk--remove" : kind === "addition" ? "plan-sbs-chunk--void" : "plan-sbs-chunk--context";
+            kind === "deletion"
+              ? "plan-sbs-chunk--remove"
+              : kind === "addition"
+                ? "plan-sbs-chunk--void"
+                : "plan-sbs-chunk--context";
           const rightChunk =
-            kind === "addition" ? "plan-sbs-chunk--add" : kind === "deletion" ? "plan-sbs-chunk--void" : "plan-sbs-chunk--context";
+            kind === "addition"
+              ? "plan-sbs-chunk--add"
+              : kind === "deletion"
+                ? "plan-sbs-chunk--void"
+                : "plan-sbs-chunk--context";
           return (
             <div className={`plan-sbs-row plan-sbs-row--${kind}`} key={idx}>
               <div className={`plan-sbs-cell plan-sbs-left ${leftChunk}`}>
@@ -158,7 +190,9 @@ function PlanDiffSideBySide({
                     <span
                       className={
                         "plan-sbs-gutter" +
-                        (row.left.role === "del" ? " plan-sbs-gutter--remove" : " plan-sbs-gutter--neutral")
+                        (row.left.role === "del"
+                          ? " plan-sbs-gutter--remove"
+                          : " plan-sbs-gutter--neutral")
                       }
                       aria-hidden
                     >
@@ -168,8 +202,14 @@ function PlanDiffSideBySide({
                   </>
                 ) : (
                   <>
-                    <span className="plan-sbs-gutter plan-sbs-gutter--void" aria-hidden />
-                    <span className="plan-sbs-text plan-sbs-text--void" aria-hidden>
+                    <span
+                      className="plan-sbs-gutter plan-sbs-gutter--void"
+                      aria-hidden
+                    />
+                    <span
+                      className="plan-sbs-text plan-sbs-text--void"
+                      aria-hidden
+                    >
                       {"\u00a0"}
                     </span>
                   </>
@@ -181,7 +221,9 @@ function PlanDiffSideBySide({
                     <span
                       className={
                         "plan-sbs-gutter" +
-                        (row.right.role === "add" ? " plan-sbs-gutter--add" : " plan-sbs-gutter--neutral")
+                        (row.right.role === "add"
+                          ? " plan-sbs-gutter--add"
+                          : " plan-sbs-gutter--neutral")
                       }
                       aria-hidden
                     >
@@ -191,8 +233,14 @@ function PlanDiffSideBySide({
                   </>
                 ) : (
                   <>
-                    <span className="plan-sbs-gutter plan-sbs-gutter--void" aria-hidden />
-                    <span className="plan-sbs-text plan-sbs-text--void" aria-hidden>
+                    <span
+                      className="plan-sbs-gutter plan-sbs-gutter--void"
+                      aria-hidden
+                    />
+                    <span
+                      className="plan-sbs-text plan-sbs-text--void"
+                      aria-hidden
+                    >
                       {"\u00a0"}
                     </span>
                   </>
@@ -216,7 +264,9 @@ async function fetchPlanRef(
   }
   try {
     const q = new URLSearchParams({ bucket, id: planId, ref });
-    const res = await fetch(`/__agent-forge/plans-api/git-content?${q.toString()}`);
+    const res = await fetch(
+      `/__agent-forge/plans-api/git-content?${q.toString()}`,
+    );
     const ct = res.headers.get("content-type") ?? "";
     if (res.ok && ct.includes("text/plain")) {
       const text = await res.text();
@@ -224,7 +274,12 @@ async function fetchPlanRef(
     }
     try {
       const j = (await res.json()) as { ok?: boolean; error?: string };
-      return { ok: false, text: "", error: typeof j.error === "string" ? j.error : `HTTP ${String(res.status)}` };
+      return {
+        ok: false,
+        text: "",
+        error:
+          typeof j.error === "string" ? j.error : `HTTP ${String(res.status)}`,
+      };
     } catch {
       return { ok: false, text: "", error: `HTTP ${String(res.status)}` };
     }
@@ -235,7 +290,9 @@ async function fetchPlanRef(
 }
 
 export function PlanReviewIsland() {
-  const [autoFollow, setAutoFollow] = useState<boolean>(() => loadAutoFollowPreference());
+  const [autoFollow, setAutoFollow] = useState<boolean>(() =>
+    loadAutoFollowPreference(),
+  );
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
   const [apiReachable, setApiReachable] = useState<boolean>(true);
@@ -245,7 +302,9 @@ export function PlanReviewIsland() {
   const [view, setView] = useState<"draft" | "diff" | "history">("draft");
   const userLockedPlanRef = useRef(false);
 
-  const [historyBucket, setHistoryBucket] = useState<"drafts" | "committed">("drafts");
+  const [historyBucket, setHistoryBucket] = useState<"drafts" | "committed">(
+    "drafts",
+  );
   const [gitVersions, setGitVersions] = useState<GitPlanVersion[]>([]);
   const [gitAvailable, setGitAvailable] = useState<boolean>(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -277,7 +336,11 @@ export function PlanReviewIsland() {
         const ids = r.catalog?.planIds ?? [];
         if (ids.length === 0) return "";
 
-        if (autoFollow && !userLockedPlanRef.current && r.catalog?.activePlanId) {
+        if (
+          autoFollow &&
+          !userLockedPlanRef.current &&
+          r.catalog?.activePlanId
+        ) {
           const ap = r.catalog.activePlanId;
           if (ids.includes(ap)) return ap;
         }
@@ -300,7 +363,11 @@ export function PlanReviewIsland() {
   }, [autoFollow]);
 
   useEffect(() => {
-    if (!selectedPlanId || !apiReachable || !catalog?.planIds.includes(selectedPlanId)) {
+    if (
+      !selectedPlanId ||
+      !apiReachable ||
+      !catalog?.planIds.includes(selectedPlanId)
+    ) {
       setDraftText("");
       setCommittedText("");
       return;
@@ -407,7 +474,8 @@ export function PlanReviewIsland() {
     [committedText, draftText],
   );
   const historySbs = useMemo(
-    () => planDiffToSideBySide(diffPlanLines(historyOlderText, historyNewerText)),
+    () =>
+      planDiffToSideBySide(diffPlanLines(historyOlderText, historyNewerText)),
     [historyOlderText, historyNewerText],
   );
 
@@ -422,7 +490,10 @@ export function PlanReviewIsland() {
   const onResumeFollow = (): void => {
     userLockedPlanRef.current = false;
     setAutoFollow(true);
-    if (catalog?.activePlanId && catalog.planIds.includes(catalog.activePlanId)) {
+    if (
+      catalog?.activePlanId &&
+      catalog.planIds.includes(catalog.activePlanId)
+    ) {
       setSelectedPlanId(catalog.activePlanId);
     }
   };
@@ -442,9 +513,11 @@ export function PlanReviewIsland() {
     return (
       <div className="plan-review-empty">
         <p className="plan-review-banner">
-          Plan review needs the dev dashboard API (routes under <code>/__agent-forge/plans-api/</code>). Run{" "}
-          <code>bun run dashboard</code> from the harness repo root and open this page from that server — static GitHub Pages
-          snapshots cannot reach local plan files.
+          Plan review needs the dev dashboard API (routes under{" "}
+          <code>/__agent-forge/plans-api/</code>). Run{" "}
+          <code>bun run dashboard</code> from the harness repo root and open
+          this page from that server — static GitHub Pages snapshots cannot
+          reach local plan files.
         </p>
       </div>
     );
@@ -488,7 +561,10 @@ export function PlanReviewIsland() {
               setAutoFollow(v);
               if (v) {
                 userLockedPlanRef.current = false;
-                if (catalog?.activePlanId && catalog.planIds.includes(catalog.activePlanId)) {
+                if (
+                  catalog?.activePlanId &&
+                  catalog.planIds.includes(catalog.activePlanId)
+                ) {
                   setSelectedPlanId(catalog.activePlanId);
                 }
               }
@@ -498,17 +574,29 @@ export function PlanReviewIsland() {
         </label>
 
         {!autoFollow ? (
-          <button type="button" className="plan-review-btn plan-review-btn-secondary" onClick={onResumeFollow}>
+          <button
+            type="button"
+            className="plan-review-btn plan-review-btn-secondary"
+            onClick={onResumeFollow}
+          >
             Snap to active session plan
           </button>
         ) : null}
 
-        <div className="plan-review-tabs" role="tablist" aria-label="Plan view mode">
+        <div
+          className="plan-review-tabs"
+          role="tablist"
+          aria-label="Plan view mode"
+        >
           <button
             type="button"
             role="tab"
             aria-selected={view === "draft"}
-            className={view === "draft" ? "plan-review-tab plan-review-tab-active" : "plan-review-tab"}
+            className={
+              view === "draft"
+                ? "plan-review-tab plan-review-tab-active"
+                : "plan-review-tab"
+            }
             onClick={() => setView("draft")}
           >
             Draft
@@ -517,7 +605,11 @@ export function PlanReviewIsland() {
             type="button"
             role="tab"
             aria-selected={view === "diff"}
-            className={view === "diff" ? "plan-review-tab plan-review-tab-active" : "plan-review-tab"}
+            className={
+              view === "diff"
+                ? "plan-review-tab plan-review-tab-active"
+                : "plan-review-tab"
+            }
             onClick={() => setView("diff")}
           >
             Diff vs committed
@@ -526,7 +618,11 @@ export function PlanReviewIsland() {
             type="button"
             role="tab"
             aria-selected={view === "history"}
-            className={view === "history" ? "plan-review-tab plan-review-tab-active" : "plan-review-tab"}
+            className={
+              view === "history"
+                ? "plan-review-tab plan-review-tab-active"
+                : "plan-review-tab"
+            }
             onClick={() => setView("history")}
           >
             History (git)
@@ -541,8 +637,9 @@ export function PlanReviewIsland() {
 
       {(catalog?.planIds ?? []).length === 0 ? (
         <p className="plan-review-empty-msg">
-          No markdown plans yet. Add files under <code>plans/drafts/</code> (and optional baselines under{" "}
-          <code>plans/committed/</code>). Use <code>plans/session-context.json</code> for auto-follow (see{" "}
+          No markdown plans yet. Add files under <code>plans/drafts/</code> (and
+          optional baselines under <code>plans/committed/</code>). Use{" "}
+          <code>plans/session-context.json</code> for auto-follow (see{" "}
           <code>plans/README.md</code>).
         </p>
       ) : view === "draft" ? (
@@ -552,11 +649,14 @@ export function PlanReviewIsland() {
       ) : view === "diff" ? (
         <div className="plan-review-diff-wrap">
           {!committedText.trim() && !draftText.trim() ? (
-            <p className="plan-review-empty-msg">Nothing loaded for this plan id.</p>
+            <p className="plan-review-empty-msg">
+              Nothing loaded for this plan id.
+            </p>
           ) : !committedText.trim() ? (
             <p className="plan-review-empty-msg">
-              No committed baseline at <code>plans/committed/{selectedPlanId}.md</code>. Commit a snapshot there to enable
-              diff.
+              No committed baseline at{" "}
+              <code>plans/committed/{selectedPlanId}.md</code>. Commit a
+              snapshot there to enable diff.
             </p>
           ) : (
             <div className="plan-review-diff-outer">
@@ -576,10 +676,18 @@ export function PlanReviewIsland() {
               <select
                 className="plan-review-select"
                 value={historyBucket}
-                onChange={(e) => setHistoryBucket((e.target as HTMLSelectElement).value as "drafts" | "committed")}
+                onChange={(e) =>
+                  setHistoryBucket(
+                    (e.target as HTMLSelectElement).value as
+                      | "drafts"
+                      | "committed",
+                  )
+                }
               >
                 <option value="drafts">plans/drafts/{selectedPlanId}.md</option>
-                <option value="committed">plans/committed/{selectedPlanId}.md</option>
+                <option value="committed">
+                  plans/committed/{selectedPlanId}.md
+                </option>
               </select>
             </label>
 
@@ -588,7 +696,9 @@ export function PlanReviewIsland() {
               <select
                 className="plan-review-select plan-review-select-wide"
                 value={olderRef}
-                onChange={(e) => setOlderRef((e.target as HTMLSelectElement).value)}
+                onChange={(e) =>
+                  setOlderRef((e.target as HTMLSelectElement).value)
+                }
               >
                 <option value="">— Select revision —</option>
                 {versionSelectOptions().map((o) => (
@@ -604,7 +714,9 @@ export function PlanReviewIsland() {
               <select
                 className="plan-review-select plan-review-select-wide"
                 value={newerRef}
-                onChange={(e) => setNewerRef((e.target as HTMLSelectElement).value)}
+                onChange={(e) =>
+                  setNewerRef((e.target as HTMLSelectElement).value)
+                }
               >
                 {versionSelectOptions().map((o) => (
                   <option key={`n-${o.value}`} value={o.value}>
@@ -614,29 +726,38 @@ export function PlanReviewIsland() {
               </select>
             </label>
             <p className="plan-review-history-hint">
-              History is <strong>per file path</strong>. <code>plans/drafts/{selectedPlanId}.md</code> and{" "}
-              <code>plans/committed/{selectedPlanId}.md</code> each have their own git log — the draft usually shows more commits
-              than the committed baseline (often one snapshot). Switch &quot;History file&quot; above to see the other path.
+              History is <strong>per file path</strong>.{" "}
+              <code>plans/drafts/{selectedPlanId}.md</code> and{" "}
+              <code>plans/committed/{selectedPlanId}.md</code> each have their
+              own git log — the draft usually shows more commits than the
+              committed baseline (often one snapshot). Switch &quot;History
+              file&quot; above to see the other path.
             </p>
           </div>
 
           {!gitAvailable ? (
             <p className="plan-review-banner plan-review-banner-soft">
-              Git history is unavailable (open the dashboard from a git checkout of the harness repo with <code>git</code> on{" "}
-              PATH).
+              Git history is unavailable (open the dashboard from a git checkout
+              of the harness repo with <code>git</code> on PATH).
             </p>
           ) : null}
 
           {historyError ? (
-            <p className="plan-review-banner plan-review-banner-soft" role="status">
+            <p
+              className="plan-review-banner plan-review-banner-soft"
+              role="status"
+            >
               History request: {historyError}
             </p>
           ) : null}
 
           {gitAvailable && gitVersions.length === 0 ? (
             <p className="plan-review-empty-msg">
-              No commits found for this path yet. After you commit <code>plans/{historyBucket}/{selectedPlanId}.md</code>,
-              revisions appear here for comparison.
+              No commits found for this path yet. After you commit{" "}
+              <code>
+                plans/{historyBucket}/{selectedPlanId}.md
+              </code>
+              , revisions appear here for comparison.
             </p>
           ) : null}
 
@@ -666,18 +787,29 @@ export function PlanReviewIsland() {
           ) : null}
 
           {historyLoadNote ? (
-            <p className="plan-review-banner plan-review-banner-soft" role="status">
+            <p
+              className="plan-review-banner plan-review-banner-soft"
+              role="status"
+            >
               {historyLoadNote}
             </p>
           ) : null}
 
           {!olderRef ? (
-            <p className="plan-review-empty-msg">Select an older revision (or wait for git history to load).</p>
+            <p className="plan-review-empty-msg">
+              Select an older revision (or wait for git history to load).
+            </p>
           ) : olderRef === newerRef ? (
-            <p className="plan-review-empty-msg">Choose two different revisions to see a diff.</p>
+            <p className="plan-review-empty-msg">
+              Choose two different revisions to see a diff.
+            </p>
           ) : (
             <div className="plan-review-diff-outer">
-              <PlanDiffSideBySide rows={historySbs} leftLabel="Older (left)" rightLabel="Newer (right)" />
+              <PlanDiffSideBySide
+                rows={historySbs}
+                leftLabel="Older (left)"
+                rightLabel="Newer (right)"
+              />
             </div>
           )}
         </div>

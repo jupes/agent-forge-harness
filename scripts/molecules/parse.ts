@@ -56,7 +56,10 @@ export function parseMoleculeJson(text: string): ParseMoleculeResult {
     return { ok: false, error: "schemaVersion must be 1" };
   }
   if (typeof o.id !== "string" || !ID_RE.test(o.id)) {
-    return { ok: false, error: "id must be kebab-case (lower a-z, 0-9, hyphen)" };
+    return {
+      ok: false,
+      error: "id must be kebab-case (lower a-z, 0-9, hyphen)",
+    };
   }
   if (typeof o.title !== "string" || o.title.trim() === "") {
     return { ok: false, error: "title must be a non-empty string" };
@@ -84,9 +87,15 @@ export function parseMoleculeJson(text: string): ParseMoleculeResult {
       return { ok: false, error: `duplicate step id: ${st.id}` };
     }
     if (typeof st.title !== "string" || st.title.trim() === "") {
-      return { ok: false, error: `step.${st.id}.title must be a non-empty string` };
+      return {
+        ok: false,
+        error: `step.${st.id}.title must be a non-empty string`,
+      };
     }
-    if (typeof st.agent !== "string" || !MOLECULE_AGENTS.includes(st.agent as MoleculeAgent)) {
+    if (
+      typeof st.agent !== "string" ||
+      !MOLECULE_AGENTS.includes(st.agent as MoleculeAgent)
+    ) {
       return {
         ok: false,
         error: `step.${st.id}.agent must be one of ${MOLECULE_AGENTS.join("|")}`,
@@ -95,8 +104,15 @@ export function parseMoleculeJson(text: string): ParseMoleculeResult {
     const produces = st.produces ?? [];
     const consumes = st.consumes ?? [];
     const depends_on = st.depends_on ?? [];
-    if (!isStringArray(produces) || !isStringArray(consumes) || !isStringArray(depends_on)) {
-      return { ok: false, error: `step.${st.id}.{produces,consumes,depends_on} must be string arrays` };
+    if (
+      !isStringArray(produces) ||
+      !isStringArray(consumes) ||
+      !isStringArray(depends_on)
+    ) {
+      return {
+        ok: false,
+        error: `step.${st.id}.{produces,consumes,depends_on} must be string arrays`,
+      };
     }
     let gate: MoleculeGate | undefined;
     if (st.gate !== undefined && st.gate !== null) {
@@ -104,7 +120,10 @@ export function parseMoleculeJson(text: string): ParseMoleculeResult {
         return { ok: false, error: `step.${st.id}.gate must be an object` };
       }
       const g = st.gate as Record<string, unknown>;
-      if (typeof g.kind !== "string" || !MOLECULE_GATE_KINDS.includes(g.kind as MoleculeGateKind)) {
+      if (
+        typeof g.kind !== "string" ||
+        !MOLECULE_GATE_KINDS.includes(g.kind as MoleculeGateKind)
+      ) {
         return {
           ok: false,
           error: `step.${st.id}.gate.kind must be one of ${MOLECULE_GATE_KINDS.join("|")}`,
@@ -129,7 +148,10 @@ export function parseMoleculeJson(text: string): ParseMoleculeResult {
   for (const [from, deps] of adjacency) {
     for (const d of deps) {
       if (!stepIds.has(d)) {
-        return { ok: false, error: `step.${from}.depends_on references unknown step: ${d}` };
+        return {
+          ok: false,
+          error: `step.${from}.depends_on references unknown step: ${d}`,
+        };
       }
       if (d === from) {
         return { ok: false, error: `step.${from} cannot depend on itself` };
