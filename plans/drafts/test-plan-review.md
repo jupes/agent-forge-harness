@@ -2,25 +2,15 @@
 
 ## Summary
 
-Synthetic plan used to verify draft view, diff vs `plans/committed/`, and git history in the dashboard. **Rev3:** tightened summary and added validation steps.
+Synthetic plan used to verify draft view, diff vs `plans/committed/`, and git history in the dashboard. **Rev4:** stress-test — large block removed (replaced with short line) so deletions appear in diffs.
 
 **Iteration 2:** Draft-only edit — `plans/committed/` still matches v1 so “Diff vs committed” should show adds here.
 
 ## Checklist (v1)
 
-- [ ] Open Plan review with `bun run dashboard`
-- [ ] Confirm this file appears in the plan picker
-- [x] Second commit: draft updated, committed baseline unchanged
-- [x] Third commit: summary + checklist touched (test line diff)
-
-## Validation steps (rev3)
-
-1. Select plan id `test-plan-review` in the picker.
-2. **Draft** tab — should show this full text (live reload on save).
-3. **Diff vs committed** — green lines for everything not in baseline `plans/committed/`.
-4. **History (git)** — pick `drafts`; table should list ≥3 commits; compare **From** an older SHA **To** Working tree.
+- [x] Fourth commit: rev4 edits (try **From** parent commit **To** working tree in History)
 
 ## Notes
 
-- Baseline copy lives at `plans/committed/test-plan-review.md` (same id).
-- **History (git):** use branch `drafts` — expect multiple commits after seeding.
+- Baseline copy at `plans/committed/test-plan-review.md` is still **v1** — use for “Diff vs committed”.
+- **History (git):** choose `plans/drafts/test-plan-review.md`; you should see **four** commits including this one.
