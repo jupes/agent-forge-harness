@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * quality-gate.ts
  *
@@ -8,13 +9,19 @@
  * Outputs structured JSON for agent consumption.
  */
 
-import { execSync } from "child_process";
-import { existsSync, readFileSync, appendFileSync } from "fs";
-import { join } from "path";
 import { Glob } from "bun";
+import { execSync } from "child_process";
+import { appendFileSync, existsSync, readFileSync } from "fs";
+import { join } from "path";
+import {
+  type CloseGateIssueType,
+  evaluateCloseTestingAttestation,
+} from "../../scripts/close-testing-attestation";
+import {
+  parseEvalVerdictJson,
+  verdictBlocksShip,
+} from "../../scripts/eval-verdict";
 import { getQualityGateLogPath } from "./utils/constants";
-import { parseEvalVerdictJson, verdictBlocksShip } from "../../scripts/eval-verdict";
-import { evaluateCloseTestingAttestation, type CloseGateIssueType } from "../../scripts/close-testing-attestation";
 
 interface CheckResult {
   name: string;
@@ -60,7 +67,12 @@ function hasScript(name: string): boolean {
 
 function hasTestFiles(): boolean {
   const cwd = process.cwd();
-  const patterns = ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"];
+  const patterns = [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+  ];
   for (const pattern of patterns) {
     const glob = new Glob(pattern);
     for (const file of glob.scanSync({ cwd, onlyFiles: true })) {
@@ -82,8 +94,17 @@ function issueTypeFromBdShowJson(output: string): CloseGateIssueType {
   }
   const rows = Array.isArray(parsed) ? parsed : [];
   const first = (rows[0] ?? null) as BdIssueJson;
-  const raw = String(first?.issue_type ?? first?.type ?? "").toLowerCase().trim();
-  if (raw === "epic" || raw === "feature" || raw === "task" || raw === "bug" || raw === "chore") return raw;
+  const raw = String(first?.issue_type ?? first?.type ?? "")
+    .toLowerCase()
+    .trim();
+  if (
+    raw === "epic" ||
+    raw === "feature" ||
+    raw === "task" ||
+    raw === "bug" ||
+    raw === "chore"
+  )
+    return raw;
   return "unknown";
 }
 
@@ -131,7 +152,12 @@ if (hasScript("lint")) {
   });
   if (!r.ok) blockingFailures.push("lint");
 } else {
-  checks.push({ name: "lint", passed: true, skipped: true, skipReason: "no lint script in package.json" });
+  checks.push({
+    name: "lint",
+    passed: true,
+    skipped: true,
+    skipReason: "no lint script in package.json",
+  });
 }
 
 // Check 3: Tests (skip if no test files)
@@ -144,7 +170,12 @@ if (hasTestFiles()) {
   });
   if (!r.ok) blockingFailures.push("tests");
 } else {
-  checks.push({ name: "tests", passed: true, skipped: true, skipReason: "no test files found" });
+  checks.push({
+    name: "tests",
+    passed: true,
+    skipped: true,
+    skipReason: "no test files found",
+  });
 }
 
 // Check 4: Clean working tree
@@ -172,12 +203,26 @@ if (event === "TaskCompleted") {
     const bdResult = run(`bd show ${taskId}`);
     if (bdResult.ok && bdResult.output.includes("ac:")) {
       // AC list was found — mark as needing human/agent verification
-      checks.push({ name: "ac-verify", passed: true, output: "AC found — verify before closing task" });
+      checks.push({
+        name: "ac-verify",
+        passed: true,
+        output: "AC found — verify before closing task",
+      });
     } else {
-      checks.push({ name: "ac-verify", passed: true, skipped: true, skipReason: "no AC found or Beads not configured" });
+      checks.push({
+        name: "ac-verify",
+        passed: true,
+        skipped: true,
+        skipReason: "no AC found or Beads not configured",
+      });
     }
   } else {
-    checks.push({ name: "ac-verify", passed: true, skipped: true, skipReason: "no CLAUDE_TASK_ID set" });
+    checks.push({
+      name: "ac-verify",
+      passed: true,
+      skipped: true,
+      skipReason: "no CLAUDE_TASK_ID set",
+    });
   }
 
   // Check 6: Feature/Epic close testing attestation
@@ -192,7 +237,9 @@ if (event === "TaskCompleted") {
     const commentsResult = run(`bd comments ${taskId} --json`);
     const attestation = evaluateCloseTestingAttestation(
       taskIssueType,
-      commentsResult.ok ? commentBodiesFromBdCommentsJson(commentsResult.output) : [],
+      commentsResult.ok
+        ? commentBodiesFromBdCommentsJson(commentsResult.output)
+        : [],
     );
     if (!attestation.required) {
       checks.push({
@@ -205,29 +252,38 @@ if (event === "TaskCompleted") {
       checks.push({
         name: "close-testing-attestation",
         passed: attestation.passed,
-        ...(attestation.passed ? {} : { output: attestation.guidance ?? "testing attestation required" }),
+        ...(attestation.passed
+          ? {}
+          : { output: attestation.guidance ?? "testing attestation required" }),
       });
-      if (!attestation.passed) blockingFailures.push("close-testing-attestation");
+      if (!attestation.passed)
+        blockingFailures.push("close-testing-attestation");
     }
   }
 
   // Check 7: Test evidence (recent commits should include test files)
   {
     const r = run("git log --oneline --name-only -5");
-    const hasRecentTests = r.ok && (r.output.includes(".test.") || r.output.includes(".spec."));
+    const hasRecentTests =
+      r.ok && (r.output.includes(".test.") || r.output.includes(".spec."));
     checks.push({
       name: "test-evidence",
       passed: hasRecentTests,
       ...(hasRecentTests
         ? {}
-        : { output: "No test files in recent commits — ensure tests were committed" }),
+        : {
+            output:
+              "No test files in recent commits — ensure tests were committed",
+          }),
     });
     if (!hasRecentTests) blockingFailures.push("test-evidence");
   }
 
   // Check 8 (optional): strict evaluator verdict JSON
   {
-    const mode = (process.env["AGENT_FORGE_EVAL_VERDICT"] ?? "").trim().toLowerCase();
+    const mode = (process.env["AGENT_FORGE_EVAL_VERDICT"] ?? "")
+      .trim()
+      .toLowerCase();
     if (mode === "strict") {
       if (!taskId) {
         checks.push({
@@ -237,7 +293,12 @@ if (event === "TaskCompleted") {
         });
         blockingFailures.push("eval-verdict");
       } else {
-        const verdictPath = join(process.cwd(), ".tmp", "work", `${taskId}-verdict.json`);
+        const verdictPath = join(
+          process.cwd(),
+          ".tmp",
+          "work",
+          `${taskId}-verdict.json`,
+        );
         if (!existsSync(verdictPath)) {
           checks.push({
             name: "eval-verdict",
@@ -270,7 +331,11 @@ if (event === "TaskCompleted") {
           } else {
             const pr = parseEvalVerdictJson(text);
             if (!pr.ok) {
-              checks.push({ name: "eval-verdict", passed: false, output: pr.error });
+              checks.push({
+                name: "eval-verdict",
+                passed: false,
+                output: pr.error,
+              });
               blockingFailures.push("eval-verdict");
             } else if (pr.value.taskId !== taskId) {
               checks.push({
@@ -329,7 +394,9 @@ try {
 console.log(JSON.stringify(result, null, 2));
 
 if (!result.passed) {
-  console.error(`\nQuality gate FAILED. Blocking failures: ${blockingFailures.join(", ")}`);
+  console.error(
+    `\nQuality gate FAILED. Blocking failures: ${blockingFailures.join(", ")}`,
+  );
   process.exit(2);
 }
 

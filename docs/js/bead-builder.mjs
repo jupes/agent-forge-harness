@@ -36,7 +36,9 @@ function shellEscapeDoubleQuoted(s) {
  * @param {string} s
  */
 function encodeDescriptionNewlines(s) {
-  return String(s ?? "").replace(/\r\n?/g, "\n").replace(/\n/g, "\\n");
+  return String(s ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n/g, "\\n");
 }
 
 /** @param {string} s */
@@ -99,10 +101,24 @@ export function buildBdCreateCommand(d) {
 
 export function renderBeadBuilderHtml() {
   const typeOptions = BEAD_TYPES.map(
-    (t) => '<option value="' + t + '"' + (t === "task" ? " selected" : "") + ">" + t + "</option>",
+    (t) =>
+      '<option value="' +
+      t +
+      '"' +
+      (t === "task" ? " selected" : "") +
+      ">" +
+      t +
+      "</option>",
   ).join("");
   const priorityOptions = BEAD_PRIORITIES.map(
-    (p) => '<option value="' + p + '"' + (p === "P2" ? " selected" : "") + ">" + p + "</option>",
+    (p) =>
+      '<option value="' +
+      p +
+      '"' +
+      (p === "P2" ? " selected" : "") +
+      ">" +
+      p +
+      "</option>",
   ).join("");
   return (
     '<p class="sb-lead" style="color:var(--text-muted);max-width:42rem;margin-bottom:1.5rem;line-height:1.55">' +
@@ -185,7 +201,8 @@ export function wireBeadBuilder(root) {
   const clearBtn = root.querySelector("#bb-clear");
   const card = root.querySelector("#bead-form-card");
 
-  if (!form || !modal || !modalBody || !modalClose || !submitBtn || !modalTitle) return;
+  if (!form || !modal || !modalBody || !modalClose || !submitBtn || !modalTitle)
+    return;
 
   if (clearBtn) {
     clearBtn.addEventListener("click", function () {

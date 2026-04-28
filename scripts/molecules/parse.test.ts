@@ -6,7 +6,14 @@ const minimal = {
   id: "m",
   title: "M",
   steps: [
-    { id: "a", title: "A", agent: "worker", produces: [], consumes: [], depends_on: [] },
+    {
+      id: "a",
+      title: "A",
+      agent: "worker",
+      produces: [],
+      consumes: [],
+      depends_on: [],
+    },
   ],
 };
 
@@ -22,7 +29,14 @@ describe("parseMoleculeJson", () => {
       ...minimal,
       steps: [
         minimal.steps[0],
-        { id: "a", title: "B", agent: "worker", produces: [], consumes: [], depends_on: [] },
+        {
+          id: "a",
+          title: "B",
+          agent: "worker",
+          produces: [],
+          consumes: [],
+          depends_on: [],
+        },
       ],
     };
     const r = parseMoleculeJson(JSON.stringify(m));
@@ -33,7 +47,14 @@ describe("parseMoleculeJson", () => {
     const m = {
       ...minimal,
       steps: [
-        { id: "a", title: "A", agent: "worker", produces: [], consumes: [], depends_on: ["missing"] },
+        {
+          id: "a",
+          title: "A",
+          agent: "worker",
+          produces: [],
+          consumes: [],
+          depends_on: ["missing"],
+        },
       ],
     };
     const r = parseMoleculeJson(JSON.stringify(m));
@@ -44,8 +65,22 @@ describe("parseMoleculeJson", () => {
     const m = {
       ...minimal,
       steps: [
-        { id: "a", title: "A", agent: "worker", produces: [], consumes: [], depends_on: ["b"] },
-        { id: "b", title: "B", agent: "worker", produces: [], consumes: [], depends_on: ["a"] },
+        {
+          id: "a",
+          title: "A",
+          agent: "worker",
+          produces: [],
+          consumes: [],
+          depends_on: ["b"],
+        },
+        {
+          id: "b",
+          title: "B",
+          agent: "worker",
+          produces: [],
+          consumes: [],
+          depends_on: ["a"],
+        },
       ],
     };
     const r = parseMoleculeJson(JSON.stringify(m));

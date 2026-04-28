@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * build-pages.ts — Generate docs/data/beads.json for the dashboard.
  *
@@ -9,10 +10,15 @@
  * Usage: bun run build-pages
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
 import { execFileSync } from "child_process";
-import type { BeadsIssue, BeadsComment, BeadsDependency, BeadsPayload } from "../types/beads";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import type {
+  BeadsComment,
+  BeadsDependency,
+  BeadsIssue,
+  BeadsPayload,
+} from "../types/beads";
 import {
   issuesAndDepsFromExportRows,
   parseBdCommentsJson,
@@ -84,7 +90,9 @@ if (issues.length === 0) {
     deps = fromBd.deps;
     comments = fromBd.comments;
     if (issues.length > 0) {
-      console.log("  (loaded issues via `bd export --no-memories` — JSONL was empty)");
+      console.log(
+        "  (loaded issues via `bd export --no-memories` — JSONL was empty)",
+      );
     }
   } catch (e) {
     bdExportFailed = e instanceof Error ? e : new Error(String(e));
