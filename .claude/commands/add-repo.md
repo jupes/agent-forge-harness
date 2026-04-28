@@ -1,6 +1,6 @@
 # /add-repo — Register a sub-repo in the harness
 
-Clones a repository into `repos/<name>/`, registers it in `repos/repos.json`, and (after clone) runs knowledge generation so agents can work against it with up-to-date context.
+Clones a repository into `repos/<name>/`, registers it in **local** `repos/repos.json` (gitignored; bootstrap from `repos/repos.json.example` when missing), and (after clone) runs knowledge generation so agents can work against it with up-to-date context.
 
 ## Usage
 
