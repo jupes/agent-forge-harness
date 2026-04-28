@@ -5,7 +5,9 @@ description: Register a new sub-repo in the knowledge base.
 
 # add-repo
 
-Adds a new sub-repo to the harness: updates repos.json, clones, generates knowledge YAML.
+Adds a new sub-repo to the harness: updates **local** `repos/repos.json` (gitignored), clones, generates knowledge YAML.
+
+If `repos/repos.json` is missing, copy `repos/repos.json.example` to `repos/repos.json` and edit entries there. Do not commit `repos/repos.json`.
 
 ## When to Use
 

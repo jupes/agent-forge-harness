@@ -174,7 +174,7 @@ agent-forge-harness/
 │   ├── _shared.yaml
 │   └── repos/          # Per-repo knowledge files
 ├── repos/              # Cloned sub-repos (gitignored)
-│   └── repos.json      # Repo registry
+│   └── repos.json.example  # Committed template; repos/repos.json is local (gitignored)
 ├── scripts/            # Bun/TS utility scripts
 ├── types/              # Shared TypeScript types
 ├── docs/               # GitHub Pages dashboard
