@@ -4,6 +4,13 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 <img width="1800" height="836" alt="agent-forge-demo (5)" src="https://github.com/user-attachments/assets/d90bb957-4c78-4dcf-aa32-d694a06833fb" />
 
+## Summary
+
+**What this repository is.** Agent Forge Harness is a **configuration and convention layer** for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It is not a framework for your product app, a deployable service, or a replacement for your editor or CI. It is a **harness repo** you keep at the root of (or alongside) the work you want agents to help with: it encodes *how* work is picked up, scoped, planned, checked, and recorded so sessions stay consistent when people, models, or machines hand off to each other.
+
+**What it does.** The harness gives you a **shared operating system** for AI-assisted development: slash commands for day-to-day flow (`/go`, `/plan`, `/ship`, and others), **workflows** that scale ceremony to task size (small fixes vs planned features vs batched epics), **hooks** that run quality checks at the right moments, **[Beads](https://github.com/gastownhall/beads) issue tracking** so tasks, acceptance criteria, and dependencies live in a graph instead of chat, **`knowledge/`** YAML for curated facts about your systems, optional **multi-repo** coordination under `repos/`, **plan storage** under `plans/` for durable drafts and committed baselines, Bun **scripts** for automation (worktrees, repo sync, dashboard data), and a **static dashboard** in `docs/` for visibility. Together, that steers work toward typed, test-backed changes and push-ready completion without forcing the same process on every one-line fix.
+
+**How it does it.** **Claude Code** loads `.claude/` (agents, commands, workflows, hooks, skills, protocols) when you open this repo. **Slash commands** map human intent to the right **workflow** markdown; agents and humans follow those playbooks. **Hooks** (TypeScript, run with Bun) enforce or report **quality gates** (typecheck, tests, tree state, and project-specific checks) in structured JSON when relevant events fire. **Beads** (`bd`, with optional Dolt) is the system of record for *what* must be done. **`knowledge/`** and **`plans/`** hold **durable** context and plan artifacts; **`.tmp/work/`** remains for short-lived session files. **Optional worktrees** and epic workflow support parallel workers without clobbering the same branch. None of this runs your production stack—it **orchestrates the work** around the codebases you point the harness at.
 
 **Deeper walkthrough:** [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md)
 
@@ -51,7 +58,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 | Clone registered repos | After URLs in `repos/repos.json`: `bun run repo init --human` |
 | Knowledge YAML | `/sync-knowledge <repo>` or `--all` — see [.claude/skills/syncing-repos/SKILL.md](.claude/skills/syncing-repos/SKILL.md) |
 | GitHub Pages data | `bun run build-pages` (needs `bd` on PATH) |
-| Local dashboard | `bun run dashboard` — Vite + live reload; `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD` supported |
+| Local dashboard | `bun run dashboard` — Vite + live reload; opens Beads dashboard + **Plan review** (`docs/plan-review.html`). Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD` |
 | Parallel epics | `bun run worktree create feat/…` — see [`.claude/workflows/epic.md`](.claude/workflows/epic.md) |
 
 ---
@@ -81,7 +88,7 @@ Scope router and friends:
 | `bun run beads:import-anthropic-plan` | Idempotent sample epic/tasks |
 | `bun run beads:bundles <EPIC-ID>` | Parallel batches from Beads graph |
 | `bun run molecules:check` | Validate `.claude/molecules/*.json` |
-| `bun run tmp:cleanup` | Prune stale `.tmp/work/*` (see script; `--apply` to delete) |
+| `bun run tmp:cleanup` | Prune stale `.tmp/work/*` ephemeral files (see script; `--apply` to delete) |
 
 ---
 
@@ -93,6 +100,7 @@ agent-forge-harness/
 ├── .claude/molecules/  # optional JSON “molecules” (validated by molecules:check)
 ├── .beads/           # Beads data (see repo .beads README)
 ├── knowledge/        # _shared.yaml, repos/*.yaml
+├── plans/            # durable plan drafts + committed snapshots
 ├── repos/            # clones (often gitignored); repos.json registry
 ├── scripts/          # Bun utilities
 ├── types/            # shared TS (e.g. beads types)
@@ -104,6 +112,8 @@ agent-forge-harness/
 ## Customize
 
 Change **knowledge** before code, then **workflows** / **quality-gate.ts** / **agents** as needed. **Add a repo:** extend `repos/repos.json`, `bun run repo init --human`, `/sync-knowledge`. **Add a skill:** `bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts <name> "description"`. Details: [HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md).
+
+Plan artifacts should use the root `plans/` contract: write active drafts to `plans/drafts/` and store baseline snapshots in `plans/committed/`.
 
 ---
 
