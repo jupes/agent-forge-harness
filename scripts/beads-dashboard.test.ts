@@ -61,6 +61,23 @@ describe("normalizeBdExportRow", () => {
     expect(issue.status).toBe("open");
     expect(issue.type).toBe("task");
   });
+
+  test("maps issue detail fields from bd export row", () => {
+    const issue = normalizeBdExportRow({
+      id: "T-3",
+      title: "Detail fields",
+      status: "closed",
+      created_at: "2026-01-01T00:00:00Z",
+      due: "2026-02-01T00:00:00Z",
+      estimate: "45",
+      spent: 30,
+      closed_by: "PR-123",
+    });
+    expect(issue.due).toBe("2026-02-01T00:00:00Z");
+    expect(issue.estimate).toBe(45);
+    expect(issue.spent).toBe(30);
+    expect(issue.closedBy).toBe("PR-123");
+  });
 });
 
 describe("mapNumericPriority", () => {
@@ -76,7 +93,7 @@ describe("mapNumericPriority", () => {
 });
 
 describe("collectBlockDeps", () => {
-  test("dedupes blocks edges and ignores non-blocks", () => {
+  test("dedupes edges and keeps supported dependency types", () => {
     const rows = [
       {
         id: "A",
@@ -86,11 +103,17 @@ describe("collectBlockDeps", () => {
           { issue_id: "A", depends_on_id: "B", type: "blocks" },
           { issue_id: "A", depends_on_id: "B", type: "blocks" },
           { issue_id: "A", depends_on_id: "C", type: "relates" },
+          { issue_id: "A", depends_on_id: "D", type: "requires" },
+          { issue_id: "A", depends_on_id: "E", type: "unknown" },
         ],
       },
     ];
     const deps = collectBlockDeps(rows);
-    expect(deps).toEqual([{ from: "A", to: "B", type: "blocks" }]);
+    expect(deps).toEqual([
+      { from: "A", to: "B", type: "blocks" },
+      { from: "A", to: "C", type: "relates" },
+      { from: "A", to: "D", type: "requires" },
+    ]);
   });
 });
 
@@ -131,19 +154,26 @@ describe("parseBdExportStdout", () => {
 });
 
 describe("issuesAndDepsFromExportRows", () => {
-  test("produces issues + block deps from export rows", () => {
+  test("produces issues + supported deps from export rows", () => {
     const { issues, deps } = issuesAndDepsFromExportRows([
       {
         id: "T-1",
         title: "t",
         status: "open",
         created_at: "2026-01-01T00:00:00Z",
-        dependencies: [{ issue_id: "T-1", depends_on_id: "T-2", type: "blocks" }],
+        dependencies: [
+          { issue_id: "T-1", depends_on_id: "T-2", type: "blocks" },
+          { issue_id: "T-1", depends_on_id: "T-3", type: "requires" },
+        ],
       },
       { id: "T-2", title: "blocker", status: "open", created_at: "2026-01-01T00:00:00Z" },
+      { id: "T-3", title: "related", status: "open", created_at: "2026-01-01T00:00:00Z" },
     ]);
-    expect(issues).toHaveLength(2);
-    expect(deps).toEqual([{ from: "T-1", to: "T-2", type: "blocks" }]);
+    expect(issues).toHaveLength(3);
+    expect(deps).toEqual([
+      { from: "T-1", to: "T-2", type: "blocks" },
+      { from: "T-1", to: "T-3", type: "requires" },
+    ]);
   });
 });
 
@@ -177,6 +207,20 @@ describe("buildDerivedFromIssuesAndDeps", () => {
     const derived = buildDerivedFromIssuesAndDeps(issues, [{ from: "B", to: "K", type: "blocks" }]);
     expect(derived.ready.map((i) => i.id)).toEqual(["B"]);
     expect(derived.blocked).toHaveLength(0);
+  });
+
+  test("requires blocks while relates does not", () => {
+    const issues: BeadsIssue[] = [
+      baseIssue({ id: "A", title: "downstream", status: "open" }),
+      baseIssue({ id: "B", title: "required", status: "open" }),
+      baseIssue({ id: "C", title: "related", status: "open" }),
+    ];
+    const derived = buildDerivedFromIssuesAndDeps(issues, [
+      { from: "A", to: "B", type: "requires" },
+      { from: "A", to: "C", type: "relates" },
+    ]);
+    expect(derived.blocked.map((i) => i.id)).toEqual(["A"]);
+    expect(derived.ready.some((i) => i.id === "A")).toBeFalse();
   });
 
   test("normalizeIssueType / normalizeStatus helpers", () => {
