@@ -113,6 +113,18 @@ export function normalizeIssueType(raw: string | undefined): IssueType {
   return "task";
 }
 
+function inferRepoFromIssueId(issueId: string): string | undefined {
+  /**
+   * Beads IDs commonly look like `<repo-slug>-<shortid>` or
+   * `<repo-slug>-<shortid>.<child>`, e.g. `agent-forge-harness-5an.65`.
+   * Infer the repo slug when `bd export` omits an explicit repo field.
+   */
+  const m = issueId.match(
+    /^([a-z0-9]+(?:-[a-z0-9]+)+)-[a-z0-9]+(?:\.[a-z0-9]+)?$/,
+  );
+  return m?.[1];
+}
+
 function asOptionalNumber(
   raw: number | string | undefined,
 ): number | undefined {
@@ -138,6 +150,8 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   const estimate = asOptionalNumber(raw.estimate);
   const spent = asOptionalNumber(raw.spent);
   const closedBy = raw.closed_by ?? raw.closedBy;
+  const inferredRepo = inferRepoFromIssueId(raw.id);
+  const repo = raw.repo ?? inferredRepo;
   /** `owner` from export is metadata (creator); only `assignee` counts as claimed for derived.ready. */
   const assignee = raw.assignee;
 
@@ -151,7 +165,7 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
     ...(description !== undefined ? { description } : {}),
     ...(priority !== undefined ? { priority } : {}),
     ...(parent !== undefined ? { parent } : {}),
-    ...(raw.repo !== undefined ? { repo: raw.repo } : {}),
+    ...(repo !== undefined ? { repo } : {}),
     ...(raw.owner !== undefined ? { owner: raw.owner } : {}),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(raw.labels !== undefined ? { labels: raw.labels } : {}),
