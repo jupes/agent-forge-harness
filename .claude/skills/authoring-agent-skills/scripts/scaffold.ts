@@ -3,6 +3,7 @@
 // Usage: bun run scaffold.ts <name> "<description>"
 import { mkdirSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
+import { defaultSkillMarkdown } from "./scaffold-lib";
 
 const name = process.argv[2];
 const desc = process.argv[3] ?? "TODO: description";
@@ -17,29 +18,9 @@ if (existsSync(dir)) {
 }
 mkdirSync(dir, { recursive: true });
 mkdirSync(join(dir, "scripts"), { recursive: true });
+mkdirSync(join(dir, "references"), { recursive: true });
 
-const md =
-  `---
-name: ${name}
-description: ${desc}
----
-
-# ${name}
-
-TODO: overview.
-
-## When to Use
-
-- TODO: triggers
-
-## Steps
-
-### 1. TODO
-
-` +
-  "```bash\n" +
-  "# command\n" +
-  "```\n";
+const md = defaultSkillMarkdown(name, desc);
 
 writeFileSync(join(dir, "SKILL.md"), md);
 console.log(JSON.stringify({ ok: true, skill: name, path: dir }));
