@@ -7,7 +7,7 @@
  *   bun run setup --non-interactive  # Use defaults / env vars only
  */
 
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createInterface } from "readline";
 
@@ -26,9 +26,11 @@ interface ReposFile {
 async function ask(question: string, defaultValue = ""): Promise<string> {
   if (NON_INTERACTIVE) return defaultValue;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => {
-    const prompt = defaultValue ? `${question} [${defaultValue}]: ` : `${question}: `;
-    rl.question(prompt, answer => {
+  return new Promise((resolve) => {
+    const prompt = defaultValue
+      ? `${question} [${defaultValue}]: `
+      : `${question}: `;
+    rl.question(prompt, (answer) => {
       rl.close();
       resolve(answer.trim() || defaultValue);
     });
@@ -46,7 +48,10 @@ async function main() {
   const projectName = await ask("Project name", "agent-forge-harness");
 
   // Step 2: GitHub org
-  const githubOrg = await ask("GitHub organization", process.env["GITHUB_ORG"] ?? "");
+  const githubOrg = await ask(
+    "GitHub organization",
+    process.env["GITHUB_ORG"] ?? "",
+  );
 
   // Step 3: Repos to manage
   const reposPath = join(process.cwd(), "repos", "repos.json");
@@ -62,14 +67,20 @@ async function main() {
     while (true) {
       const url = await ask(`Repo ${i} URL`);
       if (!url) break;
-      const namePart = url.replace(/\.git$/, "").split("/").pop() ?? `repo-${i}`;
+      const namePart =
+        url
+          .replace(/\.git$/, "")
+          .split("/")
+          .pop() ?? `repo-${i}`;
       const name = await ask(`  Name for this repo`, namePart);
       const branch = await ask(`  Default branch`, "main");
       reposData.repos.push({ name, url, defaultBranch: branch });
       i++;
     }
     writeFileSync(reposPath, JSON.stringify(reposData, null, 2));
-    console.log(`\nUpdated repos/repos.json with ${reposData.repos.length} repo(s).`);
+    console.log(
+      `\nUpdated repos/repos.json with ${reposData.repos.length} repo(s).`,
+    );
   }
 
   // Step 4: Update beads config if it exists
@@ -88,12 +99,17 @@ async function main() {
   console.log(`  Repos: ${reposData.repos.length}`);
   console.log("\nNext steps:");
   console.log("  1. bun run repo init --human   (clone sub-repos)");
-  console.log("  2. bd init && bd dolt pull      (initialize Beads; pull remote issue data when configured)");
+  console.log(
+    "  2. bd init && bd dolt pull      (initialize Beads; pull remote issue data when configured)",
+  );
   console.log("  3. claude                        (open Claude Code)");
   console.log("  4. /status                       (check workspace)");
 }
 
-main().catch(err => {
-  console.error("Setup failed:", err instanceof Error ? err.message : String(err));
+main().catch((err) => {
+  console.error(
+    "Setup failed:",
+    err instanceof Error ? err.message : String(err),
+  );
   process.exit(1);
 });

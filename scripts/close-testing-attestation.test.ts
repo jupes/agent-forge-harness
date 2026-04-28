@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type CloseGateIssueType,
   evaluateCloseTestingAttestation,
   parseTestingAttestationFromComment,
-  type CloseGateIssueType,
 } from "./close-testing-attestation";
 
 describe("parseTestingAttestationFromComment", () => {
@@ -21,7 +21,9 @@ describe("parseTestingAttestationFromComment", () => {
   });
 
   test("returns null when attestation marker missing", () => {
-    expect(parseTestingAttestationFromComment("worklog: regular progress update")).toBeNull();
+    expect(
+      parseTestingAttestationFromComment("worklog: regular progress update"),
+    ).toBeNull();
   });
 });
 

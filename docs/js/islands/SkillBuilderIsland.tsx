@@ -3,7 +3,12 @@ import { useEffect, useRef, useState } from "preact/hooks";
 
 type ModalState =
   | { open: false }
-  | { open: true; title: string; bodyHtml: string; fallbackText: string | null };
+  | {
+      open: true;
+      title: string;
+      bodyHtml: string;
+      fallbackText: string | null;
+    };
 
 export function SkillBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
@@ -34,7 +39,11 @@ export function SkillBuilderIsland() {
     setModal({ open: false });
   }
 
-  function openModal(messageHtml: string, fallbackText: string | null, titleText?: string) {
+  function openModal(
+    messageHtml: string,
+    fallbackText: string | null,
+    titleText?: string,
+  ) {
     setModal({
       open: true,
       title: titleText ?? "Copied to clipboard",
@@ -130,19 +139,33 @@ export function SkillBuilderIsland() {
     if (e.key === "Escape") closeModal();
   }
 
-  const showFallback = modal.open && modal.fallbackText != null && modal.fallbackText.length > 0;
+  const showFallback =
+    modal.open && modal.fallbackText != null && modal.fallbackText.length > 0;
 
   return (
     <div>
       <p
         className="sb-lead"
-        style={{ color: "var(--text-muted)", maxWidth: "42rem", marginBottom: "1.5rem", lineHeight: 1.55 }}
+        style={{
+          color: "var(--text-muted)",
+          maxWidth: "42rem",
+          marginBottom: "1.5rem",
+          lineHeight: 1.55,
+        }}
       >
-        Describe the skill you want. On submit we build a single prompt for your agent (including a directive to use{" "}
-        <code>@.claude/skills/authoring-agent-skills</code>) and copy it to the clipboard.
+        Describe the skill you want. On submit we build a single prompt for your
+        agent (including a directive to use{" "}
+        <code>@.claude/skills/authoring-agent-skills</code>) and copy it to the
+        clipboard.
       </p>
       <div className="skill-form-card" id="skill-form-card">
-        <form ref={formRef} id="skill-builder-form" className="skill-form" noValidate onSubmit={onSubmit}>
+        <form
+          ref={formRef}
+          id="skill-builder-form"
+          className="skill-form"
+          noValidate
+          onSubmit={onSubmit}
+        >
           <div className="sb-field">
             <label htmlFor="sb-skill-name">
               Skill name <span className="sb-req">*</span>
@@ -156,8 +179,8 @@ export function SkillBuilderIsland() {
               autoComplete="off"
             />
             <span className="sb-hint">
-              Becomes a kebab-case folder under <code>.claude/skills/</code> in the prompt (spaces and punctuation are
-              normalized).
+              Becomes a kebab-case folder under <code>.claude/skills/</code> in
+              the prompt (spaces and punctuation are normalized).
             </span>
           </div>
           <div className="sb-field">
@@ -200,11 +223,23 @@ export function SkillBuilderIsland() {
             />
           </div>
           <div className="sb-actions">
-            <button type="button" className="sb-clear" id="sb-clear" onClick={onClear}>
+            <button
+              type="button"
+              className="sb-clear"
+              id="sb-clear"
+              onClick={onClear}
+            >
               Clear form
             </button>
-            <button type="submit" className="sb-submit" id="sb-submit" disabled={submitting}>
-              <span className="sb-submit-label">Generate prompt &amp; copy</span>
+            <button
+              type="submit"
+              className="sb-submit"
+              id="sb-submit"
+              disabled={submitting}
+            >
+              <span className="sb-submit-label">
+                Generate prompt &amp; copy
+              </span>
               <span className="sb-submit-spinner" aria-hidden="true" />
             </button>
           </div>
@@ -216,24 +251,53 @@ export function SkillBuilderIsland() {
         aria-hidden={modal.open ? "false" : "true"}
         onKeyDown={onModalKeyDown}
       >
-        <div className="sb-modal-backdrop" tabIndex={-1} onClick={onBackdropClick} />
-        <div className="sb-modal-panel" role="dialog" aria-modal="true" aria-labelledby="sb-modal-title">
+        <div
+          className="sb-modal-backdrop"
+          tabIndex={-1}
+          onClick={onBackdropClick}
+        />
+        <div
+          className="sb-modal-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sb-modal-title"
+        >
           <h2 id="sb-modal-title" className="sb-modal-title">
             {modal.open ? modal.title : ""}
           </h2>
           {modal.open ? (
-            <p id="sb-modal-body" className="sb-modal-body" dangerouslySetInnerHTML={{ __html: modal.bodyHtml }} />
+            <p
+              id="sb-modal-body"
+              className="sb-modal-body"
+              dangerouslySetInnerHTML={{ __html: modal.bodyHtml }}
+            />
           ) : (
             <p id="sb-modal-body" className="sb-modal-body" />
           )}
           <p className="sb-modal-hint">
-            Paste that prompt into your coding agent so it can create the skill using the authoring meta-skill.
+            Paste that prompt into your coding agent so it can create the skill
+            using the authoring meta-skill.
           </p>
-          <div id="sb-modal-fallback" className="sb-modal-fallback" hidden={!showFallback}>
+          <div
+            id="sb-modal-fallback"
+            className="sb-modal-fallback"
+            hidden={!showFallback}
+          >
             <label>Copy manually:</label>
-            <textarea id="sb-modal-textarea" ref={modalTextareaRef} readOnly rows={8} />
+            <textarea
+              id="sb-modal-textarea"
+              ref={modalTextareaRef}
+              readOnly
+              rows={8}
+            />
           </div>
-          <button type="button" className="sb-modal-close" id="sb-modal-close" ref={modalCloseRef} onClick={closeModal}>
+          <button
+            type="button"
+            className="sb-modal-close"
+            id="sb-modal-close"
+            ref={modalCloseRef}
+            onClick={closeModal}
+          >
             Close
           </button>
         </div>

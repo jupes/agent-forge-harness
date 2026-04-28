@@ -101,7 +101,9 @@ export function workBranchesFromCommentBodies(comments) {
 export function depsTouchingIssue(issueId, deps) {
   const list = Array.isArray(deps) ? deps : [];
   return list.filter(function (d) {
-    return d && typeof d === "object" && (d.from === issueId || d.to === issueId);
+    return (
+      d && typeof d === "object" && (d.from === issueId || d.to === issueId)
+    );
   });
 }
 
@@ -119,7 +121,7 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
   function addRow(label, value) {
     if (value === undefined || value === null || value === "") return;
     rows.push(
-      "<div class=\"issue-detail-kv\"><dt>" +
+      '<div class="issue-detail-kv"><dt>' +
         escapeHtml(label) +
         "</dt><dd>" +
         value +
@@ -138,25 +140,42 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
   if (issue.createdAt) addRow("Created", escapeHtml(String(issue.createdAt)));
   if (issue.updatedAt) addRow("Updated", escapeHtml(String(issue.updatedAt)));
   if (issue.owner) addRow("Owner", escapeHtml(String(issue.owner)));
-  if (issue.assignee) addRow("Assignee (claimed)", escapeHtml(String(issue.assignee)));
+  if (issue.assignee)
+    addRow("Assignee (claimed)", escapeHtml(String(issue.assignee)));
   if (Array.isArray(issue.labels) && issue.labels.length) {
-    addRow("Labels", issue.labels.map(function (l) { return escapeHtml(String(l)); }).join(", "));
+    addRow(
+      "Labels",
+      issue.labels
+        .map(function (l) {
+          return escapeHtml(String(l));
+        })
+        .join(", "),
+    );
   }
   if (Array.isArray(issue.ac) && issue.ac.length) {
     addRow(
       "AC",
-      "<ul class=\"issue-detail-ac\">" +
-        issue.ac.map(function (line) {
-          return "<li>" + escapeHtml(String(line)) + "</li>";
-        }).join("") +
+      '<ul class="issue-detail-ac">' +
+        issue.ac
+          .map(function (line) {
+            return "<li>" + escapeHtml(String(line)) + "</li>";
+          })
+          .join("") +
         "</ul>",
     );
   }
-  if (issue.estimate != null && issue.estimate !== "") addRow("Estimate (min)", escapeHtml(String(issue.estimate)));
-  if (issue.spent != null && issue.spent !== "") addRow("Spent (min)", escapeHtml(String(issue.spent)));
+  if (issue.estimate != null && issue.estimate !== "")
+    addRow("Estimate (min)", escapeHtml(String(issue.estimate)));
+  if (issue.spent != null && issue.spent !== "")
+    addRow("Spent (min)", escapeHtml(String(issue.spent)));
   if (issue.closedBy) addRow("Closed by", escapeHtml(String(issue.closedBy)));
   if (issue.description) {
-    addRow("Description / AC text", "<div class=\"issue-detail-prose\">" + escapeHtml(String(issue.description)) + "</div>");
+    addRow(
+      "Description / AC text",
+      '<div class="issue-detail-prose">' +
+        escapeHtml(String(issue.description)) +
+        "</div>",
+    );
   }
 
   const branches = workBranchesFromCommentBodies(comments);
@@ -180,11 +199,11 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
         comments
           .map(function (c) {
             return (
-              "<li><span class=\"issue-detail-meta\">" +
+              '<li><span class="issue-detail-meta">' +
               escapeHtml(String(c.author || "")) +
               " · " +
               escapeHtml(String(c.createdAt || "")) +
-              "</span><pre class=\"issue-detail-comment-body\">" +
+              '</span><pre class="issue-detail-comment-body">' +
               escapeHtml(String(c.body || "")) +
               "</pre></li>"
             );
@@ -200,17 +219,14 @@ export function buildIssueDetailPanelHtml(issue, ctx) {
       '<section class="issue-detail-section"><h5>Dependencies</h5><ul class="issue-detail-deps">' +
       deps
         .map(function (d) {
-          var rel =
-            d.from === issue.id
-              ? "Blocked by"
-              : "Blocks";
+          var rel = d.from === issue.id ? "Blocked by" : "Blocks";
           var other = d.from === issue.id ? d.to : d.from;
           return (
-            "<li><span class=\"issue-detail-dep-rel\">" +
+            '<li><span class="issue-detail-dep-rel">' +
             escapeHtml(rel) +
             "</span> <code>" +
             escapeHtml(String(other)) +
-            "</code> <span class=\"issue-detail-dep-type\">(" +
+            '</code> <span class="issue-detail-dep-type">(' +
             escapeHtml(String(d.type || "")) +
             ")</span></li>"
           );

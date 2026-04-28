@@ -1,6 +1,10 @@
-import { h, Fragment } from "preact";
+import { Fragment, h } from "preact";
 import { useMemo } from "preact/hooks";
 import type { BeadsIssue, BeadsPayload } from "../../../types/beads";
+import {
+  issueIdCopyControlHtml,
+  toggleExpandedState,
+} from "../issue-detail.mjs";
 import {
   applyInitiativeFilter,
   formatIssueDate,
@@ -8,7 +12,6 @@ import {
   listEpics,
   sortByUpdatedDesc,
 } from "../issues-selection.mjs";
-import { issueIdCopyControlHtml, toggleExpandedState } from "../issue-detail.mjs";
 import { IssueDetailPanel } from "./IssueDetailPanel";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -38,7 +41,7 @@ const PRIORITY_COLOR: Record<string, string> = {
 const ISSUE_TABLE_COLSPAN = 8;
 
 const EXPANDABLE_ISSUE_HEAD_INNER =
-  "<tr><th>ID</th><th>Title</th><th class=\"type-col\">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class=\"date-col\">Created</th><th class=\"date-col\">Updated</th></tr>";
+  '<tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class="date-col">Created</th><th class="date-col">Updated</th></tr>';
 
 function esc(str: unknown): string {
   return String(str != null ? str : "")
@@ -80,7 +83,13 @@ function statusBadgeHtml(status: unknown): string {
 function priorityBadgeHtml(priority: unknown): string {
   if (!priority) return "";
   const color = PRIORITY_COLOR[String(priority)] || "#8aa4c8";
-  return '<span class="badge" style="color:' + color + '">' + String(priority) + "</span>";
+  return (
+    '<span class="badge" style="color:' +
+    color +
+    '">' +
+    String(priority) +
+    "</span>"
+  );
 }
 
 function typeCellHtml(type: unknown): string {
@@ -89,7 +98,9 @@ function typeCellHtml(type: unknown): string {
   if (!label && !icon) return "—";
   return (
     '<span class="type-pill">' +
-    (icon ? '<span class="type-icon" aria-hidden="true">' + icon + "</span>" : "") +
+    (icon
+      ? '<span class="type-icon" aria-hidden="true">' + icon + "</span>"
+      : "") +
     (label ? '<span class="type-label">' + label + "</span>" : "") +
     "</span>"
   );
@@ -134,7 +145,9 @@ function InitiativeSelect({
       <select
         id="filter-initiative"
         value={initiativeFilter}
-        onChange={(e) => onInitiativeChange((e.currentTarget as HTMLSelectElement).value)}
+        onChange={(e) =>
+          onInitiativeChange((e.currentTarget as HTMLSelectElement).value)
+        }
         style={{
           padding: "0.4rem 0.75rem",
           background: "var(--surface-2)",
@@ -201,7 +214,9 @@ function ExpandableIssueTable({
   }
   return (
     <table className="issue-table issue-table-expandable">
-      <thead dangerouslySetInnerHTML={{ __html: EXPANDABLE_ISSUE_HEAD_INNER }} />
+      <thead
+        dangerouslySetInnerHTML={{ __html: EXPANDABLE_ISSUE_HEAD_INNER }}
+      />
       <tbody>
         {slice.map((i) => {
           const isOpen = expandedIssueId === i.id;
@@ -215,12 +230,14 @@ function ExpandableIssueTable({
                 tabIndex={0}
                 aria-expanded={isOpen ? "true" : "false"}
                 onClick={(e) => {
-                  if ((e.target as HTMLElement).closest(".issue-id-copy")) return;
+                  if ((e.target as HTMLElement).closest(".issue-id-copy"))
+                    return;
                   onRowActivate(i.id);
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter" && e.key !== " ") return;
-                  if ((e.target as HTMLElement).closest(".issue-id-copy")) return;
+                  if ((e.target as HTMLElement).closest(".issue-id-copy"))
+                    return;
                   e.preventDefault();
                   onRowActivate(i.id);
                 }}
@@ -255,12 +272,17 @@ function ExpandableIssueTable({
               </tr>
               <tr className="issue-detail-gap">
                 <td colSpan={ISSUE_TABLE_COLSPAN}>
-                  <div className={"issue-detail-anim" + (isOpen ? " is-open" : "")}>
+                  <div
+                    className={"issue-detail-anim" + (isOpen ? " is-open" : "")}
+                  >
                     <div className="issue-detail-anim-inner">
                       {isOpen ? (
                         <IssueDetailPanel
                           issue={i}
-                          ctx={{ comments: payload.comments, deps: payload.deps }}
+                          ctx={{
+                            comments: payload.comments,
+                            deps: payload.deps,
+                          }}
                           onClose={onCloseDetail}
                         />
                       ) : null}
@@ -303,10 +325,18 @@ export function IssuesViewsIsland({
     const closedUnfiltered = (derived.byStatus || {}).closed || [];
 
     const openAll = applyInitiativeFilter(openAllUnfiltered, initiativeFilter);
-    const inProgressAll = applyInitiativeFilter(issuesInProgress(issues), initiativeFilter).sort(sortByUpdatedDesc);
+    const inProgressAll = applyInitiativeFilter(
+      issuesInProgress(issues),
+      initiativeFilter,
+    ).sort(sortByUpdatedDesc);
     const readyAll = applyInitiativeFilter(readyUnfiltered, initiativeFilter);
-    const blockedAll = applyInitiativeFilter(blockedUnfiltered, initiativeFilter);
-    const closedAll = applyInitiativeFilter(closedUnfiltered, initiativeFilter).slice().sort(sortByUpdatedDesc);
+    const blockedAll = applyInitiativeFilter(
+      blockedUnfiltered,
+      initiativeFilter,
+    );
+    const closedAll = applyInitiativeFilter(closedUnfiltered, initiativeFilter)
+      .slice()
+      .sort(sortByUpdatedDesc);
 
     const ready = readyAll.slice(0, 15);
     const inProgressIssues = inProgressAll.slice(0, 25);
@@ -314,7 +344,10 @@ export function IssuesViewsIsland({
     const closedRecent = closedAll.slice(0, 25);
 
     const open = openAll.length;
-    const inProgressCount = initiativeFilter === "all" ? inProgressUnfiltered.length : inProgressAll.length;
+    const inProgressCount =
+      initiativeFilter === "all"
+        ? inProgressUnfiltered.length
+        : inProgressAll.length;
     const closed = closedAll.length;
     const blocked = blockedAll.length;
 
@@ -353,10 +386,17 @@ export function IssuesViewsIsland({
             <div className="stat-label">Closed</div>
           </div>
         </div>
-        <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "0 0 1.25rem" }}>
-          Beads is the issue graph tracked with <code style={{ fontSize: "0.9em" }}>bd</code> (epics, tasks,
-          dependencies). This dashboard shows a built snapshot: status counts and lists of ready, in-progress, blocked,
-          and recently closed work.
+        <p
+          style={{
+            color: "var(--text-muted)",
+            fontSize: "0.85rem",
+            margin: "0 0 1.25rem",
+          }}
+        >
+          Beads is the issue graph tracked with{" "}
+          <code style={{ fontSize: "0.9em" }}>bd</code> (epics, tasks,
+          dependencies). This dashboard shows a built snapshot: status counts
+          and lists of ready, in-progress, blocked, and recently closed work.
         </p>
         <h3>In Progress ({inProgressAll.length})</h3>
         <ExpandableIssueTable
@@ -403,12 +443,17 @@ export function IssuesViewsIsland({
   }
 
   const search = listSearchQuery.toLowerCase();
-  const filteredIssues = applyInitiativeFilter(issues, initiativeFilter).filter((i: BeadsIssue) => {
-    const matchStatus = listStatusFilter === "all" || i.status === listStatusFilter;
-    const matchSearch =
-      !search || i.title.toLowerCase().indexOf(search) !== -1 || i.id.toLowerCase().indexOf(search) !== -1;
-    return matchStatus && matchSearch;
-  });
+  const filteredIssues = applyInitiativeFilter(issues, initiativeFilter).filter(
+    (i: BeadsIssue) => {
+      const matchStatus =
+        listStatusFilter === "all" || i.status === listStatusFilter;
+      const matchSearch =
+        !search ||
+        i.title.toLowerCase().indexOf(search) !== -1 ||
+        i.id.toLowerCase().indexOf(search) !== -1;
+      return matchStatus && matchSearch;
+    },
+  );
 
   return (
     <Fragment>
@@ -418,7 +463,9 @@ export function IssuesViewsIsland({
           type="text"
           placeholder="Search..."
           value={listSearchQuery}
-          onInput={(e) => onListSearchChange((e.currentTarget as HTMLInputElement).value)}
+          onInput={(e) =>
+            onListSearchChange((e.currentTarget as HTMLInputElement).value)
+          }
           style={{
             padding: "0.4rem 0.75rem",
             background: "var(--surface-2)",
@@ -431,7 +478,9 @@ export function IssuesViewsIsland({
         <select
           id="filter-status"
           value={listStatusFilter}
-          onChange={(e) => onListStatusChange((e.currentTarget as HTMLSelectElement).value)}
+          onChange={(e) =>
+            onListStatusChange((e.currentTarget as HTMLSelectElement).value)
+          }
           style={{
             padding: "0.4rem 0.75rem",
             background: "var(--surface-2)",
@@ -441,11 +490,13 @@ export function IssuesViewsIsland({
             fontSize: "0.875rem",
           }}
         >
-          {(["all", "open", "in_progress", "blocked", "closed"] as const).map((s) => (
-            <option key={s} value={s}>
-              {s === "all" ? "All statuses" : s}
-            </option>
-          ))}
+          {(["all", "open", "in_progress", "blocked", "closed"] as const).map(
+            (s) => (
+              <option key={s} value={s}>
+                {s === "all" ? "All statuses" : s}
+              </option>
+            ),
+          )}
         </select>
         <InitiativeSelect
           issues={issues}
@@ -453,7 +504,13 @@ export function IssuesViewsIsland({
           onInitiativeChange={onInitiativeChange}
         />
       </div>
-      <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: "0.75rem" }}>
+      <p
+        style={{
+          color: "var(--text-muted)",
+          fontSize: "0.85rem",
+          marginBottom: "0.75rem",
+        }}
+      >
         {filteredIssues.length} issues
       </p>
       <ExpandableIssueTable

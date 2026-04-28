@@ -3,7 +3,10 @@ import { defaultSkillMarkdown } from "../.claude/skills/authoring-agent-skills/s
 
 describe("defaultSkillMarkdown", () => {
   test("includes YAML frontmatter with name and description", () => {
-    const md = defaultSkillMarkdown("my-skill", "Does a thing. Use when testing.");
+    const md = defaultSkillMarkdown(
+      "my-skill",
+      "Does a thing. Use when testing.",
+    );
     expect(md).toContain("name: my-skill");
     expect(md).toContain("description: Does a thing. Use when testing.");
     expect(md.startsWith("---\n")).toBe(true);
