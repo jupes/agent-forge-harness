@@ -106,6 +106,21 @@ function typeCellHtml(type: unknown): string {
   );
 }
 
+function activeBlockerIdsByIssue(issues: BeadsIssue[], deps: BeadsPayload["deps"]): Map<string, string[]> {
+  const byId = new Map<string, BeadsIssue>();
+  for (const issue of issues) byId.set(issue.id, issue);
+  const out = new Map<string, string[]>();
+  for (const dep of deps || []) {
+    if (dep.type !== "blocks" && dep.type !== "requires") continue;
+    const blocker = byId.get(dep.to);
+    if (!blocker || blocker.status === "closed") continue;
+    const list = out.get(dep.from) || [];
+    if (list.indexOf(dep.to) === -1) list.push(dep.to);
+    out.set(dep.from, list);
+  }
+  return out;
+}
+
 function InitiativeSelect({
   issues,
   initiativeFilter,
@@ -190,6 +205,10 @@ function ExpandableIssueTable({
   payload: BeadsPayload;
 }) {
   const slice = issues.slice(0, max);
+  const blockerIdsByIssue = useMemo(
+    () => activeBlockerIdsByIssue(payload.issues || [], payload.deps || []),
+    [payload.issues, payload.deps],
+  );
   if (slice.length === 0) {
     return <p style={{ color: "var(--text-muted)" }}>None.</p>;
   }
@@ -201,6 +220,7 @@ function ExpandableIssueTable({
       <tbody>
         {slice.map((i) => {
           const isOpen = expandedIssueId === i.id;
+          const blockerIds = blockerIdsByIssue.get(i.id) || [];
           return (
             <Fragment key={i.id}>
               <tr
@@ -225,7 +245,14 @@ function ExpandableIssueTable({
                 <td>
                   <HtmlCell html={issueIdCopyControlHtml(i.id)} />
                 </td>
-                <td>{esc(i.title)}</td>
+                <td>
+                  {esc(i.title)}
+                  {blockerIds.length > 0 ? (
+                    <div style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "0.2rem" }}>
+                      Blocked by {blockerIds.join(", ")}
+                    </div>
+                  ) : null}
+                </td>
                 <td className="type-col">
                   <HtmlCell html={typeCellHtml(i.type)} />
                 </td>
