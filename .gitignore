@@ -8,6 +8,14 @@ trees/
 # Temporary agent work files
 .tmp/
 
+# Plan draft transient files
+plans/drafts/*.tmp
+plans/drafts/*.swp
+plans/drafts/*.swo
+
+# Local-only: which plan the session is actively discussing (plan review auto-follow)
+plans/session-context.json
+
 # Beads runtime files (Dolt backend)
 .beads/*.db
 .beads/*.db-wal

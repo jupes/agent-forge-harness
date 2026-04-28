@@ -69,8 +69,8 @@ If no alignment document exists (standalone task, no lead), skip this step.
 
 ## Step 3 — Plan
 
-Write a plan to `.tmp/work/<TASK-ID>-plan.md`.
-Create `.tmp/work/` if it does not exist.
+Write a plan to `plans/drafts/<TASK-ID>.md`.
+Create `plans/drafts/` if it does not exist.
 
 ### Plan format:
 
@@ -127,7 +127,7 @@ bun test src/...
 
 Otherwise, present the plan summary and wait for user approval:
 ```
-Plan ready: .tmp/work/<TASK-ID>-plan.md
+Plan ready: plans/drafts/<TASK-ID>.md
 Summary: <2-sentence description>
 Scope: <n> files, <complexity>
 Proceed? (yes/no)

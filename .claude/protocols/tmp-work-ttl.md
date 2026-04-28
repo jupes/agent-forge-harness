@@ -1,6 +1,6 @@
 # `.tmp/work` TTL — wisps vs durable beads (MO-02)
 
-`.tmp/work/*` holds **wisps**: short-lived, session-local artifacts (alignment docs, verdict JSON, planning notes, session handoff). `.tmp/` is gitignored; nothing in it is authoritative.
+`.tmp/work/*` holds **wisps**: short-lived, session-local artifacts (alignment docs, verdict JSON, session handoff). `.tmp/` is gitignored; nothing in it is authoritative.
 
 Durable truth lives in **Beads**: issues, AC, priorities, comments, dependencies.
 
@@ -12,7 +12,7 @@ This file defines the default retention so long-running harness usage does not a
 2. **Per-task wisps** follow the task: `.tmp/work/<TASK-ID>-*.md` / `.json`.
    - `alignment.md` — Lead/Worker/Evaluator agreed scope.
    - `verdict.json` — Evaluator output (see `evaluation-verdict.md`).
-   - `plan.md` — Worker plan (feature workflow).
+   - Worker plans are durable artifacts in `plans/drafts/`, not `.tmp/work/`.
 3. **Cross-cutting wisps** use a stable name:
    - `session-handoff.md` — next-session pickup.
    - `<EPIC-ID>-interfaces.md` — shared contracts.
