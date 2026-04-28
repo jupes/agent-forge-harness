@@ -461,6 +461,32 @@ function runPreactBridgeSelfTestIfDev() {
 
 document.addEventListener("DOMContentLoaded", function () {
   wireIssueIdCopyDelegation();
+
+  /** Deep-link SPA view from `index.html?view=<name>` (used by plan-review.html and bookmarks). */
+  (function applyDashboardViewQuery() {
+    try {
+      var allowed = [
+        "dashboard",
+        "list",
+        "epics",
+        "commands",
+        "skill-builder",
+        "bead-builder",
+        "insights",
+      ];
+      var params = new URLSearchParams(window.location.search);
+      var q = params.get("view");
+      if (q && allowed.indexOf(q) !== -1) {
+        activeView = /** @type {typeof activeView} */ (q);
+      }
+      document.querySelectorAll("nav a[data-view]").forEach(function (a) {
+        a.classList.toggle("active", /** @type {HTMLElement} */ (a).dataset.view === activeView);
+      });
+    } catch (e) {
+      /* ignore malformed URL */
+    }
+  })();
+
   document.querySelectorAll("nav a[data-view]").forEach(function (a) {
     a.addEventListener("click", function (e) {
       e.preventDefault();
