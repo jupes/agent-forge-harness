@@ -70,12 +70,49 @@
       transition: color 0.1s, border-color 0.1s, background 0.1s;
     }
 
-    nav a:hover { color: var(--text); background: var(--surface-2); border-left-color: var(--accent); }
-
-    nav a.nav-active {
+    nav a:hover,
+    nav a.active {
       color: var(--text);
       background: var(--surface-2);
       border-left-color: var(--accent);
+    }
+
+    nav .nav-meta {
+      padding: 1rem 1.25rem 0;
+      border-top: 1px solid var(--border);
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    nav .nav-meta-generated {
+      margin: 0.45rem 0 0;
+      font-size: 0.72rem;
+      color: var(--accent-2);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .nav-meta .rebuild-btn {
+      margin-top: 0.5rem;
+      width: 100%;
+      padding: 0.45rem 0.6rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .nav-meta .rebuild-btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .nav-meta .rebuild-btn:disabled {
+      opacity: 0.6;
+      cursor: wait;
     }
 
     main {
@@ -309,8 +346,23 @@
 
 <nav>
   <div class="nav-title">Agent Forge</div>
-  <a href="index.html">Dashboard</a>
-  <a href="plan-review.html" class="nav-active">Plan review</a>
+  <a href="index.html?view=dashboard">Dashboard</a>
+  <a href="index.html?view=list">All Issues</a>
+  <a href="index.html?view=epics">Epics</a>
+  <a href="index.html?view=commands">Commands</a>
+  <a href="index.html?view=skill-builder">Skill builder</a>
+  <a href="index.html?view=bead-builder">Bead builder</a>
+  <a href="index.html?view=insights">Insights</a>
+  <a href="plan-review.html" class="active">Plan review</a>
+  <div class="nav-meta">
+    <button
+      type="button"
+      id="btn-rebuild-pages"
+      class="rebuild-btn"
+      title="Regenerate docs/data/beads.json from Beads (JSONL or bd export). Only works while this Vite dev server is running; otherwise run bun run build-pages in a terminal."
+    >Refresh snapshot</button>
+    <p class="nav-meta-generated" id="nav-data-generated-at" aria-live="polite">Snapshot: not loaded</p>
+  </div>
 </nav>
 
 <main>
