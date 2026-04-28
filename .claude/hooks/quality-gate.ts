@@ -14,6 +14,7 @@ import { join } from "path";
 import { Glob } from "bun";
 import { getQualityGateLogPath } from "./utils/constants";
 import { parseEvalVerdictJson, verdictBlocksShip } from "../../scripts/eval-verdict";
+import { evaluateCloseTestingAttestation, type CloseGateIssueType } from "../../scripts/close-testing-attestation";
 
 interface CheckResult {
   name: string;
@@ -30,6 +31,8 @@ interface GateResult {
   checks: CheckResult[];
   blockingFailures: string[];
 }
+
+type BdIssueJson = { issue_type?: string; type?: string } | null;
 
 function run(cmd: string, cwd?: string): { ok: boolean; output: string } {
   try {
@@ -68,6 +71,37 @@ function hasTestFiles(): boolean {
     }
   }
   return false;
+}
+
+function issueTypeFromBdShowJson(output: string): CloseGateIssueType {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return "unknown";
+  }
+  const rows = Array.isArray(parsed) ? parsed : [];
+  const first = (rows[0] ?? null) as BdIssueJson;
+  const raw = String(first?.issue_type ?? first?.type ?? "").toLowerCase().trim();
+  if (raw === "epic" || raw === "feature" || raw === "task" || raw === "bug" || raw === "chore") return raw;
+  return "unknown";
+}
+
+function commentBodiesFromBdCommentsJson(output: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const row of parsed) {
+    if (!row || typeof row !== "object") continue;
+    const text = (row as { text?: unknown }).text;
+    if (typeof text === "string" && text.trim()) out.push(text);
+  }
+  return out;
 }
 
 const event = process.env["CLAUDE_HOOK_EVENT"] ?? "TaskCompleted";
@@ -127,8 +161,14 @@ if (hasTestFiles()) {
 
 // TaskCompleted-only checks
 if (event === "TaskCompleted") {
+  let taskIssueType: CloseGateIssueType = "unknown";
+
   // Check 5: AC verification
   if (taskId) {
+    const bdJsonResult = run(`bd show ${taskId} --json`);
+    if (bdJsonResult.ok) {
+      taskIssueType = issueTypeFromBdShowJson(bdJsonResult.output);
+    }
     const bdResult = run(`bd show ${taskId}`);
     if (bdResult.ok && bdResult.output.includes("ac:")) {
       // AC list was found — mark as needing human/agent verification
@@ -140,7 +180,38 @@ if (event === "TaskCompleted") {
     checks.push({ name: "ac-verify", passed: true, skipped: true, skipReason: "no CLAUDE_TASK_ID set" });
   }
 
-  // Check 6: Test evidence (recent commits should include test files)
+  // Check 6: Feature/Epic close testing attestation
+  if (!taskId) {
+    checks.push({
+      name: "close-testing-attestation",
+      passed: true,
+      skipped: true,
+      skipReason: "no CLAUDE_TASK_ID set",
+    });
+  } else {
+    const commentsResult = run(`bd comments ${taskId} --json`);
+    const attestation = evaluateCloseTestingAttestation(
+      taskIssueType,
+      commentsResult.ok ? commentBodiesFromBdCommentsJson(commentsResult.output) : [],
+    );
+    if (!attestation.required) {
+      checks.push({
+        name: "close-testing-attestation",
+        passed: true,
+        skipped: true,
+        skipReason: `issue type ${taskIssueType} does not require attestation`,
+      });
+    } else {
+      checks.push({
+        name: "close-testing-attestation",
+        passed: attestation.passed,
+        ...(attestation.passed ? {} : { output: attestation.guidance ?? "testing attestation required" }),
+      });
+      if (!attestation.passed) blockingFailures.push("close-testing-attestation");
+    }
+  }
+
+  // Check 7: Test evidence (recent commits should include test files)
   {
     const r = run("git log --oneline --name-only -5");
     const hasRecentTests = r.ok && (r.output.includes(".test.") || r.output.includes(".spec."));
@@ -154,7 +225,7 @@ if (event === "TaskCompleted") {
     if (!hasRecentTests) blockingFailures.push("test-evidence");
   }
 
-  // Check 7 (optional): strict evaluator verdict JSON
+  // Check 8 (optional): strict evaluator verdict JSON
   {
     const mode = (process.env["AGENT_FORGE_EVAL_VERDICT"] ?? "").trim().toLowerCase();
     if (mode === "strict") {
