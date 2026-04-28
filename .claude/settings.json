@@ -29,6 +29,10 @@
           {
             "command": "bd prime 2\u003e/dev/null || true",
             "type": "command"
+          },
+          {
+            "command": "bun run agents-md validate --hook",
+            "type": "command"
           }
         ]
       },
