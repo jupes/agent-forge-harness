@@ -255,6 +255,54 @@
     .plan-diff-add { color: #4ff5a8; }
     .plan-diff-del { color: #ff7b7b; }
     .plan-diff-same { color: var(--text-muted); }
+
+    .plan-review-history-controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1rem;
+      align-items: end;
+    }
+
+    .plan-review-select-wide {
+      max-width: 100%;
+      min-width: 0;
+    }
+
+    .plan-review-history-table-wrap {
+      overflow: auto;
+      max-height: 28vh;
+      margin-bottom: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .plan-review-history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .plan-review-history-table th,
+    .plan-review-history-table td {
+      padding: 0.45rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .plan-review-history-table th {
+      position: sticky;
+      top: 0;
+      background: var(--surface-2);
+      color: var(--accent-3);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .plan-review-history-table tr:hover td { color: var(--text); background: rgba(62, 224, 208, 0.05); }
   </style>
 </head>
 <body>
@@ -270,9 +318,9 @@
     <h1>Plan review</h1>
   </div>
   <p style="color:var(--text-muted);font-size:0.875rem;margin:0 0 1rem;max-width:70ch">
-    Live draft and diff against <code>plans/committed</code>. This view needs <code>bun run dashboard</code> at the harness
-    root. Set the active plan in <code>plans/session-context.json</code> (copy from
-    <code>session-context.json.example</code>) to auto-follow the session.
+    Live draft, diff against <code>plans/committed</code>, and <strong>git history</strong> for each plan file (compare any
+    revision to working tree or another commit). Requires <code>bun run dashboard</code> at the harness root and a git checkout.
+    Optional <code>plans/session-context.json</code> (copy from <code>session-context.json.example</code>) drives session auto-follow.
   </p>
   <div id="plan-review-root" class="plan-review-shell">
     <p class="plan-review-empty-msg" style="padding:1rem">Loading…</p>

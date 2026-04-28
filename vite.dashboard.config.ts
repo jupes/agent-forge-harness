@@ -174,6 +174,55 @@ function plansHarnessPlugin(repoRoot: string): Plugin {
     return resolved;
   }
 
+  /** Path in the form `git` expects on all platforms (POSIX slashes under repo root). */
+  function gitTrackedPlanRel(bucket: "drafts" | "committed", planId: string): string | null {
+    if (!idRe.test(planId)) return null;
+    return `plans/${bucket}/${planId}.md`;
+  }
+
+  const shaRefRe = /^[a-fA-F0-9]{7,40}$/;
+
+  type GitPlanVersion = { sha: string; committedAt: string; subject: string };
+
+  function isInsideGitWorkTree(root: string): boolean {
+    const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+    });
+    return r.status === 0 && String(r.stdout ?? "").trim() === "true";
+  }
+
+  function gitHistoryForPlan(root: string, bucket: "drafts" | "committed", planId: string): GitPlanVersion[] {
+    const rel = gitTrackedPlanRel(bucket, planId);
+    if (!rel) return [];
+    const out = spawnSync(
+      "git",
+      ["log", "--follow", "--max-count=120", "--pretty=format:%H%n%ci%n%s%n<<<REC>>>", "--", rel],
+      {
+        cwd: root,
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+        shell: false,
+      },
+    );
+    if (out.status !== 0) return [];
+    const raw = String(out.stdout ?? "").trim();
+    if (!raw) return [];
+
+    const chunks = raw.split("<<<REC>>>").filter((c) => c.trim());
+    const versions: GitPlanVersion[] = [];
+    for (const chunk of chunks) {
+      const lines = chunk.trim().split("\n");
+      const sha = lines[0]?.trim();
+      const committedAt = lines[1]?.trim();
+      const subject = lines.slice(2).join("\n").trim();
+      if (!sha || !committedAt || !shaRefRe.test(sha)) continue;
+      versions.push({ sha, committedAt, subject });
+    }
+    return versions;
+  }
+
   function configurePlansRoutes(server: ViteDevServer): void {
     server.middlewares.use((req, res, next) => {
       const rawUrl = req.url ?? "";
@@ -249,6 +298,111 @@ function plansHarnessPlugin(repoRoot: string): Plugin {
           const msg = e instanceof Error ? e.message : String(e);
           sendJson(500, { ok: false, error: msg, data: null });
         }
+        return;
+      }
+
+      if (pathname === `${PLANS_API_PREFIX}/git-history`) {
+        if (req.method !== "GET") {
+          sendJson(405, { ok: false, error: "Method not allowed" });
+          return;
+        }
+        let planId = "";
+        let bucket = "drafts";
+        try {
+          const u = new URL(rawUrl, "http://vite.local");
+          planId = u.searchParams.get("id") ?? "";
+          const b = u.searchParams.get("bucket") ?? "drafts";
+          bucket = b === "committed" ? "committed" : "drafts";
+        } catch {
+          planId = "";
+          bucket = "drafts";
+        }
+        if (!idRe.test(planId)) {
+          sendJson(400, { ok: false, error: "invalid plan id", data: null });
+          return;
+        }
+        const gitOk = isInsideGitWorkTree(repoRoot);
+        const versions = gitOk ? gitHistoryForPlan(repoRoot, bucket, planId) : [];
+        sendJson(200, {
+          ok: true,
+          data: {
+            bucket,
+            gitAvailable: gitOk,
+            versions,
+          },
+          error: null,
+        });
+        return;
+      }
+
+      if (pathname === `${PLANS_API_PREFIX}/git-content`) {
+        if (req.method !== "GET") {
+          sendJson(405, { ok: false, error: "Method not allowed" });
+          return;
+        }
+        let planId = "";
+        let bucket = "drafts";
+        let refParam = "";
+        try {
+          const u = new URL(rawUrl, "http://vite.local");
+          planId = u.searchParams.get("id") ?? "";
+          const b = u.searchParams.get("bucket") ?? "drafts";
+          bucket = b === "committed" ? "committed" : "drafts";
+          refParam = u.searchParams.get("ref") ?? "";
+        } catch {
+          planId = "";
+          bucket = "drafts";
+          refParam = "";
+        }
+        if (!idRe.test(planId)) {
+          sendJson(400, { ok: false, error: "invalid plan id", data: null });
+          return;
+        }
+        const refUp = refParam.trim().toUpperCase();
+        if (refUp === "WORKING" || refParam === "") {
+          const abs = resolvePlanPath(bucket, planId);
+          if (!abs) {
+            sendJson(404, { ok: false, error: "plan file not found on disk", data: null });
+            return;
+          }
+          try {
+            const text = readFileSync(abs, "utf8");
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end(text);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            sendJson(500, { ok: false, error: msg, data: null });
+          }
+          return;
+        }
+        if (!shaRefRe.test(refParam.trim())) {
+          sendJson(400, { ok: false, error: "ref must be WORKING or a git sha", data: null });
+          return;
+        }
+        const rel = gitTrackedPlanRel(bucket, planId);
+        if (!rel || !isInsideGitWorkTree(repoRoot)) {
+          sendJson(503, { ok: false, error: "git history unavailable", data: null });
+          return;
+        }
+        const spec = `${refParam.trim()}:${rel}`;
+        const show = spawnSync("git", ["show", spec], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          maxBuffer: 16 * 1024 * 1024,
+          shell: false,
+        });
+        if (show.status !== 0) {
+          sendJson(404, {
+            ok: false,
+            error: String(show.stderr ?? show.stdout ?? "git show failed").slice(0, 800),
+            data: null,
+          });
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end(String(show.stdout ?? ""));
         return;
       }
 

@@ -43,3 +43,12 @@ Optional **local-only** file `plans/session-context.json` (gitignored) tells the
 ```
 
 Copy `session-context.json.example` and rename to `session-context.json`. Agents or tooling can overwrite `activePlanId` while work moves between tasks. The dashboard polls this file while `bun run dashboard` is running.
+
+## Git version history (plan review)
+
+When you run **`bun run dashboard`** from this harness checkout, **Plan review → History (git)** reads **`git log`** for either:
+
+- `plans/drafts/<ISSUE-ID>.md`, or  
+- `plans/committed/<ISSUE-ID>.md`
+
+Each commit that touched that path becomes a selectable revision. Pick **From (older)** and **To (newer)** — either another commit or **Working tree (disk)** — to see a **line diff** between those two snapshots. History only appears after the plan file exists and has been **committed** at least once; uncommitted edits still appear via **Working tree**.
