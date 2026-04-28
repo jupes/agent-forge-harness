@@ -3,7 +3,6 @@ import { diffPlanLines, type PlanDiffRow } from "../plan-diff";
 
 const CATALOG_URL = "/__agent-forge/plans-api/catalog";
 const STORAGE_AUTO_FOLLOW = "agent-forge-plan-review:autoFollow";
-const WORKING_REF = "WORKING";
 
 type CatalogPayload = {
   draftIds: string[];
@@ -119,12 +118,13 @@ async function fetchGitHistory(
   }
 }
 
+/** `ref` is a full git object name, or `WORKING` (must match Vite `git-content` for the working tree). */
 async function fetchPlanRef(
   bucket: "drafts" | "committed",
   planId: string,
   ref: string,
 ): Promise<{ ok: boolean; text: string; error?: string }> {
-  if (ref === WORKING_REF) {
+  if (ref === "WORKING") {
     return fetchRaw(bucket, planId);
   }
   try {
@@ -163,7 +163,7 @@ export function PlanReviewIsland() {
   const [gitAvailable, setGitAvailable] = useState<boolean>(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [olderRef, setOlderRef] = useState<string>("");
-  const [newerRef, setNewerRef] = useState<string>(WORKING_REF);
+  const [newerRef, setNewerRef] = useState<string>("WORKING");
   const [historyOlderText, setHistoryOlderText] = useState<string>("");
   const [historyNewerText, setHistoryNewerText] = useState<string>("");
   const [historyLoadNote, setHistoryLoadNote] = useState<string | null>(null);
@@ -256,14 +256,14 @@ export function PlanReviewIsland() {
       if (r.versions.length >= 2) {
         const v1 = r.versions[1];
         if (v1) setOlderRef(v1.sha);
-        setNewerRef(WORKING_REF);
+        setNewerRef("WORKING");
       } else if (r.versions.length === 1) {
         const v0 = r.versions[0];
         if (v0) setOlderRef(v0.sha);
-        setNewerRef(WORKING_REF);
+        setNewerRef("WORKING");
       } else {
         setOlderRef("");
-        setNewerRef(WORKING_REF);
+        setNewerRef("WORKING");
       }
     };
 
@@ -340,7 +340,7 @@ export function PlanReviewIsland() {
 
   const versionSelectOptions = (): { value: string; label: string }[] => {
     const opts: { value: string; label: string }[] = [
-      { value: WORKING_REF, label: "Working tree (disk)" },
+      { value: "WORKING", label: "Working tree (disk)" },
       ...gitVersions.map((v) => ({
         value: v.sha,
         label: `${shortSha(v.sha)} · ${v.committedAt.slice(0, 16)} · ${v.subject.slice(0, 72)}${v.subject.length > 72 ? "…" : ""}`,
