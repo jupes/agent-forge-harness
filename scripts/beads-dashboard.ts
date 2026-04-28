@@ -8,6 +8,9 @@ import type {
   BeadsDependency,
   BeadsIssue,
   DerivedData,
+  EpicFlowData,
+  EpicFlowEdge,
+  EpicFlowNode,
   IssuePriority,
   IssueStatus,
   IssueType,
@@ -110,7 +113,9 @@ export function normalizeIssueType(raw: string | undefined): IssueType {
   return "task";
 }
 
-function asOptionalNumber(raw: number | string | undefined): number | undefined {
+function asOptionalNumber(
+  raw: number | string | undefined,
+): number | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
   const parsed = Number(raw);
@@ -158,7 +163,11 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
 }
 
 export function collectBlockDeps(rows: BdExportRow[]): BeadsDependency[] {
-  const allowedTypes = new Set<BeadsDependency["type"]>(["blocks", "requires", "relates"]);
+  const allowedTypes = new Set<BeadsDependency["type"]>([
+    "blocks",
+    "requires",
+    "relates",
+  ]);
   const seen = new Set<string>();
   const out: BeadsDependency[] = [];
   for (const r of rows) {
@@ -242,6 +251,116 @@ export function buildDerivedFromIssuesAndDeps(
   };
 }
 
+function toMillis(iso: string | undefined): number {
+  if (!iso) return 0;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function latestCommentSummaryForIssue(
+  issueId: string,
+  commentsByIssue: Map<string, BeadsComment[]>,
+): string | undefined {
+  const comments = commentsByIssue.get(issueId);
+  if (!comments || comments.length === 0) return undefined;
+  let latest: BeadsComment | undefined;
+  for (const c of comments) {
+    if (!latest || toMillis(c.createdAt) >= toMillis(latest.createdAt))
+      latest = c;
+  }
+  if (!latest || !latest.body) return undefined;
+  const body = latest.body.replace(/\s+/g, " ").trim();
+  if (!body) return undefined;
+  if (/^worklog:\s*/i.test(body) || /^review:\s*/i.test(body)) {
+    return body.replace(/^(worklog|review):\s*/i, "");
+  }
+  return body;
+}
+
+function summaryForIssue(
+  issue: BeadsIssue,
+  commentsByIssue: Map<string, BeadsComment[]>,
+): string {
+  const fromComment = latestCommentSummaryForIssue(issue.id, commentsByIssue);
+  if (fromComment) return fromComment;
+  const description =
+    typeof issue.description === "string" ? issue.description : "";
+  const compact = description.replace(/\s+/g, " ").trim();
+  if (compact) return compact.slice(0, 180);
+  return "No summarized changes yet.";
+}
+
+export function buildEpicFlowByEpic(
+  issues: BeadsIssue[],
+  deps: BeadsDependency[],
+  comments: BeadsComment[],
+): Record<string, EpicFlowData> {
+  const byId = new Map<string, BeadsIssue>();
+  for (const issue of issues) byId.set(issue.id, issue);
+  const commentsByIssue = new Map<string, BeadsComment[]>();
+  for (const comment of comments) {
+    const list = commentsByIssue.get(comment.issueId) || [];
+    list.push(comment);
+    commentsByIssue.set(comment.issueId, list);
+  }
+
+  const result: Record<string, EpicFlowData> = {};
+  const epics = issues.filter((issue) => issue.type === "epic");
+  for (const epic of epics) {
+    const childIssues = issues
+      .filter((issue) => issue.parent === epic.id)
+      .slice()
+      .sort(
+        (a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)) * -1,
+      );
+    const childSet = new Set<string>(childIssues.map((issue) => issue.id));
+    const nodes: EpicFlowNode[] = childIssues.map((issue) => {
+      const blockers = deps
+        .filter(
+          (dep) =>
+            (dep.type === "blocks" || dep.type === "requires") &&
+            dep.from === issue.id,
+        )
+        .filter((dep) => {
+          const blocker = byId.get(dep.to);
+          return Boolean(blocker && blocker.status !== "closed");
+        })
+        .map((dep) => dep.to);
+      return {
+        issueId: issue.id,
+        title: issue.title,
+        status: issue.status,
+        type: issue.type,
+        summary: summaryForIssue(issue, commentsByIssue),
+        blockers: Array.from(new Set(blockers)),
+      };
+    });
+
+    const edges: EpicFlowEdge[] = [];
+    const seenEdges = new Set<string>();
+    for (const dep of deps) {
+      const fromIn = childSet.has(dep.from);
+      const toIn = childSet.has(dep.to);
+      const touchesEpicRoot = dep.to === epic.id || dep.from === epic.id;
+      if (!fromIn && !toIn && !touchesEpicRoot) continue;
+      const relation = dep.type;
+      const key = `${dep.from}\t${dep.to}\t${relation}`;
+      if (seenEdges.has(key)) continue;
+      seenEdges.add(key);
+      edges.push({ from: dep.from, to: dep.to, relation });
+    }
+
+    result[epic.id] = {
+      epicId: epic.id,
+      epicTitle: epic.title,
+      nodes,
+      edges,
+    };
+  }
+
+  return result;
+}
+
 export function payloadFromIssuesDepsComments(
   issues: BeadsIssue[],
   deps: BeadsDependency[],
@@ -253,5 +372,6 @@ export function payloadFromIssuesDepsComments(
   derived: DerivedData;
 } {
   const derived = buildDerivedFromIssuesAndDeps(issues, deps);
+  derived.epicFlowByEpic = buildEpicFlowByEpic(issues, deps, comments);
   return { issues, comments, deps, derived };
 }

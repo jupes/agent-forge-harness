@@ -69,6 +69,41 @@ export interface BeadsComment {
   createdAt: string;
 }
 
+export interface EpicFlowNode {
+  /** Child issue ID within an epic initiative. */
+  issueId: string;
+  /** Human-readable issue title. */
+  title: string;
+  /** Current status for quick scan in the flow view. */
+  status: IssueStatus;
+  /** Child issue type. */
+  type: IssueType;
+  /** Condensed "what changed" summary derived from latest comments/description. */
+  summary: string;
+  /** Open blocker IDs (incoming blockers) for this child. */
+  blockers: string[];
+}
+
+export interface EpicFlowEdge {
+  /** Downstream issue in the flow relation. */
+  from: string;
+  /** Upstream issue it depends on / is blocked by. */
+  to: string;
+  /** Relation type from Beads dependency graph. */
+  relation: "blocks" | "requires" | "relates";
+}
+
+export interface EpicFlowData {
+  /** Selected epic ID. */
+  epicId: string;
+  /** Selected epic title (if known). */
+  epicTitle: string;
+  /** Child issues represented as flow nodes. */
+  nodes: EpicFlowNode[];
+  /** Dependency connections among children and the epic root. */
+  edges: EpicFlowEdge[];
+}
+
 export interface DerivedData {
   /** Issues grouped by status */
   byStatus: Record<IssueStatus, BeadsIssue[]>;
@@ -82,6 +117,8 @@ export interface DerivedData {
   blocked: BeadsIssue[];
   /** Dependency edges */
   deps: BeadsDependency[];
+  /** Pre-computed epic flow views keyed by epic issue ID. */
+  epicFlowByEpic?: Record<string, EpicFlowData>;
 }
 
 export interface BeadsPayload {

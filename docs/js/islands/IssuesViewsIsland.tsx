@@ -1,6 +1,10 @@
 import { Fragment, h } from "preact";
 import { useMemo } from "preact/hooks";
-import type { BeadsIssue, BeadsPayload } from "../../../types/beads";
+import type {
+  BeadsIssue,
+  BeadsPayload,
+  EpicFlowData,
+} from "../../../types/beads";
 import {
   issueIdCopyControlHtml,
   toggleExpandedState,
@@ -106,7 +110,10 @@ function typeCellHtml(type: unknown): string {
   );
 }
 
-function activeBlockerIdsByIssue(issues: BeadsIssue[], deps: BeadsPayload["deps"]): Map<string, string[]> {
+function activeBlockerIdsByIssue(
+  issues: BeadsIssue[],
+  deps: BeadsPayload["deps"],
+): Map<string, string[]> {
   const byId = new Map<string, BeadsIssue>();
   for (const issue of issues) byId.set(issue.id, issue);
   const out = new Map<string, string[]>();
@@ -174,6 +181,99 @@ function InitiativeSelect({
 
 function HtmlCell({ html }: { html: string }) {
   return <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function EpicFlowPanel({
+  initiativeFilter,
+  payload,
+}: {
+  initiativeFilter: string;
+  payload: BeadsPayload;
+}) {
+  if (initiativeFilter === "all") {
+    return (
+      <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
+        Select an initiative to inspect its child flow and summarized changes.
+      </p>
+    );
+  }
+  const flow: EpicFlowData | undefined =
+    payload.derived?.epicFlowByEpic?.[initiativeFilter];
+  if (!flow) {
+    return (
+      <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
+        No epic flow data for this initiative yet.
+      </p>
+    );
+  }
+  if (flow.nodes.length === 0) {
+    return (
+      <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
+        This epic has no child issues yet.
+      </p>
+    );
+  }
+  return (
+    <div style={{ marginBottom: "1rem" }}>
+      <h3 style={{ marginBottom: "0.5rem" }}>
+        Epic Flow: {flow.epicTitle} ({flow.epicId})
+      </h3>
+      <table className="issue-table" style={{ marginBottom: "0.75rem" }}>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Summary</th>
+            <th>Blocked by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {flow.nodes.map((node) => (
+            <tr key={node.issueId}>
+              <td>
+                <HtmlCell html={issueIdCopyControlHtml(node.issueId)} />
+              </td>
+              <td>{esc(node.title)}</td>
+              <td>
+                <HtmlCell html={statusBadgeHtml(node.status)} />
+              </td>
+              <td style={{ color: "var(--text-muted)" }}>
+                {esc(node.summary)}
+              </td>
+              <td style={{ color: "var(--text-muted)" }}>
+                {node.blockers.length > 0 ? node.blockers.join(", ") : "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p
+        style={{
+          color: "var(--text-muted)",
+          fontSize: "0.85rem",
+          marginBottom: "0.25rem",
+        }}
+      >
+        Connections
+      </p>
+      {flow.edges.length > 0 ? (
+        <ul
+          style={{ margin: "0 0 0.75rem 1.25rem", color: "var(--text-muted)" }}
+        >
+          {flow.edges.map((edge) => (
+            <li key={`${edge.from}-${edge.to}-${edge.relation}`}>
+              {edge.from} {"\u2192"} {edge.to} ({edge.relation})
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
+          No dependency edges recorded among these issues.
+        </p>
+      )}
+    </div>
+  );
 }
 
 export type IssuesViewsIslandProps = {
@@ -248,7 +348,13 @@ function ExpandableIssueTable({
                 <td>
                   {esc(i.title)}
                   {blockerIds.length > 0 ? (
-                    <div style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "0.2rem" }}>
+                    <div
+                      style={{
+                        color: "var(--text-muted)",
+                        fontSize: "0.78rem",
+                        marginTop: "0.2rem",
+                      }}
+                    >
                       Blocked by {blockerIds.join(", ")}
                     </div>
                   ) : null}
@@ -398,6 +504,7 @@ export function IssuesViewsIsland({
           dependencies). This dashboard shows a built snapshot: status counts
           and lists of ready, in-progress, blocked, and recently closed work.
         </p>
+        <EpicFlowPanel initiativeFilter={initiativeFilter} payload={payload} />
         <h3>In Progress ({inProgressAll.length})</h3>
         <ExpandableIssueTable
           issues={inProgressIssues}
