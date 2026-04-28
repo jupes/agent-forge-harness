@@ -3,7 +3,15 @@
  * Used by `build-pages.ts` and unit tests.
  */
 
-import type { BeadsIssue, BeadsDependency, BeadsComment, DerivedData, IssuePriority, IssueStatus, IssueType } from "../types/beads";
+import type {
+  BeadsComment,
+  BeadsDependency,
+  BeadsIssue,
+  DerivedData,
+  IssuePriority,
+  IssueStatus,
+  IssueType,
+} from "../types/beads";
 
 /** One line from `bd export --no-memories` (issue + embedded dependencies). */
 export interface BdExportRow {
@@ -23,7 +31,11 @@ export interface BdExportRow {
   assignee?: string;
   owner?: string;
   labels?: string[];
-  dependencies?: Array<{ issue_id: string; depends_on_id: string; type: string }>;
+  dependencies?: Array<{
+    issue_id: string;
+    depends_on_id: string;
+    type: string;
+  }>;
   /** Present on `bd export` rows; used to decide whether to call `bd comments <id>`. */
   comment_count?: number;
 }
@@ -39,7 +51,10 @@ export interface BdCommentJson {
 /**
  * Parse stdout from `bd comments <issueId> --json` into normalized dashboard comments.
  */
-export function parseBdCommentsJson(json: string, fallbackIssueId: string): BeadsComment[] {
+export function parseBdCommentsJson(
+  json: string,
+  fallbackIssueId: string,
+): BeadsComment[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -51,17 +66,24 @@ export function parseBdCommentsJson(json: string, fallbackIssueId: string): Bead
   for (const raw of parsed) {
     if (!raw || typeof raw !== "object") continue;
     const o = raw as BdCommentJson;
-    const issueId = typeof o.issue_id === "string" && o.issue_id.length > 0 ? o.issue_id : fallbackIssueId;
+    const issueId =
+      typeof o.issue_id === "string" && o.issue_id.length > 0
+        ? o.issue_id
+        : fallbackIssueId;
     const body = typeof o.text === "string" ? o.text : "";
     const author = typeof o.author === "string" ? o.author : "";
     const createdAt =
-      typeof o.created_at === "string" && o.created_at.length > 0 ? o.created_at : new Date().toISOString();
+      typeof o.created_at === "string" && o.created_at.length > 0
+        ? o.created_at
+        : new Date().toISOString();
     out.push({ issueId, body, author, createdAt });
   }
   return out;
 }
 
-export function mapNumericPriority(p: number | undefined): IssuePriority | undefined {
+export function mapNumericPriority(
+  p: number | undefined,
+): IssuePriority | undefined {
   if (p === undefined || Number.isNaN(p)) return undefined;
   if (p <= 0) return "critical";
   if (p === 1) return "high";
@@ -155,7 +177,10 @@ export function issuesAndDepsFromExportRows(rows: BdExportRow[]): {
 }
 
 /** Same grouping rules as `build-pages.ts` (ready / blocked / byStatus / byType / byRepo). */
-export function buildDerivedFromIssuesAndDeps(issues: BeadsIssue[], deps: BeadsDependency[]): DerivedData {
+export function buildDerivedFromIssuesAndDeps(
+  issues: BeadsIssue[],
+  deps: BeadsDependency[],
+): DerivedData {
   const byStatus = {} as Record<IssueStatus, BeadsIssue[]>;
   const byType = {} as Record<IssueType, BeadsIssue[]>;
   const byRepo: Record<string, BeadsIssue[]> = {};
@@ -179,7 +204,9 @@ export function buildDerivedFromIssuesAndDeps(issues: BeadsIssue[], deps: BeadsD
     (i) => i.status === "open" && !i.assignee && !blockedIds.has(i.id),
   );
 
-  const blocked = issues.filter((i) => i.status !== "closed" && blockedIds.has(i.id));
+  const blocked = issues.filter(
+    (i) => i.status !== "closed" && blockedIds.has(i.id),
+  );
 
   return {
     byStatus,
@@ -195,7 +222,12 @@ export function payloadFromIssuesDepsComments(
   issues: BeadsIssue[],
   deps: BeadsDependency[],
   comments: BeadsComment[],
-): { issues: BeadsIssue[]; comments: BeadsComment[]; deps: BeadsDependency[]; derived: DerivedData } {
+): {
+  issues: BeadsIssue[];
+  comments: BeadsComment[];
+  deps: BeadsDependency[];
+  derived: DerivedData;
+} {
   const derived = buildDerivedFromIssuesAndDeps(issues, deps);
   return { issues, comments, deps, derived };
 }

@@ -1,5 +1,9 @@
 import type { ComponentChildren } from "preact";
-import type { BeadsComment, BeadsDependency, BeadsIssue } from "../../../types/beads";
+import type {
+  BeadsComment,
+  BeadsDependency,
+  BeadsIssue,
+} from "../../../types/beads";
 import {
   commentsForIssue,
   depsTouchingIssue,
@@ -23,7 +27,13 @@ function DdHtml({ html }: { html: string }) {
   return <dd dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-function KvRow({ label, children }: { label: string; children: ComponentChildren }) {
+function KvRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ComponentChildren;
+}) {
   return (
     <div className="issue-detail-kv">
       <dt>{escapeHtml(label)}</dt>
@@ -32,7 +42,11 @@ function KvRow({ label, children }: { label: string; children: ComponentChildren
   );
 }
 
-export function IssueDetailPanel({ issue, ctx, onClose }: IssueDetailPanelProps) {
+export function IssueDetailPanel({
+  issue,
+  ctx,
+  onClose,
+}: IssueDetailPanelProps) {
   const comments = commentsForIssue(issue.id, ctx.comments);
   const deps = depsTouchingIssue(issue.id, ctx.deps);
   const branches = workBranchesFromCommentBodies(comments);
@@ -41,7 +55,12 @@ export function IssueDetailPanel({ issue, ctx, onClose }: IssueDetailPanelProps)
     <div className="issue-detail-panel">
       <div className="issue-detail-toolbar">
         <span className="issue-detail-heading">Issue details</span>
-        <button type="button" className="issue-detail-close" aria-label="Close expanded issue" onClick={onClose}>
+        <button
+          type="button"
+          className="issue-detail-close"
+          aria-label="Close expanded issue"
+          onClick={onClose}
+        >
           ×
         </button>
       </div>
@@ -134,7 +153,9 @@ export function IssueDetailPanel({ issue, ctx, onClose }: IssueDetailPanelProps)
         {issue.description ? (
           <KvRow label="Description / AC text">
             <dd>
-              <div className="issue-detail-prose">{escapeHtml(String(issue.description))}</div>
+              <div className="issue-detail-prose">
+                {escapeHtml(String(issue.description))}
+              </div>
             </dd>
           </KvRow>
         ) : null}
@@ -160,9 +181,12 @@ export function IssueDetailPanel({ issue, ctx, onClose }: IssueDetailPanelProps)
             {comments.map((c: BeadsComment, idx: number) => (
               <li key={idx}>
                 <span className="issue-detail-meta">
-                  {escapeHtml(String(c.author || ""))} · {escapeHtml(String(c.createdAt || ""))}
+                  {escapeHtml(String(c.author || ""))} ·{" "}
+                  {escapeHtml(String(c.createdAt || ""))}
                 </span>
-                <pre className="issue-detail-comment-body">{escapeHtml(String(c.body || ""))}</pre>
+                <pre className="issue-detail-comment-body">
+                  {escapeHtml(String(c.body || ""))}
+                </pre>
               </li>
             ))}
           </ul>
@@ -180,9 +204,13 @@ export function IssueDetailPanel({ issue, ctx, onClose }: IssueDetailPanelProps)
               const other = d.from === issue.id ? d.to : d.from;
               return (
                 <li key={idx}>
-                  <span className="issue-detail-dep-rel">{escapeHtml(rel)}</span>{" "}
+                  <span className="issue-detail-dep-rel">
+                    {escapeHtml(rel)}
+                  </span>{" "}
                   <code>{escapeHtml(String(other))}</code>{" "}
-                  <span className="issue-detail-dep-type">({escapeHtml(String(d.type || ""))})</span>
+                  <span className="issue-detail-dep-type">
+                    ({escapeHtml(String(d.type || ""))})
+                  </span>
                 </li>
               );
             })}

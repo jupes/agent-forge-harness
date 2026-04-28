@@ -1,13 +1,13 @@
 // @ts-nocheck — `docs/js/issue-detail.mjs` is the browser module; Bun runs tests against it without TS declarations.
 import { describe, expect, test } from "bun:test";
 import {
+  buildIssueDetailPanelHtml,
+  commentsForIssue,
+  depsTouchingIssue,
   escapeHtml,
   issueIdCopyControlHtml,
   toggleExpandedState,
-  commentsForIssue,
   workBranchesFromCommentBodies,
-  depsTouchingIssue,
-  buildIssueDetailPanelHtml,
 } from "../../docs/js/issue-detail.mjs";
 
 describe("escapeHtml", () => {
@@ -65,16 +65,33 @@ describe("workBranchesFromCommentBodies", () => {
   });
 
   test("returns empty when no branch-shaped tokens", () => {
-    expect(workBranchesFromCommentBodies([{ body: "worklog: no branch here" }])).toEqual([]);
+    expect(
+      workBranchesFromCommentBodies([{ body: "worklog: no branch here" }]),
+    ).toEqual([]);
   });
 });
 
 describe("commentsForIssue", () => {
   test("filters and sorts by createdAt", () => {
     const list = [
-      { issueId: "A", body: "b", author: "u", createdAt: "2026-01-02T00:00:00Z" },
-      { issueId: "B", body: "x", author: "u", createdAt: "2026-01-01T00:00:00Z" },
-      { issueId: "B", body: "y", author: "u", createdAt: "2026-01-03T00:00:00Z" },
+      {
+        issueId: "A",
+        body: "b",
+        author: "u",
+        createdAt: "2026-01-02T00:00:00Z",
+      },
+      {
+        issueId: "B",
+        body: "x",
+        author: "u",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        issueId: "B",
+        body: "y",
+        author: "u",
+        createdAt: "2026-01-03T00:00:00Z",
+      },
     ];
     const got = commentsForIssue("B", list);
     expect(got.map((c: { body: string }) => c.body)).toEqual(["x", "y"]);
@@ -124,7 +141,14 @@ describe("buildIssueDetailPanelHtml", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     };
     const html = buildIssueDetailPanelHtml(issue, {
-      comments: [{ issueId: "T-1", body: "worklog: hi", author: "a", createdAt: "2026-01-02T00:00:00Z" }],
+      comments: [
+        {
+          issueId: "T-1",
+          body: "worklog: hi",
+          author: "a",
+          createdAt: "2026-01-02T00:00:00Z",
+        },
+      ],
       deps: [{ from: "T-1", to: "T-2", type: "blocks" }],
     });
     expect(html).toContain("worklog: hi");
@@ -143,7 +167,14 @@ describe("buildIssueDetailPanelHtml", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     };
     const html = buildIssueDetailPanelHtml(issue, {
-      comments: [{ issueId: "T-9", body: "worklog: Branch feat/z-impl", author: "a", createdAt: "2026-01-02T00:00:00Z" }],
+      comments: [
+        {
+          issueId: "T-9",
+          body: "worklog: Branch feat/z-impl",
+          author: "a",
+          createdAt: "2026-01-02T00:00:00Z",
+        },
+      ],
       deps: [],
     });
     expect(html).toContain("Work branches (from comments)");

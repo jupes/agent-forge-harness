@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Sweep `.tmp/work/<TASK-ID>-*` files for **closed** Beads issues older than TTL.
  * Default: dry-run (lists candidates). Pass `--apply` to actually delete.
@@ -15,11 +16,20 @@
  * Emits `{ ok, data, error }` JSON envelope.
  */
 
-import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from "fs";
-import { join } from "path";
 import { execFileSync } from "child_process";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+} from "fs";
+import { join } from "path";
 import type { BeadsIssue } from "../types/beads";
-import { issuesAndDepsFromExportRows, parseBdExportStdout } from "./beads-dashboard";
+import {
+  issuesAndDepsFromExportRows,
+  parseBdExportStdout,
+} from "./beads-dashboard";
 
 const ISSUES_FILE = join(process.cwd(), ".beads", "issues.jsonl");
 
@@ -171,7 +181,9 @@ function main(): void {
         deleted.push(c.path);
       } catch (e) {
         // best effort
-        console.error(`warn: could not delete ${c.path}: ${(e as Error).message}`);
+        console.error(
+          `warn: could not delete ${c.path}: ${(e as Error).message}`,
+        );
       }
     }
   }

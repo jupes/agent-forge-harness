@@ -45,9 +45,10 @@ export function computeInitiativeMembers(issues, epicId) {
     if (members.has(id)) continue;
     members.add(id);
     const kids = childrenByParent.get(id);
-    if (kids) kids.forEach(function (k) {
-      stack.push(k);
-    });
+    if (kids)
+      kids.forEach(function (k) {
+        stack.push(k);
+      });
   }
   return members;
 }

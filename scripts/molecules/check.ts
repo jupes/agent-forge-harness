@@ -9,7 +9,7 @@
  * Emits `{ ok, data: [ { path, ok, error? } ], error }` and exits non-zero on any failure.
  */
 
-import { readFileSync, readdirSync, statSync } from "fs";
+import { readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
 import { parseMoleculeJson } from "./parse";
 
@@ -41,7 +41,11 @@ function checkFile(abs: string): Result {
   try {
     text = readFileSync(abs, "utf8");
   } catch (e) {
-    return { path: relative(process.cwd(), abs), ok: false, error: (e as Error).message };
+    return {
+      path: relative(process.cwd(), abs),
+      ok: false,
+      error: (e as Error).message,
+    };
   }
   const parsed = parseMoleculeJson(text);
   if (parsed.ok) {
@@ -52,11 +56,19 @@ function checkFile(abs: string): Result {
 
 function main(): void {
   const args = process.argv.slice(2);
-  const files = args.length > 0 ? args.map((p) => (p.startsWith(".") || p.includes(":") ? p : p)) : listDefaultFiles();
+  const files =
+    args.length > 0
+      ? args.map((p) => (p.startsWith(".") || p.includes(":") ? p : p))
+      : listDefaultFiles();
   if (files.length === 0) {
     console.log(
       JSON.stringify(
-        { ok: true, data: [], error: null, note: "no molecule files found in .claude/molecules/" },
+        {
+          ok: true,
+          data: [],
+          error: null,
+          note: "no molecule files found in .claude/molecules/",
+        },
         null,
         2,
       ),
@@ -70,7 +82,9 @@ function main(): void {
       {
         ok: allOk,
         data: results,
-        error: allOk ? null : `${results.filter((r) => !r.ok).length} molecule(s) failed validation`,
+        error: allOk
+          ? null
+          : `${results.filter((r) => !r.ok).length} molecule(s) failed validation`,
       },
       null,
       2,

@@ -1,5 +1,11 @@
 export type AttestationValue = "yes" | "no";
-export type CloseGateIssueType = "epic" | "feature" | "task" | "bug" | "chore" | "unknown";
+export type CloseGateIssueType =
+  | "epic"
+  | "feature"
+  | "task"
+  | "bug"
+  | "chore"
+  | "unknown";
 
 export type ParsedTestingAttestation = {
   automation: AttestationValue;
@@ -14,7 +20,9 @@ export type CloseTestingAttestationResult = {
 
 const tokenRe = /\b([a-z_]+)\s*=\s*(yes|no)\b/gi;
 
-export function parseTestingAttestationFromComment(body: string): ParsedTestingAttestation | null {
+export function parseTestingAttestationFromComment(
+  body: string,
+): ParsedTestingAttestation | null {
   if (!/\btesting-attestation\b/i.test(body)) return null;
   const values: Partial<ParsedTestingAttestation> = {};
   for (const m of body.matchAll(tokenRe)) {

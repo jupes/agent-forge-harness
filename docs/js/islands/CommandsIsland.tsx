@@ -12,20 +12,38 @@ const COMMANDS: [string, string][] = [
   ["/plan [idea]", "Explore codebase and produce an implementation plan."],
   ["/ship [msg]", "Quality gates, then commit, push, and PR."],
   ["/status", "Git state, ready work, blocked items, and PR health."],
-  ["/review [branch]", "Risk-tiered code review (Blocker / High / Medium / Low)."],
+  [
+    "/review [branch]",
+    "Risk-tiered code review (Blocker / High / Medium / Low).",
+  ],
   ["/triage", "Deadline management and capacity planning."],
   ["/ask [question]", "Query domain knowledge files."],
   [
     "/sync-knowledge",
     "Auto-generate knowledge YAML from the codebase (one repo by name, --all for repos.json, or current repo when inside a sub-repo).",
   ],
-  ["/add-bead <text>", "Quick bd create from free text (title and optional description)."],
+  [
+    "/add-bead <text>",
+    "Quick bd create from free text (title and optional description).",
+  ],
 ];
 
 const WORKFLOWS: [string, string, string][] = [
-  ["Fix", "≤3 files, clear scope", "Explore → Build → Check → Ship (no plan file)"],
-  ["Feature", ">3 files or needs a plan", "Plan → Approve → Build → Review → Ship"],
-  ["Epic", "Multiple related tasks", "Lead coordinates; parallel workers in git worktrees where dependencies allow"],
+  [
+    "Fix",
+    "≤3 files, clear scope",
+    "Explore → Build → Check → Ship (no plan file)",
+  ],
+  [
+    "Feature",
+    ">3 files or needs a plan",
+    "Plan → Approve → Build → Review → Ship",
+  ],
+  [
+    "Epic",
+    "Multiple related tasks",
+    "Lead coordinates; parallel workers in git worktrees where dependencies allow",
+  ],
 ];
 
 const SKILLS: [string, string][] = [
@@ -70,8 +88,9 @@ export function CommandsIsland() {
           maxWidth: "52rem",
         }}
       >
-        Slash command prompts live in <code>.claude/commands/</code>; orchestration playbooks live in{" "}
-        <code>.claude/workflows/</code>.
+        Slash command prompts live in <code>.claude/commands/</code>
+        {"; "}
+        orchestration playbooks live in <code>.claude/workflows/</code>.
       </p>
       <h3>Slash commands</h3>
       <table>
@@ -122,8 +141,9 @@ export function CommandsIsland() {
           maxWidth: "52rem",
         }}
       >
-        Reusable instructions under <code>{".claude/skills/<name>/SKILL.md"}</code>. Agents load them when a task
-        matches the skill.
+        Reusable instructions under{" "}
+        <code>{".claude/skills/<name>/SKILL.md"}</code>. Agents load them when a
+        task matches the skill.
       </p>
       <table>
         <thead>
@@ -145,20 +165,27 @@ export function CommandsIsland() {
       </table>
       <h3>Agents and hooks</h3>
       <p style={{ margin: "0 0 0.65rem", maxWidth: "52rem" }}>
-        <strong>Agents</strong> — Role prompts in <code>.claude/agents/</code> shape how Claude Code behaves for a given
-        job. The <strong>Lead</strong> agent decomposes work, aligns workers and evaluators, and verifies outcomes without
-        writing production code. The <strong>Worker</strong> implements tasks inside the active workflow and repo
-        conventions. The <strong>Planner</strong> turns a short prompt into a product-level spec (stories, non-goals,
-        risks). The <strong>Evaluator</strong> judges deliverables against acceptance criteria and the shared evaluation
+        <strong>Agents</strong> — Role prompts in <code>.claude/agents/</code>{" "}
+        shape how Claude Code behaves for a given job. The <strong>Lead</strong>{" "}
+        agent decomposes work, aligns workers and evaluators, and verifies
+        outcomes without writing production code. The <strong>Worker</strong>{" "}
+        implements tasks inside the active workflow and repo conventions. The{" "}
+        <strong>Planner</strong> turns a short prompt into a product-level spec
+        (stories, non-goals, risks). The <strong>Evaluator</strong> judges
+        deliverables against acceptance criteria and the shared evaluation
         rubric, including a pre-task alignment mode.
       </p>
       <p style={{ margin: 0, maxWidth: "52rem" }}>
-        <strong>Hooks</strong> — Lifecycle callbacks configured in <code>.claude/settings.json</code> (and implemented
-        as commands or Bun scripts under <code>.claude/hooks/</code>). They run automatically at events such as session
-        start, after a task completes, or when a teammate goes idle. This repo wires <code>bd prime</code> on SessionStart
-        and PreCompact, and <code>quality-gate.ts</code> on TaskCompleted and TeammateIdle to run quality checks and
-        optional evaluator verdict gates. <code>session.ts</code> is available to log session metadata and sync Beads via{" "}
-        <code>bd dolt pull</code> / <code>bd dolt push</code> when you add it to your hook configuration.
+        <strong>Hooks</strong> — Lifecycle callbacks configured in{" "}
+        <code>.claude/settings.json</code> (and implemented as commands or Bun
+        scripts under <code>.claude/hooks/</code>). They run automatically at
+        events such as session start, after a task completes, or when a teammate
+        goes idle. This repo wires <code>bd prime</code> on SessionStart and
+        PreCompact, and <code>quality-gate.ts</code> on TaskCompleted and
+        TeammateIdle to run quality checks and optional evaluator verdict gates.{" "}
+        <code>session.ts</code> is available to log session metadata and sync
+        Beads via <code>bd dolt pull</code> / <code>bd dolt push</code> when you
+        add it to your hook configuration.
       </p>
     </Fragment>
   );
