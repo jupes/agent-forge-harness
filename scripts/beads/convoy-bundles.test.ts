@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BeadsIssue, BeadsDependency } from "../../types/beads";
+import type { BeadsDependency, BeadsIssue } from "../../types/beads";
 import { collectSubtree, planBundles } from "./convoy-bundles";
 
 const mk = (id: string, over: Partial<BeadsIssue> = {}): BeadsIssue => ({
@@ -20,7 +20,9 @@ describe("collectSubtree", () => {
       mk("b", { parent: "a" }),
       mk("c"),
     ];
-    const out = collectSubtree(issues, "epic").map((i) => i.id).sort();
+    const out = collectSubtree(issues, "epic")
+      .map((i) => i.id)
+      .sort();
     expect(out).toEqual(["a", "b"]);
   });
 });

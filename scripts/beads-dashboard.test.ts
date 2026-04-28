@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { BeadsDependency, BeadsIssue } from "../types/beads";
 import {
   buildDerivedFromIssuesAndDeps,
   collectBlockDeps,
@@ -10,7 +11,6 @@ import {
   parseBdCommentsJson,
   parseBdExportStdout,
 } from "./beads-dashboard";
-import type { BeadsDependency, BeadsIssue } from "../types/beads";
 
 describe("normalizeBdExportRow", () => {
   test("maps owner as metadata and assignee only when set (owner does not fill assignee)", () => {
@@ -24,7 +24,9 @@ describe("normalizeBdExportRow", () => {
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-02T00:00:00Z",
       owner: "agent-1",
-      dependencies: [{ issue_id: "T-1", depends_on_id: "EPIC-1", type: "parent-child" }],
+      dependencies: [
+        { issue_id: "T-1", depends_on_id: "EPIC-1", type: "parent-child" },
+      ],
     };
     const issue = normalizeBdExportRow(row);
     expect(issue.id).toBe("T-1");
@@ -129,12 +131,19 @@ describe("parseBdCommentsJson", () => {
     ]);
     const got = parseBdCommentsJson(json, "T-1");
     expect(got).toEqual([
-      { issueId: "T-1", author: "u", body: "worklog: hi", createdAt: "2026-01-02T00:00:00Z" },
+      {
+        issueId: "T-1",
+        author: "u",
+        body: "worklog: hi",
+        createdAt: "2026-01-02T00:00:00Z",
+      },
     ]);
   });
 
   test("uses fallback issue id when issue_id missing", () => {
-    const json = JSON.stringify([{ author: "a", text: "x", created_at: "2026-01-01T00:00:00Z" }]);
+    const json = JSON.stringify([
+      { author: "a", text: "x", created_at: "2026-01-01T00:00:00Z" },
+    ]);
     const got = parseBdCommentsJson(json, "FALL");
     expect(got).toHaveLength(1);
     expect(got[0]?.issueId).toBe("FALL");
@@ -147,7 +156,8 @@ describe("parseBdCommentsJson", () => {
 
 describe("parseBdExportStdout", () => {
   test("parses NDJSON lines and skips bad lines", () => {
-    const stdout = '{"id":"1","title":"a","status":"open"}\nnot json\n{"id":"2","title":"b","status":"closed"}\n';
+    const stdout =
+      '{"id":"1","title":"a","status":"open"}\nnot json\n{"id":"2","title":"b","status":"closed"}\n';
     const rows = parseBdExportStdout(stdout);
     expect(rows.map((r) => r.id)).toEqual(["1", "2"]);
   });
@@ -178,7 +188,9 @@ describe("issuesAndDepsFromExportRows", () => {
 });
 
 describe("buildDerivedFromIssuesAndDeps", () => {
-  const baseIssue = (partial: Partial<BeadsIssue> & Pick<BeadsIssue, "id" | "title" | "status">): BeadsIssue =>
+  const baseIssue = (
+    partial: Partial<BeadsIssue> & Pick<BeadsIssue, "id" | "title" | "status">,
+  ): BeadsIssue =>
     ({
       type: "task",
       createdAt: "2026-01-01T00:00:00Z",
@@ -204,7 +216,9 @@ describe("buildDerivedFromIssuesAndDeps", () => {
       baseIssue({ id: "B", title: "was blocked", status: "open" }),
       baseIssue({ id: "K", title: "done", status: "closed" }),
     ];
-    const derived = buildDerivedFromIssuesAndDeps(issues, [{ from: "B", to: "K", type: "blocks" }]);
+    const derived = buildDerivedFromIssuesAndDeps(issues, [
+      { from: "B", to: "K", type: "blocks" },
+    ]);
     expect(derived.ready.map((i) => i.id)).toEqual(["B"]);
     expect(derived.blocked).toHaveLength(0);
   });

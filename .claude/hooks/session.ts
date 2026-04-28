@@ -11,11 +11,20 @@ import { appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getSessionLogPath } from "./utils/constants";
 
-const SESSION_HANDOFF_PATH = join(process.cwd(), ".tmp", "work", "session-handoff.md");
+const SESSION_HANDOFF_PATH = join(
+  process.cwd(),
+  ".tmp",
+  "work",
+  "session-handoff.md",
+);
 
 function run(cmd: string): string {
   try {
-    return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 }).trim();
+    return execSync(cmd, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+    }).trim();
   } catch {
     return "";
   }
@@ -66,7 +75,9 @@ if (event === "SessionStart") {
   if (ready) {
     console.log("\n[session] Ready work:\n" + ready);
   }
-  console.log(`\n[session] Branch: ${logEntry.git.branch} @ ${logEntry.git.commit}`);
+  console.log(
+    `\n[session] Branch: ${logEntry.git.branch} @ ${logEntry.git.commit}`,
+  );
   if (logEntry.git.status) {
     console.log(`[session] Uncommitted: ${logEntry.git.status}`);
   }

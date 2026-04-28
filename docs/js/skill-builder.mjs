@@ -52,8 +52,14 @@ export function buildAuthoringPrompt(d) {
     "|-------|-------|",
   ];
   if (rawName !== folder) {
-    lines.push("| **Skill name (as entered)** | `" + mdTableCell(rawName) + "` |");
-    lines.push("| **Folder name** (use in every path and for `scaffold.ts`) | `" + folder + "` |");
+    lines.push(
+      "| **Skill name (as entered)** | `" + mdTableCell(rawName) + "` |",
+    );
+    lines.push(
+      "| **Folder name** (use in every path and for `scaffold.ts`) | `" +
+        folder +
+        "` |",
+    );
   } else {
     lines.push("| **Skill name** | `" + folder + "` |");
   }
@@ -70,14 +76,25 @@ export function buildAuthoringPrompt(d) {
     "",
   );
   if (d.additionalNotes.trim()) {
-    lines.push("### Additional notes from author", "", d.additionalNotes.trim(), "");
+    lines.push(
+      "### Additional notes from author",
+      "",
+      d.additionalNotes.trim(),
+      "",
+    );
   }
   lines.push(
     "## Your tasks",
     "",
-    "1. Follow `@.claude/skills/authoring-agent-skills` exactly to create `.claude/skills/" + folder + "/` with a complete `SKILL.md`. Use the **folder name** above (not spaces or free-form labels) so paths and the scaffold CLI stay valid. In the YAML header at the top of `SKILL.md`, set `name:` to **" + folder + "** (must match the folder slug exactly)—do not use the author’s free-form skill name if it differs.",
+    "1. Follow `@.claude/skills/authoring-agent-skills` exactly to create `.claude/skills/" +
+      folder +
+      "/` with a complete `SKILL.md`. Use the **folder name** above (not spaces or free-form labels) so paths and the scaffold CLI stay valid. In the YAML header at the top of `SKILL.md`, set `name:` to **" +
+      folder +
+      "** (must match the folder slug exactly)—do not use the author’s free-form skill name if it differs.",
     "2. Decide whether optional `scripts/` (TypeScript) and/or `references/` folders would help; add them only when justified by the workflow and the meta-skill—do not add empty folders.",
-    "3. Where appropriate, run `bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts " + folder + "` with the description from the spec (add quoted description per the meta-skill / your shell), then flesh out content.",
+    "3. Where appropriate, run `bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts " +
+      folder +
+      "` with the description from the spec (add quoted description per the meta-skill / your shell), then flesh out content.",
     "",
     "_End of prompt — paste the entire message above into your coding agent._",
   );
@@ -152,7 +169,8 @@ export function wireSkillBuilder(root) {
   const clearBtn = root.querySelector("#sb-clear");
   const card = root.querySelector("#skill-form-card");
 
-  if (!form || !modal || !modalBody || !modalClose || !submitBtn || !modalTitle) return;
+  if (!form || !modal || !modalBody || !modalClose || !submitBtn || !modalTitle)
+    return;
 
   if (clearBtn) {
     clearBtn.addEventListener("click", function () {

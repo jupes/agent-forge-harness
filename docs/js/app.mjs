@@ -1,13 +1,18 @@
 // Agent Forge Dashboard — app (ES module; hybrid Preact islands + legacy HTML where noted).
-import { issueIdCopyControlHtml } from "./issue-detail.mjs";
-import { renderInsightsHtml, wireInsights } from "./insights.mjs";
-import { applyInitiativeFilter, listEpics } from "./issues-selection.mjs";
-import { createBridgeSelfTestVNode, mountIsland, unmountIsland } from "./preact-bridge.tsx";
+
 import { h } from "preact";
+import { renderInsightsHtml, wireInsights } from "./insights.mjs";
 import { BeadBuilderIsland } from "./islands/BeadBuilderIsland.tsx";
 import { CommandsIsland } from "./islands/CommandsIsland.tsx";
 import { IssuesViewsIsland } from "./islands/IssuesViewsIsland.tsx";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland.tsx";
+import { issueIdCopyControlHtml } from "./issue-detail.mjs";
+import { applyInitiativeFilter, listEpics } from "./issues-selection.mjs";
+import {
+  createBridgeSelfTestVNode,
+  mountIsland,
+  unmountIsland,
+} from "./preact-bridge.tsx";
 
 const STATUS_COLOR = {
   open: "#3dff9c",
@@ -40,7 +45,9 @@ function typeCell(type) {
   if (!label && !icon) return "—";
   return (
     '<span class="type-pill">' +
-    (icon ? '<span class="type-icon" aria-hidden="true">' + icon + "</span>" : "") +
+    (icon
+      ? '<span class="type-icon" aria-hidden="true">' + icon + "</span>"
+      : "") +
     (label ? '<span class="type-label">' + label + "</span>" : "") +
     "</span>"
   );
@@ -73,7 +80,9 @@ async function loadData() {
     document.getElementById("content").innerHTML =
       '<div class="empty-state">' +
       "<p>No data loaded. Run <code>bun run build-pages</code> to generate dashboard data.</p>" +
-      '<p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.5rem">' + err.message + "</p>" +
+      '<p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.5rem">' +
+      err.message +
+      "</p>" +
       "</div>";
   }
 }
@@ -96,14 +105,24 @@ function statusBadge(status) {
   }
   const color = STATUS_COLOR[s] || "#8aa4c8";
   return (
-    '<span class="badge" style="background:' + color + "20;color:" + color + ";border:1px solid " + color + '40">' + esc(s) + "</span>"
+    '<span class="badge" style="background:' +
+    color +
+    "20;color:" +
+    color +
+    ";border:1px solid " +
+    color +
+    '40">' +
+    esc(s) +
+    "</span>"
   );
 }
 
 function priorityBadge(priority) {
   if (!priority) return "";
   const color = PRIORITY_COLOR[priority] || "#8aa4c8";
-  return '<span class="badge" style="color:' + color + '">' + priority + "</span>";
+  return (
+    '<span class="badge" style="color:' + color + '">' + priority + "</span>"
+  );
 }
 
 /** Local label for payload `generatedAt` (sidebar); `title` holds raw ISO. */
@@ -151,16 +170,26 @@ function renderEpics() {
       const closedCount = children.filter(function (i) {
         return i.status === "closed";
       }).length;
-      const pct = children.length > 0 ? Math.round((closedCount / children.length) * 100) : 0;
+      const pct =
+        children.length > 0
+          ? Math.round((closedCount / children.length) * 100)
+          : 0;
 
       let html = '<div class="epic-card">';
       html += '<div class="epic-header">';
       html += issueIdCopyControlHtml(epic.id);
       html += "<strong>" + esc(epic.title) + "</strong>";
       html += statusBadge(epic.status);
-      if (epic.due) html += '<span style="color:var(--text-muted);font-size:0.8rem">Due: ' + epic.due.slice(0, 10) + "</span>";
+      if (epic.due)
+        html +=
+          '<span style="color:var(--text-muted);font-size:0.8rem">Due: ' +
+          epic.due.slice(0, 10) +
+          "</span>";
       html += "</div>";
-      html += '<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>';
+      html +=
+        '<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:' +
+        pct +
+        '%"></div></div>';
       html +=
         '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">' +
         closedCount +
@@ -170,7 +199,10 @@ function renderEpics() {
         pct +
         "%</div>";
       if (epic.description) {
-        html += '<p style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem">' + esc(epic.description.slice(0, 200)) + "</p>";
+        html +=
+          '<p style="color:var(--text-muted);font-size:0.875rem;margin-top:0.5rem">' +
+          esc(epic.description.slice(0, 200)) +
+          "</p>";
       }
       html += "</div>";
       return html;
@@ -185,14 +217,23 @@ function initiativeSelectHtmlForInsights() {
   const selected = initiativeFilter;
   let html =
     '<label style="display:inline-flex;align-items:center;gap:0.45rem;color:var(--text-muted);font-size:0.85rem">' +
-    '<span>Initiative</span>' +
+    "<span>Initiative</span>" +
     '<select id="filter-initiative" onchange="window.__dashboardSetInitiative(this.value)" ' +
     'style="padding:0.4rem 0.75rem;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.875rem;max-width:22rem">';
-  html += '<option value="all"' + (selected === "all" ? " selected" : "") + ">All initiatives</option>";
+  html +=
+    '<option value="all"' +
+    (selected === "all" ? " selected" : "") +
+    ">All initiatives</option>";
   epics.forEach(function (e) {
     const label = e.title ? e.title + "  (" + e.id + ")" : e.id;
     html +=
-      '<option value="' + esc(e.id) + '"' + (selected === e.id ? " selected" : "") + ">" + esc(label) + "</option>";
+      '<option value="' +
+      esc(e.id) +
+      '"' +
+      (selected === e.id ? " selected" : "") +
+      ">" +
+      esc(label) +
+      "</option>";
   });
   html += "</select></label>";
   return html;
@@ -238,7 +279,10 @@ function showCopyToast(message) {
  */
 async function copyTextToClipboard(text) {
   try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    if (
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === "function"
+    ) {
       await navigator.clipboard.writeText(text);
       return true;
     }
@@ -271,14 +315,20 @@ function wireIssueIdCopyDelegation() {
   if (!root || root.dataset.copyDelegationWired === "1") return;
   root.dataset.copyDelegationWired = "1";
   root.addEventListener("click", function (e) {
-    const btn = e.target && /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy");
+    const btn =
+      e.target &&
+      /** @type {HTMLElement} */ (e.target).closest(".issue-id-copy");
     if (!btn || !root.contains(btn)) return;
     e.preventDefault();
     e.stopPropagation();
     const text = btn.getAttribute("data-copy-text");
     if (!text) return;
     void copyTextToClipboard(text).then(function (ok) {
-      showCopyToast(ok ? "Copied: " + text : "Could not copy — try selecting the ID manually.");
+      showCopyToast(
+        ok
+          ? "Copied: " + text
+          : "Could not copy — try selecting the ID manually.",
+      );
     });
   });
 }
@@ -348,15 +398,24 @@ function render() {
         content.innerHTML = '<div class="empty-state">No data</div>';
       } else {
         const issues = data.issues || [];
-        const filtered = applyInitiativeFilter(issues, initiativeFilter).filter(function (i) {
-          const matchStatus = listStatusFilter === "all" || i.status === listStatusFilter;
-          const q = listSearchQuery.toLowerCase();
-          const matchSearch = !q || i.title.toLowerCase().indexOf(q) !== -1 || i.id.toLowerCase().indexOf(q) !== -1;
-          return matchStatus && matchSearch;
-        });
-        if (expandedIssueId && !filtered.some(function (i) {
-          return i.id === expandedIssueId;
-        })) {
+        const filtered = applyInitiativeFilter(issues, initiativeFilter).filter(
+          function (i) {
+            const matchStatus =
+              listStatusFilter === "all" || i.status === listStatusFilter;
+            const q = listSearchQuery.toLowerCase();
+            const matchSearch =
+              !q ||
+              i.title.toLowerCase().indexOf(q) !== -1 ||
+              i.id.toLowerCase().indexOf(q) !== -1;
+            return matchStatus && matchSearch;
+          },
+        );
+        if (
+          expandedIssueId &&
+          !filtered.some(function (i) {
+            return i.id === expandedIssueId;
+          })
+        ) {
           expandedIssueId = null;
         }
         content.innerHTML = "";
@@ -392,7 +451,14 @@ function render() {
     } else {
       content.innerHTML = v.fn();
       if (activeView === "insights") {
-        const filtered = data ? { issues: applyInitiativeFilter(data.issues || [], initiativeFilter) } : null;
+        const filtered = data
+          ? {
+              issues: applyInitiativeFilter(
+                data.issues || [],
+                initiativeFilter,
+              ),
+            }
+          : null;
         void wireInsights(content, filtered);
       }
     }
@@ -425,7 +491,9 @@ function wireRebuildDataButton() {
         body = {};
       }
       if (!res.ok) {
-        throw new Error((body && body.error) || res.statusText || "Request failed");
+        throw new Error(
+          (body && body.error) || res.statusText || "Request failed",
+        );
       }
       await loadData();
       render();
@@ -480,7 +548,10 @@ document.addEventListener("DOMContentLoaded", function () {
         activeView = /** @type {typeof activeView} */ (q);
       }
       document.querySelectorAll("nav a[data-view]").forEach(function (a) {
-        a.classList.toggle("active", /** @type {HTMLElement} */ (a).dataset.view === activeView);
+        a.classList.toggle(
+          "active",
+          /** @type {HTMLElement} */ (a).dataset.view === activeView,
+        );
       });
     } catch (e) {
       /* ignore malformed URL */

@@ -15,11 +15,16 @@
  */
 
 import { execFileSync } from "child_process";
-import { parseBdCreateJsonOutput, parseJsonLoose, type BdCreateJson } from "./bd-json-parse";
+import {
+  type BdCreateJson,
+  parseBdCreateJsonOutput,
+  parseJsonLoose,
+} from "./bd-json-parse";
 
 const EPIC_TITLE = "Epic: Integrate Anthropic long-running harness learnings";
 const EPIC_TITLE_QUERY = "Anthropic long-running harness learnings";
-const REVIEW_TITLE = "Review Anthropic harness integration plan and adjust scope";
+const REVIEW_TITLE =
+  "Review Anthropic harness integration plan and adjust scope";
 
 type Envelope =
   | {
@@ -46,7 +51,9 @@ interface BdDepRow {
   dependency_type?: string;
 }
 
-function execBd(args: string[]): { ok: true; stdout: string } | { ok: false; error: string } {
+function execBd(
+  args: string[],
+): { ok: true; stdout: string } | { ok: false; error: string } {
   try {
     const stdout = execFileSync("bd", args, {
       encoding: "utf8",
@@ -56,12 +63,16 @@ function execBd(args: string[]): { ok: true; stdout: string } | { ok: false; err
     return { ok: true, stdout };
   } catch (e: unknown) {
     const err = e as { stderr?: string; stdout?: string; message?: string };
-    const combined = `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() || (err.message ?? String(e));
+    const combined =
+      `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() ||
+      (err.message ?? String(e));
     return { ok: false, error: combined };
   }
 }
 
-function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: false; error: string } {
+function runBdJson(
+  args: string[],
+): { ok: true; json: BdCreateJson } | { ok: false; error: string } {
   const run = execBd(args);
   if (!run.ok) return run;
   const json = parseBdCreateJsonOutput(run.stdout);
@@ -74,7 +85,9 @@ function runBdJson(args: string[]): { ok: true; json: BdCreateJson } | { ok: fal
   return { ok: true, json };
 }
 
-function listIssues(extraArgs: string[]): { ok: true; issues: BdListIssue[] } | { ok: false; error: string } {
+function listIssues(
+  extraArgs: string[],
+): { ok: true; issues: BdListIssue[] } | { ok: false; error: string } {
   const args = ["list", "--json", "--flat", "--limit", "200", ...extraArgs];
   const run = execBd(args);
   if (!run.ok) return run;
@@ -90,7 +103,9 @@ function listIssues(extraArgs: string[]): { ok: true; issues: BdListIssue[] } | 
   }
 }
 
-function findEpicId(): { ok: true; id: string | null } | { ok: false; error: string } {
+function findEpicId():
+  | { ok: true; id: string | null }
+  | { ok: false; error: string } {
   const listed = listIssues([
     "--type",
     "epic",
@@ -100,7 +115,9 @@ function findEpicId(): { ok: true; id: string | null } | { ok: false; error: str
     "open",
   ]);
   if (!listed.ok) return { ok: false, error: listed.error };
-  const exact = listed.issues.find((i) => i.title === EPIC_TITLE && (i.issue_type === "epic" || !i.issue_type));
+  const exact = listed.issues.find(
+    (i) => i.title === EPIC_TITLE && (i.issue_type === "epic" || !i.issue_type),
+  );
   return { ok: true, id: exact?.id ?? null };
 }
 
@@ -114,11 +131,18 @@ function findChildByParentAndTitle(
   if (matches.length === 0) return { ok: true, id: null };
   const first = matches[0];
   if (!first) return { ok: true, id: null };
-  const open = matches.find((m) => m.status === "open" || m.status === "in_progress" || m.status === "blocked");
+  const open = matches.find(
+    (m) =>
+      m.status === "open" ||
+      m.status === "in_progress" ||
+      m.status === "blocked",
+  );
   return { ok: true, id: (open ?? first).id };
 }
 
-function listDownstreamDeps(issueId: string): { ok: true; deps: BdDepRow[] } | { ok: false; error: string } {
+function listDownstreamDeps(
+  issueId: string,
+): { ok: true; deps: BdDepRow[] } | { ok: false; error: string } {
   const run = execBd(["dep", "list", issueId, "--json"]);
   if (!run.ok) return run;
   try {
@@ -135,10 +159,17 @@ function listDownstreamDeps(issueId: string): { ok: true; deps: BdDepRow[] } | {
 function hasBlocksDep(blocked: string, dependsOn: string): boolean {
   const listed = listDownstreamDeps(blocked);
   if (!listed.ok) return false;
-  return listed.deps.some((d) => d.id === dependsOn && (d.dependency_type === "blocks" || !d.dependency_type));
+  return listed.deps.some(
+    (d) =>
+      d.id === dependsOn &&
+      (d.dependency_type === "blocks" || !d.dependency_type),
+  );
 }
 
-function depEnsure(blocked: string, dependsOn: string): { ok: true } | { ok: false; error: string } {
+function depEnsure(
+  blocked: string,
+  dependsOn: string,
+): { ok: true } | { ok: false; error: string } {
   if (hasBlocksDep(blocked, dependsOn)) {
     return { ok: true };
   }
@@ -151,7 +182,9 @@ function depEnsure(blocked: string, dependsOn: string): { ok: true } | { ok: fal
     return { ok: true };
   } catch (e: unknown) {
     const err = e as { stderr?: string; stdout?: string; message?: string };
-    const msg = `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() || (err.message ?? String(e));
+    const msg =
+      `${err.stderr ?? ""}${err.stdout ?? ""}`.trim() ||
+      (err.message ?? String(e));
     return { ok: false, error: msg };
   }
 }
@@ -191,7 +224,11 @@ function main(): Envelope {
 
   const epicLookup = findEpicId();
   if (!epicLookup.ok) {
-    return { ok: false, data: null, error: `Cannot list issues (needed for idempotency): ${epicLookup.error}` };
+    return {
+      ok: false,
+      data: null,
+      error: `Cannot list issues (needed for idempotency): ${epicLookup.error}`,
+    };
   }
   let epicId = epicLookup.id;
   if (!epicId) {
@@ -215,7 +252,11 @@ function main(): Envelope {
 
   const reviewLookup = findChildByParentAndTitle(epicId, REVIEW_TITLE);
   if (!reviewLookup.ok) {
-    return { ok: false, data: null, error: `Cannot list children of epic: ${reviewLookup.error}` };
+    return {
+      ok: false,
+      data: null,
+      error: `Cannot list children of epic: ${reviewLookup.error}`,
+    };
   }
   let reviewId = reviewLookup.id;
   if (!reviewId) {
@@ -230,7 +271,11 @@ function main(): Envelope {
       labels: ["harness", "planning"],
     });
     if (!review.ok) {
-      return { ok: false, data: null, error: `Failed to create review task: ${review.error}` };
+      return {
+        ok: false,
+        data: null,
+        error: `Failed to create review task: ${review.error}`,
+      };
     }
     reviewId = review.id;
     created.review = true;
@@ -258,12 +303,14 @@ function main(): Envelope {
         ".claude/protocols/evaluation-rubric.md exists; lead.md Step 5 references rubric; evaluator.md requires skeptical UI/product checks when applicable.",
     },
     {
-      title: "Phase 4 (optional): Document E2E / Playwright path for UI-heavy tasks",
+      title:
+        "Phase 4 (optional): Document E2E / Playwright path for UI-heavy tasks",
       acceptance:
         "Rubric or knowledge notes when to add browser verification; no mandatory Playwright for all PRs.",
     },
     {
-      title: "Phase 5: Conditional ceremony table in lead + refine vs pivot in feature workflow",
+      title:
+        "Phase 5: Conditional ceremony table in lead + refine vs pivot in feature workflow",
       acceptance:
         "lead.md includes when to skip/lighten alignment or evaluator; feature.md documents refine vs pivot after FAILED verdict.",
     },
@@ -273,7 +320,11 @@ function main(): Envelope {
   for (const p of phases) {
     const phaseLookup = findChildByParentAndTitle(epicId, p.title);
     if (!phaseLookup.ok) {
-      return { ok: false, data: null, error: `Cannot list phase candidates: ${phaseLookup.error}` };
+      return {
+        ok: false,
+        data: null,
+        error: `Cannot list phase candidates: ${phaseLookup.error}`,
+      };
     }
     let pid = phaseLookup.id;
     let phaseCreated = false;
@@ -286,7 +337,11 @@ function main(): Envelope {
         labels: ["harness", "anthropic-long-running"],
       });
       if (!t.ok) {
-        return { ok: false, data: null, error: `Failed to create phase task "${p.title}": ${t.error}` };
+        return {
+          ok: false,
+          data: null,
+          error: `Failed to create phase task "${p.title}": ${t.error}`,
+        };
       }
       pid = t.id;
       phaseCreated = true;
@@ -297,13 +352,21 @@ function main(): Envelope {
 
   const [p0, p1, p2, p3, p4, p5] = phaseIds;
   if (!p0 || !p1 || !p2 || !p3 || !p4 || !p5) {
-    return { ok: false, data: null, error: "Internal error: expected six phase issues" };
+    return {
+      ok: false,
+      data: null,
+      error: "Internal error: expected six phase issues",
+    };
   }
 
   for (const pid of phaseIds) {
     const d = depEnsure(pid, reviewId);
     if (!d.ok) {
-      return { ok: false, data: null, error: `Failed to ensure phase ${pid} depends on review: ${d.error}` };
+      return {
+        ok: false,
+        data: null,
+        error: `Failed to ensure phase ${pid} depends on review: ${d.error}`,
+      };
     }
   }
 

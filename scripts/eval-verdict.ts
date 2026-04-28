@@ -80,7 +80,10 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
     !isNonNegInt(fr.medium) ||
     !isNonNegInt(fr.low)
   ) {
-    return { ok: false, error: "findings.blocker|high|medium|low must be non-negative integers" };
+    return {
+      ok: false,
+      error: "findings.blocker|high|medium|low must be non-negative integers",
+    };
   }
   const value: EvalVerdictParsed = {
     schemaVersion: EVAL_VERDICT_SCHEMA_VERSION,
@@ -99,8 +102,15 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
     return { ok: false, error: "summary must be a string when present" };
   }
   if (o.attestations !== undefined) {
-    if (typeof o.attestations !== "object" || o.attestations === null || Array.isArray(o.attestations)) {
-      return { ok: false, error: "attestations must be an object when present" };
+    if (
+      typeof o.attestations !== "object" ||
+      o.attestations === null ||
+      Array.isArray(o.attestations)
+    ) {
+      return {
+        ok: false,
+        error: "attestations must be an object when present",
+      };
     }
     const src = o.attestations as Record<string, unknown>;
     const attestations: EvalAttestations = {};

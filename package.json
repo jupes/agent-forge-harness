@@ -15,9 +15,12 @@
     "tmp:cleanup": "bun run scripts/tmp-work-cleanup.ts",
     "beads:bundles": "bun run scripts/beads/convoy-bundles.ts",
     "molecules:check": "bun run scripts/molecules/check.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check scripts .claude/hooks .claude/skills types docs/js",
+    "lint:fix": "biome check --write scripts .claude/hooks .claude/skills types docs/js"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
     "@preact/preset-vite": "^2.10.5",
     "@types/bun": "latest",
     "chokidar": "^4.0.3",
