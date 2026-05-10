@@ -27,7 +27,7 @@ This document records confirmed values for books we have tested, plus calibratio
 #### Font Hierarchy
 
 | Size (pt) | Role | Example text |
-|-----------|------|-------------|
+| --------- | ---- | ------------ |
 | 24 | Chapter title | `Chapter 3: Classes` |
 | 20 | Major entity name (class, race) | `Cleric`, `Dwarf` |
 | 15 | Chapter subtitle / flavor | `Healers and Warriors` |
@@ -38,6 +38,7 @@ This document records confirmed values for books we have tested, plus calibratio
 | 8.5 | Footnotes / fine print | — |
 
 **Key insight**: 12pt is the universal "named entity heading" size in this book. It marks:
+
 - Spell names (Chapter 11)
 - Condition names (Appendix A)
 - Race feature names (Chapter 2)
@@ -51,7 +52,7 @@ This means **12pt detection is the primary chunking boundary signal** for all no
 The fonts have a 6-char subset hash prefix (e.g. `PRRJNW+`). This prefix will differ per PDF instance and should be stripped before matching.
 
 | Logical name | Embedded name (prefix stripped) | Used for |
-|-------------|-------------------------------|---------|
+| ------------ | ------------------------------- | -------- |
 | `ScalaSansOffc-Bold` | `ScalaSansOffc-Bold` | Section labels, small headings |
 | `ScalaSansOffc` | `ScalaSansOffc` | Stat line labels (Casting Time, Range, etc.) |
 | `ScalaSansScOffc` | `ScalaSansScOffc` | Small caps body text, page headers |
@@ -66,7 +67,7 @@ The fonts have a 6-char subset hash prefix (e.g. `PRRJNW+`). This prefix will di
 
 #### Column Layout
 
-```
+```text
 Page width:  594 pt
 Left column: x0 ~63 → x1 ~288
 Gutter:      ~288 → ~313  (25 pt gap)
@@ -86,12 +87,14 @@ right = page.crop((mid, 0, page.width, page.height)).extract_text()
 #### Page Header Format
 
 Every content page starts with:
-```
+
+```text
 {page_number}
 D&D Player's Basic Rules v0.2 | {chapter_or_section_title}
 ```
 
 Strip this before processing:
+
 ```python
 import re
 HEADER_RE = re.compile(r'^\d+\s*\nD&D Player\'s Basic Rules[^\n]*\n', re.MULTILINE)
@@ -107,7 +110,8 @@ clean = HEADER_RE.sub('', raw_text).strip()
 #### Spell Entry Pattern
 
 Each spell entry in Chapter 11 follows this fixed format:
-```
+
+```text
 {Spell Name}              ← 12pt
 {N}th-level {school}      ← 10pt
 Casting Time: {value}     ← 10pt
@@ -121,7 +125,7 @@ Detection: a 12pt word cluster immediately followed by a line matching `^\d+(st|
 
 #### Condition Entry Pattern (Appendix A)
 
-```
+```text
 {Condition Name}    ← 12pt
 A {condition name} creature...  ← 10pt prose
 • Bullet 1
@@ -133,10 +137,14 @@ Same 12pt signal as spells. Differentiate by location (Appendix A page range: 10
 #### Table Characteristics
 
 D&D Basic Rules tables are **visual text-column layouts**, not structural PDF table objects. pdfplumber's `extract_tables()` uses line/rectangle detection heuristics:
-- Works reliably for tables with visible border lines
-- Header rows are detected; data rows contain correct cell text
-- Some cells may be empty where visual column alignment substitutes for content
-- Table row example from Equipment chapter (p43): `['Padded', '5 gp', '11 + Dex modifier', '—', 'Disadvantage', '8 lb.']`
+
+**Practical findings (confirmed against `phb-basic-v0.2`):**
+
+- Of ~422 raw table detections, **only 2 survive a quality filter** of ≥3 data rows + ≥2 non-empty header cells. The other 420 are single-row stubs like `"28–29 | +9 | "` — pdfplumber mistakes decorative borders and column separators for table boundaries.
+- The 2 survivors are XP/level table fragments that are **missing column headers** — pdfplumber detects data rows separately from header rows for this table.
+- **Table content is not lost**: the column-aware text extractor captures equipment/armor/weapon table data as regular prose text in `rule` or `class_feature` chunks. The `table` content_type in this book is therefore sparse and supplementary, not primary.
+
+**Recommendation for this book**: rely on prose chunk extraction for table content. Refine table detection only if a downstream query shows important table content is missing from retrieval results.
 
 pdf-parse v2's `getTable()` returns empty cells for all D&D tables — do not use for this book.
 
@@ -211,24 +219,31 @@ For each new book, add a section to this document with:
 ## Common Pitfalls
 
 ### Multi-column text without crop
+
 pdfplumber's default `extract_text()` reads words left-to-right across the full page width, which mixes left and right column content mid-sentence. **Always crop to columns first.**
 
 ### Relying on double newlines
+
 D&D PDFs use single newlines throughout — no blank lines between paragraphs in raw extraction. Any code that splits on `\n\n` will get 1 block per page.
 
 ### Font size rounding
+
 pdfplumber returns float sizes. Always round: `round(c['size'], 1)`. A "12pt" heading may be `11.96` or `12.04` depending on the PDF renderer.
 
 ### Subset font prefix
+
 Embedded font names include a 6-char hash prefix (e.g. `PRRJNW+Bookmania-Regular`). Strip it before any font name matching: `fontname.split('+')[-1]`.
 
 ### Table cells that appear empty
+
 Some table columns use visual spacing (no ruled lines) that pdfplumber misses. Check the table bounding box and use `extract_text()` on the cropped region as a fallback.
 
 ### Page numbers included in extracted text
+
 Both pdfplumber and pdf-parse v2 include the printed page number as the first character(s) of the page text. Always strip the header block (page number + title line) before chunking.
 
 ### Chapter title pages are still 2-column
+
 Even pages that look like single-column chapter intros have content in both columns. Do not detect "is this a chapter page?" and skip column splitting — both columns need extraction on every page.
 
 ---
