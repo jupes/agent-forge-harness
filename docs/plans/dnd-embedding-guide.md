@@ -9,10 +9,10 @@
 ## Decision Summary
 
 | Model | Vendor | Dim | Context | Cost | Status |
-|-------|--------|-----|---------|------|--------|
+| ----- | ------ | --- | ------- | ---- | ------ |
 | `mxbai-embed-large` | Ollama (local) | 1024 | ~256 tokens effective | Free | **Rejected** — context too short |
-| `nomic-embed-text` | Ollama (local) | 768 | 8192 tokens | Free | **Current** |
-| `text-embedding-3-small` | OpenAI API | 1536 | 8192 tokens | $0.02/1M tokens | Next fallback |
+| `nomic-embed-text` | Ollama (local) | 768 | 8192 tokens | Free | **Rejected** — poor corpus discrimination |
+| `text-embedding-3-small` | OpenAI API | 1536 | 8192 tokens | $0.02/1M tokens | **Current** |
 | `text-embedding-3-large` | OpenAI API | 3072 | 8192 tokens | $0.13/1M tokens | Fallback if quality insufficient |
 
 Escalation path: **nomic-embed-text → text-embedding-3-small → text-embedding-3-large**
@@ -37,28 +37,34 @@ context length ≠ Ollama's effective context length for that model.
 
 ---
 
-## nomic-embed-text — Current
+## nomic-embed-text — Rejected
 
 **Model**: `nomic-embed-text` via Ollama
-**Pull**: `ollama pull nomic-embed-text`
-**Dim**: 768
-**Context**: 8192 tokens — handles all D&D chunks comfortably
-**Cost**: Free (local inference)
-**Schema**: `embedding vector(768)` in `dnd.chunks`
+**Dim**: 768 / **Context**: 8192 tokens / **Cost**: Free
 
-### Why chosen over mxbai-embed-large
+### Why it was tried
 
-- 8192-token context fits the entire corpus without truncation
-- Specifically designed and benchmarked for RAG / document retrieval
-- Recommended in Ollama's official embedding model docs
-- Same zero-cost, zero-API-key operational model
+8192-token context solves the mxbai truncation problem. Purpose-built for RAG retrieval.
 
-### Known limitations
+### Why it was rejected
 
-- 768d vs 1024d (mxbai) or 1536d (OpenAI) — lower dimension = marginally less representational
-  capacity, but well within acceptable range for semantic search at this scale
-- Local CPU inference — slower than a hosted API (~2–4s per batch of 32)
-- Requires Ollama running locally; not suitable for a hosted/serverless embed endpoint
+In practice against the D&D corpus, all 569 chunks scored in a tight **0.55–0.65 cosine
+similarity band** regardless of relevance. "Fireball" (entity_name) scored 0.548 against the
+query "what does Fireball do" — **lower than unrelated rule chunks** (0.65).
+
+Controlled micro-test confirmed the model can discriminate in isolation (0.724 relevant vs
+0.590 irrelevant on a two-sentence example), but collapses on a domain-specific corpus where
+all chunks share the same D&D vocabulary. This is a density problem: when the entire embedding
+space is occupied by similar-register text, cosine distances compress and discrimination fails.
+
+**Additional quirk**: nomic-embed-text is an asymmetric model — documents must be prefixed with
+`search_document:` and queries with `search_query:`. The Ollama modelfile uses
+`TEMPLATE {{ .Prompt }}` so prefixes must be applied manually in the embed script. This works
+correctly (prefix is passed through) but does not rescue retrieval quality on this corpus.
+
+**Lesson**: Test retrieval quality on your actual corpus, not a micro-benchmark. A model that
+works in controlled examples can fail on a domain-specific corpus where inter-chunk similarity
+is high.
 
 ---
 
@@ -68,8 +74,10 @@ context length ≠ Ollama's effective context length for that model.
 **Dim**: 1536
 **Context**: 8192 tokens
 **Cost**: $0.02 / 1M tokens
-  - Full 569-chunk ingest ≈ 60,000 tokens → **~$0.0012 per full re-ingest**
-  - Re-embedding a single book: negligible
+
+- Full 569-chunk ingest ≈ 60,000 tokens → **~$0.0012 per full re-ingest**
+- Re-embedding a single book: negligible
+
 **Schema**: `embedding vector(1536)` in `dnd.chunks`
 
 ### When to escalate
@@ -113,6 +121,7 @@ retrieval parameters (top-k, score thresholds, hybrid search).
 Switching models requires:
 
 1. **Drop and recreate** the embedding column with the new dimension:
+
    ```sql
    ALTER TABLE dnd.chunks DROP COLUMN embedding;
    ALTER TABLE dnd.chunks ADD COLUMN embedding vector(<new_dim>) NOT NULL;
@@ -120,6 +129,7 @@ Switching models requires:
    CREATE INDEX dnd_chunks_embedding_hnsw_idx ON dnd.chunks
      USING hnsw (embedding vector_cosine_ops);
    ```
+
 2. **Re-run** `ingestion/embed.py` with `--model <new-model>` (or update the default)
 3. **Update** the `EMBED_MODEL` env var and this document
 
