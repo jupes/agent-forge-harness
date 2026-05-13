@@ -27,6 +27,9 @@ plans/session-context.json
 # Each clone regenerates its own project_id via `bd init` / `bd doctor --fix`.
 .beads/metadata.json
 
+# Project-specific planning docs (live in their own sub-repos)
+docs/plans/dnd-*.md
+
 # Dashboard generated data
 docs/data/beads.json
 
