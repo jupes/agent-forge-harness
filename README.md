@@ -120,3 +120,5 @@ Plan artifacts should use the root `plans/` contract: write active drafts to `pl
 ## License
 
 MIT — [LICENSE](LICENSE)
+
+Several skills under `.claude/skills/` are derived from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, © Matt Pocock). See [.claude/skills/ATTRIBUTION.md](.claude/skills/ATTRIBUTION.md).
