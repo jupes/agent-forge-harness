@@ -189,7 +189,7 @@ bd create \
   --title "<step description>" \
   --repo <repo> \
   --priority <value> \
-  --ac "<acceptance criterion from the step>"
+  --acceptance "<acceptance criterion from the step>"
 ```
 
 Pick **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md` (critical-path or high-risk steps → **high** / **critical**; later optional steps → **medium** / **low**).

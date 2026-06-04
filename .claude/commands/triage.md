@@ -69,7 +69,7 @@ bd create \
   --title "CI failing on PR #<n>: <pr title>" \
   --repo <repo> \
   --priority high \
-  --ac "CI passes on PR #<n>"
+  --acceptance "CI passes on PR #<n>"
 
 bd comments add <new-bug-id> "design: CI failure detected by /triage. PR: #<n>. Failures: <ci check names>"
 ```
