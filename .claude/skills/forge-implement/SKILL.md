@@ -33,11 +33,18 @@ Beads must be reachable. If `bd` errors (e.g. Dolt server down), **stop** and fi
 ### 1. Claim the first task
 
 ```bash
-bd update <task-id> --claim
+bd update <task-id> --claim     # sets assignee + status=in_progress (atomic, idempotent)
 bd comments add <task-id> "worklog: starting implement (forge)"
 ```
 
 Work tasks in dependency order. One task in progress at a time.
+
+**Keep Beads current as you work** (do not batch all updates to the end):
+- `--claim` moves the task `open → in_progress` — claim it *before* writing code, not after.
+- Add a `worklog:` comment at each checkpoint and at any notable decision or pivot, so the issue
+  reflects real progress: `bd comments add <task-id> "worklog: checkpoint A green — <demo cmd>"`.
+- If a task gets stuck on something external, set `bd update <task-id> --status blocked` and add a
+  `deps:` comment naming the blocker; file a new Beads issue for the blocker rather than going quiet.
 
 ### 2. Red-green-refactor per the TDD skill
 

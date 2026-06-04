@@ -1,16 +1,19 @@
-# /forgemaster — Run the full Forge pipeline, gated phase by phase
+# /forgemaster — Route by complexity, then run the Forge pipeline gated phase by phase
 
-Orchestrate the four Forge phases in order — **research → plan → implement → ship** — pausing at
-every boundary to ask your approval before advancing. One feature, start to finish, with you in
-control at each step.
+Judge the complexity of the request, **route** to the right-sized Forge path, then run it gated —
+pausing at each boundary for your approval. Medium-or-higher work runs the full four-phase pipeline
+(**research → plan → implement → ship**); low-complexity work is handed to the trimmed
+`forge-mini` path to save turns and cost. You stay in control at every step.
 
-See `.claude/workflows/forge.md` for the pipeline overview.
+See `.claude/workflows/forge.md` (full) and `.claude/workflows/forge-mini.md` (mini) for details.
 
 ## Usage
 ```
-/forgemaster <feature description>     # start a new run
-/forgemaster <slug>                    # resume an in-progress run
+/forgemaster <feature description>     # judge complexity, route, run
+/forgemaster <slug>                    # resume an in-progress full run
 /forgemaster                           # resume the active run in .tmp/work/forge-state.json
+/forgemaster --full <description>      # force the full pipeline (skip the complexity check)
+/forgemaster --mini <description>      # force the mini path (skip the complexity check)
 ```
 
 ---
@@ -29,11 +32,44 @@ hook normally starts the server automatically; this is the manual recovery.)
 Then determine the run:
 - New feature text → derive a kebab-case `<slug>` from it and confirm with the user.
 - A `<slug>` or empty input → read `.tmp/work/forge-state.json` to find the active run and which
-  phases are already complete. Resume at the first incomplete phase.
+  phases are already complete. Resume at the first incomplete phase (this is always a **full** run;
+  skip the triage below and go to Step 1).
 
 ---
 
-## Step 1 — Walk the phases
+## Step 0.5 — Complexity triage & route
+
+Pick the right-sized path **before** doing real work — running the full pipeline on a one-file
+change wastes turns and money (cost is the whole point of this step).
+
+- `--full` / `--mini` flag present → honor it, skip the judgment.
+- Resuming an existing full run → stay full.
+- Otherwise judge complexity from cheap signals (a quick look, not a research project): aligns with
+  the tiers in `.claude/commands/go.md` and the model-tier rubric in
+  `.claude/protocols/model-tier-policy.md`.
+
+| Signal | → Mini | → Full |
+|--------|--------|--------|
+| Files touched | ≤ ~3 | > 3 |
+| New architecture / component / system | no | yes |
+| Genuine unknowns or design decisions | ≤ 1 | several |
+| Scope clarity | clear from the ask + code | ambiguous, needs investigation |
+| Cross-cutting / shared interfaces | no | yes |
+
+**Default when uncertain: ask, don't assume.** Use `AskUserQuestion` to state your read and the
+recommended route, letting the user confirm or override:
+
+- **Mini** → follow `.claude/workflows/forge-mini.md` (scope → build → wrap). Do **not** use the
+  `forge:phase-gate` / `forge-state.json` or write `plans/`/`reports/` docs; track in Beads only.
+  Then go straight to that workflow — the phase-walk below is for the full path.
+- **Full** → derive/confirm the `<slug>` and continue to Step 1.
+
+If a mini run outgrows its size mid-flight, escalate to full (`/forge-research <slug>`) as described
+in `forge-mini.md`.
+
+---
+
+## Step 1 — Walk the phases *(full path)*
 
 For each phase in order — `research`, `plan`, `implement`, `ship` — do this loop:
 
