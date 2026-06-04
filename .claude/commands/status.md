@@ -29,7 +29,7 @@ Show:
 ### 2. Ready Work
 
 ```bash
-bd ready 2>/dev/null || echo "(Beads not configured)"
+bd ready || echo "⚠ Beads unreachable — start the Dolt server: bd dolt start (then re-run /status)"
 ```
 
 Display top 5 unblocked, unclaimed tasks sorted by priority.
@@ -44,7 +44,7 @@ READY WORK
 ### 3. In-Progress Work
 
 ```bash
-bd ready --status in_progress 2>/dev/null || true
+bd ready --status in_progress
 ```
 
 Show tasks currently claimed/in-progress.
@@ -53,7 +53,7 @@ Show tasks currently claimed/in-progress.
 
 Identify blocked tasks (dependency not yet closed, or `status: blocked`):
 ```bash
-bd ready --status blocked 2>/dev/null || true
+bd ready --status blocked
 ```
 
 For each blocked item, show what it's waiting on.
@@ -115,6 +115,6 @@ When `--deep` is passed: run `/triage` for full deadline and capacity analysis.
 
 ## Error Handling
 
-- If `bd` is not installed: skip Beads sections, note "(Beads not configured)"
+- If `bd` errors (Dolt server down): surface it loudly and tell the user to run `bd dolt start`, then re-run `/status`. Do NOT silently skip Beads sections. Only if `bd` is genuinely not installed, note "(bd not installed)".
 - If `gh` is not installed: skip PR sections, note "(gh CLI not configured)"
 - If not in a git repo: report error and stop

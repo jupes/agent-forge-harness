@@ -8,7 +8,7 @@
       {
         "hooks": [
           {
-            "command": "bd prime 2\u003e/dev/null || true",
+            "command": "bd prime 2>/dev/null || true",
             "type": "command"
           }
         ]
@@ -27,7 +27,11 @@
       {
         "hooks": [
           {
-            "command": "bd prime 2\u003e/dev/null || true",
+            "command": "bd dolt start 2>/dev/null || true",
+            "type": "command"
+          },
+          {
+            "command": "bd prime 2>/dev/null || true",
             "type": "command"
           },
           {
@@ -39,11 +43,25 @@
       {
         "hooks": [
           {
+            "command": "bd dolt start",
+            "type": "command"
+          },
+          {
             "command": "bd prime",
             "type": "command"
           }
         ],
         "matcher": ""
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "bun run .claude/hooks/forge-phase-gate.ts --stop-hook",
+            "type": "command"
+          }
+        ]
       }
     ],
     "TaskCompleted": [
@@ -89,8 +107,12 @@
       "gh repo *",
       "gh api *",
       "bd dolt pull",
+      "bd dolt push",
+      "bd dolt start",
+      "bd dolt status",
       "bd ready",
       "bd show",
+      "bd list",
       "bd close",
       "bd create",
       "bd comments",
@@ -98,7 +120,6 @@
       "bd dep",
       "bd doctor",
       "bd prime",
-      "bd dolt push",
       "grep *",
       "jq *",
       "wc *",
