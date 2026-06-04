@@ -66,7 +66,7 @@ When input is a file path, parse the spec and create Beads tasks:
      --title "<derived title>" \
      --repo <repo from spec or ask> \
      --priority <value> \
-     --ac "<acceptance criterion if identifiable>"
+     --acceptance "<acceptance criterion if identifiable>"
    ```
    Set **`<value>`** using `.claude/skills/beads-priority-assignment/SKILL.md`.
 4. If items have clear dependencies (item B requires item A), add them:
@@ -121,4 +121,4 @@ Reason: <1 sentence why this tier>
 - **Task not found**: `bd show <id>` returns empty → check ID, suggest `bd ready`
 - **Ambiguous spec**: >10 items from a single spec → ask user to confirm before materializing
 - **No git repo**: abort with instructions to `git init`
-- **Beads not configured**: warn user, proceed without Beads (skip all `bd` commands)
+- **Beads unreachable** (`bd` errors / Dolt server down): **STOP — do not proceed without Beads.** Run `bd dolt start` and retry; Beads tracking is mandatory for tracked work. (The SessionStart hook normally auto-starts the server.) Only if `bd` is genuinely not installed should you tell the user to install it before continuing.
