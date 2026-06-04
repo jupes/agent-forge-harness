@@ -56,7 +56,7 @@ with test evidence; the ship phase closes the epic/feature.
 
 ## TDD is the build method
 
-The plan phase sets up red-green-refactor using `repos/skills/tdd/SKILL.md`, and the implement phase
+The plan phase sets up red-green-refactor using `.claude/skills/tdd/SKILL.md`, and the implement phase
 executes it **vertically** — one test → minimal code → repeat — never all-tests-then-all-code.
 Behaviors are tested through public interfaces so tests survive refactors.
 

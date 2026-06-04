@@ -88,3 +88,13 @@ Use beads to track TDD slices:
 bd create --type task --title "TDD slice: <behavior>" --description "<expected behavior and test scope>" --priority 2 --repo .
 bd comments add <id> "worklog: red->green completed for <behavior>"
 ```
+
+## Deep-dive references
+
+Bundled with this skill (self-contained — no external repos required):
+
+- [tests.md](tests.md) — concrete good vs. bad test examples
+- [interface-design.md](interface-design.md) — designing interfaces for testability
+- [deep-modules.md](deep-modules.md) — small interface, deep implementation
+- [mocking.md](mocking.md) — mock only at system boundaries
+- [refactoring.md](refactoring.md) — refactor candidates after green

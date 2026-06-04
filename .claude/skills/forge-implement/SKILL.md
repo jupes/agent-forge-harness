@@ -41,7 +41,7 @@ Work tasks in dependency order. One task in progress at a time.
 
 ### 2. Red-green-refactor per the TDD skill
 
-For each behavior in the plan's TDD Strategy, follow `repos/skills/tdd/SKILL.md` **vertically**:
+For each behavior in the plan's TDD Strategy, follow `.claude/skills/tdd/SKILL.md` **vertically**:
 
 ```
 RED:   write ONE test for the next behavior → it fails
@@ -114,7 +114,7 @@ Report the checkpoints completed and the tasks closed, then point to `/forge-shi
 - A checkpoint balloons past its planned scope (>8 files or >~200 lines): pause and report; consider
   splitting the Beads task before continuing.
 - A behavior cannot be tested through the public interface: revisit the interface design with the
-  user (see `repos/skills/tdd/interface-design.md`) rather than testing implementation details.
+  user (see `.claude/skills/tdd/interface-design.md`) rather than testing implementation details.
 - Quality gate fails twice after fixes: stop, file a Beads bug, escalate.
 
 ## Exit Criteria

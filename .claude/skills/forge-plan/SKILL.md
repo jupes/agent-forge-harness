@@ -35,7 +35,7 @@ constraints, and non-goals. If you find a contradiction, surface it instead of s
 
 ### 2. Set up TDD for the feature
 
-Read and follow the TDD skill at `repos/skills/tdd/SKILL.md` (see also its `tests.md`,
+Read and follow the TDD skill at `.claude/skills/tdd/SKILL.md` (see also its `tests.md`,
 `interface-design.md`, `deep-modules.md`). Apply its discipline to **this** feature:
 
 - **List behaviors to test**, not implementation steps — phrase each as a specification
@@ -72,7 +72,7 @@ Phase: plan (2/4) — from plans/research/<slug>.md
 - `path` — <how it is reused> (from research)
 
 ## TDD Strategy (red-green-refactor)
-Following repos/skills/tdd. Behaviors are tested through public interfaces, vertically.
+Following .claude/skills/tdd. Behaviors are tested through public interfaces, vertically.
 
 | # | Behavior (as a spec) | Test file | Tracer? |
 |---|----------------------|-----------|---------|

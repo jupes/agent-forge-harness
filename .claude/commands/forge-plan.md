@@ -13,7 +13,7 @@ Follow **`.claude/skills/forge-plan/SKILL.md`** in full. In short:
 
 1. Gate the start: `bun run forge:phase-gate plan --slug <slug>` (requires `plans/research/<slug>.md`).
 2. Read the research doc; keep the plan consistent with its decisions and non-goals.
-3. Set up TDD using `repos/skills/tdd/SKILL.md`: list behaviors to test (as specs), design testable
+3. Set up TDD using `.claude/skills/tdd/SKILL.md`: list behaviors to test (as specs), design testable
    interfaces, plan vertical slices, mark the tracer bullet.
 4. Break work into **checkpoints** — each names a command/URL the user can run to *see* progress (or
    is explicitly `(no live demo)`).
