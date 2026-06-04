@@ -1,0 +1,17 @@
+# Normalize all text files to LF in the working tree on every checkout,
+# regardless of core.autocrlf. Keeps biome/prettier line-ending checks green
+# cross-platform (notably on Windows where autocrlf=true would otherwise emit CRLF).
+* text=auto eol=lf
+
+# Binary assets — never apply text/eol normalization.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
+*.lockb binary
