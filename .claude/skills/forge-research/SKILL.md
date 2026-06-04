@@ -79,6 +79,13 @@ Why:
 <brief rationale + consequence>
 ```
 
+**Explain before you ask.** If the decision rests on a mechanism the user may not have in their
+head — a tradeoff, how a tool behaves, or *why the code forces the choice* — open with one or two
+plain-language sentences that explain what's going on and why it matters, **then** give the options.
+A question the user can't parse wastes the turn (and the tokens). Lead with the "why", not the menu.
+If the user says they don't understand, stop and explain the mechanism in plain terms before
+re-asking.
+
 Prefer `AskUserQuestion` when the choice is a small closed set. Stop asking when the remaining
 uncertainty is explicitly accepted or the user says to proceed.
 
