@@ -44,6 +44,18 @@ Your role for each task is defined by the workflow you are following.
 | `/add-repo <url-or-path>` | Register a sub-repo under `repos/` (follows `.claude/skills/add-repo/SKILL.md`) |
 | `/add-bead <text>` | Quick `bd create` from free text (title + optional description) |
 
+### Forge pipeline (research → plan → implement → ship)
+
+A guided four-phase pipeline. Each phase is a skill with a thin command; `/forgemaster` runs them in order, gating between each. See `.claude/workflows/forge.md`.
+
+| Command | Purpose |
+|---------|---------|
+| `/forgemaster [feature]` | Orchestrate all four phases in order, pausing for approval at each boundary |
+| `/forge-research [feature]` | Phase 1 — explore real code, grill for the unknowns → `plans/research/<slug>.md` |
+| `/forge-plan <slug>` | Phase 2 — TDD + Beads plan with demo checkpoints → `plans/drafts/<slug>.md` |
+| `/forge-implement <slug>` | Phase 3 — red-green-refactor per checkpoint, demo-able stops |
+| `/forge-ship <slug>` | Phase 4 — summary + before/after + test walkthrough → `reports/<slug>-ship.md` + PR |
+
 Workflow files live in `.claude/workflows/`. Command files live in `.claude/commands/`.
 
 ---
@@ -84,7 +96,7 @@ bd ready                   # List unblocked, unclaimed tasks
 bd show <id>               # View issue details and AC
 bd create --type task --title "..." --repo <repo> [--priority <0–4|P0–P4|critical|high|medium|low>]
 bd update <id> --claim     # Claim work
-bd update <id> --ac "..."  # Add acceptance criteria
+bd update <id> --acceptance "..."  # Add acceptance criteria (flag is --acceptance, NOT --ac)
 bd close <id>              # Mark complete
 bd comments add <id> "worklog: description"
 bd dep add <id> --blocks <other-id>

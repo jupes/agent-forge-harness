@@ -51,6 +51,7 @@ See **Description field** and **checklist** in [references/AUTHORING-GUIDE.md](r
 3. **Scripts** return structured JSON (`ok`, `data`, `error`).
 4. Idempotent scripts when reruns are likely.
 5. Tracked work uses **Beads** (`bd`), not TODO files or TODO comments.
+6. **Ship self-contained — never depend on `repos/`.** `repos/` holds cloned sub-repos and is **gitignored**, so anything under it is absent for other users. A command or skill must not reference `repos/skills/...` (or any other `repos/<x>` dependency) as something it *needs to read*. Vendor a copy into the harness (e.g. `.claude/skills/<name>/`) and reference that. Referring to `repos/<repo>/` as the **runtime location of the user's own sub-repos** (e.g. `--repo ./repos/<name>`, `repos/repos.json`) is fine — that is user data, not a harness dependency.
 
 ## Scaffold
 
