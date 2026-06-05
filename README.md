@@ -8,7 +8,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 **What this repository is.** Agent Forge Harness is a **configuration and convention layer** for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It is not a framework for your product app, a deployable service, or a replacement for your editor or CI. It is a **harness repo** you keep at the root of (or alongside) the work you want agents to help with: it encodes *how* work is picked up, scoped, planned, checked, and recorded so sessions stay consistent when people, models, or machines hand off to each other.
 
-**What it does.** The harness gives you a **shared operating system** for AI-assisted development: slash commands for day-to-day flow (`/go`, `/plan`, `/ship`, and others), **workflows** that scale ceremony to task size (small fixes vs planned features vs batched epics), **hooks** that run quality checks at the right moments, **[Beads](https://github.com/gastownhall/beads) issue tracking** so tasks, acceptance criteria, and dependencies live in a graph instead of chat, **`knowledge/`** YAML for curated facts about your systems, optional **multi-repo** coordination under `repos/`, **plan storage** under `plans/` for durable drafts and committed baselines, Bun **scripts** for automation (worktrees, repo sync, dashboard data), and a **static dashboard** in `docs/` for visibility. Together, that steers work toward typed, test-backed changes and push-ready completion without forcing the same process on every one-line fix.
+**What it does.** The harness gives you a **shared operating system** for AI-assisted development: the guided **`/forgemaster`** research→plan→implement→ship pipeline (complexity-routed, with a trimmed mini path) for end-to-end delivery, slash commands for day-to-day flow (`/go`, `/plan`, `/ship`, and others), **workflows** that scale ceremony to task size (small fixes vs planned features vs batched epics), **hooks** that run quality checks at the right moments, **[Beads](https://github.com/gastownhall/beads) issue tracking** so tasks, acceptance criteria, and dependencies live in a graph instead of chat, **`knowledge/`** YAML for curated facts about your systems, optional **multi-repo** coordination under `repos/`, **plan storage** under `plans/` for durable drafts and committed baselines, Bun **scripts** for automation (worktrees, repo sync, dashboard data), and a **static dashboard** in `docs/` for visibility. Together, that steers work toward typed, test-backed changes and push-ready completion without forcing the same process on every one-line fix.
 
 **How it does it.** **Claude Code** loads `.claude/` (agents, commands, workflows, hooks, skills, protocols) when you open this repo. **Slash commands** map human intent to the right **workflow** markdown; agents and humans follow those playbooks. **Hooks** (TypeScript, run with Bun) enforce or report **quality gates** (typecheck, tests, tree state, and project-specific checks) in structured JSON when relevant events fire. **Beads** (`bd`, with optional Dolt) is the system of record for *what* must be done. **`knowledge/`** and **`plans/`** hold **durable** context and plan artifacts; **`.tmp/work/`** remains for short-lived session files. **Optional worktrees** and epic workflow support parallel workers without clobbering the same branch. None of this runs your production stack—it **orchestrates the work** around the codebases you point the harness at.
 
@@ -65,7 +65,20 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 ## Claude Code usage
 
-Scope router and friends:
+### Forge pipeline — `/forgemaster`
+
+The flagship workflow: a guided **research → plan → implement → ship** pipeline that turns a request into shipped, tested, **Beads**-tracked work, pausing for your approval at every phase boundary. `/forgemaster` first judges complexity and **routes** the work:
+
+- **Full** (medium-or-higher scope) — four gated phases:
+  1. **Research** — explores the real code and asks you *only* what the code can't answer (one question at a time, each with a recommended answer, explaining the *why* before the options) → `plans/research/<slug>.md`.
+  2. **Plan** — turns research into a TDD- and Beads-shaped plan with demo checkpoints → `plans/drafts/<slug>.md`.
+  3. **Implement** — builds red-green-refactor (TDD via [`.claude/skills/tdd`](.claude/skills/tdd/SKILL.md)), pausing at each checkpoint so you can run a **live demo/test**.
+  4. **Ship** — writes a before/after + "test it yourself" walkthrough → `reports/<slug>-ship.md`, then pushes and opens the PR.
+- **Mini** (small, clear scope) — `/forgemaster-mini`: a trimmed **scope → build → wrap** path with the same Beads + TDD discipline but far fewer turns and artifacts, to keep cost down.
+
+A lightweight phase-gate refuses a phase whose predecessor is missing, and a `Stop` exit hook nudges the next step while a run is active. Phases also run standalone: `/forge-research` · `/forge-plan` · `/forge-implement` · `/forge-ship`. Overview: [.claude/workflows/forge.md](.claude/workflows/forge.md) (mini: [forge-mini.md](.claude/workflows/forge-mini.md)).
+
+### Scope router and friends
 
 `/go` · `/plan` · `/ship` · `/status` · `/review` · `/triage` · `/ask` · `/sync-knowledge [repo|--all]` · `/add-bead <text>`
 
