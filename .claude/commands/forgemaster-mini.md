@@ -8,9 +8,14 @@ Use this directly when you already know the task is small. For anything medium-o
 `/forgemaster` (which can also auto-route here).
 
 ## Usage
+
+Accepts the same inputs as `/forgemaster` — a **JIRA ticket**, a **Beads issue id**, or a
+**free-text description**.
+
 ```
-/forgemaster-mini <task description>
-/forgemaster-mini <beads-id>            # run mini against an existing issue
+/forgemaster-mini <task description>    # free text
+/forgemaster-mini <BEADS-ID>            # e.g. agent-forge-harness-f25 → run mini against that issue
+/forgemaster-mini <JIRA-KEY>            # e.g. PROJ-1234 → mirror into Beads, then run mini
 ```
 
 ## What to do
@@ -19,8 +24,10 @@ Follow **`.claude/workflows/forge-mini.md`** in full. In short:
 
 1. **Preflight** — `bd ready >/dev/null`; if it errors, `bd dolt start` and retry. Beads is required.
 2. **Scope** — read only the touched files; ask **at most one** decision question (lead with the
-   plain-language *why*, then options); state the approach inline; create/reuse + `--claim` one
-   Beads task (priority via `.claude/skills/beads-priority-assignment/SKILL.md`). Confirm the
+   plain-language *why*, then options); state the approach inline. **Resolve the input to one Beads
+   task**: `bd show` an existing id, *mirror* a JIRA key into Beads (`--external-ref jira-<KEY>`,
+   pasting the ticket if no JIRA integration is configured), or create a new task for free text —
+   then `--claim` it (priority via `.claude/skills/beads-priority-assignment/SKILL.md`). Confirm the
    approach once.
 3. **Build** — TDD via `.claude/skills/tdd/SKILL.md` (vertical slices) for code; one runnable demo;
    `worklog:` comment; commit with tests.

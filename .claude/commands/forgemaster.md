@@ -8,12 +8,17 @@ pausing at each boundary for your approval. Medium-or-higher work runs the full 
 See `.claude/workflows/forge.md` (full) and `.claude/workflows/forge-mini.md` (mini) for details.
 
 ## Usage
+
+Accepts a **JIRA ticket**, a **Beads issue id**, or a **free-text description** — or nothing, to
+resume the active run.
+
 ```
-/forgemaster <feature description>     # judge complexity, route, run
-/forgemaster <slug>                    # resume an in-progress full run
+/forgemaster <description>             # free text → judge complexity, route, run
+/forgemaster <BEADS-ID>                # e.g. agent-forge-harness-f25 → load that issue as the work
+/forgemaster <JIRA-KEY>                # e.g. PROJ-1234 → mirror into Beads, then run
 /forgemaster                           # resume the active run in .tmp/work/forge-state.json
-/forgemaster --full <description>      # force the full pipeline (skip the complexity check)
-/forgemaster --mini <description>      # force the mini path (skip the complexity check)
+/forgemaster --full <input>            # force the full pipeline (skip the complexity check)
+/forgemaster --mini <input>            # force the mini path (skip the complexity check)
 ```
 
 ---
@@ -29,11 +34,33 @@ bd ready >/dev/null    # if this errors, the Dolt server is down
 If `bd` errors: run `bd dolt start`, then retry. **Do not proceed without Beads.** (The SessionStart
 hook normally starts the server automatically; this is the manual recovery.)
 
-Then determine the run:
-- New feature text → derive a kebab-case `<slug>` from it and confirm with the user.
-- A `<slug>` or empty input → read `.tmp/work/forge-state.json` to find the active run and which
-  phases are already complete. Resume at the first incomplete phase (this is always a **full** run;
-  skip the triage below and go to Step 1).
+### Resolve the input → a Beads-tracked work item + `<slug>`
+
+Detect what was passed and normalize it to one Beads issue plus a kebab-case `<slug>`. Check in this
+order (the first match wins):
+
+1. **Strip flags** (`--full` / `--mini`) and trim whitespace.
+2. **Empty** → **resume**: read `.tmp/work/forge-state.json`, resume the active run at its first
+   incomplete phase (always a full run; skip the triage in Step 0.5, go to Step 1).
+3. **Existing Beads id** — `bd show <arg>` succeeds (e.g. `agent-forge-harness-f25`):
+   use that issue as the work definition (title, description, AC). **Do not create a duplicate** —
+   it is the tracking issue; the plan phase may add child tasks under it. Derive `<slug>` from its
+   title. Claim it when implementation starts.
+4. **JIRA key** — matches `^[A-Z][A-Z0-9]+-\d+$` (e.g. `PROJ-1234`) and is *not* an existing bead:
+   - Fetch the ticket **if** a JIRA integration is available (a JIRA MCP server or a `jira` CLI on
+     PATH). If none is configured, ask the user to paste the ticket **summary + description +
+     acceptance criteria** — do not invent them.
+   - **Mirror it into Beads** (Beads stays the source of truth), linking back to JIRA:
+     ```bash
+     bd create --repo <repo> --type <feature|bug|task> --title "<summary>" \
+       --priority <p> --external-ref "jira-<KEY>" --acceptance "<AC>" --description "<body + JIRA link>"
+     ```
+     Priority via `.claude/skills/beads-priority-assignment/SKILL.md`. Derive `<slug>` from the
+     summary (e.g. `proj-1234-<short-title>`).
+5. **Free text** → derive a kebab-case `<slug>`; the Beads issue is created later (full: in the plan
+   phase; mini: in the scope step).
+
+Confirm the resolved `<slug>` and a one-line work summary with the user before continuing.
 
 ---
 
@@ -62,7 +89,7 @@ recommended route, letting the user confirm or override:
 - **Mini** → follow `.claude/workflows/forge-mini.md` (scope → build → wrap). Do **not** use the
   `forge:phase-gate` / `forge-state.json` or write `plans/`/`reports/` docs; track in Beads only.
   Then go straight to that workflow — the phase-walk below is for the full path.
-- **Full** → derive/confirm the `<slug>` and continue to Step 1.
+- **Full** → continue to Step 1 with the `<slug>` resolved in Step 0.
 
 If a mini run outgrows its size mid-flight, escalate to full (`/forge-research <slug>`) as described
 in `forge-mini.md`.
