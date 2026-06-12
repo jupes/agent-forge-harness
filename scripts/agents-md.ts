@@ -29,7 +29,11 @@ const IGNORED_DIRS = new Set([
   ".dolt",
   ".git",
   ".tmp",
+  "dist",
+  "data",
   "node_modules",
+  "plans",
+  "reports",
   "repos",
   "trees",
 ]);
