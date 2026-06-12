@@ -140,9 +140,9 @@ On FAIL: fix BLOCKER/HIGH findings, re-run security scan, respawn evaluator. Max
 
 ## Step 6 — Ship
 
-### Primary repo (ship to main):
+### Primary repo (ship to master):
 ```bash
-git push origin main
+git push origin master
 ```
 
 ### Sub-repos (branch + PR):
@@ -162,7 +162,7 @@ gh pr create \
 
 ## Beads
 Closes <TASK-ID>" \
-  --base main
+  --base master
 
 # Close the Beads task
 bd close <id>

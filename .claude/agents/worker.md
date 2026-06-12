@@ -26,13 +26,13 @@ Run this BEFORE writing any new code:
 
 ```bash
 # Search for existing hooks
-grep -r "^export function use" src/hooks/ --include="*.ts" --include="*.tsx"
+grep -rE "^export function use" src/hooks/ --include="*.ts" --include="*.tsx"
 
 # Search for existing TypeScript interfaces/types
-grep -r "^export (interface|type) " src/types/ --include="*.ts"
+grep -rE "^export (interface|type) " src/types/ --include="*.ts"
 
 # Search for similar components
-grep -r "export (default|function|const)" src/components/ --include="*.tsx"
+grep -rE "export (default|function|const)" src/components/ --include="*.tsx"
 
 # Check knowledge file for documented patterns
 cat knowledge/repos/<repo>.yaml | grep -A5 "patterns:"

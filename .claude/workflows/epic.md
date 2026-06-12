@@ -235,7 +235,7 @@ git push origin <epic-branch>
 gh pr create \
   --title "<EPIC-ID>: <epic title>" \
   --body "$(cat .tmp/work/<EPIC-ID>-pr-body.md)" \
-  --base main
+  --base master
 
 bd close <EPIC-ID>
 bd dolt push

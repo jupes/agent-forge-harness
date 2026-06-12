@@ -44,7 +44,7 @@ READY WORK
 ### 3. In-Progress Work
 
 ```bash
-bd ready --status in_progress
+bd list --status=in_progress
 ```
 
 Show tasks currently claimed/in-progress.
@@ -53,7 +53,7 @@ Show tasks currently claimed/in-progress.
 
 Identify blocked tasks (dependency not yet closed, or `status: blocked`):
 ```bash
-bd ready --status blocked
+bd blocked
 ```
 
 For each blocked item, show what it's waiting on.

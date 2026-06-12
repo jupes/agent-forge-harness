@@ -44,16 +44,16 @@ Search for existing implementations before planning anything new:
 
 ```bash
 # Hooks
-grep -r "^export function use" src/ --include="*.ts" --include="*.tsx" -l
+grep -rE "^export function use" src/ --include="*.ts" --include="*.tsx" -l
 
 # Types and interfaces
-grep -r "^export (interface|type)" src/ --include="*.ts" -l
+grep -rE "^export (interface|type)" src/ --include="*.ts" -l
 
 # Components
-grep -r "^export (default|function|const)" src/components/ --include="*.tsx" -l
+grep -rE "^export (default|function|const)" src/components/ --include="*.tsx" -l
 
 # Utilities
-grep -r "^export (function|const|class)" src/utils/ --include="*.ts" -l
+grep -rE "^export (function|const|class)" src/utils/ --include="*.ts" -l
 ```
 
 Note any existing implementations relevant to the plan.
