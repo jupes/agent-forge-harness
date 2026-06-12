@@ -1,4 +1,4 @@
-﻿---
+---
 name: to-prd
 description: Synthesize current context into a PRD and file it as a Beads feature/epic issue.
 ---
