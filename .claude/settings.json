@@ -12,15 +12,17 @@
             "type": "command"
           }
         ]
-      },
+      }
+    ],
+    "PreToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
-            "command": "bd prime",
-            "type": "command"
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-dangerous-git.sh"
           }
-        ],
-        "matcher": ""
+        ]
       }
     ],
     "SessionStart": [
@@ -37,21 +39,12 @@
           {
             "command": "bun run agents-md validate --hook",
             "type": "command"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "command": "bd dolt start",
-            "type": "command"
           },
           {
-            "command": "bd prime",
+            "command": "bun run .claude/hooks/session.ts",
             "type": "command"
           }
-        ],
-        "matcher": ""
+        ]
       }
     ],
     "Stop": [

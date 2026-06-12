@@ -1,4 +1,4 @@
-﻿---
+---
 name: to-issues
 description: Break a plan/PRD into independent vertical-slice Beads issues with explicit dependencies.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: tdd
 description: Run red-green-refactor in vertical slices, emphasizing behavior-first tests and harness quality gates.
 ---
