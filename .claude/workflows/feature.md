@@ -40,9 +40,9 @@ cat knowledge/_shared.yaml
 
 # 2b. Reuse verification (mandatory — do NOT skip)
 # Search for existing implementations before planning anything new
-grep -r "^export function use" src/hooks/ --include="*.ts" --include="*.tsx" -l
-grep -r "^export (interface|type)" src/types/ --include="*.ts" -l
-grep -r "export (default|function|const)" src/components/ --include="*.tsx" -l
+grep -rE "^export function use" src/hooks/ --include="*.ts" --include="*.tsx" -l
+grep -rE "^export (interface|type)" src/types/ --include="*.ts" -l
+grep -rE "export (default|function|const)" src/components/ --include="*.tsx" -l
 
 # 2c. Explore affected areas (Glob + Grep, read-only)
 # Identify all files that will need to change — be exhaustive
