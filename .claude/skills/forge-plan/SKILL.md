@@ -110,7 +110,31 @@ bun test <paths>
 - Files: <n new / n modified>; Complexity: Low|Medium|High; Checkpoints: <n>
 ```
 
-### 5. Materialize Beads
+### 5. Plan review loop
+
+Before creating Beads issues, run a review-plan feedback loop to catch false premises early.
+Spawn a `review-plan` sub-agent (Agent tool, `subagent_type: "Explore"`, prompt:
+`"Review plans/drafts/<slug>.md using the review-plan skill"`). Loop up to **2 turns**; stop
+early when the verdict is **SOUND** (zero Blocker + High + Medium findings).
+
+```
+turn = 0
+loop:
+  1. Spawn Agent (review-plan skill) → returns verdict + findings by severity
+  2. Log: bd comments add <feature-id> "review: plan <VERDICT> — <#B>/<#H>/<#M>/<#L>"
+  3. If SOUND (no Blocker/High/Medium):  break — plan is clean
+  4. turn += 1
+  5. If turn >= 2:  break — maximum turns reached
+  6. Address every Blocker, High, and Medium finding by editing plans/drafts/<slug>.md
+     Log: bd comments add <feature-id> "worklog: plan revised after review turn <turn> — <summary>"
+  7. Continue loop
+```
+
+After the loop, tell the user the final verdict and turn count (e.g. "SOUND after 1 review" or
+"NEEDS REVISION — 2 review turns exhausted"). If Medium+ findings remain after 2 turns, surface
+them explicitly so the user can decide whether to address them before implementing.
+
+### 6. Materialize Beads
 
 Create the issue graph that the implement phase will execute. Set **`--priority` on every issue**
 using `.claude/skills/beads-priority-assignment/SKILL.md` (see [[beads-priority-assignment]]).
@@ -134,7 +158,7 @@ Record every created id back into the plan's Beads Issue Map and the forge state
 If Beads/Dolt is unavailable (`bd` errors), note it in the plan under a `## Beads` heading,
 list the issues that *should* exist, and continue — do not block planning.
 
-### 6. Approve & hand off
+### 7. Approve & hand off
 
 Present the plan summary (scope, checkpoints, Beads created) and ask the user to approve.
 On approval, advance the forge state:
@@ -149,5 +173,7 @@ Then point to the next phase: `/forge-implement <slug>` (or `/forgemaster` conti
 
 - [ ] `plans/drafts/<slug>.md` exists with TDD Strategy and Checkpoints filled.
 - [ ] Each checkpoint names a demo command or is explicitly `(no live demo)`.
+- [ ] Plan review loop ran: SOUND verdict reached, or 2 turns completed; outcome logged to Beads.
+- [ ] Any remaining Medium+ findings (after 2 turns) surfaced to user before proceeding.
 - [ ] Beads issues created (or their absence noted with reason) and mapped in the plan.
 - [ ] User approved the plan; forge state advanced to `plan` complete.
