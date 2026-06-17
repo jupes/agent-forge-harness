@@ -117,12 +117,33 @@ function inferRepoFromIssueId(issueId: string): string | undefined {
   /**
    * Beads IDs commonly look like `<repo-slug>-<shortid>` or
    * `<repo-slug>-<shortid>.<child>`, e.g. `agent-forge-harness-5an.65`.
-   * Infer the repo slug when `bd export` omits an explicit repo field.
+   * Infer the repo slug when `bd export` omits an explicit repo field. Note
+   * this only ever recovers the *host* beads DB prefix — it cannot tell which
+   * sub-project a bead targets. Use a `repo:<name>` label for that.
    */
   const m = issueId.match(
     /^([a-z0-9]+(?:-[a-z0-9]+)+)-[a-z0-9]+(?:\.[a-z0-9]+)?$/,
   );
   return m?.[1];
+}
+
+/**
+ * Owning project/repo a bead targets, taken from a `repo:<name>` label.
+ * Beads stores one DB-wide prefix per database and `bd update` has no `--repo`,
+ * so a namespaced label is the writable, export-surviving channel for tagging
+ * which sub-project (e.g. `repo:rag-chat`) a harness-tracked bead belongs to.
+ * Returns the first non-empty value after `repo:` (case-insensitive key).
+ */
+export function repoLabelFromLabels(
+  labels: string[] | undefined,
+): string | undefined {
+  for (const raw of labels ?? []) {
+    if (typeof raw !== "string") continue;
+    const m = raw.match(/^repo:(.+)$/i);
+    const value = m?.[1]?.trim();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 function asOptionalNumber(
@@ -151,7 +172,8 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   const spent = asOptionalNumber(raw.spent);
   const closedBy = raw.closed_by ?? raw.closedBy;
   const inferredRepo = inferRepoFromIssueId(raw.id);
-  const repo = raw.repo ?? inferredRepo;
+  /** repo:<name> label wins, then the explicit export field, then host prefix. */
+  const repo = repoLabelFromLabels(raw.labels) ?? raw.repo ?? inferredRepo;
   /** `owner` from export is metadata (creator); only `assignee` counts as claimed for derived.ready. */
   const assignee = raw.assignee;
 
