@@ -31,9 +31,24 @@ Your role for each task is defined by the workflow you are following.
 
 ## Slash Commands
 
+### Forge pipeline — the primary entry point
+
+`/forgemaster` is the main way to start any non-trivial task. It judges complexity, routes to full or mini, and runs research → plan → implement → ship gated phase by phase. See `.claude/workflows/forge.md`.
+
 | Command | Purpose |
-|---------|---------|
-| `/go [task]` | Smart router — classify scope and run the right workflow |
+| ------- | ------- |
+| `/forgemaster [feature]` | **Primary entry point** — judge complexity, route to full or mini, run gated phases |
+| `/forgemaster-mini [task]` | Trimmed path for small/clear-scope work (scope → build → wrap), fewer turns/artifacts |
+| `/forge-research [feature]` | Phase 1 — explore real code, grill for the unknowns → `plans/research/<slug>.md` |
+| `/forge-plan <slug>` | Phase 2 — TDD + Beads plan with demo checkpoints → `plans/drafts/<slug>.md` |
+| `/forge-implement <slug>` | Phase 3 — red-green-refactor per checkpoint, demo-able stops |
+| `/forge-ship <slug>` | Phase 4 — summary + before/after + test walkthrough → `reports/<slug>-ship.md` + PR |
+
+### Day-to-day commands
+
+| Command | Purpose |
+| ------- | ------- |
+| `/go [task]` | Scope router — classify and run the right workflow (fix / feature / epic) |
 | `/plan [idea]` | Explore codebase + create implementation plan |
 | `/ship [msg]` | Quality gates → commit → push → PR |
 | `/status` | Git state + ready work + blocked items + PR health |
@@ -44,19 +59,6 @@ Your role for each task is defined by the workflow you are following.
 | `/sync-knowledge` | Auto-generate knowledge YAML from codebase |
 | `/add-repo <url-or-path>` | Register a sub-repo under `repos/` (follows `.claude/skills/add-repo/SKILL.md`) |
 | `/add-bead <text>` | Quick `bd create` from free text (title + optional description) |
-
-### Forge pipeline (research → plan → implement → ship)
-
-A guided four-phase pipeline. Each phase is a skill with a thin command; `/forgemaster` runs them in order, gating between each. See `.claude/workflows/forge.md`.
-
-| Command | Purpose |
-|---------|---------|
-| `/forgemaster [feature]` | Judge complexity, route to full or mini, then run gated phase by phase |
-| `/forgemaster-mini [task]` | Trimmed path for small/clear-scope work (scope → build → wrap), fewer turns/artifacts |
-| `/forge-research [feature]` | Phase 1 — explore real code, grill for the unknowns → `plans/research/<slug>.md` |
-| `/forge-plan <slug>` | Phase 2 — TDD + Beads plan with demo checkpoints → `plans/drafts/<slug>.md` |
-| `/forge-implement <slug>` | Phase 3 — red-green-refactor per checkpoint, demo-able stops |
-| `/forge-ship <slug>` | Phase 4 — summary + before/after + test walkthrough → `reports/<slug>-ship.md` + PR |
 
 Workflow files live in `.claude/workflows/`. Command files live in `.claude/commands/`.
 
