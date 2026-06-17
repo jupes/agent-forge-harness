@@ -78,9 +78,9 @@ The flagship workflow: a guided **research → plan → implement → ship** pip
 
 A lightweight phase-gate refuses a phase whose predecessor is missing, and a `Stop` exit hook nudges the next step while a run is active. Phases also run standalone: `/forge-research` · `/forge-plan` · `/forge-implement` · `/forge-ship`. Overview: [.claude/workflows/forge.md](.claude/workflows/forge.md) (mini: [forge-mini.md](.claude/workflows/forge-mini.md)).
 
-### Scope router and friends
+### Day-to-day commands
 
-`/go` · `/plan` · `/ship` · `/status` · `/review` · `/triage` · `/ask` · `/sync-knowledge [repo|--all]` · `/add-bead <text>`
+For work that doesn't need the full Forge pipeline: `/go` · `/plan` · `/ship` · `/status` · `/review` · `/triage` · `/ask` · `/sync-knowledge [repo|--all]` · `/add-bead <text>`
 
 `/go` picks **fix** (small), **feature** (plan + build), or **epic** (batched / worktrees) from task scope.
 
