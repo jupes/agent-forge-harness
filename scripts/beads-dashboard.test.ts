@@ -11,6 +11,7 @@ import {
   normalizeStatus,
   parseBdCommentsJson,
   parseBdExportStdout,
+  repoLabelFromLabels,
 } from "./beads-dashboard";
 
 describe("normalizeBdExportRow", () => {
@@ -101,6 +102,30 @@ describe("normalizeBdExportRow", () => {
       repo: "./repos/custom-repo",
     });
     expect(issue.repo).toBe("./repos/custom-repo");
+  });
+
+  test("repo:<name> label wins over explicit field and inferred prefix", () => {
+    const issue = normalizeBdExportRow({
+      id: "agent-forge-harness-0im.3",
+      title: "Label tags the owning project",
+      status: "open",
+      created_at: "2026-01-01T00:00:00Z",
+      repo: "./repos/custom-repo",
+      labels: ["dnd", "repo:rag-chat", "harness"],
+    });
+    expect(issue.repo).toBe("rag-chat");
+  });
+});
+
+describe("repoLabelFromLabels", () => {
+  test("returns the value after repo: (case-insensitive key, trimmed)", () => {
+    expect(repoLabelFromLabels(["a", "Repo: rag-chat ", "b"])).toBe("rag-chat");
+  });
+
+  test("ignores non-repo labels and empty repo values", () => {
+    expect(repoLabelFromLabels(["status:open", "harness"])).toBeUndefined();
+    expect(repoLabelFromLabels(["repo:"])).toBeUndefined();
+    expect(repoLabelFromLabels(undefined)).toBeUndefined();
   });
 });
 
