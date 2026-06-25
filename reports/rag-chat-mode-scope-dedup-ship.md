@@ -30,6 +30,10 @@ behavior is unchanged — only the code organization improved.
   (`9cb580f`)
 - **Checkpoint C** — Deleted the dead `service/rag.py` copy (frozensets + `_scope_for_mode`),
   repointed `service/test_service.py`, and removed the now-pointless parity test. (`845278b`)
+- **Packaging fix** — `Dockerfile.service` copies an explicit file manifest from `ingestion/`
+  (not the whole dir), so the new `scope.py` was missing in the image and the container crashed at
+  import (`ModuleNotFoundError: No module named 'scope'`). Added `COPY ingestion/scope.py`; verified
+  with a real `docker build` + in-image `import service.rag` smoke test. (`1097585`)
 
 Net: the non-test code shrank (two ~35-line copies removed, one ~68-line module added); the line
 growth is the new characterization suite.
