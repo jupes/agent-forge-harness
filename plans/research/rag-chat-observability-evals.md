@@ -3,8 +3,41 @@
 Generated: 2026-06-26
 Repo: rag-chat (`repos/rag-chat`)
 Phase: research (1/4) — **initial options survey** (deliberately not yet a committed design)
-Beads: epic agent-forge-harness-ziw (phases ziw.1–ziw.5) + non-blocking sibling agent-forge-harness-3t2 (LangGraph/LangChain migration)
+Beads: epic agent-forge-harness-ziw (phases ziw.1–ziw.5) + **now-foundational** agent-forge-harness-3t2 (LangGraph migration — see Decision Update)
 Constraint: **prefer free / open-source** wherever possible.
+
+## Decision Update (2026-06-29) — LangGraph adopted; migration is now foundational
+
+> **Supersedes the "observability does NOT depend on LangGraph" framing below.** The team has
+> decided to **migrate rag-chat off the raw OpenAI SDK to LangGraph** (with `langchain-openai`'s
+> `ChatOpenAI` for the LLM node). This is now a **product decision, not an optional ROI call**, so
+> the relationships in this epic change:
+>
+> - **`agent-forge-harness-3t2` (LangGraph migration) becomes the foundational first phase of the
+>   epic**, not a non-blocking sibling. Everything else builds on the graph.
+> - **Observability arrives *with* the migration.** Instead of a drop-in raw-SDK wrapper
+>   (`from langfuse.openai import OpenAI`), tracing comes from the chosen backend's **LangChain /
+>   LangGraph callback handler** — Langfuse `CallbackHandler` or OpenInference `LangChainInstrumentor`
+>   — which captures **node-level** spans (retrieve / gate / rerank / generate) natively.
+> - The **Phase 0 stack spike still stands** (Langfuse vs Phoenix) but is now evaluated through the
+>   **LangGraph callback integration**, not the OpenAI wrapper.
+> - **Why this is a clean migration here:** the current pipeline is already a linear sequence of pure,
+>   well-seamed steps (`RagService.answer`: retrieve → optional gm-merge → grounding gate → generate →
+>   cite, `service/rag.py:100-154`), and `generate_answer` already takes an **injectable client**
+>   (`service/generate.py`) — those seams map almost 1:1 onto LangGraph nodes, and the injectable seam
+>   is preserved for tests.
+> - **Parity bar:** the migration must hold behavior parity against the existing golden eval
+>   (`ingestion/eval_golden.py`: Hit@1 ≈ 83.3%, Recall@10 ≈ 94.3%) and keep generation identical
+>   (same per-mode prompts, model, temperature) — it's an orchestration refactor, not a behavior
+>   change.
+> - **New deps:** `langgraph`, `langchain-core`, `langchain-openai` added to `pyproject.toml`
+>   (currently `fastapi, uvicorn, openai, psycopg, pydantic`). `openai` stays (transitive via
+>   `langchain-openai`; embeddings still call it directly in `ingestion/retrieval.py`).
+> - `repos/NeMo-Flow` (`knowledge/repos/NeMo-Flow.yaml`) is the reference for langgraph + OTel /
+>   OpenInference exporters.
+>
+> The committed phase design in `plans/drafts/rag-chat-observability-evals.md` is re-sequenced to
+> match. The OSS survey + Anthropic-eval principles below remain valid as reference.
 
 ## Goal
 
@@ -21,6 +54,59 @@ order:
 
 This is a **major, deferred** initiative. This doc surveys OSS options and recommends a lean
 starting stack; the committed phase design lives in `plans/drafts/rag-chat-observability-evals.md`.
+
+## Concepts in Plain Terms (read this first)
+
+If you're new to the tooling, here's what each thing actually *is* and how the pieces relate.
+
+- **Observability / tracing** — recording what the app does on every LLM call: the prompt, the
+  answer, how long it took, how many tokens, the cost, and which model. Today rag-chat captures
+  **none** of this (only stray `print()`s). A tracing tool gives you a searchable, filterable web UI
+  over that data so you can debug regressions and compare runs.
+- **Langfuse** — an **open-source (MIT)** LLM-observability tool you self-host with Docker. Beyond raw
+  traces it adds **version/model tags**, **scores** (eval results attach to each trace), datasets,
+  prompt management, and a **built-in dashboard** for trends over time. Instruments rag-chat's
+  *existing* OpenAI calls via a drop-in wrapper (`from langfuse.openai import OpenAI`) — near-zero
+  code change. Best fit for the actual goal (compare versions/models + dashboard). Also offers a
+  capped **free cloud tier** if we don't want to self-host.
+- **Arize Phoenix** — an **open-source (Apache-2 / Elastic)** tool that does observability **plus
+  built-in RAG evaluators** (relevance, hallucination/groundedness, Q&A correctness) in one package.
+  Auto-instruments via OpenInference; runs locally (`phoenix serve`); notebook-friendly. Great if you
+  want tracing + RAG eval in a single tool; less polished than Langfuse for long-running production
+  version tracking.
+- **Phase 0 (ziw.1) is the choice between these two** — stand both up, push a few real `/chat` calls
+  through each, compare setup cost / tagging / dashboard / footprint, and pick one as the primary
+  backend for everything after.
+- **Other observability options** (surveyed, not recommended for v1): **OpenTelemetry + OpenLLMetry**
+  (vendor-neutral spans → any backend; most plumbing, no LLM-specific UI), **NeMo-Flow** (local repo;
+  only worth it if we also migrate to LangGraph), **LangSmith** / **Braintrust** (commercial, free
+  tiers, **not OSS** → deprioritized per the free/OSS constraint).
+- **Evals** — scoring answer/retrieval *quality* against curated test cases. **Ragas** (Apache-2)
+  computes RAG **generation** metrics (faithfulness, answer-correctness, etc.) — the gap our existing
+  retrieval-only `eval_golden.py` leaves. **promptfoo** (MIT) runs **A/B comparisons across versions
+  and models** and gates CI on regressions — this is the most direct answer to "is B better than A?".
+- **Relationship to LangGraph (bead `agent-forge-harness-3t2`, later)** — **independent.** rag-chat
+  today is a linear pipeline on the **raw OpenAI SDK** (no agent framework). Langfuse/Phoenix
+  instrument that raw SDK directly, so observability does **not** require LangGraph. Migrating to
+  LangGraph would add native *node-level* tracing and agentic flexibility, but it's optional ROI —
+  filed as a **non-blocking sibling** and deliberately kept off this critical path.
+- **Is it free?** The recommended stack is **fully free / OSS, self-hosted**: Langfuse (MIT),
+  Phoenix (Apache-2), Ragas (Apache-2), promptfoo (MIT), OpenTelemetry/OpenLLMetry (OSS). The **one
+  real running cost** is **API tokens** when LLM-judge evals execute (Ragas/promptfoo rubrics call an
+  LLM to grade answers) — bounded via golden-subset size + cadence (PR subset vs nightly full).
+  See the cost/license summary table below.
+
+### Cost / license summary
+
+| Tool | Role | License | Cost to run |
+|---|---|---|---|
+| **Langfuse** (self-host) | tracing + dashboard | OSS (MIT core) | Free; Docker services (Postgres + ClickHouse). Capped free cloud tier exists. |
+| **Arize Phoenix** | tracing + built-in RAG evals | OSS (Apache-2 / ELv2) | Free; runs locally. |
+| **Ragas** | RAG answer-quality metrics | OSS (Apache-2) | Free lib; **API tokens** when LLM-judge metrics run. |
+| **promptfoo** | version/model A/B + CI gate | OSS (MIT) | Free lib; **API tokens** for LLM-rubric assertions. |
+| OpenTelemetry + OpenLLMetry | vendor-neutral tracing | OSS | Free; needs a backend (Tempo/Jaeger) + plumbing. |
+| LangSmith | tracing + evals | **Commercial** | Free tier (capped); not OSS → deprioritized. |
+| Braintrust | tracing + evals | **Commercial** | Free tier (capped); not OSS → deprioritized. |
 
 ## What the Code Says Today (from exploration)
 
@@ -48,11 +134,13 @@ The app is **not** an agent — it is a linear RAG pipeline using the **raw Open
   server-side. No dashboard surface today.
 - **Config:** `OPENAI_API_KEY`, `DATABASE_URL`; pgvector via docker-compose; service on :8000.
 
-### Key implication
-**Observability does NOT depend on migrating to LangGraph/LangChain.** Langfuse/Phoenix can
-instrument the *existing* raw OpenAI SDK with a drop-in wrapper or auto-instrumentor. So we decouple:
-ship observability + evals against the current pipeline first; treat the framework migration as an
-independent, optional follow-up (see its own bead).
+### Key implication ⚠️ SUPERSEDED — see "Decision Update (2026-06-29)" above
+
+*(Historical framing, kept for context.)* Observability does **not** technically *require* the
+LangGraph migration — Langfuse/Phoenix can instrument the raw OpenAI SDK via a drop-in wrapper, which
+is why the two were originally decoupled. **That decoupling no longer drives the plan:** the team has
+chosen to adopt LangGraph regardless, so the migration is now the epic's foundation and tracing is
+done via LangGraph callback instrumentation rather than the raw-SDK wrapper.
 
 ## Anthropic "Demystifying Evals for AI Agents" — principles applied here
 
