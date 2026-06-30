@@ -8,13 +8,26 @@ trees/
 # Temporary agent work files
 .tmp/
 
-# Plan draft transient files
-plans/drafts/*.tmp
-plans/drafts/*.swp
-plans/drafts/*.swo
+# Working artifacts — plans, research, and reports are LOCAL ONLY.
+# They are often about other projects and must never ship in this public harness repo.
+# Only the directory structure, the storage contract docs, and test fixtures are tracked.
+plans/drafts/*
+!plans/drafts/.gitkeep
+!plans/drafts/test-plan-review.md
+plans/committed/*
+!plans/committed/.gitkeep
+!plans/committed/test-plan-review.md
+plans/research/*
+!plans/research/.gitkeep
+reports/*
+!reports/.gitkeep
 
 # Local-only: which plan the session is actively discussing (plan review auto-follow)
 plans/session-context.json
+
+# Per-repo knowledge files describe external projects, not the harness itself.
+knowledge/repos/*.yaml
+!knowledge/repos/.gitkeep
 
 # Beads runtime files (Dolt backend)
 .beads/*.db
