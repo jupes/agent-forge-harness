@@ -90,11 +90,24 @@ bun run typecheck && bun run lint && bun test
 git status --porcelain                 # must be empty
 git pull --rebase origin <base>
 git push origin <branch>
-
-gh pr create --title "<feature title>" --base <base> --body "$(cat reports/<slug>-ship.md)"
 ```
 
-Use the ship report as the PR body so the summary and walkthrough travel with the PR.
+The PR body MUST follow the canonical template — see [[pr-description]]. The ship report you just
+wrote is the source material: map its sections into the template (What Shipped → What Changed, the
+goal from research → Why It's Needed, the **Test It Yourself** walkthrough → How It Was Tested, real
+gate output → Test Evidence) and fill Risk & Rollback + Linked Issues & AC Trace.
+
+```bash
+mkdir -p .tmp/work
+cp .claude/skills/pr-description/references/pr-template.md .tmp/work/pr-body.md
+# Fill every section from reports/<slug>-ship.md + the plan's Beads map, then validate:
+bun run .claude/skills/pr-description/scripts/check-pr-body.ts .tmp/work/pr-body.md   # must be "ok": true
+
+gh pr create --title "<feature title>" --base <base> --body "$(cat .tmp/work/pr-body.md)"
+```
+
+Keep `reports/<slug>-ship.md` as the durable in-repo record; the PR body is the template-conformant
+view of the same run.
 
 ### 5. Close out Beads + state
 
@@ -122,6 +135,7 @@ Try it: <the single most representative command from the walkthrough>
 ## Exit Criteria
 
 - [ ] `reports/<slug>-ship.md` exists with before/after, Beads table, and a runnable walkthrough.
-- [ ] Quality gates pass; branch pushed; PR created with the report as its body.
+- [ ] Quality gates pass; branch pushed; PR created with a [[pr-description]]-conformant body
+      (`check-pr-body.ts` reports `ok: true`).
 - [ ] Every planned Beads task is closed or deferred-with-reason; epic/feature closed.
 - [ ] Forge state advanced to `ship` complete.

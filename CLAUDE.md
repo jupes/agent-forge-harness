@@ -62,6 +62,11 @@ Your role for each task is defined by the workflow you are following.
 
 Workflow files live in `.claude/workflows/`. Command files live in `.claude/commands/`.
 
+**Every PR shipped from this harness MUST use the canonical PR description template** — see
+`.claude/skills/pr-description/`. The ship steps (`/ship`, `/forge-ship`) build the body from
+`references/pr-template.md` and must pass `bun run pr:check <body>` (all required sections present
+and filled) before `gh pr create`.
+
 ---
 
 ## Architecture
