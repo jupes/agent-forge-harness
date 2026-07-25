@@ -458,6 +458,23 @@ function plansHarnessPlugin(repoRoot: string): Plugin {
   };
 }
 
+/** Vite's banner reports the bound address (127.0.0.1), and strictPort:false means the port may not be 8787 — so resolve and print the real URL. */
+function printDashboardUrlPlugin(): Plugin {
+  return {
+    name: "agent-forge-print-dashboard-url",
+    configureServer(server) {
+      server.httpServer?.once("listening", () => {
+        const addr = server.httpServer?.address();
+        if (!addr || typeof addr === "string") return;
+        const loopbackOrWildcard = ["127.0.0.1", "::1", "0.0.0.0", "::"];
+        const host = loopbackOrWildcard.includes(addr.address) ? "localhost" : addr.address;
+        const url = `http://${host}:${addr.port}/`;
+        server.config.logger.info(`\n  ➜  Dashboard ready: ${url}\n`);
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: docsRoot,
   /** `data/` lives under `docs/` from build-pages; no separate `public/` copy. */
@@ -485,5 +502,6 @@ export default defineConfig({
     rebuildPagesApiPlugin(),
     beadsDataReloadPlugin(),
     plansHarnessPlugin(repoRoot),
+    printDashboardUrlPlugin(),
   ],
 });
