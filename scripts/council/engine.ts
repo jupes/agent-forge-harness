@@ -180,6 +180,7 @@ function parsePeerBallot(
   );
   if (
     value.suggestedSeverity !== undefined &&
+    value.suggestedSeverity !== null &&
     !isSeverity(value.suggestedSeverity)
   ) {
     throw new Error(`${path}.suggestedSeverity is invalid`);
@@ -190,7 +191,10 @@ function parsePeerBallot(
     reason: cleanModelText(value.reason),
     evidenceIds: value.evidenceIds,
   };
-  if (value.suggestedSeverity !== undefined) {
+  if (
+    value.suggestedSeverity !== undefined &&
+    value.suggestedSeverity !== null
+  ) {
     ballot.suggestedSeverity = value.suggestedSeverity;
   }
   return ballot;

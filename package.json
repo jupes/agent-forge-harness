@@ -9,6 +9,7 @@
     "dashboard": "vite --config vite.dashboard.config.ts",
     "worktree": "bun run scripts/worktree.ts",
     "council": "bun run scripts/council/cli.ts",
+    "council:mcp": "bun run scripts/council/mcp.ts",
     "repo": "bun run .claude/skills/syncing-repos/scripts/repo.ts",
     "test": "bun test scripts",
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@preact/preset-vite": "^2.10.5",
     "@types/bun": "latest",
     "chokidar": "^4.0.3",
@@ -33,8 +35,10 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
     "chart.js": "4.4.7",
     "chartjs-chart-matrix": "2.0.1",
-    "preact": "^10.29.1"
+    "preact": "^10.29.1",
+    "zod": "^4.5.4"
   }
 }

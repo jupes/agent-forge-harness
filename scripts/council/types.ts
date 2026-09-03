@@ -35,12 +35,18 @@ export type ParseCouncilProfileResult =
   | { ok: true; value: CouncilProfile }
   | { ok: false; error: string };
 
-export type ContextSourceKind = "file" | "plan" | "stdin";
+export type ContextSourceKind = "file" | "plan" | "pr" | "stdin";
+
+export type ContextSourceMetadata = Record<
+  string,
+  string | number | boolean | string[]
+>;
 
 export type ContextSource = {
   kind: ContextSourceKind;
   displayName: string;
   locator: string;
+  metadata?: ContextSourceMetadata;
 };
 
 export type EvidenceItem = {

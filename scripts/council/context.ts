@@ -6,11 +6,17 @@ import {
   type ContextPack,
   type ContextRedaction,
   type ContextSourceKind,
+  type ContextSourceMetadata,
 } from "./types";
 
 const DEFAULT_MAX_BYTES = 200_000;
 
 const SECRET_PATTERNS: ReadonlyArray<{ kind: string; pattern: RegExp }> = [
+  {
+    kind: "provider-api-key-assignment",
+    pattern:
+      /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY)\s*[:=]\s*["']?[^\s"']{8,}/gi,
+  },
   {
     kind: "private-key",
     pattern:
@@ -56,6 +62,17 @@ export type ContextInput =
       kind: "stdin";
       text: string;
       displayName?: string;
+      locator?: string;
+      metadata?: ContextSourceMetadata;
+      maxBytes?: number;
+      secretPolicy?: SecretPolicy;
+    }
+  | {
+      kind: "pr";
+      text: string;
+      displayName?: string;
+      locator?: string;
+      metadata?: ContextSourceMetadata;
       maxBytes?: number;
       secretPolicy?: SecretPolicy;
     };
@@ -154,12 +171,16 @@ export function buildContextPack(input: ContextInput): ContextPack {
   let kind: ContextSourceKind;
   let displayName: string;
   let locator: string;
+  let metadata: ContextSourceMetadata | undefined;
   let rawText: string;
 
-  if (input.kind === "stdin") {
-    kind = "stdin";
-    displayName = input.displayName?.trim() || "standard input";
-    locator = "stdin";
+  if (input.kind === "stdin" || input.kind === "pr") {
+    kind = input.kind;
+    displayName =
+      input.displayName?.trim() ||
+      (input.kind === "stdin" ? "standard input" : "pull request");
+    locator = input.locator?.trim() || input.kind;
+    metadata = input.metadata;
     rawText = input.text;
   } else {
     const root = resolve(input.cwd ?? process.cwd());
@@ -188,9 +209,11 @@ export function buildContextPack(input: ContextInput): ContextPack {
     truncated: limited.truncated,
   };
 
+  const source = { kind, displayName, locator } as ContextPack["source"];
+  if (metadata) source.metadata = metadata;
   return {
     schemaVersion: COUNCIL_SCHEMA_VERSION,
-    source: { kind, displayName, locator },
+    source,
     createdAt: new Date().toISOString(),
     contentHash,
     byteLength: evidence.byteLength,

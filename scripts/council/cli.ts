@@ -12,7 +12,13 @@ import {
   type ContextInput,
   type SecretPolicy,
 } from "./context";
-import { FakeCouncilTransport, runCouncil } from "./engine";
+import { runCouncil } from "./engine";
+import { compilePullRequest } from "./pr-source";
+import {
+  assertProvidersReady,
+  createProviderResolver,
+  providerReadiness,
+} from "./providers";
 import {
   type ContextSourceKind,
   type CouncilEvent,
@@ -26,6 +32,7 @@ const USAGE = `Agent Forge Council
 Usage:
   bun run council -- file <path> [options]
   bun run council -- plan <path> [options]
+  bun run council -- pr <number-or-url> [options]
   <command> | bun run council -- stdin [options]
   bun run council -- replay <run-id-or-manifest> [options]
 
@@ -116,7 +123,12 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
     if (runsDir) value.runsDir = runsDir;
     return { ok: true, value };
   }
-  if (command !== "file" && command !== "plan" && command !== "stdin") {
+  if (
+    command !== "file" &&
+    command !== "plan" &&
+    command !== "pr" &&
+    command !== "stdin"
+  ) {
     return { ok: false, error: `unknown command: ${command}`, json };
   }
   const sourcePath = command === "stdin" ? undefined : args[1];
@@ -225,7 +237,7 @@ function emitEnvelope(
   io.stdout(`${JSON.stringify({ ok, data, error }, null, 2)}\n`);
 }
 
-function loadProfile(path: string): CouncilProfile {
+export function loadCouncilProfile(path: string): CouncilProfile {
   const parsed = parseCouncilProfileJson(readFileSync(path, "utf8"));
   if (!parsed.ok) throw new Error(`invalid council profile: ${parsed.error}`);
   return parsed.value;
@@ -279,28 +291,41 @@ export async function runCouncilCli(
       io.cwd,
       command.profilePath ?? "councils/default.json",
     );
-    const profile = loadProfile(profilePath);
-    const inputText =
-      command.sourceKind === "stdin" ? await io.readStdin() : undefined;
-    const contextInput: ContextInput =
-      command.sourceKind === "stdin"
-        ? {
-            kind: "stdin",
-            text: inputText ?? "",
-            secretPolicy: command.secretPolicy,
-          }
-        : {
-            kind: command.sourceKind,
-            path: command.sourcePath!,
-            cwd: io.cwd,
-            secretPolicy: command.secretPolicy,
-          };
+    const profile = loadCouncilProfile(profilePath);
+    let contextInput: ContextInput;
+    if (command.sourceKind === "stdin") {
+      contextInput = {
+        kind: "stdin",
+        text: await io.readStdin(),
+        secretPolicy: command.secretPolicy,
+      };
+    } else if (command.sourceKind === "pr") {
+      const pullRequest = await compilePullRequest(command.sourcePath!, {
+        cwd: io.cwd,
+      });
+      contextInput = {
+        kind: "pr",
+        text: pullRequest.text,
+        displayName: pullRequest.displayName,
+        locator: pullRequest.locator,
+        metadata: pullRequest.metadata,
+        secretPolicy: command.secretPolicy,
+      };
+    } else {
+      contextInput = {
+        kind: command.sourceKind,
+        path: command.sourcePath!,
+        cwd: io.cwd,
+        secretPolicy: command.secretPolicy,
+      };
+    }
     if (command.maxBytes !== undefined) {
       contextInput.maxBytes = command.maxBytes;
     }
     const context = buildContextPack(contextInput);
     const estimatedCostUsd = estimateCouncilCost(profile);
     const budget = command.maxUsd ?? profile.maxEstimatedUsd;
+    const readiness = providerReadiness(profile);
     if (command.dryRun) {
       const data = {
         dryRun: true,
@@ -329,6 +354,7 @@ export async function runCouncilCli(
         estimatedCostUsd,
         budgetUsd: budget,
         budgetAllowed: estimatedCostUsd <= budget,
+        providerReadiness: readiness,
       };
       if (command.json) emitEnvelope(io, true, data, null);
       else {
@@ -337,6 +363,7 @@ export async function runCouncilCli(
             `Dry run: ${profile.title}`,
             `Source: ${context.source.displayName} (${context.byteLength} bytes${context.truncated ? ", truncated" : ""})`,
             `Seats: ${profile.seats.map((seat) => `${seat.id}=${seat.provider}/${seat.model}`).join(", ")}`,
+            `Providers: ${readiness.map((provider) => `${provider.provider}=${provider.configured ? "ready" : `missing ${provider.missing.join(",")}`}`).join(", ")}`,
             `Estimated cost: $${estimatedCostUsd.toFixed(4)} / budget $${budget.toFixed(4)}`,
             "No model calls were made.",
             "",
@@ -346,19 +373,12 @@ export async function runCouncilCli(
       return estimatedCostUsd <= budget ? 0 : 1;
     }
 
-    const unsupported = [...profile.seats, profile.chair].find(
-      (seat) => seat.provider !== "fake",
-    );
-    if (unsupported) {
-      throw new Error(
-        `provider ${unsupported.provider} is not available in the protocol-kernel slice; use a fake profile`,
-      );
-    }
-    const fakeTransport = new FakeCouncilTransport();
+    assertProvidersReady(profile);
+    const resolveTransport = createProviderResolver();
     const engineOptions: Parameters<typeof runCouncil>[0] = {
       profile,
       context,
-      resolveTransport: () => fakeTransport,
+      resolveTransport,
     };
     if (io.signal) engineOptions.signal = io.signal;
     if (command.maxUsd !== undefined) engineOptions.maxUsd = command.maxUsd;
