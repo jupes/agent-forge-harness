@@ -8,6 +8,7 @@
     "build-pages": "bun run scripts/build-pages.ts",
     "dashboard": "vite --config vite.dashboard.config.ts",
     "worktree": "bun run scripts/worktree.ts",
+    "council": "bun run scripts/council/cli.ts",
     "repo": "bun run .claude/skills/syncing-repos/scripts/repo.ts",
     "test": "bun test scripts",
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "default-review",
+  "title": "Default four-seat review council",
+  "depth": "balanced",
+  "minQuorum": 3,
+  "minPeerBallots": 2,
+  "maxEstimatedUsd": 1,
+  "seats": [
+    {
+      "id": "correctness",
+      "role": "Correctness and factual accuracy reviewer",
+      "provider": "fake",
+      "model": "deterministic-correctness",
+      "timeoutMs": 5000,
+      "maxOutputTokens": 1200,
+      "estimatedCostUsd": 0
+    },
+    {
+      "id": "security",
+      "role": "Security and reliability reviewer",
+      "provider": "fake",
+      "model": "deterministic-security",
+      "timeoutMs": 5000,
+      "maxOutputTokens": 1200,
+      "estimatedCostUsd": 0
+    },
+    {
+      "id": "testing",
+      "role": "Tests and edge cases reviewer",
+      "provider": "fake",
+      "model": "deterministic-testing",
+      "timeoutMs": 5000,
+      "maxOutputTokens": 1200,
+      "estimatedCostUsd": 0
+    },
+    {
+      "id": "architecture",
+      "role": "Architecture and maintainability reviewer",
+      "provider": "fake",
+      "model": "deterministic-architecture",
+      "timeoutMs": 5000,
+      "maxOutputTokens": 1200,
+      "estimatedCostUsd": 0
+    }
+  ],
+  "chair": {
+    "id": "chair",
+    "role": "Independent council chair",
+    "provider": "fake",
+    "model": "deterministic-chair",
+    "timeoutMs": 5000,
+    "maxOutputTokens": 1600,
+    "estimatedCostUsd": 0
+  }
+}
