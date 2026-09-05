@@ -197,7 +197,9 @@ describe("multi-provider transports", () => {
     expect(
       new Set(result.run.records.map((record) => record.provider)),
     ).toEqual(new Set(["openai", "anthropic", "deepseek", "qwen"]));
-    expect(result.run.aggregatedFindings[0]?.support).toBe(4);
+    expect(result.run.aggregatedFindings[0]?.support).toBe(0);
+    expect(result.run.aggregatedFindings[0]?.independentProposers).toBe(4);
+    expect(result.run.aggregatedFindings[0]?.consensusEligible).toBe(true);
     expect(requests.some((request) => request.url.endsWith("/responses"))).toBe(
       true,
     );

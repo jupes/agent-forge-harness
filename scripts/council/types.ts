@@ -238,6 +238,7 @@ export type CouncilRun = {
     byteLength: number;
     truncated: boolean;
     redactions: ContextRedaction[];
+    evidence?: EvidenceItem[];
   };
   estimatedCostUsd: number;
   actualCostUsd: number | null;

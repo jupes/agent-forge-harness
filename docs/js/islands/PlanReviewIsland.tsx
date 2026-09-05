@@ -583,6 +583,15 @@ export function PlanReviewIsland() {
           </button>
         ) : null}
 
+        {selectedPlanId && (
+          <a
+            className="plan-review-btn plan-review-btn-secondary"
+            href={`council.html?${new URLSearchParams({ sourceType: "plan", source: `plans/${view === "history" ? historyBucket : "drafts"}/${selectedPlanId}.md` })}`}
+          >
+            Send to council
+          </a>
+        )}
+
         <div
           className="plan-review-tabs"
           role="tablist"

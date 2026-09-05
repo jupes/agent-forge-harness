@@ -1,16 +1,21 @@
 #!/usr/bin/env bun
 
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
+  assertCouncilRunId,
   readCouncilRun,
   renderCouncilReport,
+  reserveCouncilRun,
   writeCouncilArtifacts,
 } from "./artifacts";
 import {
   buildContextPack,
   type ContextInput,
   type SecretPolicy,
+  sanitizeContent,
 } from "./context";
 import { runCouncil } from "./engine";
 import { compilePullRequest } from "./pr-source";
@@ -168,11 +173,12 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
       if (arg === "--profile") profilePath = value;
       if (arg === "--runs-dir") runsDir = value;
       if (arg === "--run-id") {
-        if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
+        try {
+          assertCouncilRunId(value);
+        } catch {
           return {
             ok: false,
-            error:
-              "--run-id may contain only letters, numbers, dot, underscore, and hyphen",
+            error: "--run-id must be a safe, non-reserved run name",
             json,
           };
         }
@@ -258,7 +264,10 @@ function progressLine(event: CouncilEvent): string | null {
 }
 
 function errorResult(io: CouncilCliIo, json: boolean, error: unknown): number {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = sanitizeContent(
+    error instanceof Error ? error.message : String(error),
+    "redact",
+  ).text.slice(0, 1000);
   if (json) emitEnvelope(io, false, null, message);
   else io.stderr(`Error: ${message}\n`);
   return 1;
@@ -287,10 +296,9 @@ export async function runCouncilCli(
       return 0;
     }
 
-    const profilePath = resolve(
-      io.cwd,
-      command.profilePath ?? "councils/default.json",
-    );
+    const profilePath = command.profilePath
+      ? resolve(io.cwd, command.profilePath)
+      : fileURLToPath(new URL("../../councils/default.json", import.meta.url));
     const profile = loadCouncilProfile(profilePath);
     let contextInput: ContextInput;
     if (command.sourceKind === "stdin") {
@@ -302,6 +310,7 @@ export async function runCouncilCli(
     } else if (command.sourceKind === "pr") {
       const pullRequest = await compilePullRequest(command.sourcePath!, {
         cwd: io.cwd,
+        secretPolicy: command.secretPolicy,
       });
       contextInput = {
         kind: "pr",
@@ -374,15 +383,18 @@ export async function runCouncilCli(
     }
 
     assertProvidersReady(profile);
+    const runId =
+      command.runId ?? `council-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const reservation = reserveCouncilRun(runId, runsRoot);
     const resolveTransport = createProviderResolver();
     const engineOptions: Parameters<typeof runCouncil>[0] = {
       profile,
       context,
       resolveTransport,
+      runId,
     };
     if (io.signal) engineOptions.signal = io.signal;
     if (command.maxUsd !== undefined) engineOptions.maxUsd = command.maxUsd;
-    if (command.runId) engineOptions.runId = command.runId;
     if (!command.json) {
       engineOptions.onEvent = (event) => {
         const line = progressLine(event);
@@ -390,7 +402,7 @@ export async function runCouncilCli(
       };
     }
     const result = await runCouncil(engineOptions);
-    const artifacts = writeCouncilArtifacts(result.run, runsRoot);
+    const artifacts = writeCouncilArtifacts(result.run, runsRoot, reservation);
     if (command.json) {
       emitEnvelope(
         io,

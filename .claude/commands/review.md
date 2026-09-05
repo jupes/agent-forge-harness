@@ -2,6 +2,10 @@
 
 Performs a structured code review with four risk tiers. Produces an AC Trace Matrix.
 
+## Optional council deliberation
+
+When the user includes `--council <profile-path>`, follow `.claude/commands/council.md` after collecting the diff, acceptance criteria, and context below. For a PR use the `pr` source; for a local branch supply the captured diff and context as text. Treat the council transcript as additional review evidence, preserve dissent and limitations, and still complete the AC Trace Matrix. Never silently substitute the key-free demo for a real review. Council findings do not authorize code changes or GitHub publication.
+
 ## Usage
 ```
 /review                      # Review current branch vs main

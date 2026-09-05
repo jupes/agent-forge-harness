@@ -189,10 +189,38 @@ export function buildContextPack(input: ContextInput): ContextPack {
     if (input.kind === "plan" && extname(contextPath).toLowerCase() !== ".md") {
       throw new Error("plan context must be a Markdown file");
     }
+    if (
+      [
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+        ".zip",
+        ".png",
+        ".jpg",
+        ".jpeg",
+      ].includes(extname(contextPath).toLowerCase())
+    ) {
+      throw new Error(
+        "Council file input requires text or Markdown; export this document to text first",
+      );
+    }
     kind = input.kind;
     displayName = basename(contextPath);
     locator = relative(root, contextPath).replaceAll("\\", "/");
-    rawText = readFileSync(contextPath, "utf8");
+    try {
+      rawText = new TextDecoder("utf-8", { fatal: true }).decode(
+        readFileSync(contextPath),
+      );
+      if (rawText.includes("\0")) throw new Error("binary content");
+    } catch {
+      throw new Error(
+        "Council file input must contain valid UTF-8 text, not a binary document",
+      );
+    }
   }
 
   // Scan before truncation so a credential split by the byte boundary cannot

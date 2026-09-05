@@ -123,7 +123,7 @@ function parseFinding(
   };
 }
 
-function parseIndependentOutput(
+export function parseIndependentOutput(
   value: unknown,
   validEvidenceIds: ReadonlySet<string>,
 ): IndependentOutput {
@@ -432,7 +432,7 @@ function preparePeerCandidates(
   return { candidates, fingerprints };
 }
 
-function independentSystem(seat: CouncilSeat): string {
+export function independentSystem(seat: CouncilSeat): string {
   return [
     "You are one independent member of a review council.",
     `Your assigned lens is: ${seat.role}`,
@@ -441,7 +441,7 @@ function independentSystem(seat: CouncilSeat): string {
   ].join("\n");
 }
 
-function independentPrompt(context: ContextPack): string {
+export function independentPrompt(context: ContextPack): string {
   return [
     "Review the artifact independently. Identify only evidence-backed findings.",
     "Use severity blocker|high|medium|low and confidence from 0 to 1.",
@@ -937,6 +937,7 @@ function finalRun(
       byteLength: context.byteLength,
       truncated: context.truncated,
       redactions: context.redactions,
+      evidence: context.evidence,
     },
     estimatedCostUsd,
     actualCostUsd: records.every((record) => record.costUsd !== undefined)

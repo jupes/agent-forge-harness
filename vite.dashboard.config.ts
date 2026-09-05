@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import chokidar from "chokidar";
+import { councilDashboardPlugin } from "./scripts/council/dashboard";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
@@ -485,5 +486,6 @@ export default defineConfig({
     rebuildPagesApiPlugin(),
     beadsDataReloadPlugin(),
     plansHarnessPlugin(repoRoot),
+    councilDashboardPlugin(repoRoot),
   ],
 });

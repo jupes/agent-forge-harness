@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Council — Agent Forge</title>
+  <link rel="stylesheet" href="css/council.css">
+</head>
+<body>
+  <nav aria-label="Main navigation">
+    <a class="brand" href="index.html">AGENT FORGE</a>
+    <a href="index.html?view=dashboard">Dashboard</a>
+    <a href="index.html?view=list">All issues</a>
+    <a href="plan-review.html">Plan review</a>
+    <a class="active" href="council.html" aria-current="page">Council</a>
+    <p>Independent perspectives.<br>Evidence before agreement.</p>
+  </nav>
+  <main>
+    <header><p class="eyebrow">Review room</p><h1>Put your work before the council.</h1><p>Review a pull request, plan, or research document with different models. Follow their objections, revisions, and final recommendation.</p></header>
+    <div id="council-root"><p class="notice">Loading the local council…</p></div>
+    <noscript>JavaScript and the local dashboard are required to run a council.</noscript>
+  </main>
+  <script type="module" src="js/council.tsx"></script>
+</body>
+</html>

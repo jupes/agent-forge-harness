@@ -343,7 +343,12 @@ describe("MCP job integration", () => {
         { timeout: 100 },
       );
       expect(
-        (result.structuredContent?.data as Record<string, unknown>).status,
+        (
+          (result.structuredContent as Record<string, unknown>)?.data as Record<
+            string,
+            unknown
+          >
+        ).status,
       ).toBe("running");
       const status = await client.callTool({
         name: "council_status",
@@ -363,12 +368,20 @@ describe("MCP job integration", () => {
         },
       });
       expect(failure.isError).toBe(true);
-      expect(failure.structuredContent?.error).toContain("does not exist");
       expect(
-        (failure.structuredContent?.data as Record<string, unknown>).runId,
+        (failure.structuredContent as Record<string, unknown>)?.error,
+      ).toContain("does not exist");
+      expect(
+        (
+          (failure.structuredContent as Record<string, unknown>)
+            ?.data as Record<string, unknown>
+        ).runId,
       ).toBe("failed");
       expect(
-        (failure.structuredContent?.data as Record<string, unknown>).artifacts,
+        (
+          (failure.structuredContent as Record<string, unknown>)
+            ?.data as Record<string, unknown>
+        ).artifacts,
       ).toBeDefined();
       const unsafe = await client.callTool({
         name: "council_start",

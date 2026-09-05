@@ -1,8 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "default-review",
-  "title": "Default four-seat review council",
-  "depth": "balanced",
+  "title": "Demo council (simulated, no model calls)",
+  "depth": "deep",
+  "maxDiscussionRounds": 1,
   "minQuorum": 3,
   "minPeerBallots": 2,
   "maxEstimatedUsd": 1,

@@ -41,7 +41,12 @@ function findingMarkdown(finding: AggregatedFinding): string {
     "",
     `**Evidence:** ${finding.evidenceIds.map((id) => `\`${id}\``).join(", ") || "None supplied"}`,
     "",
-    `**Council:** proposed by ${finding.proposedBy}; support ${finding.support}; oppose ${finding.oppose}; uncertain ${finding.uncertain}; confidence ${finding.confidence.toFixed(2)}${finding.contested ? "; contested" : ""}.`,
+    `**Council:** ${finding.resolution ?? "reviewed"}; proposed by ${finding.proposedBy}; support ${finding.support}; oppose ${finding.oppose}; uncertain ${finding.uncertain}; confidence ${finding.confidence.toFixed(2)}${finding.contested ? "; contested" : ""}.`,
+    "",
+    ...(finding.rationales ?? []).map(
+      (rationale) =>
+        `- **${rationale.reviewerLabel} (${rationale.stance}):** ${rationale.reason}`,
+    ),
   ].join("\n");
 }
 
@@ -87,10 +92,19 @@ export function renderCouncilReport(run: CouncilRun): string {
     "## Deliberation",
     "",
     `- Independent reviewers completed: ${completedIndependent}/${run.profile.seats.length}`,
-    `- Peer ballots completed: ${completedPeers}/${run.profile.depth === "balanced" ? run.profile.seats.length : 0}`,
+    `- Peer ballots completed: ${completedPeers}/${run.profile.depth !== "quick" ? run.profile.seats.length : 0}`,
+    `- Revision responses completed: ${run.records.filter((record) => record.stage === "revision" && record.status === "completed").length}`,
     `- Findings: ${run.aggregatedFindings.length}`,
     `- Estimated cost: $${run.estimatedCostUsd.toFixed(4)}`,
     `- Actual reported cost: ${run.actualCostUsd == null ? "unavailable" : `$${run.actualCostUsd.toFixed(4)}`}`,
+    `- Usage-derived estimate: ${run.usageEstimatedCostUsd == null ? "unavailable" : `$${run.usageEstimatedCostUsd.toFixed(4)}`}`,
+    `- Budget-accounted cost: $${(run.accountedCostUsd ?? run.estimatedCostUsd).toFixed(4)}${run.costIsEstimate ? " (conservative estimate)" : ""}`,
+    "",
+    "## Limitations",
+    "",
+    ...(run.limitations?.length
+      ? run.limitations.map((item) => `- ${item}`)
+      : ["- None recorded."]),
     "",
     "## Findings",
     "",
@@ -111,6 +125,16 @@ export function renderCouncilReport(run: CouncilRun): string {
     `- Context bytes: ${run.context.byteLength}${run.context.truncated ? " (truncated)" : ""}`,
     `- Event count: ${run.events.length}`,
     "",
+    "## Supplied evidence",
+    "",
+    ...(run.context.evidence ?? []).flatMap((item) => [
+      `### ${item.id}: ${item.title}`,
+      "",
+      ...item.content
+        .split("\n")
+        .map((line, index) => `    ${index + 1}: ${line}`),
+      "",
+    ]),
   ].join("\n");
 }
 

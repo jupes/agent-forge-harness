@@ -14,7 +14,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 **Deeper walkthrough:** [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md)
 
-**Deliberative reviews:** run a parallel, mixed-provider model council over a PR, plan, file, or pasted text through the local CLI or MCP server. Start with [docs/COUNCIL-REVIEWS.md](docs/COUNCIL-REVIEWS.md).
+**Deliberative reviews:** run a parallel, mixed-provider model council over a PR, plan, research file, or pasted text through the local dashboard, CLI, or MCP server. Reviewers challenge and revise each other's findings before the chair synthesizes them. Start with [docs/COUNCIL-REVIEWS.md](docs/COUNCIL-REVIEWS.md).
 
 ---
 
