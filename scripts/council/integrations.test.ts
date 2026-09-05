@@ -120,6 +120,7 @@ function outputForPrompt(prompt: string): Record<string, unknown> {
 describe("multi-provider transports", () => {
   test("runs one council across OpenAI, Anthropic, DeepSeek, and Qwen", async () => {
     const profile = multiProviderProfile();
+    profile.depth = "balanced";
     const environment = {
       OPENAI_API_KEY: "openai-test-key",
       ANTHROPIC_API_KEY: "anthropic-test-key",
@@ -146,6 +147,7 @@ describe("multi-provider transports", () => {
       if (url.endsWith("/responses")) {
         return new Response(
           JSON.stringify({
+            status: "completed",
             output: [
               {
                 content: [
@@ -160,6 +162,7 @@ describe("multi-provider transports", () => {
       if (url.endsWith("/v1/messages")) {
         return new Response(
           JSON.stringify({
+            stop_reason: "end_turn",
             content: [{ type: "text", text: JSON.stringify(output) }],
             usage: { input_tokens: 11, output_tokens: 21 },
           }),
@@ -167,7 +170,12 @@ describe("multi-provider transports", () => {
       }
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: JSON.stringify(output) } }],
+          choices: [
+            {
+              finish_reason: "stop",
+              message: { content: JSON.stringify(output) },
+            },
+          ],
           usage: { prompt_tokens: 12, completion_tokens: 22 },
         }),
       );
