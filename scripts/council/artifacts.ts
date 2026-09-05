@@ -1,11 +1,15 @@
+import { randomUUID } from "crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "fs";
-import { basename, join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import {
   type AggregatedFinding,
   COUNCIL_SCHEMA_VERSION,
@@ -86,7 +90,7 @@ export function renderCouncilReport(run: CouncilRun): string {
     `- Peer ballots completed: ${completedPeers}/${run.profile.depth === "balanced" ? run.profile.seats.length : 0}`,
     `- Findings: ${run.aggregatedFindings.length}`,
     `- Estimated cost: $${run.estimatedCostUsd.toFixed(4)}`,
-    `- Actual reported cost: $${run.actualCostUsd.toFixed(4)}`,
+    `- Actual reported cost: ${run.actualCostUsd == null ? "unavailable" : `$${run.actualCostUsd.toFixed(4)}`}`,
     "",
     "## Findings",
     "",
@@ -113,23 +117,151 @@ export function renderCouncilReport(run: CouncilRun): string {
 export function writeCouncilArtifacts(
   run: CouncilRun,
   runsRoot = resolve(process.cwd(), "reports", "council-runs"),
+  reservation?: CouncilRunReservation,
 ): CouncilArtifactPaths {
-  if (!/^[a-zA-Z0-9._-]+$/.test(run.runId)) {
-    throw new Error("runId contains unsafe path characters");
-  }
-  const directory = join(runsRoot, run.runId);
-  mkdirSync(directory, { recursive: true });
-  const manifest = join(directory, "manifest.json");
-  const events = join(directory, "events.ndjson");
-  const report = join(directory, "report.md");
-  writeFileSync(manifest, `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  const owned = reservation ?? reserveCouncilRun(run.runId, runsRoot);
+  assertReservation(owned, run.runId, runsRoot);
+  const { directory, manifest, events, report } = owned.paths;
   writeFileSync(
     events,
     `${run.events.map((event) => JSON.stringify(event)).join("\n")}\n`,
-    "utf8",
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
   );
-  writeFileSync(report, renderCouncilReport(run), "utf8");
+  writeFileSync(report, renderCouncilReport(run), {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  // The manifest is the commit marker: readers only see a complete run.
+  writeFileSync(manifest, `${JSON.stringify(run, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
   return { directory, manifest, events, report };
+}
+
+export function assertCouncilRunId(runId: string): void {
+  if (
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/.test(runId) ||
+    runId.endsWith(".") ||
+    /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(runId)
+  ) {
+    throw new Error(
+      "runId must be a safe identifier of 1–120 characters beginning with a letter or number",
+    );
+  }
+}
+
+export type CouncilRunReservation = {
+  runId: string;
+  token: string;
+  root: string;
+  paths: CouncilArtifactPaths;
+};
+
+export function reserveCouncilRun(
+  runId: string,
+  runsRoot: string,
+): CouncilRunReservation {
+  assertCouncilRunId(runId);
+  mkdirSync(runsRoot, { recursive: true });
+  const root = realpathSync(runsRoot);
+  const directory = join(root, runId);
+  try {
+    mkdirSync(directory, { mode: 0o700 });
+  } catch {
+    throw new Error(
+      `council run already exists or cannot be reserved: ${runId}`,
+    );
+  }
+  const reservation = {
+    runId,
+    token: randomUUID(),
+    root,
+    paths: {
+      directory,
+      manifest: join(directory, "manifest.json"),
+      events: join(directory, "events.ndjson"),
+      report: join(directory, "report.md"),
+    },
+  };
+  writeFileSync(
+    join(directory, "reservation.json"),
+    JSON.stringify({ token: reservation.token }),
+    { flag: "wx", mode: 0o600 },
+  );
+  return reservation;
+}
+
+function assertReservation(
+  reservation: CouncilRunReservation,
+  runId: string,
+  runsRoot: string,
+): void {
+  assertCouncilRunId(runId);
+  const directory = resolveRunDirectory(runId, runsRoot);
+  if (
+    reservation.runId !== runId ||
+    reservation.root !== realpathSync(runsRoot) ||
+    reservation.paths.directory !== directory
+  )
+    throw new Error("invalid council run reservation");
+  const ownership = join(directory, "reservation.json");
+  if (lstatSync(ownership).isSymbolicLink())
+    throw new Error("unsafe council reservation");
+  let record: unknown;
+  try {
+    record = JSON.parse(readFileSync(ownership, "utf8"));
+  } catch {
+    throw new Error("invalid council reservation");
+  }
+  if (
+    !record ||
+    typeof record !== "object" ||
+    !("token" in record) ||
+    record.token !== reservation.token
+  )
+    throw new Error("council reservation ownership changed");
+}
+
+export function writeCouncilJobFailure(
+  reservation: CouncilRunReservation,
+  state: Record<string, unknown>,
+): void {
+  assertReservation(reservation, reservation.runId, reservation.root);
+  writeFileSync(
+    join(reservation.paths.directory, "terminal.json"),
+    JSON.stringify(state),
+    { flag: "wx", mode: 0o600 },
+  );
+}
+
+export function resolveRunDirectory(runId: string, runsRoot: string): string {
+  assertCouncilRunId(runId);
+  const root = realpathSync(runsRoot);
+  const directory = join(root, runId);
+  if (
+    lstatSync(directory).isSymbolicLink() ||
+    !lstatSync(directory).isDirectory() ||
+    dirname(realpathSync(directory)) !== root
+  )
+    throw new Error(
+      "council run directory must remain inside the artifact root",
+    );
+  return directory;
+}
+
+export function listCouncilRunIds(runsRoot: string): string[] {
+  if (!existsSync(runsRoot)) return [];
+  return readdirSync(runsRoot).filter((id) => {
+    try {
+      resolveRunDirectory(id, runsRoot);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function parseStoredRun(text: string): CouncilRun {
@@ -146,12 +278,10 @@ function parseStoredRun(text: string): CouncilRun {
   if (record.schemaVersion !== COUNCIL_SCHEMA_VERSION) {
     throw new Error("stored council manifest schemaVersion must be 1");
   }
-  if (
-    typeof record.runId !== "string" ||
-    !/^[a-zA-Z0-9._-]+$/.test(record.runId)
-  ) {
+  if (typeof record.runId !== "string" || record.runId.length === 0) {
     throw new Error("stored council manifest has an invalid runId");
   }
+  assertCouncilRunId(record.runId as string);
   if (
     record.status !== "completed" &&
     record.status !== "failed" &&
@@ -170,18 +300,28 @@ export function readCouncilRun(
   runsRoot = resolve(process.cwd(), "reports", "council-runs"),
 ): CouncilRun {
   let manifestPath: string;
-  if (existsSync(pathOrRunId)) {
+  // Bare names always identify runs. Explicit CLI paths require a separator.
+  if (/[\\/]/.test(pathOrRunId) && existsSync(pathOrRunId)) {
     manifestPath = statSync(pathOrRunId).isDirectory()
       ? join(pathOrRunId, "manifest.json")
       : pathOrRunId;
   } else {
-    if (!/^[a-zA-Z0-9._-]+$/.test(pathOrRunId)) {
-      throw new Error(`invalid run id: ${basename(pathOrRunId)}`);
-    }
-    manifestPath = join(runsRoot, pathOrRunId, "manifest.json");
+    assertCouncilRunId(pathOrRunId);
+    manifestPath = join(
+      resolveRunDirectory(pathOrRunId, runsRoot),
+      "manifest.json",
+    );
   }
   if (!existsSync(manifestPath)) {
     throw new Error(`council manifest not found: ${manifestPath}`);
   }
-  return parseStoredRun(readFileSync(manifestPath, "utf8"));
+  if (
+    lstatSync(manifestPath).isSymbolicLink() ||
+    !lstatSync(manifestPath).isFile()
+  )
+    throw new Error("unsafe council manifest");
+  const run = parseStoredRun(readFileSync(manifestPath, "utf8"));
+  if (!/[\\/]/.test(pathOrRunId) && run.runId !== pathOrRunId)
+    throw new Error("council manifest runId mismatch");
+  return run;
 }

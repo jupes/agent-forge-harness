@@ -1,4 +1,5 @@
-import { sanitizeContent } from "./context";
+import { spawn } from "node:child_process";
+import { isSensitivePath, type SecretPolicy, sanitizeContent } from "./context";
 import type { ContextSourceMetadata } from "./types";
 
 const DEFAULT_DIFF_BYTES = 150_000;
@@ -150,37 +151,52 @@ export const runLocalCommand: CommandRunner = async (command, cwd) => {
   ]) {
     delete commandEnvironment[providerKey];
   }
-  const processHandle = Bun.spawn(command, {
-    cwd,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...commandEnvironment,
-      GH_PAGER: "cat",
-      GH_PROMPT_DISABLED: "true",
-    },
+  return new Promise<CommandResult>((resolve, reject) => {
+    const processHandle = spawn(command[0]!, command.slice(1), {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      shell: false,
+      env: {
+        ...commandEnvironment,
+        GH_PAGER: "cat",
+        GH_PROMPT_DISABLED: "true",
+      },
+    });
+    const stdout: Buffer[] = [],
+      stderr: Buffer[] = [];
+    let bytes = 0;
+    const timer = setTimeout(() => {
+      processHandle.kill();
+      reject(
+        new Error(`${command[0]} timed out after ${COMMAND_TIMEOUT_MS}ms`),
+      );
+    }, COMMAND_TIMEOUT_MS);
+    const collect = (chunks: Buffer[]) => (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > 20_000_000) {
+        processHandle.kill();
+        clearTimeout(timer);
+        reject(new Error(`${command[0]} output exceeded 20 MB`));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    processHandle.stdout.on("data", collect(stdout));
+    processHandle.stderr.on("data", collect(stderr));
+    processHandle.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    processHandle.on("close", (exitCode) => {
+      clearTimeout(timer);
+      resolve({
+        exitCode: exitCode ?? 1,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      });
+    });
   });
-  const stdoutPromise = new Response(processHandle.stdout).text();
-  const stderrPromise = new Response(processHandle.stderr).text();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const exitCode = await Promise.race([
-      processHandle.exited,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          processHandle.kill();
-          reject(
-            new Error(`${command[0]} timed out after ${COMMAND_TIMEOUT_MS}ms`),
-          );
-        }, COMMAND_TIMEOUT_MS);
-      }),
-    ]);
-    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-    return { exitCode, stdout, stderr };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 };
 
 function linkedIssueIds(body: string): string[] {
@@ -200,7 +216,13 @@ async function loadAcceptanceCriteria(
   const omissions: string[] = [];
   for (const id of ids) {
     const command = ["bd", "show", id, "--json"];
-    const result = await runner(command, cwd);
+    let result: CommandResult;
+    try {
+      result = await runner(command, cwd);
+    } catch {
+      omissions.push(`Acceptance criteria unavailable for ${id}.`);
+      continue;
+    }
     if (result.exitCode !== 0) {
       omissions.push(`Acceptance criteria unavailable for ${id}.`);
       continue;
@@ -220,12 +242,84 @@ async function loadAcceptanceCriteria(
   return { lines, omissions };
 }
 
+function decodeGitPath(path: string): string {
+  if (!path.startsWith('"')) return path;
+  const parts: Buffer[] = [];
+  const body = path.slice(1, -1);
+  let offset = 0;
+  for (const match of body.matchAll(/\\([0-7]{1,3}|[\\"abfnrtv])/g)) {
+    parts.push(Buffer.from(body.slice(offset, match.index), "utf8"));
+    const escapedCharacter = match[1]!;
+    const character = (
+      {
+        a: "\x07",
+        b: "\b",
+        f: "\f",
+        n: "\n",
+        r: "\r",
+        t: "\t",
+        v: "\v",
+        '"': '"',
+        "\\": "\\",
+      } as Record<string, string>
+    )[escapedCharacter];
+    parts.push(
+      character !== undefined
+        ? Buffer.from(character)
+        : Buffer.from([Number.parseInt(escapedCharacter, 8)]),
+    );
+    offset = match.index! + match[0].length;
+  }
+  parts.push(Buffer.from(body.slice(offset), "utf8"));
+  return Buffer.concat(parts).toString("utf8");
+}
+
+function filterPatch(
+  text: string,
+  knownFiles: Set<string>,
+): { text: string; includedFiles: string[]; omissions: string[] } {
+  const included: string[] = [],
+    omissions: string[] = [],
+    sections: string[] = [];
+  for (const section of text
+    .split(/(?=^diff --git )/m)
+    .filter((part) => part.trim())) {
+    const header = section.split("\n", 1)[0]!;
+    const match =
+      /^diff --git ("(?:[^"\\]|\\.)*"|a\/.*?) ("(?:[^"\\]|\\.)*"|b\/.*)$/.exec(
+        header,
+      );
+    if (!match) {
+      omissions.push("An unrecognized patch section was excluded.");
+      continue;
+    }
+    const oldPath = decodeGitPath(match[1]!).replace(/^a\//, ""),
+      newPath = decodeGitPath(match[2]!).replace(/^b\//, "");
+    if (isSensitivePath(oldPath) || isSensitivePath(newPath)) {
+      omissions.push(`Sensitive file excluded: ${newPath}.`);
+      continue;
+    }
+    if (!knownFiles.has(newPath)) {
+      omissions.push(`Unresolved patch file excluded: ${newPath}.`);
+      continue;
+    }
+    included.push(newPath);
+    sections.push(section);
+  }
+  return {
+    text: sections.join(""),
+    includedFiles: [...new Set(included)],
+    omissions,
+  };
+}
+
 export async function compilePullRequest(
   reference: string,
   options: {
     cwd?: string;
     maxDiffBytes?: number;
     runner?: CommandRunner;
+    secretPolicy?: SecretPolicy;
   } = {},
 ): Promise<CompiledPullRequest> {
   const cwd = options.cwd ?? process.cwd();
@@ -244,19 +338,42 @@ export async function compilePullRequest(
     throw safeCommandError(metadataCommand, metadataResult);
   }
   const pullRequest = parsePullRequestView(metadataResult.stdout);
-  const diffCommand = ["gh", "pr", "diff", safeReference, "--patch"];
+  const diffCommand = ["gh", "pr", "diff", safeReference, "--color=never"];
   const diffResult = await runner(diffCommand, cwd);
   if (diffResult.exitCode !== 0)
     throw safeCommandError(diffCommand, diffResult);
+  const afterResult = await runner(metadataCommand, cwd);
+  if (afterResult.exitCode !== 0)
+    throw safeCommandError(metadataCommand, afterResult);
+  const after = parsePullRequestView(afterResult.stdout);
+  if (
+    after.headRefOid !== pullRequest.headRefOid ||
+    after.baseRefOid !== pullRequest.baseRefOid
+  ) {
+    throw new Error(
+      "PR changed while its snapshot was being captured; retry the review",
+    );
+  }
 
   const maxDiffBytes = options.maxDiffBytes ?? DEFAULT_DIFF_BYTES;
   if (!Number.isInteger(maxDiffBytes) || maxDiffBytes < 1) {
     throw new Error("maxDiffBytes must be a positive integer");
   }
-  const diff = truncateUtf8(diffResult.stdout, maxDiffBytes);
+  const filtered = filterPatch(
+    diffResult.stdout,
+    new Set(pullRequest.files.map((file) => file.path)),
+  );
+  // Scan complete retained patches before truncation, including split keys.
+  const safeDiff = sanitizeContent(
+    filtered.text,
+    options.secretPolicy ?? "reject",
+  );
+  const diff = truncateUtf8(safeDiff.text, maxDiffBytes);
   const issueIds = linkedIssueIds(pullRequest.body);
   const criteria = await loadAcceptanceCriteria(issueIds, cwd, runner);
-  const omissions = [...criteria.omissions];
+  const omissions = [...filtered.omissions, ...criteria.omissions];
+  if (safeDiff.redactions.length)
+    omissions.push("Detected credentials were redacted from the patch.");
   if (diff.truncated) {
     omissions.push(`Diff truncated at ${maxDiffBytes} UTF-8 bytes.`);
   }
@@ -295,7 +412,7 @@ export async function compilePullRequest(
     changedFiles: pullRequest.changedFiles,
     additions: pullRequest.additions,
     deletions: pullRequest.deletions,
-    includedFiles: pullRequest.files.map((file) => file.path),
+    includedFiles: filtered.includedFiles,
     linkedIssueIds: issueIds,
     diffTruncated: diff.truncated,
     omissions,

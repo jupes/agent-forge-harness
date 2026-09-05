@@ -347,7 +347,7 @@ describe("PR source compilation", () => {
     expect(compiled.metadata.includedFiles).toEqual(["src/council.ts"]);
     expect(compiled.text).toContain("The council can review a pull request.");
     expect(compiled.text).toContain("Diff truncated at 20 UTF-8 bytes.");
-    expect(calls.map((call) => call[0])).toEqual(["gh", "gh", "bd"]);
+    expect(calls.map((call) => call[0])).toEqual(["gh", "gh", "gh", "bd"]);
   });
 
   test("rejects unsafe references before invoking local tools", async () => {
@@ -386,9 +386,14 @@ describe("MCP facade", () => {
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+        "council_cancel",
+        "council_list",
+        "council_profiles",
         "council_readiness",
         "council_replay",
         "council_review",
+        "council_start",
+        "council_status",
       ]);
       expect(JSON.stringify(tools)).not.toMatch(/api.?key/i);
 
