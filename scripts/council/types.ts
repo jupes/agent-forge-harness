@@ -1,9 +1,9 @@
 export const COUNCIL_SCHEMA_VERSION = 1 as const;
 
-export const COUNCIL_DEPTHS = ["quick", "balanced"] as const;
+export const COUNCIL_DEPTHS = ["quick", "balanced", "deep"] as const;
 export type CouncilDepth = (typeof COUNCIL_DEPTHS)[number];
 
-export const COUNCIL_STAGES = ["independent", "peer", "chair"] as const;
+export const COUNCIL_STAGES = ["independent", "peer", "revision", "chair"] as const;
 export type CouncilStage = (typeof COUNCIL_STAGES)[number];
 
 export const FINDING_SEVERITIES = ["blocker", "high", "medium", "low"] as const;
@@ -17,6 +17,7 @@ export type CouncilSeat = {
   timeoutMs: number;
   maxOutputTokens: number;
   estimatedCostUsd: number;
+  tokenRatesUsdPerMillion?: { input: number; output: number };
 };
 
 export type CouncilProfile = {
@@ -24,6 +25,7 @@ export type CouncilProfile = {
   id: string;
   title: string;
   depth: CouncilDepth;
+  maxDiscussionRounds?: number;
   minQuorum: number;
   minPeerBallots: number;
   maxEstimatedUsd: number;
@@ -123,6 +125,18 @@ export type AggregatedFinding = {
   oppose: number;
   uncertain: number;
   contested: boolean;
+  reviewed: boolean;
+  consensusEligible: boolean;
+  resolution: "consensus" | "contested" | "unreviewed" | "rejected";
+  independentProposers: number;
+  severityDisputed: boolean;
+  rationales: Array<{
+    reviewerLabel: string;
+    stance: PeerBallot["stance"];
+    reason: string;
+    evidenceIds: string[];
+    suggestedSeverity?: FindingSeverity;
+  }>;
 };
 
 export type ChairOutput = {
@@ -141,6 +155,7 @@ export type ModelUsage = {
 export type ModelRequest = {
   runId: string;
   stage: CouncilStage;
+  round?: number;
   seat: CouncilSeat;
   system: string;
   prompt: string;
@@ -154,7 +169,27 @@ export type ModelResult = {
   text?: string;
   usage?: ModelUsage;
   costUsd?: number;
+  estimatedUsageCostUsd?: number;
 };
+
+export class ModelTransportError extends Error {
+  readonly usage?: ModelUsage;
+  readonly costUsd?: number;
+  readonly estimatedUsageCostUsd?: number;
+
+  constructor(
+    message: string,
+    accounting: {
+      usage?: ModelUsage;
+      costUsd?: number;
+      estimatedUsageCostUsd?: number;
+    } = {},
+  ) {
+    super(message);
+    this.name = "ModelTransportError";
+    Object.assign(this, accounting);
+  }
+}
 
 export interface ModelTransport {
   generate(request: ModelRequest, signal: AbortSignal): Promise<ModelResult>;
@@ -171,6 +206,7 @@ export type CouncilEvent = {
 
 export type SeatRecord = {
   stage: CouncilStage;
+  round?: number;
   seatId: string;
   provider: string;
   model: string;
@@ -179,6 +215,8 @@ export type SeatRecord = {
   output?: IndependentOutput | PeerOutput | ChairOutput;
   usage?: ModelUsage;
   costUsd?: number;
+  estimatedUsageCostUsd?: number;
+  accountedCostUsd: number;
   error?: string;
 };
 
@@ -197,7 +235,11 @@ export type CouncilRun = {
     redactions: ContextRedaction[];
   };
   estimatedCostUsd: number;
-  actualCostUsd: number;
+  actualCostUsd: number | null;
+  usageEstimatedCostUsd: number | null;
+  accountedCostUsd: number;
+  costIsEstimate: boolean;
+  limitations: string[];
   records: SeatRecord[];
   aggregatedFindings: AggregatedFinding[];
   chair?: ChairOutput;
@@ -247,6 +289,14 @@ function parseSeat(value: unknown, path: string): CouncilSeat | string {
   if (!isNonNegativeNumber(value.estimatedCostUsd)) {
     return `${path}.estimatedCostUsd must be a non-negative number`;
   }
+  if (
+    value.tokenRatesUsdPerMillion !== undefined &&
+    (!isRecord(value.tokenRatesUsdPerMillion) ||
+      !isNonNegativeNumber(value.tokenRatesUsdPerMillion.input) ||
+      !isNonNegativeNumber(value.tokenRatesUsdPerMillion.output))
+  ) {
+    return `${path}.tokenRatesUsdPerMillion must contain non-negative input and output rates`;
+  }
   return {
     id: (value.id as string).trim(),
     role: (value.role as string).trim(),
@@ -255,6 +305,9 @@ function parseSeat(value: unknown, path: string): CouncilSeat | string {
     timeoutMs: value.timeoutMs,
     maxOutputTokens: value.maxOutputTokens,
     estimatedCostUsd: value.estimatedCostUsd,
+    ...(value.tokenRatesUsdPerMillion === undefined
+      ? {}
+      : { tokenRatesUsdPerMillion: value.tokenRatesUsdPerMillion as { input: number; output: number } }),
   };
 }
 
@@ -326,11 +379,15 @@ export function parseCouncilProfileJson(
       error: `minPeerBallots must be an integer between 0 and ${seats.length}`,
     };
   }
-  if (raw.depth === "balanced" && raw.minPeerBallots < 1) {
+  if (raw.depth !== "quick" && raw.minPeerBallots < 1) {
     return {
       ok: false,
-      error: "balanced profiles require at least one peer ballot",
+      error: "deliberative profiles require at least one peer ballot",
     };
+  }
+  if (raw.maxDiscussionRounds !== undefined &&
+      (raw.depth !== "deep" || !isPositiveInt(raw.maxDiscussionRounds) || raw.maxDiscussionRounds > 3)) {
+    return { ok: false, error: "maxDiscussionRounds requires a deep profile and must be between 1 and 3" };
   }
   if (!isNonNegativeNumber(raw.maxEstimatedUsd)) {
     return {
@@ -345,6 +402,7 @@ export function parseCouncilProfileJson(
       id: raw.id,
       title: raw.title.trim(),
       depth: raw.depth as CouncilDepth,
+      ...(raw.depth === "deep" ? { maxDiscussionRounds: (raw.maxDiscussionRounds as number | undefined) ?? 1 } : {}),
       minQuorum: raw.minQuorum,
       minPeerBallots: raw.minPeerBallots,
       maxEstimatedUsd: raw.maxEstimatedUsd,
@@ -359,7 +417,7 @@ export function estimateCouncilCost(profile: CouncilProfile): number {
     (total, seat) => total + seat.estimatedCostUsd,
     0,
   );
-  const rounds = profile.depth === "balanced" ? 2 : 1;
+  const rounds = profile.depth === "quick" ? 1 : profile.depth === "deep" ? 2 + (profile.maxDiscussionRounds ?? 1) : 2;
   return Number(
     (seatRoundCost * rounds + profile.chair.estimatedCostUsd).toFixed(6),
   );
