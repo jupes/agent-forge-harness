@@ -3,7 +3,12 @@ export const COUNCIL_SCHEMA_VERSION = 1 as const;
 export const COUNCIL_DEPTHS = ["quick", "balanced", "deep"] as const;
 export type CouncilDepth = (typeof COUNCIL_DEPTHS)[number];
 
-export const COUNCIL_STAGES = ["independent", "peer", "revision", "chair"] as const;
+export const COUNCIL_STAGES = [
+  "independent",
+  "peer",
+  "revision",
+  "chair",
+] as const;
 export type CouncilStage = (typeof COUNCIL_STAGES)[number];
 
 export const FINDING_SEVERITIES = ["blocker", "high", "medium", "low"] as const;
@@ -307,7 +312,12 @@ function parseSeat(value: unknown, path: string): CouncilSeat | string {
     estimatedCostUsd: value.estimatedCostUsd,
     ...(value.tokenRatesUsdPerMillion === undefined
       ? {}
-      : { tokenRatesUsdPerMillion: value.tokenRatesUsdPerMillion as { input: number; output: number } }),
+      : {
+          tokenRatesUsdPerMillion: value.tokenRatesUsdPerMillion as {
+            input: number;
+            output: number;
+          },
+        }),
   };
 }
 
@@ -385,9 +395,23 @@ export function parseCouncilProfileJson(
       error: "deliberative profiles require at least one peer ballot",
     };
   }
-  if (raw.maxDiscussionRounds !== undefined &&
-      (raw.depth !== "deep" || !isPositiveInt(raw.maxDiscussionRounds) || raw.maxDiscussionRounds > 3)) {
-    return { ok: false, error: "maxDiscussionRounds requires a deep profile and must be between 1 and 3" };
+  if (raw.depth !== "quick" && raw.minPeerBallots >= seats.length) {
+    return {
+      ok: false,
+      error: `minPeerBallots cannot exceed ${seats.length - 1} independent peers; authors cannot vote for their own findings`,
+    };
+  }
+  if (
+    raw.maxDiscussionRounds !== undefined &&
+    (raw.depth !== "deep" ||
+      !isPositiveInt(raw.maxDiscussionRounds) ||
+      raw.maxDiscussionRounds > 3)
+  ) {
+    return {
+      ok: false,
+      error:
+        "maxDiscussionRounds requires a deep profile and must be between 1 and 3",
+    };
   }
   if (!isNonNegativeNumber(raw.maxEstimatedUsd)) {
     return {
@@ -402,7 +426,12 @@ export function parseCouncilProfileJson(
       id: raw.id,
       title: raw.title.trim(),
       depth: raw.depth as CouncilDepth,
-      ...(raw.depth === "deep" ? { maxDiscussionRounds: (raw.maxDiscussionRounds as number | undefined) ?? 1 } : {}),
+      ...(raw.depth === "deep"
+        ? {
+            maxDiscussionRounds:
+              (raw.maxDiscussionRounds as number | undefined) ?? 1,
+          }
+        : {}),
       minQuorum: raw.minQuorum,
       minPeerBallots: raw.minPeerBallots,
       maxEstimatedUsd: raw.maxEstimatedUsd,
@@ -417,7 +446,12 @@ export function estimateCouncilCost(profile: CouncilProfile): number {
     (total, seat) => total + seat.estimatedCostUsd,
     0,
   );
-  const rounds = profile.depth === "quick" ? 1 : profile.depth === "deep" ? 2 + (profile.maxDiscussionRounds ?? 1) : 2;
+  const rounds =
+    profile.depth === "quick"
+      ? 1
+      : profile.depth === "deep"
+        ? 2 + (profile.maxDiscussionRounds ?? 1)
+        : 2;
   return Number(
     (seatRoundCost * rounds + profile.chair.estimatedCostUsd).toFixed(6),
   );

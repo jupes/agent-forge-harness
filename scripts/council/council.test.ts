@@ -287,7 +287,7 @@ describe("council engine", () => {
     expect(orders.size).toBeGreaterThan(1);
     expect(result.run.aggregatedFindings).toHaveLength(4);
     expect(
-      result.run.aggregatedFindings.every((finding) => finding.support === 4),
+      result.run.aggregatedFindings.every((finding) => finding.support === 3),
     ).toBe(true);
     expect(result.run.events.map((event) => event.seq)).toEqual(
       result.run.events.map((_, index) => index),
@@ -324,7 +324,9 @@ describe("council engine", () => {
     expect(result.ok).toBe(true);
     expect(result.run.aggregatedFindings).toHaveLength(1);
     expect(result.run.aggregatedFindings[0]?.proposedBy).toBe(4);
-    expect(result.run.aggregatedFindings[0]?.support).toBe(4);
+    expect(result.run.aggregatedFindings[0]?.support).toBe(0);
+    expect(result.run.aggregatedFindings[0]?.independentProposers).toBe(4);
+    expect(result.run.aggregatedFindings[0]?.consensusEligible).toBe(true);
   });
 
   test("continues through one independent failure when quorum remains", async () => {
