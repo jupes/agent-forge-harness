@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, join, resolve } from "path";
+import { ballotChanged, previousBallot, roundTitle } from "./discussion";
 import {
   type AggregatedFinding,
   COUNCIL_SCHEMA_VERSION,
@@ -134,6 +135,62 @@ export function renderCouncilReport(run: CouncilRun): string {
         .split("\n")
         .map((line, index) => `    ${index + 1}: ${line}`),
       "",
+    ]),
+    "## Round-by-round discussion",
+    "",
+    ...(run.discussion ?? []).flatMap((round, index, rounds) => [
+      `### ${roundTitle(round)}`,
+      "",
+      ...round.records.flatMap((record) => {
+        const output = record.output;
+        const lines = [
+          `#### ${record.seatId} (${record.provider} / ${record.model})`,
+          "",
+          `Status: ${record.status}`,
+          "",
+        ];
+        if (record.error) lines.push(record.error, "");
+        if (output && "findings" in output) {
+          lines.push(
+            `Initial verdict: ${output.verdict}`,
+            "",
+            ...output.findings.flatMap((finding) => [
+              `- **${finding.title} (${finding.severity}):** ${finding.claim} Consequence: ${finding.consequence} Evidence: ${finding.evidenceIds.join(", ")}`,
+              "",
+            ]),
+            ...output.strengths.map((text) => `- Strength: ${text}`),
+            ...output.unknowns.map((text) => `- Unknown: ${text}`),
+            "",
+          );
+        }
+        if (output && "ballots" in output) {
+          for (const ballot of output.ballots) {
+            const previous = previousBallot(
+              rounds,
+              index,
+              record.seatId,
+              ballot.candidateId,
+            );
+            lines.push(
+              `- **${round.candidateTitles[ballot.candidateId] ?? ballot.candidateId} (${ballot.stance}):** ${ballot.reason} Evidence: ${ballot.evidenceIds.join(", ") || "none"}.`,
+              "",
+            );
+            if (previous && ballotChanged(previous, ballot))
+              lines.push(
+                `  Changed from ${previous.stance} to ${ballot.stance}; severity ${previous.suggestedSeverity ?? "as proposed"} to ${ballot.suggestedSeverity ?? "as proposed"}. Earlier rationale: ${previous.reason}`,
+                "",
+              );
+          }
+          lines.push(
+            ...output.missingFindings.map(
+              (finding) =>
+                `- New finding: **${finding.title} (${finding.severity})** — ${finding.claim} Evidence: ${finding.evidenceIds.join(", ")}`,
+            ),
+            "",
+          );
+        }
+        return lines;
+      }),
     ]),
   ].join("\n");
 }

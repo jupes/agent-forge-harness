@@ -33,6 +33,7 @@ import {
   providerReadiness,
 } from "./providers";
 import {
+  type CouncilDiscussionRound,
   type CouncilEvent,
   type CouncilProfile,
   type CouncilRun,
@@ -57,6 +58,8 @@ export type CouncilServiceJob = {
   startedAt: string;
   updatedAt: string;
   events: CouncilEvent[];
+  discussion?: CouncilDiscussionRound[];
+  profile?: CouncilProfile;
   run?: CouncilRun;
   error?: string;
   artifacts?: CouncilArtifactPaths;
@@ -164,6 +167,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
             title: selected.title,
             id: selected.id,
             depth: selected.depth,
+            maxEstimatedUsd: selected.maxEstimatedUsd,
             seats: selected.seats,
             chair: selected.chair,
             readiness: providerReadiness(selected, environment),
@@ -190,6 +194,8 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         startedAt: run.startedAt,
         updatedAt: run.finishedAt,
         events: run.events,
+        discussion: run.discussion ?? [],
+        profile: run.profile,
         run,
         ...(run.error ? { error: run.error } : {}),
         artifacts: {
@@ -293,6 +299,8 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       updatedAt: startedAt,
       events: [],
       artifacts: reservation.paths,
+      discussion: [],
+      profile: selected,
     };
     writeFileSync(
       join(reservation.paths.directory, "job.json"),
@@ -358,6 +366,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
             : createProviderResolver(providerOptions),
           onEvent: (event) => {
             job.events.push(event);
+            publish();
+          },
+          onDiscussionRound: (round) => {
+            job.discussion!.push(round);
             publish();
           },
         };

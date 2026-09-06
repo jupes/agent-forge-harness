@@ -2,11 +2,13 @@
 
 Agent Forge can review a pull request, plan, local research/text file, or pasted text with a council of models. Council seats work in parallel, anonymously challenge the other candidates, and then a chair model synthesizes the final review. The same engine serves the local dashboard, CLI, and stdio MCP server.
 
-The checked-in default profile uses deterministic fake agents, so the complete workflow can be tried without an account or API key. Use `councils/multi-provider.example.json` when you are ready to call hosted models.
+The checked-in default profile uses deterministic fake agents, so the complete workflow can be tried without an account or API key. Use `councils/multi-provider.example.json` for direct hosted-provider connections, or `councils/openrouter.example.json` for four model vendors behind one OpenRouter key. You can mix gateway and direct seats in a custom profile.
 
 ## Local dashboard
 
 Run `bun run dashboard` and open [the council page](http://127.0.0.1:8787/council.html). Select a source and profile, inspect the provider/model roster and configuration status, set a budget, and choose **Convene council**. The page shows round progress, independent findings, objections and revisions, synthesis, limitations, costs, and the full transcript. Stop a running review, reopen saved history, or download its JSON report. The existing Plan review page can send its selected working-tree plan to the council; historical Git revisions must first be exported as text.
+
+The **Inside the discussion** panel publishes validated results at round barriers, before chair synthesis. Choose independent reviews, peer critique, or a rebuttal; expand a member to read findings, strengths, unknowns, and evidence-backed objections. Rebuttals show changed stance/severity, the current explanation, and the earlier rationale. **Follow latest** tracks newly completed rounds. Findings remain provisional until synthesis; unresolved findings and provider failures are visible. These are requested review explanations, not private model reasoning traces. Final JSON and Markdown reports preserve the same round history; older reports without round snapshots still expose their raw transcript.
 
 Keys stay in the local server's environment. The execution API accepts only loopback connections and same-origin browser requests. Do not expose this development server publicly or tunnel it to other users. Static hosting displays instructions instead of attempting execution. `DASHBOARD_NO_BUILD=1` skips the unrelated initial Beads dashboard refresh when only the council is needed.
 
@@ -58,6 +60,7 @@ You need a key only for providers assigned to a seat or chair in the selected pr
 | Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | [Anthropic authentication](https://platform.claude.com/docs/en/manage-claude/authentication) |
 | DeepSeek | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | [DeepSeek API docs](https://api-docs.deepseek.com/) |
 | Qwen through Alibaba Cloud Model Studio | `DASHSCOPE_API_KEY` | `QWEN_BASE_URL` | [Create a Model Studio API key](https://www.alibabacloud.com/help/en/model-studio/get-api-key) |
+| OpenRouter gateway (optional) | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | [OpenRouter keys](https://openrouter.ai/settings/keys) |
 
 Set secrets in the process environment or your operating system's secret manager, never in council profiles, command arguments, MCP tool arguments, committed MCP configuration, or source documents:
 
@@ -85,7 +88,39 @@ Copy-Item councils/multi-provider.example.json councils/my-council.json
 bun run council -- file design.md --profile councils/my-council.json --dry-run
 ```
 
-Supported built-in provider identifiers are `fake`, `openai`, `anthropic`, `deepseek`, and `qwen`. OpenAI uses the Responses API; Anthropic uses Messages with structured output; DeepSeek and Qwen use their OpenAI-compatible chat-completions JSON modes. A provider is resolved independently for every seat, so a single run can mix all four hosted providers.
+Supported built-in provider identifiers are `fake`, `openai`, `anthropic`, `deepseek`, `qwen`, and `openrouter`. OpenAI uses the Responses API; Anthropic uses Messages with structured output; DeepSeek and Qwen use their OpenAI-compatible chat-completions JSON modes. OpenRouter uses chat completions with an explicit JSON schema and the same engine-side validation. A provider is resolved independently for every seat, so a single run can mix direct vendors and gateway seats.
+
+### One-key OpenRouter setup
+
+Create/fund an OpenRouter account and set `OPENROUTER_API_KEY` in the process launching the UI, CLI, or MCP server. You do **not** need separate vendor keys for the gateway-only example. Existing direct profiles still require their own selected providers' keys.
+
+```powershell
+$env:OPENROUTER_API_KEY = '<from your secret manager>'
+bun run council -- file design.md --profile councils/openrouter.example.json --dry-run --json
+# After reviewing the plan, pricing and data policies:
+bun run council -- file design.md --profile councils/openrouter.example.json --max-usd 5
+```
+
+In the UI, choose **OpenRouter council (one key, four model vendors)**. MCP uses the same profile path. Each gateway seat uses an explicit `vendor/model` slug. Automatic model routers and suffixes that can add tools/routing are rejected; no model-fallback list, response-healing plugin or context compression is requested.
+
+Optional per-seat routing settings (including on the chair) are:
+
+```json
+"openRouter": {
+  "only": ["openai"],
+  "allowFallbacks": false,
+  "dataCollection": "deny",
+  "zeroDataRetention": true
+}
+```
+
+`only` is optional and contains upstream **endpoint provider** slugs, not model vendors. Without it, OpenRouter selects an eligible endpoint, which may vary between calls. For evaluations, pin an endpoint and a dated model snapshot where available. The example model pages were checked September 5, 2026; catalog presence is not a live validation of the stricter routing policy.
+
+The defaults above apply even if `openRouter` is omitted. `require_parameters: true` is always sent so an endpoint cannot silently ignore the structured-output requirement. `allowFallbacks: true` explicitly permits backup endpoints for the selected model; the retention and parameter filters still apply. Unsupported routing options are rejected instead of ignored. If the chosen model has no endpoint satisfying the policy, that seat fails visibly; there is no automatic relaxation. These rules follow OpenRouter's [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [structured output](https://openrouter.ai/docs/guides/features/structured-outputs) contracts. Schema constraints unsupported across vendors are expressed as instructions and revalidated by the engine.
+
+**Privacy:** review material passes through OpenRouter **and** its upstream providers. No-collection/ZDR filters are requests based on OpenRouter's provider-policy information, not an independent guarantee. Review gateway account logging, caching, guardrail/plugin and retention settings as well as upstream terms before sending private work. Do not enable weaker settings merely to make a sensitive review run. Direct connections remain available when the additional gateway trust boundary is unsuitable.
+
+The example token rates are deliberately padded **budget assumptions**, not price quotes or guaranteed ceilings; endpoint prices differ. Readiness exposes the effective routing controls without making calls. Returned generation ID, served model/provider and reported costs are retained when available. [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) supplies the gateway charge; identified BYOK requests add a known separate upstream charge, or leave actual total billing unknown when it is missing. Purchase fees, taxes and unreported charges are not a guaranteed part of that total. Avoid BYOK when testing the one-key onboarding path.
 
 Profiles can assign different roles as well as models. For a PR, use correctness/security/testing/architecture; for a plan, use feasibility/migration/operations/acceptance criteria; for research, use methods/source quality/counterarguments/generalizability. Save JSON profiles in `councils/` to have them appear in the UI and MCP profile list. Schema validation reports invalid thresholds and duplicate seat IDs before any model call.
 
@@ -136,7 +171,7 @@ The server exposes eight tools:
 | `council_profiles` | List discovered profiles, rosters, and local readiness. |
 | `council_readiness` | Resolve a profile and report missing environment-variable names without making model calls. |
 | `council_start` | Start a `pr`, `plan`, `file`, or inline `text` review and immediately return a run ID. Recommended for hosted models. |
-| `council_status` | Get the job status, events, and final result without keeping a long request open. |
+| `council_status` | Get job status, events, validated intermediate `discussion` rounds, and the final result without keeping a long request open. |
 | `council_cancel` | Request cancellation; use status to read the terminal outcome. |
 | `council_list` | List up to 100 recent jobs. |
 | `council_review` | Synchronous convenience tool. Use only when the client's timeout covers the entire deliberation. |
@@ -154,16 +189,27 @@ Then call `council_status` with `{"runId":"<returned ID>"}` until its status is 
 
 Async jobs survive a request timeout, **not termination of the server process**. Keep the MCP subprocess alive. Completed and failed results survive restarts; interrupted in-flight runs are reported as failed, never silently resumed or rebilled. A service instance permits at most four concurrent council runs. It does not share active in-memory progress with a separate CLI/dashboard process, although persisted results can be reopened from a common runs directory.
 
+While `status` is `running`, `discussion` is an array of completed round snapshots: `stage`, optional `round`, `completedAt`, validated per-member `records`, provisional `findings`, and `candidateTitles` mapping ballot IDs to readable claim titles. It is independent of the terminal `run` field. Compare the same `seatId`/`candidateId` across rounds to inspect changed votes. Member names are visible to the human/MCP caller; the anonymous model-facing peer protocol remains unchanged. Snapshots are live in memory and written into final manifests; an abrupt process exit does not preserve in-flight discussion.
+
 ## Calibration and verification
 
 Run `bun run council:calibrate` for a no-call comparison plan covering golden PR, plan, and research fixtures. To exercise the full measurement pipeline with simulated providers, run `bun run council:calibrate -- --live --max-usd 0`; `--live` means execute, but the default profile remains fake. Hosted calibration is explicitly opt-in:
 
 ```powershell
 bun run council:calibrate -- --profile councils/multi-provider.example.json
+# Inspect the enlarged no-call plan before deciding whether to run it:
+bun run council:calibrate -- --profile councils/multi-provider.example.json --baseline-seat chair --rotate-chair --repetitions 3 --seed review-v1
+# Execution needs both --live and an explicit total budget:
 bun run council:calibrate -- --profile councils/multi-provider.example.json --live --max-usd 30
 ```
 
-The runner compares a single evaluator with quick, balanced, and deep councils, preserves reports, and records latency, tokens, costs, dissent counts, keyword-recall proxies, and severity matches. The budget applies to the entire matrix. Human false-positive, usefulness, and dissent-quality ratings intentionally remain blank for adjudication. Keywords are not proof that a finding is correct. Fake runs and contract tests validate the machinery, **not** a claim that councils outperform a single model. Live hosted access and human quality calibration still require your credentials and judgment. Four seats, quorum three, two external ballots, and one revision are provisional defaults, not benchmark-proven optimal settings.
+The single evaluator defaults to the **chair model**, given the combined review concerns of the roster. Choose your strongest available model via `--baseline-seat <seat-id>`; the harness does not assume that the chair is empirically best. Its timeout/output allowance remains visible in the plan. Quick, balanced and deep runs share the same evidence hashes, seat roles/models and quorum settings (peer thresholds are normalized by depth). Deep uses the profile's revision count. This is an equal-task comparison, not equal tokens or equal spend; evaluate quality against the recorded cost/latency too. Balanced is a simple claim-review council, not an exact replication of Karpathy's whole-answer ranking.
+
+`--rotate-chair` tests each distinct configured provider/model/routing pair as chair, keeping the independent roster fixed and the synthesis role unchanged. A model may then serve as reviewer and chair: that possible self-preference is part of the experiment, not an independence guarantee. The single baseline runs once per fixture/repetition, not once per chair. `--repetitions 1..10` and `--seed` provide repeatable shuffled execution order; they do not make remote model outputs deterministic. The dry-run plan shows every comparison, model, fixture hash, and estimated matrix cost. Rotation/repetition can substantially increase spend. Hosted execution requires a positive explicit budget and credentials; no calls happen by default.
+
+Results under `reports/council-calibration/evaluation-.../` include `plan.json`, each full run/report, per-comparison rows, `results.json`, and `answer-key.json`. The separate `blind/` folder contains randomly labeled review packets, source fixtures, a scoring rubric, and blank `ratings.json`. Give only that folder to evaluators, read in sample-ID order, and lock false-positive, missed-critical, severity and usefulness ratings before revealing the answer key or proxy scores. Then use full transcripts for a second-pass dissent-preservation check. Narrative wording can still hint at the method, so blinding is best-effort. Human ratings are manually joined by sample ID; this runner does not invent or automatically adjudicate them. Use a broader held-out dataset before drawing general conclusions from three small fixtures.
+
+The budget applies to the entire matrix. A failed comparison or exhausted budget stops further calls and retains partial diagnostics/accounting; incomplete results return a nonzero CLI exit. Rejected claims are excluded from keyword-recall successes; contested/unreviewed claims remain candidates for human adjudication. Keywords are not proof that a finding is correct. Fake runs and contract tests validate the machinery, **not** a claim that councils outperform a single model. Live hosted access and human quality calibration still require your credentials and judgment. Four seats, quorum three, two external ballots, and one revision are provisional defaults, not benchmark-proven optimal settings. This evaluation workflow follows [official OpenAI evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices) on explicit objectives, comparative tests, and human validation.
 
 ## Prior art and design choices
 

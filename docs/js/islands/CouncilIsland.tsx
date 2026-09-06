@@ -1,22 +1,19 @@
 import { useEffect, useState } from "preact/hooks";
+import type { ProviderReadiness } from "../../../scripts/council/providers";
 import type { CouncilServiceJob } from "../../../scripts/council/service";
 import type {
   CouncilProfile,
   CouncilSeat,
 } from "../../../scripts/council/types";
+import { CouncilDiscussion } from "./CouncilDiscussion";
 
 const API = "/__agent-forge/council-api";
 type ProfileChoice = Pick<
   CouncilProfile,
-  "id" | "title" | "seats" | "chair" | "depth"
+  "id" | "title" | "seats" | "chair" | "depth" | "maxEstimatedUsd"
 > & {
   path: string;
-  readiness: {
-    provider: string;
-    configured: boolean;
-    missing: string[];
-    error?: string;
-  }[];
+  readiness: ProviderReadiness[];
 };
 
 async function request<T>(path: string, input?: unknown): Promise<T> {
@@ -51,6 +48,7 @@ function seatPhase(job: CouncilServiceJob | null, seat: CouncilSeat): string {
   if (!event) return job?.status === "running" ? "Waiting" : "Ready";
   const stage = String(event.payload.stage ?? "review");
   if (event.type === "seat.failed") return `${stage} · failed`;
+  if (event.type === "seat.cancelled") return `${stage} · cancelled`;
   if (event.type === "seat.completed") return `${stage} · complete`;
   return `${stage} · reviewing`;
 }
@@ -83,8 +81,9 @@ export function CouncilIsland() {
   const active = job?.status === "running";
   const ready = profile?.readiness.every((entry) => entry.configured) ?? false;
   const run = job?.run;
-  const roster = run
-    ? [...run.profile.seats, run.profile.chair]
+  const runProfile = run?.profile ?? job?.profile;
+  const roster = runProfile
+    ? [...runProfile.seats, runProfile.chair]
     : profile
       ? [...profile.seats, profile.chair]
       : [];
@@ -99,6 +98,7 @@ export function CouncilIsland() {
         if (!current) return;
         setProfiles(choices);
         setProfilePath(choices[0]?.path ?? "");
+        setBudget(String(choices[0]?.maxEstimatedUsd ?? 3));
         setHistory(runs);
         setAvailable(true);
         const runId = initial.get("run");
@@ -240,7 +240,17 @@ export function CouncilIsland() {
               Council profile
               <select
                 value={profilePath}
-                onChange={(event) => setProfilePath(event.currentTarget.value)}
+                onChange={(event) => {
+                  const path = event.currentTarget.value;
+                  setProfilePath(path);
+                  setBudget(
+                    String(
+                      profiles.find((choice) => choice.path === path)
+                        ?.maxEstimatedUsd ?? 3,
+                    ),
+                  );
+                  setJob(null);
+                }}
                 disabled={active}
               >
                 {profiles.map((choice) => (
@@ -310,6 +320,35 @@ export function CouncilIsland() {
               ? "Demo profile: simulated feedback, no API keys or model charges."
               : "Your selected providers receive the supplied review material. Configure keys in the server environment; never paste them here."}
           </p>
+          {profile?.readiness.some((entry) => entry.routing) && (
+            <details>
+              <summary>Gateway routing policy</summary>
+              {profile.readiness.flatMap((entry) =>
+                (entry.routing ?? []).map((routing) => (
+                  <p key={routing.seatId} className="muted">
+                    {routing.seatId}:{" "}
+                    {routing.only?.join(", ") ?? "any eligible endpoint"} ·
+                    fallback {routing.allow_fallbacks ? "enabled" : "disabled"}{" "}
+                    · data collection {routing.data_collection} · zero-retention
+                    filter {routing.zdr ? "on" : "off"} · structured parameters
+                    required
+                  </p>
+                )),
+              )}
+            </details>
+          )}
+          {profile &&
+            [...profile.seats, profile.chair].some(
+              (seat) => seat.provider === "openrouter",
+            ) && (
+              <p className="notice">
+                One-key gateway: set OPENROUTER_API_KEY in the server
+                environment. Review material goes through OpenRouter and its
+                upstream providers. The profile controls retention filtering and
+                fallback; inspect it before sending private work. Readiness
+                checks configuration, not live availability.
+              </p>
+            )}
           <div className="actions">
             <button
               type="button"
@@ -341,6 +380,11 @@ export function CouncilIsland() {
           </div>
         </section>
         <section aria-label="Council members">
+          <p className="muted">
+            {job
+              ? "Members for the selected run"
+              : "Members for the next review"}
+          </p>
           <div className="seat-grid">
             {roster.map((seat) => (
               <article className="seat" key={seat.id}>
@@ -377,6 +421,10 @@ export function CouncilIsland() {
               </p>
             )}
             {job.error && <p className="notice error">{job.error}</p>}
+            <CouncilDiscussion
+              key={job.runId}
+              rounds={job.discussion ?? run?.discussion ?? []}
+            />
             {run && (
               <>
                 <h2>
@@ -483,6 +531,13 @@ export function CouncilIsland() {
                           ? `${record.usage.inputTokens} input / ${record.usage.outputTokens} output tokens`
                           : "Usage not reported"}
                       </p>
+                      {record.routing && (
+                        <p className="muted">
+                          Served by: {record.routing.provider ?? "not reported"}{" "}
+                          · {record.routing.model ?? record.model}
+                          {record.routing.byok ? " · BYOK" : ""}
+                        </p>
+                      )}
                       <pre>
                         {JSON.stringify(record.output ?? record.error, null, 2)}
                       </pre>

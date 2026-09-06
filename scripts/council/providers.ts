@@ -146,13 +146,24 @@ function anthropicSchema(value: unknown): unknown {
   return result;
 }
 
-type ProviderId = "anthropic" | "deepseek" | "fake" | "openai" | "qwen";
+type ProviderId =
+  | "anthropic"
+  | "deepseek"
+  | "fake"
+  | "openai"
+  | "qwen"
+  | "openrouter";
 
 type ProviderConfig = {
   apiKeyEnv?: string;
   baseUrlEnv?: string;
   defaultBaseUrl?: string;
-  apiStyle: "anthropic" | "fake" | "openai-chat" | "openai-responses";
+  apiStyle:
+    | "anthropic"
+    | "fake"
+    | "openai-chat"
+    | "openai-responses"
+    | "openrouter-chat";
 };
 
 const PROVIDERS: Record<ProviderId, ProviderConfig> = {
@@ -181,6 +192,12 @@ const PROVIDERS: Record<ProviderId, ProviderConfig> = {
     baseUrlEnv: "QWEN_BASE_URL",
     defaultBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   },
+  openrouter: {
+    apiStyle: "openrouter-chat",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    baseUrlEnv: "OPENROUTER_BASE_URL",
+    defaultBaseUrl: "https://openrouter.ai/api/v1",
+  },
 };
 
 export type ProviderReadiness = {
@@ -191,6 +208,14 @@ export type ProviderReadiness = {
   validation: "local-configuration-only";
   transport?: ProviderConfig["apiStyle"];
   outputFormat?: "json-schema" | "json-object" | "deterministic";
+  routing?: Array<{
+    seatId: string;
+    require_parameters: true;
+    allow_fallbacks: boolean;
+    data_collection: "allow" | "deny";
+    zdr: boolean;
+    only?: string[];
+  }>;
   error?: string;
 };
 
@@ -251,6 +276,16 @@ export function providerReadiness(
             ? "json-object"
             : "json-schema") as NonNullable<ProviderReadiness["outputFormat"]>,
         ...(error ? { error } : {}),
+        ...(provider === "openrouter"
+          ? {
+              routing: [...profile.seats, profile.chair]
+                .filter((seat) => seat.provider === provider)
+                .map((seat) => ({
+                  seatId: seat.id,
+                  ...openRouterPreferences(seat),
+                })),
+            }
+          : {}),
       };
     })
     .sort((left, right) => left.provider.localeCompare(right.provider));
@@ -402,13 +437,15 @@ function responseResult(
   usage: ModelUsage | undefined,
   secretValues: string[],
   readText: () => string,
+  readAccounting?: () => Pick<ModelResult, "costUsd" | "routing">,
 ): ModelResult {
-  const accounting: {
-    usage?: ModelUsage;
-    estimatedUsageCostUsd?: number;
-  } = {};
+  const accounting: Pick<
+    ModelResult,
+    "usage" | "estimatedUsageCostUsd" | "costUsd" | "routing"
+  > = {};
   if (usage) accounting.usage = usage;
   try {
+    if (readAccounting) Object.assign(accounting, readAccounting());
     const rates = seat.tokenRatesUsdPerMillion;
     if (rates && usage) {
       const estimate =
@@ -626,6 +663,7 @@ class OpenAiChatTransport implements ModelTransport {
     private readonly baseUrl: string,
     private readonly fetchImpl: FetchLike,
     private readonly secretValues: string[],
+    private readonly gateway = false,
   ) {}
 
   async generate(
@@ -635,7 +673,10 @@ class OpenAiChatTransport implements ModelTransport {
     const response = await postJson(
       this.fetchImpl,
       `${this.baseUrl}/chat/completions`,
-      { authorization: `Bearer ${this.apiKey}` },
+      {
+        authorization: `Bearer ${this.apiKey}`,
+        ...(this.gateway ? { "X-OpenRouter-Metadata": "enabled" } : {}),
+      },
       {
         model: request.seat.model,
         messages: [
@@ -646,7 +687,20 @@ class OpenAiChatTransport implements ModelTransport {
           { role: "user", content: request.prompt },
         ],
         max_tokens: request.seat.maxOutputTokens,
-        response_format: { type: "json_object" },
+        response_format: this.gateway
+          ? {
+              type: "json_schema",
+              json_schema: {
+                name: `council_${request.stage}`,
+                strict: true,
+                // Portable subset; the engine still validates numerical limits.
+                schema: anthropicSchema(outputSchema(request.stage)),
+              },
+            }
+          : { type: "json_object" },
+        ...(this.gateway
+          ? { provider: openRouterPreferences(request.seat), transforms: [] }
+          : {}),
         stream: false,
       },
       signal,
@@ -658,10 +712,76 @@ class OpenAiChatTransport implements ModelTransport {
     const usage = isRecord(response.usage)
       ? asUsage(response.usage.prompt_tokens, response.usage.completion_tokens)
       : undefined;
-    return responseResult(request.seat, usage, this.secretValues, () =>
-      chatOutputText(response),
+    return responseResult(
+      request.seat,
+      usage,
+      this.secretValues,
+      () => chatOutputText(response),
+      this.gateway
+        ? () => openRouterAccounting(response, this.secretValues)
+        : undefined,
     );
   }
+}
+
+export function openRouterPreferences(seat: CouncilSeat) {
+  return {
+    require_parameters: true as const,
+    allow_fallbacks: seat.openRouter?.allowFallbacks ?? false,
+    data_collection: seat.openRouter?.dataCollection ?? "deny",
+    zdr: seat.openRouter?.zeroDataRetention ?? true,
+    ...(seat.openRouter?.only ? { only: seat.openRouter.only } : {}),
+  };
+}
+
+function openRouterAccounting(
+  response: Record<string, unknown>,
+  secrets: string[],
+): Pick<ModelResult, "costUsd" | "routing"> {
+  const usage = isRecord(response.usage) ? response.usage : {};
+  const details = isRecord(usage.cost_details) ? usage.cost_details : {};
+  const metadata = isRecord(response.openrouter_metadata)
+    ? response.openrouter_metadata
+    : {};
+  const byok =
+    typeof metadata.is_byok === "boolean"
+      ? metadata.is_byok
+      : typeof usage.is_byok === "boolean"
+        ? usage.is_byok
+        : undefined;
+  const cost = (value: unknown): number | undefined => {
+    if (value == null) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+      throw new Error("OpenRouter returned invalid cost accounting");
+    return value;
+  };
+  const gatewayCost = cost(usage.cost);
+  const upstreamCost = cost(details.upstream_inference_cost);
+  const routing: NonNullable<ModelResult["routing"]> = {};
+  for (const [source, target] of [
+    ["id", "responseId"],
+    ["model", "model"],
+    ["provider", "provider"],
+  ] as const) {
+    if (typeof response[source] === "string")
+      routing[target] = safeProviderText(response[source], secrets);
+  }
+  if (byok !== undefined) routing.byok = byok;
+  if (gatewayCost !== undefined) routing.gatewayCostUsd = gatewayCost;
+  if (upstreamCost !== undefined) routing.upstreamCostUsd = upstreamCost;
+  // BYOK can incur a separate upstream bill. Do not label a gateway fee alone
+  // as the total cost when that separate amount is unavailable.
+  const total =
+    gatewayCost === undefined
+      ? undefined
+      : byok
+        ? upstreamCost === undefined
+          ? undefined
+          : gatewayCost + upstreamCost
+        : gatewayCost;
+  if (total !== undefined && !Number.isFinite(total))
+    throw new Error("OpenRouter returned invalid total cost");
+  return { routing, ...(total === undefined ? {} : { costUsd: total }) };
 }
 
 export type ProviderResolverOptions = {
@@ -710,6 +830,12 @@ export function createProviderResolver(
         secretValues,
       );
     }
-    return new OpenAiChatTransport(apiKey, baseUrl, fetchImpl, secretValues);
+    return new OpenAiChatTransport(
+      apiKey,
+      baseUrl,
+      fetchImpl,
+      secretValues,
+      config.apiStyle === "openrouter-chat",
+    );
   };
 }

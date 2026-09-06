@@ -5,6 +5,7 @@ import {
   type ChairOutput,
   COUNCIL_SCHEMA_VERSION,
   type ContextPack,
+  type CouncilDiscussionRound,
   type CouncilEvent,
   type CouncilExecutionResult,
   type CouncilProfile,
@@ -42,6 +43,7 @@ export type CouncilEngineOptions = {
   runId?: string;
   now?: () => Date;
   onEvent?: (event: CouncilEvent) => void;
+  onDiscussionRound?: (round: CouncilDiscussionRound) => void;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -300,7 +302,7 @@ function parseChairOutput(
 
 function safeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return sanitizeContent(raw.slice(0, 800), "redact").text;
+  return sanitizeContent(raw, "redact").text.slice(0, 800);
 }
 
 function escapeRegExp(value: string): string {
@@ -567,7 +569,7 @@ async function callSeat<T extends IndependentOutput | PeerOutput | ChairOutput>(
   resolveTransport: (seat: CouncilSeat) => ModelTransport,
   parseOutput: ParseOutput<T>,
   signal: AbortSignal | undefined,
-  emit: (type: string, payload: Record<string, unknown>) => CouncilEvent,
+  emit: (type: string, payload: Record<string, unknown>) => void,
 ): Promise<SeatRecord> {
   emit("seat.started", {
     stage: request.stage,
@@ -579,9 +581,14 @@ async function callSeat<T extends IndependentOutput | PeerOutput | ChairOutput>(
   let reportedUsage: ModelResult["usage"];
   let reportedCostUsd: number | undefined;
   let estimatedUsageCostUsd: number | undefined;
+  let routing: ModelResult["routing"];
   const captureAccounting = (
-    result: Pick<ModelResult, "usage" | "costUsd" | "estimatedUsageCostUsd">,
+    result: Pick<
+      ModelResult,
+      "usage" | "costUsd" | "estimatedUsageCostUsd" | "routing"
+    >,
   ): void => {
+    if (result.routing) routing = result.routing;
     if (result.usage) {
       if (
         !Number.isInteger(result.usage.inputTokens) ||
@@ -608,14 +615,19 @@ async function callSeat<T extends IndependentOutput | PeerOutput | ChairOutput>(
   };
   const accounting = (): Pick<
     SeatRecord,
-    "usage" | "costUsd" | "estimatedUsageCostUsd" | "accountedCostUsd"
+    | "usage"
+    | "costUsd"
+    | "estimatedUsageCostUsd"
+    | "accountedCostUsd"
+    | "routing"
   > => ({
+    ...(routing ? { routing } : {}),
     ...(reportedUsage ? { usage: reportedUsage } : {}),
     ...(reportedCostUsd === undefined ? {} : { costUsd: reportedCostUsd }),
     ...(estimatedUsageCostUsd === undefined ? {} : { estimatedUsageCostUsd }),
     accountedCostUsd:
       reportedCostUsd ??
-      Math.max(request.seat.estimatedCostUsd, estimatedUsageCostUsd ?? 0),
+      Math.max(reserveRequestCost(request), estimatedUsageCostUsd ?? 0),
   });
   try {
     const transport = resolveTransport(request.seat);
@@ -671,6 +683,26 @@ async function callSeat<T extends IndependentOutput | PeerOutput | ChairOutput>(
     });
     return record;
   }
+}
+
+export async function runIndependentReview(
+  request: ModelRequest,
+  resolveTransport: CouncilEngineOptions["resolveTransport"],
+  signal?: AbortSignal,
+): Promise<SeatRecord> {
+  if (request.stage !== "independent")
+    throw new Error("Single review requires the independent stage");
+  return callSeat(
+    request,
+    resolveTransport,
+    (value) =>
+      parseIndependentOutput(
+        value,
+        new Set(request.context.evidence.map((item) => item.id)),
+      ),
+    signal,
+    () => {},
+  );
 }
 
 type MutableAggregate = {
@@ -854,7 +886,7 @@ function reportedCost(records: SeatRecord[]): number {
   );
 }
 
-function reserveRequestCost(request: ModelRequest): number {
+export function reserveRequestCost(request: ModelRequest): number {
   const rates = request.seat.tokenRatesUsdPerMillion;
   if (!rates) return request.seat.estimatedCostUsd;
   // UTF-8 bytes conservatively bound input tokens, with allowance for protocol
@@ -988,6 +1020,15 @@ export async function runCouncil(
   const startedAt = now().toISOString();
   const events: CouncilEvent[] = [];
   const records: SeatRecord[] = [];
+  const discussion: CouncilDiscussionRound[] = [];
+  const publishRound = (round: CouncilDiscussionRound): void => {
+    discussion.push(structuredClone(round));
+    try {
+      options.onDiscussionRound?.(structuredClone(round));
+    } catch {
+      // Observers cannot alter validated outputs or interrupt deliberation.
+    }
+  };
   let sequence = 0;
   const emit = (
     type: string,
@@ -1038,6 +1079,7 @@ export async function runCouncil(
       undefined,
       error,
     );
+    run.discussion = discussion;
     return { ok: false, run, error };
   };
 
@@ -1095,6 +1137,17 @@ export async function runCouncil(
     ),
   );
   records.push(...independentRecords);
+  publishRound({
+    stage: "independent",
+    completedAt: now().toISOString(),
+    records: independentRecords,
+    findings: aggregateFindings(
+      independentRecords.filter(isIndependentSuccess),
+      [],
+      options.profile,
+    ),
+    candidateTitles: {},
+  });
   emit("stage.completed", {
     stage: "independent",
     completed: independentRecords.filter(
@@ -1192,6 +1245,25 @@ export async function runCouncil(
     const roundRecords = await Promise.all(peerCalls);
     peerRecords.push(...roundRecords);
     records.push(...roundRecords);
+    publishRound({
+      stage,
+      round,
+      completedAt: now().toISOString(),
+      records: roundRecords,
+      findings: aggregateFindings(
+        independentSuccesses,
+        peerRecords,
+        options.profile,
+      ),
+      candidateTitles: Object.fromEntries(
+        requests.flatMap((request) =>
+          (request.candidates ?? []).map((candidate) => [
+            candidate.candidateId,
+            candidate.finding.title,
+          ]),
+        ),
+      ),
+    });
     emit("stage.completed", {
       stage,
       round,
@@ -1350,6 +1422,7 @@ export async function runCouncil(
     undefined,
     limitations,
   );
+  run.discussion = discussion;
   return { ok: true, run };
 }
 

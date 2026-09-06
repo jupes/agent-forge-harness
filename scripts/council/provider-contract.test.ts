@@ -9,13 +9,20 @@ import {
   ModelTransportError,
 } from "./types";
 
-const providers = ["openai", "anthropic", "deepseek", "qwen"] as const;
+const providers = [
+  "openai",
+  "anthropic",
+  "deepseek",
+  "qwen",
+  "openrouter",
+] as const;
 type Provider = (typeof providers)[number];
 const environment = {
   OPENAI_API_KEY: "unusual.openai.credential.123456789",
   ANTHROPIC_API_KEY: "unusual.anthropic.credential.123456789",
   DEEPSEEK_API_KEY: "unusual.deepseek.credential.123456789",
   DASHSCOPE_API_KEY: "unusual.qwen.credential.123456789",
+  OPENROUTER_API_KEY: "unusual.router.credential.123456789",
 };
 const output = { verdict: "pass", findings: [], strengths: [], unknowns: [] };
 
@@ -23,7 +30,7 @@ function seat(provider: Provider): CouncilSeat {
   return {
     id: provider,
     provider,
-    model: "contract-test",
+    model: provider === "openrouter" ? "openai/contract-test" : "contract-test",
     role: "Reviewer",
     timeoutMs: 1000,
     maxOutputTokens: 2000,

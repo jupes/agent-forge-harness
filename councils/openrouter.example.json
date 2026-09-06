@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "openrouter-review",
+  "title": "OpenRouter council (one key, four model vendors)",
+  "depth": "deep",
+  "maxDiscussionRounds": 1,
+  "minQuorum": 3,
+  "minPeerBallots": 2,
+  "maxEstimatedUsd": 5,
+  "seats": [
+    {
+      "id": "correctness",
+      "role": "Correctness and factual accuracy reviewer",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 4000,
+      "estimatedCostUsd": 0.3,
+      "tokenRatesUsdPerMillion": { "input": 5, "output": 30 },
+      "openRouter": { "allowFallbacks": false, "dataCollection": "deny", "zeroDataRetention": true }
+    },
+    {
+      "id": "security",
+      "role": "Security, abuse resistance, and reliability reviewer",
+      "provider": "openrouter",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 4000,
+      "estimatedCostUsd": 0.3,
+      "tokenRatesUsdPerMillion": { "input": 6, "output": 30 },
+      "openRouter": { "allowFallbacks": false, "dataCollection": "deny", "zeroDataRetention": true }
+    },
+    {
+      "id": "testing",
+      "role": "Tests, failure modes, and edge cases reviewer",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-pro",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 8000,
+      "estimatedCostUsd": 0.2,
+      "tokenRatesUsdPerMillion": { "input": 4, "output": 8 },
+      "openRouter": { "allowFallbacks": false, "dataCollection": "deny", "zeroDataRetention": true }
+    },
+    {
+      "id": "architecture",
+      "role": "Architecture, simplicity, and maintainability reviewer",
+      "provider": "openrouter",
+      "model": "qwen/qwen3.8-max-0902",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 8000,
+      "estimatedCostUsd": 0.2,
+      "tokenRatesUsdPerMillion": { "input": 4, "output": 12 },
+      "openRouter": { "allowFallbacks": false, "dataCollection": "deny", "zeroDataRetention": true }
+    }
+  ],
+  "chair": {
+    "id": "chair",
+    "role": "Independent synthesis chair",
+    "provider": "openrouter",
+    "model": "openai/gpt-5.4",
+    "timeoutMs": 120000,
+    "maxOutputTokens": 5000,
+    "estimatedCostUsd": 0.4,
+    "tokenRatesUsdPerMillion": { "input": 5, "output": 30 },
+    "openRouter": { "allowFallbacks": false, "dataCollection": "deny", "zeroDataRetention": true }
+  }
+}

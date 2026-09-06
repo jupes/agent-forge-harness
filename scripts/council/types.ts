@@ -23,6 +23,12 @@ export type CouncilSeat = {
   maxOutputTokens: number;
   estimatedCostUsd: number;
   tokenRatesUsdPerMillion?: { input: number; output: number };
+  openRouter?: {
+    only?: string[];
+    allowFallbacks?: boolean;
+    dataCollection?: "deny" | "allow";
+    zeroDataRetention?: boolean;
+  };
 };
 
 export type CouncilProfile = {
@@ -175,12 +181,23 @@ export type ModelResult = {
   usage?: ModelUsage;
   costUsd?: number;
   estimatedUsageCostUsd?: number;
+  routing?: ModelRouting;
+};
+
+export type ModelRouting = {
+  responseId?: string;
+  model?: string;
+  provider?: string;
+  byok?: boolean;
+  gatewayCostUsd?: number;
+  upstreamCostUsd?: number;
 };
 
 export class ModelTransportError extends Error {
   readonly usage?: ModelUsage;
   readonly costUsd?: number;
   readonly estimatedUsageCostUsd?: number;
+  readonly routing?: ModelRouting;
 
   constructor(
     message: string,
@@ -188,6 +205,7 @@ export class ModelTransportError extends Error {
       usage?: ModelUsage;
       costUsd?: number;
       estimatedUsageCostUsd?: number;
+      routing?: ModelRouting;
     } = {},
   ) {
     super(message);
@@ -221,8 +239,20 @@ export type SeatRecord = {
   usage?: ModelUsage;
   costUsd?: number;
   estimatedUsageCostUsd?: number;
+  routing?: ModelRouting;
   accountedCostUsd: number;
   error?: string;
+};
+
+// Published only after an entire round has finished and outputs are validated.
+// Public review rationales, not a model's private reasoning traces.
+export type CouncilDiscussionRound = {
+  stage: "independent" | "peer" | "revision";
+  round?: number;
+  completedAt: string;
+  records: SeatRecord[];
+  findings: AggregatedFinding[];
+  candidateTitles: Record<string, string>;
 };
 
 export type CouncilRun = {
@@ -247,6 +277,7 @@ export type CouncilRun = {
   costIsEstimate: boolean;
   limitations: string[];
   records: SeatRecord[];
+  discussion?: CouncilDiscussionRound[];
   aggregatedFindings: AggregatedFinding[];
   chair?: ChairOutput;
   failures: Array<{
@@ -303,6 +334,50 @@ function parseSeat(value: unknown, path: string): CouncilSeat | string {
   ) {
     return `${path}.tokenRatesUsdPerMillion must contain non-negative input and output rates`;
   }
+  if (value.openRouter !== undefined) {
+    const routing = value.openRouter;
+    if (value.provider !== "openrouter" || !isRecord(routing))
+      return `${path}.openRouter requires the openrouter provider and an object`;
+    if (
+      Object.keys(routing).some(
+        (key) =>
+          ![
+            "only",
+            "allowFallbacks",
+            "dataCollection",
+            "zeroDataRetention",
+          ].includes(key),
+      )
+    )
+      return `${path}.openRouter contains an unsupported routing option`;
+    if (
+      routing.only !== undefined &&
+      (!Array.isArray(routing.only) ||
+        routing.only.length === 0 ||
+        routing.only.some(
+          (slug) =>
+            typeof slug !== "string" || !/^[a-z0-9][a-z0-9/._-]*$/i.test(slug),
+        ))
+    )
+      return `${path}.openRouter.only must contain provider endpoint slugs`;
+    for (const key of ["allowFallbacks", "zeroDataRetention"]) {
+      if (routing[key] !== undefined && typeof routing[key] !== "boolean")
+        return `${path}.openRouter.${key} must be a boolean`;
+    }
+    if (
+      routing.dataCollection !== undefined &&
+      !["deny", "allow"].includes(String(routing.dataCollection))
+    )
+      return `${path}.openRouter.dataCollection must be deny or allow`;
+  }
+  if (
+    value.provider === "openrouter" &&
+    (!/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i.test(
+      String(value.model),
+    ) ||
+      String(value.model).startsWith("openrouter/"))
+  )
+    return `${path}.model must be an explicit vendor/model slug without routing or tool suffixes`;
   return {
     id: (value.id as string).trim(),
     role: (value.role as string).trim(),
@@ -311,6 +386,13 @@ function parseSeat(value: unknown, path: string): CouncilSeat | string {
     timeoutMs: value.timeoutMs,
     maxOutputTokens: value.maxOutputTokens,
     estimatedCostUsd: value.estimatedCostUsd,
+    ...(value.openRouter === undefined
+      ? {}
+      : {
+          openRouter: value.openRouter as NonNullable<
+            CouncilSeat["openRouter"]
+          >,
+        }),
     ...(value.tokenRatesUsdPerMillion === undefined
       ? {}
       : {

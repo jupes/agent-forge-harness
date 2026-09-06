@@ -167,7 +167,7 @@ export function createCouncilMcpServer(
             ? "Get council progress and result"
             : "Replay a council review",
         description:
-          "Retrieve a run by its confined ID, including events, findings, discussion, synthesis, costs, and failures. Completed results survive server restarts.",
+          "Retrieve a run by its confined ID. The discussion array exposes validated independent, peer and rebuttal rounds while status is running; these are provisional, not a final verdict. Terminal results include synthesis, costs and failures and survive server restarts.",
         inputSchema: ID_INPUT,
         annotations: { readOnlyHint: true },
       },
