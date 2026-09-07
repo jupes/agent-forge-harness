@@ -2,35 +2,27 @@
 
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
   assertCouncilRunId,
   readCouncilRun,
   renderCouncilReport,
-  reserveCouncilRun,
-  writeCouncilArtifacts,
 } from "./artifacts";
-import {
-  buildContextPack,
-  type ContextInput,
-  type SecretPolicy,
-  sanitizeContent,
-} from "./context";
-import { runCouncil } from "./engine";
-import { compilePullRequest } from "./pr-source";
-import {
-  assertProvidersReady,
-  createProviderResolver,
-  providerReadiness,
-} from "./providers";
+import { type SecretPolicy, sanitizeContent } from "./context";
+import { providerReadiness } from "./providers";
 import {
   type ContextSourceKind,
   type CouncilEvent,
-  type CouncilProfile,
   estimateCouncilCost,
-  parseCouncilProfileJson,
 } from "./types";
+import {
+  type CouncilReviewOptions,
+  executeCouncilReview,
+  loadCouncilProfile,
+  prepareCouncilContext,
+} from "./workflow";
+
+export { loadCouncilProfile } from "./workflow";
 
 const USAGE = `Agent Forge Council
 
@@ -243,12 +235,6 @@ function emitEnvelope(
   io.stdout(`${JSON.stringify({ ok, data, error }, null, 2)}\n`);
 }
 
-export function loadCouncilProfile(path: string): CouncilProfile {
-  const parsed = parseCouncilProfileJson(readFileSync(path, "utf8"));
-  if (!parsed.ok) throw new Error(`invalid council profile: ${parsed.error}`);
-  return parsed.value;
-}
-
 function progressLine(event: CouncilEvent): string | null {
   if (event.type === "stage.started") {
     return `→ ${String(event.payload.stage)} round started\n`;
@@ -300,38 +286,16 @@ export async function runCouncilCli(
       ? resolve(io.cwd, command.profilePath)
       : fileURLToPath(new URL("../../councils/default.json", import.meta.url));
     const profile = loadCouncilProfile(profilePath);
-    let contextInput: ContextInput;
-    if (command.sourceKind === "stdin") {
-      contextInput = {
-        kind: "stdin",
-        text: await io.readStdin(),
-        secretPolicy: command.secretPolicy,
-      };
-    } else if (command.sourceKind === "pr") {
-      const pullRequest = await compilePullRequest(command.sourcePath!, {
-        cwd: io.cwd,
-        secretPolicy: command.secretPolicy,
-      });
-      contextInput = {
-        kind: "pr",
-        text: pullRequest.text,
-        displayName: pullRequest.displayName,
-        locator: pullRequest.locator,
-        metadata: pullRequest.metadata,
-        secretPolicy: command.secretPolicy,
-      };
-    } else {
-      contextInput = {
-        kind: command.sourceKind,
-        path: command.sourcePath!,
-        cwd: io.cwd,
-        secretPolicy: command.secretPolicy,
-      };
-    }
-    if (command.maxBytes !== undefined) {
-      contextInput.maxBytes = command.maxBytes;
-    }
-    const context = buildContextPack(contextInput);
+    const context = await prepareCouncilContext({
+      kind: command.sourceKind,
+      source:
+        command.sourceKind === "stdin"
+          ? await io.readStdin()
+          : command.sourcePath!,
+      workspaceRoot: io.cwd,
+      secretPolicy: command.secretPolicy,
+      maxBytes: command.maxBytes,
+    });
     const estimatedCostUsd = estimateCouncilCost(profile);
     const budget = command.maxUsd ?? profile.maxEstimatedUsd;
     const readiness = providerReadiness(profile);
@@ -382,16 +346,13 @@ export async function runCouncilCli(
       return estimatedCostUsd <= budget ? 0 : 1;
     }
 
-    assertProvidersReady(profile);
     const runId =
       command.runId ?? `council-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    const reservation = reserveCouncilRun(runId, runsRoot);
-    const resolveTransport = createProviderResolver();
-    const engineOptions: Parameters<typeof runCouncil>[0] = {
+    const engineOptions: CouncilReviewOptions = {
       profile,
       context,
-      resolveTransport,
       runId,
+      runsRoot,
     };
     if (io.signal) engineOptions.signal = io.signal;
     if (command.maxUsd !== undefined) engineOptions.maxUsd = command.maxUsd;
@@ -401,8 +362,7 @@ export async function runCouncilCli(
         if (line) io.stderr(line);
       };
     }
-    const result = await runCouncil(engineOptions);
-    const artifacts = writeCouncilArtifacts(result.run, runsRoot, reservation);
+    const { result, artifacts } = await executeCouncilReview(engineOptions);
     if (command.json) {
       emitEnvelope(
         io,

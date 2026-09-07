@@ -1,3 +1,22 @@
+import type {
+  ChairOutput,
+  FindingSeverity,
+  IndependentOutput,
+  PeerBallot,
+  PeerOutput,
+  ProposedFinding,
+} from "./output-contracts";
+
+export {
+  type ChairOutput,
+  FINDING_SEVERITIES,
+  type FindingSeverity,
+  type IndependentOutput,
+  type PeerBallot,
+  type PeerOutput,
+  type ProposedFinding,
+} from "./output-contracts";
+
 export const COUNCIL_SCHEMA_VERSION = 1 as const;
 
 export const COUNCIL_DEPTHS = ["quick", "balanced", "deep"] as const;
@@ -10,9 +29,6 @@ export const COUNCIL_STAGES = [
   "chair",
 ] as const;
 export type CouncilStage = (typeof COUNCIL_STAGES)[number];
-
-export const FINDING_SEVERITIES = ["blocker", "high", "medium", "low"] as const;
-export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 
 export type CouncilSeat = {
   id: string;
@@ -87,40 +103,10 @@ export type ContextPack = {
   evidence: EvidenceItem[];
 };
 
-export type ProposedFinding = {
-  localId: string;
-  title: string;
-  severity: FindingSeverity;
-  claim: string;
-  consequence: string;
-  evidenceIds: string[];
-  confidence: number;
-};
-
-export type IndependentOutput = {
-  verdict: "pass" | "needs_changes" | "uncertain";
-  findings: ProposedFinding[];
-  strengths: string[];
-  unknowns: string[];
-};
-
 export type PeerCandidate = {
   candidateId: string;
   responseLabel: string;
   finding: ProposedFinding;
-};
-
-export type PeerBallot = {
-  candidateId: string;
-  stance: "support" | "oppose" | "uncertain";
-  reason: string;
-  evidenceIds: string[];
-  suggestedSeverity?: FindingSeverity;
-};
-
-export type PeerOutput = {
-  ballots: PeerBallot[];
-  missingFindings: ProposedFinding[];
 };
 
 export type AggregatedFinding = {
@@ -148,14 +134,6 @@ export type AggregatedFinding = {
     evidenceIds: string[];
     suggestedSeverity?: FindingSeverity;
   }>;
-};
-
-export type ChairOutput = {
-  verdict: "pass" | "needs_changes" | "insufficient_evidence";
-  summary: string;
-  recommendations: string[];
-  consensusFindingKeys: string[];
-  dissentFindingKeys: string[];
 };
 
 export type ModelUsage = {

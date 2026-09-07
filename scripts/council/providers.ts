@@ -1,5 +1,6 @@
 import { sanitizeContent } from "./context";
-import { FakeCouncilTransport } from "./engine";
+import { FakeCouncilTransport } from "./fake-transport";
+import { outputSchema } from "./output-contracts";
 import {
   type CouncilProfile,
   type CouncilSeat,
@@ -10,113 +11,8 @@ import {
   type ModelUsage,
 } from "./types";
 
-type JsonSchema = Record<string, unknown>;
 type FetchLike = typeof fetch;
 type Environment = Record<string, string | undefined>;
-
-const SEVERITY_SCHEMA = {
-  type: "string",
-  enum: ["blocker", "high", "medium", "low"],
-} as const;
-
-const FINDING_SCHEMA: JsonSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    localId: { type: "string" },
-    title: { type: "string" },
-    severity: SEVERITY_SCHEMA,
-    claim: { type: "string" },
-    consequence: { type: "string" },
-    evidenceIds: { type: "array", items: { type: "string" } },
-    confidence: { type: "number", minimum: 0, maximum: 1 },
-  },
-  required: [
-    "localId",
-    "title",
-    "severity",
-    "claim",
-    "consequence",
-    "evidenceIds",
-    "confidence",
-  ],
-};
-
-const OUTPUT_SCHEMAS = {
-  independent: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      verdict: {
-        type: "string",
-        enum: ["pass", "needs_changes", "uncertain"],
-      },
-      findings: { type: "array", items: FINDING_SCHEMA },
-      strengths: { type: "array", items: { type: "string" } },
-      unknowns: { type: "array", items: { type: "string" } },
-    },
-    required: ["verdict", "findings", "strengths", "unknowns"],
-  },
-  peer: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      ballots: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            candidateId: { type: "string" },
-            stance: {
-              type: "string",
-              enum: ["support", "oppose", "uncertain"],
-            },
-            reason: { type: "string" },
-            evidenceIds: { type: "array", items: { type: "string" } },
-            suggestedSeverity: {
-              anyOf: [SEVERITY_SCHEMA, { type: "null" }],
-            },
-          },
-          required: [
-            "candidateId",
-            "stance",
-            "reason",
-            "evidenceIds",
-            "suggestedSeverity",
-          ],
-        },
-      },
-      missingFindings: { type: "array", items: FINDING_SCHEMA },
-    },
-    required: ["ballots", "missingFindings"],
-  },
-  chair: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      verdict: {
-        type: "string",
-        enum: ["pass", "needs_changes", "insufficient_evidence"],
-      },
-      summary: { type: "string" },
-      recommendations: { type: "array", items: { type: "string" } },
-      consensusFindingKeys: { type: "array", items: { type: "string" } },
-      dissentFindingKeys: { type: "array", items: { type: "string" } },
-    },
-    required: [
-      "verdict",
-      "summary",
-      "recommendations",
-      "consensusFindingKeys",
-      "dissentFindingKeys",
-    ],
-  },
-};
-
-function outputSchema(stage: CouncilStage): JsonSchema {
-  return OUTPUT_SCHEMAS[stage === "revision" ? "peer" : stage];
-}
 
 // Anthropic rejects numerical limits in raw JSON schemas. Keep those checks in
 // the engine parser and describe them to the model instead of sending keywords

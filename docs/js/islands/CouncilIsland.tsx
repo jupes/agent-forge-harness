@@ -1,21 +1,15 @@
 import { useEffect, useState } from "preact/hooks";
-import type { ProviderReadiness } from "../../../scripts/council/providers";
 import type { CouncilServiceJob } from "../../../scripts/council/service";
-import type {
-  CouncilProfile,
-  CouncilSeat,
-} from "../../../scripts/council/types";
-import { CouncilDiscussion } from "./CouncilDiscussion";
+import { CouncilHistory } from "./CouncilHistory";
+import { CouncilMembers } from "./CouncilMembers";
+import { CouncilResult } from "./CouncilResult";
+import {
+  type CouncilDraft,
+  CouncilSetup,
+  type ProfileChoice,
+} from "./CouncilSetup";
 
 const API = "/__agent-forge/council-api";
-type ProfileChoice = Pick<
-  CouncilProfile,
-  "id" | "title" | "seats" | "chair" | "depth" | "maxEstimatedUsd"
-> & {
-  path: string;
-  readiness: ProviderReadiness[];
-};
-
 async function request<T>(path: string, input?: unknown): Promise<T> {
   const response = await fetch(
     `${API}${path}`,
@@ -37,41 +31,17 @@ async function request<T>(path: string, input?: unknown): Promise<T> {
   return envelope.data;
 }
 
-function money(value: number | null | undefined): string {
-  return typeof value === "number" ? `$${value.toFixed(4)}` : "Not reported";
-}
-
-function seatPhase(job: CouncilServiceJob | null, seat: CouncilSeat): string {
-  const event = job?.events
-    .filter((item) => item.payload.seatId === seat.id)
-    .at(-1);
-  if (!event) return job?.status === "running" ? "Waiting" : "Ready";
-  const stage = String(event.payload.stage ?? "review");
-  if (event.type === "seat.failed") return `${stage} · failed`;
-  if (event.type === "seat.cancelled") return `${stage} · cancelled`;
-  if (event.type === "seat.completed") return `${stage} · complete`;
-  return `${stage} · reviewing`;
-}
-
-function download(name: string, value: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([value], { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 export function CouncilIsland() {
   const initial = new URLSearchParams(window.location.search);
-  const [sourceType, setSourceType] = useState(
-    initial.get("sourceType") === "plan" ? "plan" : "text",
-  );
-  const [source, setSource] = useState(initial.get("source") ?? "");
+  const [draft, setDraft] = useState<CouncilDraft>({
+    sourceType: initial.get("sourceType") === "plan" ? "plan" : "text",
+    source: initial.get("source") ?? "",
+    profilePath: "",
+    budget: "3",
+    redactSecrets: false,
+  });
+  const { sourceType, source, profilePath, budget, redactSecrets } = draft;
   const [profiles, setProfiles] = useState<ProfileChoice[]>([]);
-  const [profilePath, setProfilePath] = useState("");
-  const [budget, setBudget] = useState("3");
-  const [redactSecrets, setRedactSecrets] = useState(false);
   const [history, setHistory] = useState<CouncilServiceJob[]>([]);
   const [job, setJob] = useState<CouncilServiceJob | null>(null);
   const [error, setError] = useState("");
@@ -79,7 +49,6 @@ export function CouncilIsland() {
   const [starting, setStarting] = useState(false);
   const profile = profiles.find((item) => item.path === profilePath);
   const active = job?.status === "running";
-  const ready = profile?.readiness.every((entry) => entry.configured) ?? false;
   const run = job?.run;
   const runProfile = run?.profile ?? job?.profile;
   const roster = runProfile
@@ -97,8 +66,11 @@ export function CouncilIsland() {
       .then(([choices, runs]) => {
         if (!current) return;
         setProfiles(choices);
-        setProfilePath(choices[0]?.path ?? "");
-        setBudget(String(choices[0]?.maxEstimatedUsd ?? 3));
+        setDraft((value) => ({
+          ...value,
+          profilePath: choices[0]?.path ?? "",
+          budget: String(choices[0]?.maxEstimatedUsd ?? 3),
+        }));
         setHistory(runs);
         setAvailable(true);
         const runId = initial.get("run");
@@ -220,389 +192,32 @@ export function CouncilIsland() {
             {error}
           </p>
         )}
-        <section className="panel" aria-label="New review">
-          <h2>What should the council review?</h2>
-          <div className="form-grid">
-            <label>
-              Source
-              <select
-                value={sourceType}
-                onChange={(event) => setSourceType(event.currentTarget.value)}
-                disabled={active}
-              >
-                <option value="text">Paste a document</option>
-                <option value="pr">GitHub pull request</option>
-                <option value="plan">Local Markdown plan</option>
-                <option value="file">Local research or text file</option>
-              </select>
-            </label>
-            <label>
-              Council profile
-              <select
-                value={profilePath}
-                onChange={(event) => {
-                  const path = event.currentTarget.value;
-                  setProfilePath(path);
-                  setBudget(
-                    String(
-                      profiles.find((choice) => choice.path === path)
-                        ?.maxEstimatedUsd ?? 3,
-                    ),
-                  );
-                  setJob(null);
-                }}
-                disabled={active}
-              >
-                {profiles.map((choice) => (
-                  <option key={choice.path} value={choice.path}>
-                    {choice.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="wide">
-              {sourceType === "text"
-                ? "Document or question"
-                : sourceType === "pr"
-                  ? "PR number or GitHub URL"
-                  : "File path within this workspace"}
-              <textarea
-                value={source}
-                onInput={(event) => setSource(event.currentTarget.value)}
-                placeholder={
-                  sourceType === "text"
-                    ? "Paste the work, its goals, and the evidence the reviewers should consider…"
-                    : sourceType === "pr"
-                      ? "https://github.com/owner/repo/pull/123"
-                      : "plans/drafts/my-plan.md"
-                }
-                disabled={active}
-              />
-            </label>
-            <label>
-              Run budget (USD)
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={budget}
-                onInput={(event) => setBudget(event.currentTarget.value)}
-                disabled={active}
-              />
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={redactSecrets}
-                onChange={(event) =>
-                  setRedactSecrets(event.currentTarget.checked)
-                }
-                disabled={active}
-              />{" "}
-              Redact detected secrets; otherwise reject
-            </label>
-          </div>
-          <div className="readiness">
-            {profile?.readiness.map((entry) => (
-              <span
-                key={entry.provider}
-                className={`pill${entry.configured ? "" : " warning"}`}
-              >
-                {entry.provider}:{" "}
-                {entry.configured
-                  ? "configured"
-                  : (entry.error ?? `needs ${entry.missing.join(", ")}`)}
-              </span>
-            ))}
-          </div>
-          <p className="provider-note">
-            {profile?.seats.every((seat) => seat.provider === "fake")
-              ? "Demo profile: simulated feedback, no API keys or model charges."
-              : "Your selected providers receive the supplied review material. Configure keys in the server environment; never paste them here."}
-          </p>
-          {profile?.readiness.some((entry) => entry.routing) && (
-            <details>
-              <summary>Gateway routing policy</summary>
-              {profile.readiness.flatMap((entry) =>
-                (entry.routing ?? []).map((routing) => (
-                  <p key={routing.seatId} className="muted">
-                    {routing.seatId}:{" "}
-                    {routing.only?.join(", ") ?? "any eligible endpoint"} ·
-                    fallback {routing.allow_fallbacks ? "enabled" : "disabled"}{" "}
-                    · data collection {routing.data_collection} · zero-retention
-                    filter {routing.zdr ? "on" : "off"} · structured parameters
-                    required
-                  </p>
-                )),
-              )}
-            </details>
-          )}
-          {profile &&
-            [...profile.seats, profile.chair].some(
-              (seat) => seat.provider === "openrouter",
-            ) && (
-              <p className="notice">
-                One-key gateway: set OPENROUTER_API_KEY in the server
-                environment. Review material goes through OpenRouter and its
-                upstream providers. The profile controls retention filtering and
-                fallback; inspect it before sending private work. Readiness
-                checks configuration, not live availability.
-              </p>
-            )}
-          <div className="actions">
-            <button
-              type="button"
-              onClick={() => void start()}
-              disabled={
-                active ||
-                starting ||
-                !ready ||
-                !source.trim() ||
-                budget.trim() === "" ||
-                !Number.isFinite(Number(budget)) ||
-                Number(budget) < 0
-              }
-            >
-              {starting ? "Starting…" : "Convene council"}
-            </button>
-            {active && (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void cancel()}
-              >
-                Stop review
-              </button>
-            )}
-            <span className="muted">
-              {profile?.depth ?? "balanced"} discussion
-            </span>
-          </div>
-        </section>
-        <section aria-label="Council members">
-          <p className="muted">
-            {job
-              ? "Members for the selected run"
-              : "Members for the next review"}
-          </p>
-          <div className="seat-grid">
-            {roster.map((seat) => (
-              <article className="seat" key={seat.id}>
-                <h3>{seat.id}</h3>
-                <p className="model">
-                  {seat.provider} / {seat.model}
-                </p>
-                <p className="model">{seat.role}</p>
-                <p className="phase">{seatPhase(job, seat)}</p>
-              </article>
-            ))}
-          </div>
-        </section>
+        <CouncilSetup
+          draft={draft}
+          profiles={profiles}
+          active={active}
+          starting={starting}
+          onChange={(patch) => {
+            setDraft((value) => ({ ...value, ...patch }));
+            if (patch.profilePath !== undefined) setJob(null);
+          }}
+          onStart={start}
+          onCancel={cancel}
+        />
+        <CouncilMembers job={job} roster={roster} />
         {job ? (
-          <section className="panel" aria-live="polite">
-            <div className="run-meta">
-              <span
-                className={`pill${job.status === "failed" ? " warning" : ""}`}
-              >
-                {job.status}
-              </span>
-              <span>{job.runId}</span>
-              {run && (
-                <span>
-                  Accounted cost: {money(run.accountedCostUsd)}
-                  {run.costIsEstimate ? " (estimate)" : ""}
-                </span>
-              )}
-            </div>
-            {active && (
-              <p className="round-label">
-                The council is deliberating. Each round waits for its
-                participants before sharing results.
-              </p>
-            )}
-            {job.error && <p className="notice error">{job.error}</p>}
-            <CouncilDiscussion
-              key={job.runId}
-              rounds={job.discussion ?? run?.discussion ?? []}
-            />
-            {run && (
-              <>
-                <h2>
-                  {run.chair?.verdict.replaceAll("_", " ") ??
-                    "Review incomplete"}
-                </h2>
-                <p>{run.chair?.summary ?? run.error}</p>
-                {(run.limitations?.length ?? 0) > 0 && (
-                  <div className="notice">
-                    <h3>Review limitations</h3>
-                    <ul>
-                      {run.limitations.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {(run.chair?.recommendations.length ?? 0) > 0 && (
-                  <ul className="recommendations">
-                    {run.chair?.recommendations.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                )}
-                <div>
-                  {run.aggregatedFindings.map((finding) => (
-                    <article className="finding" key={finding.key}>
-                      <h3>{finding.title}</h3>
-                      <div className="finding-meta">
-                        <span className="pill warning">{finding.severity}</span>
-                        <span>
-                          {finding.resolution ??
-                            (finding.contested ? "contested" : "reviewed")}
-                        </span>
-                        <span>
-                          {finding.support} support · {finding.oppose} oppose ·{" "}
-                          {finding.uncertain} uncertain
-                        </span>
-                        <span>
-                          Confidence: {Math.round(finding.confidence * 100)}%
-                        </span>
-                      </div>
-                      <p>{finding.claim}</p>
-                      <p className="muted">{finding.consequence}</p>
-                      <p className="muted">
-                        Evidence: {finding.evidenceIds.join(", ")}
-                      </p>
-                      {finding.rationales?.length > 0 && (
-                        <details>
-                          <summary>Why reviewers agreed or objected</summary>
-                          {finding.rationales.map((rationale, index) => (
-                            <p key={`${rationale.reviewerLabel}-${index}`}>
-                              <strong>
-                                {rationale.reviewerLabel} · {rationale.stance}:
-                              </strong>{" "}
-                              {rationale.reason}
-                            </p>
-                          ))}
-                        </details>
-                      )}
-                    </article>
-                  ))}
-                </div>
-                {run.failures.length > 0 && (
-                  <details open>
-                    <summary>
-                      Provider failures and reduced participation
-                    </summary>
-                    {run.failures.map((failure, index) => (
-                      <p key={`${failure.seatId}-${index}`}>
-                        {failure.seatId} / {failure.stage}: {failure.error}
-                      </p>
-                    ))}
-                  </details>
-                )}
-                <details>
-                  <summary>Supplied evidence</summary>
-                  {run.context.evidence?.map((item) => (
-                    <div key={item.id}>
-                      <h3>
-                        {item.id}: {item.title}
-                      </h3>
-                      <pre>
-                        {item.content
-                          .split("\n")
-                          .map((line, index) => `${index + 1}: ${line}`)
-                          .join("\n")}
-                      </pre>
-                    </div>
-                  ))}
-                </details>
-                <details>
-                  <summary>Full review transcript</summary>
-                  {run.records.map((record, index) => (
-                    <div key={`${record.seatId}-${index}`}>
-                      <h3>
-                        {record.stage}
-                        {record.round ? ` ${record.round}` : ""} ·{" "}
-                        {record.seatId} · {record.model}
-                      </h3>
-                      <p className="muted">
-                        {(record.latencyMs / 1000).toFixed(1)} seconds ·{" "}
-                        {record.usage
-                          ? `${record.usage.inputTokens} input / ${record.usage.outputTokens} output tokens`
-                          : "Usage not reported"}
-                      </p>
-                      {record.routing && (
-                        <p className="muted">
-                          Served by: {record.routing.provider ?? "not reported"}{" "}
-                          · {record.routing.model ?? record.model}
-                          {record.routing.byok ? " · BYOK" : ""}
-                        </p>
-                      )}
-                      <pre>
-                        {JSON.stringify(record.output ?? record.error, null, 2)}
-                      </pre>
-                    </div>
-                  ))}
-                </details>
-                <div className="actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() =>
-                      download(
-                        `${job.runId}.json`,
-                        JSON.stringify(run, null, 2),
-                        "application/json",
-                      )
-                    }
-                  >
-                    Download review
-                  </button>
-                  <span className="muted">
-                    Actual billed cost: {money(run.actualCostUsd)}
-                  </span>
-                </div>
-              </>
-            )}
-            <details>
-              <summary>Round activity ({job.events.length})</summary>
-              <pre>
-                {job.events
-                  .map(
-                    (event) =>
-                      `${event.seq + 1}. ${event.type} ${JSON.stringify(event.payload)}`,
-                  )
-                  .join("\n") || "Preparing source and profile…"}
-              </pre>
-            </details>
-          </section>
+          <CouncilResult job={job} />
         ) : (
           <p className="empty">
             The independent reviews, discussion, and report will appear here.
           </p>
         )}
       </div>
-      <aside className="panel history">
-        <h2>Review history</h2>
-        {history.length === 0 && (
-          <p className="muted">
-            Your completed and active runs will be saved here.
-          </p>
-        )}
-        {history.map((item) => (
-          <button
-            type="button"
-            key={item.runId}
-            className={job?.runId === item.runId ? "selected" : ""}
-            onClick={() => void openRun(item.runId)}
-          >
-            {item.run?.context.source.displayName ?? item.runId}
-            <small>
-              {item.status} · {new Date(item.startedAt).toLocaleString()}
-            </small>
-          </button>
-        ))}
-      </aside>
+      <CouncilHistory
+        history={history}
+        selectedRunId={job?.runId}
+        onOpen={openRun}
+      />
     </div>
   );
 }

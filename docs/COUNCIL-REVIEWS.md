@@ -211,6 +211,27 @@ Results under `reports/council-calibration/evaluation-.../` include `plan.json`,
 
 The budget applies to the entire matrix. A failed comparison or exhausted budget stops further calls and retains partial diagnostics/accounting; incomplete results return a nonzero CLI exit. Rejected claims are excluded from keyword-recall successes; contested/unreviewed claims remain candidates for human adjudication. Keywords are not proof that a finding is correct. Fake runs and contract tests validate the machinery, **not** a claim that councils outperform a single model. Live hosted access and human quality calibration still require your credentials and judgment. Four seats, quorum three, two external ballots, and one revision are provisional defaults, not benchmark-proven optimal settings. This evaluation workflow follows [official OpenAI evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices) on explicit objectives, comparative tests, and human validation.
 
+## Maintainer map
+
+Review behavior is shared across all three interfaces. Start with `scripts/council/engine.ts` for the round coordinator; the supporting modules have narrower responsibilities:
+
+| Module | Responsibility |
+| --- | --- |
+| `deliberation.ts` | Anonymous candidates, proposal identity, revised ballots, consensus and dissent. |
+| `prompts.ts` | Independent, peer, revision and chair instructions. |
+| `output-contracts.ts` | One set of output schemas, inferred TypeScript types and generated provider JSON schemas. |
+| `output-validation.ts` | Evidence/candidate references, full ballot coverage, chair classification and sanitized output. |
+| `model-call.ts` | Deadlines, cancellation, call accounting and single-review execution. |
+| `run-result.ts` | Limitations and final run assembly. |
+| `fake-transport.ts` | The no-charge demo and deterministic test transport. |
+| `workflow.ts` | Shared profile loading, source preparation, provider dispatch and artifact persistence for CLI and jobs. |
+
+The original exports from `engine.ts` and `cli.ts` remain available. Runtime parsing accepts omitted or null peer severity suggestions and strips unknown fields; provider schemas require all properties and represent an omitted suggestion as null. Provider-specific schema transformations stay in `providers.ts`. Context-dependent evidence and voting rules cannot be expressed by the output shape alone and remain explicit validation.
+
+The CLI retains argument parsing, dry-run output and terminal reporting. `service.ts` retains workspace/profile confinement, immediate job handles, subscriptions, cancellation and persisted preparation failures. Jobs reserve their output directory before returning a handle; the shared workflow dispatches and saves both CLI and job runs. A completed result remains available in the active job's terminal snapshot if artifact writing fails.
+
+In `docs/js/islands/`, `CouncilIsland.tsx` owns page state and server subscriptions. `CouncilSetup.tsx`, `CouncilMembers.tsx`, `CouncilResult.tsx` and `CouncilHistory.tsx` render the setup form, roster, report and history. `CouncilDiscussion.tsx` continues to own discussion-round selection. This is a structural refactor, not a new UI or deliberation protocol.
+
 ## Prior art and design choices
 
 [Karpathy's LLM Council](https://github.com/karpathy/llm-council) is the closest simple precedent: parallel opinions, anonymous peer review, and a chair. [amiable's LLM Council](https://github.com/amiable-dev/llm-council) is a broader implementation worth evaluating if a standalone Python service is preferred. This implementation keeps council state and artifacts native to the existing Bun harness and adds explicit rebuttals, conservative verdict validation, local UI, and MCP jobs. Provider adapters deliberately remain narrow and have API-specific request/response contract tests, including Anthropic's restricted schema support.

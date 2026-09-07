@@ -16,31 +16,24 @@ import {
   readCouncilRun,
   reserveCouncilRun,
   resolveRunDirectory,
-  writeCouncilArtifacts,
   writeCouncilJobFailure,
 } from "./artifacts";
-import {
-  buildContextPack,
-  type ContextInput,
-  sanitizeContent,
-} from "./context";
-import { runCouncil } from "./engine";
-import { compilePullRequest } from "./pr-source";
-import {
-  assertProvidersReady,
-  createProviderResolver,
-  type ProviderResolverOptions,
-  providerReadiness,
-} from "./providers";
-import {
-  type CouncilDiscussionRound,
-  type CouncilEvent,
-  type CouncilProfile,
-  type CouncilRun,
-  type CouncilSeat,
-  type ModelTransport,
-  parseCouncilProfileJson,
+import { sanitizeContent } from "./context";
+import { assertProvidersReady, providerReadiness } from "./providers";
+import type {
+  CouncilDiscussionRound,
+  CouncilEvent,
+  CouncilProfile,
+  CouncilRun,
+  CouncilSeat,
+  ModelTransport,
 } from "./types";
+import {
+  type CouncilReviewOptions,
+  executeCouncilReview,
+  loadCouncilProfile,
+  prepareCouncilContext,
+} from "./workflow";
 
 export type CouncilServiceInput = {
   sourceType: "file" | "plan" | "pr" | "text";
@@ -137,11 +130,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     return candidate;
   }
   function profile(path?: string): CouncilProfile {
-    const parsed = parseCouncilProfileJson(
-      readFileSync(profilePath(path), "utf8"),
-    );
-    if (!parsed.ok) throw new Error(`invalid council profile: ${parsed.error}`);
-    return parsed.value;
+    return loadCouncilProfile(profilePath(path));
   }
   function readiness(input: { profile?: string | undefined } = {}) {
     const selected = profile(input.profile);
@@ -322,48 +311,29 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     const done = Promise.resolve().then(async () => {
       try {
         if (controller.signal.aborted) throw new Error("council run cancelled");
-        const secretPolicy = input.redactSecrets ? "redact" : "reject";
-        let contextInput: ContextInput;
-        if (input.sourceType === "pr") {
-          const compiled = await compilePullRequest(input.source, {
-            cwd: workspaceRoot,
-            secretPolicy,
-          });
-          contextInput = {
-            kind: "pr",
-            text: compiled.text,
-            displayName: compiled.displayName,
-            locator: compiled.locator,
-            metadata: compiled.metadata,
-            secretPolicy,
-          };
-        } else if (input.sourceType === "text")
-          contextInput = {
-            kind: "stdin",
-            text: input.source,
-            displayName: "Pasted review text",
-            secretPolicy,
-          };
-        else
-          contextInput = {
-            kind: input.sourceType,
-            path: input.source,
-            cwd: workspaceRoot,
-            secretPolicy,
-          };
-        if (input.maxBytes !== undefined)
-          contextInput.maxBytes = input.maxBytes;
-        const packed = buildContextPack(contextInput);
-        const providerOptions: ProviderResolverOptions = { environment };
-        if (options.fetchImpl) providerOptions.fetchImpl = options.fetchImpl;
-        const engineOptions: Parameters<typeof runCouncil>[0] = {
+        const packed = await prepareCouncilContext({
+          kind: input.sourceType === "text" ? "stdin" : input.sourceType,
+          source: input.source,
+          workspaceRoot,
+          secretPolicy: input.redactSecrets ? "redact" : "reject",
+          maxBytes: input.maxBytes,
+          ...(input.sourceType === "text"
+            ? { displayName: "Pasted review text" }
+            : {}),
+        });
+        const engineOptions: CouncilReviewOptions = {
           profile: selected,
           context: packed,
           runId,
+          runsRoot,
+          reservation,
+          environment,
           signal: controller.signal,
-          resolveTransport: options.resolveTransport
-            ? options.resolveTransport(selected)
-            : createProviderResolver(providerOptions),
+          onResult: (result) => {
+            job.run = result.run;
+            job.status = result.run.status;
+            if (!result.ok) job.error = result.error;
+          },
           onEvent: (event) => {
             job.events.push(event);
             publish();
@@ -374,15 +344,11 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
           },
         };
         if (input.maxUsd !== undefined) engineOptions.maxUsd = input.maxUsd;
-        const result = await runCouncil(engineOptions);
-        job.run = result.run;
-        job.status = result.run.status;
-        if (!result.ok) job.error = result.error;
-        job.artifacts = writeCouncilArtifacts(
-          result.run,
-          runsRoot,
-          reservation,
-        );
+        if (options.fetchImpl) engineOptions.fetchImpl = options.fetchImpl;
+        if (options.resolveTransport)
+          engineOptions.resolveTransport = options.resolveTransport(selected);
+        const { artifacts } = await executeCouncilReview(engineOptions);
+        job.artifacts = artifacts;
       } catch (error) {
         job.status = controller.signal.aborted ? "cancelled" : "failed";
         job.error = safeCouncilError(error);
