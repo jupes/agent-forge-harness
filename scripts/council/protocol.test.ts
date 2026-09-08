@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { buildContextPack } from "./context";
 import { FakeCouncilTransport, runCouncil } from "./engine";
 import {
@@ -87,6 +88,7 @@ function ballots(
       ...(suggestedSeverity ? { suggestedSeverity } : {}),
     })),
     missingFindings: [],
+    equivalentCandidateGroups: [],
   };
 }
 
@@ -119,6 +121,113 @@ describe("deliberation quality regressions", () => {
     expect(result.run.limitations).toContain(
       "REQUIRED_APPENDIX is unavailable.",
     );
+  });
+
+  test("reported unknowns remain visible without vetoing a quorate pass", async () => {
+    const transport = new FakeCouncilTransport({
+      output: (request) =>
+        request.stage === "independent"
+          ? {
+              ...independent(),
+              unknowns:
+                request.seat.id === "alpha"
+                  ? ["A nonessential appendix was not supplied."]
+                  : [],
+            }
+          : request.stage === "chair"
+            ? passChair(request)
+            : undefined,
+    });
+    const result = await runCouncil({
+      profile: profile(),
+      context: evidence(),
+      resolveTransport: () => transport,
+    });
+    expect(result.run.chair?.verdict).toBe("pass");
+    expect(result.run.limitations).toContain(
+      "A nonessential appendix was not supplied.",
+    );
+  });
+
+  test("peer-confirmed paraphrases merge without inflating votes", async () => {
+    const transport = new FakeCouncilTransport({
+      output: (request) => {
+        if (request.stage === "independent")
+          return independent([
+            finding({
+              localId: request.seat.id,
+              title: `Authorization concern ${request.seat.id}`,
+              claim: `Reviewer wording ${request.seat.id}: the privileged operation lacks authorization.`,
+              consequence: `Variant ${request.seat.id}: unauthorized access can result.`,
+              severity: "low",
+            }),
+          ]);
+        if (request.stage === "peer") {
+          const output = ballots(
+            request,
+            "support",
+            "The evidence supports it.",
+          );
+          return {
+            ...output,
+            equivalentCandidateGroups: [
+              (request.candidates ?? []).map(
+                (candidate) => candidate.candidateId,
+              ),
+            ],
+          };
+        }
+        return request.stage === "chair" ? passChair(request) : undefined;
+      },
+    });
+    const result = await runCouncil({
+      profile: profile(),
+      context: evidence(),
+      resolveTransport: () => transport,
+    });
+    expect(result.run.aggregatedFindings).toHaveLength(1);
+    expect(result.run.aggregatedFindings[0]?.independentProposers).toBe(4);
+    expect(result.run.aggregatedFindings[0]?.support).toBe(0);
+  });
+
+  test("one peer cannot collapse merely related findings", async () => {
+    const transport = new FakeCouncilTransport({
+      output: (request) => {
+        if (request.stage === "independent")
+          return independent([
+            finding({
+              localId: request.seat.id,
+              title: `Distinct concern ${request.seat.id}`,
+              claim: `A distinct failure mode is described by ${request.seat.id}.`,
+            }),
+          ]);
+        if (request.stage === "peer") {
+          const output = ballots(
+            request,
+            "support",
+            "Independently supported.",
+          );
+          return {
+            ...output,
+            equivalentCandidateGroups:
+              request.seat.id === "alpha"
+                ? [
+                    (request.candidates ?? []).map(
+                      (candidate) => candidate.candidateId,
+                    ),
+                  ]
+                : [],
+          };
+        }
+        return request.stage === "chair" ? passChair(request) : undefined;
+      },
+    });
+    const result = await runCouncil({
+      profile: profile(),
+      context: evidence(),
+      resolveTransport: () => transport,
+    });
+    expect(result.run.aggregatedFindings).toHaveLength(4);
   });
 
   test("domain facts survive anonymization and authors cannot ballot their own findings", async () => {
@@ -156,6 +265,29 @@ describe("deliberation quality regressions", () => {
     )!;
     expect(externalPeer.candidates?.[0]?.finding.claim).toBe(
       "The OpenAI key crosses the Anthropic security boundary.",
+    );
+  });
+
+  test("reviewer labels remain tied to roster seats after a failure", async () => {
+    const transport = new FakeCouncilTransport({
+      fail: [{ stage: "independent", seatId: "alpha" }],
+      output: (request) =>
+        request.stage === "independent"
+          ? { ...independent(), strengths: [`marker-${request.seat.id}`] }
+          : request.stage === "chair"
+            ? passChair(request)
+            : undefined,
+    });
+    await runCouncil({
+      profile: profile(),
+      context: evidence(),
+      resolveTransport: () => transport,
+    });
+    const prompt = transport.requests.find(
+      (request) => request.stage === "chair",
+    )!.prompt;
+    expect(prompt).toContain(
+      '\"reviewerLabel\":\"Reviewer 2\",\"verdict\":\"pass\",\"strengths\":[\"marker-beta\"]',
     );
   });
 
@@ -405,6 +537,26 @@ describe("deliberation quality regressions", () => {
 });
 
 describe("conservative accounting", () => {
+  test("checked-in paid profiles can finish at the advertised context limit", async () => {
+    for (const path of [
+      "councils/openrouter.example.json",
+      "councils/multi-provider.example.json",
+    ]) {
+      const parsed = parseCouncilProfileJson(readFileSync(path, "utf8"));
+      if (!parsed.ok) throw new Error(parsed.error);
+      const transport = new FakeCouncilTransport();
+      const result = await runCouncil({
+        profile: parsed.value,
+        context: buildContextPack({
+          kind: "stdin",
+          text: "x".repeat(200_000),
+        }),
+        resolveTransport: () => transport,
+      });
+      expect(result.ok).toBe(true);
+      expect(transport.requests).toHaveLength(13);
+    }
+  });
   test("malformed paid output retains usage and cannot finance another round with an unknown zero", async () => {
     const fake = new FakeCouncilTransport();
     const transport = {

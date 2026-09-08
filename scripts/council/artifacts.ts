@@ -345,7 +345,7 @@ export function listCouncilRunIds(runsRoot: string): string[] {
   });
 }
 
-function parseStoredRun(text: string): CouncilRun {
+export function parseStoredRun(text: string): CouncilRun {
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;

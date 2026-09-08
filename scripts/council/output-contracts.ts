@@ -36,6 +36,7 @@ export const ballotSchema = z.object({
 export const peerSchema = z.object({
   ballots: z.array(ballotSchema),
   missingFindings: z.array(findingSchema),
+  equivalentCandidateGroups: z.array(z.array(z.string())).optional(),
 });
 export const chairSchema = z.object({
   verdict: z.enum(["pass", "needs_changes", "insufficient_evidence"]),
@@ -54,8 +55,12 @@ export type PeerBallot = Omit<
 > & {
   suggestedSeverity?: FindingSeverity;
 };
-export type PeerOutput = Omit<z.infer<typeof peerSchema>, "ballots"> & {
+export type PeerOutput = Omit<
+  z.infer<typeof peerSchema>,
+  "ballots" | "equivalentCandidateGroups"
+> & {
   ballots: PeerBallot[];
+  equivalentCandidateGroups: string[][];
 };
 export type ChairOutput = z.infer<typeof chairSchema>;
 

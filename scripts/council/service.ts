@@ -13,6 +13,7 @@ import {
   assertCouncilRunId,
   type CouncilArtifactPaths,
   listCouncilRunIds,
+  parseStoredRun,
   readCouncilRun,
   reserveCouncilRun,
   resolveRunDirectory,
@@ -47,7 +48,7 @@ export type CouncilServiceInput = {
 
 export type CouncilServiceJob = {
   runId: string;
-  status: "running" | "completed" | "failed" | "cancelled";
+  status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
   startedAt: string;
   updatedAt: string;
   events: CouncilEvent[];
@@ -55,6 +56,8 @@ export type CouncilServiceJob = {
   profile?: CouncilProfile;
   run?: CouncilRun;
   error?: string;
+  persistenceStatus?: "pending" | "saved" | "failed";
+  persistenceError?: string;
   artifacts?: CouncilArtifactPaths;
 };
 
@@ -213,6 +216,27 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     )
       throw new Error("invalid council job state");
     const state = stored as Record<string, unknown>;
+    if (terminal && state.run && typeof state.run === "object") {
+      const run = parseStoredRun(JSON.stringify(state.run));
+      return {
+        runId,
+        status: run.status,
+        startedAt: run.startedAt,
+        updatedAt:
+          typeof state.updatedAt === "string"
+            ? state.updatedAt
+            : run.finishedAt,
+        events: run.events,
+        discussion: run.discussion ?? [],
+        profile: run.profile,
+        run,
+        persistenceStatus: "failed",
+        persistenceError:
+          typeof state.persistenceError === "string"
+            ? safeCouncilError(state.persistenceError)
+            : "The completed result could not be saved as normal run artifacts.",
+      };
+    }
     return {
       runId,
       status: terminal && state.status === "cancelled" ? "cancelled" : "failed",
@@ -290,6 +314,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       artifacts: reservation.paths,
       discussion: [],
       profile: selected,
+      persistenceStatus: "pending",
     };
     writeFileSync(
       join(reservation.paths.directory, "job.json"),
@@ -349,19 +374,33 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
           engineOptions.resolveTransport = options.resolveTransport(selected);
         const { artifacts } = await executeCouncilReview(engineOptions);
         job.artifacts = artifacts;
+        job.persistenceStatus = "saved";
       } catch (error) {
-        job.status = controller.signal.aborted ? "cancelled" : "failed";
-        job.error = safeCouncilError(error);
+        const persistenceError = safeCouncilError(error);
+        if (job.run) {
+          job.status = job.run.status;
+          job.persistenceStatus = "failed";
+          job.persistenceError = persistenceError;
+        } else {
+          job.status = controller.signal.aborted ? "cancelled" : "failed";
+          job.error = persistenceError;
+        }
         try {
           writeCouncilJobFailure(reservation, {
             runId,
             status: job.status,
             startedAt,
             updatedAt: new Date().toISOString(),
-            error: job.error,
+            ...(job.error ? { error: job.error } : {}),
+            ...(job.persistenceError
+              ? { persistenceError: job.persistenceError }
+              : {}),
+            ...(job.run ? { run: job.run } : {}),
           });
         } catch (persistenceError) {
-          job.error += `; failure record unavailable: ${safeCouncilError(persistenceError)}`;
+          const unavailable = `failure record unavailable: ${safeCouncilError(persistenceError)}`;
+          if (job.persistenceError) job.persistenceError += `; ${unavailable}`;
+          else job.error = `${job.error ?? "Review failed"}; ${unavailable}`;
         }
       }
       publish();
@@ -376,7 +415,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   function cancel(runId: string): CouncilServiceJob {
     assertCouncilRunId(runId);
     const entry = active.get(runId);
-    if (entry?.job.status === "running") entry.controller.abort();
+    if (entry?.job.status === "running") {
+      entry.job.status = "cancelling";
+      entry.job.updatedAt = new Date().toISOString();
+      for (const listener of entry.listeners) listener(snapshot(entry.job));
+      entry.controller.abort();
+    }
     return get(runId);
   }
   function subscribe(
@@ -400,7 +444,8 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   async function close() {
     closed = true;
     for (const entry of active.values())
-      if (entry.job.status === "running") entry.controller.abort();
+      if (["running", "cancelling"].includes(entry.job.status))
+        entry.controller.abort();
     await Promise.all([...active.values()].map((entry) => entry.done));
   }
   return {

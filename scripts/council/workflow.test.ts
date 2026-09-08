@@ -216,13 +216,16 @@ test("job retains completed review data when artifact persistence fails", async 
       runId: "save-failure",
     });
     const finished = await service.wait(job.runId);
-    expect(finished.status).toBe("failed");
+    expect(finished.status).toBe("completed");
+    expect(finished.persistenceStatus).toBe("failed");
+    expect(finished.persistenceError).toContain("already exists");
     expect(finished.run?.status).toBe("completed");
     expect(finished.run?.chair?.summary).toContain("deterministic review");
     expect(readFileSync(join(runsRoot, job.runId, "report.md"), "utf8")).toBe(
       "Do not overwrite",
     );
-    expect(service.get(job.runId).status).toBe("failed");
+    expect(service.get(job.runId).status).toBe("completed");
+    expect(service.get(job.runId).persistenceStatus).toBe("failed");
   } finally {
     await service.close();
   }

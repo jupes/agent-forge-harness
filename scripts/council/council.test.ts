@@ -177,6 +177,12 @@ describe("context packs", () => {
     expect(pack.evidence[0]?.content).not.toContain(secret);
     expect(pack.evidence[0]?.content).toContain("[REDACTED:anthropic-api-key]");
     expect(pack.redactions[0]?.count).toBe(1);
+    expect(() =>
+      buildContextPack({
+        kind: "stdin",
+        text: "OPENROUTER_API_KEY=synthetic-openrouter-secret",
+      }),
+    ).toThrow(ContextSecurityError);
   });
 
   test("scans for secrets before truncation and preserves UTF-8 boundaries", () => {

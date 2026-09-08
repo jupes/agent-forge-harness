@@ -16,6 +16,10 @@ export type CouncilDraft = {
   budget: string;
   redactSecrets: boolean;
 };
+
+export function optionalBudget(value: string): number | undefined {
+  return value.trim() === "" ? undefined : Number(value);
+}
 type Props = {
   draft: CouncilDraft;
   profiles: ProfileChoice[];

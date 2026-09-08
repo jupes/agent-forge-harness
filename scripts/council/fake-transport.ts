@@ -102,6 +102,7 @@ export class FakeCouncilTransport implements ModelTransport {
               suggestedSeverity: candidate.finding.severity,
             })),
             missingFindings: [],
+            equivalentCandidateGroups: [],
           } satisfies PeerOutput,
           usage: { inputTokens: 0, outputTokens: 0 },
           costUsd,

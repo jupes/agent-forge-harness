@@ -5,7 +5,10 @@ function seatPhase(job: CouncilServiceJob | null, seat: CouncilSeat): string {
   const event = job?.events
     .filter((item) => item.payload.seatId === seat.id)
     .at(-1);
-  if (!event) return job?.status === "running" ? "Waiting" : "Ready";
+  if (!event)
+    return job?.status === "running" || job?.status === "cancelling"
+      ? "Waiting"
+      : "Ready";
   const stage = String(event.payload.stage ?? "review");
   if (event.type === "seat.failed") return `${stage} · failed`;
   if (event.type === "seat.cancelled") return `${stage} · cancelled`;

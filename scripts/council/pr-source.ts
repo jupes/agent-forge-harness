@@ -1,9 +1,15 @@
 import { spawn } from "node:child_process";
-import { isSensitivePath, type SecretPolicy, sanitizeContent } from "./context";
+import {
+  isSensitivePath,
+  type SecretPolicy,
+  sanitizeContent,
+  truncateUtf8,
+} from "./context";
 import type { ContextSourceMetadata } from "./types";
 
 const DEFAULT_DIFF_BYTES = 150_000;
 const COMMAND_TIMEOUT_MS = 30_000;
+const MAX_LINKED_ISSUES = 10;
 
 export type CommandResult = {
   exitCode: number;
@@ -116,22 +122,6 @@ function validatePullRequestReference(reference: string): string {
   throw new Error("PR reference must be a positive number or pull-request URL");
 }
 
-function truncateUtf8(
-  text: string,
-  maxBytes: number,
-): { text: string; truncated: boolean } {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.byteLength <= maxBytes) return { text, truncated: false };
-  let boundary = maxBytes;
-  while (boundary > 0 && (bytes[boundary]! & 0xc0) === 0x80) boundary -= 1;
-  return {
-    text: new TextDecoder("utf-8", { fatal: true }).decode(
-      bytes.subarray(0, boundary),
-    ),
-    truncated: true,
-  };
-}
-
 function safeCommandError(command: string[], result: CommandResult): Error {
   const detail = sanitizeContent(result.stderr.slice(0, 1_000), "redact")
     .text.replace(/\s+/g, " ")
@@ -141,16 +131,24 @@ function safeCommandError(command: string[], result: CommandResult): Error {
   );
 }
 
-export const runLocalCommand: CommandRunner = async (command, cwd) => {
-  const commandEnvironment = { ...process.env };
+export function scrubProviderEnvironment(
+  environment: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const commandEnvironment = { ...environment };
   for (const providerKey of [
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
+    "OPENROUTER_API_KEY",
   ]) {
     delete commandEnvironment[providerKey];
   }
+  return commandEnvironment;
+}
+
+export const runLocalCommand: CommandRunner = async (command, cwd) => {
+  const commandEnvironment = scrubProviderEnvironment(process.env);
   return new Promise<CommandResult>((resolve, reject) => {
     const processHandle = spawn(command[0]!, command.slice(1), {
       cwd,
@@ -199,12 +197,16 @@ export const runLocalCommand: CommandRunner = async (command, cwd) => {
   });
 };
 
-function linkedIssueIds(body: string): string[] {
-  return [
+function linkedIssueIds(body: string): { ids: string[]; omitted: number } {
+  const all = [
     ...new Set(
       body.match(/\bagent-forge-harness-[a-z0-9]+(?:\.[0-9]+)*\b/gi) ?? [],
     ),
   ].sort();
+  return {
+    ids: all.slice(0, MAX_LINKED_ISSUES),
+    omitted: Math.max(0, all.length - MAX_LINKED_ISSUES),
+  };
 }
 
 async function loadAcceptanceCriteria(
@@ -212,34 +214,29 @@ async function loadAcceptanceCriteria(
   cwd: string,
   runner: CommandRunner,
 ): Promise<{ lines: string[]; omissions: string[] }> {
-  const lines: string[] = [];
-  const omissions: string[] = [];
-  for (const id of ids) {
-    const command = ["bd", "show", id, "--json"];
-    let result: CommandResult;
-    try {
-      result = await runner(command, cwd);
-    } catch {
-      omissions.push(`Acceptance criteria unavailable for ${id}.`);
-      continue;
-    }
-    if (result.exitCode !== 0) {
-      omissions.push(`Acceptance criteria unavailable for ${id}.`);
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(result.stdout) as unknown;
-      const issue = Array.isArray(parsed) ? parsed[0] : parsed;
-      if (!isRecord(issue) || typeof issue.acceptance_criteria !== "string") {
-        omissions.push(`Acceptance criteria missing for ${id}.`);
-        continue;
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      const command = ["bd", "show", id, "--json"];
+      try {
+        const result = await runner(command, cwd);
+        if (result.exitCode !== 0)
+          return { omission: `Acceptance criteria unavailable for ${id}.` };
+        const parsed = JSON.parse(result.stdout) as unknown;
+        const issue = Array.isArray(parsed) ? parsed[0] : parsed;
+        if (!isRecord(issue) || typeof issue.acceptance_criteria !== "string")
+          return { omission: `Acceptance criteria missing for ${id}.` };
+        return { line: `${id}: ${issue.acceptance_criteria}` };
+      } catch {
+        return { omission: `Acceptance criteria unavailable for ${id}.` };
       }
-      lines.push(`${id}: ${issue.acceptance_criteria}`);
-    } catch {
-      omissions.push(`Acceptance criteria invalid for ${id}.`);
-    }
-  }
-  return { lines, omissions };
+    }),
+  );
+  return {
+    lines: results.flatMap((result) => (result.line ? [result.line] : [])),
+    omissions: results.flatMap((result) =>
+      result.omission ? [result.omission] : [],
+    ),
+  };
 }
 
 function decodeGitPath(path: string): string {
@@ -369,9 +366,14 @@ export async function compilePullRequest(
     options.secretPolicy ?? "reject",
   );
   const diff = truncateUtf8(safeDiff.text, maxDiffBytes);
-  const issueIds = linkedIssueIds(pullRequest.body);
+  const linkedIssues = linkedIssueIds(pullRequest.body);
+  const issueIds = linkedIssues.ids;
   const criteria = await loadAcceptanceCriteria(issueIds, cwd, runner);
   const omissions = [...filtered.omissions, ...criteria.omissions];
+  if (linkedIssues.omitted > 0)
+    omissions.push(
+      `${linkedIssues.omitted} additional linked issue(s) were omitted after the ${MAX_LINKED_ISSUES}-issue safety cap.`,
+    );
   if (safeDiff.redactions.length)
     omissions.push("Detected credentials were redacted from the patch.");
   if (diff.truncated) {

@@ -5,8 +5,10 @@ import { CouncilMembers } from "../../docs/js/islands/CouncilMembers";
 import {
   type CouncilDraft,
   CouncilSetup,
+  optionalBudget,
   type ProfileChoice,
 } from "../../docs/js/islands/CouncilSetup";
+import { councilPlanSource } from "../../docs/js/islands/PlanReviewIsland";
 import { providerReadiness } from "./providers";
 import type { CouncilServiceJob } from "./service";
 import { loadCouncilProfile } from "./workflow";
@@ -76,6 +78,9 @@ test("setup component forwards edits and profile budget changes without owning r
 });
 
 test("setup component preserves start validation and active-review locking", () => {
+  expect(optionalBudget("")).toBeUndefined();
+  expect(optionalBudget("  ")).toBeUndefined();
+  expect(optionalBudget("2.5")).toBe(2.5);
   const startButton = (tree: ComponentChildren) =>
     nodes(tree).find(
       (node) =>
@@ -104,6 +109,19 @@ test("setup component preserves start validation and active-review locking", () 
       .every((node) => node.props.disabled),
   ).toBe(true);
   expect(text(active)).toContain("Stop review");
+});
+
+test("council plan links honor committed-only plans and history selection", () => {
+  const catalog = { draftIds: ["draft"], committedIds: ["committed"] };
+  expect(councilPlanSource(catalog, "committed", "draft", "drafts")).toBe(
+    "plans/committed/committed.md",
+  );
+  expect(councilPlanSource(catalog, "draft", "diff", "committed")).toBe(
+    "plans/drafts/draft.md",
+  );
+  expect(councilPlanSource(catalog, "draft", "history", "committed")).toBe(
+    "plans/committed/draft.md",
+  );
 });
 
 test("member and history components retain selected-run identity and callbacks", () => {

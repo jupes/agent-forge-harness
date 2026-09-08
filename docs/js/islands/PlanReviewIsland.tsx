@@ -15,6 +15,23 @@ type CatalogPayload = {
   activePlanId: string | null;
 };
 
+export function councilPlanSource(
+  catalog: Pick<CatalogPayload, "draftIds" | "committedIds"> | null,
+  planId: string,
+  view: "draft" | "diff" | "history",
+  historyBucket: "drafts" | "committed",
+): string {
+  const bucket =
+    view === "history"
+      ? historyBucket
+      : catalog?.draftIds.includes(planId)
+        ? "drafts"
+        : catalog?.committedIds.includes(planId)
+          ? "committed"
+          : "drafts";
+  return `plans/${bucket}/${planId}.md`;
+}
+
 type CatalogEnvelope =
   | { ok: true; data: CatalogPayload; error: null }
   | { ok: false; data: null; error: string };
@@ -586,7 +603,7 @@ export function PlanReviewIsland() {
         {selectedPlanId && (
           <a
             className="plan-review-btn plan-review-btn-secondary"
-            href={`council.html?${new URLSearchParams({ sourceType: "plan", source: `plans/${view === "history" ? historyBucket : "drafts"}/${selectedPlanId}.md` })}`}
+            href={`council.html?${new URLSearchParams({ sourceType: "plan", source: councilPlanSource(catalog, selectedPlanId, view, historyBucket) })}`}
           >
             Send to council
           </a>

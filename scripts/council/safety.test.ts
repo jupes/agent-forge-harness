@@ -21,7 +21,11 @@ import {
 import { buildContextPack, renderContextForPrompt } from "./context";
 import { FakeCouncilTransport } from "./engine";
 import { createCouncilMcpServer } from "./mcp";
-import { type CommandRunner, compilePullRequest } from "./pr-source";
+import {
+  type CommandRunner,
+  compilePullRequest,
+  scrubProviderEnvironment,
+} from "./pr-source";
 import { createCouncilService } from "./service";
 
 const temporary: string[] = [];
@@ -215,6 +219,17 @@ function prRunner(
 }
 
 describe("PR snapshot safety", () => {
+  test("scrubs every provider credential from local helper commands", () => {
+    const environment = scrubProviderEnvironment({
+      OPENAI_API_KEY: "a",
+      ANTHROPIC_API_KEY: "b",
+      DEEPSEEK_API_KEY: "c",
+      DASHSCOPE_API_KEY: "d",
+      OPENROUTER_API_KEY: "e",
+      SAFE_VALUE: "kept",
+    });
+    expect(environment).toEqual({ SAFE_VALUE: "kept" });
+  });
   test("omits credential files and renamed secrets while tolerating missing optional Beads", async () => {
     const compiled = await compilePullRequest("42", {
       runner: prRunner({ bdMissing: true }),
@@ -231,6 +246,41 @@ describe("PR snapshot safety", () => {
     await expect(
       compilePullRequest("42", { runner: prRunner({ changed: true }) }),
     ).rejects.toThrow("PR changed");
+  });
+  test("caps linked issue lookups and resolves the bounded set concurrently", async () => {
+    const base = prRunner();
+    let calls = 0,
+      active = 0,
+      maxActive = 0;
+    const runner: CommandRunner = async (command, cwd) => {
+      if (command[0] === "bd") {
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await Bun.sleep(5);
+        active -= 1;
+        return {
+          exitCode: 0,
+          stdout: '[{"acceptance_criteria":"Safe review"}]',
+          stderr: "",
+        };
+      }
+      const result = await base(command, cwd);
+      if (command.includes("view")) {
+        const metadata = JSON.parse(result.stdout) as Record<string, unknown>;
+        metadata.body = Array.from(
+          { length: 15 },
+          (_, index) => `agent-forge-harness-t1b1.${index + 10}`,
+        ).join(" ");
+        return { ...result, stdout: JSON.stringify(metadata) };
+      }
+      return result;
+    };
+    const compiled = await compilePullRequest("42", { runner });
+    expect(calls).toBe(10);
+    expect(maxActive).toBeGreaterThan(1);
+    expect(compiled.metadata.linkedIssueIds).toHaveLength(10);
+    expect(compiled.text).toContain("5 additional linked issue(s)");
   });
 });
 
@@ -279,7 +329,7 @@ describe("async council service", () => {
       source: "review",
       runId: "cancelled",
     });
-    council.cancel(started.runId);
+    expect(council.cancel(started.runId).status).toBe("cancelling");
     expect((await council.wait(started.runId)).status).toBe("cancelled");
     await council.close();
     const reopened = service(root);

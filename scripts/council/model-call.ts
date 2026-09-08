@@ -153,8 +153,6 @@ export async function callSeat<
       output,
       ...accounting(),
     };
-    if (reportedUsage) record.usage = reportedUsage;
-    if (reportedCostUsd !== undefined) record.costUsd = reportedCostUsd;
     emit("seat.completed", {
       stage: request.stage,
       seatId: request.seat.id,
@@ -182,8 +180,6 @@ export async function callSeat<
       error: message,
       ...accounting(),
     };
-    if (reportedUsage) record.usage = reportedUsage;
-    if (reportedCostUsd !== undefined) record.costUsd = reportedCostUsd;
     emit(cancelled ? "seat.cancelled" : "seat.failed", {
       stage: request.stage,
       seatId: request.seat.id,
@@ -224,10 +220,11 @@ export function reportedCost(records: SeatRecord[]): number {
 export function reserveRequestCost(request: ModelRequest): number {
   const rates = request.seat.tokenRatesUsdPerMillion;
   if (!rates) return request.seat.estimatedCostUsd;
-  // UTF-8 bytes conservatively bound input tokens, with allowance for protocol
-  // framing and the response schema. Output is capped by the provider request.
+  // Approximate text tokens from UTF-8 size with protocol/schema allowance.
+  // Reported provider usage replaces this reservation as soon as it is known.
   const inputBound =
-    Buffer.byteLength(request.system + request.prompt, "utf8") + 4096;
+    Math.ceil(Buffer.byteLength(request.system + request.prompt, "utf8") / 3) +
+    1024;
   return Math.max(
     request.seat.estimatedCostUsd,
     (inputBound * rates.input + request.seat.maxOutputTokens * rates.output) /

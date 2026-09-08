@@ -228,7 +228,7 @@ export async function runCouncil(
         : 1;
   for (let round = 0; round < discussionRounds; round += 1) {
     const stage = round === 0 ? "peer" : "revision";
-    const discussion =
+    const priorFindings =
       round === 0
         ? undefined
         : aggregateFindings(independentSuccesses, peerRecords, options.profile);
@@ -254,7 +254,7 @@ export async function runCouncil(
         round,
         seat,
         system: peerSystem(seat),
-        prompt: peerPrompt(options.context, prepared.candidates, discussion),
+        prompt: peerPrompt(options.context, prepared.candidates, priorFindings),
         context: options.context,
         candidates: prepared.candidates,
       };
@@ -347,13 +347,14 @@ export async function runCouncil(
     contested: aggregatedFindings.filter((finding) => finding.contested).length,
   });
 
-  const limitations = reviewLimitations(
+  const limitationState = reviewLimitations(
     options.context,
     options.profile,
     independentSuccesses,
     records,
     aggregatedFindings,
   );
+  const limitations = limitationState.reported;
 
   emit("stage.started", { stage: "chair", seatCount: 1 });
   const chairRequest: ModelRequest = {
@@ -431,7 +432,7 @@ export async function runCouncil(
     );
     const correctedVerdict = critical
       ? "needs_changes"
-      : limitations.length > 0
+      : limitationState.blocking.length > 0
         ? "insufficient_evidence"
         : "pass";
     if (correctedVerdict !== "pass") {

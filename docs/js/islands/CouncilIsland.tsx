@@ -6,6 +6,7 @@ import { CouncilResult } from "./CouncilResult";
 import {
   type CouncilDraft,
   CouncilSetup,
+  optionalBudget,
   type ProfileChoice,
 } from "./CouncilSetup";
 
@@ -48,7 +49,7 @@ export function CouncilIsland() {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [starting, setStarting] = useState(false);
   const profile = profiles.find((item) => item.path === profilePath);
-  const active = job?.status === "running";
+  const active = job?.status === "running" || job?.status === "cancelling";
   const run = job?.run;
   const runProfile = run?.profile ?? job?.profile;
   const roster = runProfile
@@ -88,7 +89,7 @@ export function CouncilIsland() {
   }, []);
 
   useEffect(() => {
-    if (!job || job.status !== "running") return;
+    if (!job || !["running", "cancelling"].includes(job.status)) return;
     const runId = job.runId;
     const events = new EventSource(
       `${API}/runs/${encodeURIComponent(runId)}/events`,
@@ -97,7 +98,7 @@ export function CouncilIsland() {
       try {
         const snapshot = JSON.parse(event.data) as CouncilServiceJob;
         setJob(snapshot);
-        if (snapshot.status !== "running") {
+        if (!["running", "cancelling"].includes(snapshot.status)) {
           events.close();
           void request<CouncilServiceJob[]>("/runs")
             .then(setHistory)
@@ -126,11 +127,12 @@ export function CouncilIsland() {
     setError("");
     setStarting(true);
     try {
+      const maxUsd = optionalBudget(budget);
       const snapshot = await request<CouncilServiceJob>("/runs", {
         sourceType,
         source,
         profile: profilePath,
-        maxUsd: Number(budget),
+        ...(maxUsd === undefined ? {} : { maxUsd }),
         redactSecrets,
       });
       setJob(snapshot);

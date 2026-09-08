@@ -16,7 +16,7 @@ function download(name: string, value: string, type: string): void {
 
 export function CouncilResult({ job }: { job: CouncilServiceJob }) {
   const run = job.run;
-  const active = job.status === "running";
+  const active = job.status === "running" || job.status === "cancelling";
   return (
     <section className="panel" aria-live="polite">
       <div className="run-meta">
@@ -38,6 +38,12 @@ export function CouncilResult({ job }: { job: CouncilServiceJob }) {
         </p>
       )}
       {job.error && <p className="notice error">{job.error}</p>}
+      {job.persistenceError && (
+        <p className="notice error">
+          The review completed, but its normal artifacts could not be saved:{" "}
+          {job.persistenceError}
+        </p>
+      )}
       <CouncilDiscussion
         key={job.runId}
         rounds={job.discussion ?? run?.discussion ?? []}

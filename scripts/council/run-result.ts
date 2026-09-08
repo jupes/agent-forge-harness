@@ -17,14 +17,23 @@ export function reviewLimitations(
   independent: IndependentSuccess[],
   records: SeatRecord[],
   findings: AggregatedFinding[],
-): string[] {
+): { reported: string[]; blocking: string[] } {
   const limitations = new Set<string>();
-  if (context.truncated)
-    limitations.add("The supplied evidence was truncated.");
+  const blocking = new Set<string>();
+  const addBlocking = (message: string): void => {
+    limitations.add(message);
+    blocking.add(message);
+  };
+  if (context.truncated) addBlocking("The supplied evidence was truncated.");
   if (independent.length < profile.seats.length)
-    limitations.add("Independent review completed with a reduced roster.");
+    addBlocking("Independent review completed with a reduced roster.");
   if (records.some((record) => record.status !== "completed"))
-    limitations.add("One or more council calls failed or were cancelled.");
+    addBlocking("One or more council calls failed or were cancelled.");
+  if (
+    independent.filter((record) => record.output.verdict !== "uncertain")
+      .length < profile.minQuorum
+  )
+    addBlocking("Too few independent reviewers reached a supported verdict.");
   for (const record of independent) {
     if (record.output.verdict === "uncertain")
       limitations.add(
@@ -36,7 +45,7 @@ export function reviewLimitations(
       record.output.verdict === "needs_changes" &&
       record.output.findings.length === 0
     )
-      limitations.add(
+      addBlocking(
         "An independent reviewer requested changes without a verifiable finding.",
       );
   }
@@ -45,11 +54,11 @@ export function reviewLimitations(
       finding.resolution === "unreviewed" ||
       finding.resolution === "contested"
     )
-      limitations.add(
+      addBlocking(
         `${finding.resolution === "unreviewed" ? "Insufficient independent review" : "Unresolved disagreement"}: ${finding.title}`,
       );
   }
-  return [...limitations];
+  return { reported: [...limitations], blocking: [...blocking] };
 }
 
 export function finalRun(

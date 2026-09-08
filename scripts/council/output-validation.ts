@@ -128,11 +128,31 @@ export function parsePeerOutput(
       `peer output must ballot every candidate (${seenCandidates.size}/${validCandidateIds.size})`,
     );
   }
+  const equivalentCandidateGroups = (value.equivalentCandidateGroups ?? []).map(
+    (group, index) => {
+      if (group.length < 2)
+        throw new Error(
+          `equivalentCandidateGroups[${index}] must contain at least two candidates`,
+        );
+      const unique = new Set(group);
+      if (unique.size !== group.length)
+        throw new Error(
+          `equivalentCandidateGroups[${index}] contains a duplicate candidate ID`,
+        );
+      for (const candidateId of unique)
+        if (!validCandidateIds.has(candidateId))
+          throw new Error(
+            `equivalentCandidateGroups[${index}] contains unknown candidate ID: ${candidateId}`,
+          );
+      return [...unique].sort();
+    },
+  );
   return {
     ballots,
     missingFindings: value.missingFindings.map((finding, index) =>
       parseFinding(finding, `missingFindings[${index}]`, validEvidenceIds),
     ),
+    equivalentCandidateGroups,
   };
 }
 

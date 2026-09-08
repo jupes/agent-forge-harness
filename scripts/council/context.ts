@@ -15,7 +15,7 @@ const SECRET_PATTERNS: ReadonlyArray<{ kind: string; pattern: RegExp }> = [
   {
     kind: "provider-api-key-assignment",
     pattern:
-      /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY)\s*[:=]\s*["']?[^\s"']{8,}/gi,
+      /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|OPENROUTER_API_KEY)\s*[:=]\s*["']?[^\s"']{8,}/gi,
   },
   {
     kind: "private-key",
@@ -93,7 +93,7 @@ function maxBytesFrom(input: ContextInput): number {
   return value;
 }
 
-function truncateUtf8(
+export function truncateUtf8(
   text: string,
   maxBytes: number,
 ): { text: string; byteLength: number; truncated: boolean } {

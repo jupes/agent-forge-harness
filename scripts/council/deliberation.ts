@@ -120,8 +120,8 @@ export function preparePeerCandidates(
   profile: CouncilProfile,
   runId: string,
   peers: SeatRecord[] = [],
-): { candidates: PeerCandidate[]; fingerprints: Map<string, string> } {
-  const proposals = collectProposals(successes, peers);
+): { candidates: PeerCandidate[] } {
+  const { aggregates: proposals } = clusterProposals(successes, peers, profile);
   const ordered = deterministicOrder(
     [...proposals.entries()].filter(
       ([, proposal]) => !proposal.authors.has(reviewer.id),
@@ -129,7 +129,6 @@ export function preparePeerCandidates(
     `${runId}|${reviewer.id}`,
   );
   const candidates: PeerCandidate[] = [];
-  const fingerprints = new Map<string, string>();
   ordered.forEach(([key, proposal], responseIndex) => {
     const label = `Response ${responseLabel(responseIndex)}`;
     const candidateId = `C-${key}`;
@@ -142,9 +141,8 @@ export function preparePeerCandidates(
         profile,
       ),
     });
-    fingerprints.set(candidateId, key);
   });
-  return { candidates, fingerprints };
+  return { candidates };
 }
 
 type MutableAggregate = {
@@ -193,12 +191,110 @@ function collectProposals(
   return aggregates;
 }
 
+export function reviewerLabel(profile: CouncilProfile, seatId: string): string {
+  const index = profile.seats.findIndex((seat) => seat.id === seatId);
+  return index < 0 ? "Reviewer ?" : `Reviewer ${index + 1}`;
+}
+
+function clusterProposals(
+  independent: IndependentSuccess[],
+  peers: SeatRecord[],
+  profile: CouncilProfile,
+): {
+  aggregates: Map<string, MutableAggregate>;
+  aliases: Map<string, string>;
+} {
+  const base = collectProposals(independent, peers);
+  const parent = new Map([...base.keys()].map((key) => [key, key]));
+  const find = (key: string): string => {
+    const next = parent.get(key) ?? key;
+    if (next === key) return key;
+    const root = find(next);
+    parent.set(key, root);
+    return root;
+  };
+  const union = (left: string, right: string): void => {
+    const a = find(left),
+      b = find(right);
+    if (a === b) return;
+    const [root, child] = [a, b].sort();
+    parent.set(child!, root!);
+  };
+  const votes = new Map<string, Set<string>>();
+  for (const record of peers) {
+    if (
+      record.status !== "completed" ||
+      !record.output ||
+      !("equivalentCandidateGroups" in record.output)
+    )
+      continue;
+    for (const group of record.output.equivalentCandidateGroups) {
+      const keys = group.map((id) => id.replace(/^C-/, "")).sort();
+      for (let left = 0; left < keys.length; left += 1)
+        for (let right = left + 1; right < keys.length; right += 1) {
+          const a = keys[left]!,
+            b = keys[right]!;
+          const first = base.get(a),
+            second = base.get(b);
+          if (
+            !first ||
+            !second ||
+            first.authors.has(record.seatId) ||
+            second.authors.has(record.seatId)
+          )
+            continue;
+          const pair = `${a}|${b}`;
+          const reviewers = votes.get(pair) ?? new Set<string>();
+          reviewers.add(record.seatId);
+          votes.set(pair, reviewers);
+        }
+    }
+  }
+  for (const [pair, reviewers] of votes) {
+    const [a, b] = pair.split("|") as [string, string];
+    const first = base.get(a)!,
+      second = base.get(b)!;
+    const eligible = independent.filter(
+      (record) =>
+        !first.authors.has(record.seatId) && !second.authors.has(record.seatId),
+    ).length;
+    if (
+      eligible > 0 &&
+      reviewers.size >= Math.min(profile.minPeerBallots, eligible)
+    )
+      union(a, b);
+  }
+  const aliases = new Map<string, string>();
+  const aggregates = new Map<string, MutableAggregate>();
+  for (const [key, aggregate] of base) {
+    const root = find(key);
+    aliases.set(key, root);
+    const merged = aggregates.get(root) ?? {
+      representative: aggregate.representative,
+      authors: new Set<string>(),
+      independentAuthors: new Set<string>(),
+      proposals: new Map<string, ProposedFinding>(),
+    };
+    aggregate.authors.forEach((author) => {
+      merged.authors.add(author);
+    });
+    aggregate.independentAuthors.forEach((author) => {
+      merged.independentAuthors.add(author);
+    });
+    aggregate.proposals.forEach((finding, author) => {
+      merged.proposals.set(author, finding);
+    });
+    aggregates.set(root, merged);
+  }
+  return { aggregates, aliases };
+}
+
 export function aggregateFindings(
   independent: IndependentSuccess[],
   peers: SeatRecord[],
   profile: CouncilProfile,
 ): AggregatedFinding[] {
-  const aggregates = collectProposals(independent, peers);
+  const { aggregates, aliases } = clusterProposals(independent, peers, profile);
   const votes = new Map<string, Map<string, PeerBallot>>();
   for (const record of peers) {
     if (
@@ -208,7 +304,8 @@ export function aggregateFindings(
     )
       continue;
     for (const ballot of record.output.ballots) {
-      const key = ballot.candidateId.replace(/^C-/, "");
+      const rawKey = ballot.candidateId.replace(/^C-/, "");
+      const key = aliases.get(rawKey) ?? rawKey;
       const proposal = aggregates.get(key);
       if (!proposal || proposal.authors.has(record.seatId)) continue;
       const byReviewer = votes.get(key) ?? new Map<string, PeerBallot>();
@@ -301,7 +398,7 @@ export function aggregateFindings(
         resolution,
         severityDisputed,
         rationales: ballots.map(([seatId, ballot]) => ({
-          reviewerLabel: `Reviewer ${profile.seats.findIndex((seat) => seat.id === seatId) + 1}`,
+          reviewerLabel: reviewerLabel(profile, seatId),
           stance: ballot.stance,
           reason: anonymizeText(ballot.reason, profile),
           evidenceIds: ballot.evidenceIds,

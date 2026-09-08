@@ -53,11 +53,11 @@ describe("shared output contracts", () => {
     ],
     [
       "peer",
-      "d7166f474c8f797df014a70af0b455a432e48b2eabfe7d352f4575a3dda63ee3",
+      "5234bd488bd8ffa3100c6ccaba706102051f2fd82c42a5e7f42279bba7bfe1f0",
     ],
     [
       "revision",
-      "d7166f474c8f797df014a70af0b455a432e48b2eabfe7d352f4575a3dda63ee3",
+      "5234bd488bd8ffa3100c6ccaba706102051f2fd82c42a5e7f42279bba7bfe1f0",
     ],
     [
       "chair",
@@ -149,6 +149,24 @@ describe("shared output contracts", () => {
         candidate,
       ).ballots[0]?.stance,
     ).toBe("uncertain");
+  });
+
+  test("validates semantic-equivalence candidate groups", () => {
+    const input = {
+      ballots: [{ ...ballot }],
+      missingFindings: [],
+      equivalentCandidateGroups: [["C-a", "C-missing"]],
+    };
+    expect(() => parsePeerOutput(input, evidence, candidate)).toThrow(
+      "unknown candidate ID",
+    );
+    expect(() =>
+      parsePeerOutput(
+        { ...input, equivalentCandidateGroups: [["C-a", "C-a"]] },
+        evidence,
+        candidate,
+      ),
+    ).toThrow("duplicate candidate ID");
   });
 
   test("keeps contextual candidate and chair checks beyond the shared shape", () => {

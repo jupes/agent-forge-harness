@@ -107,7 +107,8 @@ export function councilHttpHandler(service: Service) {
       const snapshot = (value: typeof job): void => {
         if (res.destroyed || res.writableEnded) return;
         res.write(`event: snapshot\ndata: ${JSON.stringify(value)}\n\n`);
-        if (value.status !== "running") res.end();
+        if (value.status !== "running" && value.status !== "cancelling")
+          res.end();
       };
       let unsubscribe = () => {};
       const heartbeat = setInterval(() => {
