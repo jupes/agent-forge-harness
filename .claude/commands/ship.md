@@ -115,38 +115,42 @@ If push fails due to diverged history:
 
 ## Step 7 — Create or Update PR
 
+The PR body MUST follow the canonical template — see **`.claude/skills/pr-description/SKILL.md`**.
+Do not hand-roll an ad-hoc body; start from the template, fill every required section with real
+content, and validate before posting.
+
 ### Check if PR already exists
+
 ```bash
 gh pr list --head <current-branch> --json number,url
 ```
 
+### Build the body from the template
+
+```bash
+mkdir -p .tmp/work
+cp .claude/skills/pr-description/references/pr-template.md .tmp/work/pr-body.md
+# Fill every section in .tmp/work/pr-body.md:
+#   What Changed · Why It's Needed · How It Was Tested · Test Evidence
+#   (paste real `bun test` / typecheck output) · Risk & Rollback · Linked Issues & AC Trace.
+# Pull AC from: bd show <TASK-ID>
+bun run .claude/skills/pr-description/scripts/check-pr-body.ts .tmp/work/pr-body.md
+# Must print "ok": true before continuing.
+```
+
 ### Create new PR
+
 ```bash
 gh pr create \
   --title "<TASK-ID>: <task title>" \
-  --body "## Summary
-<what this does and why — derived from commit message and task description>
-
-## Changes
-$(git diff --stat master..HEAD | head -20)
-
-## Test Plan
-- [ ] Tests added or updated
-- [ ] Manual verification done
-
-## AC Trace
-| Criterion | Verified By |
-|-----------|-------------|
-$(bd show <TASK-ID> 2>/dev/null | grep -A20 "ac:" || echo "| — | — |")
-
-## Beads
-Closes <TASK-ID>" \
-  --base <base-branch>
+  --base <base-branch> \
+  --body "$(cat .tmp/work/pr-body.md)"
 ```
 
 ### Update existing PR
+
 ```bash
-gh pr edit <number> --body "<updated body>"
+gh pr edit <number> --body "$(cat .tmp/work/pr-body.md)"
 ```
 
 ---

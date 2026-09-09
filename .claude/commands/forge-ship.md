@@ -18,7 +18,9 @@ Follow **`.claude/skills/forge-ship/SKILL.md`** in full. In short:
 3. Write `reports/<slug>-ship.md`: what shipped, before→after table, work done, Beads completed
    table, and a **Test It Yourself** walkthrough with exact commands + expected output.
 4. `bun run typecheck && bun run lint && bun test`; clean tree; `git pull --rebase`; push.
-5. `gh pr create --base <base> --body "$(cat reports/<slug>-ship.md)"`.
+5. Build the PR body from the canonical template (`.claude/skills/pr-description/`), mapping the
+   ship report into its sections; validate with `check-pr-body.ts`; then
+   `gh pr create --base <base> --body "$(cat .tmp/work/pr-body.md)"`.
 6. Close the epic/feature; `bd dolt push`; `bun run forge:phase-gate ship --slug <slug> --write`.
 
 For the underlying push/PR mechanics, this reuses the patterns in `.claude/commands/ship.md`.
