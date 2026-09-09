@@ -353,6 +353,34 @@ describe("deliberation quality regressions", () => {
     );
   });
 
+  test("an unresolved low-severity note is reported without vetoing a pass", async () => {
+    const transport = new FakeCouncilTransport({
+      output: (request) =>
+        request.stage === "independent"
+          ? independent()
+          : request.stage === "peer"
+            ? {
+                ballots: [],
+                missingFindings:
+                  request.seat.id === "alpha"
+                    ? [finding({ severity: "low", title: "Minor wording" })]
+                    : [],
+              }
+            : request.stage === "chair"
+              ? passChair(request)
+              : undefined,
+    });
+    const result = await runCouncil({
+      profile: profile(),
+      context: evidence(),
+      resolveTransport: () => transport,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.run.aggregatedFindings[0]?.resolution).toBe("unreviewed");
+    expect(result.run.chair?.verdict).toBe("pass");
+    expect(result.run.limitations.join(" ")).toContain("Minor wording");
+  });
+
   test("parallel revisions consume rebuttals, change judgments, and do not multiply votes", async () => {
     const transport = new FakeCouncilTransport({
       delayMs: 5,

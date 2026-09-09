@@ -194,6 +194,15 @@ test("gateway billing includes known BYOK charges but never treats an unknown bi
     response({ usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0 } }),
   )(req.seat).generate(req, new AbortController().signal);
   expect(result.costUsd).toBe(0);
+  const unknownRouting = await resolver(
+    response({
+      openrouter_metadata: null,
+      usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.02 },
+    }),
+  )(req.seat).generate(req, new AbortController().signal);
+  expect(unknownRouting.routing?.gatewayCostUsd).toBe(0.02);
+  expect(unknownRouting.routing?.byok).toBeUndefined();
+  expect(unknownRouting.costUsd).toBeUndefined();
   await expect(
     resolver(
       response({

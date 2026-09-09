@@ -53,10 +53,12 @@ export function reviewLimitations(
     if (
       finding.resolution === "unreviewed" ||
       finding.resolution === "contested"
-    )
-      addBlocking(
-        `${finding.resolution === "unreviewed" ? "Insufficient independent review" : "Unresolved disagreement"}: ${finding.title}`,
-      );
+    ) {
+      const message = `${finding.resolution === "unreviewed" ? "Insufficient independent review" : "Unresolved disagreement"}: ${finding.title}`;
+      limitations.add(message);
+      if (finding.severity === "blocker" || finding.severity === "high")
+        blocking.add(message);
+    }
   }
   return { reported: [...limitations], blocking: [...blocking] };
 }

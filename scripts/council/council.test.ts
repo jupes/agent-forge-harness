@@ -121,6 +121,13 @@ describe("council profile", () => {
     expect(parseCouncilProfileJson(JSON.stringify(invalidQuorum)).ok).toBe(
       false,
     );
+    const excessiveTimeout = profile();
+    excessiveTimeout.seats[0]!.timeoutMs = 86_400_000;
+    const parsedTimeout = parseCouncilProfileJson(
+      JSON.stringify(excessiveTimeout),
+    );
+    expect(parsedTimeout.ok).toBe(false);
+    if (!parsedTimeout.ok) expect(parsedTimeout.error).toContain("600000");
   });
 });
 

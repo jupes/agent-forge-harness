@@ -29,7 +29,7 @@ bun run council -- pr 123 --profile councils/multi-provider.example.json
 bun run council -- pr https://github.com/owner/repo/pull/123 --profile councils/multi-provider.example.json
 ```
 
-PR review captures the base and head commit SHAs, changed-file list, patch, and linked Agent Forge Beads acceptance criteria when available. Oversized patches are truncated at a UTF-8 boundary and the omission is recorded. The GitHub CLI is invoked with argument arrays rather than a shell, and only a PR number or an HTTPS pull-request URL is accepted.
+PR review captures the base and head commit SHAs, changed-file list, patch, and linked Agent Forge Beads acceptance criteria when available. If GitHub's metadata response omits any changed files (including its 100-file list cap), the capture fails before fetching or reviewing the diff rather than silently dropping patch sections. Oversized complete patches are truncated at a UTF-8 boundary and the omission is recorded. The GitHub CLI is invoked with argument arrays rather than a shell, and only a PR number or an HTTPS pull-request URL is accepted.
 
 Useful controls:
 
@@ -77,7 +77,7 @@ Readiness checks local credential presence and endpoint configuration only; they
 
 `estimatedCostUsd` is a per-call reserve. Optional `tokenRatesUsdPerMillion` supplies input/output rates for pre-dispatch reservations and usage-derived estimates. Input reservations approximate text tokens from UTF-8 size with protocol allowance; provider-reported usage replaces them when available. The engine reserves each whole parallel round before launching it, then stops before a subsequent round if remaining budget is insufficient. Failed calls retain reported usage and a conservative charge. `actualCostUsd: null` means billing was not reported, not zero. `accountedCostUsd` is the budget ledger, which may exceed token-based estimates. Regression tests run both checked-in paid examples through every configured round at the default 200 KB context limit without making hosted calls.
 
-This is an estimated-cost guard, not a guaranteed billing cap: unknown provider surcharges, inaccurate custom rates, or already-dispatched calls can exceed it. Also set provider-side spending controls. The hosted example rates were checked September 4, 2026, and exclude discounts, promotions, and surcharges; DeepSeek uses peak uncached rates and Qwen uses Singapore rates. Check the provider's pricing before running large inputs.
+This is an estimated-cost guard, not a guaranteed billing cap: unknown provider surcharges, inaccurate custom rates, or already-dispatched calls can exceed it. Also set provider-side spending controls. The hosted example rates and model IDs were checked September 8, 2026, and exclude discounts, promotions, and surcharges; DeepSeek uses peak uncached rates and Qwen uses Singapore rates. Check the provider's pricing before running large inputs.
 
 ## Configure a council
 
@@ -120,7 +120,7 @@ The defaults above apply even if `openRouter` is omitted. `require_parameters: t
 
 **Privacy:** review material passes through OpenRouter **and** its upstream providers. No-collection/ZDR filters are requests based on OpenRouter's provider-policy information, not an independent guarantee. Review gateway account logging, caching, guardrail/plugin and retention settings as well as upstream terms before sending private work. Do not enable weaker settings merely to make a sensitive review run. Direct connections remain available when the additional gateway trust boundary is unsuitable.
 
-The example token rates are deliberately padded **budget assumptions**, not price quotes or guaranteed ceilings; endpoint prices differ. Readiness exposes the effective routing controls without making calls. Returned generation ID, served model/provider and reported costs are retained when available. [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) supplies the gateway charge; identified BYOK requests add a known separate upstream charge, or leave actual total billing unknown when it is missing. Purchase fees, taxes and unreported charges are not a guaranteed part of that total. Avoid BYOK when testing the one-key onboarding path.
+The example token rates are deliberately padded **budget assumptions**, not price quotes or guaranteed ceilings; endpoint prices differ. Readiness exposes the effective routing controls without making calls. The documented [`X-OpenRouter-Metadata`](https://openrouter.ai/docs/guides/features/router-metadata) opt-in supplies routing and BYOK identity when available. Returned generation ID, served model/provider and reported costs are retained. [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) supplies the gateway charge; identified BYOK requests add a known separate upstream charge. If BYOK identity or its upstream amount is missing, actual total billing remains unknown instead of treating a gateway fee as the whole bill. Purchase fees, taxes and unreported charges are not a guaranteed part of that total. Avoid BYOK when testing the one-key onboarding path.
 
 Profiles can assign different roles as well as models. For a PR, use correctness/security/testing/architecture; for a plan, use feasibility/migration/operations/acceptance criteria; for research, use methods/source quality/counterarguments/generalizability. Save JSON profiles in `councils/` to have them appear in the UI and MCP profile list. Schema validation reports invalid thresholds and duplicate seat IDs before any model call.
 
@@ -171,11 +171,11 @@ The server exposes eight tools:
 | `council_profiles` | List discovered profiles, rosters, and local readiness. |
 | `council_readiness` | Resolve a profile and report missing environment-variable names without making model calls. |
 | `council_start` | Start a `pr`, `plan`, `file`, or inline `text` review and immediately return a run ID. Recommended for hosted models. |
-| `council_status` | Get job status, events, validated intermediate `discussion` rounds, and the final result without keeping a long request open. |
+| `council_status` | Poll a compact, bounded status with round counts and abbreviated terminal findings; it omits evidence and transcripts. |
 | `council_cancel` | Request cancellation; use status to read the terminal outcome. |
 | `council_list` | List up to 100 recent jobs. |
-| `council_review` | Synchronous convenience tool. Use only when the client's timeout covers the entire deliberation. |
-| `council_replay` | Retrieve the preserved result of a prior run by its safe run ID. |
+| `council_review` | Synchronous convenience tool returning one nonduplicated full result. Use only when the client's timeout covers the entire deliberation. |
+| `council_replay` | Retrieve one nonduplicated full terminal run by its safe run ID after polling completes. |
 
 File and profile paths are restricted to the configured workspace or harness roots. MCP inputs intentionally have no credential fields. This makes the stdio server suitable for local editors, coding agents, CI wrappers, and other systems that can launch an MCP subprocess.
 
@@ -185,11 +185,11 @@ Example tool sequence:
 {"name":"council_start","arguments":{"sourceType":"text","source":"Review this design and its supplied evidence...","profile":"C:\\absolute\\harness\\councils\\multi-provider.example.json","maxUsd":3}}
 ```
 
-Then call `council_status` with `{"runId":"<returned ID>"}` until its status is `completed`, `failed`, or `cancelled`. A cancellation request first returns `cancelling` while in-flight calls stop. Read both the transport envelope and the job status: a successful status lookup can describe a failed review. Failed synchronous reviews retain their run ID, diagnostics, and artifact paths in `data` even when `ok` is false.
+Then call `council_status` with `{"runId":"<returned ID>"}` until its status is `completed`, `failed`, or `cancelled`. Status polling is deliberately compact: it includes progress counters, bounded finding summaries, and round metadata without repeating source evidence, events, model outputs, or the full run. Call `council_replay` once for the complete terminal record. A cancellation request first returns `cancelling` while in-flight calls stop. Read both the transport envelope and the job status: a successful status lookup can describe a failed review. Failed synchronous reviews retain their run ID, diagnostics, and artifact paths in `data` even when `ok` is false.
 
 Async jobs survive a request timeout, **not termination of the server process**. Keep the MCP subprocess alive. Completed and failed results survive restarts; interrupted in-flight runs are reported as failed, never silently resumed or rebilled. A service instance permits at most four concurrent council runs. It does not share active in-memory progress with a separate CLI/dashboard process, although persisted results can be reopened from a common runs directory.
 
-While `status` is `running`, `discussion` is an array of completed round snapshots: `stage`, optional `round`, `completedAt`, validated per-member `records`, provisional `findings`, and `candidateTitles` mapping ballot IDs to readable claim titles. It is independent of the terminal `run` field. Compare the same `seatId`/`candidateId` across rounds to inspect changed votes. Member names are visible to the human/MCP caller; the anonymous model-facing peer protocol remains unchanged. Snapshots are live in memory and written into final manifests; an abrupt process exit does not preserve in-flight discussion.
+While `status` is `running`, its `discussion` array contains bounded round metadata: `stage`, optional `round`, `completedAt`, record/completion/failure counts, and provisional finding count. Full validated per-member outputs and changed ballots remain available in the local UI and in the terminal run returned by `council_replay`. Member names are visible to the human/MCP caller; the anonymous model-facing peer protocol remains unchanged. Full snapshots are live in memory and written into final manifests; an abrupt process exit does not preserve in-flight discussion.
 
 ## Calibration and verification
 
@@ -226,7 +226,7 @@ Review behavior is shared across all three interfaces. Start with `scripts/counc
 | `fake-transport.ts` | The no-charge demo and deterministic test transport. |
 | `workflow.ts` | Shared profile loading, source preparation, provider dispatch and artifact persistence for CLI and jobs. |
 
-The original exports from `engine.ts` and `cli.ts` remain available. Runtime parsing accepts omitted or null peer severity suggestions and strips unknown fields; provider schemas require all properties and represent an omitted suggestion as null. Semantic-equivalence groups must contain known, distinct candidate IDs and are revalidated locally. Provider-specific schema transformations stay in `providers.ts`. Context-dependent evidence and voting rules cannot be expressed by the output shape alone and remain explicit validation. Reviewer-reported unknowns remain visible as limitations; only structural incompleteness such as truncation, failed/reduced participation, inadequate supported-verdict quorum, or unresolved/unreviewed findings can mechanically downgrade a pass.
+The original exports from `engine.ts` and `cli.ts` remain available. Runtime parsing accepts omitted or null peer severity suggestions and strips unknown fields; provider schemas require all properties and represent an omitted suggestion as null. Semantic-equivalence groups must contain known, distinct candidate IDs and are revalidated locally. Provider-specific schema transformations stay in `providers.ts`. Context-dependent evidence and voting rules cannot be expressed by the output shape alone and remain explicit validation. Reviewer-reported unknowns remain visible as limitations; structural incompleteness such as truncation, failed/reduced participation, inadequate supported-verdict quorum, or unresolved/unreviewed high-severity findings can mechanically downgrade a pass. Low-severity dissent remains reported without vetoing an otherwise supported pass.
 
 The CLI retains argument parsing, dry-run output and terminal reporting. `service.ts` retains workspace/profile confinement, immediate job handles, subscriptions, cancellation and persisted preparation failures. Jobs reserve their output directory before returning a handle; the shared workflow dispatches and saves both CLI and job runs. Execution status and persistence status are separate: if normal artifact writing fails, a completed review remains completed, exposes `persistenceStatus: "failed"`, and is recovered from the terminal record when possible.
 

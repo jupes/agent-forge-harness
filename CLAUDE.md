@@ -54,6 +54,7 @@ Your role for each task is defined by the workflow you are following.
 | `/status` | Git state + ready work + blocked items + PR health |
 | `/review [branch]` | Risk-tiered code review (Blocker/High/Medium/Low) |
 | `/review-plan [bead\|path]` | Fact-check a plan against real code + first-party docs; findings with what/why/evidence |
+| `/council [source]` | Run a parallel, mixed-provider deliberative review over a PR, plan, file, or pasted text |
 | `/triage` | Deadline management + capacity planning |
 | `/ask [question]` | Query domain knowledge files |
 | `/sync-knowledge` | Auto-generate knowledge YAML from codebase |

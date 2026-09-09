@@ -295,8 +295,8 @@ function parseSeat(value: unknown, path: string): CouncilSeat | string {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(value.id as string)) {
     return `${path}.id must be kebab-case`;
   }
-  if (!isPositiveInt(value.timeoutMs)) {
-    return `${path}.timeoutMs must be a positive integer`;
+  if (!isPositiveInt(value.timeoutMs) || value.timeoutMs > 600_000) {
+    return `${path}.timeoutMs must be a positive integer of at most 600000`;
   }
   if (!isPositiveInt(value.maxOutputTokens)) {
     return `${path}.maxOutputTokens must be a positive integer`;

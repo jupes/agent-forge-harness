@@ -670,11 +670,13 @@ function openRouterAccounting(
   const total =
     gatewayCost === undefined
       ? undefined
-      : byok
+      : byok === true
         ? upstreamCost === undefined
           ? undefined
           : gatewayCost + upstreamCost
-        : gatewayCost;
+        : byok === false
+          ? gatewayCost
+          : undefined;
   if (total !== undefined && !Number.isFinite(total))
     throw new Error("OpenRouter returned invalid total cost");
   return { routing, ...(total === undefined ? {} : { costUsd: total }) };

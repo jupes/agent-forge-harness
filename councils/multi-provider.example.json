@@ -22,11 +22,11 @@
       "id": "security",
       "role": "Security, abuse resistance, and reliability reviewer",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5",
       "timeoutMs": 120000,
       "maxOutputTokens": 2000,
-      "estimatedCostUsd": 0.25,
-      "tokenRatesUsdPerMillion": { "input": 3, "output": 15 }
+      "estimatedCostUsd": 0.2,
+      "tokenRatesUsdPerMillion": { "input": 2, "output": 10 }
     },
     {
       "id": "testing",

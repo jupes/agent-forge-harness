@@ -335,6 +335,11 @@ export async function compilePullRequest(
     throw safeCommandError(metadataCommand, metadataResult);
   }
   const pullRequest = parsePullRequestView(metadataResult.stdout);
+  if (pullRequest.files.length < pullRequest.changedFiles) {
+    throw new Error(
+      `PR metadata listed only ${pullRequest.files.length} of ${pullRequest.changedFiles} changed files; refusing an incomplete review`,
+    );
+  }
   const diffCommand = ["gh", "pr", "diff", safeReference, "--color=never"];
   const diffResult = await runner(diffCommand, cwd);
   if (diffResult.exitCode !== 0)

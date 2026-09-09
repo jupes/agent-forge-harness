@@ -52,21 +52,117 @@ function toolResult(
   };
 }
 
-function summary(job: CouncilServiceJob): Record<string, unknown> {
+function boundedText(value: string | undefined, max = 1_000): string | null {
+  return value === undefined ? null : value.slice(0, max);
+}
+
+function boundedScalar(value: unknown): unknown {
+  return typeof value === "string" ? value.slice(0, 300) : value;
+}
+
+function compactArtifacts(job: CouncilServiceJob) {
+  if (!job.artifacts) return null;
+  return Object.fromEntries(
+    Object.entries(job.artifacts).map(([key, value]) => [
+      key,
+      value.slice(0, 1_000),
+    ]),
+  );
+}
+
+function statusSummary(job: CouncilServiceJob): Record<string, unknown> {
   const run = job.run;
+  const lastEvent = job.events.at(-1);
+  const eventPayload = lastEvent
+    ? Object.fromEntries(
+        ["stage", "round", "seatId", "count", "verdict"].flatMap((key) =>
+          key in lastEvent.payload
+            ? [[key, boundedScalar(lastEvent.payload[key])]]
+            : [],
+        ),
+      )
+    : null;
   return {
-    ...job,
+    runId: job.runId,
+    status: job.status,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    profile: job.profile
+      ? {
+          id: job.profile.id.slice(0, 200),
+          title: job.profile.title.slice(0, 300),
+          depth: job.profile.depth,
+        }
+      : null,
+    progress: {
+      eventCount: job.events.length,
+      discussionRoundCount:
+        job.discussion?.length ?? run?.discussion?.length ?? 0,
+      lastEvent: lastEvent
+        ? {
+            seq: lastEvent.seq,
+            at: lastEvent.at,
+            type: lastEvent.type,
+            payload: eventPayload,
+          }
+        : null,
+    },
+    discussion: (job.discussion ?? run?.discussion ?? []).map((round) => ({
+      stage: round.stage,
+      ...(round.round === undefined ? {} : { round: round.round }),
+      completedAt: round.completedAt,
+      recordCount: round.records.length,
+      completedCount: round.records.filter(
+        (record) => record.status === "completed",
+      ).length,
+      failureCount: round.records.filter(
+        (record) => record.status !== "completed",
+      ).length,
+      findingCount: round.findings.length,
+    })),
     verdict: run?.chair?.verdict ?? null,
-    summary: run?.chair?.summary ?? job.error ?? null,
-    recommendations: run?.chair?.recommendations ?? [],
-    findings: run?.aggregatedFindings ?? [],
-    failures: run?.failures ?? [],
-    context: run?.context ?? null,
+    summary: boundedText(run?.chair?.summary ?? job.error, 2_000),
+    recommendations: (run?.chair?.recommendations ?? [])
+      .slice(0, 10)
+      .map((value) => value.slice(0, 500)),
+    findingCount: run?.aggregatedFindings.length ?? 0,
+    findings: (run?.aggregatedFindings ?? []).slice(0, 25).map((finding) => ({
+      key: finding.key,
+      title: finding.title.slice(0, 300),
+      claim: finding.claim.slice(0, 500),
+      severity: finding.severity,
+      resolution: finding.resolution,
+      support: finding.support,
+      oppose: finding.oppose,
+      uncertain: finding.uncertain,
+    })),
+    failureCount: run?.failures.length ?? 0,
+    failures: (run?.failures ?? []).slice(0, 20).map((failure) => ({
+      ...failure,
+      error: failure.error.slice(0, 500),
+    })),
     estimatedCostUsd: run?.estimatedCostUsd ?? null,
     actualCostUsd: run?.actualCostUsd ?? null,
     usageEstimatedCostUsd: run?.usageEstimatedCostUsd ?? null,
     accountedCostUsd: run?.accountedCostUsd ?? null,
     costIsEstimate: run?.costIsEstimate ?? true,
+    persistenceStatus: job.persistenceStatus ?? null,
+    persistenceError: boundedText(job.persistenceError),
+    artifacts: compactArtifacts(job),
+  };
+}
+
+function fullResult(job: CouncilServiceJob): Record<string, unknown> {
+  return {
+    runId: job.runId,
+    status: job.status,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    error: boundedText(job.error),
+    persistenceStatus: job.persistenceStatus ?? null,
+    persistenceError: boundedText(job.persistenceError),
+    artifacts: job.artifacts ?? null,
+    run: job.run ?? null,
   };
 }
 
@@ -117,7 +213,7 @@ export function createCouncilMcpServer(
     },
     async (input) => {
       try {
-        return toolResult(summary(service.start(input)));
+        return toolResult(statusSummary(service.start(input)));
       } catch (error) {
         return toolResult(null, safeCouncilError(error));
       }
@@ -145,7 +241,7 @@ export function createCouncilMcpServer(
         try {
           const result = await service.wait(job.runId);
           return toolResult(
-            summary(result),
+            fullResult(result),
             result.status === "completed"
               ? null
               : (result.error ?? `Council ${result.status}`),
@@ -158,28 +254,46 @@ export function createCouncilMcpServer(
       }
     },
   );
-  for (const name of ["council_status", "council_replay"] as const) {
-    server.registerTool(
-      name,
-      {
-        title:
-          name === "council_status"
-            ? "Get council progress and result"
-            : "Replay a council review",
-        description:
-          "Retrieve a run by its confined ID. The discussion array exposes validated independent, peer and rebuttal rounds while status is running; these are provisional, not a final verdict. Terminal results include synthesis, costs and failures and survive server restarts.",
-        inputSchema: ID_INPUT,
-        annotations: { readOnlyHint: true },
-      },
-      async ({ runId }) => {
-        try {
-          return toolResult(summary(service.get(runId)));
-        } catch (error) {
-          return toolResult(null, safeCouncilError(error));
-        }
-      },
-    );
-  }
+  server.registerTool(
+    "council_status",
+    {
+      title: "Get compact council progress and result",
+      description:
+        "Poll compact, bounded progress for a run. Returns round counts and abbreviated terminal findings without evidence, transcripts, or duplicated run data. Use council_replay once after completion for the full preserved review.",
+      inputSchema: ID_INPUT,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ runId }) => {
+      try {
+        return toolResult(statusSummary(service.get(runId)));
+      } catch (error) {
+        return toolResult(null, safeCouncilError(error));
+      }
+    },
+  );
+  server.registerTool(
+    "council_replay",
+    {
+      title: "Replay one complete council review",
+      description:
+        "Retrieve a terminal review exactly once without duplicating its context, findings, events, or discussion outside the run object. Poll active work with council_status instead.",
+      inputSchema: ID_INPUT,
+      annotations: { readOnlyHint: true },
+    },
+    async ({ runId }) => {
+      try {
+        const job = service.get(runId);
+        if (job.status === "running" || job.status === "cancelling")
+          return toolResult(
+            statusSummary(job),
+            "Council is still active; poll council_status before replaying it.",
+          );
+        return toolResult(fullResult(job));
+      } catch (error) {
+        return toolResult(null, safeCouncilError(error));
+      }
+    },
+  );
   server.registerTool(
     "council_list",
     {
@@ -217,7 +331,7 @@ export function createCouncilMcpServer(
     },
     async ({ runId }) => {
       try {
-        return toolResult(summary(service.cancel(runId)));
+        return toolResult(statusSummary(service.cancel(runId)));
       } catch (error) {
         return toolResult(null, safeCouncilError(error));
       }

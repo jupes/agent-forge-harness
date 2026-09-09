@@ -366,6 +366,39 @@ describe("PR source compilation", () => {
     ).rejects.toThrow("PR reference");
     expect(called).toBe(false);
   });
+
+  test("rejects incomplete GitHub file metadata before fetching a diff", async () => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (command) => {
+      calls.push(command);
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: JSON.stringify({
+          number: 42,
+          url: "https://github.com/example/repo/pull/42",
+          title: "Large change",
+          body: "",
+          baseRefName: "master",
+          baseRefOid: "base",
+          headRefName: "feature",
+          headRefOid: "head",
+          additions: 250,
+          deletions: 10,
+          changedFiles: 101,
+          files: Array.from({ length: 100 }, (_, index) => ({
+            path: `src/file-${index}.ts`,
+            additions: 1,
+            deletions: 0,
+          })),
+        }),
+      };
+    };
+    await expect(compilePullRequest("42", { runner })).rejects.toThrow(
+      "only 100 of 101 changed files",
+    );
+    expect(calls).toHaveLength(1);
+  });
 });
 
 describe("MCP facade", () => {
@@ -398,6 +431,11 @@ describe("MCP facade", () => {
         "council_status",
       ]);
       expect(JSON.stringify(tools)).not.toMatch(/api.?key/i);
+      expect(
+        tools.tools.find((tool) => tool.name === "council_status")?.description,
+      ).not.toBe(
+        tools.tools.find((tool) => tool.name === "council_replay")?.description,
+      );
 
       const readiness = await client.callTool({
         name: "council_readiness",
@@ -412,7 +450,7 @@ describe("MCP facade", () => {
         name: "council_review",
         arguments: {
           sourceType: "text",
-          source: "Review this locally supplied architecture note.",
+          source: "x".repeat(200_000),
           runId: "mcp-review",
         },
       });
@@ -420,6 +458,26 @@ describe("MCP facade", () => {
       expect(JSON.stringify(review.structuredContent)).toContain(
         '"runId":"mcp-review"',
       );
+      const reviewData = (
+        review.structuredContent as { data: Record<string, unknown> }
+      ).data;
+      expect(reviewData.run).toBeDefined();
+      expect(reviewData.context).toBeUndefined();
+      expect(reviewData.findings).toBeUndefined();
+
+      const status = await client.callTool({
+        name: "council_status",
+        arguments: { runId: "mcp-review" },
+      });
+      const statusText = JSON.stringify(status.structuredContent);
+      expect(statusText.length).toBeLessThan(20_000);
+      expect(statusText).not.toContain("x".repeat(1_000));
+      const statusData = (
+        status.structuredContent as { data: Record<string, unknown> }
+      ).data;
+      expect(statusData.run).toBeUndefined();
+      expect(statusData.events).toBeUndefined();
+      expect(statusData.context).toBeUndefined();
 
       const replay = await client.callTool({
         name: "council_replay",
@@ -429,6 +487,12 @@ describe("MCP facade", () => {
       expect(JSON.stringify(replay.structuredContent)).toContain(
         '"status":"completed"',
       );
+      const replayData = (
+        replay.structuredContent as { data: Record<string, unknown> }
+      ).data;
+      expect(replayData.run).toBeDefined();
+      expect(replayData.context).toBeUndefined();
+      expect(replayData.findings).toBeUndefined();
     } finally {
       await client.close();
       await server.close();

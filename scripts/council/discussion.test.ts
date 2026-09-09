@@ -10,7 +10,7 @@ import { buildContextPack } from "./context";
 import { ballotChanged, previousBallot } from "./discussion";
 import { FakeCouncilTransport, runCouncil } from "./engine";
 import { createCouncilMcpServer } from "./mcp";
-import { type CouncilServiceJob, createCouncilService } from "./service";
+import { createCouncilService } from "./service";
 import type { CouncilDiscussionRound, ModelTransport } from "./types";
 
 const harnessRoot = resolve(import.meta.dir, "../..");
@@ -198,12 +198,16 @@ test("MCP clients can read intermediate discussion without waiting for the chair
     });
     const envelope = status.structuredContent as {
       ok: boolean;
-      data: CouncilServiceJob;
+      data: {
+        status: string;
+        discussion: Array<{ recordCount: number; records?: unknown }>;
+      };
     };
     expect(envelope.ok).toBe(true);
     expect(envelope.data.status).toBe("running");
     expect(envelope.data.discussion).toHaveLength(3);
-    expect(envelope.data.run).toBeUndefined();
+    expect(envelope.data.discussion[0]?.recordCount).toBe(4);
+    expect(envelope.data.discussion[0]?.records).toBeUndefined();
   } finally {
     held.release();
     await client.close();
