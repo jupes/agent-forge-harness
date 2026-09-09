@@ -6,6 +6,7 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { buildContextPack } from "./context";
 import { runCouncil } from "./engine";
+import { FakeCouncilTransport } from "./fake-transport";
 import { createCouncilMcpServer } from "./mcp";
 import { type CommandRunner, compilePullRequest } from "./pr-source";
 import {
@@ -405,10 +406,23 @@ describe("MCP facade", () => {
   test("discovers readiness, review, and replay tools over MCP", async () => {
     const root = tempRoot("mcp");
     const runsRoot = join(root, "runs");
+    const transport = new FakeCouncilTransport({
+      output: (request) =>
+        request.stage === "independent"
+          ? {
+              ...INDEPENDENT_OUTPUT,
+              unknowns: Array.from(
+                { length: 12 },
+                (_, index) => `limitation-${index}-${"z".repeat(400)}`,
+              ),
+            }
+          : undefined,
+    });
     const server = createCouncilMcpServer({
       workspaceRoot: root,
       harnessRoot: process.cwd(),
       runsRoot,
+      resolveTransport: () => () => transport,
     });
     const client = new Client({
       name: "council-test-client",
@@ -473,11 +487,18 @@ describe("MCP facade", () => {
       expect(statusText.length).toBeLessThan(20_000);
       expect(statusText).not.toContain("x".repeat(1_000));
       const statusData = (
-        status.structuredContent as { data: Record<string, unknown> }
+        status.structuredContent as {
+          data: Record<string, unknown> & { limitations: string[] };
+        }
       ).data;
       expect(statusData.run).toBeUndefined();
       expect(statusData.events).toBeUndefined();
       expect(statusData.context).toBeUndefined();
+      expect(statusData.limitations).toHaveLength(10);
+      expect(statusData.limitations[0]).toHaveLength(300);
+      expect(statusData.limitations.every((value) => value.length <= 300)).toBe(
+        true,
+      );
 
       const replay = await client.callTool({
         name: "council_replay",

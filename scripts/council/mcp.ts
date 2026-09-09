@@ -125,6 +125,9 @@ function statusSummary(job: CouncilServiceJob): Record<string, unknown> {
     recommendations: (run?.chair?.recommendations ?? [])
       .slice(0, 10)
       .map((value) => value.slice(0, 500)),
+    limitations: (run?.limitations ?? [])
+      .slice(0, 10)
+      .map((value) => value.slice(0, 300)),
     findingCount: run?.aggregatedFindings.length ?? 0,
     findings: (run?.aggregatedFindings ?? []).slice(0, 25).map((finding) => ({
       key: finding.key,
@@ -259,7 +262,7 @@ export function createCouncilMcpServer(
     {
       title: "Get compact council progress and result",
       description:
-        "Poll compact, bounded progress for a run. Returns round counts and abbreviated terminal findings without evidence, transcripts, or duplicated run data. Use council_replay once after completion for the full preserved review.",
+        "Poll compact, bounded progress for a run. Returns round counts, verdict limitations, and abbreviated terminal findings without evidence, transcripts, or duplicated run data. Use council_replay once after completion for the full preserved review.",
       inputSchema: ID_INPUT,
       annotations: { readOnlyHint: true },
     },
