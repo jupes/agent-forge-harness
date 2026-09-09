@@ -14,6 +14,8 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 **Deeper walkthrough:** [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md)
 
+**Deliberative reviews:** run a parallel, mixed-provider model council over a PR, plan, research file, or pasted text through the local dashboard, CLI, or MCP server. Reviewers challenge and revise each other's findings before the chair synthesizes them. Start with [docs/COUNCIL-REVIEWS.md](docs/COUNCIL-REVIEWS.md).
+
 ---
 
 ## Prerequisites
@@ -95,6 +97,8 @@ For work that doesn't need the full Forge pipeline: `/go` · `/plan` · `/ship` 
 | `bun test` | Tests under `scripts/` |
 | `bun run quality-gate` | Hook parity / checks |
 | `bun run worktree` | Git worktree helpers |
+| `bun run council` | Deliberative council review CLI |
+| `bun run council:mcp` | Stdio MCP server for council reviews |
 | `bun run repo` | Multi-repo init/status (syncing-repos skill) |
 | `bun run build-pages` | Dashboard Beads snapshot |
 | `bun run dashboard` | Vite preview for `docs/` |

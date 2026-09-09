@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "multi-provider-review",
+  "title": "OpenAI, Anthropic, DeepSeek, and Qwen review council",
+  "depth": "deep",
+  "maxDiscussionRounds": 1,
+  "minQuorum": 3,
+  "minPeerBallots": 2,
+  "maxEstimatedUsd": 3,
+  "seats": [
+    {
+      "id": "correctness",
+      "role": "Correctness and factual accuracy reviewer",
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 2000,
+      "estimatedCostUsd": 0.1,
+      "tokenRatesUsdPerMillion": { "input": 0.75, "output": 4.5 }
+    },
+    {
+      "id": "security",
+      "role": "Security, abuse resistance, and reliability reviewer",
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 2000,
+      "estimatedCostUsd": 0.2,
+      "tokenRatesUsdPerMillion": { "input": 2, "output": 10 }
+    },
+    {
+      "id": "testing",
+      "role": "Tests, failure modes, and edge cases reviewer",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 8000,
+      "estimatedCostUsd": 0.12,
+      "tokenRatesUsdPerMillion": { "input": 1.32, "output": 3.96 }
+    },
+    {
+      "id": "architecture",
+      "role": "Architecture, simplicity, and maintainability reviewer",
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeoutMs": 120000,
+      "maxOutputTokens": 2000,
+      "estimatedCostUsd": 0.15,
+      "tokenRatesUsdPerMillion": { "input": 2, "output": 6 }
+    }
+  ],
+  "chair": {
+    "id": "chair",
+    "role": "Independent synthesis chair",
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "timeoutMs": 120000,
+    "maxOutputTokens": 2500,
+    "estimatedCostUsd": 0.3,
+    "tokenRatesUsdPerMillion": { "input": 2.5, "output": 15 }
+  }
+}

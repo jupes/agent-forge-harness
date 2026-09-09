@@ -35,3 +35,7 @@ Follow **`.claude/skills/review-plan/SKILL.md`** in full. In short:
    `bd comments add <id> "review: plan <verdict> — <#B>/<#H>/<#M>/<#L>"`.
 
 Pairs well after `/forge-plan` (or `/plan`) and before `/forge-implement`.
+
+## Optional council deliberation
+
+With `--council <profile-path>`, also follow `.claude/commands/council.md`. First gather the verified code and first-party evidence required above, then supply the plan together with those excerpts to the council. A council reviewing only the plan cannot independently fact-check inaccessible code or linked websites. Preserve the returned uncertainty, disagreements, and artifact path in the final plan review; do not replace evidence verification with a model vote. The Plan review dashboard also offers **Send to council** for the selected local plan.
