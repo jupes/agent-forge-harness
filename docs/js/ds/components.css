@@ -1,0 +1,265 @@
+/**
+ * Nocturne component layer — the classes the `docs/js/ds/` primitives emit.
+ *
+ * Every value here comes from a token in tokens.css. If you need a color, a
+ * space or a radius that is not a token, add the token rather than a literal.
+ */
+
+/* ─── buttons ──────────────────────────────────────────────────────────── */
+
+.af-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: var(--font-heading-weight);
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.af-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* The primary action is an accent outline — never a solid fill. */
+.af-btn-primary {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+}
+
+.af-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.af-btn-primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.af-btn-secondary {
+  border-color: var(--color-neutral-800);
+  color: var(--color-neutral-300);
+}
+
+.af-btn-secondary:hover:not(:disabled) {
+  border-color: var(--color-neutral-700);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.af-btn-secondary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 14%, transparent);
+}
+
+.af-btn-ghost {
+  padding-inline: var(--space-2);
+  color: var(--color-accent-300);
+}
+
+.af-btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.af-btn-ghost:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+/* ─── tags ─────────────────────────────────────────────────────────────── */
+
+.af-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) * 0.75);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.af-tag-neutral {
+  border-color: var(--color-neutral-800);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-300);
+}
+
+.af-tag-accent {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+  color: var(--color-accent-300);
+}
+
+.af-tag-outline {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+}
+
+.af-tag-muted {
+  border-color: var(--color-neutral-900);
+  color: var(--color-neutral-600);
+}
+
+/* ─── cards ────────────────────────────────────────────────────────────── */
+
+.af-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.af-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.af-card-kicker {
+  margin: 0;
+  color: var(--color-accent-400);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.af-card-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.af-card-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+/* ─── tables ───────────────────────────────────────────────────────────── */
+
+/* Wide tables scroll inside their own region instead of widening the page. */
+.af-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.af-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.af-table th {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-neutral-800);
+  color: var(--color-neutral-600);
+  font-size: 10.5px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.1em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.af-table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-neutral-900);
+  color: var(--color-neutral-300);
+  vertical-align: middle;
+}
+
+.af-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.af-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  color: var(--color-text);
+}
+
+.af-table-detail-row td {
+  padding: 0;
+  background: var(--color-bg);
+}
+
+.af-table-detail-row:hover td {
+  background: var(--color-bg);
+}
+
+.af-table-empty {
+  margin: 0;
+  padding: var(--space-8) var(--space-4);
+  color: var(--color-neutral-600);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ─── fields ───────────────────────────────────────────────────────────── */
+
+.af-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.af-field-label {
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.af-field-required {
+  margin-left: 3px;
+  color: var(--color-accent-400);
+  text-decoration: none;
+}
+
+.af-field-hint {
+  margin: 0;
+  color: var(--color-neutral-700);
+  font-size: 11px;
+  text-transform: none;
+}
+
+.af-input {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  caret-color: var(--color-accent);
+}
+
+.af-input:hover:not(:disabled) {
+  border-color: var(--color-neutral-700);
+}
+
+.af-input:focus-visible {
+  border-color: var(--color-accent);
+  outline-offset: 0;
+}
+
+textarea.af-input {
+  min-height: 84px;
+  resize: vertical;
+}

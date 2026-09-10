@@ -1,0 +1,11 @@
+/**
+ * The one stylesheet every page links.
+ *
+ *   <link rel="stylesheet" href="js/ds/ds.css">
+ *
+ * Keep this the only design-system entry point so a page can never pick up the
+ * tokens without the component layer (or vice versa).
+ */
+
+@import "./tokens.css";
+@import "./components.css";
