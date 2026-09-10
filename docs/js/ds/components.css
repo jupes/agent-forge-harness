@@ -1059,3 +1059,313 @@ button.issue-id-copy code {
   color: var(--color-accent-300);
   font-size: 12px;
 }
+
+/* ─── council ──────────────────────────────────────────────────────────── */
+
+/* Council's report surfaces (result, discussion, transcript) keep their own
+   semantic class names, but every value below comes from a token — this is
+   part of the design system, not a page-level stylesheet. */
+
+.af-workspace {
+  display: grid;
+  align-items: start;
+  gap: var(--space-6);
+  grid-template-columns: minmax(0, 1fr) 260px;
+}
+
+.af-workspace-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.af-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-neutral-300);
+  font-size: 13px;
+}
+
+.af-check input {
+  width: auto;
+  accent-color: var(--color-accent);
+}
+
+.af-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.af-notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-accent-800);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-900);
+  color: var(--color-accent-200);
+  font-size: 12.5px;
+}
+
+.af-notice-error {
+  border-color: var(--color-neutral-700);
+  border-left-color: var(--color-neutral-400);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-200);
+}
+
+.af-details {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-neutral-900);
+  font-size: 12.5px;
+}
+
+.af-details summary {
+  color: var(--color-accent-300);
+  cursor: pointer;
+}
+
+.af-form-actions-split {
+  justify-content: space-between;
+}
+
+.af-button-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.af-seat-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.af-seat {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.af-seat-id {
+  margin: 0;
+  font-size: 13px;
+}
+
+.af-seat-model {
+  margin: 2px 0 0;
+  color: var(--color-neutral-600);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.af-seat-phase {
+  margin: var(--space-3) 0 0;
+  color: var(--color-accent-400);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.af-history {
+  position: sticky;
+  top: var(--space-8);
+}
+
+.af-history-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.af-history-item:hover {
+  border-color: var(--color-accent-700);
+}
+
+.af-history-item.is-selected {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+}
+
+.af-history-name {
+  display: block;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.af-history-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+}
+
+/* Council report internals (CouncilResult / CouncilDiscussion). */
+
+.council-report .panel,
+.council-report .discussion,
+.council-report .finding {
+  border-color: var(--color-neutral-800);
+}
+
+.council-report h2 {
+  font-size: 16px;
+}
+
+.council-report h3,
+.council-report h4 {
+  font-size: 14px;
+}
+
+.council-report .muted,
+.council-report small {
+  color: var(--color-neutral-600);
+}
+
+.council-report .pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 20px;
+  background: var(--color-neutral-900);
+  color: var(--color-accent-300);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.council-report .pill.warning {
+  border-color: var(--color-accent-700);
+  color: var(--color-accent-200);
+}
+
+.council-report .run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.council-report .finding {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-neutral-900);
+}
+
+.council-report .finding:first-child {
+  border-top: 0;
+}
+
+.council-report .finding-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.council-report .discussion {
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid var(--color-neutral-900);
+  margin: var(--space-4) 0;
+}
+
+.council-report .discussion-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.council-report .discussion-tabs button {
+  padding: 5px 12px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-neutral-400);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.council-report .discussion-tabs button:hover {
+  border-color: var(--color-accent-700);
+  color: var(--color-accent-200);
+}
+
+.council-report .discussion-entry {
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--color-accent-700);
+  border-radius: var(--radius-sm);
+  margin: var(--space-3) 0;
+  background: var(--color-bg);
+}
+
+.council-report .discussion-entry p,
+.council-report .finding p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.council-report .vote-change {
+  display: inline-block;
+  margin: var(--space-2) var(--space-3) 0 0;
+  color: var(--color-accent-300);
+  font-size: 12px;
+}
+
+.council-report details {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-neutral-900);
+}
+
+.council-report summary {
+  color: var(--color-accent-300);
+  cursor: pointer;
+}
+
+.council-report pre {
+  max-height: 450px;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.council-report .recommendations {
+  padding-left: var(--space-6);
+}
+
+.council-report .empty {
+  padding: var(--space-8) 0;
+  color: var(--color-neutral-600);
+  text-align: center;
+}
+
+@media (width <= 1000px) {
+  .af-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .af-history {
+    position: static;
+  }
+}
