@@ -26,6 +26,7 @@ import {
   legacyRedirectFor,
   parseRoute,
   type RouteId,
+  routeForHashChange,
 } from "./router";
 
 const BEADS_URL = "data/beads.json";
@@ -54,7 +55,8 @@ function useHashRoute(): RouteId {
   });
 
   useEffect(() => {
-    const onHashChange = () => setRoute(parseRoute(window.location.hash));
+    const onHashChange = () =>
+      setRoute((current) => routeForHashChange(window.location.hash, current));
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);

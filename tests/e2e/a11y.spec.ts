@@ -32,10 +32,12 @@ test("keyboard focus produces a visible outline, not a suppressed one", async ({
   expect(focus?.outlineWidth ?? 0).toBeGreaterThan(0);
 });
 
-test("the first tab stop is the skip link, which jumps to main", async ({
+test("the skip link moves focus to main without changing the route", async ({
   page,
 }) => {
-  await page.goto("/index.html#/dashboard", { waitUntil: "networkidle" });
+  // Start somewhere other than the default route: a skip link that navigates
+  // would land on Dashboard, which a test starting there could not notice.
+  await page.goto("/index.html#/issues", { waitUntil: "networkidle" });
 
   await page.keyboard.press("Tab");
   const skip = page.locator(".af-skip-link");
@@ -43,7 +45,20 @@ test("the first tab stop is the skip link, which jumps to main", async ({
   await expect(skip).toHaveText(/Skip to content/);
 
   await page.keyboard.press("Enter");
-  await expect(page.locator("main#af-main")).toBeVisible();
+
+  await expect(page).toHaveURL(/#\/issues$/);
+  await expect(page.locator("h1")).toHaveText("All issues");
+  await expect(page.locator("main#af-main")).toBeFocused();
+});
+
+test("a bare in-page fragment does not reset the current route", async ({
+  page,
+}) => {
+  await page.goto("/index.html#/epics", { waitUntil: "networkidle" });
+  await page.evaluate(() => {
+    window.location.hash = "af-main";
+  });
+  await expect(page.locator("h1")).toHaveText("Epics");
 });
 
 test("every nav destination is reachable by keyboard alone", async ({

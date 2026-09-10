@@ -96,7 +96,18 @@ export function AppShell({
 
   return (
     <div class="af-shell">
-      <a class="af-skip-link" href="#af-main">
+      <a
+        class="af-skip-link"
+        href="#af-main"
+        onClick={(event) => {
+          // The SPA routes on the hash, so following #af-main would navigate
+          // away from the current page. Move focus to the content instead.
+          event.preventDefault();
+          const main = document.getElementById("af-main");
+          main?.focus();
+          main?.scrollIntoView({ block: "start" });
+        }}
+      >
         Skip to content
       </a>
 
@@ -152,7 +163,8 @@ export function AppShell({
         </div>
       </nav>
 
-      <main id="af-main" class="af-main">
+      {/* tabIndex -1: focusable by the skip link, not added to the tab order. */}
+      <main id="af-main" class="af-main" tabIndex={-1}>
         <header class="af-page-header">
           <div class="af-page-heading">
             <h1 class="af-page-title">{title}</h1>

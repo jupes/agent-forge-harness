@@ -7,6 +7,7 @@ import {
   parseRoute,
   ROUTES,
   type RouteId,
+  routeForHashChange,
 } from "../../docs/js/router";
 
 describe("route table", () => {
@@ -125,5 +126,23 @@ describe("isRouteId", () => {
   test("narrows unknown strings", () => {
     expect(isRouteId("issues")).toBe(true);
     expect(isRouteId("nope")).toBe(false);
+  });
+});
+
+describe("routeForHashChange", () => {
+  test("keeps the current route for a bare in-page fragment", () => {
+    // The skip link's #af-main used to parse as an unknown route and dump the
+    // user on Dashboard.
+    expect(routeForHashChange("#af-main", "issues")).toBe("issues");
+  });
+
+  test("still navigates for route-shaped hashes", () => {
+    expect(routeForHashChange("#/epics", "issues")).toBe("epics");
+    expect(routeForHashChange("#epics", "issues")).toBe("epics");
+    expect(routeForHashChange("", "issues")).toBe(DEFAULT_ROUTE);
+  });
+
+  test("an unknown slash route still falls back to the dashboard", () => {
+    expect(routeForHashChange("#/nope", "issues")).toBe(DEFAULT_ROUTE);
   });
 });

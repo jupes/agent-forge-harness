@@ -124,6 +124,21 @@ export function parseRoute(hash: string): RouteId {
   return isRouteId(id) ? id : DEFAULT_ROUTE;
 }
 
+/**
+ * The route to show after the hash changes, given the one currently shown.
+ *
+ * A bare in-page fragment such as `#af-main` (the skip link's target) is not a
+ * navigation, so it keeps the current route instead of falling back to the
+ * dashboard. Only a route-shaped hash — `#/anything`, a known id, or empty —
+ * moves the app.
+ */
+export function routeForHashChange(hash: string, current: RouteId): RouteId {
+  const raw = hash.replace(/^#/, "");
+  if (raw === "" || raw.startsWith("/")) return parseRoute(hash);
+  const id = (raw.split(/[?/]/)[0] ?? "").trim();
+  return isRouteId(id) ? id : current;
+}
+
 export function hrefFor(
   id: RouteId,
   options: { fromDocument?: boolean } = {},
