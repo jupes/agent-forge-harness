@@ -73,7 +73,9 @@ describe("hrefFor", () => {
   });
 
   test("can target the SPA from another document", () => {
-    expect(hrefFor("issues", { fromDocument: true })).toBe("index.html#/issues");
+    expect(hrefFor("issues", { fromDocument: true })).toBe(
+      "index.html#/issues",
+    );
   });
 });
 

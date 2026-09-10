@@ -30,7 +30,8 @@ export const ROUTES = [
     label: "Dashboard",
     icon: "gauge",
     group: "work",
-    blurb: "Beads snapshot, the active forge run, and what is ready to pick up.",
+    blurb:
+      "Beads snapshot, the active forge run, and what is ready to pick up.",
   },
   {
     id: "issues",
@@ -150,10 +151,7 @@ const LEGACY_VIEWS: Record<string, RouteId> = {
  * the query belongs to another page — `council.html`'s `?sourceType=`/`?source=`
  * and `?run=` contracts must pass through untouched.
  */
-export function legacyRedirectFor(
-  search: string,
-  hash: string,
-): string | null {
+export function legacyRedirectFor(search: string, hash: string): string | null {
   if (hash.replace(/^#\/?/, "").trim() !== "") return null;
 
   const params = new URLSearchParams(search);
