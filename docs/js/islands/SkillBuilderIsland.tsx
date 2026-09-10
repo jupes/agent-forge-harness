@@ -258,9 +258,8 @@ export function SkillBuilderIsland() {
         titleId="sb-modal-title"
         actions={<Button onClick={closeModal}>Close</Button>}
       >
+        {/* Body copy is authored here, not user input. */}
         {modal.open ? (
-          // Body copy is authored here, not user input.
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: fixed local strings, no user or network content reaches this.
           <p dangerouslySetInnerHTML={{ __html: modal.bodyHtml }} />
         ) : null}
         <p class="af-muted">

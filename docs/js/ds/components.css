@@ -1460,6 +1460,6 @@ button.issue-id-copy code {
   font-size: 11.5px;
 }
 
-.af-phase-artifact code {
+.af-phase .af-phase-artifact > code {
   color: var(--color-neutral-500);
 }

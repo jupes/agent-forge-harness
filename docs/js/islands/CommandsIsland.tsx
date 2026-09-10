@@ -160,7 +160,7 @@ export function CommandsIsland(): JSX.Element {
     <Fragment>
       <Card title="Slash commands" headingLevel={2} kicker=".claude/commands/">
         <p class="af-prose af-muted">
-          Slash command prompts live in <code>.claude/commands/</code>;
+          Slash command prompts live in <code>.claude/commands/</code>, and
           orchestration playbooks live in <code>.claude/workflows/</code>.
         </p>
         <Table
