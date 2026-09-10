@@ -1369,3 +1369,97 @@ button.issue-id-copy code {
     position: static;
   }
 }
+
+/* ─── forge run ────────────────────────────────────────────────────────── */
+
+.af-phase-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.af-phase {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+
+/* The connector line between phase nodes. */
+.af-phase:not(:last-child) .af-phase-node::after {
+  position: absolute;
+  top: 28px;
+  bottom: calc(-1 * var(--space-4));
+  left: 50%;
+  width: 1px;
+  background: var(--color-neutral-900);
+  content: "";
+}
+
+.af-phase-complete:not(:last-child) .af-phase-node::after {
+  background: var(--color-accent-700);
+}
+
+.af-phase-node {
+  position: relative;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 50%;
+  color: var(--color-neutral-700);
+}
+
+.af-phase-complete .af-phase-node {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+  color: var(--color-accent-400);
+}
+
+.af-phase-active .af-phase-node {
+  border-color: var(--color-accent);
+  background: var(--color-accent-900);
+  color: var(--color-accent-300);
+}
+
+.af-phase-body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-4);
+  background: var(--color-surface);
+}
+
+.af-phase-active .af-phase-body {
+  border-color: var(--color-accent-700);
+}
+
+.af-phase-locked .af-phase-body {
+  background: transparent;
+}
+
+.af-phase-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.af-phase-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.af-phase-locked .af-phase-title {
+  color: var(--color-neutral-600);
+}
+
+.af-phase-artifact {
+  margin: var(--space-2) 0 0;
+  font-size: 11.5px;
+}
+
+.af-phase-artifact code {
+  color: var(--color-neutral-500);
+}

@@ -20,30 +20,21 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
-export type ForgePhase = "research" | "plan" | "implement" | "ship";
+import {
+  artifactPath,
+  FORGE_PHASES,
+  type ForgePhase,
+  type ForgeState,
+  isForgePhase,
+} from "./phases";
 
-export const FORGE_PHASES: readonly ForgePhase[] = [
-  "research",
-  "plan",
-  "implement",
-  "ship",
-] as const;
-
-export interface ForgeState {
-  slug: string;
-  feature?: string;
-  /** The most recently completed (or active) phase. */
-  phase: ForgePhase;
-  /** Phases whose exit artifact has been validated. */
-  completed: ForgePhase[];
-  /** Beads epic id grouping the work, if any. */
-  epic?: string;
-  /** Map of phase -> repo-relative artifact path. */
-  artifacts: Partial<Record<ForgePhase, string>>;
-  /** Last phase announced by the Stop hook (noise control). */
-  announcedPhase?: ForgePhase;
-  updatedAt: string;
-}
+export {
+  artifactPath,
+  FORGE_PHASES,
+  type ForgePhase,
+  type ForgeState,
+  isForgePhase,
+};
 
 export interface GateResult<T = unknown> {
   ok: boolean;
@@ -52,25 +43,6 @@ export interface GateResult<T = unknown> {
 }
 
 export const FORGE_STATE_PATH = join(".tmp", "work", "forge-state.json");
-
-export function isForgePhase(value: string): value is ForgePhase {
-  return (FORGE_PHASES as readonly string[]).includes(value);
-}
-
-/** Repo-relative path of the document a phase produces, or null if it has none. */
-export function artifactPath(phase: ForgePhase, slug: string): string | null {
-  switch (phase) {
-    case "research":
-      return `plans/research/${slug}.md`;
-    case "plan":
-      return `plans/drafts/${slug}.md`;
-    case "implement":
-      // Implementation has no single doc artifact — it is tracked by Beads + git.
-      return null;
-    case "ship":
-      return `reports/${slug}-ship.md`;
-  }
-}
 
 /** The phase that must be complete before `phase` may start. */
 export function prereqPhase(phase: ForgePhase): ForgePhase | null {
