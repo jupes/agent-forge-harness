@@ -1,0 +1,360 @@
+/**
+ * Plan review surfaces.
+ *
+ * Part of the design system, not page-level styling: every value below comes
+ * from a token in tokens.css. The island keeps its own semantic class names
+ * because its diff renderer is bespoke.
+ */
+
+/* Diff add/remove is the one deliberate exception to the mono accent — those
+   two states must read as add and remove. Desaturated to sit on the Nocturne
+   ground rather than using the stock GitHub palette. */
+:root {
+  --diff-add-bg: rgb(64 160 100 / 18%);
+  --diff-add-fg: #b7e8c8;
+  --diff-add-edge: #4d9e6a;
+  --diff-remove-bg: rgb(190 80 80 / 18%);
+  --diff-remove-fg: #f0c5c5;
+  --diff-remove-edge: #b4595c;
+  --diff-void-hatch: rgb(117 121 140 / 22%);
+}
+
+.plan-review-root-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.plan-review-banner {
+  max-width: 72ch;
+  padding: var(--space-4);
+  border: 1px solid var(--color-accent-700);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-900);
+  color: var(--color-accent-200);
+  font-size: 13px;
+}
+
+.plan-review-banner-soft {
+  border-color: var(--color-neutral-800);
+  border-left-color: var(--color-neutral-600);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-300);
+}
+
+.plan-review-toolbar {
+  display: grid;
+  align-items: end;
+  padding: var(--space-4) var(--space-6);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(200px, auto));
+}
+
+.plan-review-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.plan-review-label {
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plan-review-select {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.plan-review-select:focus-visible {
+  border-color: var(--color-accent);
+  outline-offset: 0;
+}
+
+.plan-review-select-wide {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.plan-review-follow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-neutral-300);
+  font-size: 13px;
+}
+
+.plan-review-follow input {
+  accent-color: var(--color-accent);
+}
+
+.plan-review-btn {
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-accent-300);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.plan-review-btn:hover {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.plan-review-btn-secondary {
+  border-color: var(--color-neutral-800);
+  color: var(--color-neutral-300);
+}
+
+.plan-review-btn-secondary:hover {
+  border-color: var(--color-neutral-700);
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.plan-review-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.plan-review-tab {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.plan-review-tab:hover {
+  border-color: var(--color-accent-700);
+  color: var(--color-accent-200);
+}
+
+.plan-review-tab-active,
+.plan-review-tab-active:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-900);
+  color: var(--color-accent-200);
+}
+
+.plan-review-meta,
+.plan-review-empty-msg,
+.plan-review-history-hint {
+  margin: 0;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.plan-review-history-hint {
+  max-width: 80ch;
+  grid-column: 1 / -1;
+}
+
+.plan-review-pre,
+.plan-review-diff-pre {
+  max-height: 70vh;
+  padding: var(--space-4) var(--space-6);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  margin: 0;
+  background: var(--color-bg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.plan-review-pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.plan-review-diff-outer {
+  max-height: 70vh;
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  overflow: auto;
+}
+
+.plan-diff-add {
+  color: var(--diff-add-fg);
+}
+
+.plan-diff-del {
+  color: var(--diff-remove-fg);
+}
+
+.plan-diff-same {
+  color: var(--color-neutral-600);
+}
+
+.plan-sbs {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.plan-sbs-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: grid;
+  border-bottom: 1px solid var(--color-neutral-800);
+  background: var(--color-surface);
+  grid-template-columns: 1fr 1fr;
+}
+
+.plan-sbs-header-cell {
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  font-weight: var(--font-heading-weight);
+}
+
+.plan-sbs-row {
+  display: grid;
+  border-bottom: 1px solid var(--color-neutral-900);
+  grid-template-columns: 1fr 1fr;
+}
+
+.plan-sbs-row:last-child {
+  border-bottom: 0;
+}
+
+.plan-sbs-cell {
+  display: flex;
+  min-height: 1.5em;
+  align-items: stretch;
+  padding: 0;
+  border-right: 1px solid var(--color-neutral-900);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.plan-sbs-right {
+  border-right: 0;
+}
+
+.plan-sbs-gutter {
+  flex: 0 0 1.2rem;
+  color: var(--color-neutral-700);
+  text-align: center;
+  user-select: none;
+}
+
+.plan-sbs-gutter--remove {
+  color: var(--diff-remove-edge);
+}
+
+.plan-sbs-gutter--add {
+  color: var(--diff-add-edge);
+}
+
+.plan-sbs-chunk {
+  flex: 1;
+  padding: 1px var(--space-2);
+}
+
+.plan-sbs-chunk--remove {
+  border-left: 2px solid var(--diff-remove-edge);
+  background: var(--diff-remove-bg);
+  color: var(--diff-remove-fg);
+}
+
+.plan-sbs-chunk--add {
+  border-left: 2px solid var(--diff-add-edge);
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
+}
+
+.plan-sbs-chunk--context {
+  color: var(--color-neutral-400);
+}
+
+/* The opposite column when a line exists on only one side. */
+.plan-sbs-chunk--void {
+  background-color: var(--color-bg);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--diff-void-hatch),
+    var(--diff-void-hatch) 1px,
+    transparent 1px,
+    transparent 5px
+  );
+  color: var(--color-neutral-700);
+}
+
+.plan-review-history-controls {
+  display: grid;
+  align-items: end;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.plan-review-history-table-wrap {
+  max-height: 28vh;
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  overflow: auto;
+}
+
+.plan-review-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--color-neutral-400);
+  font-size: 12px;
+}
+
+.plan-review-history-table th,
+.plan-review-history-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-neutral-900);
+  text-align: left;
+  vertical-align: top;
+}
+
+.plan-review-history-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface);
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plan-review-history-table tr:hover td {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  color: var(--color-text);
+}
+
+.plan-review-history-panel,
+.plan-review-diff-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
