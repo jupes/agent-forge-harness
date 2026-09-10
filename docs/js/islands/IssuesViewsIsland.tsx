@@ -1,280 +1,34 @@
-import { Fragment, h } from "preact";
+import { Fragment, type JSX } from "preact";
 import { useMemo } from "preact/hooks";
 import type {
   BeadsIssue,
   BeadsPayload,
   EpicFlowData,
 } from "../../../types/beads";
+import { Card } from "../ds/Card";
+import { EmptyState } from "../ds/EmptyState";
+import { Input, Select } from "../ds/Field";
+import { Icon } from "../ds/Icon";
+import { StatCard } from "../ds/StatCard";
+import { Table } from "../ds/Table";
+import { Tag } from "../ds/Tag";
+import { toggleExpandedState } from "../issue-detail.mjs";
 import {
-  issueIdCopyControlHtml,
-  toggleExpandedState,
-} from "../issue-detail.mjs";
-import {
-  applyInitiativeFilter,
-  formatIssueDate,
-  issuesInProgress,
-  listEpics,
-  sortByUpdatedDesc,
-} from "../issues-selection.mjs";
+  priorityTone,
+  statusLabel,
+  statusTone,
+  typeIcon,
+} from "../issue-presentation";
+import { formatIssueDate } from "../issues-selection.mjs";
+import { CopyIdButton } from "./CopyIdButton";
+import { InitiativeSelect } from "./InitiativeSelect";
 import { IssueDetailPanel } from "./IssueDetailPanel";
-
-const STATUS_COLOR: Record<string, string> = {
-  open: "#3dff9c",
-  in_progress: "#ffe94d",
-  closed: "#aeb8ce",
-  blocked: "#ff4757",
-};
-
-const STATUS_CLOSED_CHECK = "#34f097";
-
-const TYPE_ICON: Record<string, string> = {
-  epic: "⚡",
-  feature: "✨",
-  task: "📄",
-  bug: "🐛",
-  chore: "🔧",
-};
-
-const PRIORITY_COLOR: Record<string, string> = {
-  critical: "#ff3838",
-  high: "#ffb020",
-  medium: "#6ec6ff",
-  low: "#8aa4c8",
-};
-
-const ISSUE_TABLE_COLSPAN = 8;
-
-const EXPANDABLE_ISSUE_HEAD_INNER =
-  '<tr><th>ID</th><th>Title</th><th class="type-col">Type</th><th>Status</th><th>Priority</th><th>Repo</th><th class="date-col">Created</th><th class="date-col">Updated</th></tr>';
-
-function esc(str: unknown): string {
-  return String(str != null ? str : "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function statusBadgeHtml(status: unknown): string {
-  const s = String(status != null ? status : "");
-  if (s === "closed") {
-    const fg = STATUS_COLOR.closed;
-    return (
-      '<span class="badge badge-status-closed" style="display:inline-flex;align-items:center;gap:0.32em;background:' +
-      fg +
-      "26;color:" +
-      fg +
-      ";border:1px solid " +
-      fg +
-      '55"><span style="color:' +
-      STATUS_CLOSED_CHECK +
-      ';font-weight:800;line-height:1;font-size:1.05em" aria-hidden="true">\u2713</span><span>closed</span></span>'
-    );
-  }
-  const color = STATUS_COLOR[s] || "#8aa4c8";
-  return (
-    '<span class="badge" style="background:' +
-    color +
-    "20;color:" +
-    color +
-    ";border:1px solid " +
-    color +
-    '40">' +
-    esc(s) +
-    "</span>"
-  );
-}
-
-function priorityBadgeHtml(priority: unknown): string {
-  if (!priority) return "";
-  const color = PRIORITY_COLOR[String(priority)] || "#8aa4c8";
-  return (
-    '<span class="badge" style="color:' +
-    color +
-    '">' +
-    String(priority) +
-    "</span>"
-  );
-}
-
-function typeCellHtml(type: unknown): string {
-  const icon = TYPE_ICON[String(type)] || "";
-  const label = esc(String(type || ""));
-  if (!label && !icon) return "—";
-  return (
-    '<span class="type-pill">' +
-    (icon
-      ? '<span class="type-icon" aria-hidden="true">' + icon + "</span>"
-      : "") +
-    (label ? '<span class="type-label">' + label + "</span>" : "") +
-    "</span>"
-  );
-}
-
-function activeBlockerIdsByIssue(
-  issues: BeadsIssue[],
-  deps: BeadsPayload["deps"],
-): Map<string, string[]> {
-  const byId = new Map<string, BeadsIssue>();
-  for (const issue of issues) byId.set(issue.id, issue);
-  const out = new Map<string, string[]>();
-  for (const dep of deps || []) {
-    if (dep.type !== "blocks" && dep.type !== "requires") continue;
-    const blocker = byId.get(dep.to);
-    if (!blocker || blocker.status === "closed") continue;
-    const list = out.get(dep.from) || [];
-    if (list.indexOf(dep.to) === -1) list.push(dep.to);
-    out.set(dep.from, list);
-  }
-  return out;
-}
-
-function InitiativeSelect({
-  issues,
-  initiativeFilter,
-  onInitiativeChange,
-}: {
-  issues: BeadsIssue[];
-  initiativeFilter: string;
-  onInitiativeChange: (v: string) => void;
-}) {
-  const epics = useMemo(() => listEpics(issues), [issues]);
-  return (
-    <label
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "0.45rem",
-        color: "var(--text-muted)",
-        fontSize: "0.85rem",
-      }}
-    >
-      <span>Initiative</span>
-      <select
-        id="filter-initiative"
-        value={initiativeFilter}
-        onChange={(e) =>
-          onInitiativeChange((e.currentTarget as HTMLSelectElement).value)
-        }
-        style={{
-          padding: "0.4rem 0.75rem",
-          background: "var(--surface-2)",
-          border: "1px solid var(--border)",
-          color: "var(--text)",
-          borderRadius: "6px",
-          fontSize: "0.875rem",
-          maxWidth: "22rem",
-        }}
-      >
-        <option value="all">All initiatives</option>
-        {epics.map((e: BeadsIssue) => {
-          const label = e.title ? e.title + "  (" + e.id + ")" : e.id;
-          return (
-            <option key={e.id} value={e.id}>
-              {label}
-            </option>
-          );
-        })}
-      </select>
-    </label>
-  );
-}
-
-function HtmlCell({ html }: { html: string }) {
-  return <span dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-function EpicFlowPanel({
-  initiativeFilter,
-  payload,
-}: {
-  initiativeFilter: string;
-  payload: BeadsPayload;
-}) {
-  if (initiativeFilter === "all") {
-    return (
-      <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
-        Select an initiative to inspect its child flow and summarized changes.
-      </p>
-    );
-  }
-  const flow: EpicFlowData | undefined =
-    payload.derived?.epicFlowByEpic?.[initiativeFilter];
-  if (!flow) {
-    return (
-      <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
-        No epic flow data for this initiative yet.
-      </p>
-    );
-  }
-  if (flow.nodes.length === 0) {
-    return (
-      <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
-        This epic has no child issues yet.
-      </p>
-    );
-  }
-  return (
-    <div style={{ marginBottom: "1rem" }}>
-      <h3 style={{ marginBottom: "0.5rem" }}>
-        Epic Flow: {flow.epicTitle} ({flow.epicId})
-      </h3>
-      <table className="issue-table" style={{ marginBottom: "0.75rem" }}>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Title</th>
-            <th>Status</th>
-            <th>Summary</th>
-            <th>Blocked by</th>
-          </tr>
-        </thead>
-        <tbody>
-          {flow.nodes.map((node) => (
-            <tr key={node.issueId}>
-              <td>
-                <HtmlCell html={issueIdCopyControlHtml(node.issueId)} />
-              </td>
-              <td>{esc(node.title)}</td>
-              <td>
-                <HtmlCell html={statusBadgeHtml(node.status)} />
-              </td>
-              <td style={{ color: "var(--text-muted)" }}>
-                {esc(node.summary)}
-              </td>
-              <td style={{ color: "var(--text-muted)" }}>
-                {node.blockers.length > 0 ? node.blockers.join(", ") : "—"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p
-        style={{
-          color: "var(--text-muted)",
-          fontSize: "0.85rem",
-          marginBottom: "0.25rem",
-        }}
-      >
-        Connections
-      </p>
-      {flow.edges.length > 0 ? (
-        <ul
-          style={{ margin: "0 0 0.75rem 1.25rem", color: "var(--text-muted)" }}
-        >
-          {flow.edges.map((edge) => (
-            <li key={`${edge.from}-${edge.to}-${edge.relation}`}>
-              {edge.from} {"\u2192"} {edge.to} ({edge.relation})
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
-          No dependency edges recorded among these issues.
-        </p>
-      )}
-    </div>
-  );
-}
+import {
+  activeBlockerIdsByIssue,
+  dashboardSections,
+  filterListIssues,
+  LIST_ROW_CAP,
+} from "./issues-views-model";
 
 export type IssuesViewsIslandProps = {
   variant: "dashboard" | "list";
@@ -289,118 +43,242 @@ export type IssuesViewsIslandProps = {
   onListSearchChange: (v: string) => void;
 };
 
-function ExpandableIssueTable({
+const STATUS_FILTERS = [
+  "all",
+  "open",
+  "in_progress",
+  "blocked",
+  "closed",
+] as const;
+
+function IssueTable({
   issues,
-  max,
+  payload,
   expandedIssueId,
   onRowActivate,
   onCloseDetail,
-  payload,
+  label,
 }: {
   issues: BeadsIssue[];
-  max: number;
+  payload: BeadsPayload;
   expandedIssueId: string | null;
   onRowActivate: (id: string) => void;
   onCloseDetail: () => void;
-  payload: BeadsPayload;
-}) {
-  const slice = issues.slice(0, max);
-  const blockerIdsByIssue = useMemo(
-    () => activeBlockerIdsByIssue(payload.issues || [], payload.deps || []),
+  label: string;
+}): JSX.Element {
+  const blockersByIssue = useMemo(
+    () => activeBlockerIdsByIssue(payload.issues ?? [], payload.deps ?? []),
     [payload.issues, payload.deps],
   );
-  if (slice.length === 0) {
-    return <p style={{ color: "var(--text-muted)" }}>None.</p>;
-  }
+
   return (
-    <table className="issue-table issue-table-expandable">
-      <thead
-        dangerouslySetInnerHTML={{ __html: EXPANDABLE_ISSUE_HEAD_INNER }}
+    <Table<BeadsIssue>
+      label={label}
+      rows={issues}
+      rowKey={(issue) => issue.id}
+      empty="None."
+      columns={[
+        {
+          key: "id",
+          header: "ID",
+          class: "af-col-id",
+          cell: (issue) => <CopyIdButton issueId={issue.id} />,
+        },
+        {
+          key: "title",
+          header: "Title",
+          cell: (issue) => {
+            const blockers = blockersByIssue.get(issue.id) ?? [];
+            return (
+              <>
+                <span class="af-issue-title">{issue.title}</span>
+                {blockers.length > 0 ? (
+                  <span class="af-issue-blocked">
+                    Blocked by {blockers.join(", ")}
+                  </span>
+                ) : null}
+              </>
+            );
+          },
+        },
+        {
+          key: "type",
+          header: "Type",
+          class: "af-col-type",
+          cell: (issue) => (
+            <span class="af-type">
+              <Icon name={typeIcon(issue.type)} size={14} />
+              {issue.type}
+            </span>
+          ),
+        },
+        {
+          key: "status",
+          header: "Status",
+          class: "af-col-status",
+          cell: (issue) => (
+            <Tag tone={statusTone(issue.status)}>
+              {issue.status === "closed" ? (
+                <Icon name="check-circle-fill" size={12} />
+              ) : null}
+              {statusLabel(issue.status)}
+            </Tag>
+          ),
+        },
+        {
+          key: "priority",
+          header: "Priority",
+          class: "af-col-priority",
+          cell: (issue) =>
+            issue.priority ? (
+              <Tag tone={priorityTone(issue.priority)}>{issue.priority}</Tag>
+            ) : (
+              <span class="af-muted">—</span>
+            ),
+        },
+        {
+          key: "repo",
+          header: "Repo",
+          class: "af-col-repo",
+          cell: (issue) => issue.repo || "—",
+        },
+        {
+          key: "createdAt",
+          header: "Created",
+          class: "af-col-date",
+          cell: (issue) => formatIssueDate(issue.createdAt),
+        },
+        {
+          key: "updatedAt",
+          header: "Updated",
+          class: "af-col-date",
+          cell: (issue) => formatIssueDate(issue.updatedAt),
+        },
+      ]}
+      rowProps={(issue) => ({
+        class: `af-issue-row${expandedIssueId === issue.id ? " is-expanded" : ""}`,
+        "data-issue-id": issue.id,
+        role: "button",
+        tabIndex: 0,
+        "aria-expanded": expandedIssueId === issue.id,
+        onClick: (event: MouseEvent) => {
+          // The copy button lives inside the row; clicking it must copy, not
+          // toggle the row open.
+          if ((event.target as HTMLElement).closest(".issue-id-copy")) return;
+          onRowActivate(issue.id);
+        },
+        onKeyDown: (event: KeyboardEvent) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          if ((event.target as HTMLElement).closest(".issue-id-copy")) return;
+          event.preventDefault();
+          onRowActivate(issue.id);
+        },
+      })}
+      rowDetail={(issue) =>
+        expandedIssueId === issue.id ? (
+          <IssueDetailPanel
+            issue={issue}
+            ctx={{ comments: payload.comments, deps: payload.deps }}
+            onClose={onCloseDetail}
+          />
+        ) : null
+      }
+    />
+  );
+}
+
+function EpicFlowPanel({
+  initiativeFilter,
+  payload,
+}: {
+  initiativeFilter: string;
+  payload: BeadsPayload;
+}): JSX.Element {
+  if (initiativeFilter === "all") {
+    return (
+      <Card title="Epic flow" headingLevel={2}>
+        <p class="af-muted">
+          Select an initiative to inspect its child flow and summarized changes.
+        </p>
+      </Card>
+    );
+  }
+
+  const flow: EpicFlowData | undefined =
+    payload.derived?.epicFlowByEpic?.[initiativeFilter];
+
+  if (!flow) {
+    return (
+      <Card title="Epic flow" headingLevel={2}>
+        <p class="af-muted">No epic flow data for this initiative yet.</p>
+      </Card>
+    );
+  }
+
+  if (flow.nodes.length === 0) {
+    return (
+      <Card title={`Epic flow: ${flow.epicTitle}`} headingLevel={2}>
+        <p class="af-muted">This epic has no child issues yet.</p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      kicker={flow.epicId}
+      title={`Epic flow: ${flow.epicTitle}`}
+      headingLevel={2}
+    >
+      <Table
+        label={`Child issues of ${flow.epicTitle}`}
+        rows={flow.nodes}
+        rowKey={(node) => node.issueId}
+        columns={[
+          {
+            key: "issueId",
+            header: "ID",
+            class: "af-col-id",
+            cell: (node) => <CopyIdButton issueId={node.issueId} />,
+          },
+          { key: "title", header: "Title" },
+          {
+            key: "status",
+            header: "Status",
+            class: "af-col-status",
+            cell: (node) => (
+              <Tag tone={statusTone(node.status)}>
+                {statusLabel(node.status)}
+              </Tag>
+            ),
+          },
+          { key: "summary", header: "Summary" },
+          {
+            key: "blockers",
+            header: "Blocked by",
+            cell: (node) =>
+              node.blockers.length > 0 ? node.blockers.join(", ") : "—",
+          },
+        ]}
       />
-      <tbody>
-        {slice.map((i) => {
-          const isOpen = expandedIssueId === i.id;
-          const blockerIds = blockerIdsByIssue.get(i.id) || [];
-          return (
-            <Fragment key={i.id}>
-              <tr
-                className={"issue-summary-row" + (isOpen ? " is-expanded" : "")}
-                data-issue-id={i.id}
-                role="button"
-                tabIndex={0}
-                aria-expanded={isOpen ? "true" : "false"}
-                onClick={(e) => {
-                  if ((e.target as HTMLElement).closest(".issue-id-copy"))
-                    return;
-                  onRowActivate(i.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter" && e.key !== " ") return;
-                  if ((e.target as HTMLElement).closest(".issue-id-copy"))
-                    return;
-                  e.preventDefault();
-                  onRowActivate(i.id);
-                }}
-              >
-                <td>
-                  <HtmlCell html={issueIdCopyControlHtml(i.id)} />
-                </td>
-                <td>
-                  {esc(i.title)}
-                  {blockerIds.length > 0 ? (
-                    <div
-                      style={{
-                        color: "var(--text-muted)",
-                        fontSize: "0.78rem",
-                        marginTop: "0.2rem",
-                      }}
-                    >
-                      Blocked by {blockerIds.join(", ")}
-                    </div>
-                  ) : null}
-                </td>
-                <td className="type-col">
-                  <HtmlCell html={typeCellHtml(i.type)} />
-                </td>
-                <td>
-                  <HtmlCell html={statusBadgeHtml(i.status)} />
-                </td>
-                <td>
-                  <HtmlCell html={priorityBadgeHtml(i.priority)} />
-                </td>
-                <td>{esc(i.repo || "—")}</td>
-                <td className="date-col">
-                  <HtmlCell html={formatIssueDate(i.createdAt)} />
-                </td>
-                <td className="date-col">
-                  <HtmlCell html={formatIssueDate(i.updatedAt)} />
-                </td>
-              </tr>
-              <tr className="issue-detail-gap">
-                <td colSpan={ISSUE_TABLE_COLSPAN}>
-                  <div
-                    className={"issue-detail-anim" + (isOpen ? " is-open" : "")}
-                  >
-                    <div className="issue-detail-anim-inner">
-                      {isOpen ? (
-                        <IssueDetailPanel
-                          issue={i}
-                          ctx={{
-                            comments: payload.comments,
-                            deps: payload.deps,
-                          }}
-                          onClose={onCloseDetail}
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-                </td>
-              </tr>
-            </Fragment>
-          );
-        })}
-      </tbody>
-    </table>
+
+      <div>
+        <p class="af-section-label">Connections</p>
+        {flow.edges.length > 0 ? (
+          <ul class="af-flow-edges">
+            {flow.edges.map((edge) => (
+              <li key={`${edge.from}-${edge.to}-${edge.relation}`}>
+                <code>{edge.from}</code> → <code>{edge.to}</code> (
+                {edge.relation})
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p class="af-muted">
+            No dependency edges recorded among these issues.
+          </p>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -415,219 +293,164 @@ export function IssuesViewsIsland({
   listSearchQuery,
   onListStatusChange,
   onListSearchChange,
-}: IssuesViewsIslandProps) {
-  const issues = payload.issues || [];
-  const derived = payload.derived;
+}: IssuesViewsIslandProps): JSX.Element {
+  const issues = payload.issues ?? [];
 
   function onRowActivate(id: string) {
     onExpandedChange(toggleExpandedState(expandedIssueId, id));
   }
 
+  const tableProps = {
+    payload,
+    expandedIssueId,
+    onRowActivate,
+    onCloseDetail: () => onExpandedChange(null),
+  };
+
   if (variant === "dashboard") {
-    const openAllUnfiltered = (derived.byStatus || {}).open || [];
-    const inProgressUnfiltered = (derived.byStatus || {}).in_progress || [];
-    const readyUnfiltered = derived.ready || [];
-    const blockedUnfiltered = derived.blocked || [];
-    const closedUnfiltered = (derived.byStatus || {}).closed || [];
-
-    const openAll = applyInitiativeFilter(openAllUnfiltered, initiativeFilter);
-    const inProgressAll = applyInitiativeFilter(
-      issuesInProgress(issues),
-      initiativeFilter,
-    ).sort(sortByUpdatedDesc);
-    const readyAll = applyInitiativeFilter(readyUnfiltered, initiativeFilter);
-    const blockedAll = applyInitiativeFilter(
-      blockedUnfiltered,
-      initiativeFilter,
-    );
-    const closedAll = applyInitiativeFilter(closedUnfiltered, initiativeFilter)
-      .slice()
-      .sort(sortByUpdatedDesc);
-
-    const ready = readyAll.slice(0, 15);
-    const inProgressIssues = inProgressAll.slice(0, 25);
-    const blockedList = blockedAll.slice(0, 15);
-    const closedRecent = closedAll.slice(0, 25);
-
-    const open = openAll.length;
-    const inProgressCount =
-      initiativeFilter === "all"
-        ? inProgressUnfiltered.length
-        : inProgressAll.length;
-    const closed = closedAll.length;
-    const blocked = blockedAll.length;
+    const sections = dashboardSections(payload, initiativeFilter);
 
     return (
       <Fragment>
-        <div className="filter-row">
+        <div class="af-toolbar">
           <InitiativeSelect
             issues={issues}
             initiativeFilter={initiativeFilter}
             onInitiativeChange={onInitiativeChange}
           />
         </div>
-        <div className="stat-row">
-          <div className="stat-card">
-            <div className="stat-num" style={{ color: "#3dff9c" }}>
-              {open}
-            </div>
-            <div className="stat-label">Open</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-num" style={{ color: "#ffe94d" }}>
-              {inProgressCount}
-            </div>
-            <div className="stat-label">In Progress</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-num" style={{ color: "#ff4757" }}>
-              {blocked}
-            </div>
-            <div className="stat-label">Blocked</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-num" style={{ color: "#aeb8ce" }}>
-              {closed}
-            </div>
-            <div className="stat-label">Closed</div>
-          </div>
+
+        <div class="af-stat-row">
+          <StatCard label="Open" value={sections.stats.open} tone="accent" />
+          <StatCard
+            label="In progress"
+            value={sections.stats.inProgress}
+            tone="accent"
+          />
+          <StatCard label="Blocked" value={sections.stats.blocked} />
+          <StatCard label="Closed" value={sections.stats.closed} tone="muted" />
         </div>
-        <p
-          style={{
-            color: "var(--text-muted)",
-            fontSize: "0.85rem",
-            margin: "0 0 1.25rem",
-          }}
-        >
-          Beads is the issue graph tracked with{" "}
-          <code style={{ fontSize: "0.9em" }}>bd</code> (epics, tasks,
-          dependencies). This dashboard shows a built snapshot: status counts
-          and lists of ready, in-progress, blocked, and recently closed work.
-        </p>
+
         <EpicFlowPanel initiativeFilter={initiativeFilter} payload={payload} />
-        <h3>In Progress ({inProgressAll.length})</h3>
-        <ExpandableIssueTable
-          issues={inProgressIssues}
-          max={25}
-          expandedIssueId={expandedIssueId}
-          onRowActivate={onRowActivate}
-          onCloseDetail={() => onExpandedChange(null)}
-          payload={payload}
-        />
-        <h3>Ready to Work ({readyAll.length})</h3>
-        <ExpandableIssueTable
-          issues={ready}
-          max={15}
-          expandedIssueId={expandedIssueId}
-          onRowActivate={onRowActivate}
-          onCloseDetail={() => onExpandedChange(null)}
-          payload={payload}
-        />
-        {blockedAll.length > 0 ? (
-          <Fragment>
-            <h3>Blocked ({blockedAll.length})</h3>
-            <ExpandableIssueTable
-              issues={blockedList}
-              max={15}
-              expandedIssueId={expandedIssueId}
-              onRowActivate={onRowActivate}
-              onCloseDetail={() => onExpandedChange(null)}
-              payload={payload}
+
+        <Card
+          title={`In progress (${sections.inProgress.total})`}
+          headingLevel={2}
+        >
+          <IssueTable
+            issues={sections.inProgress.rows}
+            label="In progress issues"
+            {...tableProps}
+          />
+        </Card>
+
+        <Card
+          title={`Ready to work (${sections.ready.total})`}
+          kicker="unblocked & unclaimed"
+          headingLevel={2}
+        >
+          <IssueTable
+            issues={sections.ready.rows}
+            label="Issues ready to work"
+            {...tableProps}
+          />
+        </Card>
+
+        {sections.blocked.total > 0 ? (
+          <Card title={`Blocked (${sections.blocked.total})`} headingLevel={2}>
+            <IssueTable
+              issues={sections.blocked.rows}
+              label="Blocked issues"
+              {...tableProps}
             />
-          </Fragment>
+          </Card>
         ) : null}
-        <h3>Recently closed ({closedAll.length})</h3>
-        <ExpandableIssueTable
-          issues={closedRecent}
-          max={25}
-          expandedIssueId={expandedIssueId}
-          onRowActivate={onRowActivate}
-          onCloseDetail={() => onExpandedChange(null)}
-          payload={payload}
-        />
+
+        <Card
+          title={`Recently closed (${sections.closed.total})`}
+          headingLevel={2}
+        >
+          <IssueTable
+            issues={sections.closed.rows}
+            label="Recently closed issues"
+            {...tableProps}
+          />
+        </Card>
       </Fragment>
     );
   }
 
-  const search = listSearchQuery.toLowerCase();
-  const filteredIssues = applyInitiativeFilter(issues, initiativeFilter).filter(
-    (i: BeadsIssue) => {
-      const matchStatus =
-        listStatusFilter === "all" || i.status === listStatusFilter;
-      const matchSearch =
-        !search ||
-        i.title.toLowerCase().indexOf(search) !== -1 ||
-        i.id.toLowerCase().indexOf(search) !== -1;
-      return matchStatus && matchSearch;
-    },
-  );
+  const filtered = filterListIssues(issues, {
+    search: listSearchQuery,
+    status: listStatusFilter,
+    initiative: initiativeFilter,
+  });
 
   return (
     <Fragment>
-      <div className="filter-row" style={{ flexWrap: "wrap" }}>
-        <input
-          id="search-input"
-          type="text"
-          placeholder="Search..."
-          value={listSearchQuery}
-          onInput={(e) =>
-            onListSearchChange((e.currentTarget as HTMLInputElement).value)
-          }
-          style={{
-            padding: "0.4rem 0.75rem",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            color: "var(--text)",
-            borderRadius: "6px",
-            fontSize: "0.875rem",
-          }}
-        />
-        <select
-          id="filter-status"
-          value={listStatusFilter}
-          onChange={(e) =>
-            onListStatusChange((e.currentTarget as HTMLSelectElement).value)
-          }
-          style={{
-            padding: "0.4rem 0.75rem",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            color: "var(--text)",
-            borderRadius: "6px",
-            fontSize: "0.875rem",
-          }}
-        >
-          {(["all", "open", "in_progress", "blocked", "closed"] as const).map(
-            (s) => (
-              <option key={s} value={s}>
-                {s === "all" ? "All statuses" : s}
+      <div class="af-toolbar">
+        <div class="af-search">
+          <Icon name="magnifying-glass" size={14} class="af-search-icon" />
+          <Input
+            id="search-input"
+            value={listSearchQuery}
+            placeholder="Filter by id or title"
+            onInput={(event) =>
+              onListSearchChange(
+                (event.currentTarget as HTMLInputElement).value,
+              )
+            }
+          />
+        </div>
+
+        <div class="af-initiative">
+          <label for="filter-status" class="af-initiative-label">
+            Status
+          </label>
+          <Select
+            id="filter-status"
+            value={listStatusFilter}
+            onChange={(event) =>
+              onListStatusChange(
+                (event.currentTarget as HTMLSelectElement).value,
+              )
+            }
+          >
+            {STATUS_FILTERS.map((status) => (
+              <option key={status} value={status}>
+                {status === "all" ? "All statuses" : statusLabel(status)}
               </option>
-            ),
-          )}
-        </select>
+            ))}
+          </Select>
+        </div>
+
         <InitiativeSelect
           issues={issues}
           initiativeFilter={initiativeFilter}
           onInitiativeChange={onInitiativeChange}
         />
+
+        <p class="af-result-count">
+          {filtered.length} issues
+          {filtered.length > LIST_ROW_CAP
+            ? ` · showing the first ${LIST_ROW_CAP}`
+            : ""}
+        </p>
       </div>
-      <p
-        style={{
-          color: "var(--text-muted)",
-          fontSize: "0.85rem",
-          marginBottom: "0.75rem",
-        }}
-      >
-        {filteredIssues.length} issues
-      </p>
-      <ExpandableIssueTable
-        issues={filteredIssues.slice(0, 100)}
-        max={100}
-        expandedIssueId={expandedIssueId}
-        onRowActivate={onRowActivate}
-        onCloseDetail={() => onExpandedChange(null)}
-        payload={payload}
-      />
+
+      {filtered.length === 0 ? (
+        <EmptyState
+          title="No issues match these filters"
+          hint="Clear the search box or widen the status filter."
+          live
+        />
+      ) : (
+        <IssueTable
+          issues={filtered.slice(0, LIST_ROW_CAP)}
+          label="All issues"
+          {...tableProps}
+        />
+      )}
     </Fragment>
   );
 }

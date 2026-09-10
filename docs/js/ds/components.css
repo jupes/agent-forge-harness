@@ -702,3 +702,297 @@ textarea.af-input {
     gap: var(--space-6);
   }
 }
+
+/* ─── page furniture ───────────────────────────────────────────────────── */
+
+.af-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.af-initiative {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.af-initiative-label {
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.af-initiative .af-input {
+  max-width: 22rem;
+}
+
+.af-search {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+}
+
+.af-search .af-input {
+  width: 260px;
+  padding-left: 30px;
+}
+
+.af-search-icon {
+  position: absolute;
+  bottom: 9px;
+  left: 10px;
+  color: var(--color-neutral-600);
+  pointer-events: none;
+}
+
+.af-result-count {
+  margin: 0 0 var(--space-2) auto;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.af-stat-row {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.af-muted {
+  color: var(--color-neutral-600);
+}
+
+.af-section-label {
+  margin: 0 0 var(--space-2);
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.af-flow-edges {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--color-neutral-500);
+  font-size: 12px;
+}
+
+/* ─── issue tables ─────────────────────────────────────────────────────── */
+
+.af-issue-row {
+  cursor: pointer;
+}
+
+.af-issue-row.is-expanded td {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.af-issue-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.af-issue-title {
+  display: block;
+  color: var(--color-text);
+}
+
+.af-issue-blocked {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+}
+
+.af-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-neutral-500);
+  white-space: nowrap;
+}
+
+.af-col-id,
+.af-col-date,
+.af-col-status,
+.af-col-priority,
+.af-col-type {
+  white-space: nowrap;
+}
+
+.af-col-id {
+  width: 1%;
+}
+
+.af-col-date {
+  color: var(--color-neutral-600);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Copy-id control, shared by every view that shows an issue id. */
+button.issue-id-copy {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 6px;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+button.issue-id-copy:hover {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+button.issue-id-copy code {
+  color: var(--color-accent-400);
+  font-size: 11.5px;
+}
+
+/* ─── epics ────────────────────────────────────────────────────────────── */
+
+.af-epic-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.af-epic-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.af-epic-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.af-epic-due,
+.af-epic-progress {
+  margin: 0;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.af-epic-description {
+  margin: 0;
+  color: var(--color-neutral-500);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+/* ─── issue detail (expanded row) ──────────────────────────────────────── */
+
+.af-detail {
+  padding: var(--space-6);
+  border-top: 1px solid var(--color-accent-900);
+  background: var(--color-bg);
+}
+
+.af-detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.af-detail-toolbar .af-section-label {
+  margin: 0;
+}
+
+.af-detail-grid {
+  display: grid;
+  align-items: start;
+  gap: var(--space-8);
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.af-detail-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  gap: var(--space-2);
+}
+
+.af-detail-row {
+  display: grid;
+  align-items: start;
+  gap: var(--space-2) var(--space-4);
+  grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr);
+}
+
+.af-detail-row dt {
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.af-detail-row dd {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.af-detail-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.af-detail-prose-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.af-detail-prose {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  text-wrap: pretty;
+  white-space: pre-wrap;
+}
+
+.af-detail-ac,
+.af-detail-list {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+}
+
+.af-detail-ac li,
+.af-detail-list li {
+  margin-bottom: var(--space-2);
+}
+
+.af-detail-comments {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  gap: var(--space-4);
+  list-style: none;
+}
+
+.af-detail-comment-meta {
+  margin: 0;
+  color: var(--color-neutral-700);
+  font-size: 11px;
+}
+
+.af-detail-comment-body {
+  margin: 2px 0 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
