@@ -23,7 +23,9 @@
     "molecules:check": "bun run scripts/molecules/check.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check scripts .claude/hooks .claude/skills types docs/js",
-    "lint:fix": "biome check --write scripts .claude/hooks .claude/skills types docs/js"
+    "lint:fix": "biome check --write scripts .claude/hooks .claude/skills types docs/js",
+    "dashboard:build": "vite build --config vite.dashboard.config.ts",
+    "verify:ui": "playwright test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",

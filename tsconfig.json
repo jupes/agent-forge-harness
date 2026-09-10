@@ -21,6 +21,7 @@
     }
   },
   "include": [
+    "tests/**/*.ts",
     "scripts/**/*.ts",
     ".claude/hooks/**/*.ts",
     ".claude/skills/**/*.ts",

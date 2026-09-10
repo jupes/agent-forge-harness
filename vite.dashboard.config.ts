@@ -471,6 +471,17 @@ export default defineConfig({
       "@docs/skill-builder": normalizePath(path.join(docsRoot, "js", "skill-builder.mjs")),
     },
   },
+  build: {
+    rollupOptions: {
+      // All three documents, or `vite build` silently emits only index.html
+      // and the other two are never verified by a build at all.
+      input: {
+        index: path.join(docsRoot, "index.html"),
+        "plan-review": path.join(docsRoot, "plan-review.html"),
+        council: path.join(docsRoot, "council.html"),
+      },
+    },
+  },
   server: {
     port: Number(process.env["PORT"] ?? "8787"),
     strictPort: false,
