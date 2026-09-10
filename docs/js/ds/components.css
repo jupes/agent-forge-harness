@@ -1042,3 +1042,20 @@ button.issue-id-copy code {
   flex-direction: column;
   gap: var(--space-6);
 }
+
+/* ─── charts ───────────────────────────────────────────────────────────── */
+
+.af-chart {
+  position: relative;
+  height: 280px;
+}
+
+.af-chart-short {
+  height: 220px;
+}
+
+.af-chart-error {
+  margin: 0;
+  color: var(--color-accent-300);
+  font-size: 12px;
+}

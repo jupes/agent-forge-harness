@@ -1,10 +1,33 @@
 import type { BeadsIssue } from "../../types/beads";
 
-/** HTML for the insights panel; `filterHtml` is injected into its toolbar. */
-export function renderInsightsHtml(filterHtml: string): string;
+export interface InsightsSummary {
+  total: number;
+  last7: number;
+  avg: number;
+  best: { day: string; count: number };
+}
 
-/** Mount the KPI cards and charts into `root`. Chart.js loads on demand. */
-export function wireInsights(
-  root: HTMLElement,
-  data: { issues: BeadsIssue[] } | null,
-): Promise<void>;
+export interface InsightsData {
+  stats: InsightsSummary;
+  series: unknown[];
+  types: string[];
+  counts: unknown;
+}
+
+/** Bucket closed issues into daily counts and summary numbers. Pure. */
+export function computeInsights(issues: BeadsIssue[]): InsightsData;
+
+/**
+ * Draw both charts into the given canvases, loading Chart.js on demand.
+ * Resolves to an error message when a chart could not be drawn, else null.
+ */
+export function mountInsightCharts(
+  canvases: {
+    daily: HTMLCanvasElement | null;
+    calendar: HTMLCanvasElement | null;
+  },
+  data: InsightsData,
+): Promise<string | null>;
+
+/** Destroy any charts this module created. */
+export function destroyInsightCharts(): void;
