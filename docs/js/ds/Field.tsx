@@ -42,6 +42,8 @@ export function Field({
 
 interface ControlBase {
   id: string;
+  /** Field name — load-bearing for forms read through FormData. */
+  name?: string;
   /** Id of the hint element describing this control. */
   describedBy?: string;
   class?: string;
@@ -52,6 +54,7 @@ interface ControlBase {
 export interface InputProps extends ControlBase {
   type?: string;
   value?: string | number;
+  defaultValue?: string | number;
   placeholder?: string;
   onInput?: JSX.InputEventHandler<HTMLInputElement>;
   onKeyDown?: JSX.KeyboardEventHandler<HTMLInputElement>;
@@ -78,6 +81,7 @@ export function Input({
 }
 
 export interface TextareaProps extends ControlBase {
+  defaultValue?: string;
   value?: string;
   placeholder?: string;
   rows?: number;
@@ -101,6 +105,7 @@ export function Textarea({
 }
 
 export interface SelectProps extends ControlBase {
+  defaultValue?: string;
   value?: string;
   children: ComponentChildren;
   onChange?: JSX.GenericEventHandler<HTMLSelectElement>;

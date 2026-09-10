@@ -996,3 +996,49 @@ button.issue-id-copy code {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+/* ─── builders and prose ───────────────────────────────────────────────── */
+
+.af-prose {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.af-builder {
+  max-width: 46rem;
+}
+
+.af-form-grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.af-form-wide {
+  grid-column: 1 / -1;
+}
+
+.af-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: var(--space-6);
+  gap: var(--space-3);
+}
+
+.af-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.af-col-command {
+  white-space: nowrap;
+}
+
+.af-insights {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
