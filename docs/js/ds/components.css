@@ -429,3 +429,276 @@ textarea.af-input {
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* ─── app shell ────────────────────────────────────────────────────────── */
+
+.af-shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+.af-skip-link {
+  position: absolute;
+  z-index: 600;
+  top: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-accent-200);
+  font-size: 13px;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+/* Visible only once focused — the classic skip-link pattern. */
+.af-skip-link:focus {
+  transform: translateY(0);
+}
+
+.af-nav {
+  display: flex;
+  overflow-y: auto;
+  flex-direction: column;
+  border-right: 1px solid var(--color-neutral-900);
+  background: linear-gradient(180deg, #1b1d2c 0%, var(--color-bg) 100%);
+}
+
+.af-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4) var(--space-4);
+  color: var(--color-text);
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+
+.af-brand-mark {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-accent-700);
+  border-radius: 6px;
+  background: var(--color-accent-900);
+  color: var(--color-accent-400);
+}
+
+.af-nav-groups {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-3) var(--space-4);
+  gap: var(--space-4);
+}
+
+.af-nav-heading {
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-3);
+  color: var(--color-neutral-700);
+  font-size: 10px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.af-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 7px var(--space-3);
+  border-radius: 7px;
+  color: var(--color-neutral-500);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.af-nav-item:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-neutral-200);
+}
+
+/* The active item takes a solid accent edge — a mark, not a flood. */
+.af-nav-item-active,
+.af-nav-item-active:hover {
+  background: var(--color-accent-900);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+  color: var(--color-text);
+}
+
+.af-shell-actions {
+  margin-top: auto;
+  padding: var(--space-4);
+  border-top: 1px solid var(--color-neutral-900);
+}
+
+.af-shell-snapshot {
+  margin: 0 0 var(--space-3);
+  color: var(--color-neutral-600);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.af-shell-refresh {
+  width: 100%;
+}
+
+.af-main {
+  overflow-x: hidden;
+}
+
+.af-page-header {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: var(--space-8) var(--space-8) var(--space-6);
+  border-bottom: 1px solid var(--color-neutral-900);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  gap: var(--space-6);
+}
+
+.af-page-title {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.af-page-blurb {
+  max-width: 62ch;
+  margin: var(--space-1) 0 0;
+  color: var(--color-neutral-600);
+  font-size: 13px;
+}
+
+.af-page-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.af-page-body {
+  display: flex;
+  max-width: 1180px;
+  flex-direction: column;
+  padding: var(--space-8) var(--space-8) 56px;
+  gap: var(--space-8);
+}
+
+/* ─── toast ────────────────────────────────────────────────────────────── */
+
+.af-toast {
+  position: fixed;
+  z-index: 10000;
+  bottom: var(--space-8);
+  left: 50%;
+  max-width: min(90vw, 28rem);
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--color-accent-700);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+  color: var(--color-text);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  text-align: center;
+  transform: translateX(-50%) translateY(140%);
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease;
+}
+
+.af-toast.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ─── responsive ───────────────────────────────────────────────────────── */
+
+/* The old shell hid the nav outright below 800px, stranding every
+   destination. Here it becomes a horizontal strip that stays reachable. */
+@media (width <= 860px) {
+  .af-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .af-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: var(--space-2) var(--space-4);
+    border-right: 0;
+    border-bottom: 1px solid var(--color-neutral-900);
+    gap: var(--space-2);
+  }
+
+  .af-brand {
+    padding: var(--space-2) 0;
+  }
+
+  .af-nav-groups {
+    flex-direction: row;
+    overflow-x: auto;
+    width: 100%;
+    padding: 0;
+    gap: var(--space-2);
+  }
+
+  .af-nav-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .af-nav-heading {
+    display: none;
+  }
+
+  .af-nav-item {
+    white-space: nowrap;
+  }
+
+  .af-shell-actions {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    padding: var(--space-2) 0 0;
+    border-top: 0;
+    margin-top: 0;
+    gap: var(--space-4);
+  }
+
+  .af-shell-snapshot {
+    margin: 0;
+  }
+
+  .af-shell-refresh {
+    width: auto;
+    flex: none;
+  }
+
+  .af-page-header {
+    position: static;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: var(--space-6) var(--space-4) var(--space-4);
+  }
+
+  .af-page-body {
+    padding: var(--space-6) var(--space-4) 40px;
+    gap: var(--space-6);
+  }
+}
