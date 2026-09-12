@@ -8,11 +8,12 @@ shared_conventions:
     types: [feat, fix, refactor, test, docs, chore, build]
     body: "What and why, not how. Optional."
     footer: "Refs: <TASK-ID>"
-    example: "feat(auth): add refresh token rotation
+    example: |-
+      feat(auth): add refresh token rotation
 
-Rotate tokens on each use.
+      Rotate tokens on each use.
 
-Refs: T-42"
+      Refs: T-42
 
   branch_naming:
     pattern: "<type>/<task-id>-<short-description>"
