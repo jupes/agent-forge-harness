@@ -96,20 +96,19 @@ export function AppShell({
 
   return (
     <div class="af-shell">
-      <a
+      {/* A button, not an anchor: the SPA routes on the hash, so an
+          href="#af-main" link would navigate away from the current page. */}
+      <button
+        type="button"
         class="af-skip-link"
-        href="#af-main"
-        onClick={(event) => {
-          // The SPA routes on the hash, so following #af-main would navigate
-          // away from the current page. Move focus to the content instead.
-          event.preventDefault();
+        onClick={() => {
           const main = document.getElementById("af-main");
           main?.focus();
           main?.scrollIntoView({ block: "start" });
         }}
       >
         Skip to content
-      </a>
+      </button>
 
       <nav class="af-nav" aria-label="Main">
         <a class="af-brand" href={fromDocument ? "index.html" : "#/dashboard"}>

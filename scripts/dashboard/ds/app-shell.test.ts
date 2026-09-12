@@ -67,11 +67,21 @@ describe("AppShell navigation", () => {
     expect(findAll(el, "main")).toHaveLength(1);
   });
 
-  test("offers a skip link so keyboard users can bypass the nav", () => {
-    const skip = findWhere(shell(), (p) => p["href"] === "#af-main");
+  test("offers a skip control that does not touch the hash", () => {
+    const skip = findWhere(shell(), (p) =>
+      String(p["class"] ?? "").includes("af-skip-link"),
+    );
     expect(skip).toBeDefined();
     expect(textOf(skip)).toContain("Skip to content");
-    expect(attrs(findAll(shell(), "main")[0])["id"]).toBe("af-main");
+    // A button, not an anchor: an href="#af-main" would go through the hash
+    // router and navigate away from the current page.
+    expect(attrs(skip)["type"]).toBe("button");
+    expect(attrs(skip)["href"]).toBeUndefined();
+
+    const main = findAll(shell(), "main")[0];
+    expect(attrs(main)["id"]).toBe("af-main");
+    // Focusable by script without joining the tab order.
+    expect(attrs(main)["tabIndex"]).toBe(-1);
   });
 });
 
