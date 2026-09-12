@@ -1,4 +1,4 @@
-import type { ComponentChildren, JSX } from "preact";
+import type { ComponentChildren, JSX, RefObject } from "preact";
 
 export interface FieldProps {
   /** Visible label text. Always present — placeholders are not labels. */
@@ -81,6 +81,10 @@ export function Input({
 }
 
 export interface TextareaProps extends ControlBase {
+  /** Function components cannot take `ref`; this reaches the <textarea>. */
+  textareaRef?: RefObject<HTMLTextAreaElement>;
+  readOnly?: boolean;
+  autofocus?: boolean;
   defaultValue?: string;
   value?: string;
   placeholder?: string;
@@ -92,6 +96,7 @@ export function Textarea({
   id,
   describedBy,
   class: className,
+  textareaRef,
   ...rest
 }: TextareaProps): JSX.Element {
   return (
@@ -99,6 +104,7 @@ export function Textarea({
       id={id}
       class={["af-input", className].filter(Boolean).join(" ")}
       aria-describedby={describedBy}
+      {...(textareaRef ? { ref: textareaRef } : {})}
       {...rest}
     />
   );

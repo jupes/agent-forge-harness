@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Dialog } from "../../../docs/js/ds/Dialog";
+import { DialogView } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { ProgressBar } from "../../../docs/js/ds/ProgressBar";
 import { StatCard } from "../../../docs/js/ds/StatCard";
@@ -81,25 +81,32 @@ describe("EmptyState", () => {
   });
 });
 
-describe("Dialog", () => {
-  test("renders nothing at all when closed", () => {
-    expect(
-      Dialog({ open: false, title: "x", onClose: () => {}, children: null }),
-    ).toBeNull();
-  });
-
-  test("is a labelled modal dialog when open", () => {
-    const el = Dialog({
+// Structure only. Modality — inert background, contained Tab order, focus
+// return — needs a real browser and lives in tests/e2e/a11y.spec.ts.
+describe("DialogView", () => {
+  function view(overrides: Partial<Parameters<typeof DialogView>[0]> = {}) {
+    return DialogView({
       open: true,
       title: "Copied to clipboard",
       onClose: () => {},
       children: "body",
+      ...overrides,
     });
-    const dialog = findWhere(el, (p) => p["role"] === "dialog");
-    expect(dialog).toBeDefined();
-    expect(attrs(dialog)["aria-modal"]).toBe("true");
-    // Labelled by its own heading rather than a duplicated aria-label.
-    const labelledBy = attrs(dialog)["aria-labelledby"];
+  }
+
+  test("is a native dialog element, so the browser can make it modal", () => {
+    expect(tag(view())).toBe("dialog");
+  });
+
+  test("keeps the element mounted but empty while closed", () => {
+    const closed = view({ open: false });
+    expect(tag(closed)).toBe("dialog");
+    expect(findAll(closed, "h2")).toHaveLength(0);
+  });
+
+  test("is labelled by its own heading", () => {
+    const el = view();
+    const labelledBy = attrs(el)["aria-labelledby"];
     expect(typeof labelledBy).toBe("string");
     const heading = findWhere(el, (p) => p["id"] === labelledBy);
     expect(textOf(heading)).toBe("Copied to clipboard");
@@ -107,54 +114,41 @@ describe("Dialog", () => {
 
   test("offers an explicit close control wired to onClose", () => {
     let closed = 0;
-    const el = Dialog({
-      open: true,
-      title: "t",
+    const el = view({
       onClose: () => {
         closed += 1;
       },
-      children: null,
     });
     const closer = findWhere(el, (p) => p["aria-label"] === "Close dialog");
-    expect(closer).toBeDefined();
     (attrs(closer)["onClick"] as () => void)();
     expect(closed).toBe(1);
   });
 
-  test("closes on Escape from anywhere inside the dialog", () => {
+  test("Escape (the cancel event) closes through state, not by itself", () => {
     let closed = 0;
-    const el = Dialog({
-      open: true,
-      title: "t",
+    let prevented = false;
+    const el = view({
       onClose: () => {
         closed += 1;
       },
-      children: null,
     });
-    const withKeys = findWhere(el, (p) => typeof p["onKeyDown"] === "function");
-    expect(withKeys).toBeDefined();
-    const onKeyDown = attrs(withKeys)["onKeyDown"] as (e: {
-      key: string;
-      stopPropagation: () => void;
-    }) => void;
-    onKeyDown({ key: "Escape", stopPropagation: () => {} });
-    expect(closed).toBe(1);
-    onKeyDown({ key: "a", stopPropagation: () => {} });
+    (attrs(el)["onCancel"] as (e: { preventDefault: () => void }) => void)({
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    expect(prevented).toBe(true);
     expect(closed).toBe(1);
   });
 
   test("dismisses on backdrop click but not on clicks inside the panel", () => {
     let closed = 0;
-    const el = Dialog({
-      open: true,
-      title: "t",
+    const el = view({
       onClose: () => {
         closed += 1;
       },
-      children: null,
     });
-    const backdrop = findAll(el, "div")[0];
-    const onClick = attrs(backdrop)["onClick"] as (e: {
+    const onClick = attrs(el)["onClick"] as (e: {
       target: unknown;
       currentTarget: unknown;
     }) => void;
@@ -163,5 +157,14 @@ describe("Dialog", () => {
     expect(closed).toBe(1);
     onClick({ target: {}, currentTarget: node });
     expect(closed).toBe(1);
+  });
+
+  test("focuses the close button by default, or defers to content", () => {
+    const closer = (el: ReturnType<typeof view>) =>
+      findWhere(el, (p) => p["aria-label"] === "Close dialog");
+    expect(attrs(closer(view()))["autofocus"]).toBe(true);
+    expect(attrs(closer(view({ initialFocus: "content" })))["autofocus"]).toBe(
+      false,
+    );
   });
 });

@@ -80,24 +80,74 @@ test("every nav destination is reachable by keyboard alone", async ({
   expect(reached.size).toBe(ROUTES.length);
 });
 
-test("Escape closes the builder dialog and Tab cannot leave it open", async ({
-  page,
-}) => {
+/** Open the Bead builder's dialog from its submit button. */
+async function openBeadDialog(page: import("@playwright/test").Page) {
   await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
-
   await page.fill("#bb-title", "Keyboard check");
-  await page.click("button[type=submit]");
-
-  const dialog = page.locator("[role=dialog]");
+  const submit = page.locator("button[type=submit]");
+  await submit.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAttribute("aria-modal", "true");
-  // Labelled by its own heading rather than a bare aria-label.
+  return { dialog, submit };
+}
+
+test("the builder dialog is labelled by its own heading", async ({ page }) => {
+  const { dialog } = await openBeadDialog(page);
   const labelledBy = await dialog.getAttribute("aria-labelledby");
   expect(labelledBy).toBeTruthy();
   await expect(page.locator(`#${labelledBy}`)).toBeVisible();
+});
+
+test("Tab and Shift+Tab stay inside an open dialog", async ({ page }) => {
+  const { dialog } = await openBeadDialog(page);
+
+  const focusInsideDialog = () =>
+    page.evaluate(
+      () => document.activeElement?.closest("dialog[open]") !== null,
+    );
+
+  // Initial focus lands inside, not on the page behind.
+  expect(await focusInsideDialog()).toBe(true);
+
+  // More presses than the dialog has focusable elements, in both directions,
+  // so a leak into the shell behind it would have to show up.
+  for (let i = 0; i < 12; i += 1) {
+    await page.keyboard.press("Tab");
+    expect(await focusInsideDialog(), `Tab #${i + 1} left the dialog`).toBe(
+      true,
+    );
+  }
+  for (let i = 0; i < 12; i += 1) {
+    await page.keyboard.press("Shift+Tab");
+    expect(
+      await focusInsideDialog(),
+      `Shift+Tab #${i + 1} left the dialog`,
+    ).toBe(true);
+  }
+
+  await expect(dialog).toBeVisible();
+});
+
+test("the page behind an open dialog is inert", async ({ page }) => {
+  await openBeadDialog(page);
+  const navReachable = await page.evaluate(() => {
+    const link = document.querySelector<HTMLElement>("nav a.af-nav-item");
+    link?.focus();
+    return document.activeElement === link;
+  });
+  expect(navReachable).toBe(false);
+});
+
+test("Escape closes the dialog and returns focus to the control that opened it", async ({
+  page,
+}) => {
+  const { dialog, submit } = await openBeadDialog(page);
 
   await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
+
+  await expect(dialog).toBeHidden();
+  await expect(submit).toBeFocused();
 });
 
 test("issue rows are operable with the keyboard", async ({ page }) => {

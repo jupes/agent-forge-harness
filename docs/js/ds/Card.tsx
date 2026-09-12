@@ -9,6 +9,7 @@ export interface CardProps {
   headingLevel?: 2 | 3 | 4;
   /** Right-aligned controls in the card header. */
   actions?: ComponentChildren;
+  id?: string;
   class?: string;
 }
 
@@ -19,6 +20,7 @@ export function Card({
   title,
   headingLevel = 3,
   actions,
+  id,
   class: className,
 }: CardProps): JSX.Element {
   const Heading = `h${headingLevel}` as "h2" | "h3" | "h4";
@@ -26,7 +28,7 @@ export function Card({
     kicker !== undefined || title !== undefined || actions !== undefined;
 
   return (
-    <section class={["af-card", className].filter(Boolean).join(" ")}>
+    <section id={id} class={["af-card", className].filter(Boolean).join(" ")}>
       {hasHeader ? (
         <header class="af-card-header">
           <div>

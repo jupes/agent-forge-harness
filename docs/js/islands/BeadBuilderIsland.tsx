@@ -20,27 +20,19 @@ type ModalState =
 
 export function BeadBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
-  const modalCloseRef = useRef<HTMLButtonElement>(null);
-  const modalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const fallbackRef = useRef<HTMLTextAreaElement>(null);
   const [modal, setModal] = useState<ModalState>({ open: false });
   const [submitting, setSubmitting] = useState(false);
 
+  // Select the whole command so Ctrl+C / Cmd+C copies it straight away. Child
+  // effects run first, so the dialog is already shown when this runs.
   useEffect(() => {
-    if (!modal.open) return;
-    const id = requestAnimationFrame(() => {
-      modalCloseRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [modal]);
-
-  useEffect(() => {
-    if (!modal.open || !modalTextareaRef.current) return;
-    if (modal.fallbackText) {
-      modalTextareaRef.current.value = modal.fallbackText;
-      modalTextareaRef.current.select();
-    } else {
-      modalTextareaRef.current.value = "";
-    }
+    if (!modal.open || !modal.fallbackText) return;
+    const textarea = fallbackRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
   }, [modal]);
 
   function closeModal() {
@@ -140,20 +132,13 @@ export function BeadBuilderIsland() {
     if (first instanceof HTMLElement) first.focus();
   }
 
-  function onBackdropClick() {
-    closeModal();
-  }
-
-  function onModalKeyDown(e: KeyboardEvent) {
-    if (e.key === "Escape") closeModal();
-  }
-
   const fallbackText =
     modal.open && modal.fallbackText ? modal.fallbackText : "";
 
   return (
     <>
       <Card
+        id="bead-form-card"
         title="Compose a bd create command"
         headingLevel={2}
         class="af-builder"
@@ -272,6 +257,7 @@ export function BeadBuilderIsland() {
           <div class="af-form-actions">
             <Button onClick={onClear}>Clear form</Button>
             <button
+              ref={submitRef}
               type="submit"
               class="af-btn af-btn-primary"
               disabled={submitting}
@@ -287,6 +273,8 @@ export function BeadBuilderIsland() {
         title={modal.open ? modal.title : ""}
         onClose={closeModal}
         titleId="bb-modal-title"
+        initialFocus={fallbackText ? "content" : "close"}
+        returnFocusRef={submitRef}
         actions={<Button onClick={closeModal}>Close</Button>}
       >
         {/* Body copy is authored here, not user input. */}
@@ -301,7 +289,10 @@ export function BeadBuilderIsland() {
           <Field label="Copy manually" id="bb-modal-textarea">
             <Textarea
               id="bb-modal-textarea"
-              defaultValue={fallbackText}
+              textareaRef={fallbackRef}
+              value={fallbackText}
+              readOnly
+              autofocus
               rows={6}
               class="af-mono"
             />

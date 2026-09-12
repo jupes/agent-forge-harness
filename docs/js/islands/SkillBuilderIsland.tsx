@@ -16,27 +16,19 @@ type ModalState =
 
 export function SkillBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
-  const modalCloseRef = useRef<HTMLButtonElement>(null);
-  const modalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const fallbackRef = useRef<HTMLTextAreaElement>(null);
   const [modal, setModal] = useState<ModalState>({ open: false });
   const [submitting, setSubmitting] = useState(false);
 
+  // Select the whole prompt so Ctrl+C / Cmd+C copies it straight away. Child
+  // effects run first, so the dialog is already shown when this runs.
   useEffect(() => {
-    if (!modal.open) return;
-    const id = requestAnimationFrame(() => {
-      modalCloseRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [modal]);
-
-  useEffect(() => {
-    if (!modal.open || !modalTextareaRef.current) return;
-    if (modal.fallbackText) {
-      modalTextareaRef.current.value = modal.fallbackText;
-      modalTextareaRef.current.select();
-    } else {
-      modalTextareaRef.current.value = "";
-    }
+    if (!modal.open || !modal.fallbackText) return;
+    const textarea = fallbackRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
   }, [modal]);
 
   function closeModal() {
@@ -135,20 +127,13 @@ export function SkillBuilderIsland() {
     if (first instanceof HTMLElement) first.focus();
   }
 
-  function onBackdropClick() {
-    closeModal();
-  }
-
-  function onModalKeyDown(e: KeyboardEvent) {
-    if (e.key === "Escape") closeModal();
-  }
-
   const fallbackText =
     modal.open && modal.fallbackText ? modal.fallbackText : "";
 
   return (
     <>
       <Card
+        id="skill-form-card"
         title="Compose a skill authoring prompt"
         headingLevel={2}
         class="af-builder"
@@ -241,6 +226,7 @@ export function SkillBuilderIsland() {
           <div class="af-form-actions">
             <Button onClick={onClear}>Clear form</Button>
             <button
+              ref={submitRef}
               type="submit"
               class="af-btn af-btn-primary"
               disabled={submitting}
@@ -256,6 +242,8 @@ export function SkillBuilderIsland() {
         title={modal.open ? modal.title : ""}
         onClose={closeModal}
         titleId="sb-modal-title"
+        initialFocus={fallbackText ? "content" : "close"}
+        returnFocusRef={submitRef}
         actions={<Button onClick={closeModal}>Close</Button>}
       >
         {/* Body copy is authored here, not user input. */}
@@ -270,7 +258,10 @@ export function SkillBuilderIsland() {
           <Field label="Copy manually" id="sb-modal-textarea">
             <Textarea
               id="sb-modal-textarea"
-              defaultValue={fallbackText}
+              textareaRef={fallbackRef}
+              value={fallbackText}
+              readOnly
+              autofocus
               rows={6}
               class="af-mono"
             />

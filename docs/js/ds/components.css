@@ -364,20 +364,28 @@ textarea.af-input {
 
 /* ─── dialog ───────────────────────────────────────────────────────────── */
 
-.af-dialog-backdrop {
-  position: fixed;
-  z-index: 500;
-  display: grid;
-  padding: var(--space-6);
-  background: color-mix(in srgb, #05060c 72%, transparent);
-  backdrop-filter: blur(4px);
-  inset: 0;
-  place-items: center;
+/* The <dialog> element is a bare, transparent box so that a click on it can
+   only mean a click on the backdrop; the panel inside carries the surface. */
+.af-dialog {
+  width: min(460px, calc(100% - 2 * var(--space-6)));
+  max-height: calc(100% - 2 * var(--space-6));
+  padding: 0;
+  border: 0;
+  margin: auto;
+  background: transparent;
+  color: var(--color-text);
+  overflow: visible;
 }
 
-.af-dialog {
+.af-dialog::backdrop {
+  background: color-mix(in srgb, #05060c 72%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.af-dialog-panel {
   display: flex;
-  width: min(460px, 100%);
+  max-height: calc(100vh - 2 * var(--space-6));
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-6);
@@ -385,6 +393,7 @@ textarea.af-input {
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   box-shadow: var(--shadow-lg);
+  overflow: auto;
 }
 
 .af-dialog-header {
@@ -448,6 +457,8 @@ textarea.af-input {
   border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-accent-200);
+  cursor: pointer;
+  font-family: inherit;
   font-size: 13px;
   text-decoration: none;
   transform: translateY(-200%);
@@ -1008,6 +1019,41 @@ button.issue-id-copy code {
 
 .af-builder {
   max-width: 46rem;
+}
+
+/* Builder feedback: the form dims while the command is built, and the card's
+   edge briefly lights up in the accent once it is ready. */
+form.is-submitting {
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.af-card.is-success-flash {
+  animation: af-success-flash 0.7s ease-out;
+}
+
+@keyframes af-success-flash {
+  0% {
+    border-color: var(--color-neutral-900);
+  }
+
+  35% {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px
+      color-mix(in srgb, var(--color-accent) 30%, transparent);
+  }
+
+  100% {
+    border-color: var(--color-neutral-900);
+  }
+}
+
+/* Keep the animation (so animationend still fires and the class clears) but
+   make it effectively instant. */
+@media (prefers-reduced-motion: reduce) {
+  .af-card.is-success-flash {
+    animation-duration: 1ms;
+  }
 }
 
 .af-form-grid {
