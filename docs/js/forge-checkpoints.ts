@@ -16,23 +16,58 @@ export interface Checkpoint {
   /** The container this checkpoint sits under (a feature, or the epic). */
   groupId: string;
   groupTitle: string;
-  /** Issues this checkpoint is still waiting on — closed blockers drop out. */
+  /**
+   * Issues this checkpoint still waits on. Closed blockers drop out; a blocker
+   * the snapshot does not hold stays, since nothing says it is done.
+   */
   blockedBy: string[];
 }
+
+/**
+ * Where a run stands. Explicit, so that "nothing to act on right now" is never
+ * read as "finished":
+ *
+ * - `complete` — every checkpoint is closed.
+ * - `in-progress` — at least one checkpoint is being worked on.
+ * - `ready` — nothing is in progress, and a checkpoint can be started.
+ * - `waiting` — work remains, but none of it is in progress or can start.
+ * - `empty` — the epic has no checkpoints in the snapshot.
+ */
+export type RunState =
+  | "empty"
+  | "complete"
+  | "in-progress"
+  | "ready"
+  | "waiting";
 
 export interface CheckpointSummary {
   checkpoints: Checkpoint[];
   done: number;
   total: number;
-  /** In progress if anything is; otherwise the first open, unblocked one. */
-  activeId: string | null;
+  state: RunState;
+  /**
+   * Checkpoints being worked on, in run order. Only these can be reviewed: a
+   * checkpoint nobody has claimed has nothing to approve yet.
+   */
+  inProgressIds: string[];
+  /** The first open checkpoint nothing blocks. Shown as next; never reviewable. */
+  nextReadyId: string | null;
+  /**
+   * For a waiting run, what its remaining checkpoints wait on from outside the
+   * run. Blockers that are themselves remaining checkpoints are left out, so
+   * this names the cause rather than the queue behind it.
+   */
+  waitingOn: string[];
 }
 
 const EMPTY: CheckpointSummary = {
   checkpoints: [],
   done: 0,
   total: 0,
-  activeId: null,
+  state: "empty",
+  inProgressIds: [],
+  nextReadyId: null,
+  waitingOn: [],
 };
 
 const BLOCKING = new Set(["blocks", "requires"]);
@@ -68,23 +103,26 @@ export function checkpointsForEpic(
   }
 
   const leafIds = new Set(leaves.map((leaf) => leaf.id));
-  const deps = payload.deps ?? [];
-
   const blockers = new Map<string, string[]>();
   const incoming = new Map<string, number>(leaves.map((leaf) => [leaf.id, 0]));
   const outgoing = new Map<string, string[]>();
   const edges = new Set<string>();
-  for (const dep of deps) {
-    if (!BLOCKING.has(dep.type) || !leafIds.has(dep.from)) continue;
-    const blocker = byId.get(dep.to);
-    if (blocker && blocker.status !== "closed") {
+  for (const dep of payload.deps ?? []) {
+    if (
+      !BLOCKING.has(dep.type) ||
+      !leafIds.has(dep.from) ||
+      dep.to === dep.from
+    ) {
+      continue;
+    }
+    if (byId.get(dep.to)?.status !== "closed") {
       const list = blockers.get(dep.from) ?? [];
       if (!list.includes(dep.to)) list.push(dep.to);
       blockers.set(dep.from, list);
     }
     // Ordering only considers edges between checkpoints of this run.
     const key = `${dep.to}->${dep.from}`;
-    if (!leafIds.has(dep.to) || dep.to === dep.from || edges.has(key)) continue;
+    if (!leafIds.has(dep.to) || edges.has(key)) continue;
     edges.add(key);
     outgoing.set(dep.to, [...(outgoing.get(dep.to) ?? []), dep.from]);
     incoming.set(dep.from, (incoming.get(dep.from) ?? 0) + 1);
@@ -125,19 +163,47 @@ export function checkpointsForEpic(
     };
   });
 
-  const active =
-    checkpoints.find((checkpoint) => checkpoint.status === "in_progress") ??
-    checkpoints.find(
-      (checkpoint) =>
-        checkpoint.status === "open" && checkpoint.blockedBy.length === 0,
-    ) ??
-    null;
+  const total = checkpoints.length;
+  const done = checkpoints.filter((c) => c.status === "closed").length;
+  const inProgressIds = checkpoints
+    .filter((c) => c.status === "in_progress")
+    .map((c) => c.id);
+  const nextReadyId =
+    checkpoints.find((c) => c.status === "open" && c.blockedBy.length === 0)
+      ?.id ?? null;
+
+  const state: RunState =
+    total === 0
+      ? "empty"
+      : done === total
+        ? "complete"
+        : inProgressIds.length > 0
+          ? "in-progress"
+          : nextReadyId !== null
+            ? "ready"
+            : "waiting";
+
+  const remaining = new Set(
+    checkpoints.filter((c) => c.status !== "closed").map((c) => c.id),
+  );
+  const waitingOn =
+    state === "waiting"
+      ? [
+          ...new Set(
+            checkpoints
+              .flatMap((c) => (remaining.has(c.id) ? c.blockedBy : []))
+              .filter((id) => !remaining.has(id)),
+          ),
+        ]
+      : [];
 
   return {
     checkpoints,
-    done: checkpoints.filter((checkpoint) => checkpoint.status === "closed")
-      .length,
-    total: checkpoints.length,
-    activeId: active?.id ?? null,
+    done,
+    total,
+    state,
+    inProgressIds,
+    nextReadyId,
+    waitingOn,
   };
 }

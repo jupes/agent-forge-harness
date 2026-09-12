@@ -3,16 +3,21 @@ import { useState } from "preact/hooks";
 import type {
   ForgeRunSnapshot,
   GateRun,
+  GateScope,
 } from "../../../scripts/dashboard/forge-run-model";
 import type { BeadsPayload } from "../../../types/beads";
 import { Button } from "../ds/Button";
 import { Card } from "../ds/Card";
 import { EmptyState } from "../ds/EmptyState";
-import { Field, Textarea } from "../ds/Field";
+import { Field, Select, Textarea } from "../ds/Field";
 import { Icon, type IconName } from "../ds/Icon";
 import { ProgressBar } from "../ds/ProgressBar";
 import { Tag } from "../ds/Tag";
-import { type Checkpoint, checkpointsForEpic } from "../forge-checkpoints";
+import {
+  type Checkpoint,
+  type CheckpointSummary,
+  checkpointsForEpic,
+} from "../forge-checkpoints";
 import { statusLabel, statusTone } from "../issue-presentation";
 import { useDevApi } from "../use-dev-api";
 
@@ -54,9 +59,9 @@ export interface ForgeRunIslandProps {
 /**
  * The active Forge pipeline run.
  *
- * Phases and the latest quality-gate run come from this machine's harness
- * state through the dev-only API; checkpoints come from the Beads snapshot;
- * a checkpoint review is recorded as a `review:` comment in Beads.
+ * Phases and the quality-gate run come from this machine's harness state
+ * through the dev-only API; checkpoints come from the Beads snapshot; a review
+ * of an in-progress checkpoint is recorded as a `review:` comment in Beads.
  */
 export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
   const { data, error, loading } = useDevApi<ForgeRunSnapshot>("/forge-run");
@@ -148,7 +153,7 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
       </div>
 
       <CheckpointsCard payload={payload} epicId={data.epic} />
-      <GateCard gate={data.gate} />
+      <GateCard gate={data.gate} scope={data.gateScope} />
     </>
   );
 }
@@ -187,12 +192,8 @@ function CheckpointsCard({
   }
 
   const summary = checkpointsForEpic(payload, epicId);
-  const active =
-    summary.checkpoints.find(
-      (checkpoint) => checkpoint.id === summary.activeId,
-    ) ?? null;
 
-  if (summary.total === 0) {
+  if (summary.state === "empty") {
     return (
       <Card title="Checkpoints" headingLevel={2} kicker={epicId}>
         <p class="af-muted">
@@ -201,6 +202,12 @@ function CheckpointsCard({
       </Card>
     );
   }
+
+  const reviewable = summary.checkpoints.filter((checkpoint) =>
+    summary.inProgressIds.includes(checkpoint.id),
+  );
+  const current = summary.inProgressIds[0] ?? null;
+  const next = summary.state === "ready" ? summary.nextReadyId : null;
 
   return (
     <Card title="Checkpoints" headingLevel={2} kicker={epicId}>
@@ -214,58 +221,128 @@ function CheckpointsCard({
       </p>
 
       <ol class="af-checkpoints">
-        {summary.checkpoints.map((checkpoint) => (
-          <li
-            key={checkpoint.id}
-            class={`af-checkpoint${checkpoint.id === summary.activeId ? " is-active" : ""}`}
-            aria-current={
-              checkpoint.id === summary.activeId ? "step" : undefined
-            }
-          >
-            <Icon
-              name={CHECKPOINT_ICON[checkpoint.status] ?? "circle"}
-              size={14}
-              label={statusLabel(checkpoint.status)}
-            />
-            <div class="af-checkpoint-body">
-              <p class="af-checkpoint-title">{checkpoint.title}</p>
-              <p class="af-checkpoint-meta">
-                <code>{checkpoint.id}</code>
-                {checkpoint.groupTitle ? ` · ${checkpoint.groupTitle}` : ""}
-                {checkpoint.blockedBy.length > 0 ? (
-                  <span class="af-checkpoint-waiting">
-                    {" "}
-                    · waiting on {checkpoint.blockedBy.join(", ")}
-                  </span>
-                ) : null}
-              </p>
-            </div>
-            <Tag tone={statusTone(checkpoint.status)}>
-              {statusLabel(checkpoint.status)}
-            </Tag>
-          </li>
-        ))}
+        {summary.checkpoints.map((checkpoint) => {
+          const isNext = checkpoint.id === next;
+          const classes = [
+            "af-checkpoint",
+            checkpoint.status === "in_progress" ? "is-active" : "",
+            isNext ? "is-next" : "",
+          ];
+          return (
+            <li
+              key={checkpoint.id}
+              class={classes.filter(Boolean).join(" ")}
+              aria-current={checkpoint.id === current ? "step" : undefined}
+            >
+              <Icon
+                name={CHECKPOINT_ICON[checkpoint.status] ?? "circle"}
+                size={14}
+                label={statusLabel(checkpoint.status)}
+              />
+              <div class="af-checkpoint-body">
+                <p class="af-checkpoint-title">{checkpoint.title}</p>
+                <p class="af-checkpoint-meta">
+                  <code>{checkpoint.id}</code>
+                  {checkpoint.groupTitle ? ` · ${checkpoint.groupTitle}` : ""}
+                  {checkpoint.blockedBy.length > 0 ? (
+                    <span class="af-checkpoint-waiting">
+                      {" "}
+                      · waiting on {checkpoint.blockedBy.join(", ")}
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <span class="af-checkpoint-tags">
+                {isNext ? <Tag tone="accent">next</Tag> : null}
+                <Tag tone={statusTone(checkpoint.status)}>
+                  {statusLabel(checkpoint.status)}
+                </Tag>
+              </span>
+            </li>
+          );
+        })}
       </ol>
 
-      {active ? (
-        <ReviewActions key={active.id} checkpoint={active} />
+      {summary.state === "in-progress" ? (
+        <ReviewActions
+          key={summary.inProgressIds.join(" ")}
+          checkpoints={reviewable}
+        />
       ) : (
-        <p class="af-muted">Every checkpoint in this run is complete.</p>
+        <RunStateNote summary={summary} />
       )}
     </Card>
   );
 }
 
-function ReviewActions({
-  checkpoint,
+/** What a run with nothing to review is waiting for — never a false "done". */
+function RunStateNote({
+  summary,
 }: {
-  checkpoint: Checkpoint;
+  summary: CheckpointSummary;
 }): JSX.Element {
+  if (summary.state === "complete") {
+    return (
+      <p class="af-checkpoint-state" data-state="complete">
+        All {summary.total} checkpoints are closed.
+      </p>
+    );
+  }
+
+  if (summary.state === "ready" && summary.nextReadyId) {
+    return (
+      <p class="af-checkpoint-state" data-state="ready">
+        Nothing is in progress. Next up is <code>{summary.nextReadyId}</code> —
+        claim it with <code>bd update {summary.nextReadyId} --claim</code>.
+        Reviews open once a checkpoint is in progress.
+      </p>
+    );
+  }
+
+  const remaining = summary.total - summary.done;
+  const markedBlocked = summary.checkpoints
+    .filter((checkpoint) => checkpoint.status === "blocked")
+    .map((checkpoint) => checkpoint.id);
+  return (
+    <p class="af-checkpoint-state is-waiting" data-state="waiting">
+      {remaining} of {summary.total} checkpoints remain, but none is in progress
+      or ready to start.
+      {summary.waitingOn.length > 0 ? (
+        <>
+          {" "}
+          Waiting on <code>{summary.waitingOn.join(", ")}</code>.
+        </>
+      ) : null}
+      {markedBlocked.length > 0 ? (
+        <>
+          {" "}
+          Marked blocked in Beads: <code>{markedBlocked.join(", ")}</code>.
+        </>
+      ) : null}
+      {summary.waitingOn.length === 0 && markedBlocked.length === 0
+        ? " Their blocking dependencies form a cycle."
+        : null}
+    </p>
+  );
+}
+
+function ReviewActions({
+  checkpoints,
+}: {
+  checkpoints: Checkpoint[];
+}): JSX.Element | null {
+  const [selectedId, setSelectedId] = useState(checkpoints[0]?.id ?? "");
   const [note, setNote] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(
     null,
   );
+
+  const selected =
+    checkpoints.find((checkpoint) => checkpoint.id === selectedId) ??
+    checkpoints[0];
+  if (!selected) return null;
+  const target: Checkpoint = selected;
 
   async function record(decision: "approve" | "request-changes") {
     setPending(decision);
@@ -274,7 +351,7 @@ function ReviewActions({
       const response = await fetch(REVIEW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ issueId: checkpoint.id, decision, note }),
+        body: JSON.stringify({ issueId: target.id, decision, note }),
       });
       const envelope = (await response.json()) as {
         ok: boolean;
@@ -285,7 +362,7 @@ function ReviewActions({
       }
       setResult({
         ok: true,
-        message: `Recorded a review: comment on ${checkpoint.id}. Refresh the snapshot to see it in the issue's history.`,
+        message: `Recorded a review: comment on ${target.id}. Refresh the snapshot to see it in the issue's history.`,
       });
       setNote("");
     } catch (cause) {
@@ -301,12 +378,38 @@ function ReviewActions({
   return (
     <section class="af-review" aria-labelledby="forge-review-heading">
       <h3 id="forge-review-heading" class="af-review-heading">
-        Review checkpoint <code>{checkpoint.id}</code>
+        {checkpoints.length === 1 ? (
+          <>
+            Review checkpoint <code>{target.id}</code>
+          </>
+        ) : (
+          "Review an in-progress checkpoint"
+        )}
       </h3>
       <p class="af-muted af-prose">
-        Adds a <code>review:</code> comment to this checkpoint in Beads. A
-        request for changes must say what to change.
+        Adds a <code>review:</code> comment in Beads. Only a checkpoint that is
+        in progress can be reviewed, and a request for changes must say what to
+        change.
       </p>
+      {checkpoints.length > 1 ? (
+        <Field label="Checkpoint" id="forge-review-checkpoint">
+          <Select
+            id="forge-review-checkpoint"
+            value={target.id}
+            disabled={pending !== null}
+            onChange={(event) => {
+              setSelectedId(event.currentTarget.value);
+              setResult(null);
+            }}
+          >
+            {checkpoints.map((checkpoint) => (
+              <option key={checkpoint.id} value={checkpoint.id}>
+                {checkpoint.id} — {checkpoint.title}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      ) : null}
       <Field label="Note" id="forge-review-note">
         <Textarea
           id="forge-review-note"
@@ -345,19 +448,39 @@ function ReviewActions({
   );
 }
 
-function GateCard({ gate }: { gate: GateRun | null }): JSX.Element {
+function GateCard({
+  gate,
+  scope,
+}: {
+  gate: GateRun | null;
+  scope: GateScope;
+}): JSX.Element {
+  const scopeText = (
+    <>
+      this checkout (<code>{scope.checkout}</code>)
+      {scope.slug ? (
+        <>
+          {" "}
+          and forge run <code>{scope.slug}</code>
+        </>
+      ) : (
+        " with no forge run in flight"
+      )}
+    </>
+  );
+
   if (!gate) {
     return (
       <Card title="Quality gate" headingLevel={2}>
         <EmptyState
-          title="No quality-gate runs recorded yet"
+          title="No quality-gate run recorded for this checkout"
           hint={
             <>
-              The TaskCompleted and TeammateIdle hooks append each run to{" "}
-              <code>
-                ~/.claude/logs/agent-forge/&lt;date&gt;/quality-gate.jsonl
-              </code>
-              ; the latest one shows here.
+              The TaskCompleted and TeammateIdle hooks log every run to one log
+              shared by all checkouts, recording where each ran. This panel
+              shows the newest run from {scopeText}. Runs from other worktrees
+              or forge runs, and entries logged before runs recorded that, are
+              not shown.
             </>
           }
         />
@@ -376,9 +499,25 @@ function GateCard({ gate }: { gate: GateRun | null }): JSX.Element {
         </Tag>
       }
     >
-      {gate.timestamp ? (
-        <p class="af-muted">Ran {new Date(gate.timestamp).toLocaleString()}</p>
-      ) : null}
+      <p class="af-muted af-gate-scope">
+        Newest run from {scopeText}
+        {gate.timestamp
+          ? `, at ${new Date(gate.timestamp).toLocaleString()}`
+          : ""}
+        {gate.branch ? (
+          <>
+            {" "}
+            on <code>{gate.branch}</code>
+          </>
+        ) : null}
+        {gate.taskId ? (
+          <>
+            {" "}
+            for task <code>{gate.taskId}</code>
+          </>
+        ) : null}
+        .
+      </p>
       <ul class="af-gate-grid">
         {gate.checks.map((check) => {
           const state = check.skipped

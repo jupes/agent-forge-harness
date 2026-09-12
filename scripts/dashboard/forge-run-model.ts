@@ -35,12 +35,29 @@ export interface GateCheck {
   detail: string | null;
 }
 
-/** One quality-gate run, as `.claude/hooks/quality-gate.ts` logs it. */
+/**
+ * One quality-gate run, as `.claude/hooks/quality-gate.ts` logs it.
+ *
+ * The log is shared by every checkout on the machine, so each entry records
+ * where it ran. Entries written before the hook did that have no identity and
+ * are never attributed to a run.
+ */
 export interface GateRun {
   event: string;
   timestamp: string;
   passed: boolean;
   checks: GateCheck[];
+  checkout: string | null;
+  branch: string | null;
+  taskId: string | null;
+  forgeSlug: string | null;
+}
+
+/** The gate runs that belong on this page: this checkout's, for this run. */
+export interface GateScope {
+  checkout: string;
+  /** The active forge run's slug, or null when none is in flight. */
+  slug: string | null;
 }
 
 export interface ForgeRunSnapshot {
@@ -49,8 +66,9 @@ export interface ForgeRunSnapshot {
   epic: string | null;
   updatedAt: string | null;
   phases: PhaseRow[];
-  /** The most recent quality-gate run, or null when none has been logged. */
+  /** The newest quality-gate run within `gateScope`, or null if there is none. */
   gate: GateRun | null;
+  gateScope: GateScope;
 }
 
 /**
@@ -125,22 +143,20 @@ function detailFor(check: {
   return null;
 }
 
+const text = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value.trim() : null;
+
 function gateRunFrom(line: string): GateRun | null {
   try {
-    const raw = JSON.parse(line) as {
-      event?: unknown;
-      timestamp?: unknown;
-      passed?: unknown;
-      checks?: unknown;
-    };
-    if (typeof raw.passed !== "boolean" || !Array.isArray(raw.checks)) {
+    const raw = JSON.parse(line) as Record<string, unknown>;
+    if (typeof raw["passed"] !== "boolean" || !Array.isArray(raw["checks"])) {
       return null;
     }
     return {
-      event: typeof raw.event === "string" ? raw.event : "",
-      timestamp: typeof raw.timestamp === "string" ? raw.timestamp : "",
-      passed: raw.passed,
-      checks: raw.checks.flatMap((entry): GateCheck[] => {
+      event: text(raw["event"]) ?? "",
+      timestamp: text(raw["timestamp"]) ?? "",
+      passed: raw["passed"],
+      checks: raw["checks"].flatMap((entry): GateCheck[] => {
         const check = entry as {
           name?: unknown;
           passed?: unknown;
@@ -158,42 +174,86 @@ function gateRunFrom(line: string): GateRun | null {
           },
         ];
       }),
+      checkout: text(raw["checkout"]),
+      branch: text(raw["branch"]),
+      taskId: text(raw["taskId"]),
+      forgeSlug: text(raw["forgeSlug"]),
     };
   } catch {
     return null;
   }
 }
 
-/** The last well-formed run in a `quality-gate.jsonl` log. */
-export function parseLatestGateRun(jsonl: string | null): GateRun | null {
-  if (!jsonl) return null;
-  const lines = jsonl.split(/\r?\n/).filter((line) => line.trim());
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const run = gateRunFrom(lines[index] as string);
-    if (run) return run;
+/**
+ * A checkout path in comparable form. Git reports `C:/Users/...` where Node
+ * reports `C:\Users\...`, and Windows drive paths compare case-insensitively.
+ */
+export function comparableCheckout(path: string): string {
+  const slashed = path.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return /^[a-z]:\//i.test(slashed) ? slashed.toLowerCase() : slashed;
+}
+
+export function gateRunBelongsTo(run: GateRun, scope: GateScope): boolean {
+  return (
+    run.checkout !== null &&
+    comparableCheckout(run.checkout) === comparableCheckout(scope.checkout) &&
+    run.forgeSlug === scope.slug
+  );
+}
+
+/**
+ * The newest gate run that belongs to `scope`.
+ *
+ * `logs` are whole `quality-gate.jsonl` files, newest first. Iteration stops at
+ * the first match, so older files are read only when newer ones have none.
+ */
+export function latestGateRun(
+  logs: Iterable<string | null>,
+  scope: GateScope,
+): GateRun | null {
+  for (const jsonl of logs) {
+    if (!jsonl) continue;
+    const lines = jsonl.split(/\r?\n/);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]?.trim();
+      if (!line) continue;
+      const run = gateRunFrom(line);
+      if (run && gateRunBelongsTo(run, scope)) return run;
+    }
   }
   return null;
 }
 
 export function forgeRunSnapshot(input: {
   stateJson: string | null;
-  gateJsonl: string | null;
+  /** The checkout this dashboard serves. */
+  checkout: string;
+  /** `quality-gate.jsonl` contents, newest first. */
+  gateLogs: Iterable<string | null>;
   artifactExists: (path: string) => boolean;
 }): ForgeRunSnapshot {
   const state = parseForgeState(input.stateJson);
+  const gateScope: GateScope = {
+    checkout: input.checkout,
+    slug: state?.slug ?? null,
+  };
   return {
     slug: state?.slug ?? null,
     feature: state?.feature ?? null,
     epic: state?.epic ?? null,
     updatedAt: state?.updatedAt || null,
     phases: phaseRows(state, input.artifactExists),
-    gate: parseLatestGateRun(input.gateJsonl),
+    gate: latestGateRun(input.gateLogs, gateScope),
+    gateScope,
   };
 }
 
 export type ReviewDecision = "approve" | "request-changes";
 
 export const REVIEW_NOTE_LIMIT = 2000;
+
+/** The only Beads status a review can be recorded against. */
+export const REVIEWABLE_STATUS = "in_progress";
 
 /** A Beads id. Must start alphanumeric so `bd` can never read it as a flag. */
 const ISSUE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
@@ -245,4 +305,18 @@ export function reviewCommentFor(input: unknown): ReviewComment {
     issueId,
     body: `review: ${verdict} via Forge run dashboard${note ? ` — ${note}` : ""}`,
   };
+}
+
+/** The status in `bd show <id> --json` output, or null if it has none. */
+export function issueStatusFromBdShow(output: string): string | null {
+  try {
+    const parsed = JSON.parse(output) as unknown;
+    const row: unknown = Array.isArray(parsed)
+      ? (parsed as unknown[])[0]
+      : parsed;
+    const status = (row as { status?: unknown } | null | undefined)?.status;
+    return typeof status === "string" ? status : null;
+  } catch {
+    return null;
+  }
 }

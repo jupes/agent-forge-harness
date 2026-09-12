@@ -12,15 +12,18 @@ import type { Page } from "@playwright/test";
 
 const ts = "2026-09-11T00:00:00.000Z";
 
-const issue = (fields: Record<string, unknown>) => ({
+/** The checkout the fixture dashboard serves; gate runs are scoped to it. */
+const CHECKOUT = "/home/dev/agent-forge-harness/trees/a1b2c3";
+
+const issue = (fields: Record<string, unknown>): Record<string, unknown> => ({
   createdAt: ts,
   updatedAt: ts,
   ...fields,
 });
 
 /**
- * One epic, two features, four checkpoints. The ids sort opposite to the
- * dependency order, so ordering checkpoints by id instead would be caught.
+ * One epic, two features, four checkpoints, one of them in progress. The ids
+ * sort opposite to the dependency order, so ordering by id would be caught.
  */
 export const BEADS = {
   version: "1.0.0",
@@ -129,6 +132,10 @@ export const FORGE = {
       event: "TaskCompleted",
       timestamp: ts,
       passed: false,
+      checkout: CHECKOUT,
+      branch: "feat/design-system",
+      taskId: "demo-primitives",
+      forgeSlug: "design-system",
       checks: [
         { name: "typecheck", passed: true, skipped: false, detail: null },
         {
@@ -147,6 +154,7 @@ export const FORGE = {
         { name: "ac-verify", passed: true, skipped: false, detail: null },
       ],
     },
+    gateScope: { checkout: CHECKOUT, slug: "design-system" },
   },
 };
 
@@ -183,7 +191,7 @@ export const REPOS = {
       {
         id: "a1b2c3",
         branch: "feat/design-system",
-        path: "/home/dev/agent-forge-harness/trees/a1b2c3",
+        path: CHECKOUT,
         createdAt: "2026-09-09T22:00:00.000Z",
         pathExists: true,
       },
@@ -217,17 +225,43 @@ export const REPOS = {
   },
 };
 
+export interface ForgeRunStub {
+  /** Replace checkpoint statuses, keyed by issue id. */
+  statuses?: Record<string, string>;
+  /** Replace the gate run; null means no run belongs to this checkout. */
+  gate?: typeof FORGE.data.gate | null;
+}
+
 /**
  * Serve the Forge run fixtures. Returns the bodies of review POSTs, which are
  * always intercepted — a test never writes a real Beads comment.
  */
-export async function stubForgeRun(page: Page): Promise<unknown[]> {
+export async function stubForgeRun(
+  page: Page,
+  stub: ForgeRunStub = {},
+): Promise<unknown[]> {
+  const statuses = stub.statuses ?? {};
+  const beads = {
+    ...BEADS,
+    issues: BEADS.issues.map((entry) => {
+      const status = statuses[String(entry["id"])];
+      return status ? { ...entry, status } : entry;
+    }),
+  };
+  const forge = {
+    ...FORGE,
+    data: {
+      ...FORGE.data,
+      gate: stub.gate === undefined ? FORGE.data.gate : stub.gate,
+    },
+  };
+
   const posts: unknown[] = [];
   await page.route("**/data/beads.json", (route) =>
-    route.fulfill({ json: BEADS }),
+    route.fulfill({ json: beads }),
   );
   await page.route("**/__agent-forge/dev-api/forge-run", (route) =>
-    route.fulfill({ json: FORGE }),
+    route.fulfill({ json: forge }),
   );
   await page.route(
     "**/__agent-forge/dev-api/forge-run/review",

@@ -8,7 +8,8 @@
  * where the pages show a "needs the dev server" state instead.
  *
  * One route writes: recording a checkpoint review adds a `review:` comment in
- * Beads. It is held to the council API's stricter same-origin check.
+ * Beads. It is held to the council API's stricter same-origin check, and to
+ * the checkpoint's live status.
  */
 
 import { spawnSync } from "node:child_process";
@@ -21,6 +22,8 @@ import { isLocalCouncilRequest } from "../council/dashboard";
 import {
   type ForgeRunSnapshot,
   forgeRunSnapshot,
+  issueStatusFromBdShow,
+  REVIEWABLE_STATUS,
   reviewCommentFor,
 } from "./forge-run-model";
 import {
@@ -33,6 +36,9 @@ import {
 } from "./repos-knowledge-model";
 
 export const DEV_API = "/__agent-forge/dev-api";
+
+/** How many days of the gate log to search for this checkout's latest run. */
+const GATE_LOG_DAYS = 31;
 
 /** Loopback guard for the read-only routes — never serve this off-machine. */
 export function isLocalRequest(req: IncomingMessage): boolean {
@@ -116,27 +122,35 @@ export function localStateRoot(root: string): string {
 }
 
 /**
- * The newest day's `quality-gate.jsonl` under the hook's log directory.
+ * `quality-gate.jsonl` contents, newest day first.
  *
  * The hook writes one directory per UTC date (`YYYY-MM-DD`), which sorts
- * lexically into date order.
+ * lexically into date order. A generator, so older days are read only when
+ * newer ones hold no run for this checkout.
  */
-export function latestGateLog(logBase: string = LOG_BASE_DIR): string | null {
+export function* gateLogsNewestFirst(
+  logBase: string = LOG_BASE_DIR,
+  maxDays: number = GATE_LOG_DAYS,
+): Generator<string> {
+  let days: string[];
   try {
-    if (!existsSync(logBase)) return null;
-    const days = readdirSync(logBase, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+    if (!existsSync(logBase)) return;
+    days = readdirSync(logBase, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(entry.name),
+      )
       .map((entry) => entry.name)
       .sort()
-      .reverse();
-    for (const day of days) {
-      const log = readIfPresent(join(logBase, day, "quality-gate.jsonl"));
-      if (log !== null) return log;
-    }
+      .reverse()
+      .slice(0, maxDays);
   } catch {
-    // An unreadable log directory means there are no runs to show.
+    return;
   }
-  return null;
+  for (const day of days) {
+    const log = readIfPresent(join(logBase, day, "quality-gate.jsonl"));
+    if (log !== null) yield log;
+  }
 }
 
 export function readForgeRun(
@@ -144,10 +158,12 @@ export function readForgeRun(
   logBase: string = LOG_BASE_DIR,
 ): ForgeRunSnapshot {
   // Forge state stays with the checkout: a run is driven from the worktree it
-  // builds in.
+  // builds in. Gate runs are matched to that checkout and run, because the log
+  // they come from is shared by every checkout on the machine.
   return forgeRunSnapshot({
     stateJson: readIfPresent(join(root, ".tmp", "work", "forge-state.json")),
-    gateJsonl: latestGateLog(logBase),
+    checkout: root,
+    gateLogs: gateLogsNewestFirst(logBase),
     artifactExists: (path) => existsSync(join(root, path)),
   });
 }
@@ -180,6 +196,7 @@ export function readReposKnowledge(
 
 export interface BdResult {
   status: number | null;
+  stdout: string;
   stderr: string;
 }
 
@@ -188,10 +205,19 @@ export interface ApiReply {
   body: { ok: boolean; data: unknown; error: string | null };
 }
 
+const fail = (status: number, error: string): ApiReply => ({
+  status,
+  body: { ok: false, data: null, error },
+});
+
+function failureReason(result: BdResult): string {
+  return result.stderr.trim().slice(0, 500) || `exit ${result.status}`;
+}
+
 /**
  * Record a checkpoint review.
  *
- * `bd` is invoked with an argument array — never a shell — and the id and
+ * `bd` is invoked with argument arrays — never a shell — and the id and
  * comment are validated first, so nothing in the request is interpreted.
  */
 export function applyReview(
@@ -199,23 +225,25 @@ export function applyReview(
   runBd: (args: string[]) => BdResult,
 ): ApiReply {
   const review = reviewCommentFor(input);
-  if (!review.ok) {
-    return {
-      status: 400,
-      body: { ok: false, data: null, error: review.error },
-    };
+  if (!review.ok) return fail(400, review.error);
+
+  // The page may be rendering a stale snapshot, so Beads decides: only a
+  // checkpoint that is in progress right now has work to approve.
+  const shown = runBd(["show", review.issueId, "--json"]);
+  if (shown.status !== 0) {
+    return fail(502, `bd show failed: ${failureReason(shown)}`);
   }
-  const result = runBd(["comments", "add", review.issueId, review.body]);
-  if (result.status !== 0) {
-    const reason = result.stderr.trim().slice(0, 500);
-    return {
-      status: 502,
-      body: {
-        ok: false,
-        data: null,
-        error: `bd comments add failed: ${reason || `exit ${result.status}`}`,
-      },
-    };
+  const status = issueStatusFromBdShow(shown.stdout);
+  if (status !== REVIEWABLE_STATUS) {
+    return fail(
+      409,
+      `Only an in-progress checkpoint can be reviewed; ${review.issueId} is ${status ?? "of unknown status"} in Beads`,
+    );
+  }
+
+  const added = runBd(["comments", "add", review.issueId, review.body]);
+  if (added.status !== 0) {
+    return fail(502, `bd comments add failed: ${failureReason(added)}`);
   }
   return {
     status: 200,
@@ -237,6 +265,7 @@ function bdRunner(root: string) {
     });
     return {
       status: result.status,
+      stdout: String(result.stdout ?? ""),
       stderr: String(result.stderr || result.error?.message || ""),
     };
   };
@@ -267,11 +296,6 @@ function sendJson(res: ServerResponse, reply: ApiReply): void {
   res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(reply.body));
 }
-
-const fail = (status: number, error: string): ApiReply => ({
-  status,
-  body: { ok: false, data: null, error },
-});
 
 async function handle(
   root: string,

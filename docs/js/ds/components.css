@@ -1563,6 +1563,32 @@ form.is-submitting {
   color: var(--color-accent-400);
 }
 
+.af-checkpoint.is-next {
+  border-color: var(--color-accent-700);
+  border-style: dashed;
+}
+
+.af-checkpoint-tags {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.af-checkpoint-state {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.af-checkpoint-state.is-waiting {
+  color: var(--color-accent-300);
+}
+
+.af-gate-scope {
+  overflow-wrap: anywhere;
+}
+
 .af-review {
   display: flex;
   flex-direction: column;

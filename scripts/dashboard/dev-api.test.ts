@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   applyReview,
   type BdResult,
-  latestGateLog,
+  gateLogsNewestFirst,
   readForgeRun,
   readReposKnowledge,
 } from "../../scripts/dashboard/dev-api";
@@ -27,17 +27,36 @@ function write(root: string, relative: string, content: string): string {
   return path;
 }
 
+/** A stand-in for bd: `show` reports `status`, and every call is recorded. */
+function fakeBd(
+  status: string,
+  overrides: Partial<Record<"show" | "comments", BdResult>> = {},
+) {
+  const calls: string[][] = [];
+  const run = (args: string[]): BdResult => {
+    calls.push(args);
+    const command = args[0] === "show" ? "show" : "comments";
+    return (
+      overrides[command] ?? {
+        status: 0,
+        stdout:
+          command === "show" ? JSON.stringify([{ id: args[1], status }]) : "",
+        stderr: "",
+      }
+    );
+  };
+  return { calls, run };
+}
+
 describe("applyReview", () => {
-  test("runs bd with an argument array, never a shell string", () => {
-    const calls: string[][] = [];
+  test("records a review on an in-progress checkpoint, running bd with argument arrays", () => {
+    const bd = fakeBd("in_progress");
     const reply = applyReview(
       { issueId: "agent-forge-harness-j5k3", decision: "approve" },
-      (args): BdResult => {
-        calls.push(args);
-        return { status: 0, stderr: "" };
-      },
+      bd.run,
     );
-    expect(calls).toEqual([
+    expect(bd.calls).toEqual([
+      ["show", "agent-forge-harness-j5k3", "--json"],
       [
         "comments",
         "add",
@@ -49,49 +68,93 @@ describe("applyReview", () => {
     expect(reply.body.ok).toBe(true);
   });
 
+  test("refuses a checkpoint that is not in progress, and writes nothing", () => {
+    for (const status of ["open", "blocked", "closed"]) {
+      const bd = fakeBd(status);
+      const reply = applyReview(
+        { issueId: "a-1", decision: "approve" },
+        bd.run,
+      );
+      expect(reply.status).toBe(409);
+      expect(reply.body.error).toContain(`a-1 is ${status} in Beads`);
+      expect(bd.calls.some((args) => args[0] === "comments")).toBe(false);
+    }
+  });
+
   test("an invalid request never reaches bd", () => {
-    let called = false;
+    const bd = fakeBd("in_progress");
     const reply = applyReview(
       { issueId: "a-1", decision: "request-changes" },
-      () => {
-        called = true;
-        return { status: 0, stderr: "" };
-      },
+      bd.run,
     );
-    expect(called).toBe(false);
+    expect(bd.calls).toEqual([]);
     expect(reply.status).toBe(400);
   });
 
   test("a bd failure is reported, not swallowed", () => {
-    const reply = applyReview(
+    const missing = fakeBd("in_progress", {
+      show: {
+        status: 1,
+        stdout: "",
+        stderr: 'Error: no issue found matching "missing-9"\n',
+      },
+    });
+    const shown = applyReview(
       { issueId: "missing-9", decision: "approve" },
-      () => ({ status: 1, stderr: "Error: issue not found\n" }),
+      missing.run,
     );
-    expect(reply.status).toBe(502);
-    expect(reply.body.error).toContain("issue not found");
+    expect(shown.status).toBe(502);
+    expect(shown.body.error).toContain("no issue found");
+    expect(missing.calls).toHaveLength(1);
+
+    const locked = fakeBd("in_progress", {
+      comments: {
+        status: 1,
+        stdout: "",
+        stderr: "Error: database is locked\n",
+      },
+    });
+    const added = applyReview(
+      { issueId: "a-1", decision: "approve" },
+      locked.run,
+    );
+    expect(added.status).toBe(502);
+    expect(added.body.error).toContain("database is locked");
   });
 });
 
-describe("latestGateLog", () => {
-  test("reads the newest day that has a quality-gate log", () => {
+describe("gateLogsNewestFirst", () => {
+  test("yields quality-gate logs newest day first, skipping days without one", () => {
     const logs = tempRoot();
-    write(logs, "2026-09-08/quality-gate.jsonl", '{"passed":true,"checks":[]}');
+    write(logs, "2026-09-08/quality-gate.jsonl", "eighth");
     write(logs, "2026-09-10/session.jsonl", "{}");
-    write(
-      logs,
-      "2026-09-09/quality-gate.jsonl",
-      '{"passed":false,"checks":[]}',
-    );
-    expect(latestGateLog(logs)).toBe('{"passed":false,"checks":[]}');
+    write(logs, "2026-09-09/quality-gate.jsonl", "ninth");
+    expect([...gateLogsNewestFirst(logs)]).toEqual(["ninth", "eighth"]);
   });
 
-  test("is null when the log directory does not exist", () => {
-    expect(latestGateLog(join(tempRoot(), "nope"))).toBeNull();
+  test("looks back a bounded number of days", () => {
+    const logs = tempRoot();
+    write(logs, "2026-09-01/quality-gate.jsonl", "older");
+    write(logs, "2026-09-02/quality-gate.jsonl", "newer");
+    expect([...gateLogsNewestFirst(logs, 1)]).toEqual(["newer"]);
+  });
+
+  test("yields nothing when the log directory does not exist", () => {
+    expect([...gateLogsNewestFirst(join(tempRoot(), "nope"))]).toEqual([]);
   });
 });
 
 describe("readForgeRun", () => {
-  test("combines forge state, artifacts on disk and the latest gate run", () => {
+  function gate(fields: Record<string, unknown>): string {
+    return JSON.stringify({
+      event: "TaskCompleted",
+      passed: true,
+      checks: [{ name: "typecheck", passed: true }],
+      ...fields,
+    });
+  }
+
+  test("combines forge state, artifacts on disk and this checkout's latest gate run", () => {
     const root = tempRoot();
     const logs = tempRoot();
     write(
@@ -107,15 +170,24 @@ describe("readForgeRun", () => {
       }),
     );
     write(root, "plans/research/demo.md", "# research");
+    // Newest first: a run from another worktree, then — in the older file — a
+    // legacy entry with no identity logged after this checkout's own run.
+    write(
+      logs,
+      "2026-09-11/quality-gate.jsonl",
+      gate({
+        timestamp: "other-worktree",
+        checkout: join(tempRoot(), "other"),
+        forgeSlug: "demo",
+      }),
+    );
     write(
       logs,
       "2026-09-10/quality-gate.jsonl",
-      JSON.stringify({
-        event: "TaskCompleted",
-        timestamp: "t",
-        passed: true,
-        checks: [{ name: "typecheck", passed: true }],
-      }),
+      [
+        gate({ timestamp: "ours", checkout: root, forgeSlug: "demo" }),
+        gate({ timestamp: "legacy" }),
+      ].join("\n"),
     );
 
     const run = readForgeRun(root, logs);
@@ -125,7 +197,15 @@ describe("readForgeRun", () => {
     );
     // plans/drafts/demo.md was never written.
     expect(run.phases.find((p) => p.id === "plan")?.artifactMissing).toBe(true);
-    expect(run.gate?.checks[0]?.name).toBe("typecheck");
+    expect(run.gateScope).toEqual({ checkout: root, slug: "demo" });
+    expect(run.gate?.timestamp).toBe("ours");
+  });
+
+  test("shows no gate when no run in the log belongs to this checkout", () => {
+    const root = tempRoot();
+    const logs = tempRoot();
+    write(logs, "2026-09-10/quality-gate.jsonl", gate({ timestamp: "legacy" }));
+    expect(readForgeRun(root, logs).gate).toBeNull();
   });
 });
 

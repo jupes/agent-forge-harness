@@ -29,7 +29,7 @@ const FEATURE = issue({
   parent: "epic",
 });
 
-describe("checkpointsForEpic", () => {
+describe("checkpointsForEpic: which issues are checkpoints", () => {
   test("collects leaf issues through features, not the containers", () => {
     const summary = checkpointsForEpic(
       payload([
@@ -86,6 +86,15 @@ describe("checkpointsForEpic", () => {
     ]);
   });
 
+  test("is empty without a snapshot, an epic, or an epic in the snapshot", () => {
+    expect(checkpointsForEpic(null, "epic").state).toBe("empty");
+    expect(checkpointsForEpic(payload([EPIC]), null).state).toBe("empty");
+    expect(checkpointsForEpic(payload([EPIC]), "missing").total).toBe(0);
+    expect(checkpointsForEpic(payload([EPIC]), "epic").state).toBe("empty");
+  });
+});
+
+describe("checkpointsForEpic: blockers", () => {
   test("lists only blockers that are still open", () => {
     const summary = checkpointsForEpic(
       payload(
@@ -107,7 +116,21 @@ describe("checkpointsForEpic", () => {
     expect(waiting?.blockedBy).toEqual(["wip"]);
   });
 
-  test("the active checkpoint is the one in progress", () => {
+  test("keeps a blocker the snapshot does not hold, since nothing says it is done", () => {
+    const summary = checkpointsForEpic(
+      payload(
+        [EPIC, FEATURE, issue({ id: "t1", parent: "feat" })],
+        [{ from: "t1", to: "other-repo-9", type: "blocks" }],
+      ),
+      "epic",
+    );
+    expect(summary.checkpoints[0]?.blockedBy).toEqual(["other-repo-9"]);
+    expect(summary.nextReadyId).toBeNull();
+  });
+});
+
+describe("checkpointsForEpic: run state and what can be reviewed", () => {
+  test("only in-progress checkpoints are reviewable", () => {
     const summary = checkpointsForEpic(
       payload([
         EPIC,
@@ -118,12 +141,33 @@ describe("checkpointsForEpic", () => {
       ]),
       "epic",
     );
-    expect(summary.activeId).toBe("t2");
+    expect(summary.state).toBe("in-progress");
+    expect(summary.inProgressIds).toEqual(["t2"]);
+    // t3 could be started, which makes it next — not something to approve.
+    expect(summary.nextReadyId).toBe("t3");
     expect(summary.done).toBe(1);
     expect(summary.total).toBe(3);
   });
 
-  test("otherwise it is the first open checkpoint with nothing blocking it", () => {
+  test("lists every in-progress checkpoint, in run order", () => {
+    const summary = checkpointsForEpic(
+      payload(
+        [
+          EPIC,
+          FEATURE,
+          issue({ id: "t2", parent: "feat", status: "in_progress" }),
+          issue({ id: "t1", parent: "feat", status: "in_progress" }),
+        ],
+        [{ from: "t2", to: "t1", type: "blocks" }],
+      ),
+      "epic",
+    );
+    expect(summary.inProgressIds).toEqual(["t1", "t2"]);
+  });
+
+  test("an unstarted run is ready, with nothing to review", () => {
+    // Regression: the first open, unblocked checkpoint used to be treated as
+    // active and offered for approval before anyone had claimed it.
     const summary = checkpointsForEpic(
       payload(
         [
@@ -137,23 +181,68 @@ describe("checkpointsForEpic", () => {
       ),
       "epic",
     );
-    expect(summary.activeId).toBe("t2");
+    expect(summary.state).toBe("ready");
+    expect(summary.inProgressIds).toEqual([]);
+    expect(summary.nextReadyId).toBe("t2");
   });
 
-  test("a finished run has no active checkpoint", () => {
+  test("remaining work that nothing can start is waiting, not complete", () => {
+    // Regression: 0 of 1 with its only checkpoint blocked read as complete.
+    const summary = checkpointsForEpic(
+      payload(
+        [
+          EPIC,
+          FEATURE,
+          issue({ id: "t1", parent: "feat" }),
+          issue({ id: "outside" }),
+        ],
+        [{ from: "t1", to: "outside", type: "blocks" }],
+      ),
+      "epic",
+    );
+    expect(summary.done).toBe(0);
+    expect(summary.total).toBe(1);
+    expect(summary.state).toBe("waiting");
+    expect(summary.waitingOn).toEqual(["outside"]);
+    expect(summary.inProgressIds).toEqual([]);
+    expect(summary.nextReadyId).toBeNull();
+  });
+
+  test("a checkpoint marked blocked, with no blocker recorded, is waiting too", () => {
     const summary = checkpointsForEpic(
       payload([
         EPIC,
         FEATURE,
-        issue({ id: "t1", parent: "feat", status: "closed" }),
+        issue({ id: "t1", parent: "feat", status: "blocked" }),
       ]),
       "epic",
     );
-    expect(summary.activeId).toBeNull();
-    expect(summary.done).toBe(1);
+    expect(summary.state).toBe("waiting");
+    expect(summary.waitingOn).toEqual([]);
   });
 
-  test("a dependency cycle still lists every checkpoint", () => {
+  test("waitingOn names what blocks the run from outside, not the queue behind it", () => {
+    const summary = checkpointsForEpic(
+      payload(
+        [
+          EPIC,
+          FEATURE,
+          issue({ id: "t1", parent: "feat" }),
+          issue({ id: "t2", parent: "feat" }),
+          issue({ id: "outside" }),
+        ],
+        [
+          { from: "t1", to: "outside", type: "blocks" },
+          { from: "t2", to: "t1", type: "blocks" },
+        ],
+      ),
+      "epic",
+    );
+    expect(summary.state).toBe("waiting");
+    expect(summary.waitingOn).toEqual(["outside"]);
+  });
+
+  test("a dependency cycle still lists every checkpoint, and is waiting", () => {
     const summary = checkpointsForEpic(
       payload(
         [
@@ -170,11 +259,23 @@ describe("checkpointsForEpic", () => {
       "epic",
     );
     expect(summary.checkpoints.map((c) => c.id).sort()).toEqual(["x", "y"]);
+    expect(summary.state).toBe("waiting");
+    expect(summary.waitingOn).toEqual([]);
   });
 
-  test("is empty without a snapshot, an epic, or an epic in the snapshot", () => {
-    expect(checkpointsForEpic(null, "epic").total).toBe(0);
-    expect(checkpointsForEpic(payload([EPIC]), null).total).toBe(0);
-    expect(checkpointsForEpic(payload([EPIC]), "missing").total).toBe(0);
+  test("complete means every checkpoint is closed", () => {
+    const summary = checkpointsForEpic(
+      payload([
+        EPIC,
+        FEATURE,
+        issue({ id: "t1", parent: "feat", status: "closed" }),
+        issue({ id: "t2", parent: "feat", status: "closed" }),
+      ]),
+      "epic",
+    );
+    expect(summary.state).toBe("complete");
+    expect(summary.done).toBe(2);
+    expect(summary.inProgressIds).toEqual([]);
+    expect(summary.nextReadyId).toBeNull();
   });
 });
