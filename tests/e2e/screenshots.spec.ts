@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { stubForgeRun, stubRepos } from "./fixtures";
 
 /**
  * Capture the principal surfaces.
@@ -13,18 +14,27 @@ import { join } from "node:path";
  * Tagged so the normal suite does not write files.
  */
 
-const SURFACES = [
+interface Surface {
+  name: string;
+  url: string;
+  /** Serve fixture state instead of this machine's local files. */
+  stub?: (page: Page) => Promise<unknown>;
+}
+
+const SURFACES: Surface[] = [
   { name: "dashboard", url: "/index.html#/dashboard" },
   { name: "issues", url: "/index.html#/issues" },
   { name: "epics", url: "/index.html#/epics" },
   { name: "commands", url: "/index.html#/commands" },
   { name: "bead-builder", url: "/index.html#/bead-builder" },
   { name: "insights", url: "/index.html#/insights" },
-  { name: "forge-run", url: "/index.html#/forge-run" },
-  { name: "repos", url: "/index.html#/repos" },
+  // These two render machine-local state. The committed images must not show a
+  // real home directory or someone's cloned repositories, so they use fixtures.
+  { name: "forge-run", url: "/index.html#/forge-run", stub: stubForgeRun },
+  { name: "repos", url: "/index.html#/repos", stub: (page) => stubRepos(page) },
   { name: "plan-review", url: "/plan-review.html" },
   { name: "council", url: "/council.html" },
-] as const;
+];
 
 const OUT = process.env["SHOT_DIR"] ?? ".tmp/shots";
 
@@ -39,6 +49,7 @@ test.describe("@screenshot", () => {
       const dir = join(OUT, testInfo.project.name);
       mkdirSync(dir, { recursive: true });
 
+      await surface.stub?.(page);
       await page.goto(surface.url, { waitUntil: "networkidle" });
       // Charts and polling views need a beat to settle before capture.
       await page.waitForTimeout(1200);

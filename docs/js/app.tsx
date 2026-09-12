@@ -215,7 +215,7 @@ function DashboardApp() {
       case "bead-builder":
         return <BeadBuilderIsland />;
       case "forge-run":
-        return <ForgeRunIsland />;
+        return <ForgeRunIsland payload={snapshot.payload} />;
       case "repos":
         return <ReposIsland />;
       default:

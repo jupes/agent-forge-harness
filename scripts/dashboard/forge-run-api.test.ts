@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
   forgeRunSnapshot,
-  parseWorktreeState,
+  parseLatestGateRun,
   phaseRows,
+  REVIEW_NOTE_LIMIT,
+  reviewCommentFor,
 } from "../../scripts/dashboard/forge-run-model";
 import type { ForgePhase } from "../../scripts/forge/phases";
 
 const STATE = {
   slug: "agent-forge-harness-dg40",
-  phase: "implement" as ForgePhase,
+  phase: "plan" as ForgePhase,
   completed: ["research", "plan"] as ForgePhase[],
   artifacts: {
     research: "plans/research/agent-forge-harness-dg40.md",
@@ -19,6 +21,31 @@ const STATE = {
   updatedAt: "2026-09-10T12:00:00.000Z",
 };
 
+/** A line exactly as `.claude/hooks/quality-gate.ts` appends it. */
+function gateLine(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    event: "TaskCompleted",
+    timestamp: "2026-09-10T12:00:00.000Z",
+    passed: false,
+    checks: [
+      { name: "typecheck", passed: true, output: "" },
+      {
+        name: "lint",
+        passed: false,
+        output: "Found 2 errors.\ndocs/js/app.tsx:12 ...",
+      },
+      {
+        name: "tests",
+        passed: true,
+        skipped: true,
+        skipReason: "no test files",
+      },
+    ],
+    blockingFailures: ["lint"],
+    ...over,
+  });
+}
+
 describe("phaseRows", () => {
   test("marks completed, active and locked phases in pipeline order", () => {
     const rows = phaseRows(STATE);
@@ -28,6 +55,8 @@ describe("phaseRows", () => {
       "implement",
       "ship",
     ]);
+    // state.phase says "plan" (the last finished phase); the work is in
+    // implement, so that is what reads as active.
     expect(rows.map((row) => row.state)).toEqual([
       "complete",
       "complete",
@@ -44,7 +73,7 @@ describe("phaseRows", () => {
     expect(rows[3]?.artifact).toBe("reports/agent-forge-harness-dg40-ship.md");
   });
 
-  test("treats a finished run as all-complete rather than leaving ship active", () => {
+  test("a finished run is all-complete", () => {
     const rows = phaseRows({
       ...STATE,
       phase: "ship",
@@ -53,83 +82,154 @@ describe("phaseRows", () => {
     expect(rows.every((row) => row.state === "complete")).toBe(true);
   });
 
-  test("returns the pipeline with everything locked when no run exists", () => {
+  test("with no run, every phase is locked", () => {
     const rows = phaseRows(null);
     expect(rows).toHaveLength(4);
     expect(rows.every((row) => row.state === "locked")).toBe(true);
   });
 });
 
-describe("parseWorktreeState", () => {
-  test("reads the worktree records the harness writes", () => {
-    const parsed = parseWorktreeState(
-      JSON.stringify({
-        worktrees: [
-          {
-            id: "dg40",
-            path: "C:/repo/trees/dg40",
-            branch: "feat/nocturne",
-            createdAt: "2026-09-09T22:00:00.000Z",
-          },
-        ],
-      }),
+describe("parseLatestGateRun", () => {
+  test("reads the most recent run from the hook's log format", () => {
+    const run = parseLatestGateRun(
+      [gateLine({ passed: true, timestamp: "earlier" }), gateLine()].join("\n"),
     );
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0]?.branch).toBe("feat/nocturne");
+    expect(run?.passed).toBe(false);
+    expect(run?.event).toBe("TaskCompleted");
+    expect(run?.checks.map((check) => check.name)).toEqual([
+      "typecheck",
+      "lint",
+      "tests",
+    ]);
   });
 
-  test("returns nothing rather than throwing on malformed or absent state", () => {
-    expect(parseWorktreeState("")).toEqual([]);
-    expect(parseWorktreeState("not json")).toEqual([]);
-    expect(parseWorktreeState("{}")).toEqual([]);
-    expect(parseWorktreeState(JSON.stringify({ worktrees: "no" }))).toEqual([]);
+  test("keeps the first line of failing output and the skip reason", () => {
+    const run = parseLatestGateRun(gateLine());
+    const lint = run?.checks.find((check) => check.name === "lint");
+    const tests = run?.checks.find((check) => check.name === "tests");
+    expect(lint).toMatchObject({ passed: false, detail: "Found 2 errors." });
+    expect(tests).toMatchObject({ skipped: true, detail: "no test files" });
   });
 
-  test("skips records missing the fields the view renders", () => {
-    const parsed = parseWorktreeState(
-      JSON.stringify({
-        worktrees: [
-          { id: "x" },
-          { branch: "b", path: "p", id: "y", createdAt: "t" },
-        ],
+  test("skips a trailing partial or malformed line", () => {
+    const run = parseLatestGateRun(`${gateLine()}\n{"event":"Task`);
+    expect(run?.checks).toHaveLength(3);
+  });
+
+  test("truncates very long output rather than shipping it whole", () => {
+    const run = parseLatestGateRun(
+      gateLine({
+        checks: [{ name: "x", passed: false, output: "e".repeat(900) }],
       }),
     );
-    expect(parsed.map((w) => w.id)).toEqual(["y"]);
+    expect((run?.checks[0]?.detail ?? "").length).toBeLessThanOrEqual(200);
+  });
+
+  test("returns null when nothing has been logged", () => {
+    expect(parseLatestGateRun(null)).toBeNull();
+    expect(parseLatestGateRun("")).toBeNull();
+    expect(parseLatestGateRun("not json\n")).toBeNull();
   });
 });
 
 describe("forgeRunSnapshot", () => {
-  test("reports the run, its phases and worktrees together", () => {
+  test("reports the run, its phases and the latest gate together", () => {
     const snapshot = forgeRunSnapshot({
       stateJson: JSON.stringify(STATE),
-      worktreeJson: JSON.stringify({ worktrees: [] }),
+      gateJsonl: gateLine(),
       artifactExists: () => true,
     });
     expect(snapshot.slug).toBe("agent-forge-harness-dg40");
     expect(snapshot.epic).toBe("agent-forge-harness-dg40");
     expect(snapshot.phases).toHaveLength(4);
-    expect(snapshot.worktrees).toEqual([]);
+    expect(snapshot.gate?.checks).toHaveLength(3);
   });
 
   test("says so plainly when no forge run is in flight", () => {
     const snapshot = forgeRunSnapshot({
       stateJson: null,
-      worktreeJson: null,
+      gateJsonl: null,
       artifactExists: () => false,
     });
     expect(snapshot.slug).toBeNull();
+    expect(snapshot.gate).toBeNull();
     expect(snapshot.phases.every((p) => p.state === "locked")).toBe(true);
   });
 
   test("flags an artifact a phase claims but that is missing on disk", () => {
     const snapshot = forgeRunSnapshot({
       stateJson: JSON.stringify(STATE),
-      worktreeJson: null,
+      gateJsonl: null,
       artifactExists: (path) => !path.includes("research"),
     });
-    const research = snapshot.phases.find((p) => p.id === "research");
-    expect(research?.artifactMissing).toBe(true);
-    const plan = snapshot.phases.find((p) => p.id === "plan");
-    expect(plan?.artifactMissing).toBe(false);
+    expect(
+      snapshot.phases.find((p) => p.id === "research")?.artifactMissing,
+    ).toBe(true);
+    expect(snapshot.phases.find((p) => p.id === "plan")?.artifactMissing).toBe(
+      false,
+    );
+  });
+});
+
+describe("reviewCommentFor", () => {
+  test("approval records a review: comment on the checkpoint", () => {
+    expect(
+      reviewCommentFor({
+        issueId: "agent-forge-harness-j5k3",
+        decision: "approve",
+      }),
+    ).toEqual({
+      ok: true,
+      issueId: "agent-forge-harness-j5k3",
+      body: "review: checkpoint APPROVED via Forge run dashboard",
+    });
+  });
+
+  test("an approval note is carried into the comment", () => {
+    const result = reviewCommentFor({
+      issueId: "agent-forge-harness-j5k3",
+      decision: "approve",
+      note: "  demo looked right  ",
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      body: "review: checkpoint APPROVED via Forge run dashboard — demo looked right",
+    });
+  });
+
+  test("requesting changes requires saying what to change", () => {
+    expect(
+      reviewCommentFor({ issueId: "a-1", decision: "request-changes" }).ok,
+    ).toBe(false);
+    expect(
+      reviewCommentFor({
+        issueId: "a-1",
+        decision: "request-changes",
+        note: "Split the table primitive",
+      }),
+    ).toMatchObject({
+      ok: true,
+      body: "review: CHANGES REQUESTED via Forge run dashboard — Split the table primitive",
+    });
+  });
+
+  test("rejects ids that are not Beads ids, including ones bd could read as flags", () => {
+    for (const issueId of ["", "--help", "-x", "a b", "a;rm", "$(x)", 42]) {
+      expect(reviewCommentFor({ issueId, decision: "approve" }).ok).toBe(false);
+    }
+  });
+
+  test("rejects unknown decisions and oversized notes", () => {
+    expect(reviewCommentFor({ issueId: "a-1", decision: "close" }).ok).toBe(
+      false,
+    );
+    expect(
+      reviewCommentFor({
+        issueId: "a-1",
+        decision: "approve",
+        note: "x".repeat(REVIEW_NOTE_LIMIT + 1),
+      }).ok,
+    ).toBe(false);
+    expect(reviewCommentFor(null).ok).toBe(false);
   });
 });

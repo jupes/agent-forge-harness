@@ -1509,3 +1509,133 @@ form.is-submitting {
 .af-phase .af-phase-artifact > code {
   color: var(--color-neutral-500);
 }
+
+.af-checkpoint-progress {
+  margin: 0;
+  color: var(--color-neutral-500);
+  font-size: 12px;
+}
+
+.af-checkpoints {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  margin: 0;
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.af-checkpoint {
+  display: grid;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  color: var(--color-neutral-500);
+  gap: var(--space-4);
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+}
+
+.af-checkpoint.is-active {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+  color: var(--color-accent-300);
+}
+
+.af-checkpoint-body {
+  min-width: 0;
+}
+
+.af-checkpoint-title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.af-checkpoint-meta {
+  margin: 2px 0 0;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.af-checkpoint-waiting {
+  color: var(--color-accent-400);
+}
+
+.af-review {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  gap: var(--space-3);
+}
+
+.af-review-heading {
+  margin: 0;
+  font-size: 13px;
+}
+
+.af-review-result {
+  margin: 0;
+  color: var(--color-accent-300);
+  font-size: 12px;
+}
+
+.af-review-result.is-error {
+  color: var(--color-neutral-200);
+}
+
+.af-gate-grid {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  list-style: none;
+}
+
+.af-gate-check {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.af-gate-check.is-failed {
+  border-color: var(--color-accent-700);
+}
+
+.af-gate-name {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  gap: var(--space-2);
+}
+
+.af-gate-check.is-passed .af-gate-name {
+  color: var(--color-neutral-300);
+}
+
+.af-gate-check.is-failed .af-gate-name {
+  color: var(--color-accent-200);
+}
+
+.af-gate-detail {
+  margin: var(--space-2) 0 0;
+  color: var(--color-neutral-600);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.af-convention-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
