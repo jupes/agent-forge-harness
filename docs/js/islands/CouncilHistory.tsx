@@ -1,4 +1,6 @@
+import type { JSX } from "preact";
 import type { CouncilServiceJob } from "../../../scripts/council/service";
+import { Card } from "../ds/Card";
 
 export function CouncilHistory({
   history,
@@ -8,28 +10,32 @@ export function CouncilHistory({
   history: CouncilServiceJob[];
   selectedRunId: string | undefined;
   onOpen: (runId: string) => Promise<void>;
-}) {
+}): JSX.Element {
   return (
-    <aside className="panel history">
-      <h2>Review history</h2>
-      {history.length === 0 && (
-        <p className="muted">
+    <Card title="Review history" headingLevel={2} class="af-history">
+      {history.length === 0 ? (
+        <p class="af-muted">
           Your completed and active runs will be saved here.
         </p>
-      )}
+      ) : null}
       {history.map((item) => (
         <button
           type="button"
           key={item.runId}
-          className={selectedRunId === item.runId ? "selected" : ""}
+          class={`af-history-item${
+            selectedRunId === item.runId ? " is-selected" : ""
+          }`}
+          aria-current={selectedRunId === item.runId ? "true" : undefined}
           onClick={() => void onOpen(item.runId)}
         >
-          {item.run?.context.source.displayName ?? item.runId}
-          <small>
+          <span class="af-history-name">
+            {item.run?.context.source.displayName ?? item.runId}
+          </span>
+          <span class="af-history-meta">
             {item.status} · {new Date(item.startedAt).toLocaleString()}
-          </small>
+          </span>
         </button>
       ))}
-    </aside>
+    </Card>
   );
 }

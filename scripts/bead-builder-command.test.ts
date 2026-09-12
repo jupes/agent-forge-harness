@@ -47,16 +47,27 @@ describe("buildBdCreateCommand", () => {
     expect(cmd).toContain('--description "line 1\\nline 2\\nline 3"');
   });
 
-  test("emits one --ac flag per non-empty AC line", () => {
+  test("emits one --acceptance flag per non-empty AC line", () => {
     const cmd = buildBdCreateCommand({
       ...base,
       acceptanceCriteria: "First criterion\n\n  Second criterion  \n",
     });
-    const acMatches = cmd.match(/--ac "[^"]*"/g) ?? [];
+    const acMatches = cmd.match(/--acceptance "[^"]*"/g) ?? [];
     expect(acMatches).toEqual([
-      '--ac "First criterion"',
-      '--ac "Second criterion"',
+      '--acceptance "First criterion"',
+      '--acceptance "Second criterion"',
     ]);
+  });
+
+  test("never emits the short --ac form, which bd rejects", () => {
+    // `bd create --ac` fails with "unknown flag: --ac". The generated command
+    // is meant to be pasted straight into a terminal, so this matters.
+    const cmd = buildBdCreateCommand({
+      ...base,
+      acceptanceCriteria: "Something verifiable",
+    });
+    expect(cmd).not.toMatch(/--ac\s/);
+    expect(cmd).toContain('--acceptance "Something verifiable"');
   });
 
   test("normalizes comma-separated labels and drops empties", () => {
@@ -71,7 +82,7 @@ describe("buildBdCreateCommand", () => {
     const cmd = buildBdCreateCommand(base);
     expect(cmd).not.toContain("--description");
     expect(cmd).not.toContain("--labels");
-    expect(cmd).not.toContain("--ac");
+    expect(cmd).not.toContain("--acceptance");
   });
 
   test("uses overridden type, priority, and repo when valid", () => {

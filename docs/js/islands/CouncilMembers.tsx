@@ -1,5 +1,7 @@
+import type { JSX } from "preact";
 import type { CouncilServiceJob } from "../../../scripts/council/service";
 import type { CouncilSeat } from "../../../scripts/council/types";
+import { Card } from "../ds/Card";
 
 function seatPhase(job: CouncilServiceJob | null, seat: CouncilSeat): string {
   const event = job?.events
@@ -22,24 +24,27 @@ export function CouncilMembers({
 }: {
   job: CouncilServiceJob | null;
   roster: CouncilSeat[];
-}) {
+}): JSX.Element {
   return (
-    <section aria-label="Council members">
-      <p className="muted">
-        {job ? "Members for the selected run" : "Members for the next review"}
-      </p>
-      <div className="seat-grid">
+    <Card
+      title="Seats"
+      headingLevel={2}
+      kicker={
+        job ? "members for the selected run" : "members for the next review"
+      }
+    >
+      <div class="af-seat-grid">
         {roster.map((seat) => (
-          <article className="seat" key={seat.id}>
-            <h3>{seat.id}</h3>
-            <p className="model">
+          <article class="af-seat" key={seat.id}>
+            <h3 class="af-seat-id">{seat.id}</h3>
+            <p class="af-seat-model">
               {seat.provider} / {seat.model}
             </p>
-            <p className="model">{seat.role}</p>
-            <p className="phase">{seatPhase(job, seat)}</p>
+            <p class="af-seat-model">{seat.role}</p>
+            <p class="af-seat-phase">{seatPhase(job, seat)}</p>
           </article>
         ))}
       </div>
-    </section>
+    </Card>
   );
 }

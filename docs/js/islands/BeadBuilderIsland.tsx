@@ -4,6 +4,10 @@ import {
   buildBdCreateCommand,
 } from "@docs/bead-builder";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { Button } from "../ds/Button";
+import { Card } from "../ds/Card";
+import { Dialog } from "../ds/Dialog";
+import { Field, Input, Select, Textarea } from "../ds/Field";
 
 type ModalState =
   | { open: false }
@@ -16,27 +20,19 @@ type ModalState =
 
 export function BeadBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
-  const modalCloseRef = useRef<HTMLButtonElement>(null);
-  const modalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const fallbackRef = useRef<HTMLTextAreaElement>(null);
   const [modal, setModal] = useState<ModalState>({ open: false });
   const [submitting, setSubmitting] = useState(false);
 
+  // Select the whole command so Ctrl+C / Cmd+C copies it straight away. Child
+  // effects run first, so the dialog is already shown when this runs.
   useEffect(() => {
-    if (!modal.open) return;
-    const id = requestAnimationFrame(() => {
-      modalCloseRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [modal]);
-
-  useEffect(() => {
-    if (!modal.open || !modalTextareaRef.current) return;
-    if (modal.fallbackText) {
-      modalTextareaRef.current.value = modal.fallbackText;
-      modalTextareaRef.current.select();
-    } else {
-      modalTextareaRef.current.value = "";
-    }
+    if (!modal.open || !modal.fallbackText) return;
+    const textarea = fallbackRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
   }, [modal]);
 
   function closeModal() {
@@ -136,204 +132,173 @@ export function BeadBuilderIsland() {
     if (first instanceof HTMLElement) first.focus();
   }
 
-  function onBackdropClick() {
-    closeModal();
-  }
-
-  function onModalKeyDown(e: KeyboardEvent) {
-    if (e.key === "Escape") closeModal();
-  }
-
-  const showFallback =
-    modal.open && modal.fallbackText != null && modal.fallbackText.length > 0;
+  const fallbackText =
+    modal.open && modal.fallbackText ? modal.fallbackText : "";
 
   return (
-    <div>
-      <p
-        className="sb-lead"
-        style={{
-          color: "var(--text-muted)",
-          maxWidth: "42rem",
-          marginBottom: "1.5rem",
-          lineHeight: 1.55,
-        }}
+    <>
+      <Card
+        id="bead-form-card"
+        title="Compose a bd create command"
+        headingLevel={2}
+        class="af-builder"
       >
-        Describe the bead you want to file. On submit we build a ready-to-paste{" "}
-        <code>bd create</code> command and copy it to your clipboard — run it in
-        a terminal that has <code>bd</code> on <code>PATH</code>.
-      </p>
-      <div className="skill-form-card" id="bead-form-card">
+        <p class="af-prose af-muted">
+          Describe the bead you want to file. On submit we build a
+          ready-to-paste <code>bd create</code> command and copy it to your
+          clipboard — run it in a terminal that has <code>bd</code> on{" "}
+          <code>PATH</code>.
+        </p>
+
         <form
           ref={formRef}
           id="bead-builder-form"
-          className="skill-form"
           noValidate
           onSubmit={onSubmit}
         >
-          <div className="sb-field">
-            <label htmlFor="bb-title">
-              Title <span className="sb-req">*</span>
-            </label>
-            <input
-              id="bb-title"
-              name="title"
-              type="text"
-              required
-              placeholder="Short, imperative title (becomes --title)"
-              autoComplete="off"
-            />
-          </div>
-          <div className="sb-field">
-            <label htmlFor="bb-type">Type</label>
-            <select id="bb-type" name="type" defaultValue="task">
-              {BEAD_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-            <span className="sb-hint">
-              Choose <code>bug</code> for defects, <code>feature</code> for
-              net-new capability, <code>chore</code> for maintenance,{" "}
-              <code>task</code> otherwise.
-            </span>
-          </div>
-          <div className="sb-field">
-            <label htmlFor="bb-priority">Priority</label>
-            <select id="bb-priority" name="priority" defaultValue="P2">
-              {BEAD_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-            <span className="sb-hint">
-              Follow{" "}
-              <code>.claude/skills/beads-priority-assignment/SKILL.md</code>.
-              Default <strong>P2</strong> when the rubric is silent.
-            </span>
-          </div>
-          <div className="sb-field">
-            <label htmlFor="bb-repo">Repo</label>
-            <input
-              id="bb-repo"
-              name="repo"
-              type="text"
-              defaultValue="."
-              placeholder="."
-              autoComplete="off"
-            />
-            <span className="sb-hint">
-              <code>.</code> for the harness root;{" "}
-              <code>./repos/&lt;name&gt;</code> for a registered sub-repo.
-            </span>
-          </div>
-          <div className="sb-field">
-            <label htmlFor="bb-description">Description</label>
-            <textarea
-              id="bb-description"
-              name="description"
-              rows={4}
-              placeholder="Context, links, reproduction steps, etc. Newlines become \n in the command."
-            />
-          </div>
-          <div className="sb-field">
-            <label htmlFor="bb-ac">Acceptance criteria</label>
-            <textarea
-              id="bb-ac"
-              name="acceptanceCriteria"
-              rows={4}
-              placeholder="One per line. Each non-empty line becomes a separate --ac flag."
-            />
-          </div>
-          <div className="sb-field">
-            <label htmlFor="bb-labels">Labels</label>
-            <input
-              id="bb-labels"
-              name="labels"
-              type="text"
-              placeholder="Comma-separated, e.g. dashboard,ui"
-              autoComplete="off"
-            />
-          </div>
-          <div className="sb-actions">
-            <button
-              type="button"
-              className="sb-clear"
-              id="bb-clear"
-              onClick={onClear}
+          <div class="af-form-grid">
+            <Field label="Title" id="bb-title" required class="af-form-wide">
+              <Input
+                id="bb-title"
+                name="title"
+                required
+                placeholder="Short, imperative title (becomes --title)"
+                autocomplete="off"
+              />
+            </Field>
+
+            <Field
+              label="Type"
+              id="bb-type"
+              hint="bug for defects, feature for net-new capability, chore for maintenance, task otherwise."
             >
-              Clear form
-            </button>
+              <Select
+                id="bb-type"
+                name="type"
+                value="task"
+                describedBy="bb-type-hint"
+              >
+                {BEAD_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field
+              label="Priority"
+              id="bb-priority"
+              hint="Follow .claude/skills/beads-priority-assignment/SKILL.md. Default P2 when the rubric is silent."
+            >
+              <Select
+                id="bb-priority"
+                name="priority"
+                value="P2"
+                describedBy="bb-priority-hint"
+              >
+                {BEAD_PRIORITIES.map((priority) => (
+                  <option key={priority} value={priority}>
+                    {priority}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field
+              label="Repo"
+              id="bb-repo"
+              hint="`.` for the harness root; ./repos/<name> for a registered sub-repo."
+            >
+              <Input
+                id="bb-repo"
+                name="repo"
+                defaultValue="."
+                placeholder="."
+                autocomplete="off"
+                describedBy="bb-repo-hint"
+              />
+            </Field>
+
+            <Field label="Labels" id="bb-labels">
+              <Input
+                id="bb-labels"
+                name="labels"
+                placeholder="Comma-separated, e.g. dashboard,ui"
+                autocomplete="off"
+              />
+            </Field>
+
+            <Field label="Description" id="bb-description" class="af-form-wide">
+              <Textarea
+                id="bb-description"
+                name="description"
+                rows={4}
+                placeholder="Context, links, reproduction steps. Newlines become \n in the command."
+              />
+            </Field>
+
+            <Field
+              label="Acceptance criteria"
+              id="bb-ac"
+              class="af-form-wide"
+              hint="One per line. Each non-empty line becomes a separate --acceptance flag."
+            >
+              <Textarea
+                id="bb-ac"
+                name="acceptanceCriteria"
+                rows={4}
+                placeholder="Something verifiable, one per line"
+                describedBy="bb-ac-hint"
+              />
+            </Field>
+          </div>
+
+          <div class="af-form-actions">
+            <Button onClick={onClear}>Clear form</Button>
             <button
+              ref={submitRef}
               type="submit"
-              className="sb-submit"
-              id="bb-submit"
+              class="af-btn af-btn-primary"
               disabled={submitting}
             >
-              <span className="sb-submit-label">Build command &amp; copy</span>
-              <span className="sb-submit-spinner" aria-hidden="true" />
+              {submitting ? "Building…" : "Build command & copy"}
             </button>
           </div>
         </form>
-      </div>
-      <div
-        id="bb-modal"
-        className={"sb-modal" + (modal.open ? " is-open" : "")}
-        aria-hidden={modal.open ? "false" : "true"}
-        onKeyDown={onModalKeyDown}
+      </Card>
+
+      <Dialog
+        open={modal.open}
+        title={modal.open ? modal.title : ""}
+        onClose={closeModal}
+        titleId="bb-modal-title"
+        initialFocus={fallbackText ? "content" : "close"}
+        returnFocusRef={submitRef}
+        actions={<Button onClick={closeModal}>Close</Button>}
       >
-        <div
-          className="sb-modal-backdrop"
-          tabIndex={-1}
-          onClick={onBackdropClick}
-        />
-        <div
-          className="sb-modal-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="bb-modal-title"
-        >
-          <h2 id="bb-modal-title" className="sb-modal-title">
-            {modal.open ? modal.title : ""}
-          </h2>
-          {modal.open ? (
-            <p
-              id="bb-modal-body"
-              className="sb-modal-body"
-              dangerouslySetInnerHTML={{ __html: modal.bodyHtml }}
-            />
-          ) : (
-            <p id="bb-modal-body" className="sb-modal-body" />
-          )}
-          <p className="sb-modal-hint">
-            Paste the command into a terminal where <code>bd</code> is
-            installed. The new id will print on stdout.
-          </p>
-          <div
-            id="bb-modal-fallback"
-            className="sb-modal-fallback"
-            hidden={!showFallback}
-          >
-            <label>Copy manually:</label>
-            <textarea
+        {/* Body copy is authored here, not user input. */}
+        {modal.open ? (
+          <p dangerouslySetInnerHTML={{ __html: modal.bodyHtml }} />
+        ) : null}
+        <p class="af-muted">
+          Paste the command into a terminal where <code>bd</code> is installed.
+          The new id will print on stdout.
+        </p>
+        {fallbackText ? (
+          <Field label="Copy manually" id="bb-modal-textarea">
+            <Textarea
               id="bb-modal-textarea"
-              ref={modalTextareaRef}
+              textareaRef={fallbackRef}
+              value={fallbackText}
               readOnly
+              autofocus
               rows={6}
+              class="af-mono"
             />
-          </div>
-          <button
-            type="button"
-            className="sb-modal-close"
-            id="bb-modal-close"
-            ref={modalCloseRef}
-            onClick={closeModal}
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+          </Field>
+        ) : null}
+      </Dialog>
+    </>
   );
 }

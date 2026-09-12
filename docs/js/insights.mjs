@@ -2,31 +2,23 @@
 // Chart.js + chartjs-chart-matrix are bundled (dynamic import) so the Vite dashboard
 // runtime does not depend on third-party CDNs.
 
-const COLOR_GREEN = "#3dff9c";
-const COLOR_BLUE = "#6ec6ff";
-const COLOR_YELLOW = "#ffe94d";
-const COLOR_PINK = "#ff80d4";
-const COLOR_AXIS = "#8aa4c8";
-const COLOR_GRID = "rgba(138,164,200,0.14)";
-const COLOR_TIP_BG = "#14203a";
-const COLOR_TIP_BORDER = "#2a3a55";
+// Chart colors come from the Nocturne ramps in docs/js/ds/tokens.css. Chart.js
+// needs literal values rather than CSS variables, so the steps are mirrored
+// here; keep them in step with the token sheet.
+const COLOR_ACCENT = "#9184d9"; // --color-accent
+const COLOR_ACCENT_300 = "#d2cefd";
+const COLOR_ACCENT_400 = "#b5abfc";
+const COLOR_ACCENT_600 = "#796cbf";
+const COLOR_AXIS = "#75798c"; // --color-neutral-600
+const COLOR_GRID = "rgba(117,121,140,0.18)";
+const COLOR_TIP_BG = "#232532"; // --color-surface
+const COLOR_TIP_BORDER = "#3f424d"; // --color-neutral-800
 
 /** @type {Promise<any> | null} */
 let chartReady = null;
 /** @type {Array<any>} */
 let chartInstances = [];
 
-function esc(s) {
-  return String(s != null ? s : "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-/**
- * Lazy-load Chart.js + matrix plugin from the app bundle (Vite resolves bare specifiers).
- * @returns {Promise<any>}
- */
 function ensureChartJs() {
   if (chartReady) return chartReady;
   chartReady = (async function () {
@@ -129,14 +121,16 @@ function typesPresent(byType) {
   return ordered;
 }
 
+// One family, separated by step rather than hue — the deck stays quiet and
+// still distinguishes types. Matches how Tag tones read elsewhere.
 const TYPE_COLORS = {
-  task: "#6ec6ff",
-  feature: "#3dff9c",
-  bug: "#ff4757",
-  chore: "#ffe94d",
-  epic: "#ff80d4",
+  task: "#b5abfc",
+  feature: "#9184d9",
+  bug: "#d2cefd",
+  chore: "#796cbf",
+  epic: "#5d5294",
 };
-const TYPE_FALLBACK = ["#8aa4c8", "#9d7cff", "#c9ff7c", "#ff9d7c", "#7cffe0"];
+const TYPE_FALLBACK = ["#9397ab", "#b5abfc", "#796cbf", "#cfd3e5", "#5d5294"];
 
 function colorForType(type, fallbackIndex) {
   const known = /** @type {Record<string,string>} */ (TYPE_COLORS)[type];
@@ -206,36 +200,6 @@ function summarize(series, counts, total) {
 /**
  * @param {string} [filterHtml] Optional chrome (e.g. initiative dropdown) injected above the KPIs.
  */
-export function renderInsightsHtml(filterHtml) {
-  const chrome = filterHtml
-    ? '<div class="filter-row" style="margin-bottom:1rem">' +
-      filterHtml +
-      "</div>"
-    : "";
-  return (
-    '<div id="insights-root" data-loaded="0">' +
-    chrome +
-    '<div class="stat-row" id="insights-stats" style="margin-bottom:1.25rem"></div>' +
-    "<h3>Beads closed over time</h3>" +
-    '<p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 0.75rem">' +
-    "Daily count of closed beads. Bucketed by " +
-    '<code style="font-size:0.9em">updatedAt</code> in UTC (close-time proxy).' +
-    "</p>" +
-    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;height:280px;position:relative">' +
-    '<canvas id="chart-closed-daily"></canvas>' +
-    "</div>" +
-    '<h3 style="margin-top:1.5rem">Activity calendar</h3>' +
-    '<p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 0.75rem">' +
-    "Last 12 weeks, GitHub-style. Brighter = more beads closed that day (UTC)." +
-    "</p>" +
-    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.75rem;height:220px;position:relative">' +
-    '<canvas id="chart-calendar"></canvas>' +
-    "</div>" +
-    '<p id="insights-error" style="display:none;color:#ff4757;font-size:0.85rem;margin-top:0.75rem"></p>' +
-    "</div>"
-  );
-}
-
 function destroyCharts() {
   chartInstances.forEach(function (c) {
     try {
@@ -245,44 +209,6 @@ function destroyCharts() {
     }
   });
   chartInstances = [];
-}
-
-function renderStatsCards(root, s) {
-  const el = root.querySelector("#insights-stats");
-  if (!el) return;
-  const avgFmt = s.avg ? s.avg.toFixed(1) : "0";
-  const bestLabel = s.best.count ? s.best.day + " (" + s.best.count + ")" : "—";
-  el.innerHTML =
-    '<div class="stat-card"><div class="stat-num" style="color:' +
-    COLOR_GREEN +
-    '">' +
-    s.total +
-    '</div><div class="stat-label">Total closed</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:' +
-    COLOR_BLUE +
-    '">' +
-    s.last7 +
-    '</div><div class="stat-label">Closed (last 7d)</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:' +
-    COLOR_YELLOW +
-    '">' +
-    avgFmt +
-    '</div><div class="stat-label">Avg / day</div></div>' +
-    '<div class="stat-card"><div class="stat-num" style="color:' +
-    COLOR_PINK +
-    ';font-size:1.4rem">' +
-    esc(bestLabel) +
-    '</div><div class="stat-label">Busiest day</div></div>';
-}
-
-function showError(root, err) {
-  const errEl = root.querySelector("#insights-error");
-  if (!errEl) return;
-  errEl.style.display = "block";
-  errEl.textContent =
-    "Failed to load Chart.js: " +
-    ((err && err.message) || String(err)) +
-    ". The KPI cards above still reflect the current data.";
 }
 
 function buildDailyChartConfig(series, types) {
@@ -393,7 +319,7 @@ function buildCalendarChartConfig(cells, maxV, numCols) {
             if (!v || !maxV) return "rgba(138,164,200,0.08)";
             const ratio = Math.min(1, v / maxV);
             const alpha = 0.22 + ratio * 0.78;
-            return "rgba(61,255,156," + alpha.toFixed(3) + ")";
+            return "rgba(145,132,217," + alpha.toFixed(3) + ")";
           },
           borderColor: "rgba(0,0,0,0)",
           borderWidth: 0,
@@ -466,54 +392,80 @@ function buildCalendarChartConfig(cells, maxV, numCols) {
 }
 
 /**
- * @param {HTMLElement} root Output of renderInsightsHtml, already in the DOM.
- * @param {{issues?: Array<object>} | null} data
+ * Summary numbers for the KPI cards, without touching the DOM.
+ * @param {BeadsIssue[]} issues
  */
-export async function wireInsights(root, data) {
-  if (!root) return;
-  destroyCharts();
-
-  const issues = data && Array.isArray(data.issues) ? data.issues : [];
-  const built = buildCounts(issues);
+export function computeInsights(issues) {
+  const list = Array.isArray(issues) ? issues : [];
+  const built = buildCounts(list);
   const series = buildDailySeries(built.counts, built.byType);
-  const types = typesPresent(built.byType);
-  const s = summarize(series, built.counts, built.total);
-  renderStatsCards(root, s);
+  return {
+    stats: summarize(series, built.counts, built.total),
+    series,
+    types: typesPresent(built.byType),
+    counts: built.counts,
+  };
+}
+
+/**
+ * Draw both charts into the supplied canvases.
+ *
+ * Chart.js is imported on demand so the library only loads on this route.
+ * Returns an error message when the import fails — the caller keeps showing
+ * the KPI cards, which do not need the library.
+ *
+ * @param {{daily: HTMLCanvasElement | null, calendar: HTMLCanvasElement | null}} canvases
+ * @param {ReturnType<typeof computeInsights>} data
+ * @returns {Promise<string | null>}
+ */
+export async function mountInsightCharts(canvases, data) {
+  destroyCharts();
 
   /** @type {any} */
   let Chart;
   try {
     Chart = await ensureChartJs();
   } catch (err) {
-    showError(root, err);
-    return;
+    return "Failed to load Chart.js: " + ((err && err.message) || String(err));
   }
 
-  const dailyCanvas = root.querySelector("#chart-closed-daily");
-  if (dailyCanvas && series.length && types.length) {
-    try {
-      chartInstances.push(
-        new Chart(dailyCanvas, buildDailyChartConfig(series, types)),
-      );
-    } catch (err) {
-      showError(root, err);
-    }
-  }
-
-  const calCanvas = root.querySelector("#chart-calendar");
-  if (calCanvas) {
-    const cal = buildCalendarCells(built.counts, 12);
+  if (canvases.daily && data.series.length && data.types.length) {
     try {
       chartInstances.push(
         new Chart(
-          calCanvas,
+          canvases.daily,
+          buildDailyChartConfig(data.series, data.types),
+        ),
+      );
+    } catch (err) {
+      return (
+        "Failed to draw the daily chart: " +
+        ((err && err.message) || String(err))
+      );
+    }
+  }
+
+  if (canvases.calendar) {
+    const cal = buildCalendarCells(data.counts, 12);
+    try {
+      chartInstances.push(
+        new Chart(
+          canvases.calendar,
           buildCalendarChartConfig(cal.cells, cal.maxV, cal.numCols),
         ),
       );
     } catch (err) {
-      showError(root, err);
+      return (
+        "Failed to draw the activity calendar: " +
+        ((err && err.message) || String(err))
+      );
     }
   }
 
-  root.setAttribute("data-loaded", "1");
+  return null;
+}
+
+/** Tear down any charts this module created. */
+export function destroyInsightCharts() {
+  destroyCharts();
 }

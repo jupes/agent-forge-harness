@@ -1,5 +1,9 @@
 import { buildAuthoringPrompt } from "@docs/skill-builder";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { Button } from "../ds/Button";
+import { Card } from "../ds/Card";
+import { Dialog } from "../ds/Dialog";
+import { Field, Input, Textarea } from "../ds/Field";
 
 type ModalState =
   | { open: false }
@@ -12,27 +16,19 @@ type ModalState =
 
 export function SkillBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
-  const modalCloseRef = useRef<HTMLButtonElement>(null);
-  const modalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const fallbackRef = useRef<HTMLTextAreaElement>(null);
   const [modal, setModal] = useState<ModalState>({ open: false });
   const [submitting, setSubmitting] = useState(false);
 
+  // Select the whole prompt so Ctrl+C / Cmd+C copies it straight away. Child
+  // effects run first, so the dialog is already shown when this runs.
   useEffect(() => {
-    if (!modal.open) return;
-    const id = requestAnimationFrame(() => {
-      modalCloseRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [modal]);
-
-  useEffect(() => {
-    if (!modal.open || !modalTextareaRef.current) return;
-    if (modal.fallbackText) {
-      modalTextareaRef.current.value = modal.fallbackText;
-      modalTextareaRef.current.select();
-    } else {
-      modalTextareaRef.current.value = "";
-    }
+    if (!modal.open || !modal.fallbackText) return;
+    const textarea = fallbackRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.select();
   }, [modal]);
 
   function closeModal() {
@@ -131,177 +127,147 @@ export function SkillBuilderIsland() {
     if (first instanceof HTMLElement) first.focus();
   }
 
-  function onBackdropClick() {
-    closeModal();
-  }
-
-  function onModalKeyDown(e: KeyboardEvent) {
-    if (e.key === "Escape") closeModal();
-  }
-
-  const showFallback =
-    modal.open && modal.fallbackText != null && modal.fallbackText.length > 0;
+  const fallbackText =
+    modal.open && modal.fallbackText ? modal.fallbackText : "";
 
   return (
-    <div>
-      <p
-        className="sb-lead"
-        style={{
-          color: "var(--text-muted)",
-          maxWidth: "42rem",
-          marginBottom: "1.5rem",
-          lineHeight: 1.55,
-        }}
+    <>
+      <Card
+        id="skill-form-card"
+        title="Compose a skill authoring prompt"
+        headingLevel={2}
+        class="af-builder"
       >
-        Describe the skill you want. On submit we build a single prompt for your
-        agent (including a directive to use{" "}
-        <code>@.claude/skills/authoring-agent-skills</code>) and copy it to the
-        clipboard.
-      </p>
-      <div className="skill-form-card" id="skill-form-card">
+        <p class="af-prose af-muted">
+          Describe the skill you want. On submit we build a single prompt for
+          your agent (including a directive to use{" "}
+          <code>@.claude/skills/authoring-agent-skills</code>) and copy it to
+          the clipboard.
+        </p>
+
         <form
           ref={formRef}
           id="skill-builder-form"
-          className="skill-form"
           noValidate
           onSubmit={onSubmit}
         >
-          <div className="sb-field">
-            <label htmlFor="sb-skill-name">
-              Skill name <span className="sb-req">*</span>
-            </label>
-            <input
+          <div class="af-form-grid">
+            <Field
+              label="Skill name"
               id="sb-skill-name"
-              name="skillName"
-              type="text"
               required
-              placeholder="e.g. deploy-staging"
-              autoComplete="off"
-            />
-            <span className="sb-hint">
-              Becomes a kebab-case folder under <code>.claude/skills/</code> in
-              the prompt (spaces and punctuation are normalized).
-            </span>
-          </div>
-          <div className="sb-field">
-            <label htmlFor="sb-description">
-              One-line description <span className="sb-req">*</span>
-            </label>
-            <input
-              id="sb-description"
-              name="description"
-              type="text"
-              required
-              placeholder="Short one-line summary (top of SKILL.md)"
-            />
-          </div>
-          <div className="sb-field">
-            <label htmlFor="sb-when">When to use this skill</label>
-            <textarea
-              id="sb-when"
-              name="whenToUse"
-              rows={3}
-              placeholder="Triggers, contexts, or roles that should load this skill…"
-            />
-          </div>
-          <div className="sb-field">
-            <label htmlFor="sb-workflow">Workflow / steps to encode</label>
-            <textarea
-              id="sb-workflow"
-              name="workflow"
-              rows={6}
-              placeholder="Numbered or bulleted steps you want the agent to follow…"
-            />
-          </div>
-          <div className="sb-field">
-            <label htmlFor="sb-notes">Additional constraints or notes</label>
-            <textarea
-              id="sb-notes"
-              name="additionalNotes"
-              rows={3}
-              placeholder="e.g. JSON output from scripts, idempotency, error handling…"
-            />
-          </div>
-          <div className="sb-actions">
-            <button
-              type="button"
-              className="sb-clear"
-              id="sb-clear"
-              onClick={onClear}
+              class="af-form-wide"
+              hint="Becomes a kebab-case folder under .claude/skills/ in the prompt (spaces and punctuation are normalized)."
             >
-              Clear form
-            </button>
+              <Input
+                id="sb-skill-name"
+                name="skillName"
+                required
+                placeholder="e.g. deploy-staging"
+                autocomplete="off"
+                describedBy="sb-skill-name-hint"
+              />
+            </Field>
+
+            <Field
+              label="One-line description"
+              id="sb-description"
+              required
+              class="af-form-wide"
+            >
+              <Input
+                id="sb-description"
+                name="description"
+                required
+                placeholder="Short one-line summary (top of SKILL.md)"
+              />
+            </Field>
+
+            <Field
+              label="When to use this skill"
+              id="sb-when"
+              class="af-form-wide"
+            >
+              <Textarea
+                id="sb-when"
+                name="whenToUse"
+                rows={3}
+                placeholder="Triggers, contexts, or roles that should load this skill…"
+              />
+            </Field>
+
+            <Field
+              label="Workflow / steps to encode"
+              id="sb-workflow"
+              class="af-form-wide"
+            >
+              <Textarea
+                id="sb-workflow"
+                name="workflow"
+                rows={6}
+                placeholder="Numbered or bulleted steps you want the agent to follow…"
+              />
+            </Field>
+
+            <Field
+              label="Additional constraints or notes"
+              id="sb-notes"
+              class="af-form-wide"
+            >
+              <Textarea
+                id="sb-notes"
+                name="additionalNotes"
+                rows={3}
+                placeholder="e.g. JSON output from scripts, idempotency, error handling…"
+              />
+            </Field>
+          </div>
+
+          <div class="af-form-actions">
+            <Button onClick={onClear}>Clear form</Button>
             <button
+              ref={submitRef}
               type="submit"
-              className="sb-submit"
-              id="sb-submit"
+              class="af-btn af-btn-primary"
               disabled={submitting}
             >
-              <span className="sb-submit-label">
-                Generate prompt &amp; copy
-              </span>
-              <span className="sb-submit-spinner" aria-hidden="true" />
+              {submitting ? "Generating…" : "Generate prompt & copy"}
             </button>
           </div>
         </form>
-      </div>
-      <div
-        id="sb-modal"
-        className={"sb-modal" + (modal.open ? " is-open" : "")}
-        aria-hidden={modal.open ? "false" : "true"}
-        onKeyDown={onModalKeyDown}
+      </Card>
+
+      <Dialog
+        open={modal.open}
+        title={modal.open ? modal.title : ""}
+        onClose={closeModal}
+        titleId="sb-modal-title"
+        initialFocus={fallbackText ? "content" : "close"}
+        returnFocusRef={submitRef}
+        actions={<Button onClick={closeModal}>Close</Button>}
       >
-        <div
-          className="sb-modal-backdrop"
-          tabIndex={-1}
-          onClick={onBackdropClick}
-        />
-        <div
-          className="sb-modal-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="sb-modal-title"
-        >
-          <h2 id="sb-modal-title" className="sb-modal-title">
-            {modal.open ? modal.title : ""}
-          </h2>
-          {modal.open ? (
-            <p
-              id="sb-modal-body"
-              className="sb-modal-body"
-              dangerouslySetInnerHTML={{ __html: modal.bodyHtml }}
-            />
-          ) : (
-            <p id="sb-modal-body" className="sb-modal-body" />
-          )}
-          <p className="sb-modal-hint">
-            Paste that prompt into your coding agent so it can create the skill
-            using the authoring meta-skill.
-          </p>
-          <div
-            id="sb-modal-fallback"
-            className="sb-modal-fallback"
-            hidden={!showFallback}
-          >
-            <label>Copy manually:</label>
-            <textarea
+        {/* Body copy is authored here, not user input. */}
+        {modal.open ? (
+          <p dangerouslySetInnerHTML={{ __html: modal.bodyHtml }} />
+        ) : null}
+        <p class="af-muted">
+          Paste the prompt into your coding agent. It will scaffold the skill
+          folder and files for you.
+        </p>
+        {fallbackText ? (
+          <Field label="Copy manually" id="sb-modal-textarea">
+            <Textarea
               id="sb-modal-textarea"
-              ref={modalTextareaRef}
+              textareaRef={fallbackRef}
+              value={fallbackText}
               readOnly
-              rows={8}
+              autofocus
+              rows={6}
+              class="af-mono"
             />
-          </div>
-          <button
-            type="button"
-            className="sb-modal-close"
-            id="sb-modal-close"
-            ref={modalCloseRef}
-            onClick={closeModal}
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+          </Field>
+        ) : null}
+      </Dialog>
+    </>
   );
 }

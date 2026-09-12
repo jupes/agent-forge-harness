@@ -1,16 +1,18 @@
-import type { ComponentChildren } from "preact";
+import type { ComponentChildren, JSX } from "preact";
 import type {
   BeadsComment,
   BeadsDependency,
   BeadsIssue,
 } from "../../../types/beads";
+import { Button } from "../ds/Button";
+import { Tag } from "../ds/Tag";
 import {
   commentsForIssue,
   depsTouchingIssue,
-  escapeHtml,
-  issueIdCopyControlHtml,
   workBranchesFromCommentBodies,
 } from "../issue-detail.mjs";
+import { priorityTone, statusLabel, statusTone } from "../issue-presentation";
+import { CopyIdButton } from "./CopyIdButton";
 
 export type IssueDetailCtx = {
   comments?: BeadsComment[];
@@ -23,200 +25,176 @@ export type IssueDetailPanelProps = {
   onClose: () => void;
 };
 
-function DdHtml({ html }: { html: string }) {
-  return <dd dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-function KvRow({
+function Row({
   label,
   children,
 }: {
   label: string;
   children: ComponentChildren;
-}) {
+}): JSX.Element {
   return (
-    <div className="issue-detail-kv">
-      <dt>{escapeHtml(label)}</dt>
-      {children}
+    <div class="af-detail-row">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
     </div>
   );
 }
 
+/**
+ * The expanded row body for an issue.
+ *
+ * Values are rendered as JSX text, which Preact escapes. The previous version
+ * also ran them through `escapeHtml()` first, so anything containing `&`, `<`
+ * or `>` reached the screen double-escaped (`a &amp; b`).
+ */
 export function IssueDetailPanel({
   issue,
   ctx,
   onClose,
-}: IssueDetailPanelProps) {
+}: IssueDetailPanelProps): JSX.Element {
   const comments = commentsForIssue(issue.id, ctx.comments);
   const deps = depsTouchingIssue(issue.id, ctx.deps);
   const branches = workBranchesFromCommentBodies(comments);
 
   return (
-    <div className="issue-detail-panel">
-      <div className="issue-detail-toolbar">
-        <span className="issue-detail-heading">Issue details</span>
-        <button
-          type="button"
-          className="issue-detail-close"
+    <div class="af-detail">
+      <div class="af-detail-toolbar">
+        <p class="af-section-label">Issue details</p>
+        <Button
+          variant="ghost"
+          icon="x"
           aria-label="Close expanded issue"
           onClick={onClose}
-        >
-          ×
-        </button>
+        />
       </div>
-      <div className="issue-detail-dl-wrap">
-        <KvRow label="ID">
-          <DdHtml html={issueIdCopyControlHtml(issue.id)} />
-        </KvRow>
-        {issue.type ? (
-          <KvRow label="Type">
-            <dd>{escapeHtml(String(issue.type))}</dd>
-          </KvRow>
-        ) : null}
-        <KvRow label="Title">
-          <dd>{escapeHtml(String(issue.title ?? ""))}</dd>
-        </KvRow>
-        <KvRow label="Status">
-          <dd>{escapeHtml(String(issue.status ?? ""))}</dd>
-        </KvRow>
-        {issue.priority ? (
-          <KvRow label="Priority">
-            <dd>{escapeHtml(String(issue.priority))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.parent ? (
-          <KvRow label="Parent">
-            <DdHtml html={issueIdCopyControlHtml(issue.parent)} />
-          </KvRow>
-        ) : null}
-        {issue.repo ? (
-          <KvRow label="Repo">
-            <dd>{escapeHtml(String(issue.repo))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.due ? (
-          <KvRow label="Due">
-            <dd>{escapeHtml(String(issue.due))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.createdAt ? (
-          <KvRow label="Created">
-            <dd>{escapeHtml(String(issue.createdAt))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.updatedAt ? (
-          <KvRow label="Updated">
-            <dd>{escapeHtml(String(issue.updatedAt))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.owner ? (
-          <KvRow label="Owner">
-            <dd>{escapeHtml(String(issue.owner))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.assignee ? (
-          <KvRow label="Assignee (claimed)">
-            <dd>{escapeHtml(String(issue.assignee))}</dd>
-          </KvRow>
-        ) : null}
-        {Array.isArray(issue.labels) && issue.labels.length > 0 ? (
-          <KvRow label="Labels">
-            <dd>{issue.labels.map((l) => escapeHtml(String(l))).join(", ")}</dd>
-          </KvRow>
-        ) : null}
-        {Array.isArray(issue.ac) && issue.ac.length > 0 ? (
-          <KvRow label="AC">
-            <dd>
-              <ul className="issue-detail-ac">
-                {issue.ac.map((line, idx) => (
-                  <li key={idx}>{escapeHtml(String(line))}</li>
+
+      <div class="af-detail-grid">
+        <dl class="af-detail-facts">
+          <Row label="ID">
+            <CopyIdButton issueId={issue.id} />
+          </Row>
+          {issue.type ? <Row label="Type">{issue.type}</Row> : null}
+          <Row label="Title">{issue.title}</Row>
+          <Row label="Status">
+            <Tag tone={statusTone(issue.status)}>
+              {statusLabel(issue.status)}
+            </Tag>
+          </Row>
+          {issue.priority ? (
+            <Row label="Priority">
+              <Tag tone={priorityTone(issue.priority)}>{issue.priority}</Tag>
+            </Row>
+          ) : null}
+          {issue.parent ? (
+            <Row label="Parent">
+              <CopyIdButton issueId={issue.parent} />
+            </Row>
+          ) : null}
+          {issue.repo ? <Row label="Repo">{issue.repo}</Row> : null}
+          {issue.due ? <Row label="Due">{issue.due}</Row> : null}
+          {issue.createdAt ? (
+            <Row label="Created">{issue.createdAt}</Row>
+          ) : null}
+          {issue.updatedAt ? (
+            <Row label="Updated">{issue.updatedAt}</Row>
+          ) : null}
+          {issue.owner ? <Row label="Owner">{issue.owner}</Row> : null}
+          {issue.assignee ? (
+            <Row label="Assignee (claimed)">{issue.assignee}</Row>
+          ) : null}
+          {issue.labels && issue.labels.length > 0 ? (
+            <Row label="Labels">
+              <span class="af-detail-tags">
+                {issue.labels.map((label) => (
+                  <Tag key={label} tone="muted">
+                    {label}
+                  </Tag>
+                ))}
+              </span>
+            </Row>
+          ) : null}
+          {issue.estimate != null ? (
+            <Row label="Estimate (min)">{issue.estimate}</Row>
+          ) : null}
+          {issue.spent != null ? (
+            <Row label="Spent (min)">{issue.spent}</Row>
+          ) : null}
+          {issue.closedBy ? (
+            <Row label="Closed by">{issue.closedBy}</Row>
+          ) : null}
+        </dl>
+
+        <div class="af-detail-prose-col">
+          {issue.ac && issue.ac.length > 0 ? (
+            <section>
+              <p class="af-section-label">Acceptance criteria</p>
+              <ul class="af-detail-ac">
+                {issue.ac.map((line, index) => (
+                  <li key={index}>{line}</li>
                 ))}
               </ul>
-            </dd>
-          </KvRow>
-        ) : null}
-        {issue.estimate != null ? (
-          <KvRow label="Estimate (min)">
-            <dd>{escapeHtml(String(issue.estimate))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.spent != null ? (
-          <KvRow label="Spent (min)">
-            <dd>{escapeHtml(String(issue.spent))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.closedBy ? (
-          <KvRow label="Closed by">
-            <dd>{escapeHtml(String(issue.closedBy))}</dd>
-          </KvRow>
-        ) : null}
-        {issue.description ? (
-          <KvRow label="Description / AC text">
-            <dd>
-              <div className="issue-detail-prose">
-                {escapeHtml(String(issue.description))}
-              </div>
-            </dd>
-          </KvRow>
-        ) : null}
+            </section>
+          ) : null}
+
+          {issue.description ? (
+            <section>
+              <p class="af-section-label">Description</p>
+              <p class="af-detail-prose">{issue.description}</p>
+            </section>
+          ) : null}
+
+          {branches.length > 0 ? (
+            <section>
+              <p class="af-section-label">Work branches (from comments)</p>
+              <ul class="af-detail-list">
+                {branches.map((branch: string) => (
+                  <li key={branch}>
+                    <code>{branch}</code>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {deps.length > 0 ? (
+            <section>
+              <p class="af-section-label">Dependencies</p>
+              <ul class="af-detail-list">
+                {deps.map((dep: BeadsDependency, index: number) => {
+                  const blockedByThis = dep.from === issue.id;
+                  return (
+                    <li key={index}>
+                      <span class="af-muted">
+                        {blockedByThis ? "Blocked by" : "Blocks"}
+                      </span>{" "}
+                      <code>{blockedByThis ? dep.to : dep.from}</code>{" "}
+                      <span class="af-muted">({dep.type})</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ) : null}
+
+          <section>
+            <p class="af-section-label">Comments</p>
+            {comments.length > 0 ? (
+              <ul class="af-detail-comments">
+                {comments.map((comment: BeadsComment, index: number) => (
+                  <li key={index}>
+                    <p class="af-detail-comment-meta">
+                      {comment.author} · {comment.createdAt}
+                    </p>
+                    <p class="af-detail-comment-body">{comment.body}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p class="af-muted">No comments in this export.</p>
+            )}
+          </section>
+        </div>
       </div>
-
-      {branches.length > 0 ? (
-        <section className="issue-detail-section">
-          <h5>Work branches (from comments)</h5>
-          <ul className="issue-detail-branches">
-            {branches.map((b: string) => (
-              <li key={b}>
-                <code>{escapeHtml(b)}</code>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      <section className="issue-detail-section">
-        <h5>Comments</h5>
-        {comments.length > 0 ? (
-          <ul className="issue-detail-comments">
-            {comments.map((c: BeadsComment, idx: number) => (
-              <li key={idx}>
-                <span className="issue-detail-meta">
-                  {escapeHtml(String(c.author || ""))} ·{" "}
-                  {escapeHtml(String(c.createdAt || ""))}
-                </span>
-                <pre className="issue-detail-comment-body">
-                  {escapeHtml(String(c.body || ""))}
-                </pre>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="issue-detail-empty">No comments in this export.</p>
-        )}
-      </section>
-
-      {deps.length > 0 ? (
-        <section className="issue-detail-section">
-          <h5>Dependencies</h5>
-          <ul className="issue-detail-deps">
-            {deps.map((d: BeadsDependency, idx: number) => {
-              const rel = d.from === issue.id ? "Blocked by" : "Blocks";
-              const other = d.from === issue.id ? d.to : d.from;
-              return (
-                <li key={idx}>
-                  <span className="issue-detail-dep-rel">
-                    {escapeHtml(rel)}
-                  </span>{" "}
-                  <code>{escapeHtml(String(other))}</code>{" "}
-                  <span className="issue-detail-dep-type">
-                    ({escapeHtml(String(d.type || ""))})
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ) : null}
     </div>
   );
 }

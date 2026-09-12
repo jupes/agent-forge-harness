@@ -1,0 +1,1667 @@
+/**
+ * Nocturne component layer — the classes the `docs/js/ds/` primitives emit.
+ *
+ * Every value here comes from a token in tokens.css. If you need a color, a
+ * space or a radius that is not a token, add the token rather than a literal.
+ */
+
+/* ─── buttons ──────────────────────────────────────────────────────────── */
+
+.af-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: var(--font-heading-weight);
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.af-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* The primary action is an accent outline — never a solid fill. */
+.af-btn-primary {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+}
+
+.af-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.af-btn-primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.af-btn-secondary {
+  border-color: var(--color-neutral-800);
+  color: var(--color-neutral-300);
+}
+
+.af-btn-secondary:hover:not(:disabled) {
+  border-color: var(--color-neutral-700);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.af-btn-secondary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 14%, transparent);
+}
+
+.af-btn-ghost {
+  padding-inline: var(--space-2);
+  color: var(--color-accent-300);
+}
+
+.af-btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.af-btn-ghost:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+/* ─── tags ─────────────────────────────────────────────────────────────── */
+
+.af-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) * 0.75);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.af-tag-neutral {
+  border-color: var(--color-neutral-800);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-300);
+}
+
+.af-tag-accent {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+  color: var(--color-accent-300);
+}
+
+.af-tag-outline {
+  border-color: var(--color-accent);
+  color: var(--color-accent-300);
+}
+
+.af-tag-muted {
+  border-color: var(--color-neutral-900);
+  color: var(--color-neutral-600);
+}
+
+/* ─── cards ────────────────────────────────────────────────────────────── */
+
+.af-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.af-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.af-card-kicker {
+  margin: 0;
+  color: var(--color-accent-400);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.af-card-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.af-card-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+/* ─── tables ───────────────────────────────────────────────────────────── */
+
+/* Wide tables scroll inside their own region instead of widening the page. */
+.af-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.af-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.af-table th {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-neutral-800);
+  color: var(--color-neutral-600);
+  font-size: 10.5px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.1em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.af-table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-neutral-900);
+  color: var(--color-neutral-300);
+  vertical-align: middle;
+}
+
+.af-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.af-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  color: var(--color-text);
+}
+
+.af-table-detail-row td {
+  padding: 0;
+  background: var(--color-bg);
+}
+
+.af-table-detail-row:hover td {
+  background: var(--color-bg);
+}
+
+.af-table-empty {
+  margin: 0;
+  padding: var(--space-8) var(--space-4);
+  color: var(--color-neutral-600);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ─── fields ───────────────────────────────────────────────────────────── */
+
+.af-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.af-field-label {
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.af-field-required {
+  margin-left: 3px;
+  color: var(--color-accent-400);
+  text-decoration: none;
+}
+
+.af-field-hint {
+  margin: 0;
+  color: var(--color-neutral-700);
+  font-size: 11px;
+  text-transform: none;
+}
+
+.af-input {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  caret-color: var(--color-accent);
+}
+
+.af-input:hover:not(:disabled) {
+  border-color: var(--color-neutral-700);
+}
+
+.af-input:focus-visible {
+  border-color: var(--color-accent);
+  outline-offset: 0;
+}
+
+textarea.af-input {
+  min-height: 84px;
+  resize: vertical;
+}
+
+/* ─── stats ────────────────────────────────────────────────────────────── */
+
+.af-stat {
+  position: relative;
+  overflow: hidden;
+  padding: var(--space-4) var(--space-6);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* The tone shows as a short solid mark, not a flood of accent. */
+.af-stat::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--color-neutral-700);
+  content: "";
+}
+
+.af-stat-accent::before {
+  background: var(--color-accent);
+}
+
+.af-stat-muted::before {
+  background: var(--color-neutral-800);
+}
+
+.af-stat-label {
+  margin: 0;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.af-stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-heading);
+  font-size: 28px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.af-stat-note {
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* ─── progress ─────────────────────────────────────────────────────────── */
+
+.af-progress {
+  overflow: hidden;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-neutral-900);
+}
+
+.af-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--color-accent-700),
+    var(--color-accent-400)
+  );
+}
+
+/* ─── empty state ──────────────────────────────────────────────────────── */
+
+.af-empty {
+  padding: var(--space-8) var(--space-6);
+  color: var(--color-neutral-500);
+  text-align: center;
+}
+
+.af-empty-title {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 14px;
+}
+
+.af-empty-hint {
+  margin: var(--space-2) 0 0;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+/* ─── dialog ───────────────────────────────────────────────────────────── */
+
+/* The <dialog> element is a bare, transparent box so that a click on it can
+   only mean a click on the backdrop; the panel inside carries the surface. */
+.af-dialog {
+  width: min(460px, calc(100% - 2 * var(--space-6)));
+  max-height: calc(100% - 2 * var(--space-6));
+  padding: 0;
+  border: 0;
+  margin: auto;
+  background: transparent;
+  color: var(--color-text);
+  overflow: visible;
+}
+
+.af-dialog::backdrop {
+  background: color-mix(in srgb, #05060c 72%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.af-dialog-panel {
+  display: flex;
+  max-height: calc(100vh - 2 * var(--space-6));
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  overflow: auto;
+}
+
+.af-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.af-dialog-title {
+  margin: 0;
+  font-size: 17px;
+}
+
+.af-dialog-close {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+}
+
+.af-dialog-close:hover {
+  border-color: var(--color-neutral-700);
+  color: var(--color-text);
+}
+
+.af-dialog-body {
+  color: var(--color-neutral-300);
+  font-size: 13px;
+}
+
+.af-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* ─── app shell ────────────────────────────────────────────────────────── */
+
+.af-shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+.af-skip-link {
+  position: absolute;
+  z-index: 600;
+  top: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-accent-200);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+/* Visible only once focused — the classic skip-link pattern. */
+.af-skip-link:focus {
+  transform: translateY(0);
+}
+
+.af-nav {
+  display: flex;
+  overflow-y: auto;
+  flex-direction: column;
+  border-right: 1px solid var(--color-neutral-900);
+  background: linear-gradient(180deg, #1b1d2c 0%, var(--color-bg) 100%);
+}
+
+.af-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4) var(--space-4);
+  color: var(--color-text);
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+
+.af-brand-mark {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-accent-700);
+  border-radius: 6px;
+  background: var(--color-accent-900);
+  color: var(--color-accent-400);
+}
+
+.af-nav-groups {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-3) var(--space-4);
+  gap: var(--space-4);
+}
+
+.af-nav-heading {
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-3);
+  color: var(--color-neutral-700);
+  font-size: 10px;
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.af-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 7px var(--space-3);
+  border-radius: 7px;
+  color: var(--color-neutral-500);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.af-nav-item:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-neutral-200);
+}
+
+/* The active item takes a solid accent edge — a mark, not a flood. */
+.af-nav-item-active,
+.af-nav-item-active:hover {
+  background: var(--color-accent-900);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+  color: var(--color-text);
+}
+
+.af-shell-actions {
+  margin-top: auto;
+  padding: var(--space-4);
+  border-top: 1px solid var(--color-neutral-900);
+}
+
+.af-shell-snapshot {
+  margin: 0 0 var(--space-3);
+  color: var(--color-neutral-600);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.af-shell-refresh {
+  width: 100%;
+}
+
+.af-main {
+  overflow-x: hidden;
+}
+
+.af-page-header {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: var(--space-8) var(--space-8) var(--space-6);
+  border-bottom: 1px solid var(--color-neutral-900);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  gap: var(--space-6);
+}
+
+.af-page-title {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.af-page-blurb {
+  max-width: 62ch;
+  margin: var(--space-1) 0 0;
+  color: var(--color-neutral-600);
+  font-size: 13px;
+}
+
+.af-page-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.af-page-body {
+  display: flex;
+  max-width: 1180px;
+  flex-direction: column;
+  padding: var(--space-8) var(--space-8) 56px;
+  gap: var(--space-8);
+}
+
+/* ─── toast ────────────────────────────────────────────────────────────── */
+
+.af-toast {
+  position: fixed;
+  z-index: 10000;
+  bottom: var(--space-8);
+  left: 50%;
+  max-width: min(90vw, 28rem);
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--color-accent-700);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+  color: var(--color-text);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  text-align: center;
+  transform: translateX(-50%) translateY(140%);
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease;
+}
+
+.af-toast.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ─── responsive ───────────────────────────────────────────────────────── */
+
+/* The old shell hid the nav outright below 800px, stranding every
+   destination. Here it becomes a horizontal strip that stays reachable. */
+@media (width <= 860px) {
+  .af-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .af-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: var(--space-2) var(--space-4);
+    border-right: 0;
+    border-bottom: 1px solid var(--color-neutral-900);
+    gap: var(--space-2);
+  }
+
+  .af-brand {
+    padding: var(--space-2) 0;
+  }
+
+  .af-nav-groups {
+    flex-direction: row;
+    overflow-x: auto;
+    width: 100%;
+    padding: 0;
+    gap: var(--space-2);
+  }
+
+  .af-nav-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .af-nav-heading {
+    display: none;
+  }
+
+  .af-nav-item {
+    white-space: nowrap;
+  }
+
+  .af-shell-actions {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    padding: var(--space-2) 0 0;
+    border-top: 0;
+    margin-top: 0;
+    gap: var(--space-4);
+  }
+
+  .af-shell-snapshot {
+    margin: 0;
+  }
+
+  .af-shell-refresh {
+    width: auto;
+    flex: none;
+  }
+
+  .af-page-header {
+    position: static;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: var(--space-6) var(--space-4) var(--space-4);
+  }
+
+  .af-page-body {
+    padding: var(--space-6) var(--space-4) 40px;
+    gap: var(--space-6);
+  }
+}
+
+/* ─── page furniture ───────────────────────────────────────────────────── */
+
+.af-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.af-initiative {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.af-initiative-label {
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.af-initiative .af-input {
+  max-width: 22rem;
+}
+
+.af-search {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+}
+
+.af-search .af-input {
+  width: 260px;
+  padding-left: 30px;
+}
+
+.af-search-icon {
+  position: absolute;
+  bottom: 9px;
+  left: 10px;
+  color: var(--color-neutral-600);
+  pointer-events: none;
+}
+
+.af-result-count {
+  margin: 0 0 var(--space-2) auto;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.af-stat-row {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.af-muted {
+  color: var(--color-neutral-600);
+}
+
+.af-section-label {
+  margin: 0 0 var(--space-2);
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.af-flow-edges {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--color-neutral-500);
+  font-size: 12px;
+}
+
+/* ─── issue tables ─────────────────────────────────────────────────────── */
+
+.af-issue-row {
+  cursor: pointer;
+}
+
+.af-issue-row.is-expanded td {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.af-issue-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.af-issue-title {
+  display: block;
+  color: var(--color-text);
+}
+
+.af-issue-blocked {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+}
+
+.af-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-neutral-500);
+  white-space: nowrap;
+}
+
+.af-col-id,
+.af-col-date,
+.af-col-status,
+.af-col-priority,
+.af-col-type {
+  white-space: nowrap;
+}
+
+.af-col-id {
+  width: 1%;
+}
+
+.af-col-date {
+  color: var(--color-neutral-600);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Copy-id control, shared by every view that shows an issue id. */
+button.issue-id-copy {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 6px;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+button.issue-id-copy:hover {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+button.issue-id-copy code {
+  color: var(--color-accent-400);
+  font-size: 11.5px;
+}
+
+/* ─── epics ────────────────────────────────────────────────────────────── */
+
+.af-epic-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.af-epic-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.af-epic-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.af-epic-due,
+.af-epic-progress {
+  margin: 0;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.af-epic-description {
+  margin: 0;
+  color: var(--color-neutral-500);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+/* ─── issue detail (expanded row) ──────────────────────────────────────── */
+
+.af-detail {
+  padding: var(--space-6);
+  border-top: 1px solid var(--color-accent-900);
+  background: var(--color-bg);
+}
+
+.af-detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.af-detail-toolbar .af-section-label {
+  margin: 0;
+}
+
+.af-detail-grid {
+  display: grid;
+  align-items: start;
+  gap: var(--space-8);
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.af-detail-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  gap: var(--space-2);
+}
+
+.af-detail-row {
+  display: grid;
+  align-items: start;
+  gap: var(--space-2) var(--space-4);
+  grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr);
+}
+
+.af-detail-row dt {
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.af-detail-row dd {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.af-detail-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.af-detail-prose-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.af-detail-prose {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  text-wrap: pretty;
+  white-space: pre-wrap;
+}
+
+.af-detail-ac,
+.af-detail-list {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+}
+
+.af-detail-ac li,
+.af-detail-list li {
+  margin-bottom: var(--space-2);
+}
+
+.af-detail-comments {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  gap: var(--space-4);
+  list-style: none;
+}
+
+.af-detail-comment-meta {
+  margin: 0;
+  color: var(--color-neutral-700);
+  font-size: 11px;
+}
+
+.af-detail-comment-body {
+  margin: 2px 0 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* ─── builders and prose ───────────────────────────────────────────────── */
+
+.af-prose {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.af-builder {
+  max-width: 46rem;
+}
+
+/* Builder feedback: the form dims while the command is built, and the card's
+   edge briefly lights up in the accent once it is ready. */
+form.is-submitting {
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.af-card.is-success-flash {
+  animation: af-success-flash 0.7s ease-out;
+}
+
+@keyframes af-success-flash {
+  0% {
+    border-color: var(--color-neutral-900);
+  }
+
+  35% {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px
+      color-mix(in srgb, var(--color-accent) 30%, transparent);
+  }
+
+  100% {
+    border-color: var(--color-neutral-900);
+  }
+}
+
+/* Keep the animation (so animationend still fires and the class clears) but
+   make it effectively instant. */
+@media (prefers-reduced-motion: reduce) {
+  .af-card.is-success-flash {
+    animation-duration: 1ms;
+  }
+}
+
+.af-form-grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.af-form-wide {
+  grid-column: 1 / -1;
+}
+
+.af-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: var(--space-6);
+  gap: var(--space-3);
+}
+
+.af-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.af-col-command {
+  white-space: nowrap;
+}
+
+.af-insights {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* ─── charts ───────────────────────────────────────────────────────────── */
+
+.af-chart {
+  position: relative;
+  height: 280px;
+}
+
+.af-chart-short {
+  height: 220px;
+}
+
+.af-chart-error {
+  margin: 0;
+  color: var(--color-accent-300);
+  font-size: 12px;
+}
+
+/* ─── council ──────────────────────────────────────────────────────────── */
+
+/* Council's report surfaces (result, discussion, transcript) keep their own
+   semantic class names, but every value below comes from a token — this is
+   part of the design system, not a page-level stylesheet. */
+
+.af-workspace {
+  display: grid;
+  align-items: start;
+  gap: var(--space-6);
+  grid-template-columns: minmax(0, 1fr) 260px;
+}
+
+.af-workspace-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.af-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-neutral-300);
+  font-size: 13px;
+}
+
+.af-check input {
+  width: auto;
+  accent-color: var(--color-accent);
+}
+
+.af-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.af-notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-accent-800);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-900);
+  color: var(--color-accent-200);
+  font-size: 12.5px;
+}
+
+.af-notice-error {
+  border-color: var(--color-neutral-700);
+  border-left-color: var(--color-neutral-400);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-200);
+}
+
+.af-details {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-neutral-900);
+  font-size: 12.5px;
+}
+
+.af-details summary {
+  color: var(--color-accent-300);
+  cursor: pointer;
+}
+
+.af-form-actions-split {
+  justify-content: space-between;
+}
+
+.af-button-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.af-seat-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.af-seat {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.af-seat-id {
+  margin: 0;
+  font-size: 13px;
+}
+
+.af-seat-model {
+  margin: 2px 0 0;
+  color: var(--color-neutral-600);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.af-seat-phase {
+  margin: var(--space-3) 0 0;
+  color: var(--color-accent-400);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.af-history {
+  position: sticky;
+  top: var(--space-8);
+}
+
+.af-history-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.af-history-item:hover {
+  border-color: var(--color-accent-700);
+}
+
+.af-history-item.is-selected {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+}
+
+.af-history-name {
+  display: block;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.af-history-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+}
+
+/* Council report internals (CouncilResult / CouncilDiscussion). */
+
+.council-report .panel,
+.council-report .discussion,
+.council-report .finding {
+  border-color: var(--color-neutral-800);
+}
+
+.council-report h2 {
+  font-size: 16px;
+}
+
+.council-report h3,
+.council-report h4 {
+  font-size: 14px;
+}
+
+.council-report .muted,
+.council-report small {
+  color: var(--color-neutral-600);
+}
+
+.council-report .pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 20px;
+  background: var(--color-neutral-900);
+  color: var(--color-accent-300);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.council-report .pill.warning {
+  border-color: var(--color-accent-700);
+  color: var(--color-accent-200);
+}
+
+.council-report .run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.council-report .finding {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-neutral-900);
+}
+
+.council-report .finding:first-child {
+  border-top: 0;
+}
+
+.council-report .finding-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.council-report .discussion {
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid var(--color-neutral-900);
+  margin: var(--space-4) 0;
+}
+
+.council-report .discussion-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.council-report .discussion-tabs button {
+  padding: 5px 12px;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-neutral-400);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.council-report .discussion-tabs button:hover {
+  border-color: var(--color-accent-700);
+  color: var(--color-accent-200);
+}
+
+.council-report .discussion-entry {
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--color-accent-700);
+  border-radius: var(--radius-sm);
+  margin: var(--space-3) 0;
+  background: var(--color-bg);
+}
+
+.council-report .discussion-entry p,
+.council-report .finding p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.council-report .vote-change {
+  display: inline-block;
+  margin: var(--space-2) var(--space-3) 0 0;
+  color: var(--color-accent-300);
+  font-size: 12px;
+}
+
+.council-report details {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-neutral-900);
+}
+
+.council-report summary {
+  color: var(--color-accent-300);
+  cursor: pointer;
+}
+
+.council-report pre {
+  max-height: 450px;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.council-report .recommendations {
+  padding-left: var(--space-6);
+}
+
+.council-report .empty {
+  padding: var(--space-8) 0;
+  color: var(--color-neutral-600);
+  text-align: center;
+}
+
+@media (width <= 1000px) {
+  .af-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .af-history {
+    position: static;
+  }
+}
+
+/* ─── forge run ────────────────────────────────────────────────────────── */
+
+.af-phase-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.af-phase {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+
+/* The connector line between phase nodes. */
+.af-phase:not(:last-child) .af-phase-node::after {
+  position: absolute;
+  top: 28px;
+  bottom: calc(-1 * var(--space-4));
+  left: 50%;
+  width: 1px;
+  background: var(--color-neutral-900);
+  content: "";
+}
+
+.af-phase-complete:not(:last-child) .af-phase-node::after {
+  background: var(--color-accent-700);
+}
+
+.af-phase-node {
+  position: relative;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: 50%;
+  color: var(--color-neutral-700);
+}
+
+.af-phase-complete .af-phase-node {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+  color: var(--color-accent-400);
+}
+
+.af-phase-active .af-phase-node {
+  border-color: var(--color-accent);
+  background: var(--color-accent-900);
+  color: var(--color-accent-300);
+}
+
+.af-phase-body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-4);
+  background: var(--color-surface);
+}
+
+.af-phase-active .af-phase-body {
+  border-color: var(--color-accent-700);
+}
+
+.af-phase-locked .af-phase-body {
+  background: transparent;
+}
+
+.af-phase-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.af-phase-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.af-phase-locked .af-phase-title {
+  color: var(--color-neutral-600);
+}
+
+.af-phase-artifact {
+  margin: var(--space-2) 0 0;
+  font-size: 11.5px;
+}
+
+.af-phase .af-phase-artifact > code {
+  color: var(--color-neutral-500);
+}
+
+.af-checkpoint-progress {
+  margin: 0;
+  color: var(--color-neutral-500);
+  font-size: 12px;
+}
+
+.af-checkpoints {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  margin: 0;
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.af-checkpoint {
+  display: grid;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  color: var(--color-neutral-500);
+  gap: var(--space-4);
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+}
+
+.af-checkpoint.is-active {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+  color: var(--color-accent-300);
+}
+
+.af-checkpoint-body {
+  min-width: 0;
+}
+
+.af-checkpoint-title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.af-checkpoint-meta {
+  margin: 2px 0 0;
+  color: var(--color-neutral-600);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.af-checkpoint-waiting {
+  color: var(--color-accent-400);
+}
+
+.af-checkpoint.is-next {
+  border-color: var(--color-accent-700);
+  border-style: dashed;
+}
+
+.af-checkpoint-tags {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.af-checkpoint-state {
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.af-checkpoint-state.is-waiting {
+  color: var(--color-accent-300);
+}
+
+.af-gate-scope {
+  overflow-wrap: anywhere;
+}
+
+.af-review {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  gap: var(--space-3);
+}
+
+.af-review-heading {
+  margin: 0;
+  font-size: 13px;
+}
+
+.af-review-result {
+  margin: 0;
+  color: var(--color-accent-300);
+  font-size: 12px;
+}
+
+.af-review-result.is-error {
+  color: var(--color-neutral-200);
+}
+
+.af-gate-grid {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  list-style: none;
+}
+
+.af-gate-check {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.af-gate-check.is-failed {
+  border-color: var(--color-accent-700);
+}
+
+.af-gate-name {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--color-neutral-300);
+  font-size: 12.5px;
+  gap: var(--space-2);
+}
+
+.af-gate-check.is-passed .af-gate-name {
+  color: var(--color-neutral-300);
+}
+
+.af-gate-check.is-failed .af-gate-name {
+  color: var(--color-accent-200);
+}
+
+.af-gate-detail {
+  margin: var(--space-2) 0 0;
+  color: var(--color-neutral-600);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.af-convention-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

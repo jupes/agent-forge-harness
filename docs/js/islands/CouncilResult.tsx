@@ -18,7 +18,7 @@ export function CouncilResult({ job }: { job: CouncilServiceJob }) {
   const run = job.run;
   const active = job.status === "running" || job.status === "cancelling";
   return (
-    <section className="panel" aria-live="polite">
+    <section className="af-card council-report" aria-live="polite">
       <div className="run-meta">
         <span className={`pill${job.status === "failed" ? " warning" : ""}`}>
           {job.status}

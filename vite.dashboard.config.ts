@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import chokidar from "chokidar";
 import { councilDashboardPlugin } from "./scripts/council/dashboard";
+import { devApiPlugin } from "./scripts/dashboard/dev-api";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
@@ -470,6 +471,17 @@ export default defineConfig({
       "@docs/skill-builder": normalizePath(path.join(docsRoot, "js", "skill-builder.mjs")),
     },
   },
+  build: {
+    rollupOptions: {
+      // All three documents, or `vite build` silently emits only index.html
+      // and the other two are never verified by a build at all.
+      input: {
+        index: path.join(docsRoot, "index.html"),
+        "plan-review": path.join(docsRoot, "plan-review.html"),
+        council: path.join(docsRoot, "council.html"),
+      },
+    },
+  },
   server: {
     port: Number(process.env["PORT"] ?? "8787"),
     strictPort: false,
@@ -487,5 +499,6 @@ export default defineConfig({
     beadsDataReloadPlugin(),
     plansHarnessPlugin(repoRoot),
     councilDashboardPlugin(repoRoot),
+    devApiPlugin(repoRoot),
   ],
 });

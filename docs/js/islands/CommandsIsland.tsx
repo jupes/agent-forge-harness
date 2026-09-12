@@ -1,11 +1,6 @@
-import { Fragment } from "preact";
-
-function esc(str: unknown): string {
-  return String(str != null ? str : "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
+import { Fragment, type JSX } from "preact";
+import { Card } from "../ds/Card";
+import { Table } from "../ds/Table";
 
 const COMMANDS: [string, string][] = [
   ["/go [task]", "Smart router — classify scope and run the right workflow."],
@@ -160,116 +155,102 @@ const SKILLS: [string, string][] = [
 
 SKILLS.sort((a, b) => a[0].localeCompare(b[0]));
 
-export function CommandsIsland() {
+export function CommandsIsland(): JSX.Element {
   return (
     <Fragment>
-      <p
-        style={{
-          color: "var(--text-muted)",
-          fontSize: "0.9rem",
-          margin: "0 0 1rem",
-          maxWidth: "52rem",
-        }}
-      >
-        Slash command prompts live in <code>.claude/commands/</code>
-        {"; "}
-        orchestration playbooks live in <code>.claude/workflows/</code>.
-      </p>
-      <h3>Slash commands</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Command</th>
-            <th>Description</th>
-          </tr>
-        </thead>
-        <tbody>
-          {COMMANDS.map(([cmd, desc]) => (
-            <tr key={cmd}>
-              <td>
-                <code>{esc(cmd)}</code>
-              </td>
-              <td>{esc(desc)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <h3>Workflow tiers</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Workflow</th>
-            <th>When to use</th>
-            <th>Process</th>
-          </tr>
-        </thead>
-        <tbody>
-          {WORKFLOWS.map(([name, when, process]) => (
-            <tr key={name}>
-              <td>
-                <strong>{esc(name)}</strong>
-              </td>
-              <td>{esc(when)}</td>
-              <td>{esc(process)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <h3>Skills</h3>
-      <p
-        style={{
-          color: "var(--text-muted)",
-          fontSize: "0.9rem",
-          margin: "0 0 0.75rem",
-          maxWidth: "52rem",
-        }}
-      >
-        Reusable instructions under{" "}
-        <code>{".claude/skills/<name>/SKILL.md"}</code>. Agents load them when a
-        task matches the skill.
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Skill</th>
-            <th>Summary</th>
-          </tr>
-        </thead>
-        <tbody>
-          {SKILLS.map(([name, summary]) => (
-            <tr key={name}>
-              <td>
-                <code>{esc(name)}</code>
-              </td>
-              <td>{esc(summary)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <h3>Agents and hooks</h3>
-      <p style={{ margin: "0 0 0.65rem", maxWidth: "52rem" }}>
-        <strong>Agents</strong> — Role prompts in <code>.claude/agents/</code>{" "}
-        shape how Claude Code behaves for a given job. The <strong>Lead</strong>{" "}
-        agent decomposes work, aligns workers and evaluators, and verifies
-        outcomes without writing production code. The <strong>Worker</strong>{" "}
-        implements tasks inside the active workflow and repo conventions. The{" "}
-        <strong>Planner</strong> turns a short prompt into a product-level spec
-        (stories, non-goals, risks). The <strong>Evaluator</strong> judges
-        deliverables against acceptance criteria and the shared evaluation
-        rubric, including a pre-task alignment mode.
-      </p>
-      <p style={{ margin: 0, maxWidth: "52rem" }}>
-        <strong>Hooks</strong> — Lifecycle callbacks configured in{" "}
-        <code>.claude/settings.json</code> (and implemented as commands or Bun
-        scripts under <code>.claude/hooks/</code>). They run automatically at
-        events such as session start, after a task completes, or when a teammate
-        goes idle. This repo wires <code>bd prime</code> on SessionStart and
-        PreCompact, and <code>quality-gate.ts</code> on TaskCompleted and
-        TeammateIdle to run quality checks and optional evaluator verdict gates.{" "}
-        <code>session.ts</code> is available to log session metadata and sync
-        Beads via <code>bd dolt pull</code> / <code>bd dolt push</code> when you
-        add it to your hook configuration.
-      </p>
+      <Card title="Slash commands" headingLevel={2} kicker=".claude/commands/">
+        <p class="af-prose af-muted">
+          Slash command prompts live in <code>.claude/commands/</code>, and
+          orchestration playbooks live in <code>.claude/workflows/</code>.
+        </p>
+        <Table
+          label="Slash commands"
+          rows={COMMANDS.map(([command, description]) => ({
+            command,
+            description,
+          }))}
+          rowKey={(row) => row.command}
+          columns={[
+            {
+              key: "command",
+              header: "Command",
+              class: "af-col-command",
+              cell: (row) => <code>{row.command}</code>,
+            },
+            { key: "description", header: "Description" },
+          ]}
+        />
+      </Card>
+
+      <Card title="Workflow tiers" headingLevel={2}>
+        <Table
+          label="Workflow tiers"
+          rows={WORKFLOWS.map(([name, when, process]) => ({
+            name,
+            when,
+            process,
+          }))}
+          rowKey={(row) => row.name}
+          columns={[
+            {
+              key: "name",
+              header: "Workflow",
+              cell: (row) => <strong>{row.name}</strong>,
+            },
+            { key: "when", header: "When to use" },
+            { key: "process", header: "Process" },
+          ]}
+        />
+      </Card>
+
+      <Card title="Skills" headingLevel={2} kicker=".claude/skills/">
+        <p class="af-prose af-muted">
+          Reusable instructions under{" "}
+          <code>{".claude/skills/<name>/SKILL.md"}</code>. Agents load them when
+          a task matches the skill.
+        </p>
+        <Table
+          label="Skills"
+          rows={SKILLS.map(([name, summary]) => ({ name, summary }))}
+          rowKey={(row) => row.name}
+          columns={[
+            {
+              key: "name",
+              header: "Skill",
+              class: "af-col-command",
+              cell: (row) => <code>{row.name}</code>,
+            },
+            { key: "summary", header: "Summary" },
+          ]}
+        />
+      </Card>
+
+      <Card title="Agents and hooks" headingLevel={2}>
+        <p class="af-prose">
+          <strong>Agents</strong> — Role prompts in <code>.claude/agents/</code>{" "}
+          shape how Claude Code behaves for a given job. The{" "}
+          <strong>Lead</strong> agent decomposes work, aligns workers and
+          evaluators, and verifies outcomes without writing production code. The{" "}
+          <strong>Worker</strong> implements tasks inside the active workflow
+          and repo conventions. The <strong>Planner</strong> turns a short
+          prompt into a product-level spec (stories, non-goals, risks). The{" "}
+          <strong>Evaluator</strong> judges deliverables against acceptance
+          criteria and the shared evaluation rubric, including a pre-task
+          alignment mode.
+        </p>
+        <p class="af-prose">
+          <strong>Hooks</strong> — Lifecycle callbacks configured in{" "}
+          <code>.claude/settings.json</code> (and implemented as commands or Bun
+          scripts under <code>.claude/hooks/</code>). They run automatically at
+          events such as session start, after a task completes, or when a
+          teammate goes idle. This repo wires <code>bd prime</code> on
+          SessionStart and PreCompact, and <code>quality-gate.ts</code> on
+          TaskCompleted and TeammateIdle to run quality checks and optional
+          evaluator verdict gates. <code>session.ts</code> is available to log
+          session metadata and sync Beads via <code>bd dolt pull</code> /{" "}
+          <code>bd dolt push</code> when you add it to your hook configuration.
+        </p>
+      </Card>
     </Fragment>
   );
 }

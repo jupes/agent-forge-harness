@@ -61,7 +61,9 @@ function setup(overrides: Partial<Parameters<typeof CouncilSetup>[0]> = {}) {
 test("setup component forwards edits and profile budget changes without owning run state", () => {
   const patches: Partial<CouncilDraft>[] = [];
   const all = nodes(setup({ onChange: (patch) => patches.push(patch) }));
-  const selects = all.filter((node) => node.type === "select");
+  const selects = all.filter(
+    (node) => typeof node.type === "function" && node.type.name === "Select",
+  );
   const change = (node: Element, value: string) =>
     (
       node.props.onChange as (event: {
@@ -84,7 +86,8 @@ test("setup component preserves start validation and active-review locking", () 
   const startButton = (tree: ComponentChildren) =>
     nodes(tree).find(
       (node) =>
-        node.type === "button" &&
+        typeof node.type === "function" &&
+        node.type.name === "Button" &&
         text(node.props.children as ComponentChildren).includes(
           "Convene council",
         ),
@@ -142,7 +145,12 @@ test("member and history components retain selected-run identity and callbacks",
     ],
   };
   const members = text(CouncilMembers({ job, roster: profile.seats }));
-  expect(members).toContain("Members for the selected run");
+  const rosterKicker = (job: CouncilServiceJob | null) =>
+    String(
+      (CouncilMembers({ job, roster: profile.seats }) as Element).props
+        .kicker ?? "",
+    ).toLowerCase();
+  expect(rosterKicker(job)).toContain("members for the selected run");
   expect(members).toContain("revision · complete");
   const opened: string[] = [];
   const history = CouncilHistory({
@@ -153,7 +161,9 @@ test("member and history components retain selected-run identity and callbacks",
     },
   });
   const button = nodes(history).find((node) => node.type === "button")!;
-  expect(button.props.className).toBe("selected");
+  // Selection is now both a class and an aria-current flag.
+  expect(String(button.props.class)).toContain("is-selected");
+  expect(button.props["aria-current"]).toBe("true");
   (button.props.onClick as () => void)();
   expect(opened).toEqual([job.runId]);
 });

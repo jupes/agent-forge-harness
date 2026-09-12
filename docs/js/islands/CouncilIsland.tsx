@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import type { CouncilServiceJob } from "../../../scripts/council/service";
+import { EmptyState } from "../ds/EmptyState";
 import { CouncilHistory } from "./CouncilHistory";
 import { CouncilMembers } from "./CouncilMembers";
 import { CouncilResult } from "./CouncilResult";
@@ -168,32 +169,30 @@ export function CouncilIsland() {
   }
 
   if (available === null)
-    return (
-      <p className="notice" role="status">
-        Connecting to your local council…
-      </p>
-    );
+    return <EmptyState title="Connecting to your local council…" live />;
   if (!available)
     return (
-      <div className="notice">
-        <h2>Open the local dashboard to run a council</h2>
-        <p>
-          This page needs the local council service. Start{" "}
-          <code>bun run dashboard</code> in the harness, then open{" "}
-          <code>/council.html</code> on its local address. Hosted static pages
-          cannot run models or access your files.
-        </p>
-      </div>
+      <EmptyState
+        title="Open the local dashboard to run a council"
+        hint={
+          <>
+            This page needs the local council service. Start{" "}
+            <code>bun run dashboard</code> in the harness, then open{" "}
+            <code>/council.html</code> on its local address. Hosted static pages
+            cannot run models or access your files.
+          </>
+        }
+      />
     );
 
   return (
-    <div className="workspace">
-      <div>
-        {error && (
-          <p className="notice error" role="alert">
+    <div class="af-workspace">
+      <div class="af-workspace-main">
+        {error ? (
+          <p class="af-notice af-notice-error" role="alert">
             {error}
           </p>
-        )}
+        ) : null}
         <CouncilSetup
           draft={draft}
           profiles={profiles}
@@ -210,9 +209,10 @@ export function CouncilIsland() {
         {job ? (
           <CouncilResult job={job} />
         ) : (
-          <p className="empty">
-            The independent reviews, discussion, and report will appear here.
-          </p>
+          <EmptyState
+            title="No review selected yet"
+            hint="The independent reviews, discussion, and report will appear here."
+          />
         )}
       </div>
       <CouncilHistory
