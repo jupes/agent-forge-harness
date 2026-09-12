@@ -21,6 +21,10 @@ import {
   parseEvalVerdictJson,
   verdictBlocksShip,
 } from "../../scripts/eval-verdict";
+import {
+  type GateIdentity,
+  gateIdentity,
+} from "../../scripts/quality-gate-identity";
 import { getQualityGateLogPath } from "./utils/constants";
 
 interface CheckResult {
@@ -31,7 +35,11 @@ interface CheckResult {
   skipReason?: string;
 }
 
-interface GateResult {
+/**
+ * One gate run as logged. The log is shared by every checkout on the machine,
+ * so each entry carries the identity of the checkout and run it came from.
+ */
+interface GateResult extends GateIdentity {
   event: string;
   timestamp: string;
   passed: boolean;
@@ -375,7 +383,30 @@ if (event === "TaskCompleted") {
   }
 }
 
+// The log below is shared by every checkout and worktree on the machine, so
+// record which checkout and forge run this result belongs to.
+const toplevel = run("git rev-parse --show-toplevel");
+const checkoutRoot =
+  toplevel.ok && toplevel.output ? toplevel.output : process.cwd();
+const headBranch = run("git rev-parse --abbrev-ref HEAD");
+let forgeStateJson: string | null = null;
+try {
+  forgeStateJson = readFileSync(
+    join(checkoutRoot, ".tmp", "work", "forge-state.json"),
+    "utf8",
+  );
+} catch {
+  // No forge run in this checkout.
+}
+
 const result: GateResult = {
+  ...gateIdentity({
+    cwd: process.cwd(),
+    gitToplevel: toplevel.ok ? toplevel.output : null,
+    gitBranch: headBranch.ok ? headBranch.output : null,
+    taskId,
+    forgeStateJson,
+  }),
   event,
   timestamp: new Date().toISOString(),
   passed: blockingFailures.length === 0,
