@@ -1,0 +1,4 @@
+# Optional Codex skill metadata. Generated from Claude Code slash command /ask.
+# This mirrors an explicit command, so it does NOT fire implicitly — invoke it with: $ask
+policy:
+  allow_implicit_invocation: false

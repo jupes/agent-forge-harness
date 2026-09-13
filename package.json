@@ -20,6 +20,7 @@
     "tmp:cleanup": "bun run scripts/tmp-work-cleanup.ts",
     "beads:bundles": "bun run scripts/beads/convoy-bundles.ts",
     "agents-md": "bun run scripts/agents-md.ts",
+    "codex:sync": "bun run scripts/sync-codex.ts",
     "molecules:check": "bun run scripts/molecules/check.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check scripts .claude/hooks .claude/skills types docs/js",

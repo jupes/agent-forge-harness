@@ -1,0 +1,4 @@
+# Optional Codex skill metadata. Generated from Claude Code slash command /plan.
+# This mirrors an explicit command, so it does NOT fire implicitly — invoke it with: $plan
+policy:
+  allow_implicit_invocation: false
