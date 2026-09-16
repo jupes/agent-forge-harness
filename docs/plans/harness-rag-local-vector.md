@@ -1,125 +1,86 @@
-# Harness RAG — Local Vector DB (Implementation Plan)
+# Harness RAG - Local Vector DB Integration Plan
 
-> **Status**: Draft  
-> **Last updated**: 2026-05-09  
-> **Scope**: [Agent Forge harness](https://github.com/jupes/agent-forge-harness) only — RAG over **harness dev repos** (`repos/` clones) and `knowledge/` YAML files to give harness agents grounded context about the codebase. Uses **PostgreSQL + pgvector in Docker**.
+> **Status**: Reconciliation candidate; implementation blocked by `agent-forge-harness-ulpz.1` and `agent-forge-harness-ulpz.2`
+> **Last updated**: 2026-09-16
+> **Scope**: Agent Forge retrieval over registered development repositories and selected harness knowledge
+> **Canonical stack context**: [self-hosted-ai-agent-stack.md](./self-hosted-ai-agent-stack.md)
 
-**Not in scope**: The D&D 5e RAG (rules/spell lookup for the rag-chat app) is a **separate project** documented in [dnd-rag-ingestion.md](./dnd-rag-ingestion.md) and implemented in the `rag-chat` sub-repo. The two projects share the same pgvector Docker container but use **separate PostgreSQL schemas** (`harness.*` vs `dnd.*`). Neither plan overlaps the other.
+**Beads authority**: `agent-forge-harness-9n1` is the existing feature. No implementation child issues are currently assigned by this plan. Closed issues `agent-forge-harness-7fx` and `agent-forge-harness-c7v` belong to the separate D&D product work and must not be reopened or reused as Harness RAG slices. If decomposition is useful after the contract freeze, create new child issues under `9n1`.
 
-**Beads**: Epic **agent-forge-harness-9n1**; infra slice **agent-forge-harness-7fx**; ingestion **agent-forge-harness-c7v**.
+## Scope boundary
 
----
+Harness RAG indexes registered repositories and approved harness knowledge so agents can retrieve chunk-grounded context with structured citations. D&D rules and spell retrieval remain a separate product concern in `rag-chat`.
 
-## Goals
+The projects do not share operational ownership. Harness RAG must not depend on the `rag-chat` Compose project, database lifecycle, credentials, legacy port 5432, schemas, or release schedule. A deployment may use the same physical host only after the operator approves that placement; the Harness stack still owns an independent service contract, credentials, backup, restore, and rollback.
 
-1. Give harness agents **chunk-grounded context** from code and docs checked out under `repos/`.
-2. Run entirely on a **developer machine or CI** with Docker — no cloud vector dependency for the default harness path.
-3. Keep **embedding + LLM** behind adapters so later options (hosted index, different models) do not require redesign.
+## Preconditions
 
----
+All adapter, schema, fixture, and live work waits for both blockers:
 
-## Database Topology
+1. `agent-forge-harness-ulpz.1` approves host placement, data retention, corpus, embedding and index contract, golden set, and success thresholds.
+2. `agent-forge-harness-ulpz.2` approves the exact Ollama and pgvector sources, licenses, pinned versions or image digests, target host, private networking, backup, restore, rollback, and service start.
 
-The pgvector Docker service hosts **one database per project/app**. The harness uses the `harness` PostgreSQL schema:
+No download, installation, schema mutation, or service start is authorized by this plan alone.
 
-```
-pgvector container (shared Docker service)
-├── schema: harness.*    ← this plan
-│     └── harness.chunks (repo, commit, path, text, embedding)
-└── schema: dnd.*        ← dnd-rag-ingestion.md / rag-chat sub-repo
-      └── dnd.chunks     (book_slug, chapter, content_type, text, embedding)
-```
+## Target contract
 
-Adding a new project = add a new schema. No cross-schema queries in normal operation.
+### Storage
 
----
+- PostgreSQL with pgvector remains the retrieval baseline.
+- The Harness stack owns the connection contract and lifecycle. Connection details are selected through environment or an approved secret reference, never a product repository or hard-coded host port.
+- Harness data lives in an isolated `harness.*` namespace or an operator-approved dedicated database. The approved choice is recorded by `ulpz.1` before migrations are written.
+- Migrations are forward-only and idempotent. Backup and restore are proven before a schema or index upgrade.
+- Changing embedding model, dimensions, chunk policy, or index version creates a compatible new index; it never mutates an incompatible index in place.
 
-## Architecture
+### Embedding provider
 
-```
-repos/<name>/          # Registered clones (repos/repos.json, add-repo skill)
-knowledge/**/*.yaml    # Domain YAML files (optional, same index or separate table)
-        ↓
-ingestion              # Chunk → embed → upsert into harness.chunks
-        ↓
-vector-db (pgvector)  # Docker service; named volume for persistence
-        ↑
-harness agents/tools   # Query top-K by prompt embedding; cite source + chunk_id in context
-```
+Ollama is the first provider behind a provider-neutral adapter. Each batch records:
 
-Implementation lives in **`scripts/`** in this harness repo (not rag-chat — that sub-repo owns D&D content).
+- requested provider and model;
+- required model digest resolved from Ollama model inventory;
+- requested dimensions and every returned vector length;
+- chunk-policy version and index version;
+- latency, status, and bounded non-secret error classification.
 
----
+`/api/embed` output is not treated as proof of model digest or an explicit dimension field. The adapter resolves the expected digest from `/api/tags`, counts the returned vectors itself, and fails before pgvector upsert on digest, count, dimension, or index-version mismatch.
 
-## Phase 1 — Local pgvector
+A hosted embedding adapter may remain optional, but CI never requires a live hosted credential or paid call.
 
-**Goal**: pgvector Docker service validated and documented as shared infra.
+### Ingestion and retrieval
 
-- Image: `pgvector/pgvector`; compose service `vector-db`.
-- `harness` schema created on first run; `dnd` schema owned by rag-chat.
-- **Persistence**: named Docker volume; verify survives `docker compose down` + `up`.
-- Smoke test: insert a row into `harness.chunks`, similarity query returns it.
+- Inputs are explicit registered repository revisions and approved harness knowledge paths.
+- Chunking has a versioned policy and a stable natural key containing repository, revision, path, and chunk identity.
+- Re-ingestion is idempotent by repository plus revision and does not duplicate unchanged chunks.
+- Retrieval is scoped to the Harness namespace and returns structured source citations containing repository, revision, source path or symbol, and chunk identity.
+- Raw source retention, deletion, and backup follow the data policy approved in `ulpz.1`.
 
-**Acceptance**
+## Implementation sequence after both blockers complete
 
-- `docker compose up vector-db` healthy.
-- Script or automated test proves round-trip against `harness.chunks`.
-- README documents connection string + env vars for sibling containers.
+1. Add the provider-neutral embedding contract, Ollama adapter, and fixture tests for digest, vector count, dimensions, mismatch, and unavailable-model behavior.
+2. Add the approved pgvector connection and migration boundary, then implement idempotent ingestion for one registered repository revision.
+3. Add cited top-K retrieval and a reviewed golden set covering expected files or symbols, required citations, and must-not-return cases.
+4. After explicit service-start approval, run one live Ollama and pgvector proof on the pilot repository and record the model digest, dimensions, chunk/index versions, retrieval metrics, backup, restore, and rollback evidence.
+5. Only if the work is too large for one feature, create new vertical-slice child issues under `agent-forge-harness-9n1` with explicit dependencies. Do not attach Harness work to closed D&D issues.
 
----
+## TDD slices
 
-## Phase 2 — Ingestion for `repos/`
+1. A fixture resolves the required digest from model inventory and rejects a response from a changed digest.
+2. A batch with a wrong vector count or any wrong vector length fails before database interaction.
+3. Re-ingesting the same repository revision produces no duplicate chunks.
+4. A model, dimension, chunk-policy, or index-version change selects a new compatible index rather than overwriting the old one.
+5. Retrieval returns structured citations and never crosses into a non-Harness namespace.
+6. A fixture-only test suite passes without Docker, Ollama, a hosted key, or network access.
+7. The operator-approved live proof meets the golden-set threshold and demonstrates backup, restore, and rollback.
 
-**Goal**: Idempotent pipeline from harness checkout paths into `harness.chunks`.
+## Decisions owned by `ulpz.1`
 
-- Input: `repos/<repo>/` paths (and optionally `knowledge/**/*.yaml`).
-- Chunking: configurable size + overlap; stable natural key (`repo` + `commit` + `path` + chunk index).
-- Embeddings: local model via Ollama (same runtime as D&D pipeline; model TBD for harness).
-- Upsert: `INSERT ... ON CONFLICT` — re-runs do not duplicate.
+- target host and whether Harness receives an isolated database or schema;
+- retention, deletion, backup, encryption, and sync policy for chunks and embeddings;
+- pilot repository and approved knowledge paths;
+- exact Ollama model, required digest, dimensions, and acceptable hardware/latency;
+- chunk policy, index version, top-K settings, and golden-set pass threshold;
+- whether post-freeze child Beads are warranted.
 
-**Acceptance**
+## Acceptance
 
-- One full repo ingested end-to-end; query returns sensible neighbors for a harness prompt.
-- Re-run: no duplicate chunks for unchanged content.
-
----
-
-## Phase 3 — Retrieval contract for agents
-
-**Goal**: Harness agents call a small function: `embed(query) → topK rows → structured citations`.
-
-- Response shape: `source_path`, `repo`, `snippet`, `chunk_id`.
-- Stateless; secrets via env only.
-- Queries scoped to `harness.*` — never touches `dnd.*`.
-
-**Acceptance**
-
-- Retrieval function returns grounded answer + `sources[]` for at least one golden harness prompt (e.g. "where is the add-repo skill implemented?").
-
----
-
-## Phase 4 — Evaluation (harness golden set)
-
-Small golden set about indexed repos:
-
-- `question`, `expected_behavior`, `expected_files_or_symbols`, `must_include`, `must_not_include`.
-
-Use to tune `topK`, chunk size, and thresholds after each major corpus change.
-
----
-
-## Open Questions
-
-- [ ] **Harness embedding model**: use same `mxbai-embed-large` (1024d via Ollama) as D&D pipeline for operational simplicity, or a lighter model for code search?
-- [ ] **`knowledge/` YAML**: same `harness.chunks` table with a `source_type` column, or a separate `harness.knowledge_chunks` table?
-- [ ] **First corpus**: one pilot repo (e.g. `rag-chat`) vs. all registered `repos.json` entries?
-- [ ] **CI**: smoke ingestion + query on PR (needs Ollama in CI or a pre-embedded fixture set).
-
----
-
-## Next Steps
-
-1. Validate pgvector container and create `harness` schema (Phase 1).
-2. Decide embedding model for harness (reuse `mxbai-embed-large` or pick lighter model).
-3. Pilot ingestion on one `repos/` checkout.
-4. Wire retrieval into harness agent tooling.
+The plan, `agent-forge-harness-9n1`, and the approved `ulpz.1` decision agree on one Harness-owned pgvector and Ollama-first contract. Both blockers are complete before implementation begins. One approved pilot repository is ingested idempotently and passes a cited top-K golden set. Provenance includes digest, requested and returned dimensions, chunk policy, and index version. The Harness database lifecycle is independent of `rag-chat`; closed D&D issues are not reused; CI needs no live hosted key; and backup, restore, migration, and rollback are demonstrated.
