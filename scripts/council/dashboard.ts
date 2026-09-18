@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
+import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { sanitizeContent } from "./context";
 import { createCouncilService } from "./service";
 
@@ -133,13 +134,19 @@ export function councilHttpHandler(service: Service) {
   };
 }
 
-export function councilDashboardPlugin(root: string): Plugin {
+export function councilDashboardPlugin(
+  root: string,
+  environment?: Record<string, string | undefined>,
+): Plugin {
   return {
     name: "agent-forge-council",
     configureServer(server) {
       const service = createCouncilService({
         workspaceRoot: root,
         harnessRoot: root,
+        environment:
+          environment ??
+          loadDashboardServerEnvironment({ mode: "development", root }),
       });
       const handler = councilHttpHandler(service);
       server.middlewares.use((req, res, next) => {
