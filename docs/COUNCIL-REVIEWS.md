@@ -71,6 +71,8 @@ $env:DEEPSEEK_API_KEY = '<from your secret manager>'
 $env:DASHSCOPE_API_KEY = '<from your secret manager>'
 ```
 
+For local development, you may instead put those assignments in a repository-root `.env` file using `NAME=value` syntax. The file is ignored by Git and is loaded only into the local dashboard server, CLI, and MCP processes; provider keys are not embedded in browser assets or returned by readiness checks. Restart an already-running process after changing the file.
+
 The example Qwen profile defaults to Alibaba Cloud's Singapore OpenAI-compatible endpoint. A DashScope key must match its region. Set `QWEN_BASE_URL` to the matching [regional endpoint](https://www.alibabacloud.com/help/en/model-studio/base-url) when using a different region or workspace.
 
 Readiness checks local credential presence and endpoint configuration only; they do not verify key validity, account credit, regional access, model availability, or live API behavior. It reports variable names and configuration errors, never key values. Provider errors and outputs are scrubbed before reaching the CLI, MCP response, logs, or artifacts. Set credentials in the environment of the process actually launching the dashboard/MCP server; a key configured in another terminal will not automatically reach an already-running process. Provider API access/billing is separate from this harness; obtain keys only for the providers you select.
