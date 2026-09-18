@@ -114,6 +114,17 @@ bd dep add <id> --blocks <other-id>
 
 Note: **`bd sync` is not part of current `bd` releases** — upstream removed it in favor of **`bd dolt pull` / `bd dolt push`** (see [gastownhall/beads#2435](https://github.com/gastownhall/beads/issues/2435)). Follow `bd doctor` for your install.
 
+### Tracker backups — do not `bd dolt push`
+
+Neither tracker has a Dolt remote. `bd` had auto-detected one pointing at each checkout's own
+**public** GitHub repository, so `bd dolt push` would have published every issue, including
+unfixed security findings and pre-launch business work; both remotes were removed on 2026-09-17.
+
+Back the trackers up with `backup-beads.ps1` in the private `beads-backups` repository. It exports
+every issue with its labels, dependencies, comments and memories to JSONL, commits when that data
+changed, and runs daily as a scheduled task; `bd import <file>.jsonl` restores it. Do not add a Dolt
+remote that points at a public repository — see bead `m51` in the game-guide-ai tracker.
+
 ### Issue Hierarchy
 - **Epic** — Problem, goals, plan (strategic)
 - **Feature** — Goal, AC, file map, approach, test plan (delegation surface)
@@ -170,7 +181,7 @@ Every session must end with ALL of the following:
 1. File Beads issues for any remaining unfinished work
 2. Run quality gates: `bun run typecheck && bun run lint && bun test`
 3. Update issue statuses (close finished, update in-progress)
-4. **Push to remote**: `git pull --rebase` then `bd dolt commit` if needed, then `bd dolt push && git push`
+4. **Push to remote**: `git pull --rebase` then `git push` (`bd dolt push` applies only where a Dolt remote is configured — neither tracker here has one; see "Tracker backups" above)
 5. Clean up stashes; prune merged branches
 6. Verify `git status` shows "up to date with origin"
 7. Write a brief handoff comment on the active Beads epic
@@ -233,10 +244,9 @@ bd close <id>         # Complete work
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY (run `bd dolt commit` before `bd dolt push` only when `bd doctor` / your workflow requires an explicit Dolt commit):
+4. **PUSH TO REMOTE** - This is MANDATORY (`bd dolt push` applies only where a Dolt remote is configured; neither tracker here has one, so back them up with the `beads-backups` script instead — see "Tracker backups" above):
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```
