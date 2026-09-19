@@ -17,13 +17,8 @@
  */
 
 import { nextPhase, phaseCommand } from "./phase-gate";
-import {
-  activeRuns,
-  listRuns,
-  type RunSummary,
-  readRunState,
-  removeRunState,
-} from "./runs";
+import { activeRuns, type RunSummary } from "./runs";
+import { listRuns, readRunState, removeRunState } from "./runs-store";
 
 interface CliResult<T = unknown> {
   ok: boolean;

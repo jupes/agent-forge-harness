@@ -13,10 +13,8 @@ trees/
 # Only the directory structure, the storage contract docs, and test fixtures are tracked.
 plans/drafts/*
 !plans/drafts/.gitkeep
-!plans/drafts/test-plan-review.md
 plans/committed/*
 !plans/committed/.gitkeep
-!plans/committed/test-plan-review.md
 plans/research/*
 !plans/research/.gitkeep
 reports/*

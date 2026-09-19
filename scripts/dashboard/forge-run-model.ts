@@ -15,6 +15,7 @@ import {
   type ForgeMode,
   type ForgePhase,
   type ForgeState,
+  type ReviewRound,
 } from "../forge/phases";
 import {
   byRecency,
@@ -76,6 +77,8 @@ export interface ForgeRunView {
   complete: boolean;
   updatedAt: string | null;
   phases: PhaseRow[];
+  /** Subagent review rounds, oldest first. Empty for a run nobody reviewed. */
+  reviews: ReviewRound[];
   /** The newest quality-gate run within `gateScope`, or null if there is none. */
   gate: GateRun | null;
   gateScope: GateScope;
@@ -300,6 +303,7 @@ export function forgeRunSnapshot(input: {
       complete: summary.complete,
       updatedAt: summary.updatedAt || null,
       phases: phaseRows(state ?? null, input.artifactExists),
+      reviews: state?.reviews ?? [],
       gate: byRun.get(summary.slug) ?? null,
       gateScope,
     };
@@ -311,6 +315,85 @@ export function forgeRunSnapshot(input: {
     runs.find((run) => !run.complete)?.slug ?? runs[0]?.slug ?? null;
 
   return { runs, selected, checkout: input.checkout, gate: checkoutLatest };
+}
+
+// ── The runs board ───────────────────────────────────────────────────────────
+
+/**
+ * How a run reads at a glance.
+ *
+ * Deliberately three states, not five: the board exists so a reader can sweep
+ * several runs and see which one needs them. Anything finer belongs in the
+ * run's own panel.
+ */
+export type RunHealth = "shipped" | "attention" | "running";
+
+/** The newest review round, whatever phase it graded, or null if none. */
+function latestReview(run: ForgeRunView): ReviewRound | null {
+  return run.reviews[run.reviews.length - 1] ?? null;
+}
+
+export function runHealth(run: ForgeRunView): RunHealth {
+  // A shipped run is done being judged — a stale failing gate from mid-run
+  // should not make a finished run look broken.
+  if (run.complete) return "shipped";
+
+  if (run.gate !== null && !run.gate.passed) return "attention";
+  if (run.phases.some((phase) => phase.artifactMissing)) return "attention";
+
+  const review = latestReview(run);
+  if (review !== null && review.verdict !== "PASS") return "attention";
+
+  return "running";
+}
+
+/** One line of the board: a whole run, small enough to scan. */
+export interface RunBoardRow {
+  slug: string;
+  feature: string | null;
+  epic: string | null;
+  mode: ForgeMode;
+  health: RunHealth;
+  /** The phase cells, in pipeline order. */
+  phases: PhaseRow[];
+  /** What the run is doing now: the active phase id, or "shipped". */
+  status: string;
+  completedCount: number;
+  totalPhases: number;
+  /** The scoped gate's verdict, or null when no gate run belongs to this one. */
+  gatePassed: boolean | null;
+  reviewRounds: number;
+  latestVerdict: ReviewRound["verdict"] | null;
+  updatedAt: string | null;
+}
+
+/**
+ * The board, one row per run, in the order given.
+ *
+ * Ordering is the caller's (the snapshot already sorts newest first) so the
+ * board never disagrees with the list it was built from.
+ */
+export function boardRows(runs: readonly ForgeRunView[]): RunBoardRow[] {
+  return runs.map((run) => {
+    const active = run.phases.find((phase) => phase.state === "active");
+    const review = latestReview(run);
+    return {
+      slug: run.slug,
+      feature: run.feature,
+      epic: run.epic,
+      mode: run.mode,
+      health: runHealth(run),
+      phases: run.phases,
+      status: run.complete ? "shipped" : (active?.id ?? "shipped"),
+      completedCount: run.phases.filter((phase) => phase.state === "complete")
+        .length,
+      totalPhases: run.phases.length,
+      gatePassed: run.gate?.passed ?? null,
+      reviewRounds: run.reviews.length,
+      latestVerdict: review?.verdict ?? null,
+      updatedAt: run.updatedAt,
+    };
+  });
 }
 
 export type ReviewDecision = "approve" | "request-changes";

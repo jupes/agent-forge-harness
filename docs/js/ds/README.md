@@ -5,7 +5,7 @@ at medium weight, 8px radii, and a single lavender accent used as a line and a g
 flood. Contrast comes from the tonal ramps, not from saturation.
 
 Before this system, three separate visual languages shipped side by side — a NASA-retro theme inline
-in `index.html`, a near-copy of it in `plan-review.html`, and a teal/mint theme in `css/council.css`.
+in `index.html` and a teal/mint theme in `css/council.css`.
 Everything now reads from one token sheet.
 
 ## Using it

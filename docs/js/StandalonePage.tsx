@@ -5,7 +5,7 @@ import { AppShell, type ShellLocation } from "./ds/AppShell";
 import { useShellChrome } from "./use-shell-chrome";
 
 export interface StandalonePageProps {
-  active: Extract<ShellLocation, "plan-review" | "council">;
+  active: Extract<ShellLocation, "council">;
   title: string;
   blurb?: ComponentChildren;
   children: ComponentChildren;
@@ -14,10 +14,10 @@ export interface StandalonePageProps {
 /**
  * The frame for a page that lives in its own document.
  *
- * Plan review and Council keep their own HTML entry points — they carry heavy,
- * dev-server-bound islands that the SPA bundle has no reason to pull in — but
- * they render through the same shell, so navigation and the global actions are
- * identical everywhere.
+ * Council keeps its own HTML entry point — it carries a heavy, dev-server-bound
+ * island that the SPA bundle has no reason to pull in — but it renders through
+ * the same shell, so navigation and the global actions are identical
+ * everywhere.
  */
 export function StandalonePage({
   active,

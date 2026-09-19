@@ -53,7 +53,8 @@ export const ROUTES = [
     label: "Forge run",
     icon: "flow-arrow",
     group: "work",
-    blurb: "Research → plan → implement → ship, gated at every phase boundary.",
+    blurb:
+      "Every run in flight — research → plan → implement → ship, gated or unattended.",
     devOnly: true,
   },
   {

@@ -31,7 +31,8 @@ import {
   roundFromVerdict,
 } from "./auto-loop";
 import { isForgePhase } from "./phases";
-import { isValidSlug, readRunState, writeRunState } from "./runs";
+import { isValidSlug } from "./runs";
+import { readRunState, writeRunState } from "./runs-store";
 
 const HANDOFF_PATH = join(".tmp", "work", "session-handoff.md");
 

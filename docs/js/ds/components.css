@@ -1418,12 +1418,125 @@ form.is-submitting {
 
 /* ─── forge run ────────────────────────────────────────────────────────── */
 
-/* Concurrent forge runs: one button per run, the current one marked. */
-.af-run-picker {
+/* The runs board. Runs are concurrent, so all of them show at once and a
+   reader can sweep for the one that needs them before opening it below. */
+
+.af-sr-only {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.af-run-board {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  padding: 0;
+  margin: 0;
   gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  list-style: none;
+}
+
+.af-run-row {
+  display: grid;
+  width: 100%;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-900);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  gap: var(--space-3) var(--space-4);
+  /* identity | phase strip | the numbers */
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  text-align: left;
+}
+
+.af-run-row:hover {
+  border-color: var(--color-neutral-800);
+  background: var(--color-neutral-900);
+}
+
+.af-run-row-current {
+  border-color: var(--color-accent-700);
+  background: var(--color-accent-900);
+}
+
+/* A run that wants a human is the one thing the board must not bury. */
+.af-run-row-attention {
+  border-color: var(--color-accent);
+}
+
+.af-run-row-shipped {
+  color: var(--color-neutral-500);
+}
+
+.af-run-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.af-run-slug {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.af-run-strip {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.af-run-seg {
+  width: 26px;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-neutral-900);
+}
+
+.af-run-seg-complete {
+  background: var(--color-accent-600);
+}
+
+.af-run-seg-active {
+  background: var(--color-accent-300);
+}
+
+/* An artifact a phase claims but that is gone: hollow, not merely dimmer. */
+.af-run-seg-missing {
+  border: 1px solid var(--color-accent);
+  background: transparent;
+}
+
+.af-run-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.af-run-phase {
+  color: var(--color-neutral-300);
+  white-space: nowrap;
+}
+
+@media (width <= 720px) {
+  .af-run-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .af-run-meta {
+    flex-wrap: wrap;
+  }
 }
 
 .af-phase-list {

@@ -21,7 +21,7 @@ import {
   parseEvalVerdictJson,
   verdictBlocksShip,
 } from "../../scripts/eval-verdict";
-import { listRuns } from "../../scripts/forge/runs";
+import { listRuns } from "../../scripts/forge/runs-store";
 import {
   type GateIdentity,
   gateIdentity,

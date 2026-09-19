@@ -174,3 +174,18 @@ describe("the runs table", () => {
     expect(line).toContain("next: shipped");
   });
 });
+
+describe("the pure half stays bundleable", () => {
+  test("runs.ts imports no Node built-in", async () => {
+    // The dashboard bundles this module for the browser through
+    // forge-run-model.ts. An `fs` or `path` import here fails `vite build`
+    // with "Module has been externalized for browser compatibility" — which is
+    // a long way from this file, so guard it where the rule actually lives.
+    const source = await Bun.file(new URL("./runs.ts", import.meta.url)).text();
+    const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
+    expect(imports).not.toHaveLength(0);
+    for (const specifier of imports) {
+      expect(specifier).toMatch(/^\.{1,2}\//);
+    }
+  });
+});
