@@ -221,44 +221,105 @@ describe("comparableCheckout", () => {
 describe("forgeRunSnapshot", () => {
   test("reports the run, its phases, and the gate scoped to this checkout and run", () => {
     const snapshot = forgeRunSnapshot({
-      stateJson: JSON.stringify(STATE),
+      runStates: [JSON.stringify(STATE)],
       checkout: CHECKOUT,
       gateLogs: [gateLine()],
       artifactExists: () => true,
     });
-    expect(snapshot.slug).toBe("agent-forge-harness-dg40");
-    expect(snapshot.epic).toBe("agent-forge-harness-dg40");
-    expect(snapshot.phases).toHaveLength(4);
-    expect(snapshot.gateScope).toEqual(SCOPE);
-    expect(snapshot.gate?.checks).toHaveLength(3);
+    const run = snapshot.runs[0];
+    expect(snapshot.runs).toHaveLength(1);
+    expect(snapshot.selected).toBe("agent-forge-harness-dg40");
+    expect(run?.slug).toBe("agent-forge-harness-dg40");
+    expect(run?.epic).toBe("agent-forge-harness-dg40");
+    expect(run?.mode).toBe("gated");
+    expect(run?.phases).toHaveLength(4);
+    expect(run?.gateScope).toEqual(SCOPE);
+    expect(run?.gate?.checks).toHaveLength(3);
   });
 
   test("says so plainly when no forge run is in flight", () => {
     const snapshot = forgeRunSnapshot({
-      stateJson: null,
+      runStates: [],
       checkout: CHECKOUT,
       gateLogs: [],
       artifactExists: () => false,
     });
-    expect(snapshot.slug).toBeNull();
+    expect(snapshot.runs).toEqual([]);
+    expect(snapshot.selected).toBeNull();
     expect(snapshot.gate).toBeNull();
-    expect(snapshot.gateScope).toEqual({ checkout: CHECKOUT, slug: null });
-    expect(snapshot.phases.every((p) => p.state === "locked")).toBe(true);
+    expect(snapshot.checkout).toBe(CHECKOUT);
   });
 
   test("flags an artifact a phase claims but that is missing on disk", () => {
     const snapshot = forgeRunSnapshot({
-      stateJson: JSON.stringify(STATE),
+      runStates: [JSON.stringify(STATE)],
       checkout: CHECKOUT,
       gateLogs: [],
       artifactExists: (path) => !path.includes("research"),
     });
-    expect(
-      snapshot.phases.find((p) => p.id === "research")?.artifactMissing,
-    ).toBe(true);
-    expect(snapshot.phases.find((p) => p.id === "plan")?.artifactMissing).toBe(
-      false,
-    );
+    const phases = snapshot.runs[0]?.phases ?? [];
+    expect(phases.find((p) => p.id === "research")?.artifactMissing).toBe(true);
+    expect(phases.find((p) => p.id === "plan")?.artifactMissing).toBe(false);
+  });
+
+  test("carries every concurrent run, newest first, each with its own gate", () => {
+    const other = {
+      ...STATE,
+      slug: "second-run",
+      epic: "second-epic",
+      mode: "auto",
+      completed: ["research"] as ForgePhase[],
+      phase: "research" as ForgePhase,
+      updatedAt: "2026-09-11T12:00:00.000Z",
+    };
+    const snapshot = forgeRunSnapshot({
+      runStates: [JSON.stringify(STATE), JSON.stringify(other)],
+      checkout: CHECKOUT,
+      gateLogs: [
+        [
+          gateLine(),
+          gateLine({ timestamp: "for-second", forgeSlug: "second-run" }),
+        ].join("\n"),
+      ],
+      artifactExists: () => true,
+    });
+    expect(snapshot.runs.map((r) => r.slug)).toEqual([
+      "second-run",
+      "agent-forge-harness-dg40",
+    ]);
+    expect(snapshot.selected).toBe("second-run");
+    expect(snapshot.runs[0]?.mode).toBe("auto");
+    expect(snapshot.runs[0]?.gate?.timestamp).toBe("for-second");
+    expect(snapshot.runs[1]?.gate?.timestamp).toBe("2026-09-10T12:00:00.000Z");
+  });
+
+  test("selects a run still in flight over a newer shipped one", () => {
+    const shipped = {
+      ...STATE,
+      slug: "shipped-run",
+      completed: ["research", "plan", "implement", "ship"] as ForgePhase[],
+      phase: "ship" as ForgePhase,
+      updatedAt: "2026-09-12T12:00:00.000Z",
+    };
+    const snapshot = forgeRunSnapshot({
+      runStates: [JSON.stringify(STATE), JSON.stringify(shipped)],
+      checkout: CHECKOUT,
+      gateLogs: [],
+      artifactExists: () => true,
+    });
+    expect(snapshot.runs[0]?.slug).toBe("shipped-run");
+    expect(snapshot.selected).toBe("agent-forge-harness-dg40");
+  });
+
+  test("a gate from another checkout never attaches to a run here", () => {
+    const snapshot = forgeRunSnapshot({
+      runStates: [JSON.stringify(STATE)],
+      checkout: CHECKOUT,
+      gateLogs: [gateLine({ checkout: "C:/elsewhere" })],
+      artifactExists: () => true,
+    });
+    expect(snapshot.runs[0]?.gate).toBeNull();
+    expect(snapshot.gate).toBeNull();
   });
 });
 

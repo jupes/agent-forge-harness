@@ -1,5 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -190,15 +196,22 @@ describe("readForgeRun", () => {
       ].join("\n"),
     );
 
-    const run = readForgeRun(root, logs);
-    expect(run.epic).toBe("demo-epic");
-    expect(run.phases.find((p) => p.id === "research")?.artifactMissing).toBe(
+    // The state file above is the pre-concurrency layout: reading picks it up
+    // by migrating it into .tmp/work/forge-runs/ first.
+    const snapshot = readForgeRun(root, logs);
+    const run = snapshot.runs[0];
+    expect(snapshot.selected).toBe("demo");
+    expect(run?.epic).toBe("demo-epic");
+    expect(run?.phases.find((p) => p.id === "research")?.artifactMissing).toBe(
       false,
     );
     // plans/drafts/demo.md was never written.
-    expect(run.phases.find((p) => p.id === "plan")?.artifactMissing).toBe(true);
-    expect(run.gateScope).toEqual({ checkout: root, slug: "demo" });
-    expect(run.gate?.timestamp).toBe("ours");
+    expect(run?.phases.find((p) => p.id === "plan")?.artifactMissing).toBe(
+      true,
+    );
+    expect(run?.gateScope).toEqual({ checkout: root, slug: "demo" });
+    expect(run?.gate?.timestamp).toBe("ours");
+    expect(existsSync(join(root, ".tmp/work/forge-state.json"))).toBe(false);
   });
 
   test("shows no gate when no run in the log belongs to this checkout", () => {
@@ -206,6 +219,36 @@ describe("readForgeRun", () => {
     const logs = tempRoot();
     write(logs, "2026-09-10/quality-gate.jsonl", gate({ timestamp: "legacy" }));
     expect(readForgeRun(root, logs).gate).toBeNull();
+  });
+
+  test("reads every concurrent run in the checkout", () => {
+    const root = tempRoot();
+    const logs = tempRoot();
+    const state = (slug: string, updatedAt: string, completed: string[]) =>
+      JSON.stringify({
+        slug,
+        phase: completed[completed.length - 1],
+        completed,
+        artifacts: {},
+        updatedAt,
+      });
+    write(
+      root,
+      ".tmp/work/forge-runs/alpha.json",
+      state("alpha", "2026-09-10T00:00:00.000Z", ["research"]),
+    );
+    write(
+      root,
+      ".tmp/work/forge-runs/beta.json",
+      state("beta", "2026-09-12T00:00:00.000Z", ["research", "plan"]),
+    );
+
+    const snapshot = readForgeRun(root, logs);
+    expect(snapshot.runs.map((r) => r.slug)).toEqual(["beta", "alpha"]);
+    expect(snapshot.selected).toBe("beta");
+    expect(
+      snapshot.runs.find((r) => r.slug === "alpha")?.phases.map((p) => p.state),
+    ).toEqual(["complete", "active", "locked", "locked"]);
   });
 });
 

@@ -19,6 +19,7 @@ import { join, resolve } from "node:path";
 import type { Plugin } from "vite";
 import { LOG_BASE_DIR } from "../../.claude/hooks/utils/constants";
 import { isLocalCouncilRequest } from "../council/dashboard";
+import { listRuns, runStatePath } from "../forge/runs";
 import {
   type ForgeRunSnapshot,
   forgeRunSnapshot,
@@ -159,9 +160,13 @@ export function readForgeRun(
 ): ForgeRunSnapshot {
   // Forge state stays with the checkout: a run is driven from the worktree it
   // builds in. Gate runs are matched to that checkout and run, because the log
-  // they come from is shared by every checkout on the machine.
+  // they come from is shared by every checkout on the machine. Several runs can
+  // be in flight, so every one of them is read — `listRuns` also migrates a
+  // legacy single-run state file on the way past.
   return forgeRunSnapshot({
-    stateJson: readIfPresent(join(root, ".tmp", "work", "forge-state.json")),
+    runStates: listRuns(root).map((run) =>
+      readIfPresent(join(root, runStatePath(run.slug) ?? "")),
+    ),
     checkout: root,
     gateLogs: gateLogsNewestFirst(logBase),
     artifactExists: (path) => existsSync(join(root, path)),
