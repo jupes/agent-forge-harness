@@ -12,13 +12,12 @@
  */
 
 import { nextPhase, phaseCommand } from "../../scripts/forge/phase-gate";
+import { activeRuns, type RunSummary } from "../../scripts/forge/runs";
 import {
-  activeRuns,
   listRuns,
-  type RunSummary,
   readRunState,
   writeRunState,
-} from "../../scripts/forge/runs";
+} from "../../scripts/forge/runs-store";
 
 /** The reminder line for one run, or null when it was already announced. */
 function announcement(run: RunSummary): string | null {

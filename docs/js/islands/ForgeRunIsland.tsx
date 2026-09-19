@@ -1,10 +1,13 @@
 import type { JSX } from "preact";
 import { useState } from "preact/hooks";
-import type {
-  ForgeRunSnapshot,
-  ForgeRunView,
-  GateRun,
-  GateScope,
+import {
+  boardRows,
+  type ForgeRunSnapshot,
+  type ForgeRunView,
+  type GateRun,
+  type GateScope,
+  type RunBoardRow,
+  type RunHealth,
 } from "../../../scripts/dashboard/forge-run-model";
 import type { BeadsPayload } from "../../../types/beads";
 import { Button } from "../ds/Button";
@@ -57,8 +60,110 @@ export interface ForgeRunIslandProps {
   payload: BeadsPayload | null;
 }
 
-/** The tab strip for picking among concurrent runs. */
-function RunPicker({
+const HEALTH_LABEL: Record<RunHealth, string> = {
+  shipped: "Shipped",
+  attention: "Needs attention",
+  running: "In flight",
+};
+
+const HEALTH_ICON: Record<RunHealth, IconName> = {
+  shipped: "check-circle-fill",
+  attention: "warning-circle",
+  running: "circle-half",
+};
+
+/** Short local time, with the full timestamp on hover. */
+function shortTime(iso: string | null): string {
+  if (!iso) return "—";
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime())
+    ? iso
+    : parsed.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+}
+
+/** One run on the board: identity, phase progress, and how it is doing. */
+function RunBoardEntry({
+  row,
+  current,
+  onSelect,
+}: {
+  row: RunBoardRow;
+  current: boolean;
+  onSelect: (slug: string) => void;
+}): JSX.Element {
+  const phaseSummary =
+    row.status === "shipped"
+      ? "Shipped"
+      : (PHASE_LABEL[row.status] ?? row.status);
+
+  return (
+    <li>
+      <button
+        type="button"
+        class={`af-run-row af-run-row-${row.health}${current ? " af-run-row-current" : ""}`}
+        aria-current={current ? "true" : undefined}
+        onClick={() => onSelect(row.slug)}
+      >
+        <span class="af-run-head">
+          <Icon name={HEALTH_ICON[row.health]} size={14} />
+          <span class="af-run-slug">{row.slug}</span>
+          <Tag tone={row.mode === "auto" ? "accent" : "muted"}>{row.mode}</Tag>
+          <span class="af-sr-only">{HEALTH_LABEL[row.health]}</span>
+        </span>
+
+        {/* Decorative: the same progress is spelled out in the meta row. */}
+        <span class="af-run-strip" aria-hidden="true">
+          {row.phases.map((phase) => (
+            <span
+              key={phase.id}
+              class={`af-run-seg af-run-seg-${phase.state}${
+                phase.artifactMissing ? " af-run-seg-missing" : ""
+              }`}
+              title={`${PHASE_LABEL[phase.id]} — ${phase.state}${
+                phase.artifactMissing ? " (artifact missing)" : ""
+              }`}
+            />
+          ))}
+        </span>
+
+        <span class="af-run-meta">
+          <span class="af-run-phase">
+            {phaseSummary} · {row.completedCount}/{row.totalPhases}
+          </span>
+          {row.gatePassed === null ? null : (
+            <Tag tone={row.gatePassed ? "neutral" : "outline"}>
+              gate {row.gatePassed ? "passed" : "failed"}
+            </Tag>
+          )}
+          {row.reviewRounds > 0 ? (
+            <Tag tone={row.latestVerdict === "PASS" ? "neutral" : "outline"}>
+              {row.reviewRounds} review{row.reviewRounds === 1 ? "" : "s"}
+              {row.latestVerdict ? ` · ${row.latestVerdict}` : ""}
+            </Tag>
+          ) : null}
+          <span class="af-muted" title={row.updatedAt ?? undefined}>
+            {shortTime(row.updatedAt)}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+}
+
+/**
+ * Every run at once.
+ *
+ * Runs are concurrent, and the question a reader arrives with is "which of
+ * these needs me?" — so the board leads with all of them and their phase
+ * progress, and the detailed panel below follows whichever one is selected.
+ * With a single run the board would just repeat that panel, so it is skipped.
+ */
+function RunsBoard({
   runs,
   selected,
   onSelect,
@@ -68,21 +173,26 @@ function RunPicker({
   onSelect: (slug: string) => void;
 }): JSX.Element | null {
   if (runs.length < 2) return null;
+  const rows = boardRows(runs);
+  const live = rows.filter((row) => row.health !== "shipped").length;
+
   return (
-    <nav class="af-run-picker" aria-label="Forge runs">
-      {runs.map((run) => (
-        <Button
-          key={run.slug}
-          variant={run.slug === selected ? "primary" : "ghost"}
-          aria-current={run.slug === selected ? "true" : undefined}
-          title={`${run.mode} run — ${run.complete ? "shipped" : "in flight"}`}
-          onClick={() => onSelect(run.slug)}
-        >
-          {run.slug}
-          {run.complete ? " ✓" : run.mode === "auto" ? " ⟳" : ""}
-        </Button>
-      ))}
-    </nav>
+    <Card
+      kicker="concurrent runs"
+      title={`${rows.length} runs · ${live} in flight`}
+      headingLevel={2}
+    >
+      <ul class="af-run-board">
+        {rows.map((row) => (
+          <RunBoardEntry
+            key={row.slug}
+            row={row}
+            current={row.slug === selected}
+            onSelect={onSelect}
+          />
+        ))}
+      </ul>
+    </Card>
   );
 }
 
@@ -148,7 +258,7 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
 
   return (
     <>
-      <RunPicker runs={data.runs} selected={run.slug} onSelect={setPicked} />
+      <RunsBoard runs={data.runs} selected={run.slug} onSelect={setPicked} />
 
       <Card
         kicker={run.complete ? "shipped run" : `active run · ${run.mode}`}

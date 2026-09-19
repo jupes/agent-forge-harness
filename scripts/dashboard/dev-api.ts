@@ -19,7 +19,8 @@ import { join, resolve } from "node:path";
 import type { Plugin } from "vite";
 import { LOG_BASE_DIR } from "../../.claude/hooks/utils/constants";
 import { isLocalCouncilRequest } from "../council/dashboard";
-import { listRuns, runStatePath } from "../forge/runs";
+import { runStatePath } from "../forge/runs";
+import { listRuns } from "../forge/runs-store";
 import {
   type ForgeRunSnapshot,
   forgeRunSnapshot,

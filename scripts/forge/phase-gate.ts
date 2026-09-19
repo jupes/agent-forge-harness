@@ -30,15 +30,8 @@ import {
   isForgeMode,
   isForgePhase,
 } from "./phases";
-import {
-  isRunComplete,
-  isValidSlug,
-  migrateLegacyRun,
-  parseState,
-  readRunState,
-  runStatePath,
-  writeRunState,
-} from "./runs";
+import { isRunComplete, isValidSlug, parseState, runStatePath } from "./runs";
+import { migrateLegacyRun, readRunState, writeRunState } from "./runs-store";
 
 /** Re-exported so callers have one import for a run's state and its gate. */
 export {
