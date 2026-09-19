@@ -16,6 +16,7 @@
     "quality-gate": "bun run .claude/hooks/quality-gate.ts",
     "forge:phase-gate": "bun run scripts/forge/phase-gate.ts",
     "forge:runs": "bun run scripts/forge/runs-cli.ts",
+    "forge:review": "bun run scripts/forge/auto-loop-cli.ts",
     "pr:check": "bun run .claude/skills/pr-description/scripts/check-pr-body.ts",
     "beads:import-anthropic-plan": "bun run scripts/beads/import-anthropic-harness-plan.ts",
     "tmp:cleanup": "bun run scripts/tmp-work-cleanup.ts",

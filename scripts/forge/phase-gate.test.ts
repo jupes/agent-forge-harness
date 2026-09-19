@@ -176,3 +176,37 @@ describe("state parsing", () => {
     ).toBe(true);
   });
 });
+
+describe("the review ledger survives the pipeline", () => {
+  test("advancing a phase keeps the rounds recorded so far", () => {
+    const withReviews: ForgeState = {
+      ...stateAfter(["research"]),
+      reviews: [
+        {
+          phase: "research",
+          round: 1,
+          verdict: "PASS",
+          findings: { blocker: 0, high: 0, medium: 1, low: 0 },
+          at: FIXED(),
+        },
+      ],
+    };
+    const r = recordComplete("plan", "demo", ALWAYS, withReviews, {}, FIXED);
+    expect(r.data?.reviews).toHaveLength(1);
+    expect(r.data?.reviews?.[0]?.phase).toBe("research");
+  });
+
+  test("mode and checkout carry forward once recorded", () => {
+    const first = recordComplete(
+      "research",
+      "demo",
+      ALWAYS,
+      null,
+      { mode: "auto", checkout: "C:/trees/aa11" },
+      FIXED,
+    ).data;
+    const second = recordComplete("plan", "demo", ALWAYS, first, {}, FIXED);
+    expect(second.data?.mode).toBe("auto");
+    expect(second.data?.checkout).toBe("C:/trees/aa11");
+  });
+});

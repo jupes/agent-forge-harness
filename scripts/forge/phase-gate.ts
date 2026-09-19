@@ -170,6 +170,9 @@ export function recordComplete(
     ...(base.announcedPhase ? { announcedPhase: base.announcedPhase } : {}),
     ...(mode ? { mode } : {}),
     ...(checkout ? { checkout } : {}),
+    // The review ledger is the audit trail for an unattended run — advancing a
+    // phase must never be what erases it.
+    ...(base.reviews ? { reviews: base.reviews } : {}),
     updatedAt: now(),
   };
   return { ok: true, data: newState, error: null };

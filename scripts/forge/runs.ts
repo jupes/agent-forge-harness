@@ -28,6 +28,8 @@ import {
   type ForgeState,
   isForgeMode,
   isForgePhase,
+  type ReviewFindings,
+  type ReviewRound,
 } from "./phases";
 
 /** Repo-relative directory holding one state file per run. */
@@ -60,6 +62,28 @@ export function runSlugFromFilename(name: string): string | null {
   return isValidSlug(slug) ? slug : null;
 }
 
+/** A review-ledger entry the state file can be trusted to hold. */
+function isReviewRound(value: unknown): value is ReviewRound {
+  const row = value as Partial<ReviewRound> | null;
+  const findings = row?.findings as Partial<ReviewFindings> | undefined;
+  return (
+    typeof row === "object" &&
+    row !== null &&
+    typeof row.phase === "string" &&
+    isForgePhase(row.phase) &&
+    typeof row.round === "number" &&
+    (row.verdict === "PASS" ||
+      row.verdict === "FAIL" ||
+      row.verdict === "UNREADABLE") &&
+    typeof findings === "object" &&
+    findings !== null &&
+    typeof findings.blocker === "number" &&
+    typeof findings.high === "number" &&
+    typeof findings.medium === "number" &&
+    typeof findings.low === "number"
+  );
+}
+
 /** Parse forge state JSON; returns null on missing/invalid input. */
 export function parseState(text: string): ForgeState | null {
   try {
@@ -84,6 +108,9 @@ export function parseState(text: string): ForgeState | null {
           ? { mode: parsed.mode }
           : {}),
         ...(parsed.checkout ? { checkout: parsed.checkout } : {}),
+        ...(Array.isArray(parsed.reviews)
+          ? { reviews: parsed.reviews.filter(isReviewRound) }
+          : {}),
         updatedAt: parsed.updatedAt ?? new Date().toISOString(),
       };
     }
