@@ -12,8 +12,8 @@ regenerated mirror. Run `bun run codex:sync` after changing `.claude/`.
   Example: the forgemaster pipeline is `$forgemaster` in Codex.
 
 ## Ported cleanly
-- **Skills** (33): copied verbatim into `.agents/skills/`.
-- **Slash commands as skills** (11): `$add-bead`, `$ask`, `$forgemaster-mini`, `$forgemaster`, `$go`, `$plan`, `$review`, `$ship`, `$status`, `$sync-knowledge`, `$triage`.
+- **Skills** (34): copied verbatim into `.agents/skills/`.
+- **Slash commands as skills** (13): `$add-bead`, `$ask`, `$council`, `$forgemaster-auto`, `$forgemaster-mini`, `$forgemaster`, `$go`, `$plan`, `$review`, `$ship`, `$status`, `$sync-knowledge`, `$triage`.
   Body is unchanged; each is marked explicit-only via `agents/openai.yaml`.
 - **Roles**: lead/worker/planner/evaluator bundled as the `forge-roles` skill.
 

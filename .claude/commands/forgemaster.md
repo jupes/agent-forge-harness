@@ -16,7 +16,7 @@ resume the active run.
 /forgemaster <description>             # free text → judge complexity, route, run
 /forgemaster <BEADS-ID>                # e.g. agent-forge-harness-f25 → load that issue as the work
 /forgemaster <JIRA-KEY>                # e.g. PROJ-1234 → mirror into Beads, then run
-/forgemaster                           # resume the active run in .tmp/work/forge-state.json
+/forgemaster                           # resume the run in flight (see: bun run forge:runs)
 /forgemaster --full <input>            # force the full pipeline (skip the complexity check)
 /forgemaster --mini <input>            # force the mini path (skip the complexity check)
 ```
@@ -40,8 +40,9 @@ Detect what was passed and normalize it to one Beads issue plus a kebab-case `<s
 order (the first match wins):
 
 1. **Strip flags** (`--full` / `--mini`) and trim whitespace.
-2. **Empty** → **resume**: read `.tmp/work/forge-state.json`, resume the active run at its first
-   incomplete phase (always a full run; skip the triage in Step 0.5, go to Step 1).
+2. **Empty** → **resume**: run `bun run forge:runs --active`. With exactly one run in flight, resume
+   it at its first incomplete phase (always a full run; skip the triage in Step 0.5, go to Step 1).
+   With several, ask which one — runs are concurrent, so "the active run" is not a thing to guess.
 3. **Existing Beads id** — `bd show <arg>` succeeds (e.g. `agent-forge-harness-f25`):
    use that issue as the work definition (title, description, AC). **Do not create a duplicate** —
    it is the tracking issue; the plan phase may add child tasks under it. Derive `<slug>` from its
@@ -87,7 +88,7 @@ change wastes turns and money (cost is the whole point of this step).
 recommended route, letting the user confirm or override:
 
 - **Mini** → follow `.claude/workflows/forge-mini.md` (scope → build → wrap). Do **not** use the
-  `forge:phase-gate` / `forge-state.json` or write `plans/`/`reports/` docs; track in Beads only.
+  `forge:phase-gate` / run state files or write `plans/`/`reports/` docs; track in Beads only.
   Then go straight to that workflow — the phase-walk below is for the full path.
 - **Full** → continue to Step 1 with the `<slug>` resolved in Step 0.
 
@@ -134,9 +135,13 @@ After the ship phase records complete:
 
 - **Within a phase**, the implement phase still pauses at its own demo/test checkpoints — those are
   finer-grained stops than the phase boundaries this command gates.
-- **Resuming**: `/forgemaster <slug>` (or bare `/forgemaster`) picks up at the first incomplete
-  phase recorded in `.tmp/work/forge-state.json`.
-- **One run at a time**: the state file tracks a single active `<slug>`. Finish or remove it before
-  starting an unrelated feature, or the phase-gate will refuse a slug mismatch.
+- **Resuming**: `/forgemaster <slug>` (or bare `/forgemaster`, when exactly one run is in flight)
+  picks up at the first incomplete phase recorded in `.tmp/work/forge-runs/<slug>.json`.
+- **Concurrent runs**: each run owns its own state file, so several can be in flight at once.
+  `bun run forge:runs` lists them. Give each code-touching run its own worktree
+  (`bun run worktree create <branch>`, then `--checkout <path>` on the phase-gate write) so two
+  runs do not build on top of each other.
+- **Unattended**: `/forgemaster-auto` runs the same four phases with a subagent review at each
+  boundary instead of asking you — see `.claude/workflows/forge-auto.md`.
 - **Standalone phases**: you can always run a single phase directly (`/forge-plan <slug>`) instead of
   the full orchestration; the same gates apply.

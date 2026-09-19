@@ -17,7 +17,7 @@ For anything bigger — multiple files, a new component/system, several unknowns
 override.
 
 **What's trimmed vs full** (the cost savings): no separate research/plan/ship **doc files**, no
-`forge:phase-gate` / `forge-state.json`, and far fewer approval gates. Tracking lives in **Beads**
+`forge:phase-gate` / run state file, and far fewer approval gates. Tracking lives in **Beads**
 (the task status is the source of truth). Run at a lower model tier when quality allows — see
 `.claude/protocols/model-tier-policy.md`.
 

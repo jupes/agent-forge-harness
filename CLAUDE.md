@@ -35,9 +35,14 @@ Your role for each task is defined by the workflow you are following.
 
 `/forgemaster` is the main way to start any non-trivial task. It judges complexity, routes to full or mini, and runs research → plan → implement → ship gated phase by phase. See `.claude/workflows/forge.md`.
 
+Forge runs are **concurrent** — each keeps its own state file, so several can be in flight at once
+(`bun run forge:runs` lists them). Give each code-touching run its own worktree. `/forgemaster-auto`
+runs the same phases without stopping for you: see `.claude/workflows/forge-auto.md`.
+
 | Command | Purpose |
 | ------- | ------- |
 | `/forgemaster [feature]` | **Primary entry point** — judge complexity, route to full or mini, run gated phases |
+| `/forgemaster-auto [feature]` | **Unattended** — same four phases, a subagent review + feedback loop at each one, no human gates |
 | `/forgemaster-mini [task]` | Trimmed path for small/clear-scope work (scope → build → wrap), fewer turns/artifacts |
 | `/forge-research [feature]` | Phase 1 — explore real code, grill for the unknowns → `plans/research/<slug>.md` |
 | `/forge-plan <slug>` | Phase 2 — TDD + Beads plan with demo checkpoints → `plans/drafts/<slug>.md` |

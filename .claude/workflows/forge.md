@@ -1,7 +1,7 @@
 # Forge Workflow
 
 The guided, four-phase development pipeline. Each phase is a skill with its own command; the phases
-chain through a shared `<slug>` and a state file at `.tmp/work/forge-state.json`.
+chain through a shared `<slug>` and that run's state file at `.tmp/work/forge-runs/<slug>.json`.
 
 ```
 research → plan → implement → ship
@@ -14,6 +14,11 @@ research → plan → implement → ship
 **When to use**: any feature or non-trivial change that benefits from research-first investigation,
 a TDD plan, observable incremental delivery, and a written handoff.
 
+**Runs are concurrent.** Each run keeps its own state file, so several features can be in flight at
+once — `bun run forge:runs` lists them. Give each code-touching run its own worktree
+(`bun run worktree create <branch>`) and record it with `--checkout <path>` on the phase-gate write,
+so two runs do not build on top of each other and the quality gate can tell their results apart.
+
 **Two sizes — match ceremony to the work** (see `.claude/protocols/model-tier-policy.md`):
 
 - **Full pipeline** (this file) — medium-or-higher complexity: >3 files, a new
@@ -24,10 +29,15 @@ a TDD plan, observable incremental delivery, and a written handoff.
   demo checkpoint → brief summary, with far fewer turns/artifacts to keep cost down. Beads tracking
   and TDD still apply.
 
+**Two ways to advance**: *gated* (a human approves each boundary) or *auto* (a fresh evaluator
+subagent reviews each phase, the findings feed back, and the run advances itself). A run records
+which it is, and you can switch at any time.
+
 **Orchestration**: `/forgemaster <feature>` first judges complexity and **routes** to the full or
 mini path (you can confirm or override), then runs the chosen path gated, asking approval before
-advancing. `/forgemaster-mini` forces the mini path; the four `/forge-*` commands run a single full
-phase standalone.
+advancing. `/forgemaster-auto` runs the same phases **unattended** — see
+`.claude/workflows/forge-auto.md`. `/forgemaster-mini` forces the mini path; the four `/forge-*`
+commands run a single full phase standalone.
 
 ---
 
@@ -93,9 +103,10 @@ Behaviors are tested through public interfaces so tests survive refactors.
 
 ## Exit hook
 
-A `Stop` hook (`.claude/hooks/forge-phase-gate.ts`) is wired in settings. It is a no-op unless a
-forge run is active, and then prints a one-line reminder of the next phase command — once per phase
-transition, never blocking. It goes quiet once the ship phase is recorded complete.
+A `Stop` hook (`.claude/hooks/forge-phase-gate.ts`) is wired in settings. It is a no-op unless at
+least one forge run is in flight, and then prints a one-line reminder per run of the next phase
+command — once per run per phase transition, never blocking. A run goes quiet once its ship phase is
+recorded complete.
 
 ---
 
@@ -106,6 +117,9 @@ transition, never blocking. It goes quiet once the ship phase is recorded comple
 - **Orchestrated**: `/forgemaster` walks all four phases, pausing for your approval at every
   boundary and surfacing each phase's exit artifact before moving on. See
   `.claude/commands/forgemaster.md`.
+- **Unattended**: `/forgemaster-auto` walks the same four phases with a fresh evaluator subagent at
+  every boundary instead of a human — bounded revision rounds, and a halt with a written handoff
+  when it cannot converge. See `.claude/workflows/forge-auto.md`.
 - **Mini**: `/forgemaster-mini` (or `/forgemaster` auto-routing a low-complexity request) runs the
   trimmed path in `.claude/workflows/forge-mini.md` — same Beads + TDD discipline, fewer phases,
   turns, and artifacts.

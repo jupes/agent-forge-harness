@@ -8,7 +8,8 @@
  * the round to the run's ledger, and prints the decision.
  *
  * CLI:
- *   bun run forge:review --slug <slug> --phase <phase> --verdict <path> [--tier <tier>]
+ *   bun run forge:review --slug <slug> --phase <phase> --verdict <path>
+ *     [--tier <tier>] [--max-revisions <n>]
  *   bun run forge:review --slug <slug> --phase <phase> --decision-only
  *   bun run forge:review --slug <slug> --ledger
  *
@@ -91,8 +92,15 @@ if (import.meta.main) {
   const phase = phaseArg;
   const history = state.reviews ?? [];
 
+  const budgetArg = getFlag(argv, "max-revisions");
+  if (budgetArg !== undefined && !/^\d+$/.test(budgetArg)) {
+    fail(`--max-revisions must be a non-negative integer, not "${budgetArg}".`);
+  }
+  const budget =
+    budgetArg === undefined ? {} : { maxRevisions: Number(budgetArg) };
+
   if (argv.includes("--decision-only")) {
-    const decision = decideNext({ phase, history });
+    const decision = decideNext({ phase, history, ...budget });
     emit(
       { ok: true, data: { decision, rounds: history.length }, error: null },
       exitCodeFor(decision.action),
@@ -126,7 +134,11 @@ if (import.meta.main) {
   const next = recordRound(state, round);
   writeRunState(next);
 
-  const decision = decideNext({ phase, history: next.reviews ?? [] });
+  const decision = decideNext({
+    phase,
+    history: next.reviews ?? [],
+    ...budget,
+  });
 
   let handoff: string | null = null;
   if (decision.action === "halt") {

@@ -34,5 +34,5 @@ Follow **`.claude/workflows/forge-mini.md`** in full. In short:
 4. **Wrap** — quality gates, close the task with evidence, push (+ PR if warranted), `bd dolt push`,
    and report inline: what changed, how to verify, Beads id + PR link.
 
-No `plans/` or `reports/` doc files and no `forge:phase-gate`/`forge-state.json` — tracking lives in
+No `plans/` or `reports/` doc files and no `forge:phase-gate` / run state file — tracking lives in
 Beads. **Escalate** to the full pipeline (`/forge-research <slug>`) if the work outgrows "mini".
