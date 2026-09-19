@@ -11,7 +11,6 @@ export const ROUTES = [
   { url: "/index.html#/bead-builder", heading: "Bead builder" },
   { url: "/index.html#/insights", heading: "Insights" },
   { url: "/index.html#/repos", heading: "Repos & knowledge" },
-  { url: "/plan-review.html", heading: "Plan review" },
   { url: "/council.html", heading: "Council review" },
 ] as const;
 
@@ -20,15 +19,12 @@ export const NAV_DESTINATION_COUNT = ROUTES.length;
 /**
  * Console/page errors the app raises deliberately.
  *
- * Plan review probes whether a plan has a committed baseline by requesting it;
- * a draft-only plan answers 404 and the island renders "no committed baseline".
- * The browser logs the failed request regardless, so it is allowed here — but
- * only this one, and only as a resource-load message.
+ * A page that probes for an optional resource gets a 404 the browser logs
+ * regardless of how gracefully the page handles it — Council's
+ * `?run=<unknown>` bookmark is the case this suite exercises. Only
+ * resource-load messages are allowed through; a real page error still fails.
  */
-const EXPECTED = [
-  /Failed to load resource.*40[34]/i,
-  /plans-api\/raw\?bucket=committed/i,
-];
+const EXPECTED = [/Failed to load resource.*40[34]/i];
 
 export function isExpectedError(text: string): boolean {
   return EXPECTED.some((pattern) => pattern.test(text));

@@ -32,7 +32,6 @@ const SURFACES: Surface[] = [
   // real home directory or someone's cloned repositories, so they use fixtures.
   { name: "forge-run", url: "/index.html#/forge-run", stub: stubForgeRun },
   { name: "repos", url: "/index.html#/repos", stub: (page) => stubRepos(page) },
-  { name: "plan-review", url: "/plan-review.html" },
   { name: "council", url: "/council.html" },
 ];
 

@@ -3,20 +3,13 @@ import { hrefFor, ROUTES, type RouteId } from "../router";
 import { Icon, type IconName } from "./Icon";
 
 /**
- * Where the shell is mounted. The SPA passes a route id; the two standalone
- * documents pass their own name so their nav entry highlights correctly.
+ * Where the shell is mounted. The SPA passes a route id; a standalone document
+ * passes its own name so its nav entry highlights correctly.
  */
-export type ShellLocation = RouteId | "plan-review" | "council";
+export type ShellLocation = RouteId | "council";
 
 /** Destinations that live in their own document rather than the SPA. */
 const STANDALONE = [
-  {
-    id: "plan-review",
-    label: "Plan review",
-    icon: "file-text",
-    href: "plan-review.html",
-    group: "work",
-  },
   {
     id: "council",
     label: "Council",
@@ -59,10 +52,10 @@ interface NavEntry {
 /**
  * The page frame: navigation, global actions, header, content.
  *
- * Every document mounts this — the SPA, `plan-review.html` and `council.html`
- * alike. That is the point: Council's hand-written nav previously omitted five
- * destinations *and* the snapshot controls, and a shell that only owned links
- * would have reproduced that gap. Global actions live here too.
+ * Every document mounts this — the SPA and `council.html` alike. That is the
+ * point: Council's hand-written nav previously omitted five destinations *and*
+ * the snapshot controls, and a shell that only owned links would have
+ * reproduced that gap. Global actions live here too.
  */
 export function AppShell({
   active,
@@ -76,7 +69,7 @@ export function AppShell({
   snapshotIso,
 }: AppShellProps): JSX.Element {
   // From a standalone document, SPA links must carry the document too.
-  const fromDocument = active === "plan-review" || active === "council";
+  const fromDocument = active === "council";
 
   const entries: NavEntry[] = [
     ...ROUTES.map((route) => ({

@@ -1,9 +1,9 @@
 /**
  * The snapshot state and refresh action every document's shell shows.
  *
- * `index.html`, `plan-review.html` and `council.html` each used to carry their
- * own copy of this (and `council.html` carried none at all, which is why it had
- * no refresh control). One hook now feeds all three.
+ * `index.html` and `council.html` each used to carry their own copy of this
+ * (and `council.html` carried none at all, which is why it had no refresh
+ * control). One hook now feeds both.
  */
 
 import { useCallback, useEffect, useState } from "preact/hooks";

@@ -15,16 +15,16 @@ function shell(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AppShell navigation", () => {
-  test("renders every SPA route plus the two standalone documents", () => {
+  test("renders every SPA route plus the standalone document", () => {
     const links = findAll(shell(), "a").filter((a) =>
       String(attrs(a)["class"] ?? "").includes("af-nav-item"),
     );
-    // 9 hash routes + plan-review.html + council.html
-    expect(links).toHaveLength(ROUTES.length + 2);
-    expect(links).toHaveLength(11);
+    // 9 hash routes + council.html
+    expect(links).toHaveLength(ROUTES.length + 1);
+    expect(links).toHaveLength(10);
   });
 
-  test("links standalone pages by document, and SPA views by hash", () => {
+  test("links the standalone page by document, and SPA views by hash", () => {
     const hrefs = findAll(shell(), "a")
       .filter((a) => String(attrs(a)["class"] ?? "").includes("af-nav-item"))
       .map((a) => String(attrs(a)["href"]));
@@ -32,8 +32,8 @@ describe("AppShell navigation", () => {
     expect(hrefs).toContain("#/issues");
     expect(hrefs).toContain("#/forge-run");
     expect(hrefs).toContain("#/repos");
-    expect(hrefs).toContain("plan-review.html");
     expect(hrefs).toContain("council.html");
+    expect(hrefs).not.toContain("plan-review.html");
   });
 
   test("marks the active destination for assistive tech, not just visually", () => {

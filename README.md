@@ -60,7 +60,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 | Clone registered repos | After URLs in local `repos/repos.json` (from `repos/repos.json.example`): `bun run repo init --human` |
 | Knowledge YAML | `/sync-knowledge <repo>` or `--all` — see [.claude/skills/syncing-repos/SKILL.md](.claude/skills/syncing-repos/SKILL.md) |
 | GitHub Pages data | `bun run build-pages` (needs `bd` on PATH) |
-| Local dashboard | `bun run dashboard` — Vite + live reload; Beads dashboard + **Plan review** (`docs/plan-review.html`: drafts, baseline diff, **git revision history / compare**). Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD` |
+| Local dashboard | `bun run dashboard` — Vite + live reload; Beads dashboard, the Forge run board and **Council** (`docs/council.html`). Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD` |
 | Parallel epics | `bun run worktree create feat/…` — see [`.claude/workflows/epic.md`](.claude/workflows/epic.md) |
 
 ---

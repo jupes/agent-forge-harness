@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { NAV_DESTINATION_COUNT } from "./routes";
 
 /**
  * The URL shapes that existed before the router.
@@ -51,26 +52,13 @@ test("council.html?sourceType=plan&source=… still prefills the setup form", as
   await expect(page.locator("#council-source")).toHaveValue(source);
 });
 
-test("plan review builds a council link pointing at the selected plan", async ({
-  page,
-}) => {
-  await page.goto("/plan-review.html", { waitUntil: "networkidle" });
-
-  const link = page.locator("a", { hasText: "Send to council" });
-  const count = await link.count();
-  test.skip(count === 0, "no plans available in this checkout");
-
-  const href = await link.first().getAttribute("href");
-  expect(href).toMatch(/^council\.html\?/);
-  expect(href).toContain("sourceType=plan");
-  expect(href).toMatch(/source=plans(%2F|\/)(drafts|committed)/);
-});
-
 test("council.html?run=<id> is a real bookmark", async ({ page }) => {
   // An id that does not exist must fail gracefully rather than break the page.
   await page.goto("/council.html?run=does-not-exist", {
     waitUntil: "networkidle",
   });
   await expect(page.locator("h1")).toHaveText("Council review");
-  await expect(page.locator("nav a.af-nav-item")).toHaveCount(11);
+  await expect(page.locator("nav a.af-nav-item")).toHaveCount(
+    NAV_DESTINATION_COUNT,
+  );
 });
