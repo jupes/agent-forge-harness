@@ -3,7 +3,9 @@
  * phase-gate.ts — Forge pipeline phase gate.
  *
  * Validates that the artifacts a Forge phase depends on exist before the phase
- * starts, and records phase completion in `.tmp/work/forge-state.json`.
+ * starts, and records phase completion in that run's own state file
+ * (`.tmp/work/forge-runs/<slug>.json` — see `runs.ts`). State is per-run, so
+ * several features can be in flight at the same time.
  *
  * Pure logic is exported (and unit-tested in phase-gate.test.ts); the CLI at the
  * bottom is the only part that touches the filesystem.
@@ -11,29 +13,43 @@
  * CLI:
  *   bun run scripts/forge/phase-gate.ts <phase> --slug <slug>            # can I enter <phase>?
  *   bun run scripts/forge/phase-gate.ts <phase> --slug <slug> --write    # mark <phase> complete
- *     [--feature "title"] [--epic <beads-id>]
+ *     [--feature "title"] [--epic <beads-id>] [--mode gated|auto] [--checkout <path>]
  *
  * Output is always a single JSON object: { ok, data, error }.
  * Exit code 0 when ok, 2 when not (so callers and hooks can gate on it).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync } from "fs";
 
 import {
   artifactPath,
   FORGE_PHASES,
+  type ForgeMode,
   type ForgePhase,
   type ForgeState,
+  isForgeMode,
   isForgePhase,
 } from "./phases";
+import {
+  isRunComplete,
+  isValidSlug,
+  migrateLegacyRun,
+  parseState,
+  readRunState,
+  runStatePath,
+  writeRunState,
+} from "./runs";
 
+/** Re-exported so callers have one import for a run's state and its gate. */
 export {
   artifactPath,
   FORGE_PHASES,
   type ForgePhase,
   type ForgeState,
   isForgePhase,
+  isRunComplete,
+  parseState,
+  runStatePath,
 };
 
 export interface GateResult<T = unknown> {
@@ -41,8 +57,6 @@ export interface GateResult<T = unknown> {
   data: T | null;
   error: string | null;
 }
-
-export const FORGE_STATE_PATH = join(".tmp", "work", "forge-state.json");
 
 /** The phase that must be complete before `phase` may start. */
 export function prereqPhase(phase: ForgePhase): ForgePhase | null {
@@ -101,7 +115,12 @@ export function recordComplete(
   slug: string,
   fileExists: (p: string) => boolean,
   state: ForgeState | null,
-  extra: { feature?: string; epic?: string } = {},
+  extra: {
+    feature?: string;
+    epic?: string;
+    mode?: ForgeMode;
+    checkout?: string;
+  } = {},
   now: () => string = () => new Date().toISOString(),
 ): GateResult<ForgeState> {
   const ap = artifactPath(phase, slug);
@@ -121,11 +140,13 @@ export function recordComplete(
     updatedAt: now(),
   };
 
+  // State is loaded by slug, so a mismatch means the file was hand-edited or
+  // left by the older single-run layout. Refuse rather than merge two runs.
   if (base.slug !== slug) {
     return {
       ok: false,
       data: null,
-      error: `Active forge run is for slug "${base.slug}", not "${slug}". Finish or remove ${FORGE_STATE_PATH} first.`,
+      error: `State at ${runStatePath(slug) ?? slug} records slug "${base.slug}", not "${slug}". Fix or remove that file before advancing this run.`,
     };
   }
 
@@ -137,6 +158,8 @@ export function recordComplete(
 
   const feature = extra.feature ?? base.feature;
   const epic = extra.epic ?? base.epic;
+  const mode = extra.mode ?? base.mode;
+  const checkout = extra.checkout ?? base.checkout;
   const newState: ForgeState = {
     slug,
     phase,
@@ -145,60 +168,17 @@ export function recordComplete(
     ...(feature ? { feature } : {}),
     ...(epic ? { epic } : {}),
     ...(base.announcedPhase ? { announcedPhase: base.announcedPhase } : {}),
+    ...(mode ? { mode } : {}),
+    ...(checkout ? { checkout } : {}),
+    // The review ledger is the audit trail for an unattended run — advancing a
+    // phase must never be what erases it.
+    ...(base.reviews ? { reviews: base.reviews } : {}),
     updatedAt: now(),
   };
   return { ok: true, data: newState, error: null };
 }
 
-/** Parse forge state JSON; returns null on missing/invalid input. */
-export function parseState(text: string): ForgeState | null {
-  try {
-    const parsed = JSON.parse(text) as Partial<ForgeState>;
-    if (
-      typeof parsed.slug === "string" &&
-      typeof parsed.phase === "string" &&
-      isForgePhase(parsed.phase) &&
-      Array.isArray(parsed.completed)
-    ) {
-      return {
-        slug: parsed.slug,
-        phase: parsed.phase,
-        completed: parsed.completed.filter(isForgePhase),
-        artifacts: parsed.artifacts ?? {},
-        ...(parsed.feature ? { feature: parsed.feature } : {}),
-        ...(parsed.epic ? { epic: parsed.epic } : {}),
-        ...(parsed.announcedPhase && isForgePhase(parsed.announcedPhase)
-          ? { announcedPhase: parsed.announcedPhase }
-          : {}),
-        updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-      };
-    }
-  } catch {
-    // fall through
-  }
-  return null;
-}
-
-/** True once the ship phase is recorded complete. */
-export function isRunComplete(state: ForgeState | null): boolean {
-  return state?.completed.includes("ship") ?? false;
-}
-
 // ── CLI ──────────────────────────────────────────────────────────────────────
-
-function loadStateFromDisk(): ForgeState | null {
-  if (!existsSync(FORGE_STATE_PATH)) return null;
-  try {
-    return parseState(readFileSync(FORGE_STATE_PATH, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function writeStateToDisk(state: ForgeState): void {
-  mkdirSync(dirname(FORGE_STATE_PATH), { recursive: true });
-  writeFileSync(FORGE_STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
-}
 
 function getFlag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -228,18 +208,41 @@ if (import.meta.main) {
     emit({ ok: false, data: null, error: "Missing required --slug <slug>." });
   }
   const slugValue = slug as string;
+  if (!isValidSlug(slugValue)) {
+    emit({
+      ok: false,
+      data: null,
+      error: `Slug "${slugValue}" cannot name a run: start with a letter or digit, then letters, digits, dot, dash or underscore (80 max).`,
+    });
+  }
 
   const write = argv.includes("--write");
-  const state = loadStateFromDisk();
+  // A run started before state went per-run keeps its history: move it into the
+  // runs directory before reading, so resuming it does not start from scratch.
+  migrateLegacyRun();
+  const state = readRunState(slugValue);
 
   if (write) {
     const feature = getFlag(argv, "feature");
     const epic = getFlag(argv, "epic");
+    const modeArg = getFlag(argv, "mode");
+    const checkout = getFlag(argv, "checkout");
+    if (modeArg !== undefined && !isForgeMode(modeArg)) {
+      emit({
+        ok: false,
+        data: null,
+        error: `--mode must be "gated" or "auto", not "${modeArg}".`,
+      });
+    }
     const result = recordComplete(phase, slugValue, existsSync, state, {
       ...(feature ? { feature } : {}),
       ...(epic ? { epic } : {}),
+      ...(modeArg !== undefined && isForgeMode(modeArg)
+        ? { mode: modeArg }
+        : {}),
+      ...(checkout ? { checkout } : {}),
     });
-    if (result.ok && result.data) writeStateToDisk(result.data);
+    if (result.ok && result.data) writeRunState(result.data);
     emit(result);
   } else {
     emit(validateEnter(phase, slugValue, existsSync, state));

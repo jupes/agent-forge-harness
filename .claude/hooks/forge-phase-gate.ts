@@ -2,52 +2,58 @@
 /**
  * forge-phase-gate.ts — Stop exit hook for the Forge pipeline.
  *
- * Fires when the agent stops. It is a no-op unless a Forge run is active
- * (`.tmp/work/forge-state.json` exists and ship is not yet complete). When a run
- * is active it prints a one-line reminder of the next phase command — but only
- * once per phase transition, so it never spams turn after turn.
+ * Fires when the agent stops. It is a no-op unless at least one Forge run is in
+ * flight (a state file under `.tmp/work/forge-runs/` whose ship phase is not
+ * recorded). For each such run it prints a one-line reminder of the next phase
+ * command — but only once per run per phase transition, so several concurrent
+ * runs never spam turn after turn.
  *
  * It is intentionally NON-blocking: it always exits 0 and never traps the agent.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { nextPhase, phaseCommand } from "../../scripts/forge/phase-gate";
 import {
-  FORGE_STATE_PATH,
-  isRunComplete,
-  nextPhase,
-  parseState,
-  phaseCommand,
-} from "../../scripts/forge/phase-gate";
+  activeRuns,
+  listRuns,
+  type RunSummary,
+  readRunState,
+  writeRunState,
+} from "../../scripts/forge/runs";
+
+/** The reminder line for one run, or null when it was already announced. */
+function announcement(run: RunSummary): string | null {
+  const state = readRunState(run.slug);
+  // Only announce on a phase change to avoid per-turn noise.
+  if (state === null || state.announcedPhase === state.phase) return null;
+
+  const next = nextPhase(run.phase);
+  const resume =
+    run.mode === "auto"
+      ? `(or continue /forgemaster-auto ${run.slug})`
+      : `(or continue /forgemaster ${run.slug})`;
+  const hint = next
+    ? `Next: ${phaseCommand(next, run.slug)} ${resume}.`
+    : "Run /forge-ship to finish.";
+
+  try {
+    writeRunState({ ...state, announcedPhase: state.phase });
+  } catch {
+    // Non-fatal: announcement de-duplication is best-effort.
+  }
+
+  return `[forge] Run "${run.slug}" (${run.mode}) — completed: ${run.completed.join(" → ") || "none"}. ${hint}`;
+}
 
 function main(): void {
-  if (!existsSync(FORGE_STATE_PATH)) return;
-
-  let state = null;
+  let runs: RunSummary[] = [];
   try {
-    state = parseState(readFileSync(FORGE_STATE_PATH, "utf8"));
+    runs = activeRuns(listRuns());
   } catch {
     return;
   }
-  if (!state || isRunComplete(state)) return;
-
-  // Only announce on a phase change to avoid per-turn noise.
-  if (state.announcedPhase === state.phase) return;
-
-  const next = nextPhase(state.phase);
-  const hint = next
-    ? `Next: ${phaseCommand(next, state.slug)} (or continue /forgemaster).`
-    : "Run /forge-ship to finish.";
-  console.log(
-    `[forge] Run "${state.slug}" — completed: ${state.completed.join(" → ") || "none"}. ${hint}`,
-  );
-
-  try {
-    writeFileSync(
-      FORGE_STATE_PATH,
-      `${JSON.stringify({ ...state, announcedPhase: state.phase }, null, 2)}\n`,
-    );
-  } catch {
-    // Non-fatal: announcement de-duplication is best-effort.
+  for (const run of runs) {
+    const line = announcement(run);
+    if (line !== null) console.log(line);
   }
 }
 

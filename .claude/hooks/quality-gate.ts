@@ -21,9 +21,11 @@ import {
   parseEvalVerdictJson,
   verdictBlocksShip,
 } from "../../scripts/eval-verdict";
+import { listRuns } from "../../scripts/forge/runs";
 import {
   type GateIdentity,
   gateIdentity,
+  type RunIdentity,
 } from "../../scripts/quality-gate-identity";
 import { getQualityGateLogPath } from "./utils/constants";
 
@@ -389,14 +391,17 @@ const toplevel = run("git rev-parse --show-toplevel");
 const checkoutRoot =
   toplevel.ok && toplevel.output ? toplevel.output : process.cwd();
 const headBranch = run("git rev-parse --abbrev-ref HEAD");
-let forgeStateJson: string | null = null;
+// Several runs can be in flight, so hand the identity every run this checkout
+// knows about and let it decide which one owns this result.
+let forgeRuns: RunIdentity[] = [];
 try {
-  forgeStateJson = readFileSync(
-    join(checkoutRoot, ".tmp", "work", "forge-state.json"),
-    "utf8",
-  );
+  forgeRuns = listRuns(checkoutRoot).map((forgeRun) => ({
+    slug: forgeRun.slug,
+    complete: forgeRun.complete,
+    checkout: forgeRun.checkout,
+  }));
 } catch {
-  // No forge run in this checkout.
+  // No readable forge runs in this checkout.
 }
 
 const result: GateResult = {
@@ -405,7 +410,8 @@ const result: GateResult = {
     gitToplevel: toplevel.ok ? toplevel.output : null,
     gitBranch: headBranch.ok ? headBranch.output : null,
     taskId,
-    forgeStateJson,
+    forgeSlugEnv: process.env["FORGE_SLUG"] ?? null,
+    runs: forgeRuns,
   }),
   event,
   timestamp: new Date().toISOString(),

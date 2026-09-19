@@ -1418,6 +1418,14 @@ form.is-submitting {
 
 /* ─── forge run ────────────────────────────────────────────────────────── */
 
+/* Concurrent forge runs: one button per run, the current one marked. */
+.af-run-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
 .af-phase-list {
   display: flex;
   flex-direction: column;

@@ -2,6 +2,7 @@ import type { JSX } from "preact";
 import { useState } from "preact/hooks";
 import type {
   ForgeRunSnapshot,
+  ForgeRunView,
   GateRun,
   GateScope,
 } from "../../../scripts/dashboard/forge-run-model";
@@ -56,15 +57,48 @@ export interface ForgeRunIslandProps {
   payload: BeadsPayload | null;
 }
 
+/** The tab strip for picking among concurrent runs. */
+function RunPicker({
+  runs,
+  selected,
+  onSelect,
+}: {
+  runs: ForgeRunView[];
+  selected: string;
+  onSelect: (slug: string) => void;
+}): JSX.Element | null {
+  if (runs.length < 2) return null;
+  return (
+    <nav class="af-run-picker" aria-label="Forge runs">
+      {runs.map((run) => (
+        <Button
+          key={run.slug}
+          variant={run.slug === selected ? "primary" : "ghost"}
+          aria-current={run.slug === selected ? "true" : undefined}
+          title={`${run.mode} run — ${run.complete ? "shipped" : "in flight"}`}
+          onClick={() => onSelect(run.slug)}
+        >
+          {run.slug}
+          {run.complete ? " ✓" : run.mode === "auto" ? " ⟳" : ""}
+        </Button>
+      ))}
+    </nav>
+  );
+}
+
 /**
- * The active Forge pipeline run.
+ * The Forge pipeline runs in flight.
  *
  * Phases and the quality-gate run come from this machine's harness state
  * through the dev-only API; checkpoints come from the Beads snapshot; a review
  * of an in-progress checkpoint is recorded as a `review:` comment in Beads.
+ *
+ * Runs are concurrent, so the snapshot carries all of them and this view shows
+ * one at a time — the newest still in flight, until you pick another.
  */
 export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
   const { data, error, loading } = useDevApi<ForgeRunSnapshot>("/forge-run");
+  const [picked, setPicked] = useState<string | null>(null);
 
   if (loading) return <EmptyState title="Reading forge state…" live />;
 
@@ -74,7 +108,7 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
         title="Forge run needs the local dashboard"
         hint={
           <>
-            This view reads <code>.tmp/work/forge-state.json</code> and the
+            This view reads <code>.tmp/work/forge-runs/</code> and the
             quality-gate log from the machine running the harness. Start{" "}
             <code>bun run dashboard</code> at the harness root and open this
             page on its local address.
@@ -86,36 +120,52 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
 
   if (!data) return <EmptyState title="No forge state available" />;
 
-  return (
-    <>
-      {data.slug ? (
-        <Card
-          kicker="active run"
-          title={data.slug}
-          headingLevel={2}
-          actions={data.epic ? <Tag tone="accent">{data.epic}</Tag> : undefined}
-        >
-          {data.feature ? <p class="af-prose">{data.feature}</p> : null}
-          {data.updatedAt ? (
-            <p class="af-muted">
-              State last written {new Date(data.updatedAt).toLocaleString()}
-            </p>
-          ) : null}
-        </Card>
-      ) : (
+  const run =
+    data.runs.find((candidate) => candidate.slug === picked) ??
+    data.runs.find((candidate) => candidate.slug === data.selected) ??
+    null;
+
+  if (run === null) {
+    return (
+      <>
         <EmptyState
           title="No forge run in flight"
           hint={
             <>
-              Start one with <code>/forgemaster &lt;feature&gt;</code>. The four
-              phases below unlock in order.
+              Start one with <code>/forgemaster &lt;feature&gt;</code> or{" "}
+              <code>/forgemaster-auto &lt;feature&gt;</code>. Runs are
+              concurrent — several can be in flight at once.
             </>
           }
         />
-      )}
+        <GateCard
+          gate={data.gate}
+          scope={{ checkout: data.checkout, slug: null }}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <RunPicker runs={data.runs} selected={run.slug} onSelect={setPicked} />
+
+      <Card
+        kicker={run.complete ? "shipped run" : `active run · ${run.mode}`}
+        title={run.slug}
+        headingLevel={2}
+        actions={run.epic ? <Tag tone="accent">{run.epic}</Tag> : undefined}
+      >
+        {run.feature ? <p class="af-prose">{run.feature}</p> : null}
+        {run.updatedAt ? (
+          <p class="af-muted">
+            State last written {new Date(run.updatedAt).toLocaleString()}
+          </p>
+        ) : null}
+      </Card>
 
       <div class="af-phase-list">
-        {data.phases.map((phase) => (
+        {run.phases.map((phase) => (
           <div key={phase.id} class={`af-phase af-phase-${phase.state}`}>
             <span class="af-phase-node" aria-hidden="true">
               <Icon name={PHASE_ICON[phase.id] ?? "circle"} size={14} />
@@ -152,8 +202,8 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
         ))}
       </div>
 
-      <CheckpointsCard payload={payload} epicId={data.epic} />
-      <GateCard gate={data.gate} scope={data.gateScope} />
+      <CheckpointsCard payload={payload} epicId={run.epic} />
+      <GateCard gate={run.gate} scope={run.gateScope} />
     </>
   );
 }

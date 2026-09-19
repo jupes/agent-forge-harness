@@ -50,6 +50,8 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   ask: "Answer questions about the codebase from knowledge files. Use when the user runs /ask or asks a domain/knowledge question about the repos.",
   forgemaster:
     "Route a task by complexity and run the gated Forge pipeline (research → plan → implement → ship). Use when the user runs /forgemaster or wants the full guided feature pipeline.",
+  "forgemaster-auto":
+    "Run the full Forge pipeline unattended: each phase is reviewed by a fresh evaluator subagent, the findings feed back, and the run advances itself. Use when the user runs /forgemaster-auto or wants a feature built end to end without approval gates.",
   "forgemaster-mini":
     "Trimmed Forge pipeline (scope → build → wrap) for small, clear-scope work. Use when the user runs /forgemaster-mini or has a small, well-scoped task.",
   go: "Classify a task and route it to the right workflow (fix / feature / epic). Use when the user runs /go or wants the adaptive workflow router.",

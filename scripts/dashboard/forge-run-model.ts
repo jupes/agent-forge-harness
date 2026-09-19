@@ -12,9 +12,16 @@
 import {
   artifactPath,
   FORGE_PHASES,
+  type ForgeMode,
   type ForgePhase,
   type ForgeState,
 } from "../forge/phases";
+import {
+  byRecency,
+  comparableCheckout,
+  parseState,
+  summarizeRun,
+} from "../forge/runs";
 
 export type PhaseState = "complete" | "active" | "locked";
 
@@ -60,15 +67,28 @@ export interface GateScope {
   slug: string | null;
 }
 
-export interface ForgeRunSnapshot {
-  slug: string | null;
+/** One forge run as the dashboard shows it. */
+export interface ForgeRunView {
+  slug: string;
   feature: string | null;
   epic: string | null;
+  mode: ForgeMode;
+  complete: boolean;
   updatedAt: string | null;
   phases: PhaseRow[];
   /** The newest quality-gate run within `gateScope`, or null if there is none. */
   gate: GateRun | null;
   gateScope: GateScope;
+}
+
+export interface ForgeRunSnapshot {
+  /** Every run this checkout knows about, newest first. Runs are concurrent. */
+  runs: ForgeRunView[];
+  /** Slug to show first: the newest run still in flight, else the newest. */
+  selected: string | null;
+  checkout: string;
+  /** This checkout's newest gate run whatever it belongs to, for when no run does. */
+  gate: GateRun | null;
 }
 
 /**
@@ -101,27 +121,9 @@ export function phaseRows(
   });
 }
 
+/** One reader for run state, so the dashboard never drifts from the registry. */
 function parseForgeState(json: string | null): ForgeState | null {
-  if (!json) return null;
-  try {
-    const parsed = JSON.parse(json) as Partial<ForgeState>;
-    if (typeof parsed.slug !== "string" || typeof parsed.phase !== "string") {
-      return null;
-    }
-    return {
-      slug: parsed.slug,
-      phase: parsed.phase as ForgePhase,
-      completed: Array.isArray(parsed.completed)
-        ? (parsed.completed as ForgePhase[])
-        : [],
-      artifacts: parsed.artifacts ?? {},
-      ...(parsed.feature ? { feature: parsed.feature } : {}),
-      ...(parsed.epic ? { epic: parsed.epic } : {}),
-      updatedAt: parsed.updatedAt ?? "",
-    };
-  } catch {
-    return null;
-  }
+  return json ? parseState(json) : null;
 }
 
 const DETAIL_LIMIT = 200;
@@ -184,14 +186,8 @@ function gateRunFrom(line: string): GateRun | null {
   }
 }
 
-/**
- * A checkout path in comparable form. Git reports `C:/Users/...` where Node
- * reports `C:\Users\...`, and Windows drive paths compare case-insensitively.
- */
-export function comparableCheckout(path: string): string {
-  const slashed = path.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  return /^[a-z]:\//i.test(slashed) ? slashed.toLowerCase() : slashed;
-}
+/** Re-exported: the quality-gate hook compares checkouts without the dashboard. */
+export { comparableCheckout } from "../forge/runs";
 
 export function gateRunBelongsTo(run: GateRun, scope: GateScope): boolean {
   return (
@@ -224,28 +220,97 @@ export function latestGateRun(
   return null;
 }
 
+/**
+ * The newest gate run for each of `slugs`, plus this checkout's newest overall,
+ * in **one** pass over the logs.
+ *
+ * Several runs can be in flight, and `gateLogs` is a generator that reads files
+ * lazily — running `latestGateRun` once per run would consume it on the first
+ * one. Iteration stops as soon as every run has its gate.
+ */
+export function latestGateRunsFor(
+  logs: Iterable<string | null>,
+  checkout: string,
+  slugs: readonly string[],
+): { byRun: Map<string, GateRun>; checkoutLatest: GateRun | null } {
+  const here = comparableCheckout(checkout);
+  const wanted = new Set(slugs);
+  const byRun = new Map<string, GateRun>();
+  let checkoutLatest: GateRun | null = null;
+
+  for (const jsonl of logs) {
+    if (!jsonl) continue;
+    const lines = jsonl.split(/\r?\n/);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]?.trim();
+      if (!line) continue;
+      const run = gateRunFrom(line);
+      if (
+        run === null ||
+        run.checkout === null ||
+        comparableCheckout(run.checkout) !== here
+      ) {
+        continue;
+      }
+      checkoutLatest ??= run;
+      if (
+        run.forgeSlug !== null &&
+        wanted.has(run.forgeSlug) &&
+        !byRun.has(run.forgeSlug)
+      ) {
+        byRun.set(run.forgeSlug, run);
+        if (byRun.size === wanted.size) return { byRun, checkoutLatest };
+      }
+    }
+  }
+  return { byRun, checkoutLatest };
+}
+
 export function forgeRunSnapshot(input: {
-  stateJson: string | null;
+  /** Every run's state file contents, in any order. */
+  runStates: readonly (string | null)[];
   /** The checkout this dashboard serves. */
   checkout: string;
   /** `quality-gate.jsonl` contents, newest first. */
   gateLogs: Iterable<string | null>;
   artifactExists: (path: string) => boolean;
 }): ForgeRunSnapshot {
-  const state = parseForgeState(input.stateJson);
-  const gateScope: GateScope = {
-    checkout: input.checkout,
-    slug: state?.slug ?? null,
-  };
-  return {
-    slug: state?.slug ?? null,
-    feature: state?.feature ?? null,
-    epic: state?.epic ?? null,
-    updatedAt: state?.updatedAt || null,
-    phases: phaseRows(state, input.artifactExists),
-    gate: latestGateRun(input.gateLogs, gateScope),
-    gateScope,
-  };
+  const states = input.runStates.flatMap((json) => {
+    const state = parseForgeState(json);
+    return state === null ? [] : [state];
+  });
+  const summaries = byRecency(states.map(summarizeRun));
+  const { byRun, checkoutLatest } = latestGateRunsFor(
+    input.gateLogs,
+    input.checkout,
+    summaries.map((run) => run.slug),
+  );
+
+  const runs: ForgeRunView[] = summaries.map((summary) => {
+    const state = states.find((candidate) => candidate.slug === summary.slug);
+    const gateScope: GateScope = {
+      checkout: input.checkout,
+      slug: summary.slug,
+    };
+    return {
+      slug: summary.slug,
+      feature: summary.feature,
+      epic: summary.epic,
+      mode: summary.mode,
+      complete: summary.complete,
+      updatedAt: summary.updatedAt || null,
+      phases: phaseRows(state ?? null, input.artifactExists),
+      gate: byRun.get(summary.slug) ?? null,
+      gateScope,
+    };
+  });
+
+  // In-flight work is what a reader came for; a shipped run is only the answer
+  // when nothing is still moving.
+  const selected =
+    runs.find((run) => !run.complete)?.slug ?? runs[0]?.slug ?? null;
+
+  return { runs, selected, checkout: input.checkout, gate: checkoutLatest };
 }
 
 export type ReviewDecision = "approve" | "request-changes";
