@@ -141,6 +141,15 @@ export function byRecency(runs: readonly RunSummary[]): RunSummary[] {
 }
 
 /**
+ * A checkout path in comparable form. Git reports `C:/Users/...` where Node
+ * reports `C:\Users\...`, and Windows drive paths compare case-insensitively.
+ */
+export function comparableCheckout(path: string): string {
+  const slashed = path.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return /^[a-z]:\//i.test(slashed) ? slashed.toLowerCase() : slashed;
+}
+
+/**
  * What to write when a legacy single-run state file is found, or null when
  * there is nothing to move. An existing per-run file always wins: the legacy
  * file may be a stale leftover, and losing live state is the worse failure.

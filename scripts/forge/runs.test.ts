@@ -10,6 +10,7 @@ import {
   runStatePath,
   summarizeRun,
 } from "./runs";
+import { runLine } from "./runs-cli";
 
 function state(
   slug: string,
@@ -147,5 +148,29 @@ describe("legacy migration", () => {
     expect(
       legacyMigration({ legacyJson: hostile, runExists: () => false }),
     ).toBeNull();
+  });
+});
+
+describe("the runs table", () => {
+  test("a run reads as its progress and the command that continues it", () => {
+    const line = runLine(
+      summarizeRun(
+        state("alpha", ["research", "plan"], "2026-06-04T00:00:00.000Z", {
+          checkout: "C:/work/trees/aa11",
+          mode: "auto",
+        }),
+      ),
+    );
+    expect(line).toContain("alpha [auto]");
+    expect(line).toContain("C:/work/trees/aa11");
+    expect(line).toContain("completed: research → plan");
+    expect(line).toContain("next: /forge-implement alpha");
+  });
+
+  test("a shipped run offers no next command", () => {
+    const line = runLine(
+      summarizeRun(state("done", ["research", "plan", "implement", "ship"])),
+    );
+    expect(line).toContain("next: shipped");
   });
 });

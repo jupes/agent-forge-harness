@@ -15,6 +15,7 @@ import {
   type ForgePhase,
   type ForgeState,
 } from "../forge/phases";
+import { comparableCheckout } from "../forge/runs";
 
 export type PhaseState = "complete" | "active" | "locked";
 
@@ -184,14 +185,8 @@ function gateRunFrom(line: string): GateRun | null {
   }
 }
 
-/**
- * A checkout path in comparable form. Git reports `C:/Users/...` where Node
- * reports `C:\Users\...`, and Windows drive paths compare case-insensitively.
- */
-export function comparableCheckout(path: string): string {
-  const slashed = path.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  return /^[a-z]:\//i.test(slashed) ? slashed.toLowerCase() : slashed;
-}
+/** Re-exported: the quality-gate hook compares checkouts without the dashboard. */
+export { comparableCheckout } from "../forge/runs";
 
 export function gateRunBelongsTo(run: GateRun, scope: GateScope): boolean {
   return (

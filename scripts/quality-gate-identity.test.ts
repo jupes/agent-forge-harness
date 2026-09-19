@@ -1,21 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { gateIdentity } from "./quality-gate-identity";
+import { forgeSlugFor, gateIdentity } from "./quality-gate-identity";
+
+const TREE = "C:/work/harness/trees/dg40";
 
 const BASE = {
   cwd: "C:/work/harness/trees/dg40/scripts",
-  gitToplevel: "C:/work/harness/trees/dg40",
+  gitToplevel: TREE,
   gitBranch: "feat/nocturne",
   taskId: "agent-forge-harness-dg40.9",
-  forgeStateJson: JSON.stringify({
-    slug: "agent-forge-harness-dg40",
-    phase: "implement",
-  }),
+  forgeSlugEnv: null as string | null,
+  runs: [{ slug: "agent-forge-harness-dg40", complete: false, checkout: TREE }],
 };
 
 describe("gateIdentity", () => {
   test("records the checkout top level, branch, task and forge run", () => {
     expect(gateIdentity(BASE)).toEqual({
-      checkout: "C:/work/harness/trees/dg40",
+      checkout: TREE,
       branch: "feat/nocturne",
       taskId: "agent-forge-harness-dg40.9",
       forgeSlug: "agent-forge-harness-dg40",
@@ -50,19 +50,107 @@ describe("gateIdentity", () => {
     expect(identity.branch).toBe("main");
   });
 
-  test("records no forge run when there is no readable forge state", () => {
-    for (const forgeStateJson of [
-      null,
-      "",
-      "not json",
-      JSON.stringify({ phase: "plan" }),
-    ]) {
-      expect(gateIdentity({ ...BASE, forgeStateJson }).forgeSlug).toBeNull();
-    }
+  test("records no forge run when the harness knows of none", () => {
+    expect(gateIdentity({ ...BASE, runs: [] }).forgeSlug).toBeNull();
   });
 
   test("records no task when the event carried none", () => {
     expect(gateIdentity({ ...BASE, taskId: undefined }).taskId).toBeNull();
     expect(gateIdentity({ ...BASE, taskId: "" }).taskId).toBeNull();
+  });
+});
+
+describe("forgeSlugFor", () => {
+  const other = "C:/work/harness/trees/aa11";
+
+  test("FORGE_SLUG wins, even before the run has written state", () => {
+    expect(
+      forgeSlugFor({ envSlug: "brand-new", checkout: TREE, runs: [] }),
+    ).toBe("brand-new");
+  });
+
+  test("ignores a blank FORGE_SLUG", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: "   ",
+        checkout: TREE,
+        runs: [{ slug: "only", complete: false, checkout: null }],
+      }),
+    ).toBe("only");
+  });
+
+  test("picks the run that claims this checkout", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: null,
+        checkout: TREE,
+        runs: [
+          { slug: "here", complete: false, checkout: TREE },
+          { slug: "elsewhere", complete: false, checkout: other },
+        ],
+      }),
+    ).toBe("here");
+  });
+
+  test("matches a checkout across separator and drive-case differences", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: null,
+        checkout: "c:\\work\\harness\\trees\\dg40\\",
+        runs: [{ slug: "here", complete: false, checkout: TREE }],
+      }),
+    ).toBe("here");
+  });
+
+  test("records nothing when two live runs share this checkout", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: null,
+        checkout: TREE,
+        runs: [
+          { slug: "alpha", complete: false, checkout: TREE },
+          { slug: "beta", complete: false, checkout: TREE },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  test("records nothing when two live runs recorded no checkout", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: null,
+        checkout: TREE,
+        runs: [
+          { slug: "alpha", complete: false, checkout: null },
+          { slug: "beta", complete: false, checkout: null },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  test("a shipped run does not claim new gate results", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: null,
+        checkout: TREE,
+        runs: [
+          { slug: "shipped", complete: true, checkout: TREE },
+          { slug: "live", complete: false, checkout: null },
+        ],
+      }),
+    ).toBe("live");
+  });
+
+  test("a run in another worktree never claims this checkout's gate", () => {
+    expect(
+      forgeSlugFor({
+        envSlug: null,
+        checkout: TREE,
+        runs: [
+          { slug: "elsewhere", complete: false, checkout: other },
+          { slug: "also-elsewhere", complete: false, checkout: other },
+        ],
+      }),
+    ).toBeNull();
   });
 });
