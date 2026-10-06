@@ -1,6 +1,6 @@
 # Molecules
 
-Workflows **as data** — an analog of Gas Town's **molecules** (chained Beads steps, loops, gates). See `knowledge/gas-town-harness-insights.yaml` → `MO-01-formulas-as-skills`.
+Workflows **as data** — chained Beads steps, loops and gates expressed as JSON. The command-center rework (`docs/plans/command-center/00-README.md`) supersedes this spike.
 
 This directory is a **spike** (bead `agent-forge-harness-9z1`). Format is JSON today for portability and zero new deps; the same shape can later be sourced from TOML/YAML (“Formulas”) and macro-expanded into per-step Beads tasks.
 
@@ -64,5 +64,5 @@ Emits a `{ ok, data, error }` JSON envelope per file; exits non-zero on any fail
 ## Non-goals (spike)
 
 - No runtime/executor — Lead still drives workflows.
-- No automatic `bd create` / `bd dep add` emission. Captured as a follow-up idea in the Gas Town knowledge YAML.
+- No automatic `bd create` / `bd dep add` emission.
 - No TOML ingestion. JSON keeps the first cut dependency-free.
