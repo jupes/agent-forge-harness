@@ -2,9 +2,12 @@
  * Generic, idempotent Beads plan importer.
  *
  * A plan is a list of issues with stable local keys, parent links and deps.
- * `importPlan` creates missing issues (matching by parent + exact title) and
- * missing `blocks` dependencies, in an order where parents and blockers exist
- * first. Re-running creates nothing new.
+ * `importPlan` creates missing issues and missing `blocks` dependencies in an
+ * order where parents and blockers exist first. Existing issues are found by
+ * a persisted key → id map first, then by parent + exact title. With
+ * `sync: true` the title, description, acceptance and priority of existing
+ * issues are pushed from the plan, so the plan file stays the source of truth
+ * after the first import. Re-running creates nothing new.
  *
  * The `BdClient` seam lets tests run without `bd`; `createExecBdClient()` is
  * the real implementation (argument arrays, never a shell string).
@@ -65,12 +68,26 @@ export interface BdCreateParams {
   labels?: string[] | undefined;
 }
 
+export type BdUpdateParams = Pick<
+  BdCreateParams,
+  "title" | "priority" | "acceptance" | "description"
+>;
+
 export interface BdClient {
   findEpicByTitle(title: string): string | null;
   listChildren(parentId: string): BdIssueRow[];
   create(params: BdCreateParams): string;
+  update(id: string, params: BdUpdateParams): void;
   listDeps(issueId: string): BdDepRow[];
   depAdd(blocked: string, dependsOn: string): void;
+}
+
+export interface ImportOptions {
+  /** Previously persisted key → id map; ids found here win over title lookup. */
+  knownIds?: Record<string, string>;
+  /** Push title/description/acceptance/priority onto existing issues. */
+  sync?: boolean;
+  log?: (line: string) => void;
 }
 
 export interface ImportResult {
@@ -78,6 +95,7 @@ export interface ImportResult {
   ids: Record<string, string>;
   created: string[];
   reused: string[];
+  updated: string[];
   depsAdded: Array<{ blocked: string; dependsOn: string }>;
 }
 
@@ -196,31 +214,53 @@ export function renderAcceptance(lines: string[]): string {
 export function importPlan(
   spec: PlanSpec,
   bd: BdClient,
-  log: (line: string) => void = () => {},
+  options: ImportOptions = {},
 ): ImportResult {
   const errors = validatePlan(spec);
   if (errors.length) {
     throw new Error(`invalid plan ${spec.name}:\n${errors.join("\n")}`);
   }
+  const log = options.log ?? (() => {});
+  const known = options.knownIds ?? {};
+  const planKeys = new Set(spec.issues.map((i) => i.key));
+  const orphanKeys = Object.keys(known).filter((k) => !planKeys.has(k));
+  if (orphanKeys.length) {
+    throw new Error(
+      `knownIds hold keys the plan no longer has (a renamed key would be re-created as a duplicate): ${orphanKeys.join(", ")}. Restore the key or move its id to the new key in the ids file.`,
+    );
+  }
   const result: ImportResult = {
     ids: {},
     created: [],
     reused: [],
+    updated: [],
     depsAdded: [],
   };
 
   for (const issue of topoOrder(spec)) {
     const parentId = issue.parent ? result.ids[issue.parent] : undefined;
     const existing =
-      issue.key === spec.epicKey
+      known[issue.key] ??
+      (issue.key === spec.epicKey
         ? bd.findEpicByTitle(issue.title)
         : (bd
             .listChildren(parentId as string)
-            .find((r) => r.title === issue.title)?.id ?? null);
+            .find((r) => r.title === issue.title)?.id ?? null));
     if (existing) {
       result.ids[issue.key] = existing;
       result.reused.push(issue.key);
-      log(`reuse ${issue.key} -> ${existing}`);
+      if (options.sync) {
+        bd.update(existing, {
+          title: issue.title,
+          priority: issue.priority,
+          acceptance: renderAcceptance(issue.acceptance),
+          description: issue.description,
+        });
+        result.updated.push(issue.key);
+        log(`sync ${issue.key} -> ${existing}`);
+      } else {
+        log(`reuse ${issue.key} -> ${existing}`);
+      }
       continue;
     }
     const id = bd.create({
@@ -322,6 +362,13 @@ export function createExecBdClient(): BdClient {
         throw new Error(`bd create returned no issue id for "${params.title}"`);
       }
       return json.id;
+    },
+    update(id, params) {
+      const args = ["update", id, "--title", params.title];
+      args.push("--priority", String(params.priority));
+      if (params.acceptance) args.push("--acceptance", params.acceptance);
+      if (params.description) args.push("--description", params.description);
+      execBd(args);
     },
     listDeps(issueId) {
       const parsed: unknown = parseJsonLoose(

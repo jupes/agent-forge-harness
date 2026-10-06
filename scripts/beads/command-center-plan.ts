@@ -8,6 +8,13 @@
  *
  * Keys are stable local identifiers; `deps` reference other keys in this plan
  * or real Beads IDs (prefixed `agent-forge-harness-`).
+ *
+ * NEVER rename a key once imported: command-center-plan.ids.json maps keys to
+ * Beads ids, and a renamed key would be created again as a duplicate. The
+ * importer refuses to run while the ids file holds a key the plan no longer
+ * has. Titles, descriptions, acceptance and priority may change freely and
+ * are pushed with `--sync`. Owner decisions live in
+ * docs/plans/command-center/05-decisions.md.
  */
 import type { PlanIssue, PlanSpec } from "./plan-import";
 
@@ -23,13 +30,13 @@ const issues: PlanIssue[] = [
     title:
       "[command-center] Agent Forge Command Center — one control plane for every agent, provider and workstream",
     description: [
-      "Turn the harness into a local-first command center: a ledger of every agent session and tool call (any provider), a control-plane server with a typed operator API, crews that route work across provider CLIs, a conflict-aware queue with bounded unattended drains, council as a first-class action on any bead, and a desktop app plus a Claude Code pane as control surfaces. Beads stays the only work graph; forgemaster stays the planning brain.",
+      "Turn the harness into a local-first command center: a ledger of every agent session and tool call (any provider), a control-plane server with a typed operator API, smiths that route work across provider CLIs, a conflict-aware queue with bounded unattended shifts, council as a first-class action on any bead, and a desktop app plus a Claude Code pane as control surfaces. Beads stays the only work graph; forgemaster stays the planning brain.",
       `Research: ${DOC}/01-orbit-teardown.md, ${DOC}/02-gap-analysis.md, ${DOC}/03-target-architecture.md. Roadmap and per-bead specs: ${DOC}/04-roadmap-and-beads.md.`,
       "Execution rule: each feature below is one /forgemaster run (research → plan → implement → ship) in its own worktree; tasks are the demo checkpoints. Re-run `bun run beads:import-command-center-plan` after editing scripts/beads/command-center-plan.ts; it is idempotent.",
     ].join("\n\n"),
     acceptance: [
       "Every feature under this epic is closed with test evidence and a merged PR.",
-      "An operator can watch sessions from at least two providers, approve a proposed bead, drain it unattended, and send its result to council from the desktop app.",
+      "An operator can watch sessions from at least two providers, approve a proposed bead, shift it unattended, and send its result to council from the desktop app.",
       "Beads remains the only work graph: no duplicate task table exists in the ledger.",
       "docs/HARNESS-GUIDE.md and README.md describe the command center and all new commands.",
     ],
@@ -47,7 +54,7 @@ const issues: PlanIssue[] = [
     description: `Resolve the three reversible-only-early decisions and freeze the shared TypeScript contracts (ledger event, executor, queue state, operator API envelope) before any feature assumes them. ${spec("f0-decisions-and-contracts")}`,
     acceptance: [
       "D1–D3 are closed with a `design:` comment recording the decision, alternatives, and rationale.",
-      "types/control-plane.ts exists, is exported, typechecks, and is referenced by the F1 and F2 plans.",
+      "types/hearth.ts exists, is exported, typechecks, and is referenced by the F1 and F2 plans.",
     ],
   },
   {
@@ -56,12 +63,11 @@ const issues: PlanIssue[] = [
     type: "decision",
     priority: 2,
     title:
-      "D1 Choose the desktop shell: Tauri 2 (recommended) vs Electron vs PWA vs Claude Code mod only",
-    description: `Decide how the command center ships as a desktop app. Recommended: Tauri 2 wrapping the existing Preact/Vite dashboard with the Bun control-plane server as a supervised sidecar (small binary, Windows-first, tray + notifications, no second UI codebase). Evaluate: Windows installer story, Bun sidecar packaging, auto-update, signing. The Claude Code mod is built regardless (F8). ${spec("d1-desktop-shell")}`,
+      "D1 Desktop shell — DECIDED: Tauri 2 wrapping the dashboard, hearth as a supervised sidecar",
+    description: `DECIDED 2026-10-06 by the owner (docs/plans/command-center/05-decisions.md #1): Tauri 2 wrapping the existing Preact/Vite dashboard with the hearth compiled by bun build --compile as a supervised sidecar. Alternatives rejected: Electron (heavier), PWA (no tray/sidecar), mod-only (no desktop app). The proving spike is the first checkpoint of f8-shell. ${spec("d1-desktop-shell")}`,
     acceptance: [
-      "A `design:` comment states the chosen shell, the two strongest alternatives, and why they lost.",
-      "A throwaway spike proves the chosen shell can launch the Bun sidecar and open http://127.0.0.1:<port> on Windows (screenshot attached to the bead).",
-      "F8 task titles are updated if the choice is not Tauri.",
+      "A `design:` comment on this bead records the choice, the alternatives, and why they lost (done 2026-10-06).",
+      "05-decisions.md #1 matches the design comment (done).",
     ],
   },
   {
@@ -70,11 +76,11 @@ const issues: PlanIssue[] = [
     type: "decision",
     priority: 2,
     title:
-      "D2 Control-plane process model and ledger location (sidecar Bun server; workspace vs machine DB)",
-    description: `Decide whether the control plane is one long-lived Bun process per machine serving all registered workspaces, or one per workspace; and whether the ledger lives per workspace (.tmp/work/ledger.db), per machine (~/.agent-forge/ledger.db), or both with a machine index. Must reconcile with ulpz.3's metadata-only SQLite projection and ulpz.1 topology. Recommended: one process per machine, one ledger per machine with a workspace column, workspace-scoped queries. ${spec("d2-process-model")}`,
+      "D2 Hearth process model and ledger location — DECIDED: one hearth and one ledger per machine",
+    description: `DECIDED 2026-10-06 by the owner (docs/plans/command-center/05-decisions.md #2-3): one hearth process per machine serving every registered workspace, lock file ~/.agent-forge/hearth.lock (pid, port, token), startable by Vite dev, the desktop shell or bun run hearth; one ledger at ~/.agent-forge/ledger.db with a workspace column, absorbing the ulpz.3 schema (RunCorrelation, metadata-only rule). ${spec("d2-process-model")}`,
     acceptance: [
-      "A `design:` comment records the process model, DB location, startup/shutdown ownership (who starts it: Vite dev, Tauri sidecar, `bun run control-plane`), and port/token discovery.",
-      "ulpz.3 has a `design:` comment acknowledging the shared schema so the two efforts do not fork.",
+      "A `design:` comment on this bead records the process model, DB location, startup ownership and port/token discovery (done 2026-10-06).",
+      "ulpz.3 carries a `design:` comment pointing at f1-core as the owner of the shared schema (done).",
     ],
     deps: ["agent-forge-harness-ulpz.1"],
   },
@@ -84,8 +90,8 @@ const issues: PlanIssue[] = [
     type: "decision",
     priority: 2,
     title:
-      "D3 Agent onboarding contract: how a session of any provider attaches and reports",
-    description: `Define the attach protocol: how a Claude Code interactive session, a Claude teammate, a headless claude -p, a codex exec, and a future remote worker (ulpz.5) announce themselves (sessionId, provider, model, workspace, worktree, beadId) and emit events. Options: hooks writing to SQLite directly vs POSTing to the control plane vs a stdio sidecar. Recommended: direct sync append through scripts/ledger for hooks (fast, no server dependency) plus an HTTP path for spawned CLIs streamed by the adapter. Resolve the identity gap from 0xxt (Claude Code does not set CLAUDE_TASK_ID for hooks). ${spec("d3-onboarding-contract")}`,
+      "D3 Write the agent onboarding protocol — DECIDED: hooks append in-process, adapters stream, remote workers POST",
+    description: `DECIDED 2026-10-06 by the owner (docs/plans/command-center/05-decisions.md #4); the remaining work on this bead is writing .claude/protocols/agent-onboarding.md. Define the attach protocol: how a Claude Code interactive session, a Claude teammate, a headless claude -p, a codex exec, and a future remote worker (ulpz.5) announce themselves (sessionId, provider, model, workspace, worktree, beadId) and emit events. Options: hooks writing to SQLite directly vs POSTing to the control plane vs a stdio sidecar. Recommended: direct sync append through scripts/ledger for hooks (fast, no server dependency) plus an HTTP path for spawned CLIs streamed by the adapter. Resolve the identity gap from 0xxt (Claude Code does not set CLAUDE_TASK_ID for hooks). ${spec("d3-onboarding-contract")}`,
     acceptance: [
       "A `design:` comment plus a new .claude/protocols/agent-onboarding.md describe the Session, Executor and Event envelopes and the attach sequence for each known executor kind.",
       "The protocol states how identity is derived when the provider gives none (minted ULID persisted in the worktree).",
@@ -98,11 +104,11 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "Freeze shared contracts in types/control-plane.ts (LedgerEvent, Executor, QueueState, OperatorEnvelope)",
+      "Freeze shared contracts in types/hearth.ts (LedgerEvent, Executor, QueueState, OperatorEnvelope)",
     description: `Write the TypeScript contracts from 03-target-architecture.md §4–§6 as exported types with a JSON-schema-free runtime validator (hand-written narrow functions, no new deps). These are consumed by the ledger, hooks, server, adapters and UI. ${spec("f0-types")}`,
     acceptance: [
-      "types/control-plane.ts exports LedgerEvent (all v1 kinds), Executor, Crew, QueueState, Reservation, OperatorEnvelope.",
-      "scripts/control-plane/validate.test.ts proves accept/reject for each event kind and for a malformed envelope.",
+      "types/hearth.ts exports LedgerEvent (all v1 kinds), Executor, Smith, QueueState, Reservation, OperatorEnvelope.",
+      "scripts/hearth/validate.test.ts proves accept/reject for each event kind and for a malformed envelope.",
       "bun run typecheck and bun run lint pass.",
     ],
     deps: ["d2", "d3"],
@@ -116,13 +122,13 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "[command-center] F1 Unified ledger: every session, tool call, phase, gate, verdict and council run in one audit store",
-    description: `Build on ulpz.3's SQLite run ledger: one appendEvent() used by every emitter, redaction at write, and a query CLI. This is the foundation the command center observes. ${spec("f1-ledger")}`,
+    description: `Absorbs ulpz.3 (the self-host SQLite run ledger; decision #12): one appendEvent() used by every emitter, redaction at write, metadata-only bodies (decision #10), nightly backup with 14-day retention and 90-day compaction (decision #11), and a query CLI. This is the foundation the command center observes. ${spec("f1-ledger")}`,
     acceptance: [
       "bun run forge:audit --bead <id> returns the ordered events for a bead across sessions, runs, gates and council runs.",
       "A Claude Code session that runs one tool call, one phase-gate write and one quality gate produces at least four events tagged with executor identity.",
       "No prompt, source or tool-output body is stored unless the event kind opts in; secrets are redacted before insert (test with planted key patterns).",
     ],
-    deps: ["agent-forge-harness-ulpz.3", "f0-types"],
+    deps: ["f0-types"],
   },
   {
     key: "f1-core",
@@ -131,11 +137,13 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "scripts/ledger: appendEvent, redaction, migrations, and forge:audit query CLI",
-    description: `Implement scripts/ledger/{db,append,redact,query}.ts over bun:sqlite with versioned migrations, WAL mode, and a single appendEvent(event) that validates against types/control-plane.ts, redacts, and inserts. Add bun run forge:audit with --bead/--run/--session/--since/--kind filters and JSON envelope output. Reuse the council's secret-pattern scanner (scripts/council/safety.test.ts shows the fixtures). ${spec("f1-core")}`,
+    description: `Implement scripts/ledger/{db,append,redact,query}.ts over bun:sqlite with versioned migrations, WAL mode, and a single appendEvent(event) that validates against types/hearth.ts, redacts, and inserts. Add bun run forge:audit with --bead/--run/--session/--since/--kind filters and JSON envelope output. Reuse the council's secret-pattern scanner (scripts/council/safety.test.ts shows the fixtures). ${spec("f1-core")}`,
     acceptance: [
       "scripts/ledger/*.test.ts cover insert, filter by each key, migration from empty, and redaction of planted secrets.",
       "forge:audit prints { ok, data, error } and exits non-zero on a bad filter.",
       "Inserting 10k events completes in under 2 s on Windows (recorded in the bead as evidence).",
+      "The ledger lives at ~/.agent-forge/ledger.db with a workspace column (decision #3); agent-forge-harness-ulpz.3 is closed with a worklog pointing at this task.",
+      "bun run forge:audit --backup copies the ledger to ~/.agent-forge/backups/ and prunes copies older than 14 days (decision #11).",
     ],
     deps: ["f0-types"],
   },
@@ -206,12 +214,12 @@ const issues: PlanIssue[] = [
     type: "feature",
     priority: 2,
     title:
-      "[command-center] F2 Control-plane server, typed operator API, SSE stream, and MCP operator surface",
-    description: `Extract the dev-API from Vite middleware into a standalone loopback Bun server with a typed operator API where every mutation is audited, a single SSE stream, Beads write actions, and an MCP server with operator vs agent authority. ${spec("f2-control-plane")}`,
+      "[command-center] F2 Hearth: control-plane server, typed operator API, SSE stream, and MCP operator surface",
+    description: `Extract the dev-API from Vite middleware into a standalone loopback Bun server with a typed operator API where every mutation is audited, a single SSE stream, Beads write actions, and an MCP server with operator vs agent authority. ${spec("f2-hearth")}`,
     acceptance: [
-      "bun run control-plane serves GET /sessions,/runs,/events,/queue,/crews,/config,/stream and the POST actions in 03-target-architecture.md §6; the Vite dashboard proxies to it in dev with no behaviour loss on existing pages.",
+      "bun run hearth serves GET /sessions,/runs,/events,/queue,/smiths,/config,/stream and the POST actions in 03-target-architecture.md §6; the Vite dashboard proxies to it in dev with no behaviour loss on existing pages.",
       "Every POST writes an operator.action event before its effect; a request without the operator token or with a foreign Origin is refused with a 403.",
-      "bun run control:mcp exposes forge_* tools; an agent session calling forge_queue_approve is refused while an operator session succeeds (tests).",
+      "bun run hearth:mcp exposes forge_* tools; an agent session calling forge_queue_approve is refused while an operator session succeeds (tests).",
     ],
     deps: ["f1-core", "d2"],
   },
@@ -222,7 +230,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "Standalone Bun control-plane server; Vite proxies /__agent-forge/* to it; council API moves behind it",
-    description: `Create scripts/control-plane/server.ts (Bun.serve on 127.0.0.1, port from agent-forge.toml or env), port the forge-run and repos-knowledge dev-api handlers (scripts/dashboard/dev-api.ts) and the council dashboard routes (scripts/council/dashboard.ts) to it, and make vite.dashboard.config.ts proxy. Keep /__agent-forge/rebuild-pages. Same-origin + Origin/Host checks + per-boot operator token file. ${spec("f2-server")}`,
+    description: `Create scripts/hearth/server.ts (Bun.serve on 127.0.0.1, port from agent-forge.toml or env), port the forge-run and repos-knowledge dev-api handlers (scripts/dashboard/dev-api.ts) and the council dashboard routes (scripts/council/dashboard.ts) to it, and make vite.dashboard.config.ts proxy. Keep /__agent-forge/rebuild-pages. Same-origin + Origin/Host checks + per-boot operator token file. ${spec("f2-server")}`,
     acceptance: [
       "All existing scripts/dashboard/*.test.ts and scripts/council/dashboard.test.ts pass against the new server (adapted imports only).",
       "Playwright routes.spec and new-pages.spec pass with the proxy in place.",
@@ -236,10 +244,10 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "Operator API: read routes (sessions, runs, events, queue, reservations, crews, config) and audited POST actions",
+      "Operator API: read routes (sessions, runs, events, queue, reservations, smiths, config) and audited POST actions",
     description: `Implement the typed routes from 03-target-architecture.md §6 over the ledger and bd. POST actions call the same scripts the CLI uses (bd, forge:phase-gate, council service); no second implementation. Add GET /stream SSE that generalises the council snapshot/keepalive pattern to all collections. ${spec("f2-api")}`,
     acceptance: [
-      "scripts/control-plane/api.test.ts covers each route's envelope, one failing validation per POST, and that each POST produced an operator.action event.",
+      "scripts/hearth/api.test.ts covers each route's envelope, one failing validation per POST, and that each POST produced an operator.action event.",
       "GET /stream delivers a delta within 1 s of a ledger append (test with a fake clock or short poll interval).",
     ],
     deps: ["f2-server", "f1-core"],
@@ -265,27 +273,27 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "MCP operator server (forge_* tools) with operator vs agent authority at call time; register .mcp.json; supersede 3u6",
-    description: `scripts/control-plane/mcp.ts (bun run control:mcp) wraps the operator API as MCP tools. Same tools/list for all sessions; calls carry the operator token only when launched with --operator. Re-export council_* tools from scripts/council/mcp.ts. Keep the tool set small (Orbit lesson 1: MCP tokens cost). Close agent-forge-harness-3u6 with a pointer here. ${spec("f2-mcp")}`,
+    description: `scripts/hearth/mcp.ts (bun run hearth:mcp) wraps the operator API as MCP tools. Same tools/list for all sessions; calls carry the operator token only when launched with --operator. Re-export council_* tools from scripts/council/mcp.ts. Keep the tool set small (Orbit lesson 1: MCP tokens cost). Close agent-forge-harness-3u6 with a pointer here. ${spec("f2-mcp")}`,
     acceptance: [
-      "scripts/control-plane/mcp.test.ts proves tools/list parity and the operator/agent refusal matrix for every governed tool.",
+      "scripts/hearth/mcp.test.ts proves tools/list parity and the operator/agent refusal matrix for every governed tool.",
       ".mcp.json registers the server; CLAUDE.md documents when agents should use forge_* vs bd.",
       "agent-forge-harness-3u6 is closed with a worklog pointing at this task.",
     ],
     deps: ["f2-api", "agent-forge-harness-3u6"],
   },
 
-  // ───────────────────────── F3 — crews and executor adapters ─────────────────────────
+  // ───────────────────────── F3 — smiths and executor adapters ─────────────────────────
   {
     key: "f3",
     parent: "epic",
     type: "feature",
     priority: 2,
     title:
-      "[command-center] F3 Crews and executor adapters: route work across provider CLIs with an env allowlist",
-    description: `Make the model-tier policy data instead of convention: crews (provider+model+effort) and complexity pools in agent-forge.toml with provenance, an ExecutorAdapter interface, and adapters for Claude Code, Codex and one more CLI, each streaming events into the ledger. ${spec("f3-crews")}`,
+      "[command-center] F3 Smiths and executor adapters: route work across provider CLIs with an env allowlist",
+    description: `Make the model-tier policy data instead of convention: smiths (provider+model+effort) and complexity benches in agent-forge.toml with provenance, an ExecutorAdapter interface, and adapters for Claude Code, Codex and one more CLI, each streaming events into the ledger. ${spec("f3-smiths")}`,
     acceptance: [
-      "bun run forge:config show prints merged crews/pools with the file each value came from.",
-      "bun run forge:exec --bead <id> --crew <name> runs a bounded task in a worktree through the chosen adapter on Windows and leaves session + tool events in the ledger for at least two providers.",
+      "bun run forge:config show prints merged smiths/benches with the file each value came from.",
+      "bun run forge:exec --bead <id> --smith <name> runs a bounded task in a worktree through the chosen adapter on Windows and leaves session + tool events in the ledger for at least two providers.",
       "Spawned processes receive only allowlisted env vars (test plants DATABASE_URL and proves absence).",
     ],
     deps: ["f1-core", "f0-types"],
@@ -296,10 +304,10 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "agent-forge.toml config with crews, pools, env allowlist, provenance; forge:config show/get/set; rewrite model-tier-policy to point at it",
-    description: `scripts/config/{load,merge,provenance}.ts reading ~/.agent-forge/config.toml then <harness>/agent-forge.toml (workspace overrides; security keys never inherited once a workspace file exists). Built-in crews mirror the current tier table (Top/Default/Cheap → named crews). Rewrite .claude/protocols/model-tier-policy.md so the escalation rules remain but the tier table is the config. ${spec("f3-config")}`,
+      "agent-forge.toml config with smiths, benches, env allowlist, provenance; forge:config show/get/set; rewrite model-tier-policy to point at it",
+    description: `DECIDED names (05-decisions.md vocabulary): built-in smiths claude-master, claude-journeyman, claude-apprentice, codex-journeyman; default smith claude-journeyman; benches low/medium/high keyed by the bead's complexity label; ranks master/journeyman/apprentice replace Top/Default/Cheap. scripts/config/{load,merge,provenance}.ts reading ~/.agent-forge/config.toml then <harness>/agent-forge.toml (workspace overrides; security keys never inherited once a workspace file exists). Built-in smiths mirror the current rank table (master/journeyman/apprentice → named smiths). Rewrite .claude/protocols/model-tier-policy.md so the escalation rules remain but the tier table is the config. ${spec("f3-config")}`,
     acceptance: [
-      "scripts/config/*.test.ts cover merge precedence, provenance, refusal of undefined crew references, and the never-inherit rule for execution.env.pass.",
+      "scripts/config/*.test.ts cover merge precedence, provenance, refusal of undefined smith references, and the never-inherit rule for execution.env.pass.",
       "forge:config keys lists every settable key; forge:config set writes the right file.",
       "model-tier-policy.md no longer says 'convention, not automation'.",
     ],
@@ -312,7 +320,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "ExecutorAdapter interface + Claude Code adapter (headless claude -p, stream-json → ledger, panic-safe cleanup)",
-    description: `scripts/executors/{adapter,claude}.ts per 03-target-architecture.md §8. Spawn with Bun.spawn in the target worktree, env from the allowlist, parse --output-format stream-json into tool.called/session events, register kill-on-exit/timeout for every child (Orbit lesson 3). Resolve crew per precedence (flag → bead metadata → pool → default). ${spec("f3-adapter-claude")}`,
+    description: `scripts/executors/{adapter,claude}.ts per 03-target-architecture.md §8. Spawn with Bun.spawn in the target worktree, env from the allowlist, parse --output-format stream-json into tool.called/session events, register kill-on-exit/timeout for every child (Orbit lesson 3). Resolve smith per precedence (flag → bead metadata → bench → default). ${spec("f3-adapter-claude")}`,
     acceptance: [
       "scripts/executors/claude.test.ts uses a fake claude binary (scripts/executors/fixtures) to prove stream parsing, env allowlist, timeout kill, and ledger events.",
       "A real headless run on Windows against a trivial bead is recorded on the bead with its forge:audit output.",
@@ -339,8 +347,8 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 3,
     title:
-      "Third adapter to prove the seam (OpenCode or Gemini CLI, whichever has a stable headless mode on Windows)",
-    description: `Pick at build time by running each CLI's headless mode on Windows; implement the one that works, document why the other was skipped, and record the comparison in the bead. ulpz.5's remote OpenHands worker will implement the same interface later. ${spec("f3-adapter-third")}`,
+      "Third adapter: Gemini CLI (OpenCode only if Gemini's headless mode fails on Windows)",
+    description: `DECIDED (05-decisions.md #13): implement the Gemini CLI adapter. Fall back to OpenCode only if Gemini's headless mode fails on Windows at build time; record the evidence on the bead either way. ulpz.5's remote OpenHands worker will implement the same interface later. ${spec("f3-adapter-third")}`,
     acceptance: [
       "A third scripts/executors/<provider>.ts passes the shared adapter contract test (scripts/executors/contract.test.ts runs every adapter against the same fixtures).",
       "forge:doctor lists three adapters.",
@@ -353,27 +361,27 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 3,
     title:
-      "Scoreboard: per-crew outcomes, gate pass rate, review findings and cost from the ledger",
-    description: `scripts/ledger/scoreboard.ts aggregates events per crew/provider/model: runs, PASS/FAIL verdicts, gate failures, council findings by severity, usage/cost where reported. Exposed at GET /scoreboard and in forge:audit --scoreboard. Gives 7xw the data it needs. ${spec("f3-scoreboard")}`,
+      "Scoreboard: per-smith outcomes, gate pass rate, review findings and cost from the ledger",
+    description: `scripts/ledger/scoreboard.ts aggregates events per smith/provider/model: runs, PASS/FAIL verdicts, gate failures, council findings by severity, usage/cost where reported. Exposed at GET /scoreboard and in forge:audit --scoreboard. Gives 7xw the data it needs. ${spec("f3-scoreboard")}`,
     acceptance: [
-      "scoreboard.test.ts proves aggregation over a fixture ledger with two crews.",
+      "scoreboard.test.ts proves aggregation over a fixture ledger with two smiths.",
       "GET /scoreboard returns the same numbers as the CLI.",
     ],
     deps: ["f1-gates", "f3-config", "f2-api"],
   },
 
-  // ───────────────────────── F4 — scheduler: queue, reservations, drains ─────────────────────────
+  // ───────────────────────── F4 — scheduler: queue, reservations, shifts ─────────────────────────
   {
     key: "f4",
     parent: "epic",
     type: "feature",
     priority: 2,
     title:
-      "[command-center] F4 Scheduler: approval queue on Beads, file reservations, unified worktree registry, bounded unattended drains, auto-tasks",
-    description: `Nothing starts without the operator; approved work is drained in parallel without file conflicts. Queue states are layered on Beads (label/metadata + ledger transitions), reservations derive from bead file maps, and forge:drain runs approved beads through the adapters with time and concurrency caps. ${spec("f4-scheduler")}`,
+      "[command-center] F4 Scheduler: approval queue on Beads, file reservations, unified worktree registry, bounded unattended shifts, auto-tasks",
+    description: `A human approves the start of every task or task family (decision #5); approved work runs in shifts in parallel without file conflicts. Queue states are layered on Beads (label/metadata + ledger transitions), reservations derive from bead file maps, and forge:shift runs approved beads through the adapters with time and concurrency caps. ${spec("f4-scheduler")}`,
     acceptance: [
-      "bun run forge:drain --for 30m --concurrency 2 --epic <id> runs two eligible beads in parallel in separate worktrees, never two beads whose file maps overlap, stops at the time cap, and leaves every child process dead.",
-      "A proposed bead cannot be drained until an operator approves it (test).",
+      "bun run forge:shift --for 30m --concurrency 2 --epic <id> runs two eligible beads in parallel in separate worktrees, never two beads whose file maps overlap, stops at the time cap, and leaves every child process dead.",
+      "A proposed bead cannot be picked up by a shift until an operator approves it (test).",
       "The dashboard worktree list shows both trees/ and .claude/worktrees/ entries.",
     ],
     deps: ["f3-adapter-claude", "f2-api"],
@@ -385,10 +393,10 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "Queue state machine on Beads (proposed→approved→queued→running→review→done, paused, halted) with ledger transitions",
-    description: `scripts/scheduler/queue.ts: state stored as a Beads label (queue:<state>) plus bead.transitioned events; legal transitions enforced; operator actions from F2 call these functions. Complexity label (complexity:low|medium|high) drives pool selection. ${spec("f4-queue")}`,
+    description: `scripts/scheduler/queue.ts: state stored as a Beads label (queue:<state>) plus bead.transitioned events; legal transitions enforced; operator actions from F2 call these functions. Complexity label (complexity:low|medium|high) drives bench selection. ${spec("f4-queue")}`,
     acceptance: [
       "queue.test.ts covers every legal and illegal transition and the event emitted for each.",
-      "bd list --label queue:queued shows exactly the beads the drain may pick.",
+      "bd list --label queue:queued shows exactly the beads the shift may pick.",
     ],
     deps: ["f1-core", "f2-api"],
   },
@@ -422,16 +430,16 @@ const issues: PlanIssue[] = [
     deps: ["f4-queue", "f4-worktrees"],
   },
   {
-    key: "f4-drain",
+    key: "f4-shift",
     parent: "f4",
     type: "task",
     priority: 2,
     title:
-      "forge:drain — bounded unattended loop over eligible beads using crews and adapters, with throttle and panic-safe cleanup",
-    description: `scripts/scheduler/drain.ts: --for <duration> --concurrency <n> [--epic] [--crew]; picks eligible beads, acquires reservations, creates a worktree, runs the bead through forgemaster-auto semantics via the adapter, posts worklog/review comments, ends at a PR, releases reservations. Host throttle (CPU/memory high-water) pauses admission. Every child is killed on stop/timeout/parent exit. Never merges. ${spec("f4-drain")}`,
+      "forge:shift — bounded unattended loop over eligible beads using smiths and adapters, with throttle and panic-safe cleanup",
+    description: `Defaults (decision #8): concurrency 2, --for 2h, admission paused above 85% CPU or memory, 3 repair attempts then queue:halted; PRs opened with the template, never merged (decision #7). scripts/scheduler/shift.ts: --for <duration> --concurrency <n> [--epic] [--smith]; picks eligible beads, acquires reservations, creates a worktree, runs the bead through forgemaster-auto semantics via the adapter, posts worklog/review comments, ends at a PR, releases reservations. Host throttle (CPU/memory high-water) pauses admission. Every child is killed on stop/timeout/parent exit. Never merges. ${spec("f4-shift")}`,
     acceptance: [
-      "drain.test.ts with fake adapters proves concurrency cap, time cap, reservation release on failure, and kill on abort.",
-      "A real 2-bead drain on Windows is recorded on the bead with forge:audit --drain output and two PR links.",
+      "shift.test.ts with fake adapters proves concurrency cap, time cap, reservation release on failure, and kill on abort.",
+      "A real 2-bead shift on Windows is recorded on the bead with forge:audit --shift output and two PR links.",
     ],
     deps: ["f4-reservations", "f3-adapter-claude", "f5-executor"],
   },
@@ -457,12 +465,12 @@ const issues: PlanIssue[] = [
     type: "feature",
     priority: 2,
     title:
-      "[command-center] F5 Forgemaster as the planning brain: executor-aware runs, file maps per task, spec→queue orchestration, molecule runtime spike",
-    description: `Expand the Forge pipeline so its plans feed the scheduler: every task carries a file map and complexity, runs record their executor and crew, a new /forge-orchestrate takes a spec to approved queue to drain to diagnosis (Orbit's orbit-orchestrate, done the Forge way), and molecules are evaluated as the drain's DAG format. ${spec("f5-forgemaster")}`,
+      "[command-center] F5 Forgemaster as the planning brain: executor-aware runs, file maps per task, spec→queue orchestration",
+    description: `Expand the Forge pipeline so its plans feed the scheduler: every task carries a file map and complexity, runs record their executor and smith, a new /forge-orchestrate takes a spec to approved queue to shift to diagnosis (Orbit's orbit-orchestrate, done the Forge way). Molecules are retired (decision #14); a shift's DAG is the Beads dependency graph. ${spec("f5-forgemaster")}`,
     acceptance: [
-      "/forgemaster <feature> --crew <name> records the crew on the run and in the ledger.",
+      "/forgemaster <feature> --smith <name> records the smith on the run and in the ledger.",
       "/forge-plan output tasks all carry a parseable file map and complexity label.",
-      "/forge-orchestrate <spec> ends with a proposed bead set awaiting approval and, after approval, a drain summary with per-bead outcomes.",
+      "/forge-orchestrate <spec> ends with a proposed bead set awaiting approval and, after approval, a shift summary with per-bead outcomes.",
     ],
     deps: ["f1-forge", "f3-config"],
   },
@@ -472,11 +480,11 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "forgemaster/forge-* commands accept --crew, record executor on the run, and the plan phase emits file map + complexity per task",
-    description: `Update .claude/commands/forgemaster*.md, forge-*.md and the forge-plan/forge-implement skills: crew flag resolved through F3 config, written via phase-gate --executor; forge-plan's task template gains a '## Files' block and a complexity label the F4 parser reads. ${spec("f5-executor")}`,
+      "forgemaster/forge-* commands accept --smith, record executor on the run, and the plan phase emits file map + complexity per task",
+    description: `Update .claude/commands/forgemaster*.md, forge-*.md and the forge-plan/forge-implement skills: smith flag resolved through F3 config, written via phase-gate --executor; forge-plan's task template gains a '## Files' block and a complexity label the F4 parser reads. ${spec("f5-executor")}`,
     acceptance: [
       "phase-gate.test.ts proves --executor persistence; the forge-plan skill's template and an example plan pass the F4 file-map parser.",
-      "docs/HARNESS-GUIDE.md Forge section documents --crew.",
+      "docs/HARNESS-GUIDE.md Forge section documents --smith.",
     ],
     deps: ["f1-forge", "f3-config"],
   },
@@ -486,27 +494,13 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "/forge-orchestrate: spec → beads (proposed) → operator approval → drain → failure diagnosis and re-plan handoff",
-    description: `New command + skill composing forge-research/plan with to-issues, the F4 queue (propose), an explicit approval stop, forge:drain, and a diagnosis step that reads ledger events for failed runs and either files fix beads or calls POST /runs/:slug/replan. ${spec("f5-orchestrate")}`,
+      "/forge-orchestrate: spec → beads (proposed) → operator approval → shift → failure diagnosis and re-plan handoff",
+    description: `New command + skill composing forge-research/plan with to-issues, the F4 queue (propose), an explicit approval stop, forge:shift, and a diagnosis step that reads ledger events for failed runs and either files fix beads or calls POST /runs/:slug/replan. ${spec("f5-orchestrate")}`,
     acceptance: [
-      "A dry run on a small spec produces proposed beads with file maps and stops; approval + drain is exercised end-to-end once and the transcript summary is attached to the bead.",
+      "A dry run on a small spec produces proposed beads with file maps and stops; approval + shift is exercised end-to-end once and the transcript summary is attached to the bead.",
       "A deliberately failing bead yields a diagnosis comment citing ledger event ids.",
     ],
-    deps: ["f5-executor", "f4-drain"],
-  },
-  {
-    key: "f5-molecules",
-    parent: "f5",
-    type: "task",
-    priority: 3,
-    title:
-      "Spike: execute a molecule (JSON step DAG) as a drain plan; decide keep/retire",
-    description: `.claude/molecules/feature-delivery.json already encodes plan→align→build→quality→evaluate→ship with gates. Prototype running it through the scheduler (each step = adapter run or gate) and decide whether molecules become the drain's plan format or are retired. Fix the stale gas-town reference in .claude/molecules/README.md either way. ${spec("f5-molecules")}`,
-    acceptance: [
-      "A `design:` comment records keep or retire with evidence from one executed molecule.",
-      "If kept: scripts/molecules/run.ts with a test; if retired: README marked historical and molecules:check removed from package.json.",
-    ],
-    deps: ["f4-drain"],
+    deps: ["f5-executor", "f4-shift"],
   },
 
   // ───────────────────────── F6 — council as a first-class action ─────────────────────────
@@ -517,7 +511,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "[command-center] F6 Council on any work item: bead source kind, send-to-council from UI/CLI/MCP, verdict posted back",
-    description: `Make council a one-click action on a bead from the dashboard, the forge-run page, the queue, the CLI and the operator MCP; the council packs the bead's AC, comments, linked plan/research and PR diff, and its verdict returns as a review: comment and ledger event. ${spec("f6-council")}`,
+    description: `Council runs on demand only (decision #9): a [review] before_pr toggle exists, default off, with a 1.00 USD per-run ceiling when on. Make council a one-click action on a bead from the dashboard, the forge-run page, the workbench, the CLI and the operator MCP; the council packs the bead's AC, comments, linked plan/research and PR diff, and its verdict returns as a review: comment and ledger event. ${spec("f6-council")}`,
     acceptance: [
       "bun run council -- bead <id> --dry-run shows the packed evidence (title, AC, latest comments, plan excerpt, PR patch if any) within budget.",
       "Send to council from IssueDetailPanel starts a run, streams progress, and on completion the bead shows a review: comment with the chair recommendation and a council.run.finished event.",
@@ -546,7 +540,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "Send-to-council action on issue detail, forge-run checkpoints and queue cards; verdict posted back as review: comment + ledger event",
-    description: `UI: a Council button (profile picker, budget) on IssueDetailPanel, ForgeRunIsland checkpoints and the Queue board, calling POST /council/runs with a bead source and following progress through /stream. Server: on completion write bd comments add '<id> review: COUNCIL <recommendation> — findings b/h/m/l' and the council.run.finished event. ${spec("f6-action")}`,
+    description: `UI: a Council button (profile picker, budget) on IssueDetailPanel, ForgeRunIsland checkpoints and the Workbench, calling POST /council/runs with a bead source and following progress through /stream. Server: on completion write bd comments add '<id> review: COUNCIL <recommendation> — findings b/h/m/l' and the council.run.finished event. ${spec("f6-action")}`,
     acceptance: [
       "Playwright spec exercises the button with the fake council profile end-to-end and asserts the review comment appears on the bead.",
       "A failed/cancelled council run posts no PASS-looking comment (test).",
@@ -561,10 +555,10 @@ const issues: PlanIssue[] = [
     type: "feature",
     priority: 2,
     title:
-      "[command-center] F7 Command center UI: live sessions, queue board with actions, timeline, crews & config, scoreboard; Playwright in CI",
+      "[command-center] F7 Command center UI: live sessions, workbench with actions, timeline, smiths & config, scoreboard; Playwright in CI",
     description: `Grow the existing Preact dashboard into the command center over the control-plane API and SSE stream, keeping static GitHub Pages mode read-only. Nocturne design system components only; ui-originality-criteria apply. ${spec("f7-ui")}`,
     acceptance: [
-      "Routes sessions, queue, timeline, crews, scoreboard exist, pass a11y.spec, and render from /stream deltas without reload.",
+      "Routes sessions, queue, timeline, smiths, scoreboard exist, pass a11y.spec, and render from /stream deltas without reload.",
       "Static build without a dev server shows read-only data from docs/data/beads.json and explains which actions need the control plane.",
       "Playwright runs in .github/workflows/quality.yml (closes 2q5s; advances p5k).",
     ],
@@ -590,7 +584,7 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "Sessions board: who is running, on which workspace/worktree/bead, with which provider/model/crew, last tool, cost",
+      "Sessions board: who is running, on which workspace/worktree/bead, with which provider/model/smith, last tool, cost",
     description: `New route /sessions and a dashboard stat strip (running / blocked / review counts). Rows link to the bead and the timeline. Teammate sessions nest under their lead. ${spec("f7-sessions")}`,
     acceptance: [
       "Playwright spec with a seeded ledger shows two providers' sessions and the counts strip.",
@@ -604,10 +598,10 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "Queue board with approve / queue / pause / resume / reassign-crew actions and reservation conflicts shown",
-    description: `Kanban-style board over F4 queue states with the operator actions wired to POST /queue/:id/*, crew picker from /crews, and a conflict badge when a bead's file map overlaps an active reservation. ${spec("f7-queue")}`,
+      "Workbench with approve / queue / pause / resume / reassign-smith actions and reservation conflicts shown",
+    description: `Kanban-style board over F4 queue states with the operator actions wired to POST /queue/:id/*, smith picker from /smiths, and a conflict badge when a bead's file map overlaps an active reservation. ${spec("f7-queue")}`,
     acceptance: [
-      "Playwright spec approves a proposed bead and sees it move columns; a reassign shows the crew on the card.",
+      "Playwright spec approves a proposed bead and sees it move columns; a reassign shows the smith on the card.",
       "Each action produces an operator.action event (asserted via /events).",
     ],
     deps: ["f7-stream", "f4-queue"],
@@ -627,13 +621,13 @@ const issues: PlanIssue[] = [
     deps: ["f7-stream"],
   },
   {
-    key: "f7-crews",
+    key: "f7-smiths",
     parent: "f7",
     type: "task",
     priority: 3,
     title:
-      "Crews & config page with provenance, adapter doctor status, and scoreboard",
-    description: `Read-only view of forge:config show (value + source file), forge:doctor adapter status, and the F3 scoreboard. Editing stays in the config file for now (link to docs). ${spec("f7-crews")}`,
+      "Smiths & config page with provenance, adapter doctor status, and scoreboard",
+    description: `Read-only view of forge:config show (value + source file), forge:doctor adapter status, and the F3 scoreboard. Editing stays in the config file for now (link to docs). ${spec("f7-smiths")}`,
     acceptance: [
       "Playwright spec renders provenance and doctor rows from fixtures.",
     ],
@@ -661,9 +655,9 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "[command-center] F8 Desktop app (Tauri shell + sidecar, tray, notifications) and Claude Code mod (band + pane)",
-    description: `Ship the command center as a Windows-first desktop app that supervises the control plane and as a Claude Code mod that surfaces counts and the queue inside the agent. Codex/Cursor plugin surfaces are a later P3. ${spec("f8-desktop")}`,
+    description: `DECIDED: Tauri 2 (decision #1), living in apps/desktop/ in this repository (decision #18), Windows first with macOS only after the Windows installer works (decision #15). Ship the command center as a desktop app that supervises the hearth and as a Claude Code mod that surfaces counts and the queue inside the agent. Codex/Cursor plugin surfaces are a later P3. ${spec("f8-desktop")}`,
     acceptance: [
-      "An installer on Windows launches the app, starts the sidecar, shows the sessions board, and raises a notification when a drain halts or a council verdict lands.",
+      "An installer on Windows launches the app, starts the sidecar, shows the sessions board, and raises a notification when a shift halts or a council verdict lands.",
       "In Claude Code the band shows running/blocked/review counts and /forge-board opens the queue pane.",
     ],
     deps: ["d1", "f7-sessions", "f7-queue"],
@@ -674,8 +668,8 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "Desktop shell per D1: window over the dashboard, sidecar lifecycle (start/health/restart/stop), tray counts, deep links",
-    description: `apps/desktop/ (Tauri 2 unless D1 says otherwise): bundles the built dashboard, spawns bun run control-plane as a sidecar with the operator token, restarts on crash, tray menu with counts from /stream, agent-forge://bead/<id> deep links. ${spec("f8-shell")}`,
+      "Tauri 2 desktop shell: window over the dashboard, sidecar lifecycle (start/health/restart/stop), tray counts, deep links",
+    description: `First checkpoint is the D1 proving spike: window opens over the dashboard, the hearth sidecar starts and stops, the tray shows a count (screenshot on the bead). apps/desktop/ (Tauri 2, decided): bundles the built dashboard, spawns bun run hearth as a sidecar with the operator token, restarts on crash, tray menu with counts from /stream, agent-forge://bead/<id> deep links. ${spec("f8-shell")}`,
     acceptance: [
       "bun run desktop:dev opens the app on Windows; killing the sidecar restarts it within 3 s (recorded).",
       "Tray counts match /sessions and /queue (manual verification steps in the ship report).",
@@ -688,7 +682,7 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 2,
     title:
-      "OS notifications and approval prompts: drain halted, gate failed, council verdict, proposed bead awaiting approval",
+      "OS notifications and approval prompts: shift halted, gate failed, council verdict, proposed bead awaiting approval",
     description: `Subscribe to /stream in the shell; map event kinds to notifications with an Approve action for proposed beads (calls POST /queue/:id/approve with the operator token). Quiet hours and per-kind toggles in agent-forge.toml. ${spec("f8-notify")}`,
     acceptance: [
       "Each mapped event kind produces one notification in a manual run (screenshots on the bead).",
@@ -721,7 +715,7 @@ const issues: PlanIssue[] = [
     acceptance: [
       "A tagged build produces an installer artifact in CI; install + launch verified on a clean Windows VM (notes on the bead).",
     ],
-    deps: ["f8-shell", "f7-crews"],
+    deps: ["f8-shell", "f7-smiths"],
   },
   {
     key: "f8-other-agents",
@@ -747,10 +741,10 @@ const issues: PlanIssue[] = [
       "[command-center] F9 Docs, knowledge and protocol migration for the command center",
     description: `Bring CLAUDE.md, AGENTS.md scaffolds, HARNESS-GUIDE, README, knowledge/_shared.yaml and the protocols in line with the command center; remove stale references found in the survey. ${spec("f9-docs")}`,
     acceptance: [
-      "README and HARNESS-GUIDE have a Command Center section covering control plane, crews, queue/drain, council action, desktop app and mod, with every new npm script listed.",
+      "README and HARNESS-GUIDE have a Command Center section covering control plane, smiths, queue/shift, council action, desktop app and mod, with every new npm script listed.",
       "knowledge/_shared.yaml no longer references the deleted gas-town insights file; bun run agents-md validate reports zero missing files.",
     ],
-    deps: ["f2-mcp", "f4-drain", "f8-shell"],
+    deps: ["f2-mcp", "f4-shift", "f8-shell"],
   },
   {
     key: "f9-fix-refs",
@@ -765,17 +759,31 @@ const issues: PlanIssue[] = [
     ],
   },
   {
+    key: "f9-retire-molecules",
+    parent: "f9",
+    type: "task",
+    priority: 3,
+    title:
+      "Retire molecules: README marked historical, molecules:check removed, workflow references cleaned",
+    description: `Molecules are retired by owner decision (05-decisions.md #14); the shift takes its DAG from Beads dependencies. Mark .claude/molecules/README.md historical (keep the JSON as an archived example), remove molecules:check from package.json and scripts/molecules/check.ts, delete references from .claude/workflows and docs/HARNESS-GUIDE.md, and keep scripts/molecules/parse.ts only if something else imports it. ${spec("f9-retire-molecules")}`,
+    acceptance: [
+      "bun run molecules:check no longer exists; typecheck, lint and tests pass.",
+      "grep -ri molecule across .claude/workflows, .claude/commands, docs/HARNESS-GUIDE.md and README.md returns only the historical note.",
+    ],
+    deps: ["f9-fix-refs"],
+  },
+  {
     key: "f9-guide",
     parent: "f9",
     type: "task",
     priority: 2,
     title:
       "HARNESS-GUIDE, README, CLAUDE.md and protocols updated for the command center; onboarding protocol linked",
-    description: `Write the Command Center chapter, update the slash-command tables (friction, forge-orchestrate, forge:drain, forge:audit, forge:config, forge:doctor, control-plane, control:mcp, desktop:dev), link .claude/protocols/agent-onboarding.md, and update the session-completion protocol to mention the ledger. ${spec("f9-guide")}`,
+    description: `Write the Command Center chapter, update the slash-command tables (friction, forge-orchestrate, forge:shift, forge:audit, forge:config, forge:doctor, control-plane, hearth:mcp, desktop:dev), link .claude/protocols/agent-onboarding.md, and update the session-completion protocol to mention the ledger. ${spec("f9-guide")}`,
     acceptance: [
       "Every npm script added by this epic appears in README's script table with one line; a new reader can start the control plane and the desktop app from the docs alone (verified by a fresh-clone walkthrough recorded on the bead).",
     ],
-    deps: ["f9-fix-refs", "f2-mcp", "f4-drain", "f8-shell"],
+    deps: ["f9-fix-refs", "f2-mcp", "f4-shift", "f8-shell"],
   },
 ];
 

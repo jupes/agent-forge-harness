@@ -3,6 +3,7 @@ import { commandCenterPlan } from "./command-center-plan";
 import {
   type BdClient,
   type BdCreateParams,
+  type BdUpdateParams,
   importPlan,
   type PlanSpec,
   renderPlanMarkdown,
@@ -10,18 +11,26 @@ import {
   validatePlan,
 } from "./plan-import";
 
+interface FakeRow {
+  id: string;
+  title: string;
+  parent?: string | undefined;
+  type: string;
+}
+
 function fakeClient(): BdClient & {
   created: BdCreateParams[];
+  updates: Array<{ id: string; params: BdUpdateParams }>;
   deps: string[];
+  rows: Map<string, FakeRow>;
 } {
-  const rows = new Map<
-    string,
-    { id: string; title: string; parent?: string | undefined; type: string }
-  >();
+  const rows = new Map<string, FakeRow>();
   const deps = new Set<string>();
   let n = 0;
   return {
     created: [],
+    updates: [],
+    rows,
     get deps() {
       return [...deps];
     },
@@ -43,6 +52,11 @@ function fakeClient(): BdClient & {
         type: params.type,
       });
       return id;
+    },
+    update(id, params) {
+      this.updates.push({ id, params });
+      const row = rows.get(id);
+      if (row) row.title = params.title;
     },
     listDeps(issueId) {
       return [...deps]
@@ -118,6 +132,12 @@ describe("validatePlan", () => {
     }
   });
 
+  test("the command-center plan uses forge vocabulary, not Orbit's", () => {
+    const text = JSON.stringify(commandCenterPlan);
+    expect(text).not.toMatch(/\bcrews?\b/i);
+    expect(text).not.toMatch(/\bdrains?\b/i);
+  });
+
   test("rejects unknown deps, missing parents, cycles and empty acceptance", () => {
     const bad: PlanSpec = {
       name: "bad",
@@ -168,6 +188,7 @@ describe("importPlan", () => {
     const result = importPlan(tiny, bd);
     expect(result.created).toHaveLength(4);
     expect(result.reused).toHaveLength(0);
+    expect(result.updated).toHaveLength(0);
     const t2 = bd.created.find((c) => c.title === "T2");
     expect(t2?.parent).toBe(result.ids.f);
     expect(t2?.priority).toBe(3);
@@ -178,7 +199,7 @@ describe("importPlan", () => {
     ]);
   });
 
-  test("is idempotent: a second run creates nothing and adds no deps", () => {
+  test("is idempotent: a second run creates nothing, updates nothing, adds no deps", () => {
     const bd = fakeClient();
     const first = importPlan(tiny, bd);
     const second = importPlan(tiny, bd);
@@ -186,6 +207,60 @@ describe("importPlan", () => {
     expect(second.reused.sort()).toEqual(["e", "f", "t1", "t2"]);
     expect(second.depsAdded).toEqual([]);
     expect(second.ids).toEqual(first.ids);
+    expect(bd.updates).toEqual([]);
+  });
+
+  test("sync pushes edited titles and fields onto issues found through knownIds", () => {
+    const bd = fakeClient();
+    const first = importPlan(tiny, bd);
+    const edited: PlanSpec = {
+      ...tiny,
+      issues: tiny.issues.map((i) =>
+        i.key === "t1"
+          ? { ...i, title: "T1 renamed", priority: 1, acceptance: ["c", "d"] }
+          : i,
+      ),
+    };
+    const second = importPlan(edited, bd, { knownIds: first.ids, sync: true });
+    expect(second.created).toEqual([]);
+    expect(second.updated.sort()).toEqual(["e", "f", "t1", "t2"]);
+    const t1 = bd.updates.find((u) => u.id === first.ids.t1);
+    expect(t1?.params.title).toBe("T1 renamed");
+    expect(t1?.params.priority).toBe(1);
+    expect(t1?.params.acceptance).toBe("- [ ] c\n- [ ] d");
+    expect(bd.rows.get(first.ids.t1 as string)?.title).toBe("T1 renamed");
+  });
+
+  test("a renamed issue without knownIds would be created again, which is why ids are persisted", () => {
+    const bd = fakeClient();
+    importPlan(tiny, bd);
+    const edited: PlanSpec = {
+      ...tiny,
+      issues: tiny.issues.map((i) =>
+        i.key === "t1" ? { ...i, title: "T1 renamed" } : i,
+      ),
+    };
+    const second = importPlan(edited, bd);
+    expect(second.created).toEqual(["t1"]);
+  });
+
+  test("refuses to run when knownIds hold a key the plan no longer has (renamed key)", () => {
+    const bd = fakeClient();
+    const first = importPlan(tiny, bd);
+    const renamed: PlanSpec = {
+      ...tiny,
+      issues: tiny.issues
+        .map((i) => (i.key === "t1" ? { ...i, key: "t1-new" } : i))
+        .map((i) =>
+          i.key === "t2"
+            ? { ...i, deps: ["t1-new", "agent-forge-harness-x1y2"] }
+            : i,
+        ),
+    };
+    expect(() =>
+      importPlan(renamed, bd, { knownIds: first.ids, sync: true }),
+    ).toThrow(/renamed key.*t1/);
+    expect(bd.created).toHaveLength(4);
   });
 
   test("refuses an invalid plan before touching bd", () => {

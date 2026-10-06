@@ -8,25 +8,25 @@ This file carries what does **not** fit in a bead: wave ordering, reuse pointers
 ## How an executor agent picks up a bead
 
 1. `bd ready | grep x1gs` → pick a leaf whose feature you are assigned; `bd show <id>` and read the AC.
-2. Read `00-README.md`, `03-target-architecture.md`, and this file's section for the bead. Then the files named in the section. Do not re-survey what `02-gap-analysis.md` already cites.
+2. Read `00-README.md`, `05-decisions.md` (settled; do not reopen), `03-target-architecture.md`, and this file's section for the bead. Then the files named in the section. Do not re-survey what `02-gap-analysis.md` already cites.
 3. Run the owning **feature** as a Forge run in its own worktree: `/forgemaster <feature title> --slug cc-<feature>`; the feature's tasks are the plan's demo checkpoints. Single tasks that are already crisp (F9 `fix-refs`, D-beads) may use `/forgemaster-mini`.
-4. Evaluator tier ≥ builder tier (`.claude/protocols/model-tier-policy.md`). Record `worklog:` and `review:` comments as you go; close with test evidence; ship with the PR template.
+4. evaluator rank ≥ builder rank (`.claude/protocols/model-tier-policy.md`). Record `worklog:` and `review:` comments as you go; close with test evidence; ship with the PR template.
 5. If the architecture must change, add a `design:` comment on the bead **and** edit `03-target-architecture.md` in the same PR.
 
 ## Waves (what can run in parallel)
 
 | Wave | Beads | Why this order |
 |---|---|---|
-| 0 | `f9-fix-refs`, `d1`, `d2`, `d3` | No code dependencies; decisions unblock everything |
+| 0 | `f9-fix-refs`, `d3` (protocol file) | No code dependencies. `d1` and `d2` are decided and closed; every other decision is in `05-decisions.md` |
 | 1 | `f0-types`, then `f1-core`, `f2-server`, `f3-config` in parallel | Contracts first; three independent foundations |
 | 2 | `f1-hooks`, `f1-forge`, `f1-gates`, `f2-api`, `f3-adapter-claude`, `f4-worktrees` | Each needs one wave-1 piece |
 | 3 | `f2-beads-write`, `f2-mcp`, `f3-adapter-codex`, `f4-queue`, `f5-executor`, `f6-source`, `f7-stream`, `f7-ci`, `f1-friction` | Operator surfaces and scheduler pieces |
 | 4 | `f4-reservations`, `f7-sessions`, `f7-queue`, `f7-timeline`, `f3-scoreboard`, `f3-adapter-third` | UI and scheduling over the API |
-| 5 | `f4-drain`, `f6-action`, `f8-shell`, `f8-mod`, `f7-crews` | Needs queue + adapters + UI |
-| 6 | `f5-orchestrate`, `f5-molecules`, `f4-autotasks`, `f8-notify`, `f8-package`, `f8-other-agents` | End-to-end flows and polish |
+| 5 | `f4-shift`, `f6-action`, `f8-shell`, `f8-mod`, `f7-smiths` | Needs queue + adapters + UI |
+| 6 | `f5-orchestrate`, `f9-retire-molecules`, `f4-autotasks`, `f8-notify`, `f8-package`, `f8-other-agents` | End-to-end flows and polish |
 | 7 | `f9-guide` | Documents the finished shape |
 
-External prerequisites already open elsewhere: `ulpz.1` (topology), `ulpz.3` (SQLite ledger), `0xxt` (hook identity), `empi` (verdict binding), `csf2`, `5mge`, `2q5s`, `3u6`. They are wired as `blocks` edges; if one stalls, note it with a `deps:` comment rather than working around it silently.
+External prerequisites already open elsewhere: `0xxt` (hook identity), `empi` (verdict binding), `csf2`, `5mge`, `2q5s`, `3u6`. They are wired as `blocks` edges; if one stalls, note it with a `deps:` comment rather than working around it silently.
 
 ---
 
@@ -36,24 +36,24 @@ External prerequisites already open elsewhere: `ulpz.1` (topology), `ulpz.3` (SQ
 Three decisions, one contract file. Decisions are `bd` type `decision`; close each with a `design:` comment that would let a stranger reconstruct the choice.
 
 <a id="d1-desktop-shell"></a>
-### D1 Desktop shell
-- **Evaluate in this order:** Tauri 2 (Rust shell, webview, sidecar support, small installers; needs Rust toolchain and WebView2 on Windows), Electron (Node-native, heavier, easiest Bun sidecar story), PWA (no tray/notification control, no sidecar), mod-only (no standalone app; fails the user's requirement).
+### D1 Desktop shell — DECIDED: Tauri 2 (`05-decisions.md` #1); closed
+- Kept for context. **Evaluated in this order:** Tauri 2 (Rust shell, webview, sidecar support, small installers; needs Rust toolchain and WebView2 on Windows), Electron (Node-native, heavier, easiest Bun sidecar story), PWA (no tray/notification control, no sidecar), mod-only (no standalone app; fails the user's requirement).
 - **Spike budget:** one afternoon. Prove: window opens over `http://127.0.0.1:8787` from `bun run dashboard`, a Bun child process is started/stopped by the shell, a tray icon shows a number. Attach a screenshot.
 - **Pitfall:** Tauri sidecars must be a single executable; `bun build --compile` produces one. Verify it on Windows with a path containing spaces.
 
 <a id="d2-process-model"></a>
-### D2 Process model and ledger location
+### D2 Process model and ledger location — DECIDED (`05-decisions.md` #2–3); closed
 - Reconcile with `docs/plans/self-hosted-ai-agent-stack.md` Checkpoint B (`ulpz.3`): its `RunCorrelation` and metadata-only rule are the schema seed. Recommend one machine-wide `~/.agent-forge/ledger.db` with a `workspace` column; `.tmp/work/ledger.db` only if `ulpz.1` insists on per-workspace isolation.
-- Decide who owns the process: `bun run control-plane` (manual), Vite dev (spawns it), Tauri sidecar (supervises it). Recommend: all three can start it; a lock file with pid + port + token under `~/.agent-forge/` prevents duplicates.
+- Decide who owns the process: `bun run hearth` (manual), Vite dev (spawns it), Tauri sidecar (supervises it). Recommend: all three can start it; a lock file with pid + port + token under `~/.agent-forge/` prevents duplicates.
 
 <a id="d3-onboarding-contract"></a>
-### D3 Agent onboarding contract
+### D3 Agent onboarding contract — DECIDED (`05-decisions.md` #4); remaining work is the protocol file
 - Write `.claude/protocols/agent-onboarding.md`: Session envelope `{ sessionId, provider, model?, effort?, workspace, worktree?, beadId?, parentSessionId? }`, attach sequence per executor kind (interactive Claude Code via hooks; teammate via hooks + `parentSessionId`; headless via adapter stream; remote via HTTP POST).
 - Identity when the provider gives none: mint a ULID, persist at `<worktree>/.agent-forge-session`, reuse until SessionEnd. This is the bridge over `0xxt`.
 
 <a id="f0-types"></a>
 ### Contracts file
-- `types/control-plane.ts` next to `types/beads.ts`; validators in `scripts/control-plane/validate.ts` (hand-written type guards; no zod). Export `LEDGER_EVENT_KINDS` as a const tuple so emitters and UI share one list.
+- `types/hearth.ts` next to `types/beads.ts`; validators in `scripts/hearth/validate.ts` (hand-written type guards; no zod). Export `LEDGER_EVENT_KINDS` as a const tuple so emitters and UI share one list.
 
 ---
 
@@ -65,7 +65,7 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 <a id="f1-core"></a>
 ### Ledger core and `forge:audit`
 - Reuse: `scripts/council/safety.test.ts` fixtures for secret patterns; `scripts/forge/runs-store.ts` for the file-layout/migration style; `{ ok, data, error }` envelope everywhere.
-- Schema v1: `events(id INTEGER PK, ulid TEXT UNIQUE, ts TEXT, kind TEXT, workspace TEXT, bead_id TEXT, run_id TEXT, session_id TEXT, provider TEXT, model TEXT, effort TEXT, crew TEXT, payload TEXT)` with indexes on `(bead_id, id)`, `(run_id, id)`, `(session_id, id)`, `(kind, id)`.
+- Schema v1: `events(id INTEGER PK, ulid TEXT UNIQUE, ts TEXT, kind TEXT, workspace TEXT, bead_id TEXT, run_id TEXT, session_id TEXT, provider TEXT, model TEXT, effort TEXT, smith TEXT, payload TEXT)` with indexes on `(bead_id, id)`, `(run_id, id)`, `(session_id, id)`, `(kind, id)`.
 - Keep `appendEvent` synchronous and under 1 ms; hooks call it in-process.
 
 <a id="f1-hooks"></a>
@@ -90,17 +90,17 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 ---
 
 ## F2 — Control plane and operator surfaces
-<a id="f2-control-plane"></a>
+<a id="f2-hearth"></a>
 
 <a id="f2-server"></a>
 ### Standalone server
-- Move handlers out of `scripts/dashboard/dev-api.ts` and `scripts/council/dashboard.ts` into `scripts/control-plane/routes/*.ts`; keep their tests by exporting the same handler functions. `vite.dashboard.config.ts` gets a `server.proxy` for `/__agent-forge` and keeps only `rebuild-pages` locally.
+- Move handlers out of `scripts/dashboard/dev-api.ts` and `scripts/council/dashboard.ts` into `scripts/hearth/routes/*.ts`; keep their tests by exporting the same handler functions. `vite.dashboard.config.ts` gets a `server.proxy` for `/__agent-forge` and keeps only `rebuild-pages` locally.
 - Token: `~/.agent-forge/operator.token` created at boot (0600 where supported); the dashboard fetches it via a loopback-only `GET /token` that requires `Origin` to be the dev origin.
 
 <a id="f2-api"></a>
 ### Operator API and SSE
 - Route table in `03-target-architecture.md` §6 is the contract; add a route-table test that asserts every POST writes `operator.action` (iterate the table, not hand-written cases).
-- SSE: generalise `scripts/council/dashboard.ts:102-123` into `scripts/control-plane/stream.ts` (snapshot on connect, deltas by ledger `id` cursor, 15 s keepalive).
+- SSE: generalise `scripts/council/dashboard.ts:102-123` into `scripts/hearth/stream.ts` (snapshot on connect, deltas by ledger `id` cursor, 15 s keepalive).
 
 <a id="f2-beads-write"></a>
 ### Beads write path
@@ -113,13 +113,13 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 
 ---
 
-## F3 — Crews and executor adapters
-<a id="f3-crews"></a>
+## F3 — Smiths and executor adapters
+<a id="f3-smiths"></a>
 
 <a id="f3-config"></a>
 ### Config with provenance
 - TOML parsing: Bun has `Bun.TOML`? If not stable, use a tiny vendored parser or `smol-toml` (justify the dep in the PR). Provenance = map key → `{ value, source: "builtin" | "~/.agent-forge/config.toml" | "<harness>/agent-forge.toml" | "env" }`.
-- Built-in crews: `claude:top` (Opus/Fable, effort high), `claude:default` (Sonnet), `claude:cheap` (Haiku), `codex:default`. Pools: `low_complexity = ["claude:cheap:70", "codex:default:30"]` etc. Keep names provider-prefixed.
+- Built-in smiths (decided): `claude-master` (highest Claude rank, effort high), `claude-journeyman` (default Claude), `claude-apprentice` (cheapest Claude), `codex-journeyman`. Default smith `claude-journeyman`. Benches: `[benches] low = ["claude-apprentice:70", "codex-journeyman:30"]`, `medium`, `high`. Keep names provider-prefixed.
 
 <a id="f3-adapter-claude"></a>
 ### Claude Code adapter
@@ -156,8 +156,9 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 ### File reservations and eligibility
 - File-map block format in task descriptions: a `## Files` section with one glob per line. Parser in `scripts/scheduler/filemap.ts`; eligibility extends `scripts/beads/convoy-bundles.ts` (keep its bundle ordering tests green).
 
-<a id="f4-drain"></a>
-### `forge:drain`
+<a id="f4-shift"></a>
+### `forge:shift`
+- Defaults (decided): concurrency 2, `--for 2h`, admission paused above 85% CPU or memory, 3 repair attempts then `queue:halted`; PRs opened, never merged.
 - Loop: pick → reserve → worktree → adapter run with `/forgemaster-auto` prompt → gate → PR → release. Concurrency with a semaphore; `--for` enforced by a deadline passed to adapters. Throttle: sample `os.loadavg`/`freemem` (Windows: `wmic`/PowerShell counters behind a small helper). Never merges.
 
 <a id="f4-autotasks"></a>
@@ -170,16 +171,15 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 <a id="f5-forgemaster"></a>
 
 <a id="f5-executor"></a>
-### `--crew` and file maps in plans
+### `--smith` and file maps in plans
 - Commands/skills to edit: `.claude/commands/forgemaster*.md`, `forge-*.md`, `.claude/skills/forge-plan/SKILL.md` (task template gains `## Files` and a complexity label), `.claude/skills/forge-implement/SKILL.md` (reads them). `phase-gate --executor '<json>'`.
 
 <a id="f5-orchestrate"></a>
 ### `/forge-orchestrate`
-- Composition, not new engines: research/plan skills → `to-issues` → queue propose → **stop for approval** → `forge:drain` → diagnosis (query ledger per failed run; file fix beads or `POST /runs/:slug/replan`). Write the skill so it degrades to a dry run when no adapter is available.
+- Composition, not new engines: research/plan skills → `to-issues` → queue propose → **stop for approval** → `forge:shift` → diagnosis (query ledger per failed run; file fix beads or `POST /runs/:slug/replan`). Write the skill so it degrades to a dry run when no adapter is available.
 
-<a id="f5-molecules"></a>
-### Molecule runtime spike
-- `.claude/molecules/feature-delivery.json` is the test subject. Decide keep/retire with evidence; either way fix the stale gas-town reference in `.claude/molecules/README.md`.
+### Molecules — RETIRED (`05-decisions.md` #14)
+- No spike. The shift's DAG is the Beads dependency graph. Cleanup is `f9-retire-molecules`.
 
 ---
 
@@ -192,6 +192,7 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 
 <a id="f6-action"></a>
 ### Send to council
+- On demand only (decided). `[review] before_pr` is a config toggle, default off, 1.00 USD ceiling when on.
 - UI entry points: `IssueDetailPanel`, `ForgeRunIsland` checkpoints, Queue cards. Server posts `review: COUNCIL <recommendation> — findings b/h/m/l` plus a link to `reports/council-runs/<id>/report.md`. Cancelled/failed runs post `review: COUNCIL incomplete` so nothing reads as a pass.
 
 ---
@@ -208,15 +209,15 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 - Nocturne `Table` + `StatCard`. Nest teammates under their lead via `parentSessionId`. Cost column reads usage from `session.ended` payloads where providers report it.
 
 <a id="f7-queue"></a>
-### Queue board
+### Workbench
 - Columns = queue states; actions call F2 routes; conflict badge from `GET /reservations` overlap check done client-side with the same glob matcher used server-side (share `scripts/scheduler/filemap.ts` through the Vite alias used for `issues-selection`).
 
 <a id="f7-timeline"></a>
 ### Timeline
 - Virtualised list (hand-rolled windowing; no new dependency unless justified). Deep links `#/timeline?bead=<id>`.
 
-<a id="f7-crews"></a>
-### Crews & config
+<a id="f7-smiths"></a>
+### Smiths & config
 - Read-only; shows provenance and doctor rows. Editing remains in files.
 
 <a id="f7-ci"></a>
@@ -230,15 +231,15 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 
 <a id="f8-shell"></a>
 ### Shell
-- `apps/desktop/` (Tauri 2 unless D1 says otherwise). Sidecar = `bun build --compile scripts/control-plane/server.ts`. Health check `GET /health`; restart with backoff; tray menu reads `/stream`. Deep link scheme `agent-forge://bead/<id>`.
+- `apps/desktop/` (Tauri 2 unless D1 says otherwise). Sidecar = `bun build --compile scripts/hearth/server.ts`. Health check `GET /health`; restart with backoff; tray menu reads `/stream`. Deep link scheme `agent-forge://bead/<id>`.
 
 <a id="f8-notify"></a>
 ### Notifications
-- Map: `drain.stopped(reason=halt)`, `gate.ran(ok=false)`, `council.run.finished`, `bead.transitioned(to=proposed)`. Approve action posts with the operator token the shell already holds. Quiet hours in `[desktop]` config.
+- Map: `shift.stopped(reason=halt)`, `gate.ran(ok=false)`, `council.run.finished`, `bead.transitioned(to=proposed)`. Approve action posts with the operator token the shell already holds. Quiet hours in `[desktop]` config.
 
 <a id="f8-mod"></a>
 ### Claude Code mod
-- Load the `plugin-authoring` skill first. Plugin dir `.claude/plugins/forge-command-center/`; poll `/sessions` and `/queue` every few seconds; band shows `▶ n · ⏸ n · 👁 n`; pane renders the queue board in text; `/forge-council <bead>` → `POST /council/runs`.
+- Load the `plugin-authoring` skill first. Plugin dir `.claude/plugins/forge-command-center/`; poll `/sessions` and `/queue` every few seconds; band shows `▶ n · ⏸ n · 👁 n`; pane renders the workbench in text; `/forge-council <bead>` → `POST /council/runs`.
 
 <a id="f8-package"></a>
 ### Packaging
@@ -257,6 +258,10 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 ### Stale references (do first)
 - `knowledge/_shared.yaml:73-76` → point `research_notes` at `docs/plans/command-center/`. `.claude/molecules/README.md` same. `bun run agents-md scaffold --write` for the eight directories the SessionStart hook lists, then `bun run agents-md validate --hook`.
 
+<a id="f9-retire-molecules"></a>
+### Retire molecules
+- Mark `.claude/molecules/README.md` historical and keep the JSON as an archived example; remove `molecules:check` and `scripts/molecules/check.ts`; keep `parse.ts` only if something still imports it; scrub references in `.claude/workflows`, `docs/HARNESS-GUIDE.md`, `README.md`.
+
 <a id="f9-guide"></a>
 ### Guide and README
-- New chapter in `docs/HARNESS-GUIDE.md` (concepts: ledger, crews, queue, drain, council action, desktop, mod); README script table; CLAUDE.md slash-command table (`/friction`, `/forge-orchestrate`, `/forge-board`, `/forge-council`); session-completion protocol mentions the ledger; link `.claude/protocols/agent-onboarding.md`.
+- New chapter in `docs/HARNESS-GUIDE.md` (concepts: ledger, smiths, queue, shift, council action, desktop, mod); README script table; CLAUDE.md slash-command table (`/friction`, `/forge-orchestrate`, `/forge-board`, `/forge-council`); session-completion protocol mentions the ledger; link `.claude/protocols/agent-onboarding.md`.
