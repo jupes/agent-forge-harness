@@ -8,6 +8,9 @@ trees/
 # Temporary agent work files
 .tmp/
 
+# Minted per-worktree agent session identity (see .claude/protocols/agent-onboarding.md)
+.agent-forge-session
+
 # Working artifacts — plans, research, and reports are LOCAL ONLY.
 # They are often about other projects and must never ship in this public harness repo.
 # Only the directory structure, the storage contract docs, and test fixtures are tracked.
