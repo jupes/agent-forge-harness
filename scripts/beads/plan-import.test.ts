@@ -132,7 +132,7 @@ describe("validatePlan", () => {
     }
   });
 
-  test("the command-center plan uses forge vocabulary, not Orbit's", () => {
+  test("the command-center plan uses forge vocabulary", () => {
     const text = JSON.stringify(commandCenterPlan);
     expect(text).not.toMatch(/\bcrews?\b/i);
     expect(text).not.toMatch(/\bdrains?\b/i);

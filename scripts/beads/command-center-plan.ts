@@ -31,7 +31,7 @@ const issues: PlanIssue[] = [
       "[command-center] Agent Forge Command Center — one control plane for every agent, provider and workstream",
     description: [
       "Turn the harness into a local-first command center: a ledger of every agent session and tool call (any provider), a control-plane server with a typed operator API, smiths that route work across provider CLIs, a conflict-aware queue with bounded unattended shifts, council as a first-class action on any bead, and a desktop app plus a Claude Code pane as control surfaces. Beads stays the only work graph; forgemaster stays the planning brain.",
-      `Research: ${DOC}/01-orbit-teardown.md, ${DOC}/02-gap-analysis.md, ${DOC}/03-target-architecture.md. Roadmap and per-bead specs: ${DOC}/04-roadmap-and-beads.md.`,
+      `Research: ${DOC}/02-gap-analysis.md, ${DOC}/03-target-architecture.md. Roadmap and per-bead specs: ${DOC}/04-roadmap-and-beads.md.`,
       "Execution rule: each feature below is one /forgemaster run (research → plan → implement → ship) in its own worktree; tasks are the demo checkpoints. Re-run `bun run beads:import-command-center-plan` after editing scripts/beads/command-center-plan.ts; it is idempotent.",
     ].join("\n\n"),
     acceptance: [
@@ -198,7 +198,7 @@ const issues: PlanIssue[] = [
     priority: 3,
     title:
       "Friction ledger as Beads: /friction command, friction label, ledger link, resolve-on-close",
-    description: `A friction is a Beads chore with label friction, optional link to the ledger event that caused it, and a resolved-by relation to the bead that fixes it. Add .claude/commands/friction.md and a skill, bun run forge:friction add|list|resolve, and make bd search cover them (it already does). This is the harness equivalent of Orbit's friction ledger, without a second store. ${spec("f1-friction")}`,
+    description: `A friction is a Beads chore with label friction, optional link to the ledger event that caused it, and a resolved-by relation to the bead that fixes it. Add .claude/commands/friction.md and a skill, bun run forge:friction add|list|resolve, and make bd search cover them (it already does). No second store: frictions are beads. ${spec("f1-friction")}`,
     acceptance: [
       '/friction "<text>" creates a chore with label friction and a friction.recorded event.',
       "Closing a bead that references a friction (resolves: <id>) closes the friction with a worklog comment.",
@@ -273,7 +273,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "MCP operator server (forge_* tools) with operator vs agent authority at call time; register .mcp.json; supersede 3u6",
-    description: `scripts/hearth/mcp.ts (bun run hearth:mcp) wraps the operator API as MCP tools. Same tools/list for all sessions; calls carry the operator token only when launched with --operator. Re-export council_* tools from scripts/council/mcp.ts. Keep the tool set small (Orbit lesson 1: MCP tokens cost). Close agent-forge-harness-3u6 with a pointer here. ${spec("f2-mcp")}`,
+    description: `scripts/hearth/mcp.ts (bun run hearth:mcp) wraps the operator API as MCP tools. Same tools/list for all sessions; calls carry the operator token only when launched with --operator. Re-export council_* tools from scripts/council/mcp.ts. Keep the tool set small (MCP tool surfaces cost tokens). Close agent-forge-harness-3u6 with a pointer here. ${spec("f2-mcp")}`,
     acceptance: [
       "scripts/hearth/mcp.test.ts proves tools/list parity and the operator/agent refusal matrix for every governed tool.",
       ".mcp.json registers the server; CLAUDE.md documents when agents should use forge_* vs bd.",
@@ -320,7 +320,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "ExecutorAdapter interface + Claude Code adapter (headless claude -p, stream-json → ledger, panic-safe cleanup)",
-    description: `scripts/executors/{adapter,claude}.ts per 03-target-architecture.md §8. Spawn with Bun.spawn in the target worktree, env from the allowlist, parse --output-format stream-json into tool.called/session events, register kill-on-exit/timeout for every child (Orbit lesson 3). Resolve smith per precedence (flag → bead metadata → bench → default). ${spec("f3-adapter-claude")}`,
+    description: `scripts/executors/{adapter,claude}.ts per 03-target-architecture.md §8. Spawn with Bun.spawn in the target worktree, env from the allowlist, parse --output-format stream-json into tool.called/session events, register kill-on-exit/timeout for every child. Resolve smith per precedence (flag → bead metadata → bench → default). ${spec("f3-adapter-claude")}`,
     acceptance: [
       "scripts/executors/claude.test.ts uses a fake claude binary (scripts/executors/fixtures) to prove stream parsing, env allowlist, timeout kill, and ledger events.",
       "A real headless run on Windows against a trivial bead is recorded on the bead with its forge:audit output.",
@@ -334,7 +334,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "Codex adapter (codex exec) reusing sync-codex output; doctor reports missing CLIs",
-    description: `scripts/executors/codex.ts: run bun run codex:sync first, then codex exec in the worktree with .codex/config.toml, map its JSON event stream to ledger events. Add bun run forge:doctor listing each adapter's availability/version (like orbit doctor). ${spec("f3-adapter-codex")}`,
+    description: `scripts/executors/codex.ts: run bun run codex:sync first, then codex exec in the worktree with .codex/config.toml, map its JSON event stream to ledger events. Add bun run forge:doctor listing each adapter's availability/version. ${spec("f3-adapter-codex")}`,
     acceptance: [
       "codex.test.ts with a fake binary proves event mapping and env allowlist.",
       "forge:doctor prints { ok, data: { adapters: [...] } } and exits 0 even when a CLI is missing (missing is data, not failure).",
@@ -466,7 +466,7 @@ const issues: PlanIssue[] = [
     priority: 2,
     title:
       "[command-center] F5 Forgemaster as the planning brain: executor-aware runs, file maps per task, spec→queue orchestration",
-    description: `Expand the Forge pipeline so its plans feed the scheduler: every task carries a file map and complexity, runs record their executor and smith, a new /forge-orchestrate takes a spec to approved queue to shift to diagnosis (Orbit's orbit-orchestrate, done the Forge way). Molecules are retired (decision #14); a shift's DAG is the Beads dependency graph. ${spec("f5-forgemaster")}`,
+    description: `Expand the Forge pipeline so its plans feed the scheduler: every task carries a file map and complexity, runs record their executor and smith, a new /forge-orchestrate takes a spec to approved queue to shift to diagnosis. Molecules are retired (decision #14); a shift's DAG is the Beads dependency graph. ${spec("f5-forgemaster")}`,
     acceptance: [
       "/forgemaster <feature> --smith <name> records the smith on the run and in the ledger.",
       "/forge-plan output tasks all carry a parseable file map and complexity label.",

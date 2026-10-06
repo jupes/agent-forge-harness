@@ -1,27 +1,27 @@
-# Gap analysis — Agent Forge today vs Orbit vs the Command Center target
+# Gap analysis — Agent Forge today vs prior art vs the Command Center target
 
 Generated: 2026-10-06 (survey of this checkout at `12fd46e`)
 Status: research input for the **Agent Forge Command Center** epic (see `00-README.md`). Every "today" claim below was checked against real files; paths are relative to the harness root.
 
 ## 1. Capability matrix
 
-Legend: ✅ have · 🟡 partial · ❌ missing · ★ target goes beyond Orbit
+Legend: ✅ have · 🟡 partial · ❌ missing · ★ target goes beyond the prior art
 
-| Capability | Orbit | Agent Forge today | Target |
+| Capability | Prior art (internal teardown, see epic comment) | Agent Forge today | Target |
 |---|---|---|---|
 | Work graph with epics, deps, AC, comments, history | 🟡 flat tasks + typed relations | ✅ Beads (`bd`, Dolt) | ✅ keep Beads as the only work graph ★ |
 | Research → plan → implement → ship methodology, TDD, phase gates | 🟡 plan/execute/review | ✅ `/forgemaster`, `scripts/forge/*` | ✅ keep; forgemaster becomes the brain that feeds the queue ★ |
 | Per-run state | task + run rows in SQLite | 🟡 `.tmp/work/forge-runs/<slug>.json` (`scripts/forge/phases.ts` `ForgeState`) | ✅ run state v2 carries `executor` and is mirrored into the ledger |
-| Audit of every agent turn / tool call, tagged with agent + model | ✅ append-only `orbit.db` | ❌ only `~/.claude/logs/agent-forge/<date>/session.jsonl` (git metadata at SessionStart) and `quality-gate.jsonl`; the PreToolUse hook records nothing | ✅ unified SQLite ledger (`ulpz.3` scope) fed by PostToolUse/SessionStart/SessionEnd hooks and by every script that changes state |
+| Audit of every agent turn / tool call, tagged with agent + model | ✅ append-only SQLite event store | ❌ only `~/.claude/logs/agent-forge/<date>/session.jsonl` (git metadata at SessionStart) and `quality-gate.jsonl`; the PreToolUse hook records nothing | ✅ unified SQLite ledger (`ulpz.3` scope) fed by PostToolUse/SessionStart/SessionEnd hooks and by every script that changes state |
 | Executor identity (provider, model, effort, session) on a run | ✅ crews | ❌ only `checkout` and free-text `ReviewRound.tier`; `CLAUDE_TASK_ID` env is not set by Claude Code (bug `0xxt`) | ✅ typed `Executor` on run, event, gate, verdict |
 | Multi-provider execution (spawn agent CLIs) | ✅ 9 CLIs | ❌ nothing spawns `claude`, `codex` or any CLI; `scripts/sync-codex.ts` only mirrors skills/commands for Codex | ✅ executor adapters: Claude Code, Codex, one more to prove the seam |
 | Multi-provider *review* | 🟡 single `review_crew` | ✅ council (anthropic, openai, deepseek, qwen, openrouter; `scripts/council/providers.ts:45-51`) | ✅ council as a first-class action on any bead ★ |
 | Routing by complexity / tier | ✅ weighted crew pools, config with provenance | 🟡 `.claude/protocols/model-tier-policy.md` is "convention, not automation" | ✅ smiths as data: provider + model + effort + benches; `forge:config show` with provenance |
 | Approval gate before work starts ("nothing starts without you") | ✅ proposed → backlog | 🟡 phase gates and human turns in `/forgemaster`; no queue | ✅ queue states layered on Beads: proposed → approved → queued → running → review → done |
 | Parallel workers with conflict avoidance | ✅ file reservations, `task_eligible` | ❌ worktrees (`scripts/worktree.ts`, `trees/.state.json`) with no reservations; conflict table is manual (`.claude/workflows/epic.md:266-274`); `.claude/worktrees/*` invisible to the dashboard | ✅ reservations derived from Beads file maps; eligibility API; one worktree registry |
-| Unattended bounded drains | ✅ `orbit run auto --for 4h --concurrency 8` | 🟡 `/forgemaster-auto` for a single run; `scripts/forge/auto-loop.ts` is a pure decision function | ✅ `forge:shift --for --concurrency` with panic-safe cleanup and resource throttle |
-| Scheduled auto-tasks that mint proposals | ✅ `.orbit/auto_tasks/*.yaml` | ❌ | ✅ templates that mint `proposed` beads (review, QA, security sweep) |
-| Friction ledger + search | ✅ `orbit friction add`, FTS5 | ❌ (`bd remember` and knowledge YAML are adjacent) | ✅ frictions are Beads issues (type chore, label `friction`) linked to ledger events ★ |
+| Unattended bounded drains | ✅ bounded loop with time and concurrency caps | 🟡 `/forgemaster-auto` for a single run; `scripts/forge/auto-loop.ts` is a pure decision function | ✅ `forge:shift --for --concurrency` with panic-safe cleanup and resource throttle |
+| Scheduled auto-tasks that mint proposals | ✅ scheduled YAML templates | ❌ | ✅ templates that mint `proposed` beads (review, QA, security sweep) |
+| Friction ledger + search | ✅ friction CLI + full-text search | ❌ (`bd remember` and knowledge YAML are adjacent) | ✅ frictions are Beads issues (type chore, label `friction`) linked to ledger events ★ |
 | Operator API | ✅ dashboard routes, operator-only mutations | 🟡 Vite middleware (`vite.dashboard.config.ts`, `scripts/dashboard/dev-api.ts`); one mutation (review comment) | ✅ standalone Bun control-plane server, typed routes, every mutation audited |
 | MCP surface | ✅ 28 tools, operator vs agent authority at call time | 🟡 council only (`scripts/council/mcp.ts`: `council_*`), no `.mcp.json`; `3u6` spike open | ✅ `forge_*` operator MCP with two authority levels |
 | Live view of sessions/agents | ✅ dashboard board, audit feed, scoreboard | ❌ forge-run page is one fetch per load; SSE exists only for council (`scripts/council/dashboard.ts:102-123`) | ✅ sessions board, run timeline, queue board, scoreboard, all SSE |
@@ -73,7 +73,7 @@ Legend: ✅ have · 🟡 partial · ❌ missing · ★ target goes beyond Orbit
 ## 5. Risks specific to this rework
 
 - **Second task store by accident.** Any "queue" or "session" table that duplicates Beads status will drift. Rule: Beads status is truth for work; the ledger stores *events* about work and references bead IDs.
-- **Token cost of MCP surfaces** (Orbit lesson 1). Keep the operator MCP small and give it a dedicated discovery surface; agents get read-mostly tools.
+- **Token cost of MCP surfaces** (a prior-art lesson). Keep the operator MCP small and give it a dedicated discovery surface; agents get read-mostly tools.
 - **Spawned CLIs on Windows.** Headless `claude -p` and `codex exec` must be exercised on Windows early; quoting and env allowlists are where `5mge` already bit us.
 - **Scope creep into a hosted product.** Local-first and loopback-only remain invariants; no auth system, no multi-tenant.
 - **Desktop shell choice is reversible only early.** Decide shell (`D1`) before any UI task assumes window APIs.

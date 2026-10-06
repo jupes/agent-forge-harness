@@ -97,7 +97,7 @@ interface ExecutorAdapter {
 interface ExecutorHandle { sessionId; pid; events: AsyncIterable<LedgerEvent>; stop(reason): Promise<void>; }
 ```
 - Claude adapter: `claude -p --output-format stream-json` in the worktree, env allowlist, stream parsed into `tool.called` events. Codex adapter: `codex exec` with `.codex/config.toml` from `sync-codex`. Third adapter is Gemini CLI (decided; OpenCode only if Gemini's headless mode fails on Windows at build time). Headless `claude -p` runs use `acceptEdits` with Bash allowlisted to known project scripts, never `dangerously-skip-permissions`.
-- Child cleanup is panic-safe (Orbit lesson 3): every spawn registers a kill on success/failure/timeout/parent exit.
+- Child cleanup is panic-safe (prior-art lesson from a test-fixture fork storm): every spawn registers a kill on success/failure/timeout/parent exit.
 - `ulpz.5` (OpenHands worker on a Linux host) is a remote adapter implementing the same interface later.
 
 ## 9. Scheduler

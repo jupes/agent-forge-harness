@@ -2,7 +2,7 @@
 
 Decided by the owner on 2026-10-06, before execution, so that no bead carries an open question. Executors treat these as settled; changing one requires a `design:` comment on the affected bead **and** an edit here in the same PR.
 
-## Vocabulary (forge brand, not Orbit's)
+## Vocabulary (forge brand)
 
 | Concept | Term | Used for |
 |---|---|---|

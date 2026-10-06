@@ -2,13 +2,13 @@
 
 Generated: 2026-10-06 · Epic: `agent-forge-harness-x1gs` · Status: **planned, not started**
 
-Agent Forge is being reworked from a Claude Code convention layer into a local-first **command center**: one ledger of every agent session and tool call across providers, a control-plane server with a typed operator API, smiths that route work to provider CLIs, a conflict-aware approval queue with bounded unattended shifts, council as a one-click action on any bead, and a desktop app plus a Claude Code pane as control surfaces. Beads stays the only work graph; forgemaster stays the planning brain. The trigger was [Orbit](https://orbit-cli.com/) ([repo](https://github.com/constellation-works/orbit)); the goal is to go beyond it, not to copy it.
+Agent Forge is being reworked from a Claude Code convention layer into a local-first **command center**: one ledger of every agent session and tool call across providers, a control-plane server with a typed operator API, smiths that route work to provider CLIs, a conflict-aware approval queue with bounded unattended shifts, council as a one-click action on any bead, and a desktop app plus a Claude Code pane as control surfaces. Beads stays the only work graph; forgemaster stays the planning brain. The prior-art teardown that triggered this is internal: a `design:` comment on the epic and a local file under `plans/research/`, not part of the public repo.
 
 ## Read in this order
 
 | # | File | What it gives an executor |
 |---|---|---|
-| 1 | [`01-orbit-teardown.md`](01-orbit-teardown.md) | Orbit's feature inventory and vocabulary; what it does better; where the harness already leads; the bar for "beyond Orbit" |
+| 1 | prior-art teardown (internal) | `bd comments agent-forge-harness-x1gs` or `plans/research/command-center-prior-art-teardown.md` locally; feature inventory of the reference runtime, where the harness already leads, the bar to clear |
 | 2 | [`02-gap-analysis.md`](02-gap-analysis.md) | Capability matrix with file-cited "today" facts; reuse map; defects found; overlap with open epics `ulpz`, `t1b1`, `3u6` |
 | 3 | [`03-target-architecture.md`](03-target-architecture.md) | Invariants, component map, domain model, ledger, control plane, MCP, adapters, scheduler, UI, desktop, config, non-goals |
 | 4 | [`04-roadmap-and-beads.md`](04-roadmap-and-beads.md) | Waves, external prerequisites, and per-bead approach notes keyed by the `Spec:` anchor each bead carries |
