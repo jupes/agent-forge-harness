@@ -24,6 +24,9 @@ import { ADAPTERS } from "./registry";
 import { ndjsonSink } from "./sinks";
 import type { EventSink, ExecutorAdapter } from "./types";
 
+/** A "bounded" task: 30 minutes unless --timeout-ms says otherwise. */
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+
 export interface ExecDeps {
   harnessRoot: string;
   home?: string;
@@ -117,7 +120,11 @@ export async function runExec(
     `${beadId.replace(/[^\w.-]/g, "_")}.ndjson`,
   );
   const sink = deps.sink ?? ndjsonSink(eventsFile);
-  const timeout = args.get("timeout-ms");
+  const timeoutArg = args.get("timeout-ms");
+  const timeoutMs = timeoutArg ? Number(timeoutArg) : DEFAULT_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return failure("--timeout-ms must be a positive number");
+  }
 
   let handle: Awaited<ReturnType<ExecutorAdapter["spawn"]>>;
   try {
@@ -132,7 +139,7 @@ export async function runExec(
         loaded.config.execution.envPass,
       ),
       runId: args.get("run"),
-      timeoutMs: timeout ? Number(timeout) : undefined,
+      timeoutMs,
       command: deps.command,
     });
   } catch (error) {

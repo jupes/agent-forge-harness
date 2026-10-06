@@ -143,6 +143,25 @@ describe("forge:exec", () => {
     expect(seen.EXTRA_OK).toBe("yes");
   });
 
+  test("a non-numeric --timeout-ms is rejected instead of killing the task at once", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "x",
+        "--timeout-ms",
+        "soon",
+      ],
+      deps,
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toContain("--timeout-ms");
+  });
+
   test("a failing sink stops the child and exits 2", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(

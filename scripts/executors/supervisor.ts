@@ -96,6 +96,7 @@ export function supervise(options: SuperviseOptions): Supervised {
     cwd: options.cwd,
     env: options.env,
     stdin: "pipe",
+    ...(process.platform === "win32" ? {} : { detached: true }),
     stdout: "pipe",
     stderr: "ignore",
   });

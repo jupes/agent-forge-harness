@@ -61,6 +61,8 @@ export function createCodexAdapter(options: CodexOptions = {}) {
     buildArgs: (request) => [
       "exec",
       "--json",
+      "--sandbox",
+      "workspace-write",
       "--model",
       request.smith.model,
       "--cd",
