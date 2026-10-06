@@ -3,13 +3,13 @@ import type { ForgeConfig } from "./load";
 
 export interface ResolveInput {
   /** `--smith` on the command line. */
-  explicit?: string;
+  explicit?: string | undefined;
   /** `smith` metadata on the bead. */
-  beadSmith?: string;
+  beadSmith?: string | undefined;
   /** The bead's `complexity:*` label, when it has one. */
-  complexity?: BenchName;
+  complexity?: BenchName | undefined;
   /** Seed for the deterministic weighted bench pick (the bead id). */
-  seed?: string;
+  seed?: string | undefined;
 }
 
 export type Resolution =

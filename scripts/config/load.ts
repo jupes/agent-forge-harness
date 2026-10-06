@@ -42,8 +42,8 @@ export interface LoadedConfig {
 
 export interface LoadOptions {
   harnessRoot: string;
-  home?: string;
-  env?: Record<string, string | undefined>;
+  home?: string | undefined;
+  env?: Record<string, string | undefined> | undefined;
 }
 
 type Table = Record<string, unknown>;
