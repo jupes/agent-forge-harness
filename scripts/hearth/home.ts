@@ -17,7 +17,9 @@ export function hearthHome(
 
 /** Stable short key for a workspace root; case-folded on Windows paths. */
 export function rootKey(root: string): string {
-  const normalized = resolve(root).replaceAll("\\", "/").toLowerCase();
+  const slashed = resolve(root).replaceAll("\\", "/");
+  const normalized =
+    process.platform === "win32" ? slashed.toLowerCase() : slashed;
   return createHash("sha256").update(normalized).digest("hex").slice(0, 12);
 }
 

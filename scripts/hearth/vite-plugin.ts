@@ -42,14 +42,21 @@ function refuse(res: ServerResponse): void {
  * (`DASHBOARD_HOST`), and a proxied request would otherwise look local to the
  * hearth.
  */
+/**
+ * Whether Vite's proxy would forward this path to the hearth. Matches the proxy's
+ * own rule (a bare prefix, no trailing slash), so `/__agent-forgeX/../…` cannot
+ * slip past a stricter-looking guard.
+ */
+export function isProxiedPath(pathname: string): boolean {
+  return pathname.startsWith(API_PREFIX) && pathname !== LOCAL_ONLY_PATH;
+}
+
 export function guardRequest(
   req: IncomingMessage,
   res: ServerResponse,
 ): boolean {
   const pathname = (req.url ?? "").split("?")[0] ?? "";
-  if (!pathname.startsWith(`${API_PREFIX}/`) || pathname === LOCAL_ONLY_PATH) {
-    return true;
-  }
+  if (!isProxiedPath(pathname)) return true;
   if (isLoopbackAddress(req.socket.remoteAddress)) return true;
   refuse(res);
   return false;
@@ -84,10 +91,7 @@ export function hearthPlugin(
       server.middlewares.use((req, res, next) => {
         if (!guardRequest(req, res)) return;
         const pathname = (req.url ?? "").split("?")[0] ?? "";
-        if (
-          !pathname.startsWith(`${API_PREFIX}/`) ||
-          pathname === LOCAL_ONLY_PATH
-        ) {
+        if (!isProxiedPath(pathname)) {
           next();
           return;
         }

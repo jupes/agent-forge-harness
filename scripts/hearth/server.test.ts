@@ -1,7 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { hasAmbiguousPath } from "./gate";
 import { lockPath } from "./home";
 import { readLock } from "./lock";
 import { createHearth, type StartedHearth } from "./server";
@@ -115,4 +123,64 @@ test("health reports the pid and root", async () => {
   const body = (await res.json()) as { data: { pid: number; root: string } };
   expect(body.data.pid).toBe(process.pid);
   expect(resolve(body.data.root)).toBe(resolve(root));
+});
+
+function rawGet(url: string, path: string): Promise<number> {
+  return new Promise((done, fail) => {
+    const target = new URL(url);
+    const req = httpRequest(
+      { host: target.hostname, port: target.port, path, method: "GET" },
+      (res) => {
+        res.resume();
+        done(res.statusCode ?? 0);
+      },
+    );
+    req.on("error", fail);
+    req.end();
+  });
+}
+
+test("refuses ambiguous paths that a router could read two ways", async () => {
+  const { hearth } = await start();
+  // Bun resolves dot segments before the handler sees the URL, so only the
+  // separators it leaves intact can be observed here; dot segments are covered
+  // by the unit test below.
+  for (const path of [
+    "/__agent-forge/council-api/%2fprofiles",
+    "/__agent-forge/council-api/%5cprofiles",
+    "/__agent-forge//dev-api/forge-run",
+  ]) {
+    expect(await rawGet(hearth.url, path)).toBe(400);
+  }
+});
+
+test("keeps the token out of the lock and removes the token file on close", async () => {
+  const { hearth, home, root } = await start();
+  const lock = readFileSync(lockPath(home, root), "utf8");
+  expect(lock).not.toContain(hearth.token);
+  const tokenFile = readLock(lockPath(home, root))?.tokenFile ?? "";
+  expect(existsSync(tokenFile)).toBe(true);
+  await hearth.close();
+  expect(existsSync(tokenFile)).toBe(false);
+  expect(readLock(lockPath(home, root))).toBeNull();
+});
+
+test("hasAmbiguousPath flags dot segments, encoded separators and empty segments only", () => {
+  for (const bad of [
+    "/__agent-forgeX/../__agent-forge/council-api/profiles",
+    "/__agent-forge/./dev-api",
+    "/__agent-forge/council-api/%2e%2e/profiles",
+    "/a%2Fb",
+    String.raw`/a\b`,
+    "/a//b",
+  ]) {
+    expect(hasAmbiguousPath(bad)).toBe(true);
+  }
+  for (const good of [
+    "/__agent-forge/dev-api/forge-run",
+    "/__agent-forge/council-api/runs/run-1.v2/events",
+    "/__agent-forge/council-api/runs/..name/events",
+  ]) {
+    expect(hasAmbiguousPath(good)).toBe(false);
+  }
 });

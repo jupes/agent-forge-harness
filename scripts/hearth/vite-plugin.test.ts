@@ -170,3 +170,17 @@ test("the guard refuses a non-loopback client on API paths but not on other path
     ),
   ).toBe(true);
 });
+
+test("the guard covers every path Vite would proxy, including a bare-prefix dot-segment path", () => {
+  const sneaky = fakeResponse();
+  expect(
+    guardRequest(
+      fakeRequest(
+        "192.168.1.20",
+        "/__agent-forgeX/../__agent-forge/council-api/profiles",
+      ),
+      sneaky.res,
+    ),
+  ).toBe(false);
+  expect(sneaky.status()).toBe(403);
+});

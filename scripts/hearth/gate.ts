@@ -43,3 +43,12 @@ export function isDeclaredSameOrigin(req: IncomingMessage): boolean {
     req.headers["sec-fetch-site"] === "same-origin"
   );
 }
+
+/**
+ * Paths a router could read two ways: dot segments, encoded separators or dots,
+ * backslashes, and empty segments. No legitimate route uses them, so they are
+ * refused outright rather than normalised.
+ */
+export function hasAmbiguousPath(pathname: string): boolean {
+  return /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\|\/\//i.test(pathname);
+}

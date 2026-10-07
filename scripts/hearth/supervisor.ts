@@ -135,6 +135,11 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     async stopIfOwner() {
       const lock = readLock(file);
       if (!lock || lock.supervisor !== options.id) return;
+      // A recycled pid must not take the blame for a hearth that already died.
+      if (!(await isHealthy(lock))) {
+        releaseLock(file, lock.pid);
+        return;
+      }
       try {
         process.kill(lock.pid);
       } catch {

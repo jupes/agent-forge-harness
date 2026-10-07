@@ -7,7 +7,6 @@ import { spawnSync } from "node:child_process";
 import chokidar from "chokidar";
 import { hearthPlugin } from "./scripts/hearth/vite-plugin";
 
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
 const docsRoot = path.join(repoRoot, "docs");

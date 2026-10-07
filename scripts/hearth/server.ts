@@ -8,12 +8,17 @@
  * the operator API that builds on this server.
  */
 
+import { rmSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
-import { frontDoorOrigin, isDeclaredSameOrigin } from "./gate";
+import {
+  frontDoorOrigin,
+  hasAmbiguousPath,
+  isDeclaredSameOrigin,
+} from "./gate";
 import { hearthHome, lockPath, tokenPath } from "./home";
 import {
   acquireLock,
@@ -114,6 +119,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       return;
     }
     const pathname = (req.url ?? "").split("?")[0] ?? "";
+    if (hasAmbiguousPath(pathname)) {
+      return reply(res, 400, null, "Unsupported path");
+    }
     if (pathname === TOKEN_ROUTE) {
       if (req.method !== "GET")
         return reply(res, 405, null, "Method not allowed");
@@ -124,6 +132,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
           null,
           "The token is served only to a same-origin request",
         );
+      }
+      if (token === "") {
+        return reply(res, 503, null, "The control plane is still starting");
       }
       return reply(res, 200, { token });
     }
@@ -180,6 +191,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     token,
     close: async () => {
       releaseLock(lockFile, process.pid);
+      rmSync(tokenFile, { force: true });
       await stop();
     },
   };
