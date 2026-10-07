@@ -14,7 +14,7 @@ import {
   gateLogsNewestFirst,
   readForgeRun,
   readReposKnowledge,
-} from "../../scripts/dashboard/dev-api";
+} from "./dev-api";
 
 const created: string[] = [];
 function tempRoot(): string {
