@@ -1,0 +1,25 @@
+# Copy to agent-forge.toml (gitignored) to override the built-in smiths.
+# Precedence: builtin < ~/.agent-forge/config.toml < this file < env (AGENT_FORGE_SMITH).
+# Inspect the result: bun run forge:config show
+
+[workflow]
+default_crew = "claude-journeyman"
+
+# Override or add a smith. Partial tables merge over the built-in of the same name.
+# [smiths.claude-journeyman]
+# model = "claude-sonnet-5-5"
+# effort = "medium"
+#
+# [smiths.my-codex]
+# provider = "codex"
+# model = "gpt-5-codex"
+# effort = "high"
+
+[benches]
+low = ["claude-apprentice:70", "codex-journeyman:30"]
+
+# Variables passed to spawned executors ON TOP of the always-passed base set
+# (PATH, SystemRoot, USERPROFILE, ...). Everything else is dropped.
+# Once this file exists, the same key in ~/.agent-forge/config.toml is ignored.
+[execution.env]
+pass = []
