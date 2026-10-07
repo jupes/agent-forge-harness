@@ -38,19 +38,21 @@ function refuse(res: ServerResponse): void {
 }
 
 /**
- * Fail closed for non-loopback clients: Vite may be bound beyond loopback
- * (`DASHBOARD_HOST`), and a proxied request would otherwise look local to the
- * hearth.
- */
-/**
  * Whether Vite's proxy would forward this path to the hearth. Matches the proxy's
  * own rule (a bare prefix, no trailing slash), so `/__agent-forgeX/../…` cannot
  * slip past a stricter-looking guard.
+ * `rebuild-pages` is excluded because `rebuildPagesApiPlugin` (registered first)
+ * answers it before the proxy is reached.
  */
 export function isProxiedPath(pathname: string): boolean {
   return pathname.startsWith(API_PREFIX) && pathname !== LOCAL_ONLY_PATH;
 }
 
+/**
+ * Fail closed for non-loopback clients: Vite may be bound beyond loopback
+ * (`DASHBOARD_HOST`), and a proxied request would otherwise look local to the
+ * hearth.
+ */
 export function guardRequest(
   req: IncomingMessage,
   res: ServerResponse,
