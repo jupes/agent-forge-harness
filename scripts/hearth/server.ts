@@ -22,18 +22,17 @@ import {
   readLock,
   releaseLock,
 } from "./lock";
+import { API_PREFIX, HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { councilHttpHandler } from "./routes/council";
 import { devApiHttpHandler } from "./routes/dev-api";
 import { createToken } from "./token";
-
-export const API_PREFIX = "/__agent-forge";
-export const TOKEN_ROUTE = `${API_PREFIX}/token`;
-export const HEALTH_ROUTE = `${API_PREFIX}/health`;
 
 export interface HearthOptions {
   root: string;
   /** Hearth state directory; defaults to `AGENT_FORGE_HOME` / `~/.agent-forge`. */
   home?: string;
+  /** Where `councils/` lives; defaults to `root` (the harness checkout). */
+  harnessRoot?: string;
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -94,7 +93,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   const service = createCouncilService({
     workspaceRoot: root,
-    harnessRoot: root,
+    harnessRoot: options.harnessRoot ?? root,
     environment:
       options.environment ??
       loadDashboardServerEnvironment({ mode: "development", root }),
