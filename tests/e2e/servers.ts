@@ -36,8 +36,11 @@ const RUN_HOME_NAME = /^agent-forge-e2e-\d+-\d+$/;
  * arrive at the same one, so it travels in the environment. It is not created
  * here — list mode and every worker would each leave one behind. The hearth
  * creates it.
+ *
+ * `||=`, not `??=`: an empty value must count as unset, because the hearth
+ * reads an empty `AGENT_FORGE_HOME` as "use the real one".
  */
-export const HEARTH_HOME = (process.env["AGENT_FORGE_E2E_HOME"] ??= join(
+export const HEARTH_HOME = (process.env["AGENT_FORGE_E2E_HOME"] ||= join(
   tmpdir(),
   `agent-forge-e2e-${process.pid}-${Date.now()}`,
 ));

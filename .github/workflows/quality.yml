@@ -36,9 +36,14 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
+      # Fails when the version cannot be read: an empty one would give every
+      # release the same cache key.
       - name: Read the installed Playwright version
         id: playwright
-        run: echo "version=$(bunx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+        run: |
+          version="$(bunx playwright --version | awk '{print $2}')"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       # Keyed by what is installed (the headless shell only), so a change of
       # version or of install flags cannot hit a cache without the browser.
       - name: Cache the browser

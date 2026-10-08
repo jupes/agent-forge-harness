@@ -30,7 +30,8 @@ test("the dashboard proxies to the hearth the suite started, for this checkout",
   );
   const behindDashboard = ((await proxied.json()) as Health).data;
 
-  expect(hearth).not.toBeNull();
+  // Checked first: two missing pids would otherwise compare equal below.
+  expect(typeof hearth?.pid, "the hearth reports its pid").toBe("number");
   expect(
     behindDashboard?.pid,
     "one hearth, not a second one spawned by the dashboard",
