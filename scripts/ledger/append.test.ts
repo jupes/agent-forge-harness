@@ -282,4 +282,24 @@ describe("appendEvent", () => {
     }
     expect(rawRows(path)).toHaveLength(2);
   });
+
+  test("ten thousand events are all stored", () => {
+    const path = tempLedger();
+    const started = performance.now();
+    for (let i = 0; i < 10_000; i++) {
+      const result = appendEvent(toolCall, { path });
+      if (!result.ok) throw new Error(result.error);
+    }
+    const elapsedMs = performance.now() - started;
+    const db = new Database(path, { readonly: true });
+    try {
+      expect(
+        db.query<{ n: number }, []>("SELECT count(*) AS n FROM events").get(),
+      ).toEqual({ n: 10_000 });
+    } finally {
+      db.close();
+    }
+    // A loose bound only: the measured figure is recorded by scripts/ledger/bench.ts.
+    expect(elapsedMs).toBeLessThan(20_000);
+  }, 30_000);
 });
