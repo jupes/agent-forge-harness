@@ -58,6 +58,10 @@ export const BUILTIN_BENCHES: Readonly<Record<BenchName, BenchEntry[]>> = {
 /**
  * Always passed to spawned executors: without these a child cannot start on
  * Windows (or find itself). Matched case-insensitively. Config `pass` only adds.
+ *
+ * `AGENT_FORGE_HOME` is here because it names where the ledger and the hearth
+ * keep their files: a child that lost it would fall back to the OS home, and
+ * the hooks of a session started from a sandbox would write the real ledger.
  */
 export const BASE_ENV_ALLOWLIST: readonly string[] = [
   "PATH",
@@ -70,4 +74,5 @@ export const BASE_ENV_ALLOWLIST: readonly string[] = [
   "TMP",
   "APPDATA",
   "LOCALAPPDATA",
+  "AGENT_FORGE_HOME",
 ];

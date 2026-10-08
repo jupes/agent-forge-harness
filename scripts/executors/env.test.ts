@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ledgerHome } from "../ledger/paths";
 import { buildChildEnv } from "./env";
 
 describe("buildChildEnv", () => {
@@ -25,6 +26,28 @@ describe("buildChildEnv", () => {
       "ANTHROPIC_API_KEY",
     ]);
     expect(child).toEqual({ Path: "C:\\bin", Anthropic_Api_Key: "k" });
+  });
+
+  test("a moved Agent Forge home reaches the child, so its hooks do not fall back to the OS home", () => {
+    const child = buildChildEnv(
+      {
+        PATH: "/bin",
+        USERPROFILE: "C:\Users\someone",
+        AGENT_FORGE_HOME: "C:\sandbox\forge home",
+        AGENT_FORGE_BEAD_ID: "bead-1",
+      },
+      [],
+    );
+    expect(child).toEqual({
+      PATH: "/bin",
+      USERPROFILE: "C:\Users\someone",
+      AGENT_FORGE_HOME: "C:\sandbox\forge home",
+    });
+    // The ledger resolves the child's home from that, not from USERPROFILE.
+    expect(ledgerHome(child)).toBe("C:\sandbox\forge home");
+    expect(ledgerHome(buildChildEnv({ PATH: "/bin" }, []))).toBe(
+      ledgerHome({}),
+    );
   });
 
   test("skips undefined values", () => {
