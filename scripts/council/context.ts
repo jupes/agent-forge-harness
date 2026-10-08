@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { basename, extname, isAbsolute, relative, resolve, sep } from "path";
+import { redactSecrets } from "../secret-patterns";
 import {
   COUNCIL_SCHEMA_VERSION,
   type ContextPack,
@@ -10,30 +11,6 @@ import {
 } from "./types";
 
 const DEFAULT_MAX_BYTES = 200_000;
-
-const SECRET_PATTERNS: ReadonlyArray<{ kind: string; pattern: RegExp }> = [
-  {
-    kind: "provider-api-key-assignment",
-    pattern:
-      /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|OPENROUTER_API_KEY)\s*[:=]\s*["']?[^\s"']{8,}/gi,
-  },
-  {
-    kind: "private-key",
-    pattern:
-      /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
-  },
-  { kind: "anthropic-api-key", pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g },
-  {
-    kind: "openai-api-key",
-    pattern: /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g,
-  },
-  {
-    kind: "github-token",
-    pattern: /gh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}/g,
-  },
-  { kind: "aws-access-key", pattern: /AKIA[0-9A-Z]{16}/g },
-  { kind: "slack-token", pattern: /xox(?:b|p|a|r|s)-[A-Za-z0-9-]{10,}/g },
-];
 
 const SENSITIVE_BASENAMES = new Set([
   ".npmrc",
@@ -146,14 +123,7 @@ export function sanitizeContent(
   text: string,
   policy: SecretPolicy,
 ): { text: string; redactions: ContextRedaction[] } {
-  let sanitized = text;
-  const redactions: ContextRedaction[] = [];
-  for (const secret of SECRET_PATTERNS) {
-    const matches = sanitized.match(secret.pattern);
-    if (!matches || matches.length === 0) continue;
-    redactions.push({ kind: secret.kind, count: matches.length });
-    sanitized = sanitized.replace(secret.pattern, `[REDACTED:${secret.kind}]`);
-  }
+  const { text: sanitized, redactions } = redactSecrets(text);
   if (policy === "reject" && redactions.length > 0) {
     const summary = redactions
       .map((redaction) => `${redaction.kind}=${redaction.count}`)
