@@ -52,6 +52,7 @@ const PHASE_GATE = join(import.meta.dir, "phase-gate.ts");
 const REVIEW = join(import.meta.dir, "auto-loop-cli.ts");
 const RUNS = join(import.meta.dir, "runs-cli.ts");
 const AUDIT = join(import.meta.dir, "..", "ledger", "audit-cli.ts");
+const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
 
 /** The parent's environment minus anything that names a live session, run or ledger. */
 function childEnv(
@@ -89,6 +90,7 @@ function verdictFile(
   name: string,
   verdict: "PASS" | "FAIL",
   high: number,
+  summary?: string,
 ): string {
   const path = join(box.cwd, name);
   writeFileSync(
@@ -98,6 +100,7 @@ function verdictFile(
       taskId: "t",
       verdict,
       findings: { blocker: 0, high, medium: 0, low: 0 },
+      ...(summary !== undefined ? { summary } : {}),
     }),
   );
   return path;
@@ -174,6 +177,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     expect(listed.ok).toBe(true);
     expect(listed.data.map((e) => e.kind)).toEqual([
       "run.phase.completed",
+      "verdict.bound",
       "review.recorded",
     ]);
     expect(listed.data.every((e) => e.runId === "x")).toBe(true);
@@ -246,6 +250,77 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     expect(
       runEvents(box, "x").filter((e) => e.kind === "run.phase.entered"),
     ).toEqual([]);
+  }, 60_000);
+
+  test("a verdict file recorded by forge:review produces one verdict.bound for the run", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--bead",
+      "b-1",
+      "--provider",
+      "claude",
+      "--model",
+      "m-1",
+    ]);
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      verdictFile(box, "v.json", "PASS", 0, `looks right; key ${SECRET} seen`),
+    ]);
+    expect(reviewed.exitCode).toBe(0);
+
+    const bound = runEvents(box, "x").filter((e) => e.kind === "verdict.bound");
+    expect(bound).toHaveLength(1);
+    const [event] = bound;
+    expect(event?.runId).toBe("x");
+    expect(event?.beadId).toBe("b-1");
+    expect(event?.executor).toEqual({ provider: "claude", model: "m-1" });
+    // The verdict file names no evaluator, so none is stored; the builder is
+    // the executor the run recorded.
+    expect(event?.payload).toEqual({
+      verdict: "pass",
+      builder: { provider: "claude", model: "m-1" },
+      summary: "looks right; key [REDACTED:anthropic-api-key] seen",
+    });
+    expect(JSON.stringify(runEvents(box, "x"))).not.toContain(SECRET);
+    // It is recorded before the round's decision.
+    expect(
+      runEvents(box, "x")
+        .map((e) => e.kind)
+        .slice(-2),
+    ).toEqual(["verdict.bound", "review.recorded"]);
+  }, 60_000);
+
+  test("an unreadable verdict file is bound as unreadable", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    await run(box, PHASE_GATE, ["research", "--slug", "x", "--write"]);
+    const broken = join(box.cwd, "broken.json");
+    writeFileSync(broken, "{ not json");
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      broken,
+    ]);
+    expect(reviewed.exitCode).toBe(2);
+
+    const bound = runEvents(box, "x").filter((e) => e.kind === "verdict.bound");
+    expect(bound).toHaveLength(1);
+    expect(bound[0]?.payload).toEqual({ verdict: "unreadable" });
+    expect(bound[0]?.executor).toBeUndefined();
   }, 60_000);
 
   test("two enter-checks in a row record one run.phase.entered", async () => {

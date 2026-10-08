@@ -348,4 +348,9 @@ export function createCouncilMcpServer(
   return server;
 }
 
-if (import.meta.main) serveStdio(() => createCouncilMcpServer());
+if (import.meta.main) {
+  // Loaded here, not at the top: the ledger needs Bun's SQLite, and this
+  // module's exports are imported by callers that must not load it.
+  const { councilLedger } = await import("./ledger-wiring");
+  serveStdio(() => createCouncilMcpServer(councilLedger(process.env)));
+}

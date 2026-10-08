@@ -9,6 +9,7 @@ import {
   renderCouncilReport,
 } from "./artifacts";
 import { type SecretPolicy, sanitizeContent } from "./context";
+import type { CouncilAppend, CouncilAttachResolver } from "./ledger-events";
 import { providerReadiness } from "./providers";
 import {
   type ContextSourceKind,
@@ -39,6 +40,7 @@ Options:
   --max-usd <amount>     Hard estimated-cost budget
   --max-bytes <bytes>    Maximum source bytes (default: 200000)
   --run-id <id>          Stable run id for automation
+  --bead <id>            Beads issue the review is for (recorded in the ledger)
   --redact-secrets       Redact detected credentials instead of rejecting input
   --dry-run              Resolve context and estimate cost without model calls
   --json                 Emit the standard { ok, data, error } envelope
@@ -54,6 +56,7 @@ type RunCommand = {
   maxUsd?: number;
   maxBytes?: number;
   runId?: string;
+  beadId?: string;
   secretPolicy: SecretPolicy;
   dryRun: boolean;
   json: boolean;
@@ -138,6 +141,7 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
   let maxUsd: number | undefined;
   let maxBytes: number | undefined;
   let runId: string | undefined;
+  let beadId: string | undefined;
   let secretPolicy: SecretPolicy = "reject";
   let dryRun = false;
   for (let index = start; index < args.length; index += 1) {
@@ -156,7 +160,8 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
       arg === "--runs-dir" ||
       arg === "--max-usd" ||
       arg === "--max-bytes" ||
-      arg === "--run-id"
+      arg === "--run-id" ||
+      arg === "--bead"
     ) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
@@ -164,6 +169,7 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
       }
       if (arg === "--profile") profilePath = value;
       if (arg === "--runs-dir") runsDir = value;
+      if (arg === "--bead") beadId = value;
       if (arg === "--run-id") {
         try {
           assertCouncilRunId(value);
@@ -206,6 +212,7 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
   if (maxUsd !== undefined) value.maxUsd = maxUsd;
   if (maxBytes !== undefined) value.maxBytes = maxBytes;
   if (runId) value.runId = runId;
+  if (beadId) value.beadId = beadId;
   return { ok: true, value };
 }
 
@@ -215,6 +222,13 @@ export type CouncilCliIo = {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   signal?: AbortSignal;
+  /**
+   * The ledger a run's started and finished events go to, and who they belong
+   * to. Both are supplied when this file runs as a command; a caller that
+   * leaves either out gets a run that records nothing.
+   */
+  appendEvent?: CouncilAppend;
+  resolveAttach?: CouncilAttachResolver;
 };
 
 function defaultIo(): CouncilCliIo {
@@ -356,6 +370,13 @@ export async function runCouncilCli(
     };
     if (io.signal) engineOptions.signal = io.signal;
     if (command.maxUsd !== undefined) engineOptions.maxUsd = command.maxUsd;
+    if (io.appendEvent && io.resolveAttach) {
+      engineOptions.appendEvent = io.appendEvent;
+      engineOptions.attach = io.resolveAttach({
+        cwd: io.cwd,
+        ...(command.beadId !== undefined ? { beadId: command.beadId } : {}),
+      });
+    }
     if (!command.json) {
       engineOptions.onEvent = (event) => {
         const line = progressLine(event);
@@ -385,8 +406,12 @@ if (import.meta.main) {
   const controller = new AbortController();
   const onInterrupt = (): void => controller.abort();
   process.once("SIGINT", onInterrupt);
+  // Loaded here, not at the top: the ledger needs Bun's SQLite, and this
+  // module's exports are imported by callers that must not load it.
+  const { councilLedger } = await import("./ledger-wiring");
   process.exitCode = await runCouncilCli(process.argv.slice(2), {
     signal: controller.signal,
+    ...councilLedger(process.env),
   });
   process.removeListener("SIGINT", onInterrupt);
 }

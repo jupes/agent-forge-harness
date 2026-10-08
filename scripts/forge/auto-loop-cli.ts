@@ -8,7 +8,8 @@
  * the round to the run's ledger together with the decision it reached, and
  * prints that decision. The stored decision is what the phase gate and the
  * runs table read afterwards, so a halt here is a halt everywhere; the round
- * is also appended to the event ledger as `review.recorded`.
+ * is also appended to the event ledger as `verdict.bound` (the verdict file
+ * as read) and `review.recorded` (the decision).
  *
  * CLI:
  *   bun run forge:review --slug <slug> --phase <phase> --verdict <path>
@@ -159,6 +160,14 @@ if (import.meta.main) {
     ...(executor ? { executor } : {}),
   };
   writeRunState(next);
+  // The verdict file as it was read, then what the loop decided about it.
+  ledger.emitRunEvent(
+    attach,
+    ledger.verdictBound({
+      verdict,
+      ...(state.executor ? { builder: state.executor } : {}),
+    }),
+  );
   ledger.emitRunEvent(attach, ledger.reviewRecorded(round, decision.action));
 
   let handoff: string | null = null;

@@ -7,6 +7,9 @@
  * Runs core checks plus optional strict evaluator verdict (see AGENT_FORGE_EVAL_VERDICT).
  * Exits with code 2 to block completion if any fail.
  * Outputs structured JSON for agent consumption.
+ *
+ * Each run is also appended to the event ledger as `gate.ran`, and a verdict
+ * the strict check read as `verdict.bound`. The JSONL log below is unchanged.
  */
 
 import { Glob } from "bun";
@@ -18,16 +21,28 @@ import {
   evaluateCloseTestingAttestation,
 } from "../../scripts/close-testing-attestation";
 import {
+  type EvalVerdictParsed,
   parseEvalVerdictJson,
   verdictBlocksShip,
 } from "../../scripts/eval-verdict";
-import { listRuns } from "../../scripts/forge/runs-store";
+import { listRuns, readRunState } from "../../scripts/forge/runs-store";
 import {
   type GateIdentity,
   gateIdentity,
   type RunIdentity,
 } from "../../scripts/quality-gate-identity";
 import { getQualityGateLogPath } from "./utils/constants";
+import { readHookInput } from "./utils/hook-input";
+
+const startedAt = performance.now();
+// Read for the ledger event's `trigger` only; the gate's own `event` below
+// still comes from the environment.
+const hookInput = await readHookInput();
+const hookEventName =
+  typeof hookInput?.hook_event_name === "string" &&
+  hookInput.hook_event_name.length > 0
+    ? hookInput.hook_event_name
+    : undefined;
 
 interface CheckResult {
   name: string;
@@ -140,6 +155,8 @@ const taskId = process.env["CLAUDE_TASK_ID"] ?? "";
 
 const checks: CheckResult[] = [];
 const blockingFailures: string[] = [];
+/** The verdict the strict check read and matched to this task, if it got that far. */
+let strictVerdict: EvalVerdictParsed | null = null;
 
 // Check 1: TypeScript typecheck
 {
@@ -355,6 +372,7 @@ if (event === "TaskCompleted") {
               });
               blockingFailures.push("eval-verdict");
             } else if (verdictBlocksShip(pr.value)) {
+              strictVerdict = pr.value;
               checks.push({
                 name: "eval-verdict",
                 passed: false,
@@ -362,6 +380,7 @@ if (event === "TaskCompleted") {
               });
               blockingFailures.push("eval-verdict");
             } else {
+              strictVerdict = pr.value;
               checks.push({
                 name: "eval-verdict",
                 passed: true,
@@ -425,6 +444,45 @@ try {
   appendFileSync(getQualityGateLogPath(), JSON.stringify(result) + "\n");
 } catch {
   // Log failure is non-fatal
+}
+
+// Record the run in the event ledger. Loaded and run inside the guard: the
+// gate's verdict never depends on its audit trail.
+try {
+  const ledger = await import("../../scripts/quality-gate-ledger");
+  const { appendEvent } = await import("../../scripts/ledger/append");
+  const runState =
+    result.forgeSlug !== null
+      ? readRunState(result.forgeSlug, checkoutRoot)
+      : null;
+  const attach = ledger.gateAttach({
+    cwd: process.cwd(),
+    env: process.env,
+    forgeSlug: result.forgeSlug,
+    state: runState,
+  });
+  if (strictVerdict !== null) {
+    appendEvent(
+      ledger.strictVerdictEvent({
+        verdict: strictVerdict,
+        forgeSlug: result.forgeSlug,
+        ...(runState?.executor ? { builder: runState.executor } : {}),
+        attach,
+      }),
+    );
+  }
+  appendEvent(
+    ledger.gateRanEvent({
+      result,
+      durationMs: performance.now() - startedAt,
+      ...(hookEventName !== undefined ? { trigger: hookEventName } : {}),
+      attach,
+    }),
+  );
+} catch (error) {
+  console.error(
+    `quality-gate: ledger event not recorded: ${error instanceof Error ? error.message : String(error)}`,
+  );
 }
 
 // Output JSON for agent consumption

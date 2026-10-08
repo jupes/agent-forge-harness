@@ -10,6 +10,14 @@ import {
   type SecretPolicy,
 } from "./context";
 import { type CouncilEngineOptions, runCouncil } from "./engine";
+import {
+  type CouncilAppend,
+  type CouncilAttach,
+  type CouncilLedgerEvent,
+  councilFinished,
+  councilLedgerEvent,
+  councilStarted,
+} from "./ledger-events";
 import { compilePullRequest } from "./pr-source";
 import {
   assertProvidersReady,
@@ -20,6 +28,7 @@ import {
   type ContextSourceKind,
   type CouncilExecutionResult,
   type CouncilProfile,
+  type CouncilRun,
   parseCouncilProfileJson,
 } from "./types";
 
@@ -81,6 +90,14 @@ export type CouncilReviewOptions = Omit<
   environment?: ProviderResolverOptions["environment"];
   fetchImpl?: ProviderResolverOptions["fetchImpl"];
   onResult?: (result: CouncilExecutionResult) => void;
+  /**
+   * Appends one ledger event. Handed in by a Bun entry point; this module is
+   * also loaded under Node, where the ledger cannot be imported. Absent, or
+   * without `attach`, the run records nothing in the ledger.
+   */
+  appendEvent?: CouncilAppend;
+  /** Who the run's ledger events belong to, resolved by the caller. */
+  attach?: CouncilAttach;
 };
 
 // Jobs reserve before returning a handle; synchronous callers reserve here.
@@ -94,6 +111,8 @@ export async function executeCouncilReview(options: CouncilReviewOptions) {
     fetchImpl,
     resolveTransport,
     onResult,
+    appendEvent,
+    attach,
     ...engineOptions
   } = options;
   assertProvidersReady(engineOptions.profile, environment);
@@ -103,17 +122,40 @@ export async function executeCouncilReview(options: CouncilReviewOptions) {
   const providerOptions: ProviderResolverOptions = {};
   if (environment !== undefined) providerOptions.environment = environment;
   if (fetchImpl !== undefined) providerOptions.fetchImpl = fetchImpl;
-  const result = await runCouncil({
-    ...engineOptions,
-    resolveTransport:
-      resolveTransport ?? createProviderResolver(providerOptions),
-  });
-  // Retain the completed run in memory even if saving its artifacts fails.
+  const record = (event: CouncilLedgerEvent): void => {
+    if (!appendEvent || !attach) return;
+    try {
+      appendEvent(councilLedgerEvent(attach, event));
+    } catch {
+      // The audit trail never changes or interrupts a review.
+    }
+  };
+  record(
+    councilStarted(
+      engineOptions.runId,
+      engineOptions.profile.id,
+      engineOptions.maxUsd ?? engineOptions.profile.maxEstimatedUsd,
+    ),
+  );
+  // Whatever happens from here on, the started event gets its finished one:
+  // the run's own outcome when there is a run, even if saving it then fails.
+  let finished: CouncilRun | null = null;
   try {
-    onResult?.(structuredClone(result));
-  } catch {
-    // Observers cannot change or interrupt persistence of validated results.
+    const result = await runCouncil({
+      ...engineOptions,
+      resolveTransport:
+        resolveTransport ?? createProviderResolver(providerOptions),
+    });
+    finished = result.run;
+    // Retain the completed run in memory even if saving its artifacts fails.
+    try {
+      onResult?.(structuredClone(result));
+    } catch {
+      // Observers cannot change or interrupt persistence of validated results.
+    }
+    const artifacts = writeCouncilArtifacts(result.run, runsRoot, owned);
+    return { result, artifacts };
+  } finally {
+    record(councilFinished(engineOptions.runId, finished));
   }
-  const artifacts = writeCouncilArtifacts(result.run, runsRoot, owned);
-  return { result, artifacts };
 }

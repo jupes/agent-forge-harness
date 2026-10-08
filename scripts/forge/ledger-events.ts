@@ -1,6 +1,6 @@
 /**
  * The ledger events a Forge run emits: a phase entered, a phase completed, a
- * review round recorded.
+ * verdict file bound to the run, a review round recorded.
  *
  * Imported only by the Bun CLIs (`phase-gate.ts`, `auto-loop-cli.ts`), and
  * only when they run as commands: the ledger loads `bun:sqlite`, which the
@@ -13,6 +13,7 @@ import type {
   LedgerEventInput,
   LedgerPayloads,
 } from "../../types/hearth";
+import type { EvalVerdictParsed } from "../eval-verdict";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { type Attach, resolveAttach } from "../ledger/identity";
 import { lastEvent } from "../ledger/query";
@@ -28,7 +29,8 @@ type Env = Readonly<Record<string, string | undefined>>;
 type RunEventKind =
   | "run.phase.entered"
   | "run.phase.completed"
-  | "review.recorded";
+  | "review.recorded"
+  | "verdict.bound";
 
 /** A run event before it is tied to a workspace, a session and an executor. */
 export type RunEvent = {
@@ -64,6 +66,33 @@ export function reviewRecorded(
         low: round.findings.low,
       },
       action,
+    },
+  };
+}
+
+/**
+ * A verdict file as the ledger binds it: the outcome, who built the work
+ * under review when the run recorded that, and the file's own summary (an
+ * opt-in body the ledger redacts and caps). Verdict schema 1 does not name
+ * its evaluator, so none is recorded. `null` is a file that could not be read
+ * or parsed.
+ */
+export function verdictBound(input: {
+  verdict: Pick<EvalVerdictParsed, "verdict" | "summary"> | null;
+  builder?: Executor;
+}): RunEvent & { kind: "verdict.bound" } {
+  const { verdict, builder } = input;
+  return {
+    kind: "verdict.bound",
+    payload: {
+      verdict:
+        verdict === null
+          ? "unreadable"
+          : verdict.verdict === "PASS"
+            ? "pass"
+            : "fail",
+      ...(builder ? { builder } : {}),
+      ...(verdict?.summary ? { summary: verdict.summary } : {}),
     },
   };
 }
