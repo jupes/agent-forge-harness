@@ -222,9 +222,9 @@ test.describe("Forge run", () => {
 
     await expect(page.getByText(NO_RUN_TITLE, { exact: true })).toBeVisible();
     await expect(page.locator(".af-phase")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Checkpoints" })).toHaveCount(
-      0,
-    );
+    await expect(
+      page.getByRole("heading", { name: "Checkpoints" }),
+    ).toHaveCount(0);
 
     const scope = page.locator(".af-gate-scope");
     await expect(scope).toContainText(`this checkout (${CHECKOUT})`);

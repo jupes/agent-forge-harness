@@ -46,9 +46,10 @@ export const HEARTH_HOME = (process.env["AGENT_FORGE_E2E_HOME"] ||= join(
 ));
 
 /**
- * Whether `path` is a home this module would have generated: the only kind the
- * teardown may delete. A home someone pointed `AGENT_FORGE_E2E_HOME` at is used
- * and left alone.
+ * Whether `path` has the shape of a home this module generates: the only kind
+ * the teardown may delete. It goes by shape alone, so any other place
+ * `AGENT_FORGE_E2E_HOME` points at is used and left alone — and one that has
+ * this shape is deleted, whoever chose it.
  */
 export function isRunHome(path: string): boolean {
   return (

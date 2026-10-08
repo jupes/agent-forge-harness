@@ -36,8 +36,8 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
-      # Fails when the version cannot be read: an empty one would give every
-      # release the same cache key.
+      # Fails when the version comes back empty: that would give every release
+      # the same cache key.
       - name: Read the installed Playwright version
         id: playwright
         run: |
@@ -58,8 +58,8 @@ jobs:
       - name: Install the browser's system libraries
         if: steps.browser.outputs.cache-hit == 'true'
         run: bunx playwright install-deps chromium
-      # Shorter than the job's limit: a hung suite then fails this step, rather
-      # than the job being cancelled, and the upload below still runs.
+      # Shorter than the job's limit. The intent: a hung suite fails this step,
+      # rather than the job being cancelled, so the upload below still runs.
       - name: Run the browser suite
         timeout-minutes: 12
         run: bun run verify:ui
