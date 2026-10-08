@@ -2,14 +2,32 @@
 /**
  * session.ts
  *
- * Triggered on SessionStart / SessionEnd (when wired in settings).
- * Logs session metadata; syncs Beads via `bd dolt pull` / `bd dolt push` per CLAUDE.md (not removed `bd sync`).
+ * Runs on SessionStart and SessionEnd. Which one comes from stdin
+ * `hook_event_name`; with no stdin (a run by hand) it acts as SessionStart.
+ *
+ * SessionStart: records `session.started` in the ledger, leaves the session
+ * mirror in the worktree, logs to `session.jsonl`, pulls Beads and prints the
+ * orientation lines the session reads.
+ * SessionEnd: records `session.ended` first, then pushes Beads exactly once
+ * and logs how the push went. It prints nothing.
+ *
+ * It always exits 0: a failure here must never cost the session.
  */
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import { appendFileSync, existsSync } from "fs";
 import { join } from "path";
+import {
+  handleSessionEnd,
+  handleSessionStart,
+  hookDeps,
+} from "../../scripts/ledger/hook-events";
 import { getSessionLogPath } from "./utils/constants";
+import {
+  type HookInput,
+  isAdapterChild,
+  readHookInput,
+} from "./utils/hook-input";
 
 const SESSION_HANDOFF_PATH = join(
   process.cwd(),
@@ -17,6 +35,9 @@ const SESSION_HANDOFF_PATH = join(
   "work",
   "session-handoff.md",
 );
+
+/** Leaves room inside the SessionEnd hook's own timeout (see `.claude/settings.json`). */
+const PUSH_TIMEOUT_MS = 30_000;
 
 function run(cmd: string): string {
   try {
@@ -30,41 +51,76 @@ function run(cmd: string): string {
   }
 }
 
-const event = process.env["CLAUDE_HOOK_EVENT"] ?? "SessionStart";
-
-const logEntry = {
-  event,
-  timestamp: new Date().toISOString(),
-  git: {
-    branch: run("git branch --show-current"),
-    commit: run("git rev-parse --short HEAD"),
-    status: run("git status --short"),
-    remote: run("git remote get-url origin"),
-  },
-  cwd: process.cwd(),
-};
-
-// Append to session log
-try {
-  appendFileSync(getSessionLogPath(), JSON.stringify(logEntry) + "\n");
-} catch {
-  // Non-fatal
+function log(entry: Record<string, unknown>): void {
+  try {
+    appendFileSync(getSessionLogPath(), `${JSON.stringify(entry)}\n`);
+  } catch {
+    // Non-fatal
+  }
 }
 
-// Beads / Dolt: pull at session start, push at session end (non-fatal if no remote or auth)
-if (event === "SessionStart") {
+function pushBeads(): { ok: boolean; ms: number } {
+  const started = performance.now();
+  let ok = false;
+  try {
+    execFileSync("bd", ["dolt", "push"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: PUSH_TIMEOUT_MS,
+    });
+    ok = true;
+  } catch {
+    // No remote, no auth, no `bd`: reported through `ok`.
+  }
+  return { ok, ms: Math.round(performance.now() - started) };
+}
+
+/** The ledger half of the hook. A failure is one stderr line, never an exit code. */
+function ledger(event: string, input: HookInput): void {
+  try {
+    const deps = hookDeps({ env: process.env, cwd: process.cwd() });
+    if (event === "SessionEnd")
+      handleSessionEnd(input, deps, {
+        push: pushBeads,
+        log: (entry) => log({ ...entry, timestamp: new Date().toISOString() }),
+      });
+    else handleSessionStart(input, deps);
+  } catch (error) {
+    console.error(
+      `[session] ledger: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function main(): Promise<void> {
+  const input = await readHookInput();
+  const event =
+    input?.hook_event_name === "SessionEnd" ? "SessionEnd" : "SessionStart";
+  // An adapter records its headless child's session itself.
+  const attached = input !== null && !isAdapterChild();
+
+  // The ledger first: `session.ended` must land before the push, which may be
+  // cut short, and before the git calls below, which are slow.
+  if (attached) ledger(event, input);
+
+  const logEntry = {
+    event,
+    timestamp: new Date().toISOString(),
+    git: {
+      branch: run("git branch --show-current"),
+      commit: run("git rev-parse --short HEAD"),
+      status: run("git status --short"),
+      remote: run("git remote get-url origin"),
+    },
+    cwd: process.cwd(),
+  };
+  log(logEntry);
+  if (event === "SessionEnd") return;
+
+  // Beads / Dolt: pull at session start (non-fatal if no remote or auth)
   const pullOut = run("bd dolt pull 2>&1");
   if (pullOut) {
     console.log(`[session] bd dolt pull: ${pullOut.slice(0, 200)}`);
   }
-} else if (event === "SessionEnd") {
-  const pushOut = run("bd dolt push 2>&1");
-  if (pushOut) {
-    console.log(`[session] bd dolt push: ${pushOut.slice(0, 200)}`);
-  }
-}
-
-if (event === "SessionStart") {
   if (existsSync(SESSION_HANDOFF_PATH)) {
     console.log(
       `\n[session] Continuity: read ${SESSION_HANDOFF_PATH} (see .claude/protocols/session-handoff.md) before editing code.\n`,
@@ -81,7 +137,13 @@ if (event === "SessionStart") {
   if (logEntry.git.status) {
     console.log(`[session] Uncommitted: ${logEntry.git.status}`);
   }
+  console.log(`[session] ${event} logged.`);
 }
 
-console.log(`[session] ${event} logged.`);
-process.exit(0);
+main()
+  .catch((error: unknown) => {
+    console.error(
+      `[session] ${error instanceof Error ? error.message : String(error)}`,
+    );
+  })
+  .finally(() => process.exit(0));

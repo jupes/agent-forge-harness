@@ -3,10 +3,9 @@
  *
  * A script launched from a session (a phase gate, a quality gate, a review
  * round) has no hook payload to read its identity from. It attaches to the
- * live session through the id the host exports to its shell tool, or through
- * the mirror file the session leaves in its worktree, and takes the model
- * from the ledger's per-session cache. Nothing here invents a value: what is
- * not known is left out.
+ * live session through the mirror file the session leaves in its worktree,
+ * and takes the model from the ledger's per-session cache. Nothing here
+ * invents a value: what is not known is left out.
  */
 
 import { readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
@@ -127,8 +126,9 @@ function withoutSession(executor: Executor | undefined): Executor | undefined {
 /**
  * The correlation fields for an event emitted from `cwd`.
  *
- * - `sessionId`: the id the host exports to its shell tool, else the mirror in
- *   the worktree, else absent. The run state never supplies it.
+ * - `sessionId`: the mirror in the worktree, else absent. The run state never
+ *   supplies it, and neither does the environment: no variable there is part
+ *   of the host's documented contract.
  * - `executor`: explicit flags, else the cached model of the session, else the
  *   executor stored on the run (without its session id), else absent.
  * - `beadId` / `runId`: explicit flag, else environment, else run state.
@@ -138,7 +138,6 @@ export function resolveAttach(input: AttachInput): Attach {
   const { workspace, worktree } = resolveCheckout(cwd);
 
   const sessionId =
-    nonEmpty(env.CLAUDE_CODE_SESSION_ID) ??
     readSessionMirror(worktree, input.now ? { now: input.now } : {}) ??
     undefined;
 

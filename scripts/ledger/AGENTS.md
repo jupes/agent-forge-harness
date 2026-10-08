@@ -16,8 +16,11 @@ Local agent guidance for this directory.
 - `db.ts` imports `bun:sqlite`, which only loads under Bun. Modules that Vite loads under Node or bundles for the browser (`scripts/council/workflow.ts`, `scripts/council/service.ts`, `scripts/forge/runs.ts`, `scripts/forge/phases.ts`, `scripts/forge/review-rules.ts`) must not import from this directory at runtime.
 - Tests never touch the real ledger under the user's home. `test-preload.ts` points the test process at a temp `AGENT_FORGE_HOME`; a test that asserts on ledger contents creates its own temp ledger and passes its `path`, and a spawned script gets `AGENT_FORGE_HOME` in its environment.
 - Schema changes are a new entry appended to `MIGRATIONS` in `db.ts`; existing entries are never edited.
+- `hook-events.ts` is what the Claude Code hook scripts (`.claude/hooks/ledger-hook.ts`, `.claude/hooks/session.ts`) call. Its handlers take the parsed stdin object and injected dependencies, store names, hashes and sizes only, and never throw into the host. A hook event with no known model carries no `executor` — never a placeholder.
+- The hook tests in `hooks.test.ts` spawn the real scripts with a from-scratch environment (temp `AGENT_FORGE_HOME`, temp `HOME`/`USERPROFILE`, an empty `PATH`), so no live session id leaks in and neither `bd` nor `git` can run.
 
 ## Notes
 
 - `bun test scripts/ledger` runs this directory's tests.
-- `fixtures/` holds scripts that tests spawn as child processes; they are not entry points.
+- `fixtures/` holds scripts that tests and `bench.ts` spawn as child processes; they are not entry points.
+- `bun run scripts/ledger/bench.ts --hook 20` times the PostToolUse hook against a process that does nothing.

@@ -173,21 +173,13 @@ describe("resolveAttach", () => {
     expect(attach.sessionId).toBe("sess-1");
   });
 
-  test("a session id in the shell environment is preferred over the mirror, and the mirror is used when it is absent", () => {
+  test("the session comes from the worktree mirror only: a session id in the shell environment is not used", () => {
     const { cwd, path } = sandbox();
+    const env = { CLAUDE_CODE_SESSION_ID: "sess-env" };
+    expect("sessionId" in resolveAttach({ cwd, env, path })).toBe(false);
     writeSessionMirror(cwd, "sess-mirror");
-    expect(
-      resolveAttach({
-        cwd,
-        env: { CLAUDE_CODE_SESSION_ID: "sess-env" },
-        path,
-      }).sessionId,
-    ).toBe("sess-env");
+    expect(resolveAttach({ cwd, env, path }).sessionId).toBe("sess-mirror");
     expect(resolveAttach({ cwd, env: {}, path }).sessionId).toBe("sess-mirror");
-    expect(
-      resolveAttach({ cwd, env: { CLAUDE_CODE_SESSION_ID: "" }, path })
-        .sessionId,
-    ).toBe("sess-mirror");
   });
 
   test("with no cached model the result has no executor", () => {

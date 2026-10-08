@@ -1,6 +1,6 @@
-import { createHash } from "crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { basename, extname, isAbsolute, relative, resolve, sep } from "path";
+import { hashText } from "../hash-text";
 import { redactSecrets } from "../secret-patterns";
 import {
   COUNCIL_SCHEMA_VERSION,
@@ -58,9 +58,7 @@ export class ContextSecurityError extends Error {
   override name = "ContextSecurityError";
 }
 
-export function hashText(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
+export { hashText };
 
 function maxBytesFrom(input: ContextInput): number {
   const value = input.maxBytes ?? DEFAULT_MAX_BYTES;

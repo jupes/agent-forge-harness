@@ -158,3 +158,30 @@ export function lastEvent(
     return null;
   }
 }
+
+/**
+ * The child sessions of `parent` (ids of the form `<parent>:<agent>`) that have
+ * events but no `session.ended` yet. Empty when the ledger cannot be read.
+ */
+export function openChildSessions(
+  parent: string,
+  opts: { path?: string } = {},
+): string[] {
+  try {
+    // `;` is the character after `:`, so the range is every id with the prefix `<parent>:`.
+    return openLedger(opts.path)
+      .query<{ session_id: string }, [string, string]>(
+        `SELECT DISTINCT session_id FROM events
+         WHERE session_id >= ? AND session_id < ?
+           AND session_id NOT IN (
+             SELECT session_id FROM events
+             WHERE kind = 'session.ended' AND session_id IS NOT NULL
+           )
+         ORDER BY session_id`,
+      )
+      .all(`${parent}:`, `${parent};`)
+      .map((row) => row.session_id);
+  } catch {
+    return [];
+  }
+}

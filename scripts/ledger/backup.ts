@@ -6,7 +6,7 @@
  * throw on failure; callers that must not fail (hooks) wrap them.
  */
 
-import { mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { openLedger } from "./db";
 import { backupsDir, ledgerPath } from "./paths";
@@ -49,6 +49,19 @@ function prune(dir: string, today: number): string[] {
   return pruned;
 }
 
+function backupsDirFor(opts: UpkeepOptions & { dir?: string }): string {
+  return (
+    opts.dir ??
+    (opts.path === undefined
+      ? backupsDir()
+      : join(dirname(resolve(opts.path)), "backups"))
+  );
+}
+
+function snapshotName(now: Date): string {
+  return `ledger-${now.toISOString().slice(0, 10)}.db`;
+}
+
 /**
  * Write today's snapshot to `backups/ledger-YYYY-MM-DD.db` beside the ledger
  * (UTC date; a second backup on the same day replaces the first) and prune old
@@ -59,14 +72,10 @@ export function backupLedger(opts: UpkeepOptions & { dir?: string } = {}): {
   pruned: string[];
 } {
   const now = opts.now?.() ?? new Date();
-  const dir =
-    opts.dir ??
-    (opts.path === undefined
-      ? backupsDir()
-      : join(dirname(resolve(opts.path)), "backups"));
+  const dir = backupsDirFor(opts);
   mkdirSync(dir, { recursive: true });
 
-  const target = join(dir, `ledger-${now.toISOString().slice(0, 10)}.db`);
+  const target = join(dir, snapshotName(now));
   // `VACUUM INTO` refuses an existing file, so the snapshot is written beside
   // its final name and moved over it.
   const staging = `${target}.${process.pid}.tmp`;
@@ -83,6 +92,24 @@ export function backupLedger(opts: UpkeepOptions & { dir?: string } = {}): {
     throw error;
   }
   return { path: target, pruned: prune(dir, startOfUtcDay(now)) };
+}
+
+/**
+ * Take today's snapshot unless one already exists. The stand-in for a nightly
+ * job: a session start calls it, so the first session of a day pays for the
+ * backup. Never throws; returns whether a snapshot was taken.
+ */
+export function backupIfDue(
+  opts: UpkeepOptions & { dir?: string } = {},
+): boolean {
+  try {
+    const now = opts.now?.() ?? new Date();
+    if (existsSync(join(backupsDirFor(opts), snapshotName(now)))) return false;
+    backupLedger({ ...opts, now: () => now });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
