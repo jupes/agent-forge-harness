@@ -2,7 +2,7 @@
  * What the Forge run view shows, derived from local harness state.
  *
  * Pure functions — the plugin that reads files and runs `bd` lives in
- * `scripts/dashboard/dev-api.ts`, so the shape of the view and the rules for
+ * `scripts/hearth/routes/dev-api.ts`, so the shape of the view and the rules for
  * recording a review are testable without a filesystem or a server.
  *
  * Checkpoints are not here: they come from the Beads snapshot the page already

@@ -16,18 +16,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import type { Plugin } from "vite";
-import { LOG_BASE_DIR } from "../../.claude/hooks/utils/constants";
-import { isLocalCouncilRequest } from "../council/dashboard";
-import { runStatePath } from "../forge/runs";
-import { listRuns } from "../forge/runs-store";
+import { LOG_BASE_DIR } from "../../../.claude/hooks/utils/constants";
 import {
   type ForgeRunSnapshot,
   forgeRunSnapshot,
   issueStatusFromBdShow,
   REVIEWABLE_STATUS,
   reviewCommentFor,
-} from "./forge-run-model";
+} from "../../dashboard/forge-run-model";
 import {
   ageInDays,
   buildRepoEntries,
@@ -35,7 +31,10 @@ import {
   type ReposKnowledge,
   sharedConventionsFrom,
   worktreeViews,
-} from "./repos-knowledge-model";
+} from "../../dashboard/repos-knowledge-model";
+import { runStatePath } from "../../forge/runs";
+import { listRuns } from "../../forge/runs-store";
+import { isLocalCouncilRequest } from "./council";
 
 export const DEV_API = "/__agent-forge/dev-api";
 
@@ -303,7 +302,7 @@ function sendJson(res: ServerResponse, reply: ApiReply): void {
   res.end(JSON.stringify(reply.body));
 }
 
-async function handle(
+export async function devApiHttpHandler(
   root: string,
   req: IncomingMessage,
   res: ServerResponse,
@@ -370,15 +369,4 @@ async function handle(
     return;
   }
   sendJson(res, fail(404, "Unknown dev API route"));
-}
-
-export function devApiPlugin(root: string): Plugin {
-  return {
-    name: "agent-forge-dev-api",
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        void handle(root, req, res, next);
-      });
-    },
-  };
 }

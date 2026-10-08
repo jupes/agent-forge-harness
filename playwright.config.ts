@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 /**
@@ -40,7 +42,12 @@ export default defineConfig({
     // DASHBOARD_NO_BUILD keeps the suite from regenerating the Beads snapshot
     // on every run; whatever docs/data/beads.json holds is what gets rendered.
     command: "bun run dashboard",
-    env: { PORT: String(PORT), DASHBOARD_NO_BUILD: "1" },
+    // A throwaway hearth home keeps the suite off the developer's real ~/.agent-forge.
+    env: {
+      PORT: String(PORT),
+      DASHBOARD_NO_BUILD: "1",
+      AGENT_FORGE_HOME: join(tmpdir(), "agent-forge-e2e-home"),
+    },
     url: `http://127.0.0.1:${PORT}/index.html`,
     reuseExistingServer: !process.env["CI"],
     timeout: 120_000,

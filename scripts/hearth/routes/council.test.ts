@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { COUNCIL_API, councilHttpHandler } from "./dashboard";
-import { createCouncilService } from "./service";
+import { createCouncilService } from "../../council/service";
+import { COUNCIL_API, councilHttpHandler } from "./council";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -15,7 +15,7 @@ async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "council-http-"));
   const service = createCouncilService({
     workspaceRoot: root,
-    harnessRoot: resolve(import.meta.dir, "../.."),
+    harnessRoot: resolve(import.meta.dir, "../../.."),
     runsRoot: join(root, "runs"),
   });
   const handler = councilHttpHandler(service);

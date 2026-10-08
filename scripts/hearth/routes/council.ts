@@ -1,8 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Plugin } from "vite";
-import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
-import { sanitizeContent } from "./context";
-import { createCouncilService } from "./service";
+import { sanitizeContent } from "../../council/context";
+import type { createCouncilService } from "../../council/service";
+import { passesFrontDoor } from "../gate";
 
 export const COUNCIL_API = "/__agent-forge/council-api";
 type Service = ReturnType<typeof createCouncilService>;
@@ -22,24 +21,8 @@ function send(
 }
 
 export function isLocalCouncilRequest(req: IncomingMessage): boolean {
-  const remote = req.socket.remoteAddress;
-  if (
-    remote !== "127.0.0.1" &&
-    remote !== "::1" &&
-    remote !== "::ffff:127.0.0.1"
-  )
-    return false;
-  try {
-    const host = new URL(`http://${req.headers.host ?? ""}`);
-    if (!["localhost", "127.0.0.1", "[::1]"].includes(host.hostname))
-      return false;
-    if (req.headers.origin && req.headers.origin !== host.origin) return false;
-    return req.headers["sec-fetch-site"] !== "cross-site";
-  } catch {
-    return false;
-  }
+  return passesFrontDoor(req);
 }
-
 async function bodyJson(req: IncomingMessage): Promise<unknown> {
   if (!req.headers["content-type"]?.startsWith("application/json")) {
     throw new Error("Use application/json for council requests");
@@ -131,30 +114,5 @@ export function councilHttpHandler(service: Service) {
         send(res, 400, null, message);
       } else res.end();
     }
-  };
-}
-
-export function councilDashboardPlugin(
-  root: string,
-  environment?: Record<string, string | undefined>,
-): Plugin {
-  return {
-    name: "agent-forge-council",
-    configureServer(server) {
-      const service = createCouncilService({
-        workspaceRoot: root,
-        harnessRoot: root,
-        environment:
-          environment ??
-          loadDashboardServerEnvironment({ mode: "development", root }),
-      });
-      const handler = councilHttpHandler(service);
-      server.middlewares.use((req, res, next) => {
-        void handler(req, res, next);
-      });
-      server.httpServer?.once("close", () => {
-        void service.close();
-      });
-    },
   };
 }

@@ -5,8 +5,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import chokidar from "chokidar";
-import { councilDashboardPlugin } from "./scripts/council/dashboard";
-import { devApiPlugin } from "./scripts/dashboard/dev-api";
+import { hearthPlugin } from "./scripts/hearth/vite-plugin";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
@@ -160,7 +159,6 @@ export default defineConfig({
     }),
     rebuildPagesApiPlugin(),
     beadsDataReloadPlugin(),
-    councilDashboardPlugin(repoRoot),
-    devApiPlugin(repoRoot),
+    hearthPlugin(repoRoot),
   ],
 });
