@@ -6,17 +6,18 @@
  * real ledger.
  */
 
-import { homedir } from "os";
 import { join } from "path";
+import { agentForgeHome } from "../agent-forge-home";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-/** `AGENT_FORGE_HOME` when set, else `~/.agent-forge` (the OS home, not `$HOME`). */
+/**
+ * `AGENT_FORGE_HOME` when set, else `~/.agent-forge` (the OS home, not `$HOME`).
+ * The hearth keeps its lock and token files in the same directory; the rule
+ * is written once, in `scripts/agent-forge-home.ts`.
+ */
 export function ledgerHome(env: Env = process.env): string {
-  const override = env.AGENT_FORGE_HOME;
-  return override && override.trim().length > 0
-    ? override
-    : join(homedir(), ".agent-forge");
+  return agentForgeHome(env);
 }
 
 export function ledgerPath(env: Env = process.env): string {

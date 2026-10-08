@@ -1,18 +1,16 @@
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { agentForgeHome } from "../agent-forge-home";
 
 /**
- * Machine-local hearth state: `AGENT_FORGE_HOME`, else `~/.agent-forge`.
- * Tests point this at a temp directory so they never touch the real one.
+ * Machine-local hearth state: `AGENT_FORGE_HOME`, else `~/.agent-forge` — the
+ * directory the ledger also lives in (`scripts/agent-forge-home.ts` holds the
+ * rule). Tests point this at a temp directory so they never touch the real one.
  */
 export function hearthHome(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const override = env["AGENT_FORGE_HOME"];
-  return override && override.length > 0
-    ? override
-    : join(homedir(), ".agent-forge");
+  return agentForgeHome(env);
 }
 
 /** Stable short key for a workspace root; case-folded on Windows paths. */
