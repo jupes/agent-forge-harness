@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -18,6 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
+import { type ImportGraph, importGraph } from "../import-graph";
 import { closeLedger } from "../ledger/db";
 import { writeSessionMirror } from "../ledger/identity";
 import { PAYLOAD_KEYS } from "../ledger/payload-allowlist";
@@ -537,68 +539,74 @@ describe("the council service (fake transport, scratch ledger)", () => {
 
 describe("the import boundary (source scan)", () => {
   const COUNCIL = import.meta.dir;
+  const REPO = resolve(COUNCIL, "..", "..");
+  const at = (...parts: string[]): string =>
+    join(REPO, ...parts).replaceAll("\\", "/");
 
-  /** Module specifiers a file loads at runtime: type-only imports are skipped. */
-  function runtimeSpecifiers(file: string): string[] {
-    const source = readFileSync(file, "utf8");
-    const found: string[] = [];
-    const statement =
-      /^\s*(?:import|export)\s+(?!type\b)(?:[^"';]*?\sfrom\s+)?["']([^"']+)["']/gm;
-    const dynamic = /\bimport\(\s*["']([^"']+)["']\s*\)/g;
-    for (const pattern of [statement, dynamic])
-      for (const match of source.matchAll(pattern))
-        if (match[1] !== undefined) found.push(match[1]);
-    return found;
+  const reachable = importGraph;
+
+  /** What the graph holds that only Bun can load, or that is the ledger. */
+  function ledgerReach(graph: ImportGraph): string[] {
+    return [
+      ...graph.files.filter((file) => file.includes("/scripts/ledger/")),
+      ...graph.files.filter((file) => file.endsWith("/ledger-wiring.ts")),
+      ...graph.bare.filter((name) => name.startsWith("bun:")),
+    ];
   }
 
-  function resolveLocal(from: string, specifier: string): string | null {
-    const base = resolve(dirname(from), specifier);
-    for (const candidate of [
-      base,
-      `${base}.ts`,
-      `${base}.tsx`,
-      join(base, "index.ts"),
-    ])
-      if (/\.tsx?$/.test(candidate) && existsSync(candidate)) return candidate;
-    return null;
+  /** The module scripts the dashboard's pages load: what Vite bundles. */
+  function browserEntries(): string[] {
+    const docs = join(REPO, "docs");
+    return readdirSync(docs)
+      .filter((name) => name.endsWith(".html"))
+      .flatMap((name) =>
+        [
+          ...readFileSync(join(docs, name), "utf8").matchAll(
+            /<script\s+type="module"\s+src="([^"]+)"/g,
+          ),
+        ].map((match) => join(docs, match[1] ?? "")),
+      );
   }
 
-  /** Every local file and every bare specifier reachable from `entry` at runtime. */
-  function reachable(entry: string): { files: string[]; bare: string[] } {
-    const files = new Set<string>([entry]);
-    const bare = new Set<string>();
-    const queue = [entry];
-    for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
-      for (const specifier of runtimeSpecifiers(file)) {
-        if (!specifier.startsWith(".")) {
-          bare.add(specifier);
-          continue;
-        }
-        const next = resolveLocal(file, specifier);
-        if (next !== null && !files.has(next)) {
-          files.add(next);
-          queue.push(next);
-        }
-      }
-    }
-    return {
-      files: [...files].map((file) => file.replaceAll("\\", "/")),
-      bare: [...bare],
-    };
-  }
-
-  test("nothing the dashboard's council plugin loads reaches the ledger or bun:sqlite", () => {
-    const graph = reachable(join(COUNCIL, "dashboard.ts"));
+  test("nothing Vite loads under Node reaches the ledger or a bun: module", () => {
+    // The dashboard config is the only thing Vite runs under Node; everything
+    // it loads is whatever that file imports. The hearth it starts is a
+    // separate Bun process, named by path and never imported.
+    const graph = reachable(join(REPO, "vite.dashboard.config.ts"));
     // The walk really followed the chain this guards.
-    for (const name of ["service.ts", "workflow.ts", "ledger-events.ts"])
-      expect(graph.files).toContain(join(COUNCIL, name).replaceAll("\\", "/"));
-    expect(
-      graph.files.filter((file) => file.includes("/scripts/ledger/")),
-    ).toEqual([]);
-    expect(
-      graph.files.filter((file) => file.endsWith("ledger-wiring.ts")),
-    ).toEqual([]);
-    expect(graph.bare.filter((name) => name.startsWith("bun:"))).toEqual([]);
+    for (const name of [
+      "vite-plugin.ts",
+      "supervisor.ts",
+      "lock.ts",
+      "home.ts",
+    ])
+      expect(graph.files).toContain(at("scripts", "hearth", name));
+    expect(graph.files).toContain(at("scripts", "agent-forge-home.ts"));
+    expect(graph.files).not.toContain(at("scripts", "hearth", "server.ts"));
+    expect(ledgerReach(graph)).toEqual([]);
+  });
+
+  test("nothing the dashboard bundles for the browser reaches the ledger or a bun: module", () => {
+    const entries = browserEntries();
+    expect(entries.map((file) => file.replaceAll("\\", "/")).sort()).toEqual([
+      at("docs", "js", "app.tsx"),
+      at("docs", "js", "council.tsx"),
+    ]);
+    const graph = reachable(...entries);
+    // The walk really crossed from the pages into `scripts/`.
+    expect(graph.files).toContain(at("scripts", "forge", "runs.ts"));
+    expect(graph.files).toContain(at("scripts", "council", "discussion.ts"));
+    expect(ledgerReach(graph)).toEqual([]);
+  });
+
+  test("the council service and workflow reach the ledger only through what a caller hands them", () => {
+    // Not a Node constraint any more — the hearth that serves these runs under
+    // Bun — but the seam: the service appends through an injected function,
+    // so a host that injects nothing loads no ledger and writes none.
+    const graph = reachable(join(COUNCIL, "service.ts"));
+    for (const name of ["workflow.ts", "ledger-events.ts"])
+      expect(graph.files).toContain(at("scripts", "council", name));
+    expect(ledgerReach(graph)).toEqual([]);
   });
 
   test("the scan sees a ledger import where there is one", () => {
@@ -607,6 +615,13 @@ describe("the import boundary (source scan)", () => {
       graph.files.some((file) => file.endsWith("/scripts/ledger/db.ts")),
     ).toBe(true);
     expect(graph.bare).toContain("bun:sqlite");
+    expect(ledgerReach(graph)).toEqual(
+      expect.arrayContaining([
+        at("scripts", "ledger", "db.ts"),
+        at("scripts", "council", "ledger-wiring.ts"),
+        "bun:sqlite",
+      ]),
+    );
   });
 
   test("the CLI and MCP entry points load the ledger only through a dynamic import", () => {
