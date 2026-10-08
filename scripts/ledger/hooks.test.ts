@@ -106,9 +106,10 @@ async function hook(
   script: string,
   stdin: unknown,
   extraEnv: Record<string, string> = {},
+  args: string[] = [],
 ): Promise<Ran> {
   const body = typeof stdin === "string" ? stdin : JSON.stringify(stdin);
-  const child = Bun.spawn([process.execPath, "run", script], {
+  const child = Bun.spawn([process.execPath, "run", script, ...args], {
     cwd: box.cwd,
     env: childEnv(box, extraEnv),
     stdin: new Blob([body]),
@@ -368,6 +369,88 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       expect(sessionLog(box).map((line) => line.event)).toEqual([
         "SessionStart",
         "SessionStart",
+      ]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "the session script named SessionEnd on its command line, with no usable payload, ends the session quietly instead of starting one",
+    async () => {
+      const box = sandbox();
+      for (const stdin of ["", "not json {"]) {
+        const ran = await hook(box, SESSION, stdin, {}, ["SessionEnd"]);
+        expect(ran).toMatchObject({ exitCode: 0, stdout: "" });
+      }
+      // No session id arrived, so there is no session to end in the ledger.
+      expect(events(box)).toHaveLength(0);
+      const log = sessionLog(box);
+      expect(log.map((line) => line.event)).toEqual([
+        "SessionEnd",
+        "SessionEnd",
+        "SessionEnd",
+        "SessionEnd",
+      ]);
+      // Each run pushed once (`bd` is not on the children's PATH, so it failed) and logged where the event name came from.
+      expect(log.filter((line) => "push" in line)).toHaveLength(2);
+      expect(
+        log.filter((line) => "git" in line).map((line) => line.eventSource),
+      ).toEqual(["argv", "argv"]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "the session script named SessionEnd on its command line, whose stdin stays open and silent, still ends rather than starts",
+    async () => {
+      const box = sandbox();
+      const child = Bun.spawn(
+        [process.execPath, "run", SESSION, "SessionEnd"],
+        {
+          cwd: box.cwd,
+          env: childEnv(box),
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const stdout = await new Response(child.stdout).text();
+      expect(await child.exited).toBe(0);
+      child.stdin.end();
+      expect(stdout).toBe("");
+      expect(sessionLog(box).map((line) => line.event)).toEqual([
+        "SessionEnd",
+        "SessionEnd",
+      ]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a payload on stdin outranks the command line, and SessionStart on the command line alone starts a session log entry",
+    async () => {
+      const box = sandbox();
+      const fromStdin = await hook(
+        box,
+        SESSION,
+        payload("SessionStart", box, { source: "startup", model: "m-1" }),
+        {},
+        ["SessionEnd"],
+      );
+      expect(fromStdin.stdout).toContain("[session] SessionStart logged.");
+      expect(events(box).map((event) => event.kind)).toEqual([
+        "session.started",
+      ]);
+
+      const fromArgv = await hook(box, SESSION, "", {}, ["SessionStart"]);
+      expect(fromArgv.stdout).toContain("[session] SessionStart logged.");
+      expect(
+        sessionLog(box)
+          .filter((line) => "git" in line)
+          .map((line) => [line.event, line.eventSource]),
+      ).toEqual([
+        ["SessionStart", "stdin"],
+        ["SessionStart", "argv"],
       ]);
     },
     SPAWN_TIMEOUT_MS,

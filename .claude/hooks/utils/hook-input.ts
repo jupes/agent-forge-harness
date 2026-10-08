@@ -24,6 +24,30 @@ export function isAdapterChild(env: Env = process.env): boolean {
   return env.AGENT_FORGE_ADAPTER === "1";
 }
 
+export type SessionHookEvent = "SessionStart" | "SessionEnd";
+
+function isSessionHookEvent(value: unknown): value is SessionHookEvent {
+  return value === "SessionStart" || value === "SessionEnd";
+}
+
+/**
+ * Which session event a run of the session script is for, and who said so.
+ * The host's payload wins; without one that names the event (stdin missing,
+ * late or unreadable) the event named on the command line is used, so a
+ * registration that passes it can never have its SessionEnd mistaken for a
+ * start. With neither, the script was run by hand and acts as SessionStart.
+ */
+export function sessionEventOf(
+  input: HookInput | null,
+  argv: readonly string[],
+): { event: SessionHookEvent; source: "stdin" | "argv" | "default" } {
+  const named = input?.hook_event_name;
+  if (isSessionHookEvent(named)) return { event: named, source: "stdin" };
+  const token = argv.find(isSessionHookEvent);
+  if (token !== undefined) return { event: token, source: "argv" };
+  return { event: "SessionStart", source: "default" };
+}
+
 /** The object in `text`, or null when it is empty, not JSON, or not an object. */
 export function parseHookInput(text: string): HookInput | null {
   if (text.trim().length === 0) return null;

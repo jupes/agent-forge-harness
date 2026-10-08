@@ -19,6 +19,7 @@ Local agent guidance for this directory.
 - `verdict.bound` never carries an `evaluator`: verdict schema 1 does not name one, and nothing here invents it.
 - Schema changes are a new entry appended to `MIGRATIONS` in `db.ts`; existing entries are never edited.
 - `hook-events.ts` is what the Claude Code hook scripts (`.claude/hooks/ledger-hook.ts`, `.claude/hooks/session.ts`) call. Its handlers take the parsed stdin object and injected dependencies, store names, hashes and sizes only, and never throw into the host. A hook event with no known model carries no `executor` — never a placeholder.
+- `.claude/hooks/session.ts` takes its event from stdin `hook_event_name`, else from a `SessionStart` / `SessionEnd` token on its command line, else acts as SessionStart (a run by hand). The command-line token is what keeps a SessionEnd whose payload is missing or late from running the SessionStart path; the registration in `.claude/settings.json` does not pass the token yet, so until it does that case still falls through to SessionStart.
 - The hook tests in `hooks.test.ts` spawn the real scripts with a from-scratch environment (temp `AGENT_FORGE_HOME`, temp `HOME`/`USERPROFILE`, an empty `PATH`), so no live session id leaks in and neither `bd` nor `git` can run.
 
 ## Notes

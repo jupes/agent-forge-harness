@@ -3,13 +3,17 @@
  * session.ts
  *
  * Runs on SessionStart and SessionEnd. Which one comes from stdin
- * `hook_event_name`; with no stdin (a run by hand) it acts as SessionStart.
+ * `hook_event_name`; when stdin does not say (missing, late or unreadable),
+ * from a `SessionStart` / `SessionEnd` token on the command line; with
+ * neither (a run by hand) it acts as SessionStart.
  *
  * SessionStart: records `session.started` in the ledger, leaves the session
  * mirror in the worktree, logs to `session.jsonl`, pulls Beads and prints the
  * orientation lines the session reads.
  * SessionEnd: records `session.ended` first, then pushes Beads exactly once
- * and logs how the push went. It prints nothing.
+ * and logs how the push went. It prints nothing, and never pulls. Without a
+ * payload there is no session id, so nothing is recorded in the ledger; the
+ * push and the log lines still happen.
  *
  * It always exits 0: a failure here must never cost the session.
  */
@@ -27,6 +31,8 @@ import {
   type HookInput,
   isAdapterChild,
   readHookInput,
+  type SessionHookEvent,
+  sessionEventOf,
 } from "./utils/hook-input";
 
 const SESSION_HANDOFF_PATH = join(
@@ -75,7 +81,7 @@ function pushBeads(): { ok: boolean; ms: number } {
 }
 
 /** The ledger half of the hook. A failure is one stderr line, never an exit code. */
-function ledger(event: string, input: HookInput): void {
+function ledger(event: SessionHookEvent, input: HookInput): void {
   try {
     const deps = hookDeps({ env: process.env, cwd: process.cwd() });
     if (event === "SessionEnd")
@@ -93,17 +99,20 @@ function ledger(event: string, input: HookInput): void {
 
 async function main(): Promise<void> {
   const input = await readHookInput();
-  const event =
-    input?.hook_event_name === "SessionEnd" ? "SessionEnd" : "SessionStart";
-  // An adapter records its headless child's session itself.
-  const attached = input !== null && !isAdapterChild();
+  const { event, source } = sessionEventOf(input, process.argv.slice(2));
 
   // The ledger first: `session.ended` must land before the push, which may be
-  // cut short, and before the git calls below, which are slow.
-  if (attached) ledger(event, input);
+  // cut short, and before the git calls below, which are slow. An adapter
+  // records its headless child's session itself. A session end whose payload
+  // never arrived still pushes: the handler records nothing without a session id.
+  if (!isAdapterChild()) {
+    if (event === "SessionEnd") ledger(event, input ?? {});
+    else if (input !== null) ledger(event, input);
+  }
 
   const logEntry = {
     event,
+    eventSource: source,
     timestamp: new Date().toISOString(),
     git: {
       branch: run("git branch --show-current"),
