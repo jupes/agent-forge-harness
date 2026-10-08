@@ -48,7 +48,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 | **Workspace** | A registered repo checkout the control plane manages (`repos/repos.json` entry or the harness itself) | path |
 | **Bead** | A Beads issue; the unit of work | `agent-forge-harness-xxxx` |
 | **Run** | One Forge pipeline execution for a slug (existing `ForgeState`), now with an `executor` | `slug` |
-| **Session** | One live agent process attached to the harness (Claude Code interactive, Claude teammate, headless `claude -p`, `codex exec`, …) | `sessionId` (provider-issued where available, else minted) |
+| **Session** | One live agent process attached to the harness (Claude Code interactive, Claude teammate, headless `claude -p`, `codex exec`, …). Its `kind` is one of `interactive`, `teammate`, `subagent`, `headless`, `remote`; a subagent is a child of the session that launched it | `sessionId` (provider-issued where available, else minted) |
 | **Executor** | `{ provider, model, effort, smith?, sessionId? }`; who is doing the work | embedded on run/event/gate/verdict |
 | **Smith** | Named `{ provider, model, effort, enabled, tags }` in config; who does the work | smith name (`claude-journeyman`, …) |
 | **Rank** | Policy level `master` / `journeyman` / `apprentice` that maps work onto smiths; evaluator rank ≥ builder rank | rank |
@@ -66,7 +66,9 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 
 - Storage (decided): one `bun:sqlite` file at `~/.agent-forge/ledger.db` with a `workspace` column; nightly backup to `~/.agent-forge/backups/` keeping 14 days; events older than 90 days compacted to daily summaries. Metadata-only by default: no prompt bodies, no source bodies, no tool output bodies; hashes and sizes instead. Opt-in bodies per event kind with redaction.
 - Event kinds (v1): `session.started|ended`, `tool.called` (name, duration, exit, args hash), `prompt.submitted` (hash, length), `run.phase.entered|completed`, `review.recorded`, `gate.ran`, `verdict.bound`, `bead.transitioned` (queue state), `reservation.acquired|released`, `shift.started|stopped`, `council.run.started|finished`, `friction.recorded`, `operator.action` (every mutation).
-- Query surface: `bun run forge:audit --bead <id> | --run <slug> | --session <id> | --since <iso> [--kind ...] --json`.
+- Payload notes: `session.started` carries the session `kind`, its `worktree` and, for a child, `parentSessionId`. `review.recorded` carries the `action` the review loop took (`advance`, `revise`, `halt`). `gate.ran` carries the `trigger` (the hook event that ran the gate) when known. `verdict.bound` has an optional `evaluator` until the verdict file names one (verdict v2). The opt-in bodies are exactly `verdict.bound.summary` and `council.run.finished.summary`, stored redacted and capped. A hook-sourced `tool.called` has no exit code.
+- Besides events, the ledger keeps a `session_models` cache table (the last model and effort seen per session). It is a lookup for emitters that run outside the session, not an event.
+- Query surface: `bun run forge:audit --bead <id> | --run <slug> | --session <id> | --since <iso> [--kind ...] --json`. `--bead` also returns the other events of any session that touched the bead; `--bead-exact` returns only events tagged with it. The default scope is the workspace of the current directory (`--all-workspaces` lifts it); `--after-id` and `--limit` page by event id. `--backup` writes a dated snapshot and prunes old ones; `--compact` folds events past retention into daily summaries.
 - Emitters are thin: a single `appendEvent()` in `scripts/ledger/` used by hooks, forge scripts, quality gate, worktree registry, council, and adapters. Hooks must stay fast (one sync insert, no network).
 
 ## 6. Control-plane server

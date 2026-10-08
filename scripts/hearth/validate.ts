@@ -20,6 +20,7 @@ import {
   QUEUE_STATES,
   type QueueState,
   type Reservation,
+  SESSION_KINDS,
   type SessionEnvelope,
   SHIFT_STOP_REASONS,
   type Smith,
@@ -151,6 +152,7 @@ const smithCheck = shape({
 const sessionEnvelopeCheck = shape({
   sessionId: nonEmptyStr,
   provider: nonEmptyStr,
+  kind: optional(oneOf(SESSION_KINDS)),
   model: optional(nonEmptyStr),
   effort: optional(nonEmptyStr),
   workspace: nonEmptyStr,
@@ -204,7 +206,12 @@ const verdictOutcome = oneOf(["pass", "fail", "unreadable"]);
 
 /** One entry per kind: adding a kind to `LEDGER_EVENT_KINDS` fails typecheck until it has a check. */
 const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
-  "session.started": shape({ source: optional(str) }),
+  "session.started": shape({
+    source: optional(str),
+    kind: optional(oneOf(SESSION_KINDS)),
+    worktree: optional(nonEmptyStr),
+    parentSessionId: optional(nonEmptyStr),
+  }),
   "session.ended": shape({
     reason: optional(str),
     durationMs: optional(nonNegInt),
@@ -228,17 +235,20 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
       medium: nonNegInt,
       low: nonNegInt,
     }),
+    action: optional(oneOf(["advance", "revise", "halt"])),
   }),
   "gate.ran": shape({
     gate: nonEmptyStr,
     passed: bool,
     durationMs: optional(nonNegInt),
     exitCode: optional(num),
+    trigger: optional(nonEmptyStr),
   }),
   "verdict.bound": shape({
     verdict: verdictOutcome,
     builder: optional(executorCheck),
-    evaluator: executorCheck,
+    evaluator: optional(executorCheck),
+    summary: optional(str),
   }),
   "bead.transitioned": shape({
     from: nullable(queueState),
@@ -272,6 +282,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     councilRunId: nonEmptyStr,
     outcome: oneOf(["pass", "fail", "unreadable", "cancelled"]),
     costUsd: optional(num),
+    summary: optional(str),
   }),
   "friction.recorded": shape({
     frictionBeadId: nonEmptyStr,

@@ -5,6 +5,7 @@ import {
   type LedgerEventKind,
   type LedgerPayloads,
   QUEUE_STATES,
+  SESSION_KINDS,
 } from "../../types/hearth";
 import {
   isQueueState,
@@ -27,7 +28,15 @@ const executor = {
 const PAYLOADS: {
   [K in LedgerEventKind]: { good: LedgerPayloads[K]; bad: unknown };
 } = {
-  "session.started": { good: { source: "startup" }, bad: { source: 7 } },
+  "session.started": {
+    good: {
+      source: "startup",
+      kind: "subagent",
+      worktree: "C:/Users/Erich Staehling/wt",
+      parentSessionId: "sess-0",
+    },
+    bad: { source: 7 },
+  },
   "session.ended": {
     good: { reason: "clear", durationMs: 1200 },
     bad: { durationMs: "long" },
@@ -56,16 +65,23 @@ const PAYLOADS: {
       round: 1,
       verdict: "PASS",
       findings: { blocker: 0, high: 0, medium: 1, low: 2 },
+      action: "advance",
     },
     bad: { phase: "plan", round: 1, verdict: "MAYBE", findings: {} },
   },
   "gate.ran": {
-    good: { gate: "typecheck", passed: true, durationMs: 900, exitCode: 0 },
+    good: {
+      gate: "typecheck",
+      passed: true,
+      durationMs: 900,
+      exitCode: 0,
+      trigger: "Stop",
+    },
     bad: { gate: "typecheck", passed: "yes" },
   },
   "verdict.bound": {
     good: { verdict: "pass", builder: executor, evaluator: executor },
-    bad: { verdict: "pass" },
+    bad: { verdict: "maybe" },
   },
   "bead.transitioned": {
     good: { from: null, to: "proposed", reason: "minted by auto-task" },
@@ -97,7 +113,12 @@ const PAYLOADS: {
     bad: { councilRunId: "run-1" },
   },
   "council.run.finished": {
-    good: { councilRunId: "run-1", outcome: "cancelled", costUsd: 0.4 },
+    good: {
+      councilRunId: "run-1",
+      outcome: "cancelled",
+      costUsd: 0.4,
+      summary: "cancelled by the operator",
+    },
     bad: { councilRunId: "run-1", outcome: "great" },
   },
   "friction.recorded": {
@@ -207,6 +228,59 @@ describe("validateLedgerEventInput — what emitters append", () => {
     ).toBe(false);
   });
 
+  test("accepts a verdict.bound without an evaluator, and with a summary", () => {
+    expect(
+      validateLedgerEventInput(input("verdict.bound", { verdict: "pass" })).ok,
+    ).toBe(true);
+    expect(
+      validateLedgerEventInput(
+        input("verdict.bound", { verdict: "fail", summary: "two highs" }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  test("rejects a verdict.bound whose evaluator is present but malformed", () => {
+    expect(
+      validateLedgerEventInput(
+        input("verdict.bound", {
+          verdict: "pass",
+          evaluator: { provider: "" },
+        }),
+      ).ok,
+    ).toBe(false);
+  });
+
+  test("accepts a session.started carrying kind, worktree and parentSessionId; rejects an unknown kind", () => {
+    expect(
+      validateLedgerEventInput(
+        input("session.started", {
+          kind: "teammate",
+          worktree: "C:/Users/Erich Staehling/wt",
+          parentSessionId: "sess-0",
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateLedgerEventInput(input("session.started", { kind: "robot" })).ok,
+    ).toBe(false);
+  });
+
+  test("accepts review.recorded with an action and rejects an action outside advance|revise|halt", () => {
+    const review = PAYLOADS["review.recorded"].good;
+    for (const action of ["advance", "revise", "halt"]) {
+      expect(
+        validateLedgerEventInput(
+          input("review.recorded", { ...review, action }),
+        ).ok,
+      ).toBe(true);
+    }
+    expect(
+      validateLedgerEventInput(
+        input("review.recorded", { ...review, action: "retry" }),
+      ).ok,
+    ).toBe(false);
+  });
+
   test("hands back the validated event typed by kind", () => {
     const result = validateLedgerEventInput(
       input("gate.ran", PAYLOADS["gate.ran"].good),
@@ -312,6 +386,15 @@ describe("validateSessionEnvelope", () => {
         parentSessionId: "sess-0",
       }).ok,
     ).toBe(true);
+  });
+
+  test("validateSessionEnvelope accepts every declared session kind and rejects another", () => {
+    for (const kind of SESSION_KINDS) {
+      expect(validateSessionEnvelope({ ...envelope, kind }).ok).toBe(true);
+    }
+    expect(validateSessionEnvelope({ ...envelope, kind: "robot" }).ok).toBe(
+      false,
+    );
   });
 
   test("rejects a missing identity or a wrong-typed optional", () => {
