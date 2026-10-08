@@ -1,9 +1,11 @@
 /**
  * Preloaded by `bun test` (see `bunfig.toml`).
  *
- * Points the whole test process at a throwaway ledger home, so a test that
- * reaches an emitter without naming a ledger can never write the real one
- * under the user's home. It is a safety net only: tests that assert on ledger
+ * Points the test process at a throwaway ledger home, so a test that reaches
+ * an emitter without naming a ledger writes there and not under the user's
+ * home. A child process is covered only while it inherits this environment: a
+ * test that builds a child's environment itself must set `AGENT_FORGE_HOME`
+ * in it (`test-isolation.test.ts` checks that). Tests that assert on ledger
  * contents create their own ledger and pass its path.
  */
 

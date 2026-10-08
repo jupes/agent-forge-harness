@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { closeLedger } from "../ledger/db";
+import { queryEvents } from "../ledger/query";
 import {
   assertCouncilRunId,
   readCouncilRun,
@@ -443,16 +445,21 @@ describe("MCP job integration", () => {
       await server.close();
     }
   });
-  test("runs through the real stdio entry point from another project", async () => {
+  test("runs through the real stdio entry point from another project and records the run in the ledger it was pointed at", async () => {
     const root = temp();
+    const ledgerHome = temp();
+    const ledger = join(ledgerHome, "ledger.db");
     const client = new Client({ name: "stdio-test", version: "1" });
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["run", resolve("scripts/council/mcp.ts")],
       cwd: root,
+      // The transport adds the OS home to this; without AGENT_FORGE_HOME the
+      // server would record the run in the ledger under the user's home.
       env: {
         COUNCIL_WORKSPACE_ROOT: root,
         COUNCIL_RUNS_DIR: join(root, "runs"),
+        AGENT_FORGE_HOME: ledgerHome,
       },
       stderr: "pipe",
     });
@@ -474,6 +481,20 @@ describe("MCP job integration", () => {
       );
     } finally {
       await client.close();
+    }
+    try {
+      const recorded = queryEvents({}, { path: ledger });
+      expect(recorded.map((event) => event.kind)).toEqual([
+        "council.run.started",
+        "council.run.finished",
+      ]);
+      expect(
+        recorded.map(
+          (event) => (event.payload as { councilRunId?: string }).councilRunId,
+        ),
+      ).toEqual(["stdio", "stdio"]);
+    } finally {
+      closeLedger(ledger);
     }
   });
 });

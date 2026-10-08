@@ -46,6 +46,8 @@ async function stopHook(cwd: string): Promise<string> {
     if (/^(CLAUDE_|AGENT_FORGE_|FORGE_)/.test(key)) continue;
     env[key] = value;
   }
+  // The hook records nothing today; were it to, the events stay in the scratch checkout.
+  env.AGENT_FORGE_HOME = join(cwd, "agent-forge-home");
   const child = Bun.spawn(["bun", "run", HOOK], {
     cwd,
     env,
