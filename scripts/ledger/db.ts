@@ -65,8 +65,10 @@ export function isBusy(error: unknown): boolean {
  * Bring the file to the current schema. Several processes can open an empty
  * ledger at the same moment, so the version is re-read under the write lock:
  * whoever loses the race finds the schema current and applies nothing.
+ * Exported so a test can enter it the way the loser does — having seen an
+ * empty file before the winner committed; `prepare` is the only caller.
  */
-function migrate(db: Database): void {
+export function migrate(db: Database): void {
   // The journal mode cannot change inside a transaction, and it persists in the file.
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("BEGIN IMMEDIATE");

@@ -3,7 +3,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { closeLedger, LEDGER_SCHEMA_VERSION, openLedger } from "./db";
+import {
+  closeLedger,
+  isBusy,
+  LEDGER_SCHEMA_VERSION,
+  migrate,
+  openLedger,
+} from "./db";
 
 const temporary: string[] = [];
 
@@ -107,6 +113,65 @@ describe("openLedger", () => {
       pragma: { synchronous: number };
     };
     expect(report.pragma.synchronous).toBe(1);
+  });
+
+  // Pins that the migration reads the version itself rather than trusting what
+  // the opener saw before it. It does not pin that the read comes after BEGIN
+  // IMMEDIATE rather than just before it: telling those apart needs a second
+  // connection to commit between two statements inside `migrate`, and there is
+  // no seam for that.
+  test("an opener that saw an empty file but lost the race to create the schema applies nothing once it holds the write lock", () => {
+    const file = join(tempHome(), "ledger.db");
+    const winner = new Database(file, { create: true });
+    const loser = new Database(file, { create: true });
+    try {
+      // Both looked before either wrote, so both go on to migrate.
+      expect(userVersion(winner)).toBe(0);
+      expect(userVersion(loser)).toBe(0);
+
+      migrate(winner);
+      insertRow(winner, "U1");
+      migrate(loser);
+
+      expect(userVersion(loser)).toBe(LEDGER_SCHEMA_VERSION);
+      const tables = loser
+        .query<{ n: number }, []>(
+          "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'events'",
+        )
+        .get();
+      expect(tables?.n).toBe(1);
+      const rows = loser
+        .query<{ n: number }, []>("SELECT count(*) AS n FROM events")
+        .get();
+      expect(rows?.n).toBe(1);
+    } finally {
+      winner.close();
+      loser.close();
+    }
+  });
+
+  test("an opener that reaches the migration while another connection holds the write lock gets a busy error and changes nothing", () => {
+    const file = join(tempHome(), "ledger.db");
+    const winner = new Database(file, { create: true });
+    const loser = new Database(file, { create: true });
+    try {
+      migrate(winner);
+      winner.exec("BEGIN IMMEDIATE");
+      let thrown: unknown;
+      try {
+        migrate(loser);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(isBusy(thrown)).toBe(true);
+      winner.exec("COMMIT");
+      // The failed attempt left no transaction open on the loser's connection.
+      migrate(loser);
+      expect(userVersion(loser)).toBe(LEDGER_SCHEMA_VERSION);
+    } finally {
+      winner.close();
+      loser.close();
+    }
   });
 
   test("several processes opening an empty ledger at once all succeed and the schema is created once", async () => {
