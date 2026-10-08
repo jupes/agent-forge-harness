@@ -17,7 +17,7 @@
  */
 
 import { phaseCommand, reviewCommand } from "./phase-gate";
-import type { ForgeState, ReviewStatus } from "./phases";
+import type { ForgePhase, ForgeState, ReviewStatus } from "./phases";
 import { reviewGate } from "./review-rules";
 import { activeRuns, type RunSummary } from "./runs";
 import { listRuns, readRunState, removeRunState } from "./runs-store";
@@ -26,6 +26,17 @@ interface CliResult<T = unknown> {
   ok: boolean;
   data: T | null;
   error: string | null;
+}
+
+/**
+ * What a run held by its reviews has to do: record the review it is waiting
+ * on, or — when the last review asked for changes — revise first.
+ */
+function pendingStep(run: RunSummary, phase: ForgePhase): string {
+  const command = reviewCommand(phase, run.slug);
+  return run.revising
+    ? `revise ${phase}, then record a review (${command})`
+    : `review ${phase} (${command})`;
 }
 
 /**
@@ -38,7 +49,7 @@ function nextStep(run: RunSummary): string {
     return `halted in ${run.halted.phase} — ${run.halted.reason}`;
   }
   if (run.reviewPending !== null) {
-    return `review ${run.reviewPending} (${reviewCommand(run.reviewPending, run.slug)})`;
+    return pendingStep(run, run.reviewPending);
   }
   if (run.complete || run.next === null) return "shipped";
   return phaseCommand(run.next, run.slug);
@@ -52,7 +63,7 @@ export function stopAnnouncement(run: RunSummary): string {
     return `${head} HALTED in ${run.halted.phase}: ${run.halted.reason} Nothing advances until a new review of ${run.halted.phase} does (${reviewCommand(run.halted.phase, run.slug)}).`;
   }
   if (run.reviewPending !== null) {
-    return `${head} Next: review ${run.reviewPending} (${reviewCommand(run.reviewPending, run.slug)}).`;
+    return `${head} Next: ${pendingStep(run, run.reviewPending)}.`;
   }
   if (run.complete || run.next === null) return `${head} Shipped.`;
   const resume =

@@ -442,6 +442,37 @@ describe("how a held run is described", () => {
     expect(line).not.toContain("/forge-plan");
   });
 
+  test("a phase whose last review asked for a revision reads as revise first, then review — not as awaiting a review", () => {
+    const revising = summarizeRun(
+      autoRun(["research"], [review("research", 1, "FAIL", 1)], {
+        slug: "alpha",
+      }),
+    );
+    const awaiting = summarizeRun(autoRun(["research"], [], { slug: "alpha" }));
+    expect(revising.reviewPending).toBe("research");
+    expect(revising.revising).toBe(true);
+    expect(awaiting.revising).toBe(false);
+
+    const command = "bun run forge:review --slug alpha --phase research";
+    const line = runLine(revising);
+    expect(line).toContain("next: revise research, then record a review (");
+    expect(line).toContain(command);
+    expect(line).not.toContain("next: review research");
+    expect(runLine(awaiting)).toContain("next: review research (");
+    expect(runLine(awaiting)).not.toContain("revise");
+
+    const reminder = stopAnnouncement(revising);
+    expect(reminder).toContain("Next: revise research, then record a review (");
+    expect(reminder).toContain(command);
+    expect(stopAnnouncement(awaiting)).toContain("Next: review research (");
+    expect(stopAnnouncement(awaiting)).not.toContain("revise");
+  });
+
+  test("a halted or clear run is not revising", () => {
+    expect(summarizeRun(haltedPlan).revising).toBe(false);
+    expect(summarizeRun(state("beta", ["research"], AT)).revising).toBe(false);
+  });
+
   test("the stop reminder text names the halt instead of the next phase", () => {
     const text = stopAnnouncement(summarizeRun(haltedPlan));
     expect(text).toContain("HALTED in plan");

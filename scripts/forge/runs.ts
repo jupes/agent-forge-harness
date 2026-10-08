@@ -170,6 +170,8 @@ export interface RunSummary {
   halted: { phase: ForgePhase; reason: string } | null;
   /** The completed phase an auto run still has to review (or revise and review again). */
   reviewPending: ForgePhase | null;
+  /** True when `reviewPending`'s last review asked for a revision: revise first, then review again. */
+  revising: boolean;
   complete: boolean;
   mode: ForgeMode;
   feature: string | null;
@@ -200,6 +202,7 @@ export function summarizeRun(state: ForgeState): RunSummary {
       gate.status === "awaiting-review" || gate.status === "revise"
         ? gate.phase
         : null,
+    revising: gate.status === "revise",
     complete: isRunComplete(state),
     mode: state.mode ?? "gated",
     feature: state.feature ?? null,
