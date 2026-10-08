@@ -4,28 +4,43 @@
  * Two halves. In this process, the preload has already moved the ledger to a
  * temp directory, so an emitter that names no ledger lands there. For child
  * processes — which may be handed an environment that drops the preload's
- * setting — every test file that starts a process is run again with the OS
+ * setting — every test file that can start a process is run again with the OS
  * home pointed at a scratch directory and no `AGENT_FORGE_HOME`: the default
- * ledger location is then `<scratch>/.agent-forge`, and it must not appear.
+ * home is then `<scratch>/.agent-forge`, and it must not appear. That
+ * directory is the hearth's as well as the ledger's, so a lock or token file
+ * written there fails this too.
  *
- * The files are found by scanning for the ways a test starts a process, so a
- * new spawning test is covered without being listed here. What this does not
- * cover: a process started through a primitive that is not in `SPAWNS`.
+ * "Can start a process" is decided by a scan, so a new test is covered without
+ * being listed here: a test file is re-run when it, or any module it loads
+ * (followed through relative imports), names one of the primitives in
+ * `SPAWNS`. A test that starts a hearth through `scripts/hearth/supervisor.ts`
+ * or an executor through `scripts/executors/` is therefore in, though the
+ * test file itself spawns nothing.
+ *
+ * What this does not cover: a process started through a primitive that is not
+ * in `SPAWNS`, or from inside a package other than the MCP stdio client; a
+ * module reached only through an import whose specifier is computed; and a
+ * child that writes somewhere other than the default home.
  */
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
+import { importGraph } from "../import-graph";
 import { ledgerHome, ledgerPath } from "./paths";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const TEST_ROOT = join(REPO, "scripts");
 const SELF = resolve(import.meta.path);
 
-/** Every way a test in this repo starts a process. */
+/**
+ * The ways code in this repo starts a process: Bun's spawn and shell, Node's
+ * `child_process` (whatever is imported from it), and the MCP stdio client,
+ * which spawns inside its package.
+ */
 const SPAWNS =
-  /Bun\.spawn|\bspawn(?:Sync)?\(|\bexec(?:File)?(?:Sync)?\(|child_process|StdioClientTransport|Bun\.\$|\$`/;
+  /Bun\.spawn|Bun\.\$|child_process|StdioClientTransport|\{[^}]*\$[^}]*\}\s*from\s*["']bun["']/;
 
 function testFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -36,10 +51,21 @@ function testFiles(dir: string): string[] {
   });
 }
 
+/** Whether a file names a spawn primitive; each file is read once. */
+const spawns = new Map<string, boolean>();
+function startsProcesses(file: string): boolean {
+  let known = spawns.get(file);
+  if (known === undefined) {
+    known = SPAWNS.test(readFileSync(file, "utf8"));
+    spawns.set(file, known);
+  }
+  return known;
+}
+
 function spawningTestFiles(): string[] {
   return testFiles(TEST_ROOT)
     .filter((file) => resolve(file) !== SELF)
-    .filter((file) => SPAWNS.test(readFileSync(file, "utf8")))
+    .filter((file) => importGraph(file).files.some(startsProcesses))
     .map((file) => relative(REPO, file).split(sep).join("/"))
     .sort();
 }
@@ -52,8 +78,9 @@ describe("the test suite and the ledger under the user's home", () => {
     expect(resolve(ledgerPath())).toBe(join(home, "ledger.db"));
   });
 
-  test("the scan finds the test files known to start processes", () => {
-    expect(spawningTestFiles()).toEqual(
+  test("the scan finds the test files that start processes, directly or through a module they load", () => {
+    const files = spawningTestFiles();
+    expect(files).toEqual(
       expect.arrayContaining([
         "scripts/council/safety.test.ts",
         "scripts/forge/ledger-events.test.ts",
@@ -62,11 +89,18 @@ describe("the test suite and the ledger under the user's home", () => {
         "scripts/ledger/audit-cli.test.ts",
         "scripts/ledger/db.test.ts",
         "scripts/ledger/hooks.test.ts",
+        // Nothing in these files spawns: the modules they load do.
+        "scripts/executors/exec-cli.test.ts",
+        "scripts/hearth/supervisor.test.ts",
       ]),
     );
+    // And it is a selection, not the whole suite.
+    expect(files).not.toContain("scripts/ledger/ulid.test.ts");
+    expect(files).not.toContain("scripts/ledger/paths.test.ts");
+    expect(files).not.toContain("scripts/secret-patterns.test.ts");
   });
 
-  test("every test file that starts a process, re-run with the OS home pointed at a scratch directory, leaves no .agent-forge there", async () => {
+  test("every test file that can start a process, re-run with the OS home pointed at a scratch directory, leaves no .agent-forge there", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
     try {
       const env: Record<string, string> = {};
