@@ -5,9 +5,13 @@
  * holds); `worktree` is the checkout the directory is actually in. They differ
  * only inside a linked git worktree. No `git` process is spawned: emitters run
  * inside hooks and must stay fast.
+ *
+ * Both are spelled the way the file system reports the directory, so one
+ * directory is one workspace however it was reached: a Windows 8.3 short name
+ * (`C:UsersLONGNA~1`) and a link or junction resolve to the real path.
  */
 
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, isAbsolute, resolve } from "path";
 import { comparableCheckout } from "../forge/runs";
 
@@ -17,6 +21,15 @@ export interface Checkout {
 }
 
 const resolved = new Map<string, Checkout>();
+
+/** A directory in comparable form, by its real path; by the path as given when it cannot be read. */
+function comparableOnDisk(path: string): string {
+  try {
+    return comparableCheckout(realpathSync.native(path));
+  } catch {
+    return comparableCheckout(path);
+  }
+}
 
 function readLine(path: string): string | null {
   try {
@@ -45,12 +58,12 @@ function locate(start: string, stopAt: string | undefined): Checkout {
   for (;;) {
     const marker = resolve(dir, ".git");
     if (existsSync(marker)) {
-      const worktree = comparableCheckout(dir);
+      const worktree = comparableOnDisk(dir);
       if (statSync(marker).isDirectory())
         return { workspace: worktree, worktree };
       const main = mainCheckoutOf(dir, marker);
       return {
-        workspace: main === null ? worktree : comparableCheckout(main),
+        workspace: main === null ? worktree : comparableOnDisk(main),
         worktree,
       };
     }
@@ -58,7 +71,7 @@ function locate(start: string, stopAt: string | undefined): Checkout {
     if (parent === dir || comparableCheckout(dir) === fence) break;
     dir = parent;
   }
-  const self = comparableCheckout(start);
+  const self = comparableOnDisk(start);
   return { workspace: self, worktree: self };
 }
 
@@ -79,7 +92,7 @@ export function resolveCheckout(
   try {
     checkout = locate(start, opts.stopAt);
   } catch {
-    const self = comparableCheckout(start);
+    const self = comparableOnDisk(start);
     checkout = { workspace: self, worktree: self };
   }
   resolved.set(key, checkout);

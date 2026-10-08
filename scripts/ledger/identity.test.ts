@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
 } from "fs";
@@ -26,7 +27,8 @@ const temporary: string[] = [];
 
 /** A fake checkout (a `.git` directory, no git) plus a ledger of its own, under a path with a space. */
 function sandbox(): { cwd: string; path: string } {
-  const root = mkdtempSync(join(tmpdir(), "ledger test "));
+  // Spelled the way the file system reports it: that is how a checkout is stored.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ledger test ")));
   temporary.push(root);
   const cwd = join(root, "check out");
   mkdirSync(join(cwd, ".git"), { recursive: true });

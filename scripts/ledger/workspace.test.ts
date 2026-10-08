@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { comparableCheckout } from "../forge/runs";
@@ -7,9 +14,13 @@ import { resolveCheckout } from "./workspace";
 
 const temporary: string[] = [];
 
-/** A scratch directory whose name contains a space. No git is involved. */
+/**
+ * A scratch directory whose name contains a space, spelled the way the file
+ * system reports it (the temp directory may be an 8.3 short name or a link).
+ * No git is involved.
+ */
 function scratch(): string {
-  const dir = mkdtempSync(join(tmpdir(), "ledger test "));
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "ledger test ")));
   temporary.push(dir);
   return dir;
 }
@@ -81,6 +92,39 @@ describe("resolveCheckout", () => {
     expect(resolveCheckout(deepTree)).toEqual({
       workspace: comparableCheckout(main),
       worktree: comparableCheckout(worktree),
+    });
+  });
+
+  // The same file-system call expands Windows 8.3 short names; that spelling
+  // is only exercised on a machine whose temp directory has one.
+  test("a checkout reached through a link resolves to the same workspace and worktree as its real path", () => {
+    const root = scratch();
+    const main = mainCheckout(root);
+    const alias = join(root, "alias of main");
+    symlinkSync(main, alias, "junction");
+    const deep = join(main, "scripts");
+    mkdirSync(deep, { recursive: true });
+    expect(resolveCheckout(alias)).toEqual(resolveCheckout(main));
+    expect(resolveCheckout(join(alias, "scripts"))).toEqual({
+      workspace: comparableCheckout(main),
+      worktree: comparableCheckout(main),
+    });
+  });
+
+  test("the spelling the temp directory was given in resolves like the spelling the file system reports", () => {
+    const given = mkdtempSync(join(tmpdir(), "ledger test "));
+    temporary.push(given);
+    mkdirSync(join(given, ".git"));
+    expect(resolveCheckout(given).workspace).toBe(
+      comparableCheckout(realpathSync.native(given)),
+    );
+  });
+
+  test("a directory that does not exist falls back to the path as given", () => {
+    const missing = join(scratch(), "never made");
+    expect(resolveCheckout(missing, { stopAt: missing })).toEqual({
+      workspace: comparableCheckout(missing),
+      worktree: comparableCheckout(missing),
     });
   });
 
