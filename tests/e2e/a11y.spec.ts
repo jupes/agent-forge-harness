@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { stubSnapshot } from "./fixtures";
 import { collectErrors, ROUTES } from "./routes";
 
 /**
@@ -151,12 +152,12 @@ test("Escape closes the dialog and returns focus to the control that opened it",
 });
 
 test("issue rows are operable with the keyboard", async ({ page }) => {
+  // The snapshot is generated data that a fresh checkout does not have, so the
+  // rows come from the fixture: this used to skip wherever it was missing.
+  await stubSnapshot(page);
   await page.goto("/index.html#/issues", { waitUntil: "networkidle" });
 
   const row = page.locator(".af-issue-row").first();
-  const rowCount = await page.locator(".af-issue-row").count();
-  test.skip(rowCount === 0, "no snapshot data available in this checkout");
-
   await expect(row).toHaveAttribute("role", "button");
   await row.focus();
   await expect(row).toHaveAttribute("aria-expanded", "false");
@@ -164,7 +165,9 @@ test("issue rows are operable with the keyboard", async ({ page }) => {
   await expect(row).toHaveAttribute("aria-expanded", "true");
 });
 
-test.describe("mobile viewport", () => {
+// Tagged so the desktop project deselects these (see playwright.config.ts);
+// the guard below remains for any project that forgets to.
+test.describe("mobile viewport", { tag: "@mobile" }, () => {
   test.skip(
     ({ viewport }) => (viewport?.width ?? 0) > 500,
     "mobile-only expectations",

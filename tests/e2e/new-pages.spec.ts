@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { FORGE, stubForgeRun, stubRepos } from "./fixtures";
+import type { ForgeRunSnapshot } from "../../scripts/dashboard/forge-run-model";
+import { CHECKOUT, stubForgeRun, stubRepos } from "./fixtures";
 import { collectErrors } from "./routes";
 
 /**
@@ -7,12 +8,15 @@ import { collectErrors } from "./routes";
  *
  * Most tests serve the fixtures in `./fixtures` through route interception, so
  * every panel and run state is exercised whether or not this machine has that
- * state. One test per page also reads the real dev API. No test records a
- * real review: the POST is always intercepted.
+ * state. One test per page also reads the real dev API, and asserts only what
+ * holds on any machine. No test records a real review: the POST is always
+ * intercepted.
  */
 
 const FORGE_RUN = "/index.html#/forge-run";
-const CHECKOUT = FORGE.data.gateScope.checkout;
+const FORGE_RUN_API = "/__agent-forge/dev-api/forge-run";
+// Matched exactly: the gate card's scope line says the same words in passing.
+const NO_RUN_TITLE = "No forge run in flight";
 
 test.describe("Forge run", () => {
   test("lists checkpoints in dependency order and marks the one in progress", async ({
@@ -207,17 +211,54 @@ test.describe("Forge run", () => {
     await expect(page.locator(".af-gate-check")).toHaveCount(0);
   });
 
+  test("with no run in flight, says so and still shows this checkout's newest gate run", async ({
+    page,
+  }) => {
+    // What a fresh clone serves: no run to select, but the gate log is shared
+    // by every checkout, so its newest entry for this one still belongs here.
+    const errors = collectErrors(page);
+    await stubForgeRun(page, { empty: true });
+    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+
+    await expect(page.getByText(NO_RUN_TITLE, { exact: true })).toBeVisible();
+    await expect(page.locator(".af-phase")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Checkpoints" })).toHaveCount(
+      0,
+    );
+
+    const scope = page.locator(".af-gate-scope");
+    await expect(scope).toContainText(`this checkout (${CHECKOUT})`);
+    await expect(scope).toContainText("with no forge run in flight");
+    await expect(page.locator(".af-gate-check")).toHaveCount(5);
+    expect(errors).toEqual([]);
+  });
+
   test("renders the real forge state from this checkout without errors", async ({
     page,
   }) => {
-    // Real dev API and real snapshot; what they contain varies by machine, so
-    // this checks the panels render, not their rows. Nothing is clicked.
+    // Real dev API, through the proxy, from whatever this checkout holds. A
+    // fresh clone has no run and a working checkout usually has one, so the
+    // page is held to what the API just reported rather than to either case.
+    // Nothing is clicked.
     const errors = collectErrors(page);
+    const reply = await page.request.get(FORGE_RUN_API);
+    expect(reply.ok()).toBe(true);
+    const { data } = (await reply.json()) as { data: ForgeRunSnapshot };
+
     await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
-    await expect(page.locator(".af-phase")).toHaveCount(4);
-    await expect(
-      page.getByRole("heading", { name: "Checkpoints" }),
-    ).toBeVisible();
+
+    if (data.selected === null) {
+      await expect(page.getByText(NO_RUN_TITLE, { exact: true })).toBeVisible();
+      await expect(page.locator(".af-phase")).toHaveCount(0);
+    } else {
+      await expect(page.locator(".af-phase")).toHaveCount(4);
+      await expect(
+        page.getByRole("heading", { name: data.selected, exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Checkpoints" }),
+      ).toBeVisible();
+    }
     await expect(
       page.getByRole("heading", { name: "Quality gate" }),
     ).toBeVisible();

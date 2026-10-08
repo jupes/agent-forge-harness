@@ -14,6 +14,16 @@ import { defineConfig, devices } from "@playwright/test";
 
 const PORT = Number(process.env["PORT"] ?? 8799);
 
+/**
+ * What a normal run leaves out, so that "skipped" only ever means something
+ * went wrong. Captures write files and run when SHOT_DIR asks for them;
+ * `@mobile` tests assert a 375px layout and run on the mobile project.
+ *
+ * A project's `grepInvert` replaces a top-level one rather than adding to it,
+ * so each project names everything it deselects.
+ */
+const CAPTURES = process.env["SHOT_DIR"] === undefined ? [/@screenshot/] : [];
+
 export default defineConfig({
   testDir: "tests/e2e",
   fullyParallel: false,
@@ -30,10 +40,12 @@ export default defineConfig({
   projects: [
     {
       name: "desktop",
+      grepInvert: [...CAPTURES, /@mobile/],
       use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 900 } },
     },
     {
       name: "mobile",
+      grepInvert: CAPTURES,
       use: { ...devices["Desktop Chrome"], viewport: { width: 375, height: 812 } },
     },
   ],
