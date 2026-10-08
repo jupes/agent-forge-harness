@@ -5,7 +5,12 @@ import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { validateOperatorEnvelope } from "../hearth/validate";
 import { appendEvent } from "./append";
-import { formatTable, parseAuditArgs } from "./audit-cli";
+import {
+  DEFAULT_LIMIT,
+  formatTable,
+  parseAuditArgs,
+  runAudit,
+} from "./audit-cli";
 import { closeLedger } from "./db";
 import { queryEvents } from "./query";
 import { resolveCheckout } from "./workspace";
@@ -178,7 +183,105 @@ describe("formatTable", () => {
   });
 });
 
+describe("forge:audit when more events match than the limit", () => {
+  function ids(stdout: string): number[] {
+    const envelope = JSON.parse(stdout) as { data: Array<{ id: number }> };
+    return envelope.data.map((row) => row.id);
+  }
+
+  function filled(count: number): {
+    cwd: string;
+    env: Record<string, string>;
+  } {
+    const box = sandbox();
+    for (let i = 0; i < count; i++)
+      appendEvent(event("w", { runId: "r-1" }), { path: box.path });
+    return { cwd: box.cwd, env: { AGENT_FORGE_HOME: box.home } };
+  }
+
+  test("a tail cut by --limit keeps the newest events, says so on stderr, and leaves the envelope an array of events", () => {
+    const context = filled(3);
+    const cut = runAudit(
+      ["--all-workspaces", "--limit", "2", "--json"],
+      context,
+    );
+    expect(cut.code).toBe(0);
+    expect(validateOperatorEnvelope(JSON.parse(cut.stdout)).ok).toBe(true);
+    expect(ids(cut.stdout)).toEqual([2, 3]);
+    expect(cut.stderr).toContain("newest 2");
+    expect(cut.stderr).toContain("--limit");
+
+    const table = runAudit(["--all-workspaces", "--limit", "2"], context);
+    expect(table.stdout.split("\n")).toHaveLength(3);
+    expect(table.stderr).toContain("newest 2");
+  });
+
+  test("a result that fits the limit exactly carries no note", () => {
+    const context = filled(3);
+    for (const limit of ["3", "4"]) {
+      const whole = runAudit(
+        ["--all-workspaces", "--limit", limit, "--json"],
+        context,
+      );
+      expect(ids(whole.stdout)).toEqual([1, 2, 3]);
+      expect(whole.stderr).toBeUndefined();
+    }
+  });
+
+  test("a page cut by --limit after a cursor keeps the first events and names the cursor to continue from", () => {
+    const context = filled(4);
+    const page = runAudit(
+      ["--all-workspaces", "--after-id", "1", "--limit", "2", "--json"],
+      context,
+    );
+    expect(ids(page.stdout)).toEqual([2, 3]);
+    expect(page.stderr).toContain("--after-id 3");
+
+    const last = runAudit(
+      ["--all-workspaces", "--after-id", "3", "--limit", "2", "--json"],
+      context,
+    );
+    expect(ids(last.stdout)).toEqual([4]);
+    expect(last.stderr).toBeUndefined();
+  });
+
+  test("the default limit cuts a longer history and says so", () => {
+    const context = filled(DEFAULT_LIMIT + 1);
+    const cut = runAudit(
+      ["--run", "r-1", "--all-workspaces", "--json"],
+      context,
+    );
+    const shown = ids(cut.stdout);
+    expect(shown).toHaveLength(DEFAULT_LIMIT);
+    expect(shown[0]).toBe(2);
+    expect(cut.stderr).toContain(`newest ${DEFAULT_LIMIT}`);
+  });
+});
+
 describe("forge:audit (spawned)", () => {
+  test("a cut result prints its note on stderr and only the envelope on stdout", async () => {
+    const box = sandbox();
+    for (let i = 0; i < 3; i++) appendEvent(event("w"), { path: box.path });
+    closeLedger();
+    const child = Bun.spawn(
+      ["bun", "run", CLI, "--all-workspaces", "--limit", "2", "--json"],
+      {
+        cwd: box.cwd,
+        env: childEnv(box.home),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(await child.exited).toBe(0);
+    const envelope = JSON.parse(stdout) as { data: unknown[] };
+    expect(envelope.data).toHaveLength(2);
+    expect(stderr).toContain("newest 2");
+  }, 30_000);
+
   test("forge:audit --json prints the envelope and exits 0", async () => {
     const box = sandbox();
     const here = resolveCheckout(box.cwd).workspace;

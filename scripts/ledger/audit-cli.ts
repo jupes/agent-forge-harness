@@ -15,6 +15,11 @@
  *
  * Filters combine (AND). Exit code 0 when ok; on any error the envelope is
  * printed (with or without --json) and the exit code is 2.
+ *
+ * When more events match than the limit, the result is cut and one line on
+ * stderr says so, with and without --json. The note is not a field of the
+ * envelope: `data` stays the array of events its readers parse, and stdout
+ * stays the envelope alone.
  */
 
 import {
@@ -214,6 +219,8 @@ export function formatTable(events: readonly LedgerEvent[]): string {
 export interface AuditOutcome {
   code: 0 | 2;
   stdout: string;
+  /** A note for the reader that is not part of the answer: the result was cut at the limit. */
+  stderr?: string;
 }
 
 function failure(error: string): AuditOutcome {
@@ -252,17 +259,28 @@ export function runAudit(
         `${result.events} event(s) from ${result.days} day(s) folded into daily summaries`,
       );
     }
-    const events = queryEvents(
+    const limit = filter.limit ?? DEFAULT_LIMIT;
+    // One more than asked for: its presence is how a cut result is told from a whole one.
+    const fetched = queryEvents(
       {
-        limit: DEFAULT_LIMIT,
         ...filter,
+        limit: limit + 1,
         ...(allWorkspaces
           ? {}
           : { workspace: resolveCheckout(context.cwd).workspace }),
       },
       { path },
     );
-    return success(events, json, formatTable(events));
+    if (fetched.length <= limit)
+      return success(fetched, json, formatTable(fetched));
+    // A page after a cursor keeps its first events; a tail keeps its newest.
+    const paged = filter.afterId !== undefined;
+    const shown = `${limit} matching event${limit === 1 ? "" : "s"}`;
+    const events = paged ? fetched.slice(0, limit) : fetched.slice(1);
+    const note = paged
+      ? `forge:audit: showing the first ${shown} after id ${filter.afterId}; more follow — continue with --after-id ${events[events.length - 1]?.id}`
+      : `forge:audit: showing the newest ${shown}; older ones were left out — raise --limit or narrow the filters`;
+    return { ...success(events, json, formatTable(events)), stderr: note };
   } catch (error) {
     return failure(error instanceof Error ? error.message : String(error));
   }
@@ -274,5 +292,6 @@ if (import.meta.main) {
     env: process.env,
   });
   console.log(outcome.stdout);
+  if (outcome.stderr !== undefined) console.error(outcome.stderr);
   process.exit(outcome.code);
 }

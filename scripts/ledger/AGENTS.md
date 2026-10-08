@@ -24,5 +24,6 @@ Local agent guidance for this directory.
 ## Notes
 
 - `bun test scripts/ledger` runs this directory's tests.
+- `forge:audit` cuts a result at `--limit` (default 500) and says so in one stderr line; the `--json` envelope's `data` is always the array of events and never carries the note.
 - `fixtures/` holds scripts that tests and `bench.ts` spawn as child processes; they are not entry points.
 - `bun run scripts/ledger/bench.ts --hook 20` times the PostToolUse hook against a process that does nothing.
