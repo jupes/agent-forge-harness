@@ -1,6 +1,12 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
+import { HEALTH_ROUTE } from "./scripts/hearth/paths";
+import {
+  DASHBOARD_PORT,
+  DASHBOARD_URL,
+  HEARTH_HOME,
+  HEARTH_PORT,
+  HEARTH_URL,
+} from "./tests/e2e/servers";
 
 /**
  * Browser verification for the dashboard.
@@ -9,10 +15,11 @@ import { defineConfig, devices } from "@playwright/test";
  * computed styles, focus rings, layout at a viewport, or runtime console
  * errors. Anything in that category is verified here instead.
  *
- * Run with `bun run verify:ui`. The dev server is started for you.
+ * Run with `bun run verify:ui`. The hearth and the dashboard are started for
+ * you, and stopped afterwards.
  */
 
-const PORT = Number(process.env["PORT"] ?? 8799);
+const CI = Boolean(process.env["CI"]);
 
 /**
  * What a normal run leaves out, so that "skipped" only ever means something
@@ -28,13 +35,21 @@ export default defineConfig({
   testDir: "tests/e2e",
   fullyParallel: false,
   workers: 1,
-  reporter: process.env["CI"] ? "line" : [["list"]],
+  // A stray `test.only` would let the CI job pass on a single test.
+  forbidOnly: CI,
+  // A broken suite burns a timeout per test; stop early so the job still has
+  // time to upload its traces.
+  maxFailures: CI ? 10 : 0,
+  // `list` in CI too: the log names every test that ran.
+  reporter: "list",
   timeout: 45_000,
   expect: { timeout: 10_000 },
+  globalTeardown: "./tests/e2e/global-teardown.ts",
 
   use: {
-    baseURL: `http://127.0.0.1:${PORT}`,
+    baseURL: DASHBOARD_URL,
     trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
 
   projects: [
@@ -50,20 +65,45 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    // DASHBOARD_NO_BUILD keeps the suite from regenerating the Beads snapshot
-    // on every run; whatever docs/data/beads.json holds is what gets rendered.
-    command: "bun run dashboard",
-    // A throwaway hearth home keeps the suite off the developer's real ~/.agent-forge.
-    env: {
-      PORT: String(PORT),
-      DASHBOARD_NO_BUILD: "1",
-      AGENT_FORGE_HOME: join(tmpdir(), "agent-forge-e2e-home"),
+  // Started in order, each awaited. A server already answering on either port
+  // is an error rather than something to attach to: it may belong to another
+  // checkout, or to a hearth in the developer's real home. Override `PORT` or
+  // `E2E_HEARTH_PORT` to run beside one.
+  webServer: [
+    {
+      // The control plane first, so its readiness is checked on its own and its
+      // output reaches this log. The dashboard attaches to it; left to itself
+      // the dashboard would spawn one and discard what it prints.
+      name: "hearth",
+      // Not `bun run hearth`: see scripts/hearth/AGENTS.md.
+      command: "bun scripts/hearth/server.ts",
+      env: {
+        HEARTH_PORT: String(HEARTH_PORT),
+        AGENT_FORGE_HOME: HEARTH_HOME,
+      },
+      url: `${HEARTH_URL}${HEALTH_ROUTE}`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+      stderr: "pipe",
     },
-    url: `http://127.0.0.1:${PORT}/index.html`,
-    reuseExistingServer: !process.env["CI"],
-    timeout: 120_000,
-    stdout: "ignore",
-    stderr: "pipe",
-  },
+    {
+      name: "dashboard",
+      // --strictPort: a taken port is an error, not a silent move to the next
+      // one while this config waits on the old one.
+      command: "bun run dashboard --strictPort",
+      env: {
+        PORT: String(DASHBOARD_PORT),
+        // Keeps the suite from regenerating the Beads snapshot on every run;
+        // whatever docs/data/beads.json holds is what gets rendered.
+        DASHBOARD_NO_BUILD: "1",
+        AGENT_FORGE_HOME: HEARTH_HOME,
+      },
+      url: `${DASHBOARD_URL}/index.html`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+  ],
 });
