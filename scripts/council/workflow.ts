@@ -91,9 +91,9 @@ export type CouncilReviewOptions = Omit<
   fetchImpl?: ProviderResolverOptions["fetchImpl"];
   onResult?: (result: CouncilExecutionResult) => void;
   /**
-   * Appends one ledger event. Handed in by a Bun entry point; this module is
-   * also loaded under Node, where the ledger cannot be imported. Absent, or
-   * without `attach`, the run records nothing in the ledger.
+   * Appends one ledger event. Handed in by a Bun entry point; this module
+   * never imports the ledger itself. Absent, or without `attach`, the run
+   * records nothing in the ledger.
    */
   appendEvent?: CouncilAppend;
   /** Who the run's ledger events belong to, resolved by the caller. */

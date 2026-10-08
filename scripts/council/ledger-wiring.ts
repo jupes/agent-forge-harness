@@ -1,10 +1,12 @@
 /**
  * The real ledger, as the two functions a council run is handed.
  *
- * This file imports the ledger, which loads Bun's SQLite driver. Only the Bun
+ * This file imports the ledger, which loads Bun's SQLite driver. Only two Bun
  * entry points load it — `cli.ts` and `mcp.ts`, each through a dynamic import
- * where it runs as a command — never `workflow.ts`, `service.ts` or
- * `dashboard.ts`, which Vite loads under Node.
+ * where it runs as a command — never `workflow.ts` or `service.ts`, which
+ * take these two functions from their caller. The hearth, which serves the
+ * dashboard's council routes, does not load it: runs started there are not
+ * recorded.
  */
 
 import { appendEvent } from "../ledger/append";

@@ -75,9 +75,9 @@ export type CouncilServiceOptions = {
   ) => (seat: CouncilSeat) => ModelTransport;
   /**
    * The ledger a run's started and finished events go to, and who they belong
-   * to. Injected by Bun entry points only: this module is also loaded under
-   * Node, where the ledger cannot be imported. Without both, runs record
-   * nothing in the ledger.
+   * to. Injected by the host — today the MCP server; the hearth injects
+   * neither — because this module never imports the ledger itself. Without
+   * both, runs record nothing in the ledger.
    */
   appendEvent?: CouncilAppend;
   resolveAttach?: CouncilAttachResolver;

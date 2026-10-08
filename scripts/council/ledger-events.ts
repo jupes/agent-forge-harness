@@ -2,9 +2,9 @@
  * The ledger events a council run emits: one when it starts, one when it ends.
  *
  * Builders only, with type-only imports. `workflow.ts` and `service.ts` load
- * this file, and Vite loads those under Node, where the ledger's SQLite driver
- * does not exist — so nothing here may import the ledger. The function that
- * appends is handed in by a Bun entry point (see `ledger-wiring.ts`).
+ * this file, and neither they nor it import the ledger: the function that
+ * appends is handed in by a Bun entry point (see `ledger-wiring.ts`), so a
+ * host that hands in nothing loads no SQLite driver and records nothing.
  */
 
 import type {
