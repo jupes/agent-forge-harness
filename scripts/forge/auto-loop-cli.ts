@@ -5,7 +5,10 @@
  * `/forgemaster-auto` runs unattended, so "did that review pass, and what now?"
  * has to be a command with an exit code rather than a judgement call the agent
  * makes about its own work. This reads the evaluator's verdict file, appends
- * the round to the run's ledger, and prints the decision.
+ * the round to the run's ledger together with the decision it reached, and
+ * prints that decision. The stored decision is what the phase gate and the
+ * runs table read afterwards, so a halt here is a halt everywhere; the round
+ * is also appended to the event ledger as `review.recorded`.
  *
  * CLI:
  *   bun run forge:review --slug <slug> --phase <phase> --verdict <path>
@@ -30,7 +33,7 @@ import {
   reviewComment,
   roundFromVerdict,
 } from "./auto-loop";
-import { isForgePhase } from "./phases";
+import { type ForgeState, isForgePhase, type ReviewRound } from "./phases";
 import { isValidSlug } from "./runs";
 import { readRunState, writeRunState } from "./runs-store";
 
@@ -125,21 +128,38 @@ if (import.meta.main) {
     verdictError = `could not read ${verdictPath}`;
   }
 
-  const round = roundFromVerdict({
+  const graded = roundFromVerdict({
     phase,
     history,
     verdict,
     at: new Date().toISOString(),
     ...(getFlag(argv, "tier") ? { tier: getFlag(argv, "tier") as string } : {}),
   });
-  const next = recordRound(state, round);
-  writeRunState(next);
-
+  // Decide first, from the history including this round, and store the
+  // decision on the round: the revision budget is known only here, so anything
+  // that re-derived it later could disagree with what this command printed.
   const decision = decideNext({
     phase,
-    history: next.reviews ?? [],
+    history: [...history, graded],
     ...budget,
   });
+  const round: ReviewRound = {
+    ...graded,
+    action: decision.action,
+    reason: decision.reason,
+  };
+
+  // Loaded here, not at the top: the ledger needs Bun's SQLite, and this
+  // module's pure exports are imported without it.
+  const ledger = await import("./ledger-events");
+  const attach = ledger.attachRun({ slug, state });
+  const executor = ledger.withLiveSession(state.executor, attach);
+  const next: ForgeState = {
+    ...recordRound(state, round),
+    ...(executor ? { executor } : {}),
+  };
+  writeRunState(next);
+  ledger.emitRunEvent(attach, ledger.reviewRecorded(round, decision.action));
 
   let handoff: string | null = null;
   if (decision.action === "halt") {

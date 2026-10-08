@@ -1,0 +1,400 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import type { LedgerEvent } from "../../types/hearth";
+import { closeLedger } from "../ledger/db";
+import type { Attach } from "../ledger/identity";
+import { queryEvents } from "../ledger/query";
+import {
+  emitPhaseEntered,
+  emitRunEvent,
+  executorToPersist,
+  phaseCompleted,
+  reviewRecorded,
+  withLiveSession,
+} from "./ledger-events";
+import { parseState } from "./runs";
+
+const temporary: string[] = [];
+
+interface Box {
+  cwd: string;
+  home: string;
+  path: string;
+}
+
+/** A scratch checkout and a ledger home, both under a path with a space. */
+function sandbox(): Box {
+  const root = mkdtempSync(join(tmpdir(), "ledger test "));
+  temporary.push(root);
+  const cwd = join(root, "check out");
+  const home = join(root, "forge home");
+  mkdirSync(join(cwd, ".git"), { recursive: true });
+  mkdirSync(join(cwd, "plans", "research"), { recursive: true });
+  mkdirSync(join(cwd, "plans", "drafts"), { recursive: true });
+  return { cwd, home, path: join(home, "ledger.db") };
+}
+
+afterEach(() => {
+  closeLedger();
+  for (const dir of temporary.splice(0))
+    rmSync(dir, { recursive: true, force: true });
+});
+
+const PHASE_GATE = join(import.meta.dir, "phase-gate.ts");
+const REVIEW = join(import.meta.dir, "auto-loop-cli.ts");
+const RUNS = join(import.meta.dir, "runs-cli.ts");
+const AUDIT = join(import.meta.dir, "..", "ledger", "audit-cli.ts");
+
+/** The parent's environment minus anything that names a live session, run or ledger. */
+function childEnv(
+  home: string,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (/^(CLAUDE_|AGENT_FORGE_|FORGE_)/.test(key)) continue;
+    env[key] = value;
+  }
+  env.AGENT_FORGE_HOME = home;
+  return { ...env, ...extra };
+}
+
+async function run(
+  box: Box,
+  script: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<{ exitCode: number; stdout: string }> {
+  const child = Bun.spawn(["bun", "run", script, ...args], {
+    cwd: box.cwd,
+    env: childEnv(box.home, extraEnv),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(child.stdout).text();
+  return { exitCode: await child.exited, stdout };
+}
+
+function verdictFile(
+  box: Box,
+  name: string,
+  verdict: "PASS" | "FAIL",
+  high: number,
+): string {
+  const path = join(box.cwd, name);
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      taskId: "t",
+      verdict,
+      findings: { blocker: 0, high, medium: 0, low: 0 },
+    }),
+  );
+  return path;
+}
+
+function runEvents(box: Box, runId: string): LedgerEvent[] {
+  return queryEvents({ runId }, { path: box.path });
+}
+
+describe("the Forge CLIs write run events to the ledger (spawned scripts, scratch ledger)", () => {
+  test("a phase-gate write and a review round appear in order under the run", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    const wrote = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--bead",
+      "b-1",
+      "--provider",
+      "claude",
+      "--model",
+      "m-1",
+    ]);
+    expect(wrote.exitCode).toBe(0);
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      verdictFile(box, "v.json", "PASS", 0),
+    ]);
+    expect(reviewed.exitCode).toBe(0);
+
+    const events = queryEvents(
+      { runId: "x", kinds: ["run.phase.completed", "review.recorded"] },
+      { path: box.path },
+    );
+    expect(events.map((e) => e.kind)).toEqual([
+      "run.phase.completed",
+      "review.recorded",
+    ]);
+    for (const event of events) {
+      expect(event.beadId).toBe("b-1");
+      expect(event.executor?.provider).toBe("claude");
+      expect(event.executor?.model).toBe("m-1");
+      // No live session in the scrubbed environment: nothing is invented.
+      expect(event.sessionId).toBeUndefined();
+    }
+    const [completed, review] = events;
+    expect(completed?.payload).toEqual({
+      phase: "research",
+      artifact: "plans/research/x.md",
+    });
+    expect(review?.payload).toMatchObject({
+      phase: "research",
+      round: 1,
+      verdict: "PASS",
+      action: "advance",
+    });
+
+    // The same history through the real query CLI, as `forge:audit --run` runs it.
+    closeLedger();
+    const audit = await run(box, AUDIT, ["--run", "x", "--json"]);
+    expect(audit.exitCode).toBe(0);
+    const listed = JSON.parse(audit.stdout) as {
+      ok: boolean;
+      data: LedgerEvent[];
+    };
+    expect(listed.ok).toBe(true);
+    expect(listed.data.map((e) => e.kind)).toEqual([
+      "run.phase.completed",
+      "review.recorded",
+    ]);
+    expect(listed.data.every((e) => e.runId === "x")).toBe(true);
+
+    // The run file kept the executor and bead it was given.
+    const state = parseState(
+      readFileSync(
+        join(box.cwd, ".tmp", "work", "forge-runs", "x.json"),
+        "utf8",
+      ),
+    );
+    expect(state?.schemaVersion).toBe(2);
+    expect(state?.beadId).toBe("b-1");
+    expect(state?.executor).toEqual({ provider: "claude", model: "m-1" });
+    expect(state?.reviews?.[0]?.action).toBe("advance");
+  }, 60_000);
+
+  test("a halting review is stored as a halt, exits 2, and the next phase is refused", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+    ]);
+    // One failing round with no revision budget: a halt the default budget
+    // would have called a revision.
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      verdictFile(box, "v.json", "FAIL", 1),
+      "--max-revisions",
+      "0",
+    ]);
+    expect(reviewed.exitCode).toBe(2);
+
+    const review = runEvents(box, "x").find(
+      (e) => e.kind === "review.recorded",
+    );
+    expect(review?.payload).toMatchObject({ verdict: "FAIL", action: "halt" });
+
+    const state = parseState(
+      readFileSync(
+        join(box.cwd, ".tmp", "work", "forge-runs", "x.json"),
+        "utf8",
+      ),
+    );
+    const latest = state?.reviews?.[state.reviews.length - 1];
+    expect(latest?.action).toBe("halt");
+    expect(latest?.reason).toContain("0 revision rounds");
+
+    closeLedger();
+    const enter = await run(box, PHASE_GATE, ["plan", "--slug", "x"]);
+    expect(enter.exitCode).toBe(2);
+    const refused = JSON.parse(enter.stdout) as { ok: boolean; error: string };
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('"research" is halted');
+
+    const table = await run(box, RUNS, []);
+    expect(table.stdout).toContain("next: halted in research");
+    expect(table.stdout).not.toContain("/forge-plan");
+
+    // The refused entry check recorded nothing.
+    expect(
+      runEvents(box, "x").filter((e) => e.kind === "run.phase.entered"),
+    ).toEqual([]);
+  }, 60_000);
+
+  test("two enter-checks in a row record one run.phase.entered", async () => {
+    const box = sandbox();
+    expect(
+      (await run(box, PHASE_GATE, ["research", "--slug", "x"])).exitCode,
+    ).toBe(0);
+    expect(
+      (await run(box, PHASE_GATE, ["research", "--slug", "x"])).exitCode,
+    ).toBe(0);
+    const entered = runEvents(box, "x").filter(
+      (e) => e.kind === "run.phase.entered",
+    );
+    expect(entered).toHaveLength(1);
+    expect(entered[0]?.payload).toEqual({ phase: "research" });
+  }, 60_000);
+
+  test("a different FORGE_SLUG in the environment does not move a run's events", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    const wrote = await run(
+      box,
+      PHASE_GATE,
+      ["research", "--slug", "x", "--write"],
+      { FORGE_SLUG: "y" },
+    );
+    expect(wrote.exitCode).toBe(0);
+    expect(runEvents(box, "x").map((e) => e.kind)).toEqual([
+      "run.phase.completed",
+    ]);
+    expect(runEvents(box, "y")).toEqual([]);
+  }, 60_000);
+
+  test("--provider without --model is refused and nothing is written", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    const wrote = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--provider",
+      "claude",
+    ]);
+    expect(wrote.exitCode).toBe(2);
+    expect((JSON.parse(wrote.stdout) as { ok: boolean }).ok).toBe(false);
+    const listed = await run(box, RUNS, ["--json"]);
+    expect((JSON.parse(listed.stdout) as { data: unknown[] }).data).toEqual([]);
+  }, 60_000);
+});
+
+describe("run event helpers (in-process, scratch ledger)", () => {
+  const attach = (extra: Partial<Attach> = {}): Attach => ({
+    workspace: "c:/work/repo",
+    worktree: "c:/work/repo",
+    runId: "x",
+    ...extra,
+  });
+
+  test("an entered event is appended again once the phase has completed in between", () => {
+    const box = sandbox();
+    const opts = { path: box.path };
+    expect(emitPhaseEntered(attach(), "plan", opts)?.ok).toBe(true);
+    expect(emitPhaseEntered(attach(), "plan", opts)).toBeNull();
+    emitRunEvent(attach(), phaseCompleted("plan"), opts);
+    expect(emitPhaseEntered(attach(), "plan", opts)?.ok).toBe(true);
+    expect(runEvents(box, "x").map((e) => e.kind)).toEqual([
+      "run.phase.entered",
+      "run.phase.completed",
+      "run.phase.entered",
+    ]);
+  });
+
+  test("a review event carries the counts and the decision but not the summary text", () => {
+    const box = sandbox();
+    emitRunEvent(
+      attach({ beadId: "b-1" }),
+      reviewRecorded(
+        {
+          phase: "plan",
+          round: 2,
+          verdict: "FAIL",
+          findings: { blocker: 1, high: 2, medium: 3, low: 4 },
+          summary: "the evaluator's prose",
+          reason: "why it halted",
+          at: "2026-06-04T00:00:00.000Z",
+        },
+        "halt",
+      ),
+      { path: box.path },
+    );
+    const [event] = runEvents(box, "x");
+    expect(event?.payload).toEqual({
+      phase: "plan",
+      round: 2,
+      verdict: "FAIL",
+      findings: { blocker: 1, high: 2, medium: 3, low: 4 },
+      action: "halt",
+    });
+    expect(JSON.stringify(event)).not.toContain("prose");
+  });
+
+  test("an unwritable ledger is reported, not thrown", () => {
+    const box = sandbox();
+    const blocker = join(box.cwd, "a file");
+    writeFileSync(blocker, "x");
+    const result = emitRunEvent(attach(), phaseCompleted("plan"), {
+      path: join(blocker, "ledger.db"),
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("the executor to store is the flagged one, else the live session's, else the stored one", () => {
+    const flagged = { provider: "claude", model: "m-flag" };
+    const stored = { provider: "claude", model: "m-old", sessionId: "s-old" };
+    const live = { provider: "claude", model: "m-live", sessionId: "s-1" };
+
+    expect(executorToPersist(attach(), flagged, stored)).toEqual(flagged);
+    expect(
+      executorToPersist(attach({ sessionId: "s-1" }), flagged, stored),
+    ).toEqual({ ...flagged, sessionId: "s-1" });
+    expect(
+      executorToPersist(
+        attach({ sessionId: "s-1", executor: live }),
+        undefined,
+        stored,
+      ),
+    ).toEqual(live);
+    // The resolver fell back to the stored executor (no session id on it):
+    // the stored one is kept as it was.
+    expect(
+      executorToPersist(
+        attach({ executor: { provider: "claude", model: "m-old" } }),
+        undefined,
+        stored,
+      ),
+    ).toEqual(stored);
+    expect(executorToPersist(attach(), undefined, undefined)).toBeUndefined();
+  });
+
+  test("a review refreshes the stored executor's session only when a session is known", () => {
+    const stored = { provider: "claude", model: "m-old", sessionId: "s-old" };
+    expect(withLiveSession(stored, attach({ sessionId: "s-2" }))).toEqual({
+      ...stored,
+      sessionId: "s-2",
+    });
+    expect(withLiveSession(stored, attach())).toEqual(stored);
+    expect(
+      withLiveSession(undefined, attach({ sessionId: "s-2" })),
+    ).toBeUndefined();
+  });
+});

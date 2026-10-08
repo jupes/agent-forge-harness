@@ -9,9 +9,11 @@
  *
  * Nothing here touches disk or imports a Node built-in: the dashboard bundles
  * this module into the browser, so a stray `fs`/`path` import breaks the build.
- * The filesystem wrappers live in `runs-store.ts`.
+ * The filesystem wrappers live in `runs-store.ts`. For the same reason nothing
+ * here imports the ledger, which only loads under Bun.
  */
 
+import { validateExecutor } from "../hearth/validate";
 import {
   FORGE_PHASES,
   type ForgeMode,
@@ -19,9 +21,12 @@ import {
   type ForgeState,
   isForgeMode,
   isForgePhase,
+  isReviewAction,
+  isReviewStatus,
   type ReviewFindings,
   type ReviewRound,
 } from "./phases";
+import { reviewGate } from "./review-rules";
 
 /** Repo-relative directory holding one state file per run. */
 export const FORGE_RUNS_DIR = ".tmp/work/forge-runs";
@@ -75,10 +80,35 @@ function isReviewRound(value: unknown): value is ReviewRound {
   );
 }
 
-/** Parse forge state JSON; returns null on missing/invalid input. */
+/**
+ * A round as the state file holds it, keeping every field it carries. A stored
+ * decision that is not one of the three actions is dropped — the field, not
+ * the round — so the rules fall back to deriving it.
+ */
+function readRound(value: ReviewRound): ReviewRound {
+  const { action, reason, ...rest } = value as Omit<
+    ReviewRound,
+    "action" | "reason"
+  > & { action?: unknown; reason?: unknown };
+  return {
+    ...rest,
+    ...(isReviewAction(action) ? { action } : {}),
+    ...(typeof reason === "string" ? { reason } : {}),
+  };
+}
+
+/**
+ * Parse forge state JSON; returns null on missing/invalid input.
+ *
+ * This is also the v1 → v2 migration: a file written before `schemaVersion`
+ * existed is read with every field it has and comes back as version 2. The
+ * file itself is rewritten only when the run next records something.
+ */
 export function parseState(text: string): ForgeState | null {
   try {
     const parsed = JSON.parse(text) as Partial<ForgeState>;
+    // An executor is trusted only when it has the contract's shape.
+    const executor = validateExecutor(parsed.executor);
     if (
       typeof parsed.slug === "string" &&
       typeof parsed.phase === "string" &&
@@ -86,21 +116,29 @@ export function parseState(text: string): ForgeState | null {
       Array.isArray(parsed.completed)
     ) {
       return {
+        schemaVersion: 2,
         slug: parsed.slug,
         phase: parsed.phase,
         completed: parsed.completed.filter(isForgePhase),
         artifacts: parsed.artifacts ?? {},
         ...(parsed.feature ? { feature: parsed.feature } : {}),
         ...(parsed.epic ? { epic: parsed.epic } : {}),
+        ...(typeof parsed.beadId === "string" && parsed.beadId.length > 0
+          ? { beadId: parsed.beadId }
+          : {}),
+        ...(executor.ok ? { executor: executor.value } : {}),
         ...(parsed.announcedPhase && isForgePhase(parsed.announcedPhase)
           ? { announcedPhase: parsed.announcedPhase }
+          : {}),
+        ...(isReviewStatus(parsed.announcedStatus)
+          ? { announcedStatus: parsed.announcedStatus }
           : {}),
         ...(typeof parsed.mode === "string" && isForgeMode(parsed.mode)
           ? { mode: parsed.mode }
           : {}),
         ...(parsed.checkout ? { checkout: parsed.checkout } : {}),
         ...(Array.isArray(parsed.reviews)
-          ? { reviews: parsed.reviews.filter(isReviewRound) }
+          ? { reviews: parsed.reviews.filter(isReviewRound).map(readRound) }
           : {}),
         updatedAt: parsed.updatedAt ?? new Date().toISOString(),
       };
@@ -122,8 +160,16 @@ export interface RunSummary {
   /** The most recently completed (or active) phase, as the run recorded it. */
   phase: ForgePhase;
   completed: ForgePhase[];
-  /** The first phase not yet complete — what to do next, or null once shipped. */
+  /**
+   * What to do next: the first phase not yet complete, or — for an auto run —
+   * the completed phase still waiting on a review or a revision. Null once
+   * shipped, and null while the run is halted.
+   */
   next: ForgePhase | null;
+  /** Set when an auto run's review loop stopped it; nothing follows until a new round advances. */
+  halted: { phase: ForgePhase; reason: string } | null;
+  /** The completed phase an auto run still has to review (or revise and review again). */
+  reviewPending: ForgePhase | null;
   complete: boolean;
   mode: ForgeMode;
   feature: string | null;
@@ -133,12 +179,27 @@ export interface RunSummary {
 }
 
 export function summarizeRun(state: ForgeState): RunSummary {
+  const gate = reviewGate(state);
+  const firstIncomplete =
+    FORGE_PHASES.find((phase) => !state.completed.includes(phase)) ?? null;
   return {
     slug: state.slug,
     phase: state.phase,
     completed: state.completed,
     next:
-      FORGE_PHASES.find((phase) => !state.completed.includes(phase)) ?? null,
+      gate.status === "halted"
+        ? null
+        : gate.status === "clear"
+          ? firstIncomplete
+          : gate.phase,
+    halted:
+      gate.status === "halted"
+        ? { phase: gate.phase, reason: gate.reason }
+        : null,
+    reviewPending:
+      gate.status === "awaiting-review" || gate.status === "revise"
+        ? gate.phase
+        : null,
     complete: isRunComplete(state),
     mode: state.mode ?? "gated",
     feature: state.feature ?? null,
@@ -148,9 +209,14 @@ export function summarizeRun(state: ForgeState): RunSummary {
   };
 }
 
-/** The runs still in flight, in their original order. */
+/**
+ * The runs still in flight, in their original order. A run that recorded ship
+ * but whose ship review halted or is still pending is not finished.
+ */
 export function activeRuns(runs: readonly RunSummary[]): RunSummary[] {
-  return runs.filter((run) => !run.complete);
+  return runs.filter(
+    (run) => !run.complete || run.halted !== null || run.reviewPending !== null,
+  );
 }
 
 /** Newest first, by the time the run last wrote state. Does not mutate `runs`. */

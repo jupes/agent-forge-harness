@@ -14,6 +14,11 @@
  *   bun run scripts/forge/phase-gate.ts <phase> --slug <slug>            # can I enter <phase>?
  *   bun run scripts/forge/phase-gate.ts <phase> --slug <slug> --write    # mark <phase> complete
  *     [--feature "title"] [--epic <beads-id>] [--mode gated|auto] [--checkout <path>]
+ *     [--bead <beads-id>] [--provider <id> --model <id> [--effort <level>] [--smith <name>]]
+ *
+ * An auto run cannot enter a phase while an earlier one is halted or still
+ * waiting on its review (`reviewGate` in `review-rules.ts`). A successful entry
+ * check and every `--write` are appended to the ledger (`forge:audit --run`).
  *
  * Output is always a single JSON object: { ok, data, error }.
  * Exit code 0 when ok, 2 when not (so callers and hooks can gate on it).
@@ -21,6 +26,8 @@
 
 import { existsSync } from "fs";
 
+import type { Executor } from "../../types/hearth";
+import { validateExecutor } from "../hearth/validate";
 import {
   artifactPath,
   FORGE_PHASES,
@@ -30,6 +37,7 @@ import {
   isForgeMode,
   isForgePhase,
 } from "./phases";
+import { reviewGate } from "./review-rules";
 import { isRunComplete, isValidSlug, parseState, runStatePath } from "./runs";
 import { migrateLegacyRun, readRunState, writeRunState } from "./runs-store";
 
@@ -70,9 +78,42 @@ export function phaseCommand(phase: ForgePhase, slug: string): string {
   return `/forge-${phase} ${slug}`;
 }
 
+/** The command that records a review round for a phase. */
+export function reviewCommand(phase: ForgePhase, slug: string): string {
+  return `bun run forge:review --slug ${slug} --phase ${phase} --verdict <path>`;
+}
+
+/**
+ * Why an auto run may not start `phase` yet, or null when its reviews allow
+ * it. Only a phase earlier than `phase` can hold it: re-running the held phase
+ * itself is how the run gets moving again.
+ */
+function heldByReview(
+  phase: ForgePhase,
+  slug: string,
+  state: ForgeState | null,
+): string | null {
+  if (state === null) return null;
+  const gate = reviewGate(state);
+  if (gate.status === "clear") return null;
+  if (FORGE_PHASES.indexOf(gate.phase) >= FORGE_PHASES.indexOf(phase)) {
+    return null;
+  }
+  const review = reviewCommand(gate.phase, slug);
+  switch (gate.status) {
+    case "halted":
+      return `Cannot start "${phase}": "${gate.phase}" is halted — ${gate.reason} Fix the findings, re-run ${phaseCommand(gate.phase, slug)}, then record a review that advances: ${review}`;
+    case "revise":
+      return `Cannot start "${phase}": "${gate.phase}" is under revision — ${gate.reason} Revise it with ${phaseCommand(gate.phase, slug)}, then review again: ${review}`;
+    case "awaiting-review":
+      return `Cannot start "${phase}": "${gate.phase}" has not been reviewed, and an auto run does not advance a phase nobody reviewed. Record its review: ${review}`;
+  }
+}
+
 /**
  * Can `phase` start? Its prerequisite is satisfied when the prerequisite's
- * artifact exists, or (for artifact-less phases) state records it complete.
+ * artifact exists, or (for artifact-less phases) state records it complete —
+ * and, for an auto run, no earlier phase is halted or waiting on a review.
  */
 export function validateEnter(
   phase: ForgePhase,
@@ -88,6 +129,8 @@ export function validateEnter(
   const artifactPresent = ap !== null && fileExists(ap);
   const recorded = state?.completed.includes(prereq) ?? false;
   if (artifactPresent || recorded) {
+    const held = heldByReview(phase, slug, state);
+    if (held !== null) return { ok: false, data: null, error: held };
     return { ok: true, data: { phase, prereq }, error: null };
   }
   const missing =
@@ -113,6 +156,8 @@ export function recordComplete(
     epic?: string;
     mode?: ForgeMode;
     checkout?: string;
+    beadId?: string;
+    executor?: Executor;
   } = {},
   now: () => string = () => new Date().toISOString(),
 ): GateResult<ForgeState> {
@@ -153,22 +198,60 @@ export function recordComplete(
   const epic = extra.epic ?? base.epic;
   const mode = extra.mode ?? base.mode;
   const checkout = extra.checkout ?? base.checkout;
+  const beadId = extra.beadId ?? base.beadId;
+  const executor = extra.executor ?? base.executor;
   const newState: ForgeState = {
+    schemaVersion: 2,
     slug,
     phase,
     completed,
     artifacts,
     ...(feature ? { feature } : {}),
     ...(epic ? { epic } : {}),
+    ...(beadId ? { beadId } : {}),
+    ...(executor ? { executor } : {}),
     ...(base.announcedPhase ? { announcedPhase: base.announcedPhase } : {}),
+    ...(base.announcedStatus ? { announcedStatus: base.announcedStatus } : {}),
     ...(mode ? { mode } : {}),
     ...(checkout ? { checkout } : {}),
     // The review ledger is the audit trail for an unattended run — advancing a
-    // phase must never be what erases it.
+    // phase must never be what erases it. It is also where a halt lives, so
+    // recording a phase cannot clear one.
     ...(base.reviews ? { reviews: base.reviews } : {}),
     updatedAt: now(),
   };
   return { ok: true, data: newState, error: null };
+}
+
+/**
+ * The executor named by `--provider/--model [--effort] [--smith]`, or
+ * undefined when none of the flags is given. Provider and model come together.
+ */
+export function executorFromFlags(flags: {
+  provider?: string;
+  model?: string;
+  effort?: string;
+  smith?: string;
+}): GateResult<Executor | undefined> {
+  const given = Object.values(flags).some((value) => value !== undefined);
+  if (!given) return { ok: true, data: undefined, error: null };
+  if (flags.provider === undefined || flags.model === undefined) {
+    return {
+      ok: false,
+      data: null,
+      error:
+        "--provider and --model must be given together (--effort and --smith are optional extras).",
+    };
+  }
+  const checked = validateExecutor({
+    provider: flags.provider,
+    model: flags.model,
+    ...(flags.effort !== undefined ? { effort: flags.effort } : {}),
+    ...(flags.smith !== undefined ? { smith: flags.smith } : {}),
+  });
+  return checked.ok
+    ? { ok: true, data: checked.value, error: null }
+    : { ok: false, data: null, error: checked.error };
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
@@ -210,6 +293,25 @@ if (import.meta.main) {
   }
 
   const write = argv.includes("--write");
+  const bead = getFlag(argv, "bead");
+  const provider = getFlag(argv, "provider");
+  const model = getFlag(argv, "model");
+  const effort = getFlag(argv, "effort");
+  const smith = getFlag(argv, "smith");
+  const flagged = executorFromFlags({
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(smith !== undefined ? { smith } : {}),
+  });
+  if (!flagged.ok) emit(flagged);
+  const explicit = {
+    ...(bead ? { beadId: bead } : {}),
+    ...(flagged.data ? { executor: flagged.data } : {}),
+  };
+  // Loaded here, not at the top: the ledger needs Bun's SQLite, and this
+  // module's pure exports are imported by code that must load without it.
+  const ledger = await import("./ledger-events");
   // A run started before state went per-run keeps its history: move it into the
   // runs directory before reading, so resuming it does not start from scratch.
   migrateLegacyRun();
@@ -234,10 +336,35 @@ if (import.meta.main) {
         ? { mode: modeArg }
         : {}),
       ...(checkout ? { checkout } : {}),
+      ...explicit,
     });
-    if (result.ok && result.data) writeRunState(result.data);
-    emit(result);
+    if (!result.ok || !result.data) emit(result);
+    const draft = result.data;
+    const attach = ledger.attachRun({
+      slug: slugValue,
+      state: draft,
+      explicit,
+    });
+    const executor = ledger.executorToPersist(
+      attach,
+      flagged.data ?? undefined,
+      draft.executor,
+    );
+    const recorded: ForgeState = executor ? { ...draft, executor } : draft;
+    writeRunState(recorded);
+    ledger.emitRunEvent(
+      attach,
+      ledger.phaseCompleted(phase, recorded.artifacts[phase]),
+    );
+    emit({ ok: true, data: recorded, error: null });
   } else {
-    emit(validateEnter(phase, slugValue, existsSync, state));
+    const result = validateEnter(phase, slugValue, existsSync, state);
+    if (result.ok) {
+      ledger.emitPhaseEntered(
+        ledger.attachRun({ slug: slugValue, state, explicit }),
+        phase,
+      );
+    }
+    emit(result);
   }
 }
