@@ -16,10 +16,15 @@ export const SECRET_PATTERNS: ReadonlyArray<{ kind: string; pattern: RegExp }> =
       pattern:
         /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
     },
-    { kind: "anthropic-api-key", pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g },
+    // The lookbehind keeps `sk-` from matching mid-word: a slug such as
+    // `task-queue-state-machine-v2` is not a key.
+    {
+      kind: "anthropic-api-key",
+      pattern: /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}/g,
+    },
     {
       kind: "openai-api-key",
-      pattern: /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g,
+      pattern: /(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g,
     },
     {
       kind: "github-token",
