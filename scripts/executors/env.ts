@@ -40,12 +40,14 @@ type Correlation = Pick<
  * What an adapter adds to its child's environment, built from the request:
  * `AGENT_FORGE_ADAPTER=1` tells the harness's session and tool hooks that
  * this session is recorded by its adapter, so they record nothing; the rest
- * tells script emitters run inside the child which bead, smith, run and
- * parent session they belong to (`.claude/protocols/agent-onboarding.md`,
- * Correlation). The quality gate reads only the smith from them, and only
- * when it can otherwise resolve an executor: it does not consult the marker,
- * and its bead and run come only from the run correlation `forge:exec --run`
- * hands the child.
+ * tells script emitters run inside the child which bead, smith and run they
+ * belong to (`.claude/protocols/agent-onboarding.md`, Correlation). The
+ * parent session is set for the session hooks' contract and is read by
+ * nothing inside an adapter child today. The quality gate reads only the
+ * smith from these, and only when it can otherwise resolve an executor: it
+ * does not consult the marker, and its bead and run come only from a run
+ * correlation — for a hook-triggered gate inside the child, the one
+ * `forge:exec --run` hands it.
  */
 export function adapterEnv(request: Correlation): Record<string, string> {
   return {
