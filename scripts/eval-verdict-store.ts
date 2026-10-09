@@ -281,8 +281,40 @@ export function readVerdictOnce(input: {
     input.file ?? STRICT_VERDICT_FILE,
   );
   if (!where.ok) return where;
-  const { relative } = where;
-  const root = resolveCheckout(input.checkout).worktree;
+  return readOwnFile(resolveCheckout(input.checkout).worktree, where.relative);
+}
+
+const EVALUATION_DIR_NAME = /^[0-9a-f]{64}$/;
+
+/** True for a directory name the path rule can produce: 64 lower-case hex digits. */
+export function isEvaluationDirName(name: string): boolean {
+  return EVALUATION_DIR_NAME.test(name);
+}
+
+/**
+ * Read one file of an evaluation directory by the directory's name rather
+ * than by a run id: what a sweep has in hand. Refuses what `readVerdictOnce`
+ * refuses, and any directory or file name the path rule cannot produce.
+ */
+export function readEvaluationFile(input: {
+  checkout: string;
+  dir: string;
+  file: string;
+}): ReadVerdictResult {
+  if (!isEvaluationDirName(input.dir) || !isManagedVerdictFile(input.file)) {
+    return {
+      ok: false,
+      error: "the file is not a verdict file of an evaluation directory",
+    };
+  }
+  return readOwnFile(
+    resolveCheckout(input.checkout).worktree,
+    `${EVALUATIONS_DIR}/${input.dir}/${input.file}`,
+  );
+}
+
+/** One bounded read of `relative` under the checkout root, refused behind any link. */
+function readOwnFile(root: string, relative: string): ReadVerdictResult {
   const path = `${root}/${relative}`;
   const refuse = (error: string): ReadVerdictResult => ({ ok: false, error });
 

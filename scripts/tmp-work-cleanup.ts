@@ -13,14 +13,22 @@
  *   - `<EPIC-ID>-interfaces.md` (suffix `-interfaces.md`)
  *   - Any file whose prefix matches an open/in_progress/blocked Beads issue.
  *
+ * Also sweeps evaluator verdicts under `.tmp/work/evaluations/`, by the same
+ * closed-bead and age rule, and only a file it can validate (a schema 2
+ * verdict in the directory its run id declares, behind no link) whose digest
+ * the event ledger already holds: see `sweepEvaluations`.
+ *
  * Emits `{ ok, data, error }` JSON envelope.
  */
 
 import { execFileSync } from "child_process";
 import {
   existsSync,
+  lstatSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  rmdirSync,
   statSync,
   unlinkSync,
 } from "fs";
@@ -30,6 +38,26 @@ import {
   issuesAndDepsFromExportRows,
   parseBdExportStdout,
 } from "./beads-dashboard";
+import {
+  EVAL_VERDICT_SCHEMA_VERSION,
+  parseEvalVerdictJson,
+} from "./eval-verdict";
+import {
+  EVALUATIONS_DIR,
+  evaluationDir,
+  isEvaluationDirName,
+  isManagedVerdictFile,
+  readEvaluationFile,
+} from "./eval-verdict-store";
+import { comparableCheckout } from "./forge/runs";
+import { resolveCheckout } from "./ledger/workspace";
+
+/**
+ * Days a swept file is kept after its bead closes, unless `TTL_DAYS` says
+ * otherwise. One period for task-scoped files and evaluator verdicts alike:
+ * the retention policy still to be decided (bead ulpz.1) replaces this value.
+ */
+export const DEFAULT_TTL_DAYS = 14;
 
 const ISSUES_FILE = join(process.cwd(), ".beads", "issues.jsonl");
 
@@ -135,13 +163,190 @@ function listFiles(): string[] {
 }
 
 function parseTtl(): number {
-  const raw = process.env["TTL_DAYS"]?.trim() ?? "14";
+  const raw = process.env["TTL_DAYS"]?.trim() ?? String(DEFAULT_TTL_DAYS);
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return 14;
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_TTL_DAYS;
   return Math.floor(n);
 }
 
-function main(): void {
+// ── Evaluator verdicts ──────────────────────────────────────────────────────
+
+/** A verdict file's digest and the run it names: what the ledger is asked for. */
+export interface LedgerDigest {
+  sha256: string;
+  executionRunId: string;
+}
+
+export interface EvaluationSweep {
+  /** Paths are relative to the checkout. */
+  candidates: SweepCandidate[];
+  deleted: string[];
+  /** Set when the whole evaluations directory was left alone, and why. */
+  note?: string;
+}
+
+/** True when `relative` under the checkout root exists as a real directory of the checkout's own: not a link. */
+function isOwnDirectory(root: string, relative: string): boolean {
+  const path = `${root}/${relative}`;
+  try {
+    return (
+      lstatSync(path).isDirectory() &&
+      comparableCheckout(realpathSync.native(path)) === path
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sweep the evaluator verdicts of a checkout.
+ *
+ * A file is a candidate only when it is where the path rule puts verdicts: a
+ * managed file name in a directory named by 64 hex digits, in the checkout's
+ * own evaluations directory, with no link anywhere on the way. It is removed
+ * only when all of this holds:
+ *
+ * - its bytes are a schema 2 verdict whose run id hashes to the directory it
+ *   is in (so the file is the one that run declared, not a stray copy);
+ * - the Beads issue it names is closed, and the file is older than the TTL;
+ * - the ledger holds a `verdict.bound` for that run with the file's digest.
+ *   Until then the file is the only copy of that evidence.
+ *
+ * Files are unlinked one at a time; a run's directory is removed only once it
+ * is empty. Anything else found there is left as it is.
+ */
+export function sweepEvaluations(input: {
+  /** A directory in the checkout to sweep. */
+  checkout: string;
+  issuesById: Map<string, BeadsIssue>;
+  ttlDays: number;
+  ledgerHolds(digest: LedgerDigest): boolean;
+  apply: boolean;
+  nowMs: number;
+}): EvaluationSweep {
+  const root = resolveCheckout(input.checkout).worktree;
+  const candidates: SweepCandidate[] = [];
+  const deleted: string[] = [];
+  try {
+    lstatSync(`${root}/${EVALUATIONS_DIR}`);
+  } catch {
+    return { candidates, deleted };
+  }
+  if (!isOwnDirectory(root, EVALUATIONS_DIR)) {
+    return {
+      candidates,
+      deleted,
+      note: `${EVALUATIONS_DIR} is, or sits under, a link: nothing in it is swept`,
+    };
+  }
+
+  for (const dir of readdirSync(`${root}/${EVALUATIONS_DIR}`).sort()) {
+    const relativeDir = `${EVALUATIONS_DIR}/${dir}`;
+    if (!isEvaluationDirName(dir) || !isOwnDirectory(root, relativeDir)) {
+      continue;
+    }
+    for (const file of readdirSync(`${root}/${relativeDir}`).sort()) {
+      if (!isManagedVerdictFile(file)) continue;
+      const relative = `${relativeDir}/${file}`;
+      const candidate = classifyEvaluationFile(root, dir, file, input);
+      candidates.push({ ...candidate, path: relative });
+      if (candidate.action !== "delete" || !input.apply) continue;
+      try {
+        unlinkSync(`${root}/${relative}`);
+        deleted.push(relative);
+      } catch (e) {
+        console.error(
+          `warn: could not delete ${relative}: ${(e as Error).message}`,
+        );
+      }
+    }
+    if (input.apply) {
+      try {
+        // Fails, as it should, while anything is left in the directory.
+        rmdirSync(`${root}/${relativeDir}`);
+      } catch {
+        // Not empty, or not removable: it stays.
+      }
+    }
+  }
+  return { candidates, deleted };
+}
+
+/** What to do with one managed file of one evaluation directory. */
+function classifyEvaluationFile(
+  root: string,
+  dir: string,
+  file: string,
+  input: {
+    issuesById: Map<string, BeadsIssue>;
+    ttlDays: number;
+    ledgerHolds(digest: LedgerDigest): boolean;
+    nowMs: number;
+  },
+): Omit<SweepCandidate, "path"> {
+  const skip = (
+    reason: string,
+    taskId = "",
+    ageDays = 0,
+  ): Omit<SweepCandidate, "path"> => ({
+    taskId,
+    ageDays,
+    action: "skip",
+    reason,
+  });
+  const read = readEvaluationFile({ checkout: root, dir, file });
+  if (!read.ok) return skip(read.error);
+  const parsed = parseEvalVerdictJson(read.buffer.toString("utf8"));
+  if (
+    !parsed.ok ||
+    parsed.value.schemaVersion !== EVAL_VERDICT_SCHEMA_VERSION
+  ) {
+    return skip("not a schema 2 verdict");
+  }
+  const verdict = parsed.value;
+  if (evaluationDir(verdict.executionRunId) !== `${EVALUATIONS_DIR}/${dir}`) {
+    return skip(
+      `the verdict names run ${verdict.executionRunId}, which this directory is not the directory of`,
+      verdict.beadsIssueId,
+    );
+  }
+  let ageDays = 0;
+  try {
+    const modified = statSync(`${root}/${read.path}`).mtimeMs;
+    ageDays = Math.floor((input.nowMs - modified) / 86_400_000);
+  } catch {
+    return skip("the file's age could not be read", verdict.beadsIssueId);
+  }
+  const taskId = verdict.beadsIssueId;
+  const issue = input.issuesById.get(taskId);
+  if (!issue) return skip(`bead ${taskId} not in ledger`, taskId, ageDays);
+  if (issue.status !== "closed") {
+    return skip(`bead ${taskId} status=${issue.status}`, taskId, ageDays);
+  }
+  if (ageDays < input.ttlDays) {
+    return skip(`age ${ageDays}d < TTL ${input.ttlDays}d`, taskId, ageDays);
+  }
+  if (
+    !input.ledgerHolds({
+      sha256: read.sha256,
+      executionRunId: verdict.executionRunId,
+    })
+  ) {
+    return skip(
+      "the ledger holds no verdict.bound with this file's digest for its run",
+      taskId,
+      ageDays,
+    );
+  }
+  return {
+    taskId,
+    ageDays,
+    action: "delete",
+    reason: `closed bead, age ${ageDays}d ≥ TTL ${input.ttlDays}d, digest held by the ledger`,
+  };
+}
+
+async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
   const ttlDays = parseTtl();
   const nowMs = Date.now();
@@ -188,6 +393,32 @@ function main(): void {
     }
   }
 
+  // Evaluator verdicts. The ledger is loaded here, not at the top: it needs
+  // Bun's SQLite, which the functions above are tested without. A ledger that
+  // cannot be read holds nothing, so nothing is removed.
+  const { queryEvents } = await import("./ledger/query");
+  const evaluations = sweepEvaluations({
+    checkout: process.cwd(),
+    issuesById: byId,
+    ttlDays,
+    ledgerHolds: ({ sha256, executionRunId }) => {
+      try {
+        return queryEvents({
+          runId: executionRunId,
+          kinds: ["verdict.bound"],
+        }).some(
+          (event) =>
+            event.kind === "verdict.bound" &&
+            event.payload.verdictArtifact?.sha256 === sha256,
+        );
+      } catch {
+        return false;
+      }
+    },
+    apply,
+    nowMs,
+  });
+
   console.log(
     JSON.stringify(
       {
@@ -198,6 +429,7 @@ function main(): void {
           scanned: files.length,
           candidates,
           deleted,
+          evaluations,
         },
         error: null,
       },
@@ -208,5 +440,5 @@ function main(): void {
 }
 
 if (import.meta.main) {
-  main();
+  await main();
 }
