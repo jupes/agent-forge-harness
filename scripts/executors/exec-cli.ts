@@ -8,25 +8,39 @@
  *
  * Smith resolution: --smith, then --bead-smith, then the bench for
  * --complexity, then workflow.default_crew. The child gets only allowlisted
- * environment variables. Events are written as NDJSON under
- * `.tmp/work/exec-events/<bead>.ndjson` until the ledger exists (x1gs.2.1).
+ * variables of this process's environment, plus the ones its adapter sets
+ * itself (`env.ts`) and, with --run, the correlation pointer described below.
+ *
+ * The run's events (`session.started`, one `tool.called` per tool,
+ * `session.ended`) go to the ledger; read them with
+ * `bun run forge:audit --bead <id>`. An event the ledger does not take never
+ * stops the provider: the envelope reports `recorded`, `notRecorded` and the
+ * first `ledgerError`, and `ledger` names the file written.
  *
  * With --run, the run's correlation (`scripts/run-correlation.ts`) is written
  * in the worktree and its path put in the child's environment, so a quality
  * gate that runs inside the child is linked to this bead and run. The worktree
  * must be a checkout's top level for that. A run already correlated to
- * another bead is left alone. Whenever no pointer is handed on, the child
- * runs unlinked and `data.correlationNote` says why. The child never inherits
- * a pointer from this process.
+ * another bead is left alone. Whenever no pointer is handed on, a gate inside
+ * the child runs unlinked and `data.correlationNote` says why; the run's
+ * ledger events and the adapter's variables still carry --bead and --run. The
+ * child never inherits a pointer from this process.
  *
- * Exit code 0 when the provider exits 0, 2 otherwise.
+ * Exit code 0 when the provider exits 0, 2 otherwise — whatever the ledger did.
  */
 
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
-import { BENCH_NAMES, type BenchName } from "../../types/hearth";
+import {
+  BENCH_NAMES,
+  type BenchName,
+  type LedgerEventInput,
+} from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
+import { readSessionMirror } from "../ledger/identity";
+import { ledgerPath } from "../ledger/paths";
+import { resolveCheckout } from "../ledger/workspace";
 import { RUN_CORRELATION_ENV } from "../run-correlation";
 import {
   correlationReport,
@@ -35,8 +49,8 @@ import {
 } from "../run-correlation-store";
 import { buildChildEnv } from "./env";
 import { ADAPTERS } from "./registry";
-import { ndjsonSink } from "./sinks";
-import type { EventSink, ExecutorAdapter } from "./types";
+import { ledgerSink } from "./sinks";
+import type { EventSink, ExecutorAdapter, SinkResult } from "./types";
 
 /** A "bounded" task: 30 minutes unless --timeout-ms says otherwise. */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -46,9 +60,13 @@ export interface ExecDeps {
   home?: string;
   env?: Record<string, string | undefined>;
   adapters?: Readonly<Record<string, ExecutorAdapter>>;
+  /** The directory forge:exec was launched from. Default: the current directory. */
+  cwd?: string;
   /** Replaces the provider binary (tests). */
   command?: string[];
-  /** Replaces the default NDJSON sink. */
+  /** The ledger file to write (tests). Default: the ledger of the process environment. */
+  ledgerPath?: string;
+  /** Replaces the ledger sink altogether. */
   sink?: EventSink;
 }
 
@@ -115,6 +133,33 @@ const failure = (error: string): ExecOutcome => ({
   body: { ok: false, data: null, error },
 });
 
+/**
+ * The session forge:exec was launched from: the one mirrored into that
+ * directory's checkout, as for every other script emitter. Undefined when no
+ * fresh mirror is there.
+ */
+function launchingSession(cwd: string): string | undefined {
+  return readSessionMirror(resolveCheckout(cwd).worktree) ?? undefined;
+}
+
+/**
+ * Hand one event to the sink. A sink that returns nothing has taken it; one
+ * that throws is a refusal like any other.
+ */
+async function store(
+  sink: EventSink,
+  event: LedgerEventInput,
+): Promise<SinkResult> {
+  try {
+    return (await sink(event)) ?? { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function runExec(
   argv: string[],
   deps: ExecDeps,
@@ -167,14 +212,9 @@ export async function runExec(
     );
   }
 
-  const eventsFile = join(
-    deps.harnessRoot,
-    ".tmp",
-    "work",
-    "exec-events",
-    `${beadId.replace(/[^\w.-]/g, "_")}.ndjson`,
-  );
-  const sink = deps.sink ?? ndjsonSink(eventsFile);
+  const sink =
+    deps.sink ??
+    ledgerSink(deps.ledgerPath === undefined ? {} : { path: deps.ledgerPath });
   const timeoutArg = args.get("timeout-ms");
   const timeoutMs = timeoutArg ? Number(timeoutArg) : DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -210,6 +250,7 @@ export async function runExec(
       prompt,
       env: childEnv,
       runId,
+      parentSessionId: launchingSession(deps.cwd ?? process.cwd()),
       timeoutMs,
       command: deps.command,
     });
@@ -217,15 +258,16 @@ export async function runExec(
     return failure(error instanceof Error ? error.message : String(error));
   }
 
-  let count = 0;
-  try {
-    for await (const event of handle.events) {
-      await sink(event);
-      count++;
-    }
-  } catch (error) {
-    await handle.stop("sink failed");
-    return failure(error instanceof Error ? error.message : String(error));
+  // The provider's outcome decides the result. An event the ledger did not
+  // take is counted and reported, and the child is left to finish.
+  let events = 0;
+  let recorded = 0;
+  let ledgerError: string | null = null;
+  for await (const event of handle.events) {
+    events++;
+    const stored = await store(sink, event);
+    if (stored.ok) recorded++;
+    else ledgerError ??= stored.error;
   }
   const result = await handle.done;
   const ok = result.exitCode === 0 && !result.timedOut;
@@ -238,8 +280,11 @@ export async function runExec(
         smith: smith.name,
         provider: smith.provider,
         via,
-        events: count,
-        eventsFile: deps.sink ? null : eventsFile,
+        events,
+        recorded,
+        notRecorded: events - recorded,
+        ledgerError,
+        ledger: deps.sink ? null : (deps.ledgerPath ?? ledgerPath()),
         exitCode: result.exitCode,
         timedOut: result.timedOut,
         correlation: correlated.correlation,

@@ -5,11 +5,19 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { isAdapterChild } from "../../.claude/hooks/utils/hook-input";
 import type { LedgerEventInput } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
+import { comparableCheckout } from "../forge/runs";
 import { validateLedgerEventInput } from "../hearth/validate";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
@@ -38,9 +46,14 @@ async function run(
   mode: string,
   extra: Partial<SpawnRequest> = {},
 ) {
-  const root = mkdtempSync(join(tmpdir(), "exec contract "));
+  // Each directory is its own checkout: a bare temp directory would resolve to
+  // whatever checkout the temp directory happens to sit in.
+  const root = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "exec contract ")),
+  );
+  mkdirSync(join(root, ".git"));
   const worktree = join(root, "work tree with spaces");
-  mkdirSync(worktree);
+  mkdirSync(join(worktree, ".git"), { recursive: true });
   const dumpFile = join(root, "dump.json");
   const handle = await adapter.spawn({
     beadId: "bead-1",
@@ -103,6 +116,21 @@ for (const { name, adapter, smith } of adapters) {
       expect(ended.payload.reason).toBe("completed");
     });
 
+    test("session.started says it is a headless session and names the checkout it runs in; events carry the harness checkout as workspace", async () => {
+      const { events, root, worktree } = await run(adapter, name, smith, "ok");
+      const started = events[0] as Extract<
+        LedgerEventInput,
+        { kind: "session.started" }
+      >;
+      expect(started.payload).toEqual({
+        source: `headless:${name}`,
+        kind: "headless",
+        worktree: comparableCheckout(worktree),
+      });
+      for (const event of events)
+        expect(event.workspace).toBe(comparableCheckout(root));
+    });
+
     test("tool events carry a hash, never the tool input", async () => {
       const { events } = await run(adapter, name, smith, "ok");
       expect(JSON.stringify(events)).not.toContain("SECRET_BODY_MUST_NOT_LEAK");
@@ -122,6 +150,34 @@ for (const { name, adapter, smith } of adapters) {
       expect(
         Object.keys(dump.env).some((k) => k.toLowerCase() === "path"),
       ).toBe(true);
+    });
+
+    test("the child is marked as an adapter child and carries the bead, smith and run; values planted under those names do not reach it", async () => {
+      const { dump } = await run(adapter, name, smith, "ok", {
+        env: {
+          ...buildChildEnv(process.env, []),
+          AGENT_FORGE_ADAPTER: "0",
+          agent_forge_bead_id: "planted-bead",
+          Forge_Slug: "planted-run",
+          Agent_Forge_Parent_Session: "planted-parent",
+        },
+      });
+      const seen = dump.env as Record<string, string>;
+      const owned = Object.keys(seen).filter((key) =>
+        /^(agent_forge_(adapter|bead_id|smith|parent_session)|forge_slug)$/i.test(
+          key,
+        ),
+      );
+      expect(
+        Object.fromEntries(owned.sort().map((key) => [key, seen[key]])),
+      ).toEqual({
+        AGENT_FORGE_ADAPTER: "1",
+        AGENT_FORGE_BEAD_ID: "bead-1",
+        AGENT_FORGE_SMITH: smith,
+        FORGE_SLUG: "run-1",
+      });
+      // The predicate the harness hooks use to stand down inside such a child.
+      expect(isAdapterChild(seen)).toBe(true);
     });
 
     test("never asks for dangerously-skip-permissions", async () => {
@@ -165,6 +221,7 @@ for (const { name, adapter, smith } of adapters) {
 
     test("stop() kills the child and records why", async () => {
       const root = mkdtempSync(join(tmpdir(), "exec stop "));
+      mkdirSync(join(root, ".git"));
       const handle = await adapter.spawn({
         beadId: "b",
         worktree: root,

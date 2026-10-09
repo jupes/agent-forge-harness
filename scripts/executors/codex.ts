@@ -2,8 +2,17 @@
  * Codex adapter: `codex exec --json`, prompt on stdin (`-`).
  *
  * `bun run codex:sync` runs first so `.agents/skills/` exists for the worktree
- * (inject `prepare` in tests). Flag and event names follow the documented
- * `codex exec --json` stream and were not run against a real CLI here.
+ * (inject `prepare` in tests).
+ *
+ * Checked against `codex` on Windows, run directly (2026-10-08): 0.159.0 and
+ * 0.160.0 both accept the flags below. On 0.160.0 — the only version that got
+ * as far as a command — one shell command arrived as `item.started` then
+ * `item.completed` with `item.type: "command_execution"` and a numeric
+ * `exit_code`. Only the completed item is mapped, so a command is one tool
+ * call. Items other than a shell command have not been observed and are not
+ * mapped. One run through `forge:exec` on 0.160.0 (2026-10-09) left
+ * `session.started`, a `tool.called` for the shell command and
+ * `session.ended` in the ledger.
  */
 
 import { createCliAdapter, type ParsedTool } from "./cli-adapter";
