@@ -11,10 +11,13 @@
  * The line shapes (field names and nesting) follow what the real CLIs printed
  * when each binary was run directly on Windows — `claude` 2.1.293 as far as
  * an authentication failure, `codex` 0.159.0 for a rejected model, `codex`
- * 0.160.0 through one shell command — with invented values; no recorded line
- * is copied. Two shapes are not from a recording: the Claude `tool_use` block
- * (the documented stream-json format; that run never got as far as a tool)
- * and a successful Claude `result`.
+ * 0.160.0 through one shell command. Each line carries a subset of the real
+ * fields; the discriminating values (`authentication_failed`,
+ * `command_execution`, the statuses) are the real ones, while ids, text and
+ * counts are invented, and no recorded line is copied. Two shapes are not
+ * from a recording: the Claude `tool_use` block (the documented stream-json
+ * format; that run never got as far as a tool) and a successful Claude
+ * `result`.
  *
  *   auth   (claude) the stored sign-in is rejected: an assistant error message,
  *          an error `result`, exit 1
