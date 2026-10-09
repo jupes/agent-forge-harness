@@ -100,12 +100,12 @@ function checkoutRoot(
 }
 
 /**
- * True when the correlations directory of `root`, as far as it exists, really
- * is inside `root`: no part of it is a link to somewhere else. Checked before
- * anything is created, so nothing is ever made or written behind a link. The
- * loader refuses such a file on its side.
+ * True when the correlations directory of `root`, as far as it exists, is the
+ * checkout's own: no part of it is a link, wherever the link leads. Checked
+ * before anything is created, so nothing is ever made or written behind a
+ * link. The loader refuses a file behind one on its side.
  */
-function correlationsDirIsInside(root: string): boolean {
+function correlationsDirIsOwn(root: string): boolean {
   let dir = root;
   for (const part of RUN_CORRELATIONS_DIR.split("/")) {
     dir = `${dir}/${part}`;
@@ -164,10 +164,10 @@ export function initRunCorrelation(input: {
     env: { [RUN_CORRELATION_ENV]: path },
   });
 
-  if (!correlationsDirIsInside(root)) {
+  if (!correlationsDirIsOwn(root)) {
     return {
       ok: false,
-      error: `${RUN_CORRELATIONS_DIR} resolves outside this checkout`,
+      error: `${RUN_CORRELATIONS_DIR} is, or sits under, a link: a correlation is only written in the checkout's own directory`,
     };
   }
   const existing = loadRunCorrelation(path, root);

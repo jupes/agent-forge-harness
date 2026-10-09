@@ -403,12 +403,22 @@ describe("the writer and a linked correlations directory", () => {
     return { dir, outside };
   }
 
+  test("a link elsewhere inside the same checkout is refused too", () => {
+    const dir = checkout();
+    const inner = join(dir, "elsewhere");
+    mkdirSync(inner);
+    mkdirSync(join(dir, ".tmp", "work"), { recursive: true });
+    symlinkSync(inner, join(dir, RUN_CORRELATIONS_DIR), "junction");
+    expect(init(dir).ok).toBe(false);
+    expect(readdirSync(inner)).toEqual([]);
+  });
+
   test("a correlations directory that links outside the checkout is not written through", () => {
     for (const at of [RUN_CORRELATIONS_DIR, ".tmp/work", ".tmp"]) {
       const { dir, outside } = linked(at);
       expect(init(dir)).toEqual({
         ok: false,
-        error: `${RUN_CORRELATIONS_DIR} resolves outside this checkout`,
+        error: `${RUN_CORRELATIONS_DIR} is, or sits under, a link: a correlation is only written in the checkout's own directory`,
       });
       // Nothing was written at the link's target, at any depth.
       expect(
