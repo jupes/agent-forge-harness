@@ -120,8 +120,8 @@ export function observedRankPolicy(input: {
  * Why an evaluator does not satisfy strict completion, or null when it does.
  *
  * A human does, by declaring an actor kind. A model must have been observed,
- * must not carry its own rejection, and its observed provider and model must
- * pass the rank policy as computed here: the verdict's own "allowed" is not
+ * its observed provider and model must pass the rank policy as computed here,
+ * and it must not carry its own rejection: the verdict's own "allowed" is not
  * taken on trust, and the requested provider, model and rank are never used.
  */
 export function strictEvaluatorProblem(
@@ -135,9 +135,6 @@ export function strictEvaluatorProblem(
   ) {
     return `the verdict records no observed evaluator provider and model (requested ${evaluator.requestedProvider}/${evaluator.requestedModel} is not evidence of what ran)`;
   }
-  if (evaluator.rankPolicyDecision !== "allowed") {
-    return `the verdict records its own rank-policy decision as rejected (${evaluator.rankPolicyRule})`;
-  }
   const observed = `${evaluator.observedProvider}/${evaluator.observedModel}`;
   const policy = observedRankPolicy({
     observed: {
@@ -150,7 +147,11 @@ export function strictEvaluatorProblem(
   switch (policy.rule) {
     case "evaluator-at-or-above-builder":
     case "master-evaluator-builder-unknown":
-      return null;
+      // The policy passes here; a verdict that recorded its own rejection
+      // (written against another builder or config) still does not.
+      return evaluator.rankPolicyDecision === "allowed"
+        ? null
+        : `the verdict records its own rank-policy decision as rejected (${evaluator.rankPolicyRule})`;
     case "evaluator-rank-unknown":
       return `observed evaluator ${observed} has no rank: no configured smith with a rank:* tag uses that provider and model`;
     case "evaluator-below-builder":
