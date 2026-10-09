@@ -11,9 +11,12 @@
  * mirror in the worktree, logs to `session.jsonl`, pulls Beads and prints the
  * orientation lines the session reads.
  * SessionEnd: records `session.ended` first, then logs to `session.jsonl`. It
- * prints nothing and runs no `bd` command: the tracker is neither pulled nor
- * pushed when a session ends. Without a payload there is no session id, so
- * nothing is recorded in the ledger; the log line is still written.
+ * prints nothing and runs no `bd` command. Without a payload there is no
+ * session id, so nothing is recorded in the ledger; the log line is still
+ * written.
+ *
+ * Neither path pushes the tracker: it is local-only, and the only `bd`
+ * commands here are the pull and the ready list of a session start.
  *
  * It always exits 0: a failure here must never cost the session.
  */

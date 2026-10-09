@@ -158,7 +158,7 @@ const issues: PlanIssue[] = [
     acceptance: [
       "A manual session shows session.started, prompt.submitted, tool.called, session.ended events with the same sessionId.",
       "Hook latency added per tool call is under 30 ms (measured, noted on the bead).",
-      "SessionEnd never pushes the tracker (it runs no bd command); the existing session.jsonl log keeps working.",
+      "SessionEnd never pushes the tracker; the existing session.jsonl log keeps working.",
     ],
     deps: ["f1-core", "d3"],
   },

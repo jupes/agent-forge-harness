@@ -203,9 +203,10 @@ Every sequence ends the same way: `session.ended` exactly once, with `payload.re
    carries its own `ts`.
 3. **SessionEnd hook.** `session.ended` with `payload.reason` from stdin, appended **before** anything
    slow; then the mirror is removed if it is still this session's, and the hook writes its one line to
-   `session.jsonl`. It runs no `bd` command: the tracker is local-only, and nothing pushes it when a
-   session ends. The `timeout` on the hook's registration was sized for a push the hook used to make
-   and is longer than it now needs.
+   `session.jsonl`. The hook never pushes the tracker, which is local-only, and its SessionEnd path
+   runs no `bd` command at all. The hook command carries a `timeout` of its own because the host's
+   default budget for SessionEnd hooks (1.5 seconds, shared between them) leaves little room for a slow
+   start; the value was sized for a push the hook used to make and can be much smaller now.
 
 ### 2. Claude teammate or subagent (hooks + `parentSessionId`)
 

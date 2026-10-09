@@ -216,12 +216,14 @@ describe("the hook registration in .claude/settings.json", () => {
     }
   });
 
-  test("SessionEnd runs the session script and waits for it, and the hooks that were there before are still registered", () => {
-    // Nothing is asserted about the registration's `timeout`: it was sized for
-    // a tracker push that the hook no longer makes.
+  test("SessionEnd runs the session script with a timeout of its own above the host's default, and the hooks that were there before are still registered", () => {
     const end = registered("SessionEnd");
     expect(end).toHaveLength(1);
     expect(end[0]?.command).toContain("session.ts");
+    // The host gives SessionEnd hooks 1.5 seconds between them unless one
+    // carries a longer timeout. How much longer is not pinned: the value was
+    // sized for a tracker push the hook no longer makes.
+    expect(end[0]?.timeout).toBeGreaterThan(1.5);
     expect(end[0]?.async).toBeUndefined();
 
     const commands = (event: string) =>
@@ -491,7 +493,7 @@ describe("the hook scripts, given a hook payload on stdin", () => {
   );
 
   test(
-    "a session end runs no bd command: a recording bd on the PATH sees the session start's pull and nothing from a session end, with a payload or without one",
+    "a recording bd on the PATH sees a session start's pull, nothing from the ledger hook or from a session end named by its payload or on the command line, and only a start's commands from a session end named by neither",
     async () => {
       const box = sandbox();
       const bd = recordingBd(box);
@@ -506,8 +508,22 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       // does not grow below means no call was made, not that `bd` was missing.
       const atStart = bd.calls();
       expect(atStart).toContain("dolt pull");
+      expect(readSessionMirror(box.cwd)).toBe("S");
 
-      const ended = [
+      const quiet = [
+        await hook(
+          box,
+          LEDGER_HOOK,
+          payload("UserPromptSubmit", box, { prompt: "hi" }),
+          bd.env,
+        ),
+        await hook(
+          box,
+          LEDGER_HOOK,
+          payload("PostToolUse", box, { tool_name: "Bash" }),
+          bd.env,
+        ),
+        await hook(box, LEDGER_HOOK, payload("Stop", box), bd.env),
         await hook(
           box,
           SESSION,
@@ -516,12 +532,24 @@ describe("the hook scripts, given a hook payload on stdin", () => {
         ),
         await hook(box, SESSION, "", bd.env, ["SessionEnd"]),
       ];
-      expect(ended.map((ran) => ran.exitCode)).toEqual([0, 0]);
+      expect(quiet.map((ran) => ran.exitCode)).toEqual([0, 0, 0, 0, 0]);
+      // The hooks did their own work: the session is ended and its mirror is gone.
       expect(events(box).map((event) => event.kind)).toEqual([
         "session.started",
+        "prompt.submitted",
+        "tool.called",
         "session.ended",
       ]);
+      expect(readSessionMirror(box.cwd)).toBeNull();
       expect(bd.calls()).toEqual(atStart);
+
+      // The registration names no event on the command line, so a session end
+      // whose payload never arrives is taken for a start. It runs what a start
+      // runs, once more, and still nothing that pushes.
+      const unnamed = await hook(box, SESSION, "", bd.env);
+      expect(unnamed.stdout).toContain("[session] SessionStart logged.");
+      expect(bd.calls()).toEqual([...atStart, ...atStart]);
+      expect(bd.calls().some((call) => call.includes("push"))).toBe(false);
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -690,7 +718,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-describe("nothing in the repository's hooks or scripts pushes the tracker", () => {
+describe("the tracker push is not typed out in the repository's hooks or scripts", () => {
   // Spelled apart from the rest so this file does not type the command out itself.
   const verb = "push";
 
@@ -715,10 +743,29 @@ describe("nothing in the repository's hooks or scripts pushes the tracker", () =
     expect(trackerPushLines(`one\ntwo bd dolt ${verb}\nthree`)).toEqual([2]);
   });
 
-  test("no file under .claude/hooks or scripts types out the tracker push", () => {
-    const files = [HOOKS, join(ROOT, "scripts")].flatMap(sourceFiles);
-    // The walk reached both trees, the session hook and this file among them.
+  test("no file under the hook, skill, workflow and script trees, Markdown aside, types out the tracker push", () => {
+    const trees = [
+      ".claude/hooks",
+      ".claude/skills",
+      ".agents/skills",
+      ".github",
+      "scripts",
+    ];
+    const files = trees.flatMap((tree) => sourceFiles(join(ROOT, tree)));
+    // The walk reached the trees: the session hook, a skill's script, the CI
+    // workflow and this file are among what it read.
     expect(files).toContain(SESSION);
+    expect(files).toContain(
+      join(
+        ROOT,
+        ".claude",
+        "skills",
+        "pr-description",
+        "scripts",
+        "check-pr-body.ts",
+      ),
+    );
+    expect(files).toContain(join(ROOT, ".github", "workflows", "quality.yml"));
     expect(files).toContain(join(import.meta.dir, "hooks.test.ts"));
     const found = files.flatMap((file) =>
       trackerPushLines(readFileSync(file, "utf8")).map(
@@ -728,7 +775,7 @@ describe("nothing in the repository's hooks or scripts pushes the tracker", () =
     expect(found).toEqual([]);
   });
 
-  test("no hook command registered in .claude/settings.json and no package.json script is the tracker push", () => {
+  test("no hook command registered in .claude/settings.json and no package.json script types out the tracker push", () => {
     const settings = JSON.parse(
       readFileSync(join(HOOKS, "..", "settings.json"), "utf8"),
     ) as { hooks: Record<string, Array<{ hooks: HookCommand[] }>> };
