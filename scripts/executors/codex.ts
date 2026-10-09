@@ -9,7 +9,9 @@
  * `item.started` then `item.completed` with `item.type: "command_execution"`
  * and a numeric `exit_code`. Only the completed item is mapped, so a command
  * is one tool call. Items other than a shell command have not been observed
- * and are not mapped.
+ * and are not mapped. One run through `forge:exec` on 0.160.0 (2026-10-09)
+ * left `session.started`, a `tool.called` for the shell command and
+ * `session.ended` in the ledger.
  */
 
 import { createCliAdapter, type ParsedTool } from "./cli-adapter";

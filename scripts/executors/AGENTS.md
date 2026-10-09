@@ -25,6 +25,9 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   - `codex` 0.159.0 and 0.160.0 accept every flag `codex.ts` passes. On 0.160.0 one shell command arrived as
     `item.started` then `item.completed` (`item.type: "command_execution"`, numeric `exit_code`), which is what the
     parser maps. Items other than a shell command have **not** been observed and are not mapped.
+  - One run through `forge:exec` itself (`codex` 0.160.0, 2026-10-09, a one-file task in a scratch repository, an
+    isolated ledger home): the ledger held `session.started`, one `tool.called` (`shell`, exit code 0) and
+    `session.ended` (`completed`), each with the smith. No `forge:exec` run against a real `claude` has been made.
   - `forge:doctor` checks `--version` only. A binary can answer that and still be unusable: not signed in, or missing
     the helper it runs tools with (one such copy exited 0 without doing the task).
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.
