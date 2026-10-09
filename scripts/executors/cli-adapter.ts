@@ -5,6 +5,7 @@
  */
 
 import type { Executor, LedgerEventInput, Provider } from "../../types/hearth";
+import { resolveCheckout } from "../ledger/workspace";
 import { supervise } from "./supervisor";
 import type {
   DoctorResult,
@@ -140,8 +141,13 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         smith: request.smith.name,
         sessionId,
       };
+      // Spelled the way every other emitter spells them: the harness's main
+      // checkout (also when the run was launched from a linked worktree of
+      // it), and the checkout the executor runs in.
+      const { workspace } = resolveCheckout(request.workspace);
+      const { worktree } = resolveCheckout(request.worktree);
       const base = {
-        workspace: request.workspace,
+        workspace,
         beadId: request.beadId,
         ...(request.runId ? { runId: request.runId } : {}),
         sessionId,
@@ -154,7 +160,11 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         ...base,
         ts: new Date().toISOString(),
         kind: "session.started",
-        payload: { source: `headless:${spec.provider}` },
+        payload: {
+          source: `headless:${spec.provider}`,
+          kind: "headless",
+          worktree,
+        },
       });
 
       const child = supervise({

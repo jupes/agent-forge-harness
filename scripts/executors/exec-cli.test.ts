@@ -9,6 +9,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { ledgerPath } from "../ledger/paths";
 import { queryEvents } from "../ledger/query";
@@ -86,6 +87,31 @@ describe("forge:exec", () => {
       ledger: ledgerPath(),
     });
     expect(existsSync(join(childHome, "ledger.db"))).toBe(false);
+  });
+
+  test("run from a linked worktree of the harness, events carry the main checkout as workspace", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    // A main checkout and a linked worktree of it, laid out the way git does.
+    const main = join(root, "main repo");
+    const gitDir = join(main, ".git", "worktrees", "feature one");
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, "commondir"), "../..\n");
+    const linked = join(root, "linked trees", "feature one");
+    mkdirSync(linked, { recursive: true });
+    writeFileSync(
+      join(linked, ".git"),
+      `gitdir: ${gitDir.replaceAll("\\", "/")}\n`,
+    );
+
+    const out = await runExec(
+      ["--bead", "b-7", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, harnessRoot: linked, command: fake("claude") },
+    );
+    expect(out.code).toBe(0);
+    const rows = queryEvents({ beadId: "b-7" }, { path: ledger });
+    expect(rows).toHaveLength(4);
+    for (const row of rows)
+      expect(row.workspace).toBe(comparableCheckout(main));
   });
 
   test("--smith routes to the codex adapter", async () => {

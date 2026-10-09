@@ -16,7 +16,11 @@ export interface SpawnRequest {
   beadId: string;
   /** Directory the executor runs in. May contain spaces. */
   worktree: string;
-  /** Workspace the events belong to (the harness root). */
+  /**
+   * The harness root the run was launched from. Events carry its main checkout
+   * (a linked worktree resolves to the checkout it belongs to); adapter
+   * preparation such as `codex:sync` runs in the directory as given.
+   */
   workspace: string;
   smith: Smith;
   /** Sent on stdin, never argv: argv is parsed by cmd.exe when a `.cmd` shim is involved. */

@@ -103,6 +103,7 @@ describe("codex adapter", () => {
       },
     });
     const root = mkdtempSync(join(tmpdir(), "codex prep "));
+    mkdirSync(join(root, ".git"));
     const handle = await adapter.spawn({
       beadId: "b",
       worktree: root,

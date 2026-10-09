@@ -5,11 +5,18 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
+import { comparableCheckout } from "../forge/runs";
 import { validateLedgerEventInput } from "../hearth/validate";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
@@ -38,9 +45,14 @@ async function run(
   mode: string,
   extra: Partial<SpawnRequest> = {},
 ) {
-  const root = mkdtempSync(join(tmpdir(), "exec contract "));
+  // Each directory is its own checkout: a bare temp directory would resolve to
+  // whatever checkout the temp directory happens to sit in.
+  const root = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "exec contract ")),
+  );
+  mkdirSync(join(root, ".git"));
   const worktree = join(root, "work tree with spaces");
-  mkdirSync(worktree);
+  mkdirSync(join(worktree, ".git"), { recursive: true });
   const dumpFile = join(root, "dump.json");
   const handle = await adapter.spawn({
     beadId: "bead-1",
@@ -101,6 +113,21 @@ for (const { name, adapter, smith } of adapters) {
         { kind: "session.ended" }
       >;
       expect(ended.payload.reason).toBe("completed");
+    });
+
+    test("session.started says it is a headless session and names the checkout it runs in; events carry the harness checkout as workspace", async () => {
+      const { events, root, worktree } = await run(adapter, name, smith, "ok");
+      const started = events[0] as Extract<
+        LedgerEventInput,
+        { kind: "session.started" }
+      >;
+      expect(started.payload).toEqual({
+        source: `headless:${name}`,
+        kind: "headless",
+        worktree: comparableCheckout(worktree),
+      });
+      for (const event of events)
+        expect(event.workspace).toBe(comparableCheckout(root));
     });
 
     test("tool events carry a hash, never the tool input", async () => {
@@ -165,6 +192,7 @@ for (const { name, adapter, smith } of adapters) {
 
     test("stop() kills the child and records why", async () => {
       const root = mkdtempSync(join(tmpdir(), "exec stop "));
+      mkdirSync(join(root, ".git"));
       const handle = await adapter.spawn({
         beadId: "b",
         worktree: root,
