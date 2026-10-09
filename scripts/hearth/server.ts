@@ -159,6 +159,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // The Beads database is machine-local: from a linked worktree, bd finds
     // none unless it runs in the main checkout.
     runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
+    bdTimeoutMs: options.api?.bdTimeoutMs,
+    configHome: options.api?.configHome,
   });
   const api = createOperatorApi(
     {

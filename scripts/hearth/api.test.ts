@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import type {
@@ -7,14 +7,18 @@ import type {
   LedgerEventInput,
   LedgerEventOf,
   OperatorEnvelope,
+  QueueEntry,
   Reservation,
   RunDetail,
   SessionSummary,
+  SmithsView,
 } from "../../types/hearth";
+import { type LoadedConfig, loadConfig } from "../config/load";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
+import type { BdResult } from "./routes/dev-api";
 import {
   startTestHearth,
   type TestHearth,
@@ -175,7 +179,10 @@ const READS: Record<string, string> = {
   "GET /runs": "/runs",
   "GET /runs/:slug": "/runs/demo",
   "GET /events": "/events",
+  "GET /queue": "/queue",
   "GET /reservations": "/reservations",
+  "GET /smiths": "/smiths",
+  "GET /config": "/config",
 };
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -1115,5 +1122,295 @@ describe("reads over the ledger and run state", () => {
     const body = await envelope<RunDetail>(await get(h, "/runs/demo"));
     expect(body.data?.events.events.length).toBe(200);
     expect(body.data?.events.more).toBe(true);
+  });
+});
+
+const QUEUE_ARGS = [
+  "list",
+  "--readonly",
+  "--flat",
+  "--json",
+  "--all",
+  "--limit",
+  "0",
+  "--label-any",
+  "queue:proposed,queue:approved,queue:queued,queue:running,queue:review,queue:done,queue:paused,queue:halted",
+];
+
+const BD_ISSUES = [
+  {
+    id: "b-1",
+    title: "One",
+    status: "open",
+    priority: 2,
+    issue_type: "task",
+    labels: ["queue:approved", "command-center"],
+  },
+  {
+    id: "b-2",
+    title: "Two",
+    status: "closed",
+    priority: 1,
+    issue_type: "bug",
+    labels: ["queue:done"],
+  },
+  {
+    id: "b-3",
+    title: "Both",
+    status: "in_progress",
+    labels: ["queue:paused", "queue:running"],
+  },
+  // What a bd that ignores the label filter hands back: none of these is in the queue.
+  { id: "b-4", title: "No queue label", status: "open", labels: ["privacy"] },
+  {
+    id: "b-5",
+    title: "Not a queue state",
+    status: "open",
+    labels: ["queue:teleported", "queue:"],
+  },
+  { id: "b-6", title: "No labels at all", status: "open" },
+];
+
+const listed = (issues: unknown): BdResult => ({
+  status: 0,
+  stdout: JSON.stringify(issues),
+  stderr: "",
+});
+
+describe("/queue", () => {
+  test("asks bd with one fixed argument array, and returns one entry per queue label a bead carries", async () => {
+    const h = await start();
+    h.bd.list = listed(BD_ISSUES);
+    const response = await get(h, "/queue");
+    expect(response.status).toBe(200);
+    expect((await envelope<QueueEntry[]>(response)).data).toEqual([
+      {
+        beadId: "b-1",
+        title: "One",
+        state: "approved",
+        status: "open",
+        priority: 2,
+        type: "task",
+      },
+      {
+        beadId: "b-2",
+        title: "Two",
+        state: "done",
+        status: "closed",
+        priority: 1,
+        type: "bug",
+      },
+      { beadId: "b-3", title: "Both", state: "running", status: "in_progress" },
+      { beadId: "b-3", title: "Both", state: "paused", status: "in_progress" },
+    ]);
+    expect(h.bd.calls).toEqual([QUEUE_ARGS]);
+  });
+
+  test("filters by state, and refuses a state or a parameter it does not know without calling bd", async () => {
+    const h = await start();
+    h.bd.list = listed(BD_ISSUES);
+    const some = await envelope<QueueEntry[]>(
+      await get(h, "/queue?state=running,done"),
+    );
+    expect(some.data?.map((entry) => [entry.beadId, entry.state])).toEqual([
+      ["b-2", "done"],
+      ["b-3", "running"],
+    ]);
+    // The request never changes what bd is asked.
+    expect(h.bd.calls).toEqual([QUEUE_ARGS]);
+
+    for (const bad of [
+      "?state=teleported",
+      "?state=",
+      "?state=running&state=done",
+      "?label=privacy",
+      "?state=running,--all",
+      "?limit=5",
+    ]) {
+      const response = await get(h, `/queue${bad}`);
+      expect({ bad, status: response.status }).toEqual({ bad, status: 400 });
+      expect((await envelope(response)).ok).toBe(false);
+    }
+    expect(h.bd.calls.length).toBe(1);
+  });
+
+  test("a bd failure, or output that is not a list of issues, is 502", async () => {
+    const h = await start();
+    const failures: Array<[string, BdResult]> = [
+      [
+        "a non-zero exit",
+        { status: 1, stdout: "", stderr: "Error: database is locked\n" },
+      ],
+      [
+        "a process that could not start",
+        { status: null, stdout: "", stderr: "spawn bd ENOENT" },
+      ],
+      [
+        "output that is not JSON",
+        { status: 0, stdout: "no issues found", stderr: "" },
+      ],
+      [
+        "JSON that is not a list",
+        { status: 0, stdout: '{"issues":[]}', stderr: "" },
+      ],
+      [
+        "a list of things that are not issues",
+        { status: 0, stdout: '[1,"two",null]', stderr: "" },
+      ],
+    ];
+    for (const [label, result] of failures) {
+      h.bd.list = result;
+      const response = await get(h, "/queue");
+      const body = await envelope(response);
+      expect({ label, status: response.status, ok: body.ok }).toEqual({
+        label,
+        status: 502,
+        ok: false,
+      });
+    }
+    h.bd.list = {
+      status: 1,
+      stdout: "",
+      stderr: "Error: database is locked\n",
+    };
+    expect((await envelope(await get(h, "/queue"))).error).toContain(
+      "database is locked",
+    );
+  });
+
+  test("runs one bd at a time: a request that arrives during a read shares the next one, never an older answer", async () => {
+    const h = await start();
+    const waiting: Array<(result: BdResult) => void> = [];
+    h.bd.list = () => new Promise<BdResult>((resolve) => waiting.push(resolve));
+    const until = async (count: number): Promise<void> => {
+      for (let i = 0; i < 200 && waiting.length < count; i++)
+        await new Promise((done) => setTimeout(done, 5));
+      if (waiting.length < count)
+        throw new Error(
+          `bd was started ${waiting.length} time(s), expected ${count}`,
+        );
+    };
+    const ids = async (response: Promise<Response>): Promise<string[]> =>
+      (await envelope<QueueEntry[]>(await response)).data?.map(
+        (entry) => entry.beadId,
+      ) ?? [];
+
+    const first = get(h, "/queue");
+    await until(1);
+    // Both arrive while the first read is still running.
+    const second = get(h, "/queue");
+    const third = get(h, "/queue");
+    await new Promise((done) => setTimeout(done, 50));
+    expect(waiting.length).toBe(1);
+
+    waiting[0]?.(listed([BD_ISSUES[0]]));
+    expect(await ids(first)).toEqual(["b-1"]);
+    await until(2);
+    waiting[1]?.(listed([BD_ISSUES[1]]));
+    expect(await ids(second)).toEqual(["b-2"]);
+    expect(await ids(third)).toEqual(["b-2"]);
+    expect(h.bd.calls.length).toBe(2);
+  });
+
+  test("a bd that never answers is 502 within the timeout, and the next request starts a new one", async () => {
+    const h = await start({ api: { bdTimeoutMs: 100 } });
+    h.bd.list = () => new Promise<BdResult>(() => {});
+    const began = performance.now();
+    const response = await get(h, "/queue");
+    expect(response.status).toBe(502);
+    expect(performance.now() - began).toBeLessThan(2000);
+    expect((await envelope(response)).error).toContain("did not answer");
+
+    h.bd.list = listed([BD_ISSUES[0]]);
+    const next = await get(h, "/queue");
+    expect(next.status).toBe(200);
+    expect(h.bd.calls.length).toBe(2);
+  });
+});
+
+describe("/smiths and /config", () => {
+  const WORKSPACE_TOML = [
+    "[workflow]",
+    'default_crew = "claude-master"',
+    "",
+    "[smiths.claude-apprentice]",
+    "enabled = false",
+    "",
+  ].join("\n");
+
+  test("return what the config loader returns for the hearth's root, with provenance", async () => {
+    const h = await start({ files: { "agent-forge.toml": WORKSPACE_TOML } });
+    mkdirSync(join(h.configHome, ".agent-forge"), { recursive: true });
+    writeFileSync(
+      join(h.configHome, ".agent-forge", "config.toml"),
+      '[smiths.claude-journeyman]\neffort = "high"\n',
+    );
+    const expected = loadConfig({
+      harnessRoot: h.root,
+      home: h.configHome,
+      env: {},
+    });
+
+    const config = await envelope<LoadedConfig>(await get(h, "/config"));
+    expect(config.data).toEqual(JSON.parse(JSON.stringify(expected)));
+    expect(config.data?.config.workflow.defaultCrew).toBe("claude-master");
+    expect(config.data?.provenance["workflow.default_crew"]?.source).toBe(
+      join(h.root, "agent-forge.toml"),
+    );
+    expect(
+      config.data?.provenance["smiths.claude-journeyman.effort"]?.source,
+    ).toBe(join(h.configHome, ".agent-forge", "config.toml"));
+    expect(config.data?.provenance["smiths.claude-master.model"]?.source).toBe(
+      "builtin",
+    );
+    expect(config.data?.files.length).toBe(2);
+
+    const smiths = await envelope<SmithsView>(await get(h, "/smiths"));
+    expect(smiths.data?.defaultSmith).toBe("claude-master");
+    expect(smiths.data?.smiths).toEqual(Object.values(expected.config.smiths));
+    expect(
+      smiths.data?.smiths.find((smith) => smith.name === "claude-apprentice")
+        ?.enabled,
+    ).toBe(false);
+    expect(
+      smiths.data?.smiths.find((smith) => smith.name === "claude-journeyman")
+        ?.effort,
+    ).toBe("high");
+    expect(smiths.data?.benches).toEqual(expected.config.benches);
+  });
+
+  test("do not read the hearth's own environment: AGENT_FORGE_SMITH there changes nothing", async () => {
+    const before = process.env["AGENT_FORGE_SMITH"];
+    process.env["AGENT_FORGE_SMITH"] = "claude-apprentice";
+    try {
+      const h = await start();
+      const smiths = await envelope<SmithsView>(await get(h, "/smiths"));
+      expect(smiths.data?.defaultSmith).toBe("claude-journeyman");
+      const config = await envelope<LoadedConfig>(await get(h, "/config"));
+      expect(config.data?.provenance["workflow.default_crew"]?.source).toBe(
+        "builtin",
+      );
+      expect(config.data?.files).toEqual([]);
+    } finally {
+      if (before === undefined) delete process.env["AGENT_FORGE_SMITH"];
+      else process.env["AGENT_FORGE_SMITH"] = before;
+    }
+  });
+
+  test("a config file that cannot be loaded is an error envelope naming the file, on both routes", async () => {
+    const h = await start({
+      files: { "agent-forge.toml": '[workflow]\ndefault_crew = "nobody"\n' },
+    });
+    for (const path of ["/config", "/smiths"]) {
+      const response = await get(h, path);
+      const body = await envelope(response);
+      expect({ path, status: response.status, ok: body.ok }).toEqual({
+        path,
+        status: 500,
+        ok: false,
+      });
+      expect(body.error).toContain("agent-forge.toml");
+      expect(body.error).toContain('unknown smith "nobody"');
+    }
   });
 });

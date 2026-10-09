@@ -8,7 +8,15 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { EventsPage, RunDetail } from "../../../types/hearth";
+import {
+  type EventsPage,
+  QUEUE_STATES,
+  type QueueEntry,
+  type QueueState,
+  type RunDetail,
+  type SmithsView,
+} from "../../../types/hearth";
+import { type LoadedConfig, loadConfig } from "../../config/load";
 import { assertCouncilRunId } from "../../council/artifacts";
 import {
   type CouncilServiceInput,
@@ -27,14 +35,15 @@ import {
   queryEventPage,
 } from "../../ledger/query";
 import { redactSecrets } from "../../secret-patterns";
-import type {
-  ActionRoute,
-  ApiRoute,
-  ReadRoute,
-  RouteReply,
-  RouteRequest,
+import {
+  type ActionRoute,
+  type ApiRoute,
+  type ReadRoute,
+  type RouteReply,
+  type RouteRequest,
+  safeMessage,
 } from "../api";
-import type { ValidationResult } from "../validate";
+import { isQueueState, type ValidationResult } from "../validate";
 import { applyReview, type BdRunner } from "./dev-api";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
@@ -48,6 +57,10 @@ export interface OperatorDeps {
   council: CouncilService;
   /** Runs `bd` in the checkout that holds the tracker. */
   runBd: BdRunner;
+  /** How long a queue read may take; defaults to `BD_QUEUE_TIMEOUT_MS`. */
+  bdTimeoutMs?: number | undefined;
+  /** The OS home the machine config file is read from; defaults to the real one. */
+  configHome?: string | undefined;
 }
 
 const fail = <T>(error: string): ValidationResult<T> => ({ ok: false, error });
@@ -207,7 +220,7 @@ function eventsPage(page: EventPage, after: number | undefined): EventsPage {
 }
 
 /** The reads over the ledger and the run state. */
-function ledgerReads(deps: OperatorDeps): ApiRoute[] {
+function ledgerReads(deps: OperatorDeps) {
   const ledger = { path: deps.ledgerPath };
   const { workspace } = deps;
   const sessions: ReadRoute<SessionsQuery> = {
@@ -257,30 +270,26 @@ function ledgerReads(deps: OperatorDeps): ApiRoute[] {
       ),
     }),
   };
-  return [
-    sessions,
-    {
-      kind: "read",
-      method: "GET",
-      path: "/runs",
-      collection: "runs",
-      validate: noParameters,
-      read: () => ({ status: 200, data: listRuns(deps.root) }),
-    },
-    run,
-    events,
-    {
-      kind: "read",
-      method: "GET",
-      path: "/reservations",
-      collection: "reservations",
-      validate: noParameters,
-      read: () => ({
-        status: 200,
-        data: activeReservations({ workspace }, ledger),
-      }),
-    },
-  ];
+  const runs: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/runs",
+    collection: "runs",
+    validate: noParameters,
+    read: () => ({ status: 200, data: listRuns(deps.root) }),
+  };
+  const reservations: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/reservations",
+    collection: "reservations",
+    validate: noParameters,
+    read: () => ({
+      status: 200,
+      data: activeReservations({ workspace }, ledger),
+    }),
+  };
+  return { sessions, runs, run, events, reservations };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -409,6 +418,230 @@ function review(request: RouteRequest): ValidationResult<Review> {
     : { ok: true, value: { issueId: comment.issueId, input: request.body } };
 }
 
+/** How long a queue read may take before it is reported as failed. */
+export const BD_QUEUE_TIMEOUT_MS = 15_000;
+
+const QUEUE_LABEL = "queue:";
+
+/**
+ * What `bd` is asked for the queue: always exactly this, whatever the request.
+ *
+ * `--label-any` with every state spelled out, because bd 1.1.0 silently
+ * ignores `--label-pattern` and `--label-regex` and returns every issue.
+ * `--all`, because `bd list` hides closed issues and a `done` bead is closed.
+ * `--readonly`, because this route only reads.
+ */
+export const QUEUE_LIST_ARGS: readonly string[] = [
+  "list",
+  "--readonly",
+  "--flat",
+  "--json",
+  "--all",
+  "--limit",
+  "0",
+  "--label-any",
+  QUEUE_STATES.map((state) => `${QUEUE_LABEL}${state}`).join(","),
+];
+
+/**
+ * One call at a time, and at most one waiting: a caller that arrives while a
+ * call is running shares the next call, so it never receives an answer that
+ * was read before it asked.
+ */
+function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
+  let running: Promise<T> | null = null;
+  let next: Promise<T> | null = null;
+  const launch = (): Promise<T> => {
+    const call = start().finally(() => {
+      if (running === call) running = null;
+    });
+    running = call;
+    return call;
+  };
+  return () => {
+    if (running === null) return launch();
+    next ??= running
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(() => {
+        next = null;
+        return launch();
+      });
+    return next;
+  };
+}
+
+function withTimeout<T>(
+  work: Promise<T>,
+  ms: number,
+  what: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} did not answer within ${ms} ms`)),
+      ms,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+type QueueRead =
+  | { ok: true; entries: QueueEntry[] }
+  | { ok: false; error: string };
+
+/**
+ * The beads that carry a `queue:<state>` label, one entry per such label. The
+ * result is filtered on each issue's own labels: whatever the CLI returned, an
+ * issue with no queue label is not in the queue. A bead with two queue labels
+ * appears twice — which one should win is the state machine's rule to make.
+ */
+function queueEntries(stdout: string): QueueRead {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return { ok: false, error: "bd list did not print JSON" };
+  }
+  if (!Array.isArray(parsed))
+    return { ok: false, error: "bd list did not print a list of issues" };
+  const entries: QueueEntry[] = [];
+  for (const issue of parsed) {
+    if (!isRecord(issue) || typeof issue["id"] !== "string")
+      return {
+        ok: false,
+        error: "bd list printed something that is not an issue",
+      };
+    const labels = Array.isArray(issue["labels"]) ? issue["labels"] : [];
+    for (const state of QUEUE_STATES) {
+      if (!labels.includes(`${QUEUE_LABEL}${state}`)) continue;
+      entries.push({
+        beadId: issue["id"],
+        title: typeof issue["title"] === "string" ? issue["title"] : "",
+        state,
+        status: typeof issue["status"] === "string" ? issue["status"] : "",
+        ...(typeof issue["priority"] === "number"
+          ? { priority: issue["priority"] }
+          : {}),
+        ...(typeof issue["issue_type"] === "string"
+          ? { type: issue["issue_type"] }
+          : {}),
+      });
+    }
+  }
+  return { ok: true, entries };
+}
+
+function queueStates(
+  request: RouteRequest,
+): ValidationResult<readonly QueueState[] | null> {
+  const given = parameters(request, ["state"]);
+  if (!given.ok) return given;
+  const text = given.value.get("state");
+  if (text === undefined) return { ok: true, value: null };
+  const states: QueueState[] = [];
+  for (const name of text.split(",")) {
+    if (!isQueueState(name))
+      return fail(`state: expected one of ${QUEUE_STATES.join(", ")}`);
+    states.push(name);
+  }
+  return { ok: true, value: states };
+}
+
+/** The reads that do not come from the ledger: the queue (Beads) and the config files. */
+function workspaceReads(deps: OperatorDeps) {
+  const timeout = deps.bdTimeoutMs ?? BD_QUEUE_TIMEOUT_MS;
+  const readQueue = coalesced(async (): Promise<QueueRead> => {
+    const result = await withTimeout(
+      Promise.resolve(deps.runBd([...QUEUE_LIST_ARGS])),
+      timeout,
+      "bd list",
+    );
+    if (result.status !== 0)
+      return {
+        ok: false,
+        error: `bd list failed: ${result.stderr.trim().slice(0, 500) || `exit ${result.status}`}`,
+      };
+    return queueEntries(result.stdout);
+  });
+  const queue: ReadRoute<readonly QueueState[] | null> = {
+    kind: "read",
+    method: "GET",
+    path: "/queue",
+    collection: "queue",
+    validate: queueStates,
+    read: async (states) => {
+      let read: QueueRead;
+      try {
+        read = await readQueue();
+      } catch (error) {
+        read = { ok: false, error: safeMessage(error) };
+      }
+      if (!read.ok) return { status: 502, error: safeMessage(read.error) };
+      return {
+        status: 200,
+        data:
+          states === null
+            ? read.entries
+            : read.entries.filter((entry) => states.includes(entry.state)),
+      };
+    },
+  };
+
+  /**
+   * The files `forge:config show` reads in this checkout, and nothing from the
+   * environment: the hearth's was fixed when it started and is not the
+   * operator's shell.
+   */
+  const config = (): LoadedConfig =>
+    loadConfig({
+      harnessRoot: deps.root,
+      env: {},
+      ...(deps.configHome !== undefined ? { home: deps.configHome } : {}),
+    });
+  const configured =
+    (view: (loaded: LoadedConfig) => unknown) => (): RouteReply => {
+      try {
+        return { status: 200, data: view(config()) };
+      } catch (error) {
+        return { status: 500, error: safeMessage(error) };
+      }
+    };
+  const smiths: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/smiths",
+    collection: "smiths",
+    validate: noParameters,
+    read: configured(
+      ({ config: loaded }): SmithsView => ({
+        smiths: Object.values(loaded.smiths),
+        benches: loaded.benches,
+        defaultSmith: loaded.workflow.defaultCrew,
+      }),
+    ),
+  };
+  const whole: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/config",
+    collection: "config",
+    validate: noParameters,
+    read: configured((loaded) => loaded),
+  };
+  return { queue, smiths, config: whole };
+}
+
 /** The council service refuses by throwing; its routes have always answered that with 400. */
 function councilReply(status: number, call: () => unknown): RouteReply {
   try {
@@ -467,5 +700,18 @@ function actions(deps: OperatorDeps): ApiRoute[] {
 }
 
 export function operatorRoutes(deps: OperatorDeps): ApiRoute[] {
-  return [...ledgerReads(deps), ...actions(deps)];
+  const { sessions, runs, run, events, reservations } = ledgerReads(deps);
+  const { queue, smiths, config } = workspaceReads(deps);
+  // In the order section 6 lists them.
+  return [
+    sessions,
+    runs,
+    run,
+    events,
+    queue,
+    reservations,
+    smiths,
+    config,
+    ...actions(deps),
+  ];
 }

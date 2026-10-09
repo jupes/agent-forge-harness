@@ -62,6 +62,8 @@ export interface TestHearth {
   api: string;
   home: string;
   root: string;
+  /** Stands in for the OS home: the machine config is read from `.agent-forge/config.toml` under it. */
+  configHome: string;
   /** The ledger's name for `root`. */
   workspace: string;
   ledger: string;
@@ -114,6 +116,7 @@ export async function startTestHearth(
     api: `${hearth.url}/__agent-forge`,
     home,
     root,
+    configHome,
     workspace,
     ledger,
     bd,
