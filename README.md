@@ -47,7 +47,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 
 3. **GitHub CLI:** `gh auth login` when you use PR automation.
 
-4. **Beads:** install `bd`, run `bd doctor`, apply what it suggests (`bd hooks install`, `git config beads.role maintainer`, etc.). Initialize once, e.g. `bd init --non-interactive --role maintainer` (add `--shared-server` when doctor says so, typical on Windows). **Sync issues** with `bd dolt pull` / `bd dolt push` — not the removed `bd sync` ([#2435](https://github.com/gastownhall/beads/issues/2435)). Optional sample epic: `bun run beads:import-anthropic-plan`.
+4. **Beads:** install `bd`, run `bd doctor`, apply what it suggests (`bd hooks install`, `git config beads.role maintainer`, etc.). Initialize once, e.g. `bd init --non-interactive --role maintainer` (add `--shared-server` when doctor says so, typical on Windows). **The tracker is local-only:** `.beads/config.yaml` disables `bd dolt push`, because a Dolt remote on a public git origin would publish the whole tracker (see "Tracker is local-only" in `CLAUDE.md`). Optional sample epic: `bun run beads:import-anthropic-plan`.
 
 5. **Claude Code:** open the **repo root** (`claude`) so `.claude/` loads; restart after hook changes from `bd init`.
 

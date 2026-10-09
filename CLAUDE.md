@@ -102,8 +102,8 @@ Supporting systems:
 
 ### CLI Quick Reference
 ```bash
-bd dolt pull               # Pull issue data from Dolt remote — typical at session start
-bd dolt push               # Push issue data to Dolt remote — typical at session end with git push
+bd dolt pull               # No-op here: no Dolt remote is configured (the tracker is local-only)
+bd dolt push               # Disabled here: skipped by no-push (see "Tracker is local-only" below)
 bd dolt commit             # Commit pending Dolt changes (when your setup / bd doctor says you need it)
 bd backup sync             # Push configured Dolt-native backups (not the same as day-to-day issue sync)
 bd federation sync         # Only if you use federation / peer sync mode
@@ -118,6 +118,19 @@ bd dep add <id> --blocks <other-id>
 ```
 
 Note: **`bd sync` is not part of current `bd` releases** — upstream removed it in favor of **`bd dolt pull` / `bd dolt push`** (see [gastownhall/beads#2435](https://github.com/gastownhall/beads/issues/2435)). Follow `bd doctor` for your install.
+
+### Tracker is local-only — do not `bd dolt push`
+
+The Beads tracker for this project is **local-only**. `bd` can wire a project's git `origin` as a
+Dolt remote, and for a public repository that publishes every issue, comment and memory there.
+`.beads/config.yaml` therefore sets `no-push: true`, `dolt.local-only: true` and
+`dolt.auto-push: false`; with them `bd dolt push` prints "skipping push: rig is local-only" and does
+nothing.
+
+- Do not run `bd dolt push`, and do not add a Dolt remote that points at a public repository.
+- `bd dolt remote list` must print "No remotes configured." If it does not, stop and tell the owner.
+- Back the tracker up locally with `bd export --all -o <file>.jsonl` (`bd import` restores it) or
+  `bd backup`. Off-machine copies go to a private location only.
 
 ### Issue Hierarchy
 - **Epic** — Problem, goals, plan (strategic)
@@ -175,7 +188,7 @@ Every session must end with ALL of the following:
 1. File Beads issues for any remaining unfinished work
 2. Run quality gates: `bun run typecheck && bun run lint && bun test`
 3. Update issue statuses (close finished, update in-progress)
-4. **Push to remote**: `git pull --rebase` then `bd dolt commit` if needed, then `bd dolt push && git push`
+4. **Push to remote**: `git pull --rebase` then `git push`. Do not run `bd dolt push` — the tracker is local-only (see "Tracker is local-only")
 5. Clean up stashes; prune merged branches
 6. Verify `git status` shows "up to date with origin"
 7. Write a brief handoff comment on the active Beads epic
@@ -238,10 +251,9 @@ bd close <id>         # Complete work
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY (run `bd dolt commit` before `bd dolt push` only when `bd doctor` / your workflow requires an explicit Dolt commit):
+4. **PUSH TO REMOTE** - This is MANDATORY for git. The Beads tracker is local-only and is not pushed (see "Tracker is local-only"):
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```

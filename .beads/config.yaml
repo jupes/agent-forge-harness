@@ -32,3 +32,10 @@ defaults:
   assignee: null
 
 dolt.shared-server: true
+
+# Local-only tracker. The git origin is a public repository, and a Dolt remote on it would
+# publish every issue, comment and memory there. These keep bd from wiring one
+# and from pushing. Do not change them without the owner.
+no-push: true
+dolt.local-only: true
+dolt.auto-push: false

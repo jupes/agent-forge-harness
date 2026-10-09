@@ -171,8 +171,7 @@ bd comments add <id> "worklog: shipped in PR #<n>"
 
 ### After shipping:
 ```bash
-bd dolt push               # Push issue data to remote
-git status                 # Verify clean state
+git status                 # Verify clean state (the tracker is local-only: no `bd dolt push`)
 ```
 
 ---

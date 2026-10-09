@@ -247,8 +247,8 @@ export function CommandsIsland(): JSX.Element {
           SessionStart and PreCompact, and <code>quality-gate.ts</code> on
           TaskCompleted and TeammateIdle to run quality checks and optional
           evaluator verdict gates. <code>session.ts</code> is available to log
-          session metadata and sync Beads via <code>bd dolt pull</code> /{" "}
-          <code>bd dolt push</code> when you add it to your hook configuration.
+          session metadata when you add it to your hook configuration. The Beads
+          tracker is local-only, so nothing is pushed.
         </p>
       </Card>
     </Fragment>

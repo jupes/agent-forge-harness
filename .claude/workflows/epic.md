@@ -238,7 +238,7 @@ gh pr create \
   --base master
 
 bd close <EPIC-ID>
-bd dolt push
+# The tracker is local-only: do not run `bd dolt push`.
 ```
 
 ---

@@ -95,8 +95,8 @@ Keep the summary inline — no `reports/` file unless asked.
    git pull --rebase origin <base>
    git push origin <branch>
    gh pr create --base <base> --title "<title>" --body "<short summary + how to verify>"   # if a PR is wanted
-   bd dolt push
    ```
+   The tracker is local-only: do not run `bd dolt push`.
 4. Report inline: **what changed**, **how to verify it** (1–3 steps with expected output), and the
    **Beads id closed** + PR link.
 
