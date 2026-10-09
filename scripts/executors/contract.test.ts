@@ -14,6 +14,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { isAdapterChild } from "../../.claude/hooks/utils/hook-input";
 import type { LedgerEventInput } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
@@ -149,6 +150,34 @@ for (const { name, adapter, smith } of adapters) {
       expect(
         Object.keys(dump.env).some((k) => k.toLowerCase() === "path"),
       ).toBe(true);
+    });
+
+    test("the child is marked as an adapter child and carries the bead, smith and run; values planted under those names do not reach it", async () => {
+      const { dump } = await run(adapter, name, smith, "ok", {
+        env: {
+          ...buildChildEnv(process.env, []),
+          AGENT_FORGE_ADAPTER: "0",
+          agent_forge_bead_id: "planted-bead",
+          Forge_Slug: "planted-run",
+          Agent_Forge_Parent_Session: "planted-parent",
+        },
+      });
+      const seen = dump.env as Record<string, string>;
+      const owned = Object.keys(seen).filter((key) =>
+        /^(agent_forge_(adapter|bead_id|smith|parent_session)|forge_slug)$/i.test(
+          key,
+        ),
+      );
+      expect(
+        Object.fromEntries(owned.sort().map((key) => [key, seen[key]])),
+      ).toEqual({
+        AGENT_FORGE_ADAPTER: "1",
+        AGENT_FORGE_BEAD_ID: "bead-1",
+        AGENT_FORGE_SMITH: smith,
+        FORGE_SLUG: "run-1",
+      });
+      // The predicate the harness hooks use to stand down inside such a child.
+      expect(isAdapterChild(seen)).toBe(true);
     });
 
     test("never asks for dangerously-skip-permissions", async () => {

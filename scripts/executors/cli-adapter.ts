@@ -6,6 +6,7 @@
 
 import type { Executor, LedgerEventInput, Provider } from "../../types/hearth";
 import { resolveCheckout } from "../ledger/workspace";
+import { childEnv } from "./env";
 import { supervise } from "./supervisor";
 import type {
   DoctorResult,
@@ -164,13 +165,16 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
           source: `headless:${spec.provider}`,
           kind: "headless",
           worktree,
+          ...(request.parentSessionId
+            ? { parentSessionId: request.parentSessionId }
+            : {}),
         },
       });
 
       const child = supervise({
         command: [...resolved.command, ...spec.buildArgs(request)],
         cwd: request.worktree,
-        env: request.env,
+        env: childEnv(request),
         stdin: request.prompt,
         timeoutMs: request.timeoutMs,
         onLine: (line) => {

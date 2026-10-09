@@ -28,7 +28,9 @@ import {
 } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
+import { readSessionMirror } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
+import { resolveCheckout } from "../ledger/workspace";
 import { buildChildEnv } from "./env";
 import { ADAPTERS } from "./registry";
 import { ledgerSink } from "./sinks";
@@ -42,6 +44,8 @@ export interface ExecDeps {
   home?: string;
   env?: Record<string, string | undefined>;
   adapters?: Readonly<Record<string, ExecutorAdapter>>;
+  /** The directory forge:exec was launched from. Default: the current directory. */
+  cwd?: string;
   /** Replaces the provider binary (tests). */
   command?: string[];
   /** The ledger file to write (tests). Default: the ledger of the process environment. */
@@ -71,6 +75,15 @@ const failure = (error: string): ExecOutcome => ({
   code: 2,
   body: { ok: false, data: null, error },
 });
+
+/**
+ * The session forge:exec was launched from: the one mirrored into that
+ * directory's checkout, as for every other script emitter. Undefined when no
+ * fresh mirror is there.
+ */
+function launchingSession(cwd: string): string | undefined {
+  return readSessionMirror(resolveCheckout(cwd).worktree) ?? undefined;
+}
 
 /** Hand one event to the sink; a sink that throws is a refusal like any other. */
 async function store(
@@ -161,6 +174,7 @@ export async function runExec(
         loaded.config.execution.envPass,
       ),
       runId: args.get("run"),
+      parentSessionId: launchingSession(deps.cwd ?? process.cwd()),
       timeoutMs,
       command: deps.command,
     });

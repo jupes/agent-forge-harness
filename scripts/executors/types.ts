@@ -25,9 +25,14 @@ export interface SpawnRequest {
   smith: Smith;
   /** Sent on stdin, never argv: argv is parsed by cmd.exe when a `.cmd` shim is involved. */
   prompt: string;
-  /** Already filtered by `buildChildEnv`; the child receives exactly this. */
+  /**
+   * Already filtered by `buildChildEnv`. The child receives this plus the
+   * variables its adapter sets itself (`childEnv` in `env.ts`).
+   */
   env: Record<string, string>;
   runId?: string | undefined;
+  /** The session that launched this run, when one is known. */
+  parentSessionId?: string | undefined;
   timeoutMs?: number | undefined;
   /** Replaces the resolved binary (tests point this at a fake). Adapter flags are appended. */
   command?: string[] | undefined;

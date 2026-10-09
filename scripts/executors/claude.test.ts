@@ -41,6 +41,7 @@ function setup() {
   const deps: ExecDeps = {
     harnessRoot: root,
     home: root,
+    cwd: root,
     ledgerPath: ledger,
     env: { PATH: process.env.PATH },
     adapters: { claude: claudeAdapter },

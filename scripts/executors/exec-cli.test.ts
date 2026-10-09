@@ -11,6 +11,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
+import { SESSION_MIRROR_FILE } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
 import { queryEvents } from "../ledger/query";
 import { claudeAdapter } from "./claude";
@@ -49,6 +50,7 @@ function setup() {
   const deps: ExecDeps = {
     harnessRoot: root,
     home: root,
+    cwd: root,
     ledgerPath: ledger,
     env: { PATH: process.env.PATH, DATABASE_URL: "postgres://planted" },
     adapters: {
@@ -112,6 +114,47 @@ describe("forge:exec", () => {
     expect(rows).toHaveLength(4);
     for (const row of rows)
       expect(row.workspace).toBe(comparableCheckout(main));
+  });
+
+  test("a session mirrored into the launch directory is recorded as the parent and handed to the child", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const dump = join(root, "dump.json");
+    writeFileSync(join(root, SESSION_MIRROR_FILE), "launching-session-1\n");
+    const out = await runExec(
+      ["--bead", "b-8", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: [...fake("claude"), "--fake-dump", dump] },
+    );
+    expect(out.code).toBe(0);
+    const [started] = queryEvents(
+      { beadId: "b-8", kinds: ["session.started"] },
+      { path: ledger },
+    );
+    expect(started?.payload).toMatchObject({
+      kind: "headless",
+      parentSessionId: "launching-session-1",
+    });
+    expect(
+      JSON.parse(readFileSync(dump, "utf8")).env.AGENT_FORGE_PARENT_SESSION,
+    ).toBe("launching-session-1");
+  });
+
+  test("with no session mirrored into the launch directory there is no parent, on the event or in the child", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const dump = join(root, "dump.json");
+    const out = await runExec(
+      ["--bead", "b-9", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: [...fake("claude"), "--fake-dump", dump] },
+    );
+    expect(out.code).toBe(0);
+    const [started] = queryEvents(
+      { beadId: "b-9", kinds: ["session.started"] },
+      { path: ledger },
+    );
+    expect(started?.kind).toBe("session.started");
+    expect(started?.payload).not.toHaveProperty("parentSessionId");
+    expect(JSON.parse(readFileSync(dump, "utf8")).env).not.toHaveProperty(
+      "AGENT_FORGE_PARENT_SESSION",
+    );
   });
 
   test("--smith routes to the codex adapter", async () => {
