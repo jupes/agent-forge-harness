@@ -8,7 +8,8 @@
  *
  * Smith resolution: --smith, then --bead-smith, then the bench for
  * --complexity, then workflow.default_crew. The child gets only allowlisted
- * environment variables.
+ * variables of this process's environment, plus the ones its adapter sets
+ * itself (`env.ts`) and, with --run, the correlation pointer described below.
  *
  * The run's events (`session.started`, one `tool.called` per tool,
  * `session.ended`) go to the ledger; read them with
@@ -20,9 +21,10 @@
  * in the worktree and its path put in the child's environment, so a quality
  * gate that runs inside the child is linked to this bead and run. The worktree
  * must be a checkout's top level for that. A run already correlated to
- * another bead is left alone. Whenever no pointer is handed on, the child
- * runs unlinked and `data.correlationNote` says why. The child never inherits
- * a pointer from this process.
+ * another bead is left alone. Whenever no pointer is handed on, a gate inside
+ * the child runs unlinked and `data.correlationNote` says why; the run's
+ * ledger events and the adapter's variables still carry --bead and --run. The
+ * child never inherits a pointer from this process.
  *
  * Exit code 0 when the provider exits 0, 2 otherwise — whatever the ledger did.
  */
