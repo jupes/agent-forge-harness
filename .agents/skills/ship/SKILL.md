@@ -37,7 +37,7 @@ bun run lint                 # Lint (skip if no lint script in package.json)
 bun test                     # Tests (skip if no test files exist)
 ```
 
-**Strict evaluator verdict (optional):** If `AGENT_FORGE_EVAL_VERDICT=strict` is set in the environment where hooks run, ensure **`.tmp/work/<TASK-ID>-verdict.json`** exists and matches **`.claude/protocols/evaluation-verdict.md`** before treating the task as shippable. The quality gate enforces this on `TaskCompleted`, and only for a run it can tie to that Beads issue through a run correlation: create one with `bun run forge:correlate --bead <TASK-ID>` (a Forge run gets one from `forge:phase-gate … --write --bead <TASK-ID>`), then run `bun run quality-gate --correlation <pointer>` with the `pointer` that command printed. Without a correlation the strict check fails.
+**Strict evaluator verdict (optional):** If `AGENT_FORGE_EVAL_VERDICT=strict` is set in the environment where hooks run, ensure the run's evaluator verdict has been filed with **`bun run forge:verdict`** (schema 2, at the path the run's correlation declares: **`.claude/protocols/evaluation-verdict.md`**) before treating the task as shippable. The quality gate enforces this on `TaskCompleted`, and only for a run it can tie to that Beads issue through a run correlation: create one with `bun run forge:correlate --bead <TASK-ID>` (a Forge run gets one from `forge:phase-gate … --write --bead <TASK-ID>`), then run `bun run quality-gate --correlation <pointer>` with the `pointer` that command printed. Without a correlation the strict check fails.
 
 **If any check fails**:
 1. Report which check failed and the exact error
