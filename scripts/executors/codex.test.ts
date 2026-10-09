@@ -130,6 +130,55 @@ describe("codex adapter", () => {
     ]);
     expect(parseCodexLine("nope")).toEqual([]);
   });
+
+  test("a command the stream reports twice (item.started, then item.completed) is one tool call, with the completed item's exit code", () => {
+    const item = {
+      id: "item_1",
+      type: "command_execution",
+      command: "write-file hello.txt",
+      aggregated_output: "",
+    };
+    const started = JSON.stringify({
+      type: "item.started",
+      item: { ...item, exit_code: null, status: "in_progress" },
+    });
+    const completed = JSON.stringify({
+      type: "item.completed",
+      item: { ...item, exit_code: 0, status: "completed" },
+    });
+    expect([started, completed].flatMap(parseCodexLine)).toEqual([
+      { tool: "shell", input: "write-file hello.txt", exitCode: 0 },
+    ]);
+  });
+});
+
+describe("codex adapter: shapes the real CLI printed, replayed by the fake binary", () => {
+  test("a run whose model is rejected (an error item, error, turn.failed, exit 1) leaves session.started and session.ended with the failure, and no tool.called", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b-model",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "hi",
+        "--smith",
+        "codex-journeyman",
+      ],
+      { ...deps, command: fake("model") },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toBe("provider exited 1");
+    expect(out.body.data).toMatchObject({ events: 2, recorded: 2 });
+
+    const rows = queryEvents({ beadId: "b-model" }, { path: ledger });
+    expect(rows.map((row) => row.kind)).toEqual([
+      "session.started",
+      "session.ended",
+    ]);
+    expect(rows[1]?.payload).toMatchObject({ reason: "failed: exit 1" });
+  });
 });
 
 describe("doctor", () => {
