@@ -93,6 +93,9 @@ describe("claude adapter through forge:exec (fake binary)", () => {
       smith: "claude-journeyman",
       via: "default",
       events: 4,
+      recorded: 4,
+      notRecorded: 0,
+      ledgerError: null,
       ledger,
     });
     expect(data).not.toHaveProperty("eventsFile");

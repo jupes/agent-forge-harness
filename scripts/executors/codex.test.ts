@@ -64,7 +64,13 @@ describe("codex adapter through forge:exec (fake binary)", () => {
       { ...deps, command: fake() },
     );
     expect(out.code).toBe(0);
-    expect(out.body.data).toMatchObject({ provider: "codex", via: "explicit" });
+    expect(out.body.data).toMatchObject({
+      provider: "codex",
+      via: "explicit",
+      recorded: 4,
+      notRecorded: 0,
+      ledgerError: null,
+    });
 
     const rows = queryEvents({ beadId: "b-2" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([

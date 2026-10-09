@@ -80,7 +80,11 @@ describe("forge:exec", () => {
       "tool.called",
       "session.ended",
     ]);
-    expect(out.body.data).toMatchObject({ events: 4, ledger: ledgerPath() });
+    expect(out.body.data).toMatchObject({
+      events: 4,
+      recorded: 4,
+      ledger: ledgerPath(),
+    });
     expect(existsSync(join(childHome, "ledger.db"))).toBe(false);
   });
 
@@ -175,20 +179,56 @@ describe("forge:exec", () => {
     expect(out.body.error).toContain("--timeout-ms");
   });
 
-  test("a failing sink stops the child and exits 2", async () => {
+  test("a ledger that cannot be written is reported, and the provider still runs to its end", async () => {
+    const { root, worktree, deps } = setup();
+    const dump = join(root, "dump.json");
+    const out = await runExec(
+      ["--bead", "b-6", "--worktree", worktree, "--prompt", "x"],
+      {
+        ...deps,
+        // A directory where the ledger file should be: it cannot be opened.
+        ledgerPath: root,
+        command: [...fake("claude"), "--fake-dump", dump],
+      },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body.ok).toBe(true);
+    const data = out.body.data as Record<string, unknown>;
+    expect(data).toMatchObject({
+      events: 4,
+      recorded: 0,
+      notRecorded: 4,
+      exitCode: 0,
+      timedOut: false,
+    });
+    expect(String(data.ledgerError).length).toBeGreaterThan(0);
+    expect(data.ledgerError).not.toBeNull();
+    // The provider read its prompt and exited on its own.
+    expect(JSON.parse(readFileSync(dump, "utf8")).stdin).toBe("x");
+  });
+
+  test("a sink that throws does not kill the child: the run finishes and the failure is reported", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(
       ["--bead", "b-5", "--worktree", worktree, "--prompt", "x"],
       {
         ...deps,
-        command: fake("claude", "hang"),
+        command: fake("claude"),
         sink: () => {
           throw new Error("disk full");
         },
       },
     );
-    expect(out.code).toBe(2);
-    expect(out.body.error).toBe("disk full");
+    expect(out.code).toBe(0);
+    expect(out.body.error).toBeNull();
+    expect(out.body.data).toMatchObject({
+      events: 4,
+      recorded: 0,
+      notRecorded: 4,
+      ledgerError: "disk full",
+      ledger: null,
+      exitCode: 0,
+    });
   });
 });
 

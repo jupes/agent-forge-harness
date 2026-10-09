@@ -8,22 +8,31 @@
  *
  * Smith resolution: --smith, then --bead-smith, then the bench for
  * --complexity, then workflow.default_crew. The child gets only allowlisted
- * environment variables. Events are written as NDJSON under
- * `.tmp/work/exec-events/<bead>.ndjson` until the ledger exists (x1gs.2.1).
+ * environment variables.
  *
- * Exit code 0 when the provider exits 0, 2 otherwise.
+ * The run's events (`session.started`, one `tool.called` per tool,
+ * `session.ended`) go to the ledger; read them with
+ * `bun run forge:audit --bead <id>`. An event the ledger does not take never
+ * stops the provider: the envelope reports `recorded`, `notRecorded` and the
+ * first `ledgerError`, and `ledger` names the file written.
+ *
+ * Exit code 0 when the provider exits 0, 2 otherwise — whatever the ledger did.
  */
 
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
-import { BENCH_NAMES, type BenchName } from "../../types/hearth";
+import {
+  BENCH_NAMES,
+  type BenchName,
+  type LedgerEventInput,
+} from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
 import { ledgerPath } from "../ledger/paths";
 import { buildChildEnv } from "./env";
 import { ADAPTERS } from "./registry";
 import { ledgerSink } from "./sinks";
-import type { EventSink, ExecutorAdapter } from "./types";
+import type { EventSink, ExecutorAdapter, SinkResult } from "./types";
 
 /** A "bounded" task: 30 minutes unless --timeout-ms says otherwise. */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -62,6 +71,21 @@ const failure = (error: string): ExecOutcome => ({
   code: 2,
   body: { ok: false, data: null, error },
 });
+
+/** Hand one event to the sink; a sink that throws is a refusal like any other. */
+async function store(
+  sink: EventSink,
+  event: LedgerEventInput,
+): Promise<SinkResult> {
+  try {
+    return await sink(event);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 export async function runExec(
   argv: string[],
@@ -144,15 +168,16 @@ export async function runExec(
     return failure(error instanceof Error ? error.message : String(error));
   }
 
-  let count = 0;
-  try {
-    for await (const event of handle.events) {
-      await sink(event);
-      count++;
-    }
-  } catch (error) {
-    await handle.stop("sink failed");
-    return failure(error instanceof Error ? error.message : String(error));
+  // The provider's outcome decides the result. An event the ledger did not
+  // take is counted and reported, and the child is left to finish.
+  let events = 0;
+  let recorded = 0;
+  let ledgerError: string | null = null;
+  for await (const event of handle.events) {
+    events++;
+    const stored = await store(sink, event);
+    if (stored.ok) recorded++;
+    else ledgerError ??= stored.error;
   }
   const result = await handle.done;
   const ok = result.exitCode === 0 && !result.timedOut;
@@ -165,7 +190,10 @@ export async function runExec(
         smith: smith.name,
         provider: smith.provider,
         via,
-        events: count,
+        events,
+        recorded,
+        notRecorded: events - recorded,
+        ledgerError,
         ledger: deps.sink ? null : (deps.ledgerPath ?? ledgerPath()),
         exitCode: result.exitCode,
         timedOut: result.timedOut,
