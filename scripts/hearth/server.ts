@@ -16,6 +16,10 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import type {
+  CouncilAppend,
+  CouncilAttachResolver,
+} from "../council/ledger-events";
 import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { type AppendResult, appendEvent } from "../ledger/append";
@@ -55,6 +59,15 @@ export interface HearthOptions {
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
   environment?: Record<string, string | undefined>;
+  /**
+   * The ledger that council runs started through this hearth are recorded in,
+   * and how each is attributed. Absent by default, and then they record
+   * nothing: `main()` supplies it, tests leave it out.
+   */
+  councilLedger?: {
+    appendEvent: CouncilAppend;
+    resolveAttach: CouncilAttachResolver;
+  };
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
 }
@@ -137,6 +150,12 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     environment:
       options.environment ??
       loadDashboardServerEnvironment({ mode: "development", root }),
+    ...(options.councilLedger
+      ? {
+          appendEvent: options.councilLedger.appendEvent,
+          resolveAttach: options.councilLedger.resolveAttach,
+        }
+      : {}),
   });
   const council = councilHttpHandler(service);
   const tokenFile = tokenPath(home, root);
@@ -294,8 +313,12 @@ function argValue(argv: string[], flag: string): string | undefined {
 async function main(argv: string[]): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
+  // Loaded here, not at the top: `createHearth` records council runs only when
+  // it is handed a ledger for them, and a test that hands it none must get none.
+  const { operatorCouncilLedger } = await import("../council/ledger-wiring");
   const hearth = await createHearth({
     root,
+    councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
   process.stdout.write(

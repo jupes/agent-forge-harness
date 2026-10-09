@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import type {
   EventsPage,
+  LedgerEvent,
   LedgerEventInput,
   LedgerEventOf,
   OperatorEnvelope,
@@ -15,6 +16,7 @@ import type {
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import { setSessionModel } from "../ledger/session-models";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
@@ -1420,4 +1422,139 @@ describe("/smiths and /config", () => {
       expect(body.error).toContain('unknown smith "nobody"');
     }
   });
+});
+
+describe("council runs started through the hearth", () => {
+  /** The council events in the ledger, once the run has recorded its end. */
+  async function councilEvents(
+    h: TestHearth,
+    runId: string,
+  ): Promise<LedgerEvent[]> {
+    const ofRun = (): LedgerEvent[] =>
+      h
+        .events(["council.run.started", "council.run.finished"])
+        .filter(
+          (event) =>
+            (event.kind === "council.run.started" ||
+              event.kind === "council.run.finished") &&
+            event.payload.councilRunId === runId,
+        );
+    for (
+      let i = 0;
+      i < 400 &&
+      !ofRun().some((event) => event.kind === "council.run.finished");
+      i++
+    )
+      await new Promise((done) => setTimeout(done, 25));
+    return ofRun();
+  }
+
+  test("a hearth given a council ledger records the start and the end, for the bead the request names and nobody it did not", async () => {
+    // What a session-attached emitter would pick up: an agent's mirror file in
+    // the checkout, and a bead and run in the environment. None of it belongs
+    // to a run the operator started from the dashboard.
+    const before = {
+      bead: process.env["AGENT_FORGE_BEAD_ID"],
+      run: process.env["FORGE_SLUG"],
+    };
+    process.env["AGENT_FORGE_BEAD_ID"] = "bead-from-the-environment";
+    process.env["FORGE_SLUG"] = "run-from-the-environment";
+    try {
+      const h = await start({
+        councilRuns: true,
+        files: { ".agent-forge-session": "agent-session-in-this-checkout\n" },
+      });
+      setSessionModel(
+        {
+          sessionId: "agent-session-in-this-checkout",
+          provider: "claude",
+          model: "claude-opus-5-5",
+        },
+        { path: h.ledger },
+      );
+
+      const named = await post(h, "/council/runs", {
+        ...text("with-bead"),
+        beadId: "demo-7",
+      });
+      expect(named.status).toBe(202);
+      const withBead = await councilEvents(h, "with-bead");
+      const unnamed = await post(h, "/council-api/runs", text("no-bead"));
+      expect(unnamed.status).toBe(202);
+      const noBead = await councilEvents(h, "no-bead");
+
+      expect(withBead.map((event) => event.kind)).toEqual([
+        "council.run.started",
+        "council.run.finished",
+      ]);
+      expect(noBead.map((event) => event.kind)).toEqual([
+        "council.run.started",
+        "council.run.finished",
+      ]);
+      for (const event of withBead) {
+        expect(event.workspace).toBe(h.workspace);
+        expect(event.beadId).toBe("demo-7");
+      }
+      for (const event of [...withBead, ...noBead]) {
+        expect(event).not.toHaveProperty("sessionId");
+        expect(event).not.toHaveProperty("executor");
+        expect(event).not.toHaveProperty("runId");
+      }
+      for (const event of noBead) expect(event).not.toHaveProperty("beadId");
+      expect(withBead[1]?.payload).toMatchObject({
+        councilRunId: "with-bead",
+        outcome: expect.any(String),
+      });
+
+      // The audit row names the same run, carries the same bead, and comes first.
+      const audit = h.events(["operator.action"]);
+      expect(audit.map((event) => [event.payload, event.beadId])).toEqual([
+        [
+          { action: "council.run.start", surface: "api", target: "with-bead" },
+          "demo-7",
+        ],
+        [
+          { action: "council.run.start", surface: "api", target: "no-bead" },
+          undefined,
+        ],
+      ]);
+      expect(audit[0]?.id).toBeLessThan(withBead[0]?.id ?? 0);
+      expect(audit[1]?.id).toBeLessThan(noBead[0]?.id ?? 0);
+    } finally {
+      for (const [name, value] of [
+        ["AGENT_FORGE_BEAD_ID", before.bead],
+        ["FORGE_SLUG", before.run],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  }, 30_000);
+
+  test("a hearth given none (the default) records the operator's action and no council event", async () => {
+    const h = await start();
+    const response = await post(h, "/council/runs", {
+      ...text("unrecorded"),
+      beadId: "demo-7",
+    });
+    expect(response.status).toBe(202);
+    await councilRunFinished(h, "unrecorded");
+    await new Promise((done) => setTimeout(done, 100));
+    expect(h.events().map((event) => event.kind)).toEqual(["operator.action"]);
+  }, 20_000);
+
+  test("a run id the caller did not give is minted before the audit row, so the row names the run that starts", async () => {
+    const h = await start({ councilRuns: true });
+    const response = await post(h, "/council/runs", {
+      sourceType: "text",
+      source: "Evaluate this plan and record any missing evidence.",
+    });
+    expect(response.status).toBe(202);
+    const job = (await envelope<{ runId: string }>(response)).data;
+    expect(job?.runId).toMatch(/^council-\d+-[0-9a-f]{8}$/);
+    const [audit] = h.events(["operator.action"]);
+    expect(audit?.payload).toMatchObject({ target: job?.runId });
+    const events = await councilEvents(h, job?.runId ?? "");
+    expect(events[0]?.payload).toMatchObject({ councilRunId: job?.runId });
+  }, 20_000);
 });

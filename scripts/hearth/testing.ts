@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
+import { operatorCouncilLedger } from "../council/ledger-wiring";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -78,6 +79,8 @@ export interface TestHearth {
 
 export interface TestHearthOptions {
   api?: OperatorApiOverrides;
+  /** Hand the hearth a council ledger (this hearth's own), as `main()` does. Off by default. */
+  councilRuns?: boolean;
   /** Files to write under the root before the hearth starts. */
   files?: Record<string, string>;
 }
@@ -102,6 +105,9 @@ export async function startTestHearth(
     home,
     harnessRoot: REPO,
     environment: { COUNCIL_RUNS_DIR: join(root, "council-runs") },
+    ...(options.councilRuns
+      ? { councilLedger: operatorCouncilLedger({ path: ledger }) }
+      : {}),
     api: {
       ledgerPath: ledger,
       runBd: (args) => bd.run(args),
