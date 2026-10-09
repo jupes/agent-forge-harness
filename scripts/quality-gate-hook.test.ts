@@ -21,6 +21,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -35,6 +36,7 @@ import { dirname, join } from "path";
 import {
   type GateDeps,
   type GateOutcome,
+  gateExitCode,
   runQualityGate,
 } from "../.claude/hooks/quality-gate";
 import type { HookStdin } from "../.claude/hooks/utils/hook-input";
@@ -756,6 +758,24 @@ describe("strict completion: what the gate entry records", () => {
   });
 });
 
+describe("strict completion: the evidence has to be on record", () => {
+  const passed = { passed: true };
+  const bound = {
+    passed: true,
+    evaluatorArtifact: { kind: "evaluator-verdict" },
+  };
+
+  test("a run that bound a verdict blocks when its log entry could not be written", () => {
+    expect(gateExitCode(bound, { logged: false })).toBe(2);
+    expect(gateExitCode(bound, { logged: true })).toBe(0);
+  });
+
+  test("a run that bound no verdict is not held to its log, as before", () => {
+    expect(gateExitCode(passed, { logged: false })).toBe(0);
+    expect(gateExitCode({ passed: false }, { logged: true })).toBe(2);
+  });
+});
+
 describe("strict completion: who judged", () => {
   test("a verdict with no evaluator identity is refused", () => {
     const { evaluator: _evaluator, ...anonymous } = v2();
@@ -1212,7 +1232,7 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
           output?: string;
         }>
       ).find((entry) => entry.name === "eval-verdict");
-      // The verdict read is the one filed under the correlated bead.
+      // The verdict read is the one at the correlated run's declared path.
       expect(strict).toMatchObject({
         passed: true,
         output: "PASS B=0 H=0; evaluator: human reviewer",
@@ -1267,7 +1287,7 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
   );
 
   test(
-    "a verdict overwritten after a gate run leaves that run's log entry and ledger row as they were; the next run records the new bytes",
+    "two gate runs over a verdict that was overwritten between them each record the bytes they read",
     async () => {
       const box = sandbox();
       const pointer = correlate(box, "bead-1", "run-1");
@@ -1310,6 +1330,119 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
       ]);
     },
     SPAWN_TIMEOUT_MS * 2,
+  );
+
+  /**
+   * A directory holding a stand-in `git` for the spawned gate: it does nothing
+   * but, when asked for the branch name, run `onBranch`. The gate asks for the
+   * branch after it has read and judged the verdict and before it writes its
+   * log entry and its ledger rows, so this is a way to change the file between
+   * the two without any switch in the gate.
+   */
+  function standInGit(
+    box: Box,
+    onBranch: { windows: string; posix: string },
+  ): string {
+    const bin = join(box.root, "stand-in bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "git.cmd"),
+      [
+        "@echo off",
+        `if "%2"=="--abbrev-ref" ${onBranch.windows}`,
+        "exit /b 1",
+        "",
+      ].join("\r\n"),
+    );
+    const script = join(bin, "git");
+    writeFileSync(
+      script,
+      [
+        "#!/bin/sh",
+        `if [ "$2" = "--abbrev-ref" ]; then ${onBranch.posix}; fi`,
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(script, 0o755);
+    return bin;
+  }
+
+  test(
+    "a verdict swapped between the gate's read and its recording changes neither the log entry nor the ledger row",
+    async () => {
+      const box = sandbox();
+      const pointer = correlate(box, "bead-1", "run-1");
+      const validated = verdict(box, "run-1", v2({ summary: "as validated" }));
+      const place = join(box.cwd, evaluatorVerdictPath("run-1") ?? "");
+      // What gets copied over the verdict once the gate has read it.
+      const swapped = JSON.stringify(
+        v2({
+          verdict: "FAIL",
+          findings: { blocker: 2, high: 0, medium: 0, low: 0 },
+          evaluator: { kind: "human", actorKind: "operator" },
+          summary: "swapped in after the read",
+        }),
+      );
+      const source = join(box.root, "swapped.json");
+      writeFileSync(source, swapped);
+      const bin = standInGit(box, {
+        windows: 'copy /Y "%SWAP_SOURCE%" "%SWAP_TARGET%" >nul',
+        posix: 'cp "$SWAP_SOURCE" "$SWAP_TARGET"',
+      });
+
+      await spawnGate(box, "", {
+        [RUN_CORRELATION_ENV]: pointer,
+        AGENT_FORGE_EVAL_VERDICT: "strict",
+        PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${SHELL_ONLY_PATH}`,
+        SWAP_SOURCE: source,
+        SWAP_TARGET: place,
+      });
+
+      // The swap happened: the file now holds other bytes.
+      expect(readFileSync(place, "utf8")).toBe(swapped);
+      // What the gate recorded is what it read and judged.
+      const [logged] = gateLog(box);
+      expect(logged?.evaluatorArtifact).toMatchObject({
+        sha256: sha256(validated),
+        bytes: Buffer.byteLength(validated),
+        evaluator: { kind: "human", actorKind: "reviewer" },
+      });
+      const [bound] = queryEvents(
+        { kinds: ["verdict.bound"] },
+        { path: box.ledger },
+      );
+      expect(bound?.payload).toMatchObject({
+        verdict: "pass",
+        summary: "as validated",
+        verdictArtifact: {
+          sha256: sha256(validated),
+          bytes: Buffer.byteLength(validated),
+        },
+      });
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a bound verdict whose log entry cannot be written is said to be unrecorded",
+    async () => {
+      const box = sandbox();
+      const pointer = correlate(box, "bead-1", "run-1");
+      verdict(box, "run-1", v2());
+      // A file where the log's directory tree would start: nothing can be appended.
+      writeFileSync(join(box.userHome, ".claude"), "not a directory");
+      const out = await spawnGate(box, "", {
+        [RUN_CORRELATION_ENV]: pointer,
+        AGENT_FORGE_EVAL_VERDICT: "strict",
+      });
+      expect(gateLog(box)).toEqual([]);
+      expect(out.stderr).toContain(
+        "quality-gate: the gate log could not be written, so the bound verdict's evidence is not on record: strict completion is blocked.",
+      );
+      expect(out.exitCode).toBe(2);
+    },
+    SPAWN_TIMEOUT_MS,
   );
 
   /** The eval-verdict check of a spawned strict run over one model verdict. */

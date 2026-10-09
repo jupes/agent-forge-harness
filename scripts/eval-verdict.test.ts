@@ -206,6 +206,15 @@ describe("parseEvalVerdictJson, schema 2", () => {
       { ...MODEL_EVALUATOR, providerEvidence: "request" },
       { ...MODEL_EVALUATOR, rankPolicyDecision: "maybe" },
       { ...MODEL_EVALUATOR, rankPolicyRule: "" },
+      // The rule is a slug, not a sentence someone can put free text in.
+      { ...MODEL_EVALUATOR, rankPolicyRule: "because I said so" },
+      { ...MODEL_EVALUATOR, rankPolicyRule: "x".repeat(81) },
+      // Identity strings are short plain text.
+      { ...MODEL_EVALUATOR, requestedModel: "m".repeat(201) },
+      { ...MODEL_EVALUATOR, observedModel: "claude\nopus" },
+      { ...MODEL_EVALUATOR, observedProvider: "p".repeat(201) },
+      { ...MODEL_EVALUATOR, sessionId: "s".repeat(201) },
+      { ...MODEL_EVALUATOR, sessionId: "tab\there" },
     ]) {
       const r = parseEvalVerdictJson(v2({ evaluator }));
       expect(r.ok).toBe(false);

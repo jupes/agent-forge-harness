@@ -197,7 +197,7 @@ describe("strictVerdictEvent", () => {
     expect(validateLedgerEventInput(event).ok).toBe(true);
   });
 
-  test("the file reference the gate recorded goes on the event and into the ledger", () => {
+  test("a file reference handed to the builder goes on the event and into the ledger, digest intact", () => {
     const box = sandbox();
     const artifact = {
       path: ".tmp/work/evaluations/abc/verdict.json",

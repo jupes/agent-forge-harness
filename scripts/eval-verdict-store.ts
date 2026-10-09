@@ -9,9 +9,10 @@
  * The id is hashed so that any run id is one safe path segment, and ids that
  * differ only in case stay apart on a case-insensitive disk.
  *
- * A verdict is created once and never replaced: the writer creates the file
- * exclusively. A reader opens it once and returns the bytes with their digest,
- * so what was validated and what was hashed are the same buffer.
+ * A verdict is created once and never replaced, and is whole or absent: the
+ * writer writes it beside its place and hard-links it in, which fails when
+ * the place is taken. A reader opens it once and returns the bytes with their
+ * digest, so what was validated and what was hashed are the same buffer.
  *
  * Kept apart from `eval-verdict.ts` and `run-correlation.ts`, which stay free
  * of Node imports for the dashboard bundle. The directory is gitignored, so a
@@ -22,8 +23,8 @@ import { createHash } from "crypto";
 import {
   closeSync,
   existsSync,
-  fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -34,6 +35,7 @@ import {
   writeSync,
 } from "fs";
 import { join } from "path";
+import { parseEvalVerdictJson, verdictForRun } from "./eval-verdict";
 import { comparableCheckout, isValidSlug } from "./forge/runs";
 import { resolveCheckout } from "./ledger/workspace";
 
@@ -166,15 +168,87 @@ function managedPath(
   return { ok: true, dir, relative: `${dir}/${file}` };
 }
 
+/** What `readBounded` found at a path it was allowed to open. */
+type Bounded =
+  | { ok: true; buffer: Buffer }
+  | { ok: false; reason: "too-large" | "unreadable"; detail?: string };
+
+/**
+ * One open and one read of at most `MAX_VERDICT_BYTES`: a larger file is seen
+ * without being taken in.
+ */
+function readBounded(path: string): Bounded {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    // Room for one more byte than a verdict may have.
+    const room = Buffer.alloc(MAX_VERDICT_BYTES + 1);
+    let length = 0;
+    while (length < room.byteLength) {
+      const read = readSync(fd, room, length, room.byteLength - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    return length > MAX_VERDICT_BYTES
+      ? { ok: false, reason: "too-large" }
+      : { ok: true, buffer: Buffer.from(room.subarray(0, length)) };
+  } catch (error) {
+    return { ok: false, reason: "unreadable", detail: message(error) };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Nothing to do about a failed close of a read-only handle.
+      }
+    }
+  }
+}
+
+/**
+ * Read a verdict file a caller named, at any path, once and bounded: what
+ * `forge:review` is given with `--verdict`. Nothing about where the file is
+ * is checked here; the caller binds it by what its bytes say.
+ */
+export function readVerdictFileAt(
+  path: string,
+):
+  | { ok: true; buffer: Buffer; sha256: string; bytes: number }
+  | { ok: false; error: string } {
+  const read = readBounded(path);
+  if (!read.ok) {
+    return {
+      ok: false,
+      error:
+        read.reason === "too-large"
+          ? `${path} is larger than ${MAX_VERDICT_BYTES} bytes`
+          : `could not read ${path}`,
+    };
+  }
+  return {
+    ok: true,
+    buffer: read.buffer,
+    sha256: sha256Hex(read.buffer),
+    bytes: read.buffer.byteLength,
+  };
+}
+
 /**
  * Create a run's verdict file. Fails, and writes nothing, when the file is
  * already there: a verdict is never replaced, by this or by a second writer
  * that lost the race. `file` is the run's strict verdict unless it names a
  * review round (`reviewVerdictFile`).
  *
- * `checkout` is a directory in the checkout the run builds in. Nothing is
+ * The place is the run's only one, so only that run's verdict goes in it:
+ * `content` must parse as a schema 2 verdict naming `executionRunId`.
+ *
+ * `checkout` is the top level of the checkout the run builds in. Nothing is
  * created behind a link: every existing part of the path must be the
  * checkout's own, before and after the directory is made.
+ *
+ * The bytes are written to a scratch file beside the place and hard-linked
+ * into it, so the verdict appears whole or not at all, and a writer that dies
+ * part-way leaves only its scratch file.
  */
 export function writeVerdictOnce(input: {
   checkout: string;
@@ -194,10 +268,23 @@ export function writeVerdictOnce(input: {
       error: `the verdict is larger than ${MAX_VERDICT_BYTES} bytes`,
     };
   }
+  const parsed = parseEvalVerdictJson(input.content);
+  const mine = parsed.ok
+    ? verdictForRun(parsed.value, { executionRunId: input.executionRunId })
+    : parsed;
+  if (!mine.ok) {
+    return {
+      ok: false,
+      error: `the content is not a schema 2 verdict for this run: ${mine.error}`,
+    };
+  }
+
+  let given: string;
   try {
     if (!statSync(input.checkout).isDirectory()) {
       return { ok: false, error: "the checkout directory does not exist" };
     }
+    given = comparableCheckout(realpathSync.native(input.checkout));
   } catch {
     return { ok: false, error: "the checkout directory does not exist" };
   }
@@ -205,21 +292,59 @@ export function writeVerdictOnce(input: {
   if (!existsSync(join(root, ".git"))) {
     return { ok: false, error: "the directory is not in a git checkout" };
   }
+  // A directory named as the checkout is that checkout, not whichever one
+  // encloses it: a verdict is never filed somewhere nobody asked for.
+  if (given !== root) {
+    return {
+      ok: false,
+      error: "the directory is not the top level of a checkout",
+    };
+  }
   const linked: WriteVerdictResult = {
     ok: false,
     error: `${EVALUATIONS_DIR} is, or sits under or holds, a link: a verdict is only written in the checkout's own directory`,
   };
   if (!isOwn(root, where.dir)) return linked;
-
-  const path = `${root}/${where.relative}`;
-  let fd: number;
   try {
     mkdirSync(`${root}/${where.dir}`, { recursive: true });
-    if (!isOwn(root, where.dir)) return linked;
-    // Exclusive create: fails when anything is at the path, a link included.
-    fd = openSync(path, "wx");
   } catch (error) {
-    return errorCode(error) === "EEXIST"
+    return {
+      ok: false,
+      error: `could not create ${where.dir}: ${message(error)}`,
+    };
+  }
+  if (!isOwn(root, where.dir)) return linked;
+
+  const path = `${root}/${where.relative}`;
+  const scratch = `${root}/${where.dir}/.${input.file ?? STRICT_VERDICT_FILE}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  try {
+    const fd = openSync(scratch, "wx");
+    try {
+      let written = 0;
+      while (written < data.byteLength) {
+        written += writeSync(fd, data, written, data.byteLength - written);
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // The create-once step: a hard link is made only where nothing is, and
+    // what it names is already whole.
+    linkSync(scratch, path);
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") {
+      return {
+        ok: false,
+        error: `could not write ${where.relative}: ${message(error)}`,
+      };
+    }
+    let regular = false;
+    try {
+      regular = lstatSync(path).isFile();
+    } catch {
+      // Gone again, or not readable: reported as in the way.
+    }
+    return regular
       ? {
           ok: false,
           exists: true,
@@ -227,33 +352,14 @@ export function writeVerdictOnce(input: {
         }
       : {
           ok: false,
-          error: `could not create ${where.relative}: ${message(error)}`,
+          error: `${where.relative} is in the way and is not a regular file`,
         };
-  }
-  try {
-    let written = 0;
-    while (written < data.byteLength) {
-      written += writeSync(fd, data, written, data.byteLength - written);
-    }
-    fsyncSync(fd);
-    closeSync(fd);
-  } catch (error) {
-    // The file is this call's own creation: do not leave half a verdict
-    // where a whole one can then never be written.
+  } finally {
     try {
-      closeSync(fd);
+      unlinkSync(scratch);
     } catch {
-      // Already closed.
+      // Never created, or already gone.
     }
-    try {
-      unlinkSync(path);
-    } catch {
-      // Nothing more to do; the reader will refuse what is there.
-    }
-    return {
-      ok: false,
-      error: `could not write ${where.relative}: ${message(error)}`,
-    };
   }
   return {
     ok: true,
@@ -341,41 +447,19 @@ function readOwnFile(root: string, relative: string): ReadVerdictResult {
   }
   if (!regular) return refuse(`${relative} is not a regular file`);
 
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, "r");
-    if (!fstatSync(fd).isFile()) {
-      return refuse(`${relative} is not a regular file`);
-    }
-    // Room for one more byte than a verdict may have: a larger file is seen
-    // without being read.
-    const room = Buffer.alloc(MAX_VERDICT_BYTES + 1);
-    let length = 0;
-    while (length < room.byteLength) {
-      const read = readSync(fd, room, length, room.byteLength - length, null);
-      if (read === 0) break;
-      length += read;
-    }
-    if (length > MAX_VERDICT_BYTES) {
-      return refuse(`${relative} is larger than ${MAX_VERDICT_BYTES} bytes`);
-    }
-    const buffer = Buffer.from(room.subarray(0, length));
-    return {
-      ok: true,
-      path: relative,
-      buffer,
-      sha256: sha256Hex(buffer),
-      bytes: length,
-    };
-  } catch (error) {
-    return refuse(`${relative} could not be read: ${message(error)}`);
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        // Nothing to do about a failed close of a read-only handle.
-      }
-    }
+  const read = readBounded(path);
+  if (!read.ok) {
+    return refuse(
+      read.reason === "too-large"
+        ? `${relative} is larger than ${MAX_VERDICT_BYTES} bytes`
+        : `${relative} could not be read: ${read.detail}`,
+    );
   }
+  return {
+    ok: true,
+    path: relative,
+    buffer: read.buffer,
+    sha256: sha256Hex(read.buffer),
+    bytes: read.buffer.byteLength,
+  };
 }

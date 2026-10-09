@@ -12,7 +12,7 @@ A verdict belongs to one **execution run** of one Beads issue, and says who judg
 
 The path is a rule, not a setting: it is derived from the `executionRunId` of the run's **run correlation** (`.claude/protocols/agent-onboarding.md`, *Run correlation*), in the checkout the run builds in. Nothing else selects a verdict: not the Beads id, not an environment variable, not the host's task id. Two runs of the same Beads issue have two different files.
 
-- **One run, one verdict.** The file is created exclusively; a second write for the same run fails and says so.
+- **One run, one verdict.** The file is created only where nothing is; a second write for the same run fails and says so. It appears whole or not at all.
 - **A re-evaluation is a new run.** After a FAIL is repaired, `bun run forge:correlate --bead <TASK-ID>` mints a new run with its own path. The earlier file stays as evidence of the earlier run.
 - The `.tmp/` tree is gitignored; the file is **not** committed.
 
@@ -96,8 +96,10 @@ A **model** evaluator keeps what was requested apart from what ran:
 | `observedProvider`, `observedModel` | What was observed to run. Read from a machine source the writer did not type. |
 | `providerEvidence` | `selected-direct-transport` (the session or CLI that ran the evaluator) or `gateway-routing`. |
 | `modelEvidence` | `response-field` (the model the responses reported) or `gateway-routing`. |
-| `rankPolicyDecision`, `rankPolicyRule` | `allowed` or `rejected`, and the rule that decided it. |
+| `rankPolicyDecision`, `rankPolicyRule` | `allowed` or `rejected`, and the name of the rule that decided it (lower-case letters, digits and dashes; never free text). |
 | `sessionId` | The session the observation was read for. |
+
+Provider, model and session values are short plain text: at most 200 characters, no control characters. They are copied into the gate log and the ledger.
 
 The four observed fields are all present or all absent. When nothing was observed they are absent: a value is never copied from the request.
 
@@ -124,6 +126,7 @@ When `AGENT_FORGE_EVAL_VERDICT=strict`, on a `TaskCompleted` run of the gate:
 3. From that buffer it requires: schema 2; `beadsIssueId` and `executionRunId` equal to the correlation's; a human evaluator, or a model evaluator that was observed, whose own recorded decision is `allowed`, and whose observed provider and model pass the rank policy as the gate computes it.
 4. **`verdict: "PASS"`** → the check passes. **`"FAIL"`** with `blocker > 0` or `high > 0` → it fails. **`"FAIL"`** with only medium/low → it passes (file follow-up beads).
 5. A verdict that got through step 3 is **bound**: the gate log entry carries `evaluatorArtifact` (the path, the SHA-256 and byte count of that buffer, both ids and the evaluator), and one `verdict.bound` ledger event carries the same path, digest, size and evaluator. The file is not opened again.
+6. That log entry is the record of what satisfied strict completion. If it cannot be appended, a run that bound a verdict is **blocked** and says why. (The ledger event stays best-effort: a ledger that cannot be written is reported and does not block.)
 
 When the variable is unset or not `strict`, the hook does not read the file. A `TeammateIdle` run never reads it, so a passing `TeammateIdle` says nothing about strict completion.
 
@@ -137,6 +140,8 @@ An unattended run reviews each phase, possibly several times, so one run has sev
 - for a run with **no correlation**, cannot check a schema 2 verdict against anything and refuses it; it still takes a legacy schema 1 verdict and marks the round as one;
 - reads the file once and records its path, digest and size in the `verdict.bound` event;
 - reports, without enforcing, when the evaluator would not satisfy strict completion.
+
+So a `verdict.bound` event is not by itself evidence of strict completion: `forge:review` emits one for a round's verdict whatever its evaluator. Strict completion is a linked gate log entry whose `eval-verdict` check passed and which carries `evaluatorArtifact`.
 
 ## Legacy verdicts (schema 1)
 
@@ -153,7 +158,9 @@ Nothing writes schema 1 any more.
 - **The gate checks what the verdict declares; it does not observe the evaluator itself.** The observation is made by `forge:verdict`. A hand-written file can declare anything, like every other file under `.tmp/work`: the directory is the working tree's own and is not protected from the session that works in it. The same goes for the run correlation, the run's state and the smith config the rank check reads.
 - **A verdict can call itself human.** The gate takes a human verdict on its actor kind alone. The log entry and the ledger event record that it was a human verdict, so it can be seen.
 - **The observation is of a session.** An Evaluator subagent shares its session with whoever spawned it and is observed as that session's model. Spawn it without a weaker model override, run the evaluator as a session of its own, or have a person file the verdict.
-- **A failed write can block a run.** If a write fails after the file was created the command removes it; if the process dies mid-write the partial file stays, the gate refuses it, and the run needs a new correlation.
+- **A hard link is not seen as a link.** The reader refuses symbolic links and junctions anywhere on the path. A `verdict.json` that is a hard link to another file is read like any file; what is recorded is still the digest of the bytes read.
+- **A run that is rebound after its verdict was filed needs a new run.** `forge:correlate --bead` and `forge:phase-gate --bead` can point a run at another Beads issue. The verdict already filed names the earlier issue, the gate refuses it, and the run's one place is taken.
+- **A writer that dies part-way leaves a scratch file.** The verdict is written beside its place (`.verdict.json.<pid>.<stamp>.tmp`) and linked in, so `verdict.json` is whole or absent and the run is not blocked. The scratch file stays; the sweep leaves it, and that run's directory, alone.
 
 ## Cleanup
 

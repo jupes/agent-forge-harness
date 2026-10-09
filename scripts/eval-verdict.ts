@@ -110,6 +110,29 @@ function nonEmpty(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** Longer than any provider, model or session id; a value over it is not one. */
+const IDENTITY_TEXT_LIMIT = 200;
+
+/** A rank-policy rule is a name, such as `evaluator-at-or-above-builder`: never free text. */
+const POLICY_RULE = /^[a-z0-9][a-z0-9-]{0,79}$/;
+
+/**
+ * A provider, model or session id as short plain text, or undefined: trimmed,
+ * non-empty, at most `IDENTITY_TEXT_LIMIT` characters, no control character.
+ * These values are copied into the gate log and the ledger.
+ */
+function identityText(value: unknown): string | undefined {
+  const trimmed = nonEmpty(value);
+  if (trimmed === undefined || trimmed.length > IDENTITY_TEXT_LIMIT) {
+    return undefined;
+  }
+  for (const character of trimmed) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return undefined;
+  }
+  return trimmed;
+}
+
 function oneOf<T extends string>(
   allowed: readonly T[],
   value: unknown,
@@ -192,11 +215,11 @@ function observedFrom(o: Fields): Parsed<{
       "evaluator observedProvider, observedModel, providerEvidence and modelEvidence must all be present or all absent",
     );
   }
-  const observedProvider = nonEmpty(o.observedProvider);
-  const observedModel = nonEmpty(o.observedModel);
+  const observedProvider = identityText(o.observedProvider);
+  const observedModel = identityText(o.observedModel);
   if (observedProvider === undefined || observedModel === undefined) {
     return refuse(
-      "evaluator observedProvider and observedModel must be non-empty strings",
+      "evaluator observedProvider and observedModel must be short plain text",
     );
   }
   const providerEvidence = oneOf(PROVIDER_EVIDENCE_SOURCES, o.providerEvidence);
@@ -237,11 +260,11 @@ export function parseEvaluatorIdentity(
   if (raw.kind !== "model") {
     return refuse('evaluator kind must be "human" or "model"');
   }
-  const requestedProvider = nonEmpty(raw.requestedProvider);
-  const requestedModel = nonEmpty(raw.requestedModel);
+  const requestedProvider = identityText(raw.requestedProvider);
+  const requestedModel = identityText(raw.requestedModel);
   if (requestedProvider === undefined || requestedModel === undefined) {
     return refuse(
-      "evaluator requestedProvider and requestedModel must be non-empty strings",
+      "evaluator requestedProvider and requestedModel must be short plain text",
     );
   }
   const requestedRank: Rank | undefined = oneOf(RANKS, raw.requestedRank);
@@ -258,16 +281,16 @@ export function parseEvaluatorIdentity(
     );
   }
   const rankPolicyRule = nonEmpty(raw.rankPolicyRule);
-  if (rankPolicyRule === undefined) {
-    return refuse("evaluator rankPolicyRule must be a non-empty string");
+  if (rankPolicyRule === undefined || !POLICY_RULE.test(rankPolicyRule)) {
+    return refuse(
+      "evaluator rankPolicyRule must be a rule name (lower-case letters, digits and dashes)",
+    );
   }
   const observed = observedFrom(raw);
   if (!observed.ok) return observed;
-  const sessionId = nonEmpty(raw.sessionId);
+  const sessionId = identityText(raw.sessionId);
   if (raw.sessionId !== undefined && sessionId === undefined) {
-    return refuse(
-      "evaluator sessionId must be a non-empty string when present",
-    );
+    return refuse("evaluator sessionId must be short plain text when present");
   }
   return {
     ok: true,

@@ -40,7 +40,7 @@ import {
   parseEvalVerdictJson,
   verdictForRun,
 } from "../eval-verdict";
-import { MAX_VERDICT_BYTES, sha256Hex } from "../eval-verdict-store";
+import { readVerdictFileAt } from "../eval-verdict-store";
 import { strictEvaluatorProblem } from "../evaluator-policy";
 import { resolveCheckout } from "../ledger/workspace";
 import { type RunCorrelation, runCorrelationPath } from "../run-correlation";
@@ -213,16 +213,11 @@ if (import.meta.main) {
   // digest goes into the ledger.
   let verdict: EvalVerdictParsed | null = null;
   let verdictError: string | null = null;
-  let bytes: Buffer | null = null;
-  try {
-    bytes = readFileSync(verdictPath);
-  } catch {
-    verdictError = `could not read ${verdictPath}`;
-  }
-  if (bytes !== null && bytes.byteLength > MAX_VERDICT_BYTES) {
-    verdictError = `${verdictPath} is larger than ${MAX_VERDICT_BYTES} bytes`;
-  } else if (bytes !== null) {
-    const parsed = parseEvalVerdictJson(bytes.toString("utf8"));
+  const read = readVerdictFileAt(verdictPath);
+  if (!read.ok) {
+    verdictError = read.error;
+  } else {
+    const parsed = parseEvalVerdictJson(read.buffer.toString("utf8"));
     if (!parsed.ok) {
       verdictError = parsed.error;
     } else {
@@ -232,11 +227,11 @@ if (import.meta.main) {
     }
   }
   const artifact =
-    verdict !== null && bytes !== null
+    verdict !== null && read.ok
       ? {
           path: recordedPath(checkout, verdictPath),
-          sha256: sha256Hex(bytes),
-          bytes: bytes.byteLength,
+          sha256: read.sha256,
+          bytes: read.bytes,
           schemaVersion: verdict.schemaVersion,
         }
       : null;

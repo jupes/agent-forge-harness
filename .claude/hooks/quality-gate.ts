@@ -507,6 +507,23 @@ export function runQualityGate(input: {
   };
 }
 
+/**
+ * The gate's exit code. A run whose checks failed is blocked. So is a run that
+ * bound a verdict and could not append its log entry: the entry is where the
+ * verdict's path, digest and evaluator are recorded, and strict completion
+ * with no record of what satisfied it is not completion. A run that bound no
+ * verdict is not held to its log.
+ */
+export function gateExitCode(
+  result: { passed: boolean; evaluatorArtifact?: unknown },
+  recorded: { logged: boolean },
+): 0 | 2 {
+  if (!result.passed) return EXIT_BLOCKED;
+  return result.evaluatorArtifact !== undefined && !recorded.logged
+    ? EXIT_BLOCKED
+    : 0;
+}
+
 // ── The hook ─────────────────────────────────────────────────────────────────
 
 function run(cmd: string, cwd?: string): { ok: boolean; output: string } {
@@ -604,11 +621,18 @@ if (import.meta.main) {
     console.error(`quality-gate: ${outcome.notice}`);
   }
 
-  // Log to file
+  // Log to file. A failure is not fatal to a run that bound no verdict; one
+  // that did has its evidence in this entry (see `gateExitCode`).
+  let logged = true;
   try {
     appendFileSync(getQualityGateLogPath(), JSON.stringify(result) + "\n");
   } catch {
-    // Log failure is non-fatal
+    logged = false;
+    if (result.evaluatorArtifact !== undefined) {
+      console.error(
+        "quality-gate: the gate log could not be written, so the bound verdict's evidence is not on record: strict completion is blocked.",
+      );
+    }
   }
 
   // Record the run in the event ledger. Loaded and run inside the guard: the
@@ -661,8 +685,6 @@ if (import.meta.main) {
     console.error(
       `\nQuality gate FAILED. Blocking failures: ${result.blockingFailures.join(", ")}`,
     );
-    process.exit(EXIT_BLOCKED);
   }
-
-  process.exit(0);
+  process.exit(gateExitCode(result, { logged }));
 }

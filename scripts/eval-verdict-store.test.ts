@@ -10,6 +10,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -52,7 +53,20 @@ function sandbox(): { checkout: string; outside: string } {
 const sha256 = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");
 
-const BODY = '{"schemaVersion":2,"verdict":"PASS"}\n';
+/** A schema 2 verdict's bytes for `run`: the only content the writer files. */
+function body(run: string, summary?: string): string {
+  return `${JSON.stringify({
+    schemaVersion: 2,
+    beadsIssueId: "bead-1",
+    executionRunId: run,
+    verdict: "PASS",
+    findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+    ...(summary !== undefined ? { summary } : {}),
+    evaluator: { kind: "human", actorKind: "reviewer" },
+  })}\n`;
+}
+
+const BODY = body("run-1");
 
 describe("evaluatorVerdictPath", () => {
   test("is .tmp/work/evaluations/<sha256 of the run id>/verdict.json", () => {
@@ -103,7 +117,7 @@ describe("writeVerdictOnce", () => {
     const again = writeVerdictOnce({
       checkout,
       executionRunId: "run-1",
-      content: '{"verdict":"FAIL"}',
+      content: body("run-1", "a second opinion"),
     });
     expect(again).toEqual({
       ok: false,
@@ -125,7 +139,7 @@ describe("writeVerdictOnce", () => {
     const retried = writeVerdictOnce({
       checkout,
       executionRunId: "run-2",
-      content: BODY,
+      content: body("run-2"),
     });
     const round = writeVerdictOnce({
       checkout,
@@ -156,7 +170,15 @@ describe("writeVerdictOnce", () => {
       const wrote = writeVerdictOnce({
         checkout: ${JSON.stringify(checkout)},
         executionRunId: "run-1",
-        content: JSON.stringify({ writer: process.argv[2] }),
+        content: JSON.stringify({
+          schemaVersion: 2,
+          beadsIssueId: "bead-1",
+          executionRunId: "run-1",
+          verdict: "PASS",
+          findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+          summary: process.argv[2],
+          evaluator: { kind: "human", actorKind: "reviewer" },
+        }),
       });
       console.log(JSON.stringify({ writer: process.argv[2], ...wrote }));
     `;
@@ -180,15 +202,18 @@ describe("writeVerdictOnce", () => {
     const winners = results.filter((result) => result.ok);
     expect(winners).toHaveLength(1);
     expect(results.filter((result) => result.exists === true)).toHaveLength(5);
-    // The file holds the winner's bytes, whole.
+    // The file holds the winner's bytes, whole, and nothing else is left behind.
     expect(
       JSON.parse(
         readFileSync(
           join(checkout, evaluatorVerdictPath("run-1") ?? ""),
           "utf8",
         ),
-      ),
-    ).toEqual({ writer: winners[0]?.writer });
+      ).summary,
+    ).toBe(winners[0]?.writer);
+    expect(readdirSync(join(checkout, evaluationDir("run-1") ?? ""))).toEqual([
+      "verdict.json",
+    ]);
   }, 60_000);
 
   test("refuses when the evaluations directory, or anything above or below it, is a link", () => {
@@ -228,7 +253,7 @@ describe("writeVerdictOnce", () => {
     writeVerdictOnce({
       checkout: inner.checkout,
       executionRunId: "run-0",
-      content: BODY,
+      content: body("run-0"),
     });
     symlinkSync(
       join(inner.checkout, evaluationDir("run-0") ?? ""),
@@ -285,6 +310,123 @@ describe("writeVerdictOnce", () => {
         content: BODY,
       }),
     ).toEqual({ ok: false, error: "executionRunId must be a Forge run id" });
+  });
+
+  test("files only a schema 2 verdict for that run, and anything else leaves the run's place free", () => {
+    const { checkout } = sandbox();
+    const cases: Array<[string, string]> = [
+      ["", "invalid JSON"],
+      ["   \n", "invalid JSON"],
+      ["not json at all", "invalid JSON"],
+      [
+        JSON.stringify({
+          schemaVersion: 1,
+          taskId: "bead-1",
+          verdict: "PASS",
+          findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        }),
+        "the verdict is schema 1 (legacy): it names no run and no evaluator",
+      ],
+      [
+        body("some-other-run"),
+        'verdict executionRunId "some-other-run" is not this run ("run-1")',
+      ],
+    ];
+    for (const [content, reason] of cases) {
+      expect(
+        writeVerdictOnce({ checkout, executionRunId: "run-1", content }),
+      ).toEqual({
+        ok: false,
+        error: `the content is not a schema 2 verdict for this run: ${reason}`,
+      });
+    }
+    expect(existsSync(join(checkout, ".tmp"))).toBe(false);
+    // The run's one place is still free for its verdict.
+    expect(
+      writeVerdictOnce({ checkout, executionRunId: "run-1", content: BODY }).ok,
+    ).toBe(true);
+  });
+
+  test("the file is whole or absent: what a killed writer leaves behind does not block the run", () => {
+    const { checkout } = sandbox();
+    const dir = join(checkout, evaluationDir("run-1") ?? "");
+    mkdirSync(dir, { recursive: true });
+    // Half a verdict in a writer's scratch file, as a kill mid-write leaves it.
+    writeFileSync(join(dir, ".verdict.json.4242.tmp"), BODY.slice(0, 40));
+
+    const wrote = writeVerdictOnce({
+      checkout,
+      executionRunId: "run-1",
+      content: BODY,
+    });
+    expect(wrote.ok).toBe(true);
+    expect(readFileSync(join(dir, "verdict.json"), "utf8")).toBe(BODY);
+    // This call's own scratch file is gone; the stranger's is not its to remove.
+    expect(readdirSync(dir).sort()).toEqual([
+      ".verdict.json.4242.tmp",
+      "verdict.json",
+    ]);
+  });
+
+  test("says what is in the way when it is not a verdict", () => {
+    // A directory where the verdict file goes.
+    const blocked = sandbox();
+    const place = join(blocked.checkout, evaluatorVerdictPath("run-1") ?? "");
+    mkdirSync(place, { recursive: true });
+    expect(
+      writeVerdictOnce({
+        checkout: blocked.checkout,
+        executionRunId: "run-1",
+        content: BODY,
+      }),
+    ).toEqual({
+      ok: false,
+      error: `${evaluatorVerdictPath("run-1")} is in the way and is not a regular file`,
+    });
+
+    // A file where the run's directory goes.
+    const flat = sandbox();
+    mkdirSync(join(flat.checkout, EVALUATIONS_DIR), { recursive: true });
+    writeFileSync(join(flat.checkout, evaluationDir("run-1") ?? ""), "x");
+    const wrote = writeVerdictOnce({
+      checkout: flat.checkout,
+      executionRunId: "run-1",
+      content: BODY,
+    });
+    expect(wrote.ok).toBe(false);
+    if (!wrote.ok) {
+      expect(wrote.error).toStartWith(
+        `could not create ${evaluationDir("run-1")}:`,
+      );
+      expect("exists" in wrote).toBe(false);
+    }
+  });
+
+  test("writes only at the top level of a checkout it is given: not a directory that is missing, not one inside it", () => {
+    const { checkout } = sandbox();
+    expect(
+      writeVerdictOnce({
+        checkout: join(checkout, "nowhere"),
+        executionRunId: "run-1",
+        content: BODY,
+      }),
+    ).toEqual({ ok: false, error: "the checkout directory does not exist" });
+
+    const nested = join(checkout, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    expect(
+      writeVerdictOnce({
+        checkout: nested,
+        executionRunId: "run-1",
+        content: BODY,
+      }),
+    ).toEqual({
+      ok: false,
+      error: "the directory is not the top level of a checkout",
+    });
+    // Nothing went to the enclosing checkout either.
+    expect(existsSync(join(checkout, ".tmp"))).toBe(false);
+    expect(existsSync(join(nested, ".tmp"))).toBe(false);
   });
 
   test("the review file of a label, and nothing for a label that is not one", () => {
@@ -346,7 +488,7 @@ describe("readVerdictOnce", () => {
     writeVerdictOnce({
       checkout: inner.checkout,
       executionRunId: "run-0",
-      content: BODY,
+      content: body("run-0"),
     });
     symlinkSync(
       join(inner.checkout, evaluationDir("run-0") ?? ""),
@@ -363,7 +505,7 @@ describe("readVerdictOnce", () => {
     writeVerdictOnce({
       checkout: file.checkout,
       executionRunId: "run-0",
-      content: BODY,
+      content: body("run-0"),
     });
     const target = join(file.checkout, evaluatorVerdictPath("run-0") ?? "");
     const link = join(file.checkout, evaluatorVerdictPath("run-1") ?? "");

@@ -729,6 +729,21 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     );
   }, 180_000);
 
+  test("a verdict file over the size a verdict has is refused without being taken in", async () => {
+    const box = await correlatedRun();
+    const reviewed = await review(
+      box,
+      v2Json({ summary: "x".repeat(70 * 1024) }),
+    );
+    expect(reviewed.exitCode).toBe(2);
+    expect(String(reviewed.data.verdictError)).toEndWith(
+      "is larger than 65536 bytes",
+    );
+    expect(boundRows(box).map((event) => event.payload)).toEqual([
+      { verdict: "unreadable" },
+    ]);
+  }, 60_000);
+
   test("an unreadable verdict file is bound as unreadable", async () => {
     const box = sandbox();
     writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
