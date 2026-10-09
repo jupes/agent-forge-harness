@@ -8,7 +8,7 @@ Optional machine-readable output from an **Evaluator** pass, used when **`AGENT_
 .tmp/work/<TASK-ID>-verdict.json
 ```
 
-`<TASK-ID>` is the Beads id (same as `CLAUDE_TASK_ID` when hooks run under a claimed task). The `.tmp/` tree is gitignored; the file is **not** committed.
+`<TASK-ID>` is the Beads issue id: in strict mode, the `beadsIssueId` of the run correlation the quality gate is given (`.claude/protocols/agent-onboarding.md`, *Run correlation*). The `.tmp/` tree is gitignored; the file is **not** committed.
 
 ## Schema (version 1)
 
@@ -30,7 +30,7 @@ Optional machine-readable output from an **Evaluator** pass, used when **`AGENT_
 | Field | Required | Rules |
 |-------|----------|--------|
 | `schemaVersion` | yes | Must be `1` |
-| `taskId` | yes | Non-empty string; must match the Beads task id and `CLAUDE_TASK_ID` when strict mode runs |
+| `taskId` | yes | Non-empty string; must match the Beads issue id, which in strict mode is the `beadsIssueId` of the gate's run correlation |
 | `verdict` | yes | `"PASS"` or `"FAIL"` |
 | `findings.*` | yes | Non-negative integers: `blocker`, `high`, `medium`, `low` |
 | `summary` | no | String |
@@ -52,14 +52,15 @@ These are **advisory** multi-axis signals. The strict gate still only looks at `
 
 ## Strict gate behavior
 
-When `AGENT_FORGE_EVAL_VERDICT=strict` and `CLAUDE_TASK_ID` is set:
+When `AGENT_FORGE_EVAL_VERDICT=strict`, on a `TaskCompleted` run of the gate:
 
+- The gate **must** have been given a run correlation naming the Beads issue: create one with `bun run forge:correlate --bead <TASK-ID>` (a Forge run gets one from `forge:phase-gate … --write --bead <TASK-ID>`), then run `bun run quality-gate --correlation <pointer>` with the `pointer` that command printed. A launcher can instead set `AGENT_FORGE_RUN_CORRELATION` for the process it starts. Without a correlation the check fails: an uncorrelated run cannot satisfy strict completion.
 - The verdict file **must** exist and parse under this schema.
 - **`verdict: "PASS"`** → gate passes.
 - **`verdict: "FAIL"`** with **`blocker > 0` or `high > 0`** → gate **fails** (same bar as `.claude/workflows/feature.md` “FAIL — BLOCKER / HIGH”).
 - **`verdict: "FAIL"`** with only medium/low → gate **passes** (file follow-up beads; matches feature workflow “MEDIUM/LOW only → proceed”).
 
-When the env var is unset or not `strict`, the hook **does not** require this file.
+When the env var is unset or not `strict`, the hook **does not** require this file. A `TeammateIdle` run never reads it, so a passing `TeammateIdle` says nothing about strict completion.
 
 ## Human vs model evaluator
 

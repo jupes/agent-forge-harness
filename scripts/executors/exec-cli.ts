@@ -11,6 +11,14 @@
  * environment variables. Events are written as NDJSON under
  * `.tmp/work/exec-events/<bead>.ndjson` until the ledger exists (x1gs.2.1).
  *
+ * With --run, the run's correlation (`scripts/run-correlation.ts`) is written
+ * in the worktree and its path put in the child's environment, so a quality
+ * gate that runs inside the child is linked to this bead and run. The worktree
+ * must be a checkout's top level for that. A run already correlated to
+ * another bead is left alone. Whenever no pointer is handed on, the child
+ * runs unlinked and `data.correlationNote` says why. The child never inherits
+ * a pointer from this process.
+ *
  * Exit code 0 when the provider exits 0, 2 otherwise.
  */
 
@@ -19,6 +27,12 @@ import { join, resolve } from "path";
 import { BENCH_NAMES, type BenchName } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
+import { RUN_CORRELATION_ENV } from "../run-correlation";
+import {
+  correlationReport,
+  initRunCorrelation,
+  type RunCorrelationReport,
+} from "../run-correlation-store";
 import { buildChildEnv } from "./env";
 import { ADAPTERS } from "./registry";
 import { ndjsonSink } from "./sinks";
@@ -53,6 +67,47 @@ function flags(argv: string[]): Map<string, string> {
     }
   }
   return map;
+}
+
+/**
+ * The child's run correlation: written in its worktree when the caller named
+ * a run, and the environment that carries the pointer to it.
+ */
+function correlateChild(input: {
+  worktree: string;
+  beadId: string;
+  runId: string | undefined;
+}): {
+  env: Record<string, string>;
+  correlation: RunCorrelationReport | null;
+  note?: string;
+} {
+  const { worktree, beadId, runId } = input;
+  if (!runId) {
+    return {
+      env: {},
+      correlation: null,
+      note: "no --run was given, so there is no run to correlate",
+    };
+  }
+  const made = initRunCorrelation({
+    // The worktree is where the child runs its gate, so the file goes there
+    // and nowhere a directory that is not a checkout might resolve to.
+    checkout: worktree,
+    topLevel: true,
+    beadsIssueId: beadId,
+    executionRunId: runId,
+  });
+  if (made.ok) {
+    return { env: made.env, correlation: correlationReport(made.correlation) };
+  }
+  return {
+    env: {},
+    correlation: null,
+    note: made.held
+      ? `${made.error}; rebind it with: bun run forge:correlate --bead ${beadId} --run ${runId}`
+      : `run correlation not written: ${made.error}`,
+  };
 }
 
 const failure = (error: string): ExecOutcome => ({
@@ -126,6 +181,25 @@ export async function runExec(
     return failure("--timeout-ms must be a positive number");
   }
 
+  const runId = args.get("run");
+  const correlated = correlateChild({
+    worktree: resolve(worktree),
+    beadId,
+    runId,
+  });
+  const childEnv = buildChildEnv(
+    deps.env ?? process.env,
+    loaded.config.execution.envPass,
+  );
+  // The pointer is this launcher's to give: one inherited from the parent
+  // names some other run's file.
+  for (const name of Object.keys(childEnv)) {
+    if (name.toLowerCase() === RUN_CORRELATION_ENV.toLowerCase()) {
+      delete childEnv[name];
+    }
+  }
+  Object.assign(childEnv, correlated.env);
+
   let handle: Awaited<ReturnType<ExecutorAdapter["spawn"]>>;
   try {
     handle = await adapter.spawn({
@@ -134,11 +208,8 @@ export async function runExec(
       workspace: deps.harnessRoot,
       smith,
       prompt,
-      env: buildChildEnv(
-        deps.env ?? process.env,
-        loaded.config.execution.envPass,
-      ),
-      runId: args.get("run"),
+      env: childEnv,
+      runId,
       timeoutMs,
       command: deps.command,
     });
@@ -171,6 +242,8 @@ export async function runExec(
         eventsFile: deps.sink ? null : eventsFile,
         exitCode: result.exitCode,
         timedOut: result.timedOut,
+        correlation: correlated.correlation,
+        ...(correlated.note ? { correlationNote: correlated.note } : {}),
       },
       error: ok
         ? null

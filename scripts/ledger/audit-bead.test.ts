@@ -17,6 +17,8 @@ import { join } from "path";
 import type { LedgerEvent } from "../../types/hearth";
 import { readRunState } from "../forge/runs-store";
 import { gateAttach, gateRanEvent } from "../quality-gate-ledger";
+import { RUN_CORRELATIONS_DIR } from "../run-correlation";
+import { loadRunCorrelation } from "../run-correlation-store";
 import { appendEvent } from "./append";
 import { closeLedger } from "./db";
 
@@ -194,17 +196,23 @@ describe("audit-cli --bead over events from every emitter (spawned scripts, scra
     ]);
     expect(reviewed.exitCode).toBe(0);
 
-    // Gate family: what the quality gate builds for a passing run of "x",
+    // Gate family: what the quality gate builds for a passing run that was
+    // pointed at the correlation the phase-gate write above left for "x",
     // appended here rather than by the gate script.
+    const correlated = loadRunCorrelation(
+      `${RUN_CORRELATIONS_DIR}/x.json`,
+      box.cwd,
+    );
+    if (!correlated.ok) throw new Error(correlated.error);
     const gate = appendEvent(
       gateRanEvent({
-        result: { passed: true, forgeSlug: "x" },
+        result: { passed: true },
         durationMs: 1500,
         trigger: "TaskCompleted",
         attach: gateAttach({
           cwd: box.cwd,
           env: {},
-          forgeSlug: "x",
+          correlation: correlated.value,
           state: readRunState("x", box.cwd),
           path: box.path,
         }),
