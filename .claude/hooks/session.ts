@@ -10,15 +10,15 @@
  * SessionStart: records `session.started` in the ledger, leaves the session
  * mirror in the worktree, logs to `session.jsonl`, pulls Beads and prints the
  * orientation lines the session reads.
- * SessionEnd: records `session.ended` first, then pushes Beads exactly once
- * and logs how the push went. It prints nothing, and never pulls. Without a
- * payload there is no session id, so nothing is recorded in the ledger; the
- * push and the log lines still happen.
+ * SessionEnd: records `session.ended` first, then logs to `session.jsonl`. It
+ * prints nothing and runs no `bd` command: the tracker is neither pulled nor
+ * pushed when a session ends. Without a payload there is no session id, so
+ * nothing is recorded in the ledger; the log line is still written.
  *
  * It always exits 0: a failure here must never cost the session.
  */
 
-import { execFileSync, execSync } from "child_process";
+import { execSync } from "child_process";
 import { appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import {
@@ -42,9 +42,6 @@ const SESSION_HANDOFF_PATH = join(
   "session-handoff.md",
 );
 
-/** Leaves room inside the SessionEnd hook's own timeout (see `.claude/settings.json`). */
-const PUSH_TIMEOUT_MS = 30_000;
-
 function run(cmd: string): string {
   try {
     return execSync(cmd, {
@@ -65,30 +62,11 @@ function log(entry: Record<string, unknown>): void {
   }
 }
 
-function pushBeads(): { ok: boolean; ms: number } {
-  const started = performance.now();
-  let ok = false;
-  try {
-    execFileSync("bd", ["dolt", "push"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: PUSH_TIMEOUT_MS,
-    });
-    ok = true;
-  } catch {
-    // No remote, no auth, no `bd`: reported through `ok`.
-  }
-  return { ok, ms: Math.round(performance.now() - started) };
-}
-
 /** The ledger half of the hook. A failure is one stderr line, never an exit code. */
 function ledger(event: SessionHookEvent, input: HookInput): void {
   try {
     const deps = hookDeps({ env: process.env, cwd: process.cwd() });
-    if (event === "SessionEnd")
-      handleSessionEnd(input, deps, {
-        push: pushBeads,
-        log: (entry) => log({ ...entry, timestamp: new Date().toISOString() }),
-      });
+    if (event === "SessionEnd") handleSessionEnd(input, deps);
     else handleSessionStart(input, deps);
   } catch (error) {
     console.error(
@@ -101,14 +79,10 @@ async function main(): Promise<void> {
   const input = await readHookInput();
   const { event, source } = sessionEventOf(input, process.argv.slice(2));
 
-  // The ledger first: `session.ended` must land before the push, which may be
-  // cut short, and before the git calls below, which are slow. An adapter
-  // records its headless child's session itself. A session end whose payload
-  // never arrived still pushes: the handler records nothing without a session id.
-  if (!isAdapterChild()) {
-    if (event === "SessionEnd") ledger(event, input ?? {});
-    else if (input !== null) ledger(event, input);
-  }
+  // The ledger first: `session.ended` must land before the git calls below,
+  // which are slow and may be cut short. An adapter records its headless
+  // child's session itself, and without a payload there is no session to record.
+  if (input !== null && !isAdapterChild()) ledger(event, input);
 
   const logEntry = {
     event,
