@@ -40,6 +40,7 @@ function gate(passed: boolean, over: Partial<GateRun> = {}): GateRun {
     host: null,
     taskId: null,
     forgeSlug: null,
+    evaluatorVerdict: null,
     ...over,
   };
 }

@@ -124,6 +124,7 @@ const GATE: GateRun = {
   host: null,
   taskId: null,
   forgeSlug: null,
+  evaluatorVerdict: null,
   checks: [
     { name: "typecheck", passed: true, skipped: false, detail: null },
     {
@@ -155,6 +156,47 @@ export const UNLINKED_GATE: GateRun = {
     "no run correlation was given (--correlation <path> or AGENT_FORGE_RUN_CORRELATION)",
   host: { idleTeammateName: "worker-2" },
   checks: [{ name: "typecheck", passed: true, skipped: false, detail: null }],
+};
+
+const VERDICT_CHECK = {
+  name: "eval-verdict",
+  passed: true,
+  skipped: false,
+  detail: "PASS B=0 H=0; evaluator: model claude/claude-opus-5-5",
+};
+
+/** A gate run whose strict check bound the run's own schema 2 verdict. */
+export const VERDICT_BOUND_GATE: GateRun = {
+  ...GATE,
+  passed: true,
+  checks: [
+    { name: "typecheck", passed: true, skipped: false, detail: null },
+    VERDICT_CHECK,
+  ],
+  evaluatorVerdict: {
+    evidence: "schema-2",
+    path: ".tmp/work/evaluations/5f2c9a/verdict.json",
+    sha256: "9b74c9897bac770ffc029102a200c5de".repeat(2),
+    bytes: 412,
+    evaluator: {
+      kind: "model",
+      requestedProvider: "claude",
+      requestedModel: "claude-opus-5-5",
+      requestedRank: "master",
+      observedProvider: "claude",
+      observedModel: "claude-opus-5-5",
+      providerEvidence: "selected-direct-transport",
+      modelEvidence: "response-field",
+      rankPolicyDecision: "allowed",
+      rankPolicyRule: "evaluator-at-or-above-builder",
+    },
+  },
+};
+
+/** A gate run whose strict check passed on a verdict that named no run. */
+export const LEGACY_VERDICT_GATE: GateRun = {
+  ...VERDICT_BOUND_GATE,
+  evaluatorVerdict: { evidence: "legacy" },
 };
 
 /** An entry logged before entries had a schema version. */
@@ -364,6 +406,8 @@ export async function stubRepos(
   overrides: Partial<ReposKnowledge> = {},
 ): Promise<void> {
   await page.route("**/__agent-forge/dev-api/repos-knowledge", (route) =>
-    route.fulfill({ json: { ...REPOS, data: { ...REPOS.data, ...overrides } } }),
+    route.fulfill({
+      json: { ...REPOS, data: { ...REPOS.data, ...overrides } },
+    }),
   );
 }
