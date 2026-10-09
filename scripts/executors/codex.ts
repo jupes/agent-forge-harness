@@ -4,13 +4,14 @@
  * `bun run codex:sync` runs first so `.agents/skills/` exists for the worktree
  * (inject `prepare` in tests).
  *
- * Checked against `codex` 0.159.0 and 0.160.0 on Windows, run directly
- * (2026-10-08): the flags below are accepted, and a shell command arrives as
- * `item.started` then `item.completed` with `item.type: "command_execution"`
- * and a numeric `exit_code`. Only the completed item is mapped, so a command
- * is one tool call. Items other than a shell command have not been observed
- * and are not mapped. One run through `forge:exec` on 0.160.0 (2026-10-09)
- * left `session.started`, a `tool.called` for the shell command and
+ * Checked against `codex` on Windows, run directly (2026-10-08): 0.159.0 and
+ * 0.160.0 both accept the flags below. On 0.160.0 — the only version that got
+ * as far as a command — one shell command arrived as `item.started` then
+ * `item.completed` with `item.type: "command_execution"` and a numeric
+ * `exit_code`. Only the completed item is mapped, so a command is one tool
+ * call. Items other than a shell command have not been observed and are not
+ * mapped. One run through `forge:exec` on 0.160.0 (2026-10-09) left
+ * `session.started`, a `tool.called` for the shell command and
  * `session.ended` in the ledger.
  */
 

@@ -65,30 +65,47 @@ describe("forge:exec", () => {
   test("with no ledger path injected, rows go to the ledger of the process environment, not to the home handed to the child", async () => {
     const { root, worktree, deps } = setup();
     const childHome = join(root, "child forge home");
-    const beadId = `b-default-${crypto.randomUUID().slice(0, 8)}`;
     const { ledgerPath: _injected, ...withoutLedger } = deps;
-    const out = await runExec(
-      ["--bead", beadId, "--worktree", worktree, "--prompt", "hi"],
-      {
-        ...withoutLedger,
-        env: { ...deps.env, AGENT_FORGE_HOME: childHome },
-        command: fake("claude"),
-      },
-    );
-    expect(out.code).toBe(0);
-    // The test process's own ledger: the preload points it at a temp home.
-    expect(queryEvents({ beadId }).map((row) => row.kind)).toEqual([
-      "session.started",
-      "tool.called",
-      "tool.called",
-      "session.ended",
-    ]);
-    expect(out.body.data).toMatchObject({
-      events: 4,
-      recorded: 4,
-      ledger: ledgerPath(),
-    });
-    expect(existsSync(join(childHome, "ledger.db"))).toBe(false);
+
+    // This test writes through the default path, so it names the process's
+    // home itself for its own duration: it must not depend on the test preload
+    // (absent when the file is run from another directory) to stay off the
+    // real ledger.
+    const processHome = join(root, "process forge home");
+    const processLedger = join(processHome, "ledger.db");
+    ledgers.push(processLedger);
+    const saved = process.env.AGENT_FORGE_HOME;
+    process.env.AGENT_FORGE_HOME = processHome;
+    try {
+      expect(ledgerPath()).toBe(processLedger);
+      const out = await runExec(
+        ["--bead", "b-default", "--worktree", worktree, "--prompt", "hi"],
+        {
+          ...withoutLedger,
+          env: { ...deps.env, AGENT_FORGE_HOME: childHome },
+          command: fake("claude"),
+        },
+      );
+      expect(out.code).toBe(0);
+      expect(
+        queryEvents({ beadId: "b-default" }).map((row) => row.kind),
+      ).toEqual([
+        "session.started",
+        "tool.called",
+        "tool.called",
+        "session.ended",
+      ]);
+      expect(out.body.data).toMatchObject({
+        events: 4,
+        recorded: 4,
+        ledger: processLedger,
+      });
+      expect(existsSync(processLedger)).toBe(true);
+      expect(existsSync(join(childHome, "ledger.db"))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_FORGE_HOME;
+      else process.env.AGENT_FORGE_HOME = saved;
+    }
   });
 
   test("run from a linked worktree of the harness, events carry the main checkout as workspace", async () => {

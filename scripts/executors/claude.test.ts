@@ -144,6 +144,21 @@ describe("parseClaudeLine", () => {
     ]);
   });
 
+  test("a block that is not a tool_use is not a tool, even when it carries a name", () => {
+    const assistant = line({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_result", name: "Write", content: "done" },
+          { type: "tool_use", id: "t1", name: "Read", input: { c: 3 } },
+        ],
+      },
+    });
+    expect(parseClaudeLine(assistant)).toEqual([
+      { tool: "Read", input: { c: 3 } },
+    ]);
+  });
+
   test("a line that is not an assistant message yields nothing, even when it carries a tool_use block", () => {
     const echoed = {
       content: [{ type: "tool_use", id: "t1", name: "Write", input: {} }],

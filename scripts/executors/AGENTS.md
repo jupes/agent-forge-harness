@@ -14,9 +14,11 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
 - An adapter marks its child: `childEnv` (`env.ts`) adds `AGENT_FORGE_ADAPTER=1` plus the bead, smith, run and parent
   session. The harness hooks record nothing inside such a child (`isAdapterChild`), so a session its adapter records
   is not recorded a second time. The values come from the request, never from the parent environment.
-- Tests use `fixtures/fake-cli.ts` and their own ledger file (`ExecDeps.ledgerPath`). Every temp root plants a `.git`
-  directory: the adapter resolves checkouts, and a bare temp directory resolves to whatever checkout it sits in. Pass
-  `cwd` as well — the default launch directory is the real one, which may hold a live session mirror.
+- Tests use `fixtures/fake-cli.ts` and their own ledger file (`ExecDeps.ledgerPath`). The one test of the default
+  ledger path cannot pass a file, so it points `AGENT_FORGE_HOME` at its own temp home for its duration instead of
+  relying on the test preload. Every temp root plants a `.git` directory: the adapter resolves checkouts, and a bare
+  temp directory resolves to whatever checkout it sits in. Pass `cwd` as well — the default launch directory is the
+  real one, which may hold a live session mirror.
 - The fake binary proves plumbing. What real CLIs have shown, on Windows, each binary run directly with the adapter's
   flags and an allowlisted environment (2026-10-08):
   - `claude` 2.1.293 accepts every flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
