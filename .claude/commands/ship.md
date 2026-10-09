@@ -162,8 +162,7 @@ gh pr edit <number> --body "$(cat .tmp/work/pr-body.md)"
 bd close <TASK-ID> 2>/dev/null || true
 bd comments add <TASK-ID> "worklog: shipped — PR #<n>" 2>/dev/null || true
 
-# Push Beads data
-bd dolt push 2>/dev/null || true
+# Beads is local-only here: nothing to push (see "Tracker is local-only" in CLAUDE.md)
 
 # Deploy dashboard
 bun run build-pages 2>/dev/null || true

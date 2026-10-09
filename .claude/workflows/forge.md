@@ -86,7 +86,7 @@ updates Beads:
 | Blocked on something external | `bd update <id> --status blocked` + a `deps:` comment naming the blocker (and file the blocker as its own issue) |
 | Review verdict | `bd comments add <id> "review: PASS\|FAIL — <counts>"` |
 | Task done (with evidence) | `bd close <id>` + closing `worklog:` comment |
-| Run shipped | close the epic/feature; `bd dolt push` |
+| Run shipped | close the epic/feature (the tracker is local-only — no `bd dolt push`) |
 
 Comment prefixes follow the harness convention: `worklog:`, `ac:`, `design:`, `deps:`, `review:`.
 Do **not** batch all status changes to the end — a stale issue graph misleads the next session.

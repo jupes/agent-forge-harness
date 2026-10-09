@@ -21,7 +21,7 @@ Follow **`.claude/skills/forge-ship/SKILL.md`** in full. In short:
 5. Build the PR body from the canonical template (`.claude/skills/pr-description/`), mapping the
    ship report into its sections; validate with `check-pr-body.ts`; then
    `gh pr create --base <base> --body "$(cat .tmp/work/pr-body.md)"`.
-6. Close the epic/feature; `bd dolt push`; `bun run forge:phase-gate ship --slug <slug> --write`.
+6. Close the epic/feature (the tracker is local-only — no `bd dolt push`); `bun run forge:phase-gate ship --slug <slug> --write`.
 
 For the underlying push/PR mechanics, this reuses the patterns in `.claude/commands/ship.md`.
 

@@ -26,8 +26,8 @@ bd show <issue-id>
 bd update <issue-id> --claim
 bd update <issue-id> --status done
 
-# Sync with Dolt remote
-bd dolt push
+# This tracker is local-only: there is no Dolt remote and `bd dolt push` is disabled (no-push).
+# Back up with: bd export --all -o <file>.jsonl
 ```
 
 ### Working with Issues

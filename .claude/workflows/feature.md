@@ -275,7 +275,7 @@ Closes <TASK-ID>" \
 # Close Beads task
 bd close <TASK-ID>
 bd comments add <TASK-ID> "worklog: shipped in PR #<n>"
-bd dolt push
+# The tracker is local-only: do not run `bd dolt push`.
 ```
 
 ---

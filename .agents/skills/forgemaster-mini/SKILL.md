@@ -36,7 +36,7 @@ Follow **`.claude/workflows/forge-mini.md`** in full. In short:
    approach once.
 3. **Build** — TDD via `.claude/skills/tdd/SKILL.md` (vertical slices) for code; one runnable demo;
    `worklog:` comment; commit with tests.
-4. **Wrap** — quality gates, close the task with evidence, push (+ PR if warranted), `bd dolt push`,
+4. **Wrap** — quality gates, close the task with evidence, push (+ PR if warranted; the tracker is local-only, so no `bd dolt push`),
    and report inline: what changed, how to verify, Beads id + PR link.
 
 No `plans/` or `reports/` doc files and no `forge:phase-gate` / run state file — tracking lives in

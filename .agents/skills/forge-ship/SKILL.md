@@ -114,7 +114,7 @@ view of the same run.
 ```bash
 bd close <epic-or-feature-id>
 bd comments add <epic-or-feature-id> "worklog: shipped — PR #<n>; report reports/<slug>-ship.md"
-bd dolt push
+# The tracker is local-only: do not run `bd dolt push`.
 bun run forge:phase-gate ship --slug <slug> --write     # records the run complete
 ```
 
