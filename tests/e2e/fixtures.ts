@@ -1,4 +1,14 @@
 import type { Page } from "@playwright/test";
+import type {
+  ForgeRunSnapshot,
+  ForgeRunView,
+  GateRun,
+} from "../../scripts/dashboard/forge-run-model";
+import type {
+  RepoEntry,
+  ReposKnowledge,
+} from "../../scripts/dashboard/repos-knowledge-model";
+import type { BeadsIssue, BeadsPayload, IssueStatus } from "../../types/beads";
 
 /**
  * Fixture state for the Forge run and Repos & knowledge views.
@@ -8,14 +18,20 @@ import type { Page } from "@playwright/test";
  * populated: the behavior specs, and the committed screenshots — which, in a
  * public repository, must not capture a real home directory or the list of
  * repositories someone has cloned.
+ *
+ * Every fixture is held to the type the real endpoint returns (`satisfies`).
+ * When a model changes shape, `bun run typecheck` fails here — instead of the
+ * page throwing on a stale stub and each test timing out on its first locator.
  */
 
 const ts = "2026-09-11T00:00:00.000Z";
 
 /** The checkout the fixture dashboard serves; gate runs are scoped to it. */
-const CHECKOUT = "/home/dev/agent-forge-harness/trees/a1b2c3";
+export const CHECKOUT = "/home/dev/agent-forge-harness/trees/a1b2c3";
 
-const issue = (fields: Record<string, unknown>): Record<string, unknown> => ({
+const issue = (
+  fields: Omit<BeadsIssue, "createdAt" | "updatedAt">,
+): BeadsIssue => ({
   createdAt: ts,
   updatedAt: ts,
   ...fields,
@@ -92,70 +108,83 @@ export const BEADS = {
     { from: "demo-shell", to: "demo-primitives", type: "blocks" },
     { from: "demo-migrate", to: "demo-shell", type: "blocks" },
   ],
+} satisfies BeadsPayload;
+
+const GATE: GateRun = {
+  event: "TaskCompleted",
+  timestamp: ts,
+  passed: false,
+  checkout: CHECKOUT,
+  branch: "feat/design-system",
+  taskId: "demo-primitives",
+  forgeSlug: "design-system",
+  checks: [
+    { name: "typecheck", passed: true, skipped: false, detail: null },
+    {
+      name: "lint",
+      passed: false,
+      skipped: false,
+      detail: "Found 2 errors.",
+    },
+    {
+      name: "tests",
+      passed: true,
+      skipped: true,
+      detail: "no test files",
+    },
+    { name: "clean-tree", passed: true, skipped: false, detail: null },
+    { name: "ac-verify", passed: true, skipped: false, detail: null },
+  ],
+};
+
+/** One gated run, mid-implement. Runs are concurrent; the API returns a list. */
+const RUN: ForgeRunView = {
+  slug: "design-system",
+  feature: "Adopt a shared design system",
+  epic: "demo-epic",
+  mode: "gated",
+  complete: false,
+  updatedAt: ts,
+  phases: [
+    {
+      id: "research",
+      state: "complete",
+      artifact: "plans/research/design-system.md",
+      artifactMissing: false,
+    },
+    {
+      id: "plan",
+      state: "complete",
+      artifact: "plans/drafts/design-system.md",
+      artifactMissing: false,
+    },
+    {
+      id: "implement",
+      state: "active",
+      artifact: null,
+      artifactMissing: false,
+    },
+    {
+      id: "ship",
+      state: "locked",
+      artifact: "reports/design-system-ship.md",
+      artifactMissing: false,
+    },
+  ],
+  reviews: [],
+  gate: GATE,
+  gateScope: { checkout: CHECKOUT, slug: "design-system" },
 };
 
 export const FORGE = {
   ok: true,
   error: null,
   data: {
-    slug: "design-system",
-    feature: "Adopt a shared design system",
-    epic: "demo-epic",
-    updatedAt: ts,
-    phases: [
-      {
-        id: "research",
-        state: "complete",
-        artifact: "plans/research/design-system.md",
-        artifactMissing: false,
-      },
-      {
-        id: "plan",
-        state: "complete",
-        artifact: "plans/drafts/design-system.md",
-        artifactMissing: false,
-      },
-      {
-        id: "implement",
-        state: "active",
-        artifact: null,
-        artifactMissing: false,
-      },
-      {
-        id: "ship",
-        state: "locked",
-        artifact: "reports/design-system-ship.md",
-        artifactMissing: false,
-      },
-    ],
-    gate: {
-      event: "TaskCompleted",
-      timestamp: ts,
-      passed: false,
-      checkout: CHECKOUT,
-      branch: "feat/design-system",
-      taskId: "demo-primitives",
-      forgeSlug: "design-system",
-      checks: [
-        { name: "typecheck", passed: true, skipped: false, detail: null },
-        {
-          name: "lint",
-          passed: false,
-          skipped: false,
-          detail: "Found 2 errors.",
-        },
-        {
-          name: "tests",
-          passed: true,
-          skipped: true,
-          detail: "no test files",
-        },
-        { name: "clean-tree", passed: true, skipped: false, detail: null },
-        { name: "ac-verify", passed: true, skipped: false, detail: null },
-      ],
-    },
-    gateScope: { checkout: CHECKOUT, slug: "design-system" },
-  },
+    runs: [RUN],
+    selected: RUN.slug,
+    checkout: CHECKOUT,
+    gate: GATE,
+  } satisfies ForgeRunSnapshot,
 };
 
 const repo = (
@@ -163,8 +192,8 @@ const repo = (
   defaultBranch: string,
   cloned: boolean,
   knowledgeAgeDays: number | null,
-  freshness: string,
-) => ({
+  freshness: RepoEntry["freshness"],
+): RepoEntry => ({
   name,
   path: `repos/${name}`,
   url: `https://github.com/example/${name}.git`,
@@ -180,7 +209,7 @@ export const REPOS = {
   ok: true,
   error: null,
   data: {
-    localStateFrom: null as string | null,
+    localStateFrom: null,
     repos: [
       repo("billing-api", "main", true, 3, "current"),
       repo("legacy-worker", "trunk", true, 45, "stale"),
@@ -222,14 +251,29 @@ export const REPOS = {
         },
       ],
     },
-  },
+  } satisfies ReposKnowledge,
 };
+
+/**
+ * Serve a Beads snapshot in place of `docs/data/beads.json`, which is
+ * generated, gitignored data: a fresh checkout — CI included — has none.
+ */
+export async function stubSnapshot(
+  page: Page,
+  beads: BeadsPayload = BEADS,
+): Promise<void> {
+  await page.route("**/data/beads.json", (route) =>
+    route.fulfill({ json: beads }),
+  );
+}
 
 export interface ForgeRunStub {
   /** Replace checkpoint statuses, keyed by issue id. */
-  statuses?: Record<string, string>;
+  statuses?: Record<string, IssueStatus>;
   /** Replace the gate run; null means no run belongs to this checkout. */
-  gate?: typeof FORGE.data.gate | null;
+  gate?: GateRun | null;
+  /** Serve a checkout with no forge run at all, as a fresh clone has. */
+  empty?: boolean;
 }
 
 /**
@@ -241,25 +285,20 @@ export async function stubForgeRun(
   stub: ForgeRunStub = {},
 ): Promise<unknown[]> {
   const statuses = stub.statuses ?? {};
-  const beads = {
-    ...BEADS,
-    issues: BEADS.issues.map((entry) => {
-      const status = statuses[String(entry["id"])];
-      return status ? { ...entry, status } : entry;
-    }),
-  };
-  const forge = {
-    ...FORGE,
-    data: {
-      ...FORGE.data,
-      gate: stub.gate === undefined ? FORGE.data.gate : stub.gate,
-    },
-  };
+  const gate = stub.gate === undefined ? GATE : stub.gate;
+  const data: ForgeRunSnapshot = stub.empty
+    ? { runs: [], selected: null, checkout: CHECKOUT, gate }
+    : { ...FORGE.data, runs: [{ ...RUN, gate }], gate };
+  const forge = { ...FORGE, data };
 
   const posts: unknown[] = [];
-  await page.route("**/data/beads.json", (route) =>
-    route.fulfill({ json: beads }),
-  );
+  await stubSnapshot(page, {
+    ...BEADS,
+    issues: BEADS.issues.map((entry) => {
+      const status = statuses[entry.id];
+      return status ? { ...entry, status } : entry;
+    }),
+  });
   await page.route("**/__agent-forge/dev-api/forge-run", (route) =>
     route.fulfill({ json: forge }),
   );
@@ -275,7 +314,7 @@ export async function stubForgeRun(
 
 export async function stubRepos(
   page: Page,
-  overrides: Partial<typeof REPOS.data> = {},
+  overrides: Partial<ReposKnowledge> = {},
 ): Promise<void> {
   await page.route("**/__agent-forge/dev-api/repos-knowledge", (route) =>
     route.fulfill({ json: { ...REPOS, data: { ...REPOS.data, ...overrides } } }),
