@@ -32,8 +32,11 @@ error, never a silent fall-through.
 
 `bun run forge:exec --bead <id> --smith <name> --worktree <path> --prompt <text>` runs one bounded task through the
 smith's provider CLI (`scripts/executors/`). Spawned processes get only the base environment plus
-`[execution.env] pass`; nothing else from the parent environment reaches them. `bun run forge:doctor` reports which
-provider CLIs are installed.
+`[execution.env] pass`, and the variables the adapter sets itself (the adapter marker, bead, smith, run and parent
+session); nothing else from the parent environment reaches them. The run's `session.started`, `tool.called` and
+`session.ended` events go to the ledger with the smith on each: `bun run forge:audit --bead <id>` shows them. A ledger
+that cannot be written is reported in the command's output and never stops the provider. `bun run forge:doctor`
+reports which provider CLIs are installed.
 
 ## When to use which rank
 

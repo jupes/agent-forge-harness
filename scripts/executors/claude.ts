@@ -4,9 +4,12 @@
  * Headless permissions follow decision #6: `acceptEdits` plus an allowlist of
  * project scripts. `--dangerously-skip-permissions` is never used.
  *
- * The stream shape (`assistant` messages carrying `tool_use` content blocks)
- * is the documented stream-json format; the flags were not run against a real
- * CLI here (none installed) — see the follow-up that verifies both providers.
+ * Checked against `claude` 2.1.293 on Windows, run directly (2026-10-08):
+ * every flag below is accepted, and the stream is framed as `system` /
+ * `assistant` / `result` lines. That run stopped at authentication, so the
+ * shape `parseClaudeLine` maps — an `assistant` message carrying `tool_use`
+ * content blocks, the documented stream-json format — has not been observed
+ * from a real CLI.
  */
 
 import { createCliAdapter, type ParsedTool } from "./cli-adapter";
