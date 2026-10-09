@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -387,12 +388,15 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     expect(event?.beadId).toBe("b-1");
     expect(event?.executor).toEqual({ provider: "claude", model: "m-1" });
     // The verdict file names no evaluator, so none is stored; the builder is
-    // the executor the run recorded.
-    expect(event?.payload).toEqual({
+    // the executor the run recorded. The file reference says it was schema 1.
+    expect(event?.payload).toMatchObject({
       verdict: "pass",
       builder: { provider: "claude", model: "m-1" },
+      verdictArtifact: { path: "v.json", schemaVersion: 1 },
       summary: "looks right; key [REDACTED:anthropic-api-key] seen",
     });
+    expect("evaluator" in (event?.payload ?? {})).toBe(false);
+    expect("evaluatorIdentity" in (event?.payload ?? {})).toBe(false);
     expect(JSON.stringify(runEvents(box, "x"))).not.toContain(SECRET);
     // It is recorded before the round's decision.
     expect(
@@ -428,11 +432,14 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     box: Box,
     json: string,
     env: Record<string, string> = {},
-  ): Promise<{ exitCode: number; data: Record<string, unknown> }> {
-    const file = join(
-      box.cwd,
-      `verdict-${Math.random().toString(36).slice(2)}.json`,
-    );
+  ): Promise<{
+    exitCode: number;
+    data: Record<string, unknown>;
+    /** The verdict file's name, which is its path relative to the checkout. */
+    file: string;
+  }> {
+    const name = `verdict-${Math.random().toString(36).slice(2)}.json`;
+    const file = join(box.cwd, name);
     writeFileSync(file, json);
     const reviewed = await run(
       box,
@@ -443,6 +450,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     return {
       exitCode: reviewed.exitCode,
       data: JSON.parse(reviewed.stdout).data,
+      file: name,
     };
   }
 
@@ -454,7 +462,8 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
 
   test("a schema 2 verdict recorded by forge:review stores its evaluator", async () => {
     const box = await correlatedRun(["--provider", "claude", "--model", "m-1"]);
-    const reviewed = await review(box, v2Json({ summary: "second opinion" }));
+    const json = v2Json({ summary: "second opinion" });
+    const reviewed = await review(box, json);
     expect(reviewed.exitCode).toBe(0);
     expect(reviewed.data.verdictError).toBeUndefined();
     expect(reviewed.data.verdictSchemaVersion).toBe(2);
@@ -468,6 +477,13 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       builder: { provider: "claude", model: "m-1" },
       evaluator: { provider: "claude", model: "claude-sonnet-5-5" },
       evaluatorIdentity: MODEL_EVALUATOR,
+      // The file as it was read, once: its path in the checkout and its bytes' digest.
+      verdictArtifact: {
+        path: reviewed.file,
+        sha256: createHash("sha256").update(json).digest("hex"),
+        bytes: Buffer.byteLength(json),
+        schemaVersion: 2,
+      },
       summary: "second opinion",
     });
   }, 60_000);

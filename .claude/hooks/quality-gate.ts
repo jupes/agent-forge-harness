@@ -21,8 +21,13 @@
  * not validate fails the gate outright. What the host says about itself on
  * stdin is recorded in the log entry and goes nowhere else.
  *
+ * In strict mode the run's evaluator verdict is read from the one path the
+ * correlation's run id declares (`scripts/eval-verdict-store.ts`), once: the
+ * bytes that are validated are the bytes that are hashed, and the log entry
+ * carries their path, digest and size with the ids and evaluator they name.
+ *
  * Each run is also appended to the event ledger as `gate.ran`, and a verdict
- * the strict check read as `verdict.bound`.
+ * the strict check bound as `verdict.bound`.
  *
  * Pure logic is exported (and tested in `scripts/quality-gate-hook.test.ts`);
  * the block at the bottom is the only part that runs as the hook.
@@ -30,8 +35,7 @@
 
 import { Glob } from "bun";
 import { execSync } from "child_process";
-import { appendFileSync, existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { appendFileSync, readFileSync } from "fs";
 import { evaluateCloseTestingAttestation } from "../../scripts/close-testing-attestation";
 import { loadConfig } from "../../scripts/config/load";
 import {
@@ -40,6 +44,10 @@ import {
   verdictBlocksShip,
   verdictForRun,
 } from "../../scripts/eval-verdict";
+import {
+  type ReadVerdictResult,
+  readVerdictOnce,
+} from "../../scripts/eval-verdict-store";
 import { strictEvaluatorProblem } from "../../scripts/evaluator-policy";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { readRunState } from "../../scripts/forge/runs-store";
@@ -49,6 +57,7 @@ import {
   readBeadsIssue,
 } from "../../scripts/quality-gate-beads";
 import {
+  type EvaluatorArtifactReference,
   type GateEvent,
   type GateEventSource,
   type GateIdentity,
@@ -97,6 +106,8 @@ export interface GateResult extends GateIdentity {
   passed: boolean;
   checks: CheckResult[];
   blockingFailures: string[];
+  /** The evaluator verdict the strict check bound. Absent when it bound none. */
+  evaluatorArtifact?: EvaluatorArtifactReference;
 }
 
 /** Everything the gate touches outside its arguments, so tests can replace it. */
@@ -113,6 +124,8 @@ export interface GateDeps {
   smiths(checkout: string): readonly Smith[];
   /** The stored state of a Forge run in the checkout, when it has one. */
   runState(runId: string, checkout: string): ForgeState | null;
+  /** Reads a run's evaluator verdict at its declared path: called at most once per gate run. */
+  readVerdict(checkout: string, executionRunId: string): ReadVerdictResult;
 }
 
 export type GateOutcome =
@@ -127,7 +140,8 @@ export type GateOutcome =
       /**
        * The verdict the strict check accepted as this run's: schema 2, naming
        * the correlated bead and run, by an evaluator that satisfies strict
-       * completion. Its outcome may still block.
+       * completion. Its outcome may still block. The file it was read from
+       * is `result.evaluatorArtifact`.
        */
       boundVerdict: EvalVerdict | null;
       /** The hook event that ran the gate; absent for a run by hand. */
@@ -151,12 +165,12 @@ function runChecks(
 ): {
   checks: CheckResult[];
   blockingFailures: string[];
-  boundVerdict: EvalVerdict | null;
+  bound: BoundVerdict | null;
 } {
   const { run } = deps;
   const checks: CheckResult[] = [];
   const blockingFailures: string[] = [];
-  let boundVerdict: EvalVerdict | null = null;
+  let bound: BoundVerdict | null = null;
 
   // Check 1: TypeScript typecheck
   {
@@ -219,7 +233,7 @@ function runChecks(
 
   // TaskCompleted-only checks
   if (event !== "TaskCompleted") {
-    return { checks, blockingFailures, boundVerdict };
+    return { checks, blockingFailures, bound };
   }
 
   // Checks 5 and 6 read the Beads issue the run is correlated to.
@@ -322,7 +336,7 @@ function runChecks(
         const outcome = strictVerdictCheck(correlation, deps, strict);
         checks.push(outcome.check);
         if (!outcome.check.passed) blockingFailures.push("eval-verdict");
-        boundVerdict = outcome.bound;
+        bound = outcome.bound;
       }
     } else {
       checks.push({
@@ -331,13 +345,19 @@ function runChecks(
         skipped: true,
         skipReason:
           mode === ""
-            ? "set AGENT_FORGE_EVAL_VERDICT=strict to require .tmp/work/<TASK-ID>-verdict.json"
+            ? "set AGENT_FORGE_EVAL_VERDICT=strict to require the run's evaluator verdict (.claude/protocols/evaluation-verdict.md)"
             : `AGENT_FORGE_EVAL_VERDICT="${mode}" is not strict`,
       });
     }
   }
 
-  return { checks, blockingFailures, boundVerdict };
+  return { checks, blockingFailures, bound };
+}
+
+/** A verdict the strict check bound, with the file it was read from. */
+interface BoundVerdict {
+  verdict: EvalVerdict;
+  artifact: EvaluatorArtifactReference;
 }
 
 /** An evaluator in a few words, for a check's output. */
@@ -347,38 +367,25 @@ function describeEvaluator(evaluator: EvaluatorIdentity): string {
 }
 
 /**
- * The strict check for a correlated run: its evaluator verdict must be a
- * schema 2 verdict naming the correlation's bead and run, by an evaluator that
- * satisfies strict completion, and must not block.
+ * The strict check for a correlated run. The run's evaluator verdict is read
+ * once, from the path the correlation's run id declares and nowhere else.
+ * Everything after works on that one buffer: it must parse as a schema 2
+ * verdict naming the correlation's bead and run, by an evaluator that
+ * satisfies strict completion, and must not block. A verdict that gets that
+ * far is bound: its reference carries the buffer's digest and size.
  */
 function strictVerdictCheck(
   correlation: RunCorrelation,
   deps: GateDeps,
   strict: { checkout: string; runState: ForgeState | null },
-): { check: CheckResult; bound: EvalVerdict | null } {
+): { check: CheckResult; bound: BoundVerdict | null } {
   const refused = (output: string) => ({
     check: { name: "eval-verdict", passed: false, output },
     bound: null,
   });
-  const verdictPath = join(
-    deps.cwd,
-    ".tmp",
-    "work",
-    `${correlation.beadsIssueId}-verdict.json`,
-  );
-  if (!existsSync(verdictPath)) {
-    return refused(`Missing verdict file: ${verdictPath}`);
-  }
-  let text: string;
-  try {
-    text = readFileSync(verdictPath, "utf8");
-  } catch {
-    return refused(`Could not read verdict file: ${verdictPath}`);
-  }
-  if (text.trim() === "") {
-    return refused(`Empty verdict file: ${verdictPath}`);
-  }
-  const parsed = parseEvalVerdictJson(text);
+  const read = deps.readVerdict(strict.checkout, correlation.executionRunId);
+  if (!read.ok) return refused(read.error);
+  const parsed = parseEvalVerdictJson(read.buffer.toString("utf8"));
   if (!parsed.ok) return refused(parsed.error);
   const mine = verdictForRun(parsed.value, correlation);
   if (!mine.ok) return refused(mine.error);
@@ -391,6 +398,20 @@ function strictVerdictCheck(
     ...(builder ? { builder } : {}),
   });
   if (problem !== null) return refused(problem);
+
+  const bound: BoundVerdict = {
+    verdict,
+    artifact: {
+      kind: "evaluator-verdict",
+      path: read.path,
+      sha256: read.sha256,
+      bytes: read.bytes,
+      verdictSchemaVersion: verdict.schemaVersion,
+      executionRunId: verdict.executionRunId,
+      beadsIssueId: verdict.beadsIssueId,
+      evaluator: verdict.evaluator,
+    },
+  };
   if (verdictBlocksShip(verdict)) {
     return {
       check: {
@@ -398,7 +419,7 @@ function strictVerdictCheck(
         passed: false,
         output: `verdict FAIL with blocker/high — ${JSON.stringify(verdict.findings)}`,
       },
-      bound: verdict,
+      bound,
     };
   }
   return {
@@ -407,7 +428,7 @@ function strictVerdictCheck(
       passed: true,
       output: `${verdict.verdict} B=${verdict.findings.blocker} H=${verdict.findings.high}; evaluator: ${describeEvaluator(verdict.evaluator)}`,
     },
-    bound: verdict,
+    bound,
   };
 }
 
@@ -445,7 +466,7 @@ export function runQualityGate(input: {
       ? deps.runState(correlation.executionRunId, checkoutRoot)
       : null;
 
-  const { checks, blockingFailures, boundVerdict } = runChecks(
+  const { checks, blockingFailures, bound } = runChecks(
     invocation.event,
     correlation,
     deps,
@@ -469,13 +490,14 @@ export function runQualityGate(input: {
     passed: blockingFailures.length === 0,
     checks,
     blockingFailures,
+    ...(bound !== null ? { evaluatorArtifact: bound.artifact } : {}),
   };
   return {
     kind: "ran",
     result,
     correlation,
     runState,
-    boundVerdict,
+    boundVerdict: bound?.verdict ?? null,
     ...(invocation.eventSource === "stdin"
       ? { trigger: invocation.event }
       : {}),
@@ -568,6 +590,8 @@ if (import.meta.main) {
       hasTestFiles,
       smiths: configuredSmiths,
       runState: readRunState,
+      readVerdict: (checkout, executionRunId) =>
+        readVerdictOnce({ checkout, executionRunId }),
     },
   });
 
@@ -598,10 +622,19 @@ if (import.meta.main) {
       correlation,
       state: runState,
     });
-    if (boundVerdict !== null) {
+    // The verdict's file reference is the one already in the log entry: the
+    // file is not opened again for the ledger.
+    const artifact = result.evaluatorArtifact;
+    if (boundVerdict !== null && artifact !== undefined) {
       appendEvent(
         ledger.strictVerdictEvent({
           verdict: boundVerdict,
+          artifact: {
+            path: artifact.path,
+            sha256: artifact.sha256,
+            bytes: artifact.bytes,
+            schemaVersion: artifact.verdictSchemaVersion,
+          },
           ...(runState?.executor ? { builder: runState.executor } : {}),
           attach,
         }),

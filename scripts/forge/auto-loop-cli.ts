@@ -25,7 +25,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, relative, resolve } from "path";
 
 import { loadConfig } from "../config/load";
 import {
@@ -34,6 +34,7 @@ import {
   parseEvalVerdictJson,
   verdictForRun,
 } from "../eval-verdict";
+import { MAX_VERDICT_BYTES, sha256Hex } from "../eval-verdict-store";
 import { strictEvaluatorProblem } from "../evaluator-policy";
 import { type RunCorrelation, runCorrelationPath } from "../run-correlation";
 import {
@@ -183,10 +184,20 @@ if (import.meta.main) {
   // An unreadable or invalid verdict is recorded, not swallowed: decideNext
   // halts on it, which is the point — an auto run must not grade itself blind.
   // A verdict that is not this run's is as unusable as one that cannot be read.
+  // The file is read once: the bytes that are parsed are the bytes whose
+  // digest goes into the ledger.
   let verdict: EvalVerdictParsed | null = null;
   let verdictError: string | null = null;
+  let bytes: Buffer | null = null;
   try {
-    const parsed = parseEvalVerdictJson(readFileSync(verdictPath, "utf8"));
+    bytes = readFileSync(verdictPath);
+  } catch {
+    verdictError = `could not read ${verdictPath}`;
+  }
+  if (bytes !== null && bytes.byteLength > MAX_VERDICT_BYTES) {
+    verdictError = `${verdictPath} is larger than ${MAX_VERDICT_BYTES} bytes`;
+  } else if (bytes !== null) {
+    const parsed = parseEvalVerdictJson(bytes.toString("utf8"));
     if (!parsed.ok) {
       verdictError = parsed.error;
     } else {
@@ -194,9 +205,27 @@ if (import.meta.main) {
       if (mine.ok) verdict = mine.value;
       else verdictError = mine.error;
     }
-  } catch {
-    verdictError = `could not read ${verdictPath}`;
   }
+  // The path as the ledger records it: relative to the checkout when the file
+  // is inside it.
+  const inCheckout = relative(checkout, resolve(verdictPath)).replaceAll(
+    "\\",
+    "/",
+  );
+  const artifact =
+    verdict !== null && bytes !== null
+      ? {
+          path:
+            inCheckout.length > 0 &&
+            !inCheckout.startsWith("../") &&
+            !/^[A-Za-z]:|^\//.test(inCheckout)
+              ? inCheckout
+              : resolve(verdictPath).replaceAll("\\", "/"),
+          sha256: sha256Hex(bytes),
+          bytes: bytes.byteLength,
+          schemaVersion: verdict.schemaVersion,
+        }
+      : null;
   const bound =
     verdict?.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION ? verdict : null;
 
@@ -262,6 +291,7 @@ if (import.meta.main) {
       : attach,
     ledger.verdictBound({
       verdict,
+      ...(artifact ? { artifact } : {}),
       ...(state.executor ? { builder: state.executor } : {}),
     }),
   );

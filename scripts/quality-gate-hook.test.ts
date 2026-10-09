@@ -4,7 +4,8 @@
  * In process: `runQualityGate` with a constructed stdin result and recording
  * command runners, so every command line and every `bd` argument list the gate
  * produces can be inspected. The correlation and verdict files are real files
- * in a scratch checkout.
+ * in a scratch checkout; the verdict is read by the real reader, wrapped so a
+ * test can count its reads and change the file behind it.
  *
  * As a subprocess: the real `.claude/hooks/quality-gate.ts` with JSON piped on
  * stdin, in a scratch directory that is not a repository and has no
@@ -18,6 +19,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "crypto";
 import {
   existsSync,
   mkdirSync,
@@ -25,6 +27,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -37,6 +40,11 @@ import {
 import type { HookStdin } from "../.claude/hooks/utils/hook-input";
 import type { Executor } from "../types/hearth";
 import { BUILTIN_SMITHS } from "./config/defaults";
+import {
+  EVALUATIONS_DIR,
+  evaluatorVerdictPath,
+  readVerdictOnce,
+} from "./eval-verdict-store";
 import { closeLedger } from "./ledger/db";
 import { queryEvents } from "./ledger/query";
 import { RUN_CORRELATION_ENV } from "./run-correlation";
@@ -127,17 +135,35 @@ function modelEvaluator(
   };
 }
 
-/** Put `content` where the strict check looks for the verdict of `fileId`. */
+/**
+ * Put `content` at the declared verdict path of run `runId`: plain bytes, so
+ * a test can plant what no writer would. Returns the bytes.
+ */
 function verdict(
   box: Box,
-  fileId: string,
+  runId: string,
   content: Record<string, unknown> = v2(),
 ): string {
-  const file = join(box.cwd, ".tmp", "work", `${fileId}-verdict.json`);
+  const file = join(box.cwd, evaluatorVerdictPath(runId) ?? "");
+  mkdirSync(dirname(file), { recursive: true });
+  const bytes = JSON.stringify(content);
+  writeFileSync(file, bytes);
+  return bytes;
+}
+
+/** Where the strict check looked before verdicts were bound to runs. */
+function taskScopedVerdict(
+  box: Box,
+  bead: string,
+  content: Record<string, unknown>,
+): void {
+  const file = join(box.cwd, ".tmp", "work", `${bead}-verdict.json`);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(content));
-  return file;
 }
+
+const sha256 = (data: string) =>
+  createHash("sha256").update(data).digest("hex");
 
 const payload = (input: Record<string, unknown>): HookStdin => ({
   kind: "payload",
@@ -153,6 +179,8 @@ interface Recorded {
   commands: string[];
   /** Every program run with an argument array. */
   execs: Array<{ file: string; args: string[] }>;
+  /** Every run id whose verdict file the gate read. */
+  reads: string[];
 }
 
 /** Run the gate in process: every base check passes unless `answers` says otherwise. */
@@ -166,10 +194,13 @@ function gate(
     bd?: Record<string, { ok: boolean; output: string }>;
     /** Who the run's state says built the work. */
     builder?: Executor;
+    /** Runs right after the gate has read a verdict file, before it uses it. */
+    afterRead?: () => void;
   } = {},
 ): Recorded {
   const commands: string[] = [];
   const execs: Array<{ file: string; args: string[] }> = [];
+  const reads: string[] = [];
   const answers: Record<string, { ok: boolean; output: string }> = {
     [GIT_LOG]: { ok: true, output: "abc1234 a change\nscripts/a.test.ts" },
     "git rev-parse --show-toplevel": { ok: false, output: "" },
@@ -190,6 +221,12 @@ function gate(
     hasScript: () => true,
     hasTestFiles: () => true,
     smiths: () => Object.values(BUILTIN_SMITHS),
+    readVerdict: (checkout, executionRunId) => {
+      reads.push(executionRunId);
+      const read = readVerdictOnce({ checkout, executionRunId });
+      input.afterRead?.();
+      return read;
+    },
     runState: (runId) =>
       input.builder
         ? {
@@ -208,7 +245,7 @@ function gate(
     argv: input.argv ?? [],
     deps,
   });
-  return { outcome, commands, execs };
+  return { outcome, commands, execs, reads };
 }
 
 function ran(recorded: Recorded): Extract<GateOutcome, { kind: "ran" }> {
@@ -274,6 +311,7 @@ describe("an unbound host event", () => {
 
   test("cannot satisfy strict completion, even with a passing verdict filed under the host's task id", () => {
     const box = sandbox();
+    taskScopedVerdict(box, "host-task", v2({ beadsIssueId: "host-task" }));
     verdict(box, "host-task", v2({ beadsIssueId: "host-task" }));
     const recorded = gate(box, {
       stdin: payload({
@@ -439,7 +477,7 @@ describe("a correlated run", () => {
 
   test("strict mode binds a schema 2 verdict that names the correlated bead and run", () => {
     const box = sandbox();
-    verdict(box, "bead-1", v2({ summary: "looks right" }));
+    verdict(box, "run-1", v2({ summary: "looks right" }));
     const passing = gate(box, {
       argv: ["--correlation", correlate(box)],
       env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
@@ -465,11 +503,24 @@ function strict(
   builder?: Executor,
 ): Recorded {
   const box = sandbox();
-  verdict(box, "bead-1", content);
+  verdict(box, "run-1", content);
   return gate(box, {
     argv: ["--correlation", correlate(box)],
     env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
     ...(builder ? { builder } : {}),
+  });
+}
+
+/** The strict check of one correlated run of bead-1 in `box`. */
+function strictRun(
+  box: Box,
+  run: string,
+  extra: { afterRead?: () => void } = {},
+): Recorded {
+  return gate(box, {
+    argv: ["--correlation", correlate(box, "bead-1", run)],
+    env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
+    ...extra,
   });
 }
 
@@ -528,6 +579,180 @@ describe("strict completion: whose verdict it is", () => {
         'verdict FAIL with blocker/high — {"blocker":1,"high":0,"medium":0,"low":0}',
     });
     expect(ran(recorded).boundVerdict).toMatchObject({ verdict: "FAIL" });
+  });
+});
+
+describe("strict completion: where the verdict is read", () => {
+  test("only the path the correlation's run id declares is read: a passing verdict filed under the bead is not seen", () => {
+    const box = sandbox();
+    taskScopedVerdict(box, "bead-1", v2());
+    const recorded = strictRun(box, "run-1");
+    refusedWith(
+      recorded,
+      `no evaluator verdict at ${evaluatorVerdictPath("run-1")}`,
+    );
+    expect(recorded.reads).toEqual(["run-1"]);
+  });
+
+  test("two runs of one bead, concurrent or retried: each gate binds its own run's verdict and never the other's", () => {
+    const box = sandbox();
+    const first = verdict(box, "run-a", v2({ executionRunId: "run-a" }));
+
+    // The second run has no verdict yet: the first run's is not it.
+    refusedWith(
+      strictRun(box, "run-b"),
+      `no evaluator verdict at ${evaluatorVerdictPath("run-b")}`,
+    );
+    const a = strictRun(box, "run-a");
+    expect(check(a, "eval-verdict")).toMatchObject({ passed: true });
+
+    // The retry fails its own evaluation; the first run still passes on its own.
+    const second = verdict(
+      box,
+      "run-b",
+      v2({
+        executionRunId: "run-b",
+        verdict: "FAIL",
+        findings: { blocker: 0, high: 2, medium: 0, low: 0 },
+      }),
+    );
+    const b = strictRun(box, "run-b");
+    expect(check(b, "eval-verdict")).toMatchObject({ passed: false });
+    expect(check(strictRun(box, "run-a"), "eval-verdict")).toMatchObject({
+      passed: true,
+    });
+
+    expect(ran(a).result.evaluatorArtifact).toMatchObject({
+      path: evaluatorVerdictPath("run-a"),
+      sha256: sha256(first),
+      executionRunId: "run-a",
+      beadsIssueId: "bead-1",
+    });
+    expect(ran(b).result.evaluatorArtifact).toMatchObject({
+      path: evaluatorVerdictPath("run-b"),
+      sha256: sha256(second),
+      executionRunId: "run-b",
+      beadsIssueId: "bead-1",
+    });
+  });
+
+  test("a stale verdict copied to this run's path is refused by what its bytes say", () => {
+    const box = sandbox();
+    const earlier = v2({ executionRunId: "run-a" });
+    verdict(box, "run-a", earlier);
+    verdict(box, "run-b", earlier);
+    refusedWith(
+      strictRun(box, "run-b"),
+      'verdict executionRunId "run-a" is not this run ("run-b")',
+    );
+  });
+
+  test("a verdict behind a link is refused, even a valid one for this very run", () => {
+    const box = sandbox();
+    const outside = join(box.root, "outside");
+    const planted = join(outside, sha256("run-1"), "verdict.json");
+    mkdirSync(dirname(planted), { recursive: true });
+    writeFileSync(planted, JSON.stringify(v2()));
+    mkdirSync(join(box.cwd, ".tmp", "work"), { recursive: true });
+    symlinkSync(outside, join(box.cwd, EVALUATIONS_DIR), "junction");
+    refusedWith(
+      strictRun(box, "run-1"),
+      `${evaluatorVerdictPath("run-1")} is, or sits under, a link: a verdict is only read from the checkout's own directory`,
+    );
+  });
+});
+
+describe("strict completion: what the gate entry records", () => {
+  test("the path, SHA-256, byte count, both ids and the evaluator of the bytes it read, in the one entry", () => {
+    const box = sandbox();
+    const bytes = verdict(
+      box,
+      "run-1",
+      v2({ evaluator: modelEvaluator({ sessionId: "session-9" }) }),
+    );
+    const recorded = strictRun(box, "run-1");
+    expect<unknown>(ran(recorded).result.evaluatorArtifact).toEqual({
+      kind: "evaluator-verdict",
+      path: evaluatorVerdictPath("run-1"),
+      sha256: sha256(bytes),
+      bytes: Buffer.byteLength(bytes),
+      verdictSchemaVersion: 2,
+      executionRunId: "run-1",
+      beadsIssueId: "bead-1",
+      evaluator: modelEvaluator({ sessionId: "session-9" }),
+    });
+    // The entry's own ids are the same two.
+    expect<unknown>(ran(recorded).result).toMatchObject({
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+    });
+  });
+
+  test("a blocking verdict is recorded too; a verdict that is not this run's leaves no artifact", () => {
+    const blocking = strict(
+      v2({
+        verdict: "FAIL",
+        findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+      }),
+    );
+    expect(ran(blocking).result.evaluatorArtifact).toMatchObject({
+      kind: "evaluator-verdict",
+    });
+    for (const content of [
+      v2({ executionRunId: "run-0" }),
+      v2({ evaluator: modelEvaluator({ observedModel: "claude-next" }) }),
+      {
+        schemaVersion: 1,
+        taskId: "bead-1",
+        verdict: "PASS",
+        findings: v2().findings,
+      },
+    ]) {
+      expect("evaluatorArtifact" in ran(strict(content)).result).toBe(false);
+    }
+  });
+
+  test("the file is read once, and overwriting it after the read changes nothing the gate records", () => {
+    const box = sandbox();
+    const original = verdict(box, "run-1", v2({ summary: "as validated" }));
+    const recorded = strictRun(box, "run-1", {
+      // Swap the file the moment the gate has read it: a blocking verdict by
+      // another evaluator, larger than the original.
+      afterRead: () =>
+        verdict(
+          box,
+          "run-1",
+          v2({
+            verdict: "FAIL",
+            findings: { blocker: 3, high: 0, medium: 0, low: 0 },
+            evaluator: { kind: "human", actorKind: "operator" },
+            summary: "swapped in after the read",
+          }),
+        ),
+    });
+
+    expect(recorded.reads).toEqual(["run-1"]);
+    expect(check(recorded, "eval-verdict")).toMatchObject({ passed: true });
+    expect(ran(recorded).result.evaluatorArtifact).toMatchObject({
+      sha256: sha256(original),
+      bytes: Buffer.byteLength(original),
+      evaluator: { kind: "human", actorKind: "reviewer" },
+    });
+    expect(ran(recorded).boundVerdict).toMatchObject({
+      verdict: "PASS",
+      summary: "as validated",
+    });
+  });
+
+  test("without strict mode, and for an uncorrelated run, no verdict file is read", () => {
+    const box = sandbox();
+    verdict(box, "run-1", v2());
+    expect(
+      gate(box, { argv: ["--correlation", correlate(box)] }).reads,
+    ).toEqual([]);
+    expect(
+      gate(box, { env: { AGENT_FORGE_EVAL_VERDICT: "strict" } }).reads,
+    ).toEqual([]);
   });
 });
 
@@ -663,10 +888,11 @@ describe("hostile stdin", () => {
   test("a host task id that is itself a plausible Beads id selects neither the bead nor the verdict", () => {
     const box = sandbox();
     // The host's id has a passing verdict on file; the correlated bead's fails.
+    taskScopedVerdict(box, "other-bead", v2({ beadsIssueId: "other-bead" }));
     verdict(box, "other-bead", v2({ beadsIssueId: "other-bead" }));
     verdict(
       box,
-      "bead-1",
+      "run-1",
       v2({
         verdict: "FAIL",
         findings: { blocker: 1, high: 0, medium: 0, low: 0 },
@@ -944,7 +1170,7 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     async () => {
       const box = sandbox();
       const pointer = correlate(box, "bead-1", "run-1");
-      verdict(box, "bead-1", v2({ summary: "looks right" }));
+      const bytes = verdict(box, "run-1", v2({ summary: "looks right" }));
       // Unlike the other spawned cases this one can reach a shell (and nothing
       // else), so a host id spliced into a command line would run: under
       // cmd.exe and under sh alike, this one writes the canary file.
@@ -1017,9 +1243,73 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
       expect(events[0]?.payload && "evaluator" in events[0].payload).toBe(
         false,
       );
+
+      // The entry and the event name the same file by the same bytes.
+      const artifact = {
+        path: evaluatorVerdictPath("run-1"),
+        sha256: sha256(bytes),
+        bytes: Buffer.byteLength(bytes),
+      };
+      expect(logged?.evaluatorArtifact).toEqual({
+        kind: "evaluator-verdict",
+        ...artifact,
+        verdictSchemaVersion: 2,
+        executionRunId: "run-1",
+        beadsIssueId: "bead-1",
+        evaluator: { kind: "human", actorKind: "reviewer" },
+      });
+      expect(events[0]?.payload).toMatchObject({
+        verdictArtifact: { ...artifact, schemaVersion: 2 },
+      });
       expect(events[1]?.payload).toMatchObject({ trigger: "TaskCompleted" });
     },
     SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a verdict overwritten after a gate run leaves that run's log entry and ledger row as they were; the next run records the new bytes",
+    async () => {
+      const box = sandbox();
+      const pointer = correlate(box, "bead-1", "run-1");
+      const env = {
+        [RUN_CORRELATION_ENV]: pointer,
+        AGENT_FORGE_EVAL_VERDICT: "strict",
+      };
+      const first = verdict(box, "run-1", v2({ summary: "first" }));
+      await spawnGate(box, "", env);
+      // Nothing stops a plain write under .tmp: the evidence is what was read.
+      const second = verdict(
+        box,
+        "run-1",
+        v2({
+          verdict: "FAIL",
+          findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+          summary: "second",
+        }),
+      );
+      await spawnGate(box, "", env);
+
+      expect(
+        gateLog(box).map(
+          (entry) => (entry.evaluatorArtifact as { sha256: string }).sha256,
+        ),
+      ).toEqual([sha256(first), sha256(second)]);
+      const bound = queryEvents(
+        { kinds: ["verdict.bound"] },
+        { path: box.ledger },
+      );
+      expect(
+        bound.map((event) =>
+          event.kind === "verdict.bound"
+            ? [event.payload.verdict, event.payload.verdictArtifact?.sha256]
+            : [],
+        ),
+      ).toEqual([
+        ["pass", sha256(first)],
+        ["fail", sha256(second)],
+      ]);
+    },
+    SPAWN_TIMEOUT_MS * 2,
   );
 
   /** The eval-verdict check of a spawned strict run over one model verdict. */
@@ -1028,7 +1318,7 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     evaluator: Record<string, unknown>,
   ): Promise<{ check: Record<string, unknown> | undefined; stderr: string }> {
     const pointer = correlate(box, "bead-1", "run-1");
-    verdict(box, "bead-1", v2({ evaluator }));
+    verdict(box, "run-1", v2({ evaluator }));
     const out = await spawnGate(box, "", {
       [RUN_CORRELATION_ENV]: pointer,
       AGENT_FORGE_EVAL_VERDICT: "strict",

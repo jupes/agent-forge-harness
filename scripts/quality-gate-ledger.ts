@@ -7,7 +7,11 @@
  * tests load it.
  */
 
-import type { Executor, LedgerEventInput } from "../types/hearth";
+import type {
+  Executor,
+  LedgerEventInput,
+  VerdictArtifact,
+} from "../types/hearth";
 import type { EvalVerdict } from "./eval-verdict";
 import { verdictBound } from "./forge/ledger-events";
 import type { ForgeState } from "./forge/phases";
@@ -102,15 +106,18 @@ export function gateRanEvent(input: {
  * The verdict the strict check bound. It binds only a schema 2 verdict that
  * names the correlated bead and run, so the event's bead and run are the ones
  * the verdict names. `builder` is the run's stored executor, when there is
- * one; the evaluator is the one the verdict declares.
+ * one; the evaluator is the one the verdict declares; `artifact` is the file
+ * reference the gate put in its log entry, from the bytes it read.
  */
 export function strictVerdictEvent(input: {
   verdict: EvalVerdict;
+  artifact?: VerdictArtifact;
   builder?: Executor;
   attach: Attach;
 }): LedgerEventInput & { kind: "verdict.bound" } {
   const { payload } = verdictBound({
     verdict: input.verdict,
+    ...(input.artifact ? { artifact: input.artifact } : {}),
     ...(input.builder ? { builder: input.builder } : {}),
   });
   return {

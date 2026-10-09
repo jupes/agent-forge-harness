@@ -12,6 +12,7 @@ import type {
   Executor,
   LedgerEventInput,
   LedgerPayloads,
+  VerdictArtifact,
 } from "../../types/hearth";
 import {
   EVAL_VERDICT_SCHEMA_VERSION,
@@ -82,13 +83,15 @@ export function reviewRecorded(
  * A schema 2 verdict gives the typed evaluator as declared, and an evaluator
  * executor only from what it says was observed to run. A legacy (schema 1)
  * verdict names no evaluator, so neither is recorded. `null` is a file that
- * could not be read or parsed, or is not this run's.
+ * could not be read or parsed, or is not this run's. `artifact` is the file
+ * as the emitter read it, when it hashed the bytes it parsed.
  */
 export function verdictBound(input: {
   verdict: EvalVerdictParsed | null;
   builder?: Executor;
+  artifact?: VerdictArtifact;
 }): RunEvent & { kind: "verdict.bound" } {
-  const { verdict, builder } = input;
+  const { verdict, builder, artifact } = input;
   const identity =
     verdict?.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION
       ? verdict.evaluator
@@ -106,6 +109,7 @@ export function verdictBound(input: {
       ...(builder ? { builder } : {}),
       ...(evaluator ? { evaluator } : {}),
       ...(identity ? { evaluatorIdentity: identity } : {}),
+      ...(verdict !== null && artifact ? { verdictArtifact: artifact } : {}),
       ...(verdict?.summary ? { summary: verdict.summary } : {}),
     },
   };

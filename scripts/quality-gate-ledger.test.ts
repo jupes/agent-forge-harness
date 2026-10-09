@@ -197,6 +197,30 @@ describe("strictVerdictEvent", () => {
     expect(validateLedgerEventInput(event).ok).toBe(true);
   });
 
+  test("the file reference the gate recorded goes on the event and into the ledger", () => {
+    const box = sandbox();
+    const artifact = {
+      path: ".tmp/work/evaluations/abc/verdict.json",
+      sha256: "0f".repeat(32),
+      bytes: 312,
+      schemaVersion: 2,
+    };
+    const event = strictVerdictEvent({
+      verdict: boundVerdict(),
+      artifact,
+      attach: attach(),
+    });
+    expect(event.payload.verdictArtifact).toEqual(artifact);
+    expect(validateLedgerEventInput(event).ok).toBe(true);
+    expect(appendEvent(event, { path: box.path }).ok).toBe(true);
+    const [stored] = queryEvents(
+      { kinds: ["verdict.bound"] },
+      { path: box.path },
+    );
+    // A digest is not a secret: it is stored whole.
+    expect(stored?.payload).toMatchObject({ verdictArtifact: artifact });
+  });
+
   test("a human verdict is stored with its actor kind and no evaluator executor", () => {
     const box = sandbox();
     const event = strictVerdictEvent({

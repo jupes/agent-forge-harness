@@ -20,6 +20,7 @@
  */
 
 import type { HookStdin } from "../.claude/hooks/utils/hook-input";
+import type { EvaluatorIdentity } from "../types/hearth";
 import type { BeadsIssueId, RunCorrelation } from "./run-correlation";
 
 /** The hook events the gate is registered for. */
@@ -78,6 +79,25 @@ export const GATE_HOST_TEXT_FIELDS = [
 ] as const satisfies readonly (keyof GateHostIdentity)[];
 
 export const GATE_LOG_SCHEMA_VERSION = 2 as const;
+
+/**
+ * The evaluator verdict a strict gate run bound, as that run's log entry
+ * records it: where the file was, the digest and size of the bytes the gate
+ * read, and what those bytes said about whose verdict it is and who judged.
+ * Everything here comes from the one buffer the gate validated.
+ */
+export interface EvaluatorArtifactReference {
+  kind: "evaluator-verdict";
+  /** Relative to the checkout: the path the run correlation's run id declares. */
+  path: string;
+  /** Lower-case hex SHA-256 of the bytes read. */
+  sha256: string;
+  bytes: number;
+  verdictSchemaVersion: 2;
+  executionRunId: string;
+  beadsIssueId: BeadsIssueId;
+  evaluator: EvaluatorIdentity;
+}
 
 export interface GateIdentity {
   schemaVersion: typeof GATE_LOG_SCHEMA_VERSION;

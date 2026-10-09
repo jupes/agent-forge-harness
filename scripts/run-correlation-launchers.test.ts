@@ -121,6 +121,7 @@ function gateLink(
     hasTestFiles: () => false,
     smiths: () => [],
     runState: () => null,
+    readVerdict: () => ({ ok: false, error: "not read in these tests" }),
   };
   const outcome = runQualityGate({
     stdin: { kind: "none", reason: "terminal" },
