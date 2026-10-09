@@ -24,8 +24,14 @@
  * unattended caller can branch on the code alone.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join, relative, resolve } from "path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "fs";
+import { dirname, join, resolve } from "path";
 
 import { loadConfig } from "../config/load";
 import {
@@ -36,6 +42,7 @@ import {
 } from "../eval-verdict";
 import { MAX_VERDICT_BYTES, sha256Hex } from "../eval-verdict-store";
 import { strictEvaluatorProblem } from "../evaluator-policy";
+import { resolveCheckout } from "../ledger/workspace";
 import { type RunCorrelation, runCorrelationPath } from "../run-correlation";
 import {
   type AutoDecision,
@@ -46,7 +53,7 @@ import {
   roundFromVerdict,
 } from "./auto-loop";
 import { type ForgeState, isForgePhase, type ReviewRound } from "./phases";
-import { isValidSlug } from "./runs";
+import { comparableCheckout, isValidSlug } from "./runs";
 import { readRunState, writeRunState } from "./runs-store";
 
 const HANDOFF_PATH = join(".tmp", "work", "session-handoff.md");
@@ -81,6 +88,22 @@ function emit(result: CliResult, code: number): never {
 
 function fail(error: string): never {
   emit({ ok: false, data: null, error }, 2);
+}
+
+/**
+ * A verdict file's path as the ledger records it: relative to the checkout
+ * when the file is inside it, else its real path in comparable form.
+ */
+function recordedPath(checkout: string, file: string): string {
+  let real: string;
+  try {
+    real = comparableCheckout(realpathSync.native(file));
+  } catch {
+    real = comparableCheckout(resolve(file));
+  }
+  return real.startsWith(`${checkout}/`)
+    ? real.slice(checkout.length + 1)
+    : real;
 }
 
 /**
@@ -170,8 +193,10 @@ if (import.meta.main) {
     fail("Missing required --verdict <path to the evaluator verdict JSON>.");
   }
 
-  // The run's correlation lives in the checkout the run builds in.
-  const checkout = state.checkout ?? process.cwd();
+  // The run's correlation lives at the top level of the checkout the run
+  // builds in: the one place the loader looks, and the place "is there a file
+  // at all" is asked of.
+  const checkout = resolveCheckout(state.checkout ?? process.cwd()).worktree;
   const { loadRunCorrelation } = await import("../run-correlation-store");
   const pointer = runCorrelationPath(slug) ?? "";
   const loaded = loadRunCorrelation(pointer, checkout);
@@ -206,21 +231,10 @@ if (import.meta.main) {
       else verdictError = mine.error;
     }
   }
-  // The path as the ledger records it: relative to the checkout when the file
-  // is inside it.
-  const inCheckout = relative(checkout, resolve(verdictPath)).replaceAll(
-    "\\",
-    "/",
-  );
   const artifact =
     verdict !== null && bytes !== null
       ? {
-          path:
-            inCheckout.length > 0 &&
-            !inCheckout.startsWith("../") &&
-            !/^[A-Za-z]:|^\//.test(inCheckout)
-              ? inCheckout
-              : resolve(verdictPath).replaceAll("\\", "/"),
+          path: recordedPath(checkout, verdictPath),
           sha256: sha256Hex(bytes),
           bytes: bytes.byteLength,
           schemaVersion: verdict.schemaVersion,
@@ -238,8 +252,11 @@ if (import.meta.main) {
       smiths = Object.values(
         loadConfig({ harnessRoot: checkout }).config.smiths,
       );
-    } catch {
-      // Config that cannot be read ranks nobody, which the problem then says.
+    } catch (error) {
+      // Config that cannot be read ranks nobody: say that is why.
+      console.error(
+        `forge:review: smith config not readable, so no evaluator has a rank: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     evaluatorProblem = strictEvaluatorProblem(bound.evaluator, {
       smiths,
@@ -278,24 +295,24 @@ if (import.meta.main) {
     ...(executor ? { executor } : {}),
   };
   writeRunState(next);
-  // The verdict file as it was read, then what the loop decided about it. A
-  // schema 2 verdict's event is filed under the bead and run the verdict
-  // names, which are the correlation's.
+  // The verdict file as it was read, then what the loop decided about it.
+  // Both rows of a round graded from a schema 2 verdict are filed under the
+  // bead and run the verdict names, which are the correlation's.
+  const roundAttach = bound
+    ? { ...attach, beadId: bound.beadsIssueId, runId: bound.executionRunId }
+    : attach;
   ledger.emitRunEvent(
-    bound
-      ? {
-          ...attach,
-          beadId: bound.beadsIssueId,
-          runId: bound.executionRunId,
-        }
-      : attach,
+    roundAttach,
     ledger.verdictBound({
       verdict,
       ...(artifact ? { artifact } : {}),
       ...(state.executor ? { builder: state.executor } : {}),
     }),
   );
-  ledger.emitRunEvent(attach, ledger.reviewRecorded(round, decision.action));
+  ledger.emitRunEvent(
+    roundAttach,
+    ledger.reviewRecorded(round, decision.action),
+  );
 
   let handoff: string | null = null;
   if (decision.action === "halt") {

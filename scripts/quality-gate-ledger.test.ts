@@ -251,16 +251,20 @@ describe("strictVerdictEvent", () => {
       verdict,
       attach: attach({ beadId: "b-correlated", runId: "x" }),
     });
-    const inherited = Object.create({ sessionId: "from-a-prototype" });
+    // The identity's own fields without its session id, on an object whose
+    // prototype has one: an inherited value must not be read as the verdict's.
+    const { sessionId: _own, ...ownFields } = verdict.evaluator as {
+      sessionId?: string;
+    };
     const smuggled = {
       ...event,
       payload: {
         ...event.payload,
-        evaluatorIdentity: Object.assign(inherited, {
-          ...verdict.evaluator,
-          sessionId: undefined,
-          prompt: "a body that is not metadata",
-        }),
+        evaluatorIdentity: Object.assign(
+          Object.create({ sessionId: "from-a-prototype" }),
+          ownFields,
+          { prompt: "a body that is not metadata" },
+        ),
       },
     };
     // justification: the extra key is the point of the test; the ledger must drop it.
@@ -274,9 +278,7 @@ describe("strictVerdictEvent", () => {
     );
     expect(stored?.beadId).toBe("b-correlated");
     expect(stored?.runId).toBe("x");
-    const { sessionId: _session, ...withoutSession } = verdict.evaluator as {
-      sessionId?: string;
-    };
+    const withoutSession = ownFields;
     expect<unknown>(stored?.payload).toEqual({
       verdict: "fail",
       evaluator: {
@@ -291,37 +293,43 @@ describe("strictVerdictEvent", () => {
   });
 
   test("an evaluator identity or a verdict artifact that is not the contract's shape is not stored at all", () => {
-    const box = sandbox();
     const event = strictVerdictEvent({
       verdict: boundVerdict(),
       attach: attach(),
     });
-    const malformed = {
-      ...event,
-      payload: {
-        verdict: "pass",
-        evaluatorIdentity: {
-          kind: "banana",
-          actorKind: 42,
-          rankPolicyDecision: true,
-        },
-        verdictArtifact: {
-          path: ".tmp/work/evaluations/x/verdict.json",
-          sha256: "not-a-digest",
-          bytes: "not-a-number",
-          schemaVersion: 2,
-        },
-      },
+    const good = {
+      path: ".tmp/work/evaluations/x/verdict.json",
+      sha256: "0f".repeat(32),
+      bytes: 312,
+      schemaVersion: 2,
     };
-    // justification: malformed on purpose; the ledger must not store it.
-    expect(
-      appendEvent(malformed as unknown as typeof event, { path: box.path }).ok,
-    ).toBe(true);
-    const [stored] = queryEvents(
-      { kinds: ["verdict.bound"] },
-      { path: box.path },
-    );
-    expect(stored?.payload).toEqual({ verdict: "pass" });
+    // One thing wrong at a time, so each rule is what drops the value.
+    const malformed: Array<Record<string, unknown>> = [
+      { evaluatorIdentity: { kind: "banana", actorKind: 42 } },
+      { evaluatorIdentity: { kind: "human" } },
+      { evaluatorIdentity: "claude-opus-5-5" },
+      { verdictArtifact: { ...good, sha256: "not-a-digest" } },
+      { verdictArtifact: { ...good, sha256: "0F".repeat(32) } },
+      { verdictArtifact: { ...good, bytes: "312" } },
+      { verdictArtifact: { ...good, bytes: -1 } },
+      { verdictArtifact: { ...good, path: "" } },
+      { verdictArtifact: { ...good, schemaVersion: "2" } },
+    ];
+    for (const extra of malformed) {
+      const box = sandbox();
+      const candidate = { ...event, payload: { verdict: "pass", ...extra } };
+      // justification: malformed on purpose; the ledger must not store it.
+      expect(
+        appendEvent(candidate as unknown as typeof event, { path: box.path })
+          .ok,
+      ).toBe(true);
+      const [stored] = queryEvents(
+        { kinds: ["verdict.bound"] },
+        { path: box.path },
+      );
+      expect(stored?.payload).toEqual({ verdict: "pass" });
+      closeLedger();
+    }
   });
 });
 

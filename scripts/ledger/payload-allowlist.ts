@@ -91,7 +91,7 @@ function isScalar(value: unknown): boolean {
   );
 }
 
-/** The listed keys of an object: its own properties, scalars only. */
+/** The listed keys of an object, scalars only. */
 function pick(
   value: unknown,
   keys: readonly string[],
@@ -100,11 +100,7 @@ function pick(
   if (typeof value !== "object" || value === null) return out;
   const record = value as Record<string, unknown>;
   for (const key of keys) {
-    if (
-      Object.hasOwn(record, key) &&
-      record[key] !== undefined &&
-      isScalar(record[key])
-    )
+    if (record[key] !== undefined && isScalar(record[key]))
       out[key] = record[key];
   }
   return out;

@@ -64,6 +64,9 @@ export function roundFromVerdict(input: {
     verdict: input.verdict?.verdict ?? "UNREADABLE",
     findings: input.verdict?.findings ?? NO_FINDINGS,
     ...(input.tier ? { tier: input.tier } : {}),
+    ...(input.verdict
+      ? { verdictSchemaVersion: input.verdict.schemaVersion }
+      : {}),
     ...(input.verdict?.summary ? { summary: input.verdict.summary } : {}),
     at: input.at,
   };
