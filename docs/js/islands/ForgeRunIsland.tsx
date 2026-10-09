@@ -23,6 +23,7 @@ import {
   checkpointsForEpic,
 } from "../forge-checkpoints";
 import { statusLabel, statusTone } from "../issue-presentation";
+import { operatorPost } from "../operator";
 import { useDevApi } from "../use-dev-api";
 
 const REVIEW_URL = "/__agent-forge/dev-api/forge-run/review";
@@ -508,10 +509,10 @@ function ReviewActions({
     setPending(decision);
     setResult(null);
     try {
-      const response = await fetch(REVIEW_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ issueId: target.id, decision, note }),
+      const response = await operatorPost(REVIEW_URL, {
+        issueId: target.id,
+        decision,
+        note,
       });
       const envelope = (await response.json()) as {
         ok: boolean;

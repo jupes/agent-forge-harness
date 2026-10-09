@@ -7,12 +7,13 @@
  * and council plugins they are loopback-only and absent from any static build,
  * where the pages show a "needs the dev server" state instead.
  *
- * One route writes: recording a checkpoint review adds a `review:` comment in
- * Beads. It is held to the council API's stricter same-origin check, and to
- * the checkpoint's live status.
+ * The routes served here only read. Recording a checkpoint review — the one
+ * write, a `review:` comment in Beads — is an action row of the operator API
+ * (`./operator.ts`), which is where its token, audit row and same-origin check
+ * are applied; `applyReview` below is its effect.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
@@ -34,7 +35,6 @@ import {
 } from "../../dashboard/repos-knowledge-model";
 import { runStatePath } from "../../forge/runs";
 import { listRuns } from "../../forge/runs-store";
-import { isLocalCouncilRequest } from "./council";
 
 export const DEV_API = "/__agent-forge/dev-api";
 
@@ -205,6 +205,9 @@ export interface BdResult {
   stderr: string;
 }
 
+/** Runs `bd` with an argument array — never a shell — and reports how it went. */
+export type BdRunner = (args: string[]) => BdResult | Promise<BdResult>;
+
 export interface ApiReply {
   status: number;
   body: { ok: boolean; data: unknown; error: string | null };
@@ -225,16 +228,16 @@ function failureReason(result: BdResult): string {
  * `bd` is invoked with argument arrays — never a shell — and the id and
  * comment are validated first, so nothing in the request is interpreted.
  */
-export function applyReview(
+export async function applyReview(
   input: unknown,
-  runBd: (args: string[]) => BdResult,
-): ApiReply {
+  runBd: BdRunner,
+): Promise<ApiReply> {
   const review = reviewCommentFor(input);
   if (!review.ok) return fail(400, review.error);
 
   // The page may be rendering a stale snapshot, so Beads decides: only a
   // checkpoint that is in progress right now has work to approve.
-  const shown = runBd(["show", review.issueId, "--json"]);
+  const shown = await runBd(["show", review.issueId, "--json"]);
   if (shown.status !== 0) {
     return fail(502, `bd show failed: ${failureReason(shown)}`);
   }
@@ -246,7 +249,7 @@ export function applyReview(
     );
   }
 
-  const added = runBd(["comments", "add", review.issueId, review.body]);
+  const added = await runBd(["comments", "add", review.issueId, review.body]);
   if (added.status !== 0) {
     return fail(502, `bd comments add failed: ${failureReason(added)}`);
   }
@@ -260,39 +263,40 @@ export function applyReview(
   };
 }
 
-function bdRunner(root: string) {
-  return (args: string[]): BdResult => {
-    const result = spawnSync("bd", args, {
-      cwd: root,
-      encoding: "utf8",
-      shell: false,
-      timeout: 30_000,
-    });
-    return {
-      status: result.status,
-      stdout: String(result.stdout ?? ""),
-      stderr: String(result.stderr || result.error?.message || ""),
-    };
-  };
-}
+/** How long one `bd` call may run, and how much it may print, before it is given up on. */
+const BD_TIMEOUT_MS = 15_000;
+const BD_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  if (!req.headers["content-type"]?.startsWith("application/json")) {
-    throw new Error("Use application/json");
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.byteLength;
-    if (size > 16_000) throw new Error("Request body too large");
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-  } catch {
-    throw new Error("Request body must be valid JSON");
-  }
+/**
+ * The real `bd`, run from `root`: an argument array, no shell, and not on the
+ * serving thread — a slow tracker must not stall every other request and every
+ * open stream. A call that cannot start, times out or prints too much resolves
+ * with a null or non-zero status and the reason on stderr; it never rejects.
+ */
+export function bdRunner(root: string): BdRunner {
+  return (args) =>
+    new Promise<BdResult>((done) => {
+      execFile(
+        "bd",
+        args,
+        {
+          cwd: root,
+          encoding: "utf8",
+          shell: false,
+          timeout: BD_TIMEOUT_MS,
+          maxBuffer: BD_MAX_OUTPUT_BYTES,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          const code = error === null ? 0 : error.code;
+          done({
+            status: typeof code === "number" ? code : null,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr || error?.message || ""),
+          });
+        },
+      );
+    });
 }
 
 function sendJson(res: ServerResponse, reply: ApiReply): void {
@@ -316,30 +320,10 @@ export async function devApiHttpHandler(
   const route = pathname.slice(DEV_API.length);
 
   if (route === "/forge-run/review") {
-    // Writes to Beads, so loopback alone is not enough: require a same-origin
-    // browser request, as the council API does.
-    if (!isLocalCouncilRequest(req)) {
-      sendJson(
-        res,
-        fail(403, "Reviews can be recorded only from this local dashboard"),
-      );
-      return;
-    }
-    if (req.method !== "POST") {
-      sendJson(res, fail(405, "Method not allowed"));
-      return;
-    }
-    try {
-      // The Beads config is machine-local as well: from a linked worktree,
-      // bd finds no database unless it runs in the main checkout.
-      const runBd = bdRunner(localStateRoot(root));
-      sendJson(res, applyReview(await readJsonBody(req), runBd));
-    } catch (error) {
-      sendJson(
-        res,
-        fail(400, error instanceof Error ? error.message : String(error)),
-      );
-    }
+    // The POST is an operator action and never reaches this handler through a
+    // hearth. Whatever does reach it gets the answer every other method always
+    // got here, and nothing is written.
+    sendJson(res, fail(405, "Method not allowed"));
     return;
   }
 

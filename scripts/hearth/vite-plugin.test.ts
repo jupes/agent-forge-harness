@@ -4,6 +4,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
+import { closeLedger } from "../ledger/db";
+import { OPERATOR_HEADER } from "./paths";
 import { createHearth } from "./server";
 import { guardRequest, hearthPlugin } from "./vite-plugin";
 
@@ -29,15 +31,35 @@ function rebuildStub(): Plugin {
   };
 }
 
-async function fixture(): Promise<{ vite: ViteDevServer; url: string }> {
+interface Fixture {
+  vite: ViteDevServer;
+  /** The dashboard's origin: what a browser on it would send as `Origin`. */
+  url: string;
+  /** The hearth's operator token. */
+  token: string;
+  /** The hearth's ledger file. */
+  ledger: string;
+  root: string;
+}
+
+async function fixture(): Promise<Fixture> {
   const home = mkdtempSync(join(tmpdir(), "af-vite-home-"));
   const root = mkdtempSync(join(tmpdir(), "af-vite-root-"));
+  // A planted .git makes the temp root its own workspace in the ledger.
+  mkdirSync(join(root, ".git"));
   mkdirSync(join(root, ".tmp", "work"), { recursive: true });
+  const ledger = join(home, "ledger.db");
   const hearth = await createHearth({
     root,
     home,
     harnessRoot: resolve(import.meta.dir, "../.."),
     environment: {},
+    api: {
+      ledgerPath: ledger,
+      // Never the real bd, never the user's config.
+      runBd: async () => ({ status: 0, stdout: "[]", stderr: "" }),
+      configHome: home,
+    },
   });
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   const vite = await createServer({
@@ -62,10 +84,17 @@ async function fixture(): Promise<{ vite: ViteDevServer; url: string }> {
   cleanup.push(async () => {
     await vite.close();
     await hearth.close();
-    rmSync(home, { recursive: true, force: true });
-    rmSync(root, { recursive: true, force: true });
+    closeLedger(ledger);
+    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
   });
-  return { vite, url: `http://127.0.0.1:${address.port}` };
+  return {
+    vite,
+    url: `http://127.0.0.1:${address.port}`,
+    token: hearth.token,
+    ledger,
+    root,
+  };
 }
 
 test("proxies a read route through Vite to the hearth", async () => {
@@ -75,18 +104,23 @@ test("proxies a read route through Vite to the hearth", async () => {
   expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
 });
 
-test("streams a council run's SSE snapshot through the proxy", async () => {
-  const { url } = await fixture();
+test("starts a council run through the proxy with the operator token, and streams its snapshot", async () => {
+  const { url, token } = await fixture();
   const api = `${url}/__agent-forge/council-api`;
-  const started = await fetch(`${api}/runs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sourceType: "text",
-      source: "Evaluate this plan and record any missing evidence.",
-      runId: "proxied-review",
-    }),
-  });
+  const start = (headers: Record<string, string>): Promise<Response> =>
+    fetch(`${api}/runs`, {
+      method: "POST",
+      // Behind the proxy the hearth sees the dashboard's Host, so the
+      // dashboard's origin is the one a request has to declare.
+      headers: { "Content-Type": "application/json", Origin: url, ...headers },
+      body: JSON.stringify({
+        sourceType: "text",
+        source: "Evaluate this plan and record any missing evidence.",
+        runId: "proxied-review",
+      }),
+    });
+  expect((await start({})).status).toBe(403);
+  const started = await start({ [OPERATOR_HEADER]: token });
   expect(started.status).toBe(202);
   let body = "";
   for (let attempt = 0; attempt < 50; attempt++) {

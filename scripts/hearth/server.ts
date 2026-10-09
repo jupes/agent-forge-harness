@@ -3,17 +3,24 @@
  *
  * Hosts the handlers that used to live in Vite middleware (forge-run,
  * repos-knowledge, council) behind one front-door check, publishes a per-root
- * lock so a dashboard can find it, and mints a per-boot operator token. The
- * token is created and served here; enforcing it on mutating routes belongs to
- * the operator API that builds on this server.
+ * lock so a dashboard can find it, and mints a per-boot operator token.
+ *
+ * The operator API (`api.ts`, `routes/operator.ts`) is mounted ahead of those
+ * handlers. Every mutation goes through it: a POST needs the token, and the
+ * token is honoured only while the file the lock names still holds what this
+ * hearth minted.
  */
 
 import { rmSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import type { LedgerEventInput } from "../../types/hearth";
 import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import { type AppendResult, appendEvent } from "../ledger/append";
+import { resolveCheckout } from "../ledger/workspace";
+import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
   hasAmbiguousPath,
@@ -29,8 +36,14 @@ import {
 } from "./lock";
 import { API_PREFIX, HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { councilHttpHandler } from "./routes/council";
-import { devApiHttpHandler } from "./routes/dev-api";
-import { createToken } from "./token";
+import {
+  type BdRunner,
+  bdRunner,
+  devApiHttpHandler,
+  localStateRoot,
+} from "./routes/dev-api";
+import { operatorRoutes } from "./routes/operator";
+import { createToken, readToken } from "./token";
 
 export interface HearthOptions {
   root: string;
@@ -42,6 +55,26 @@ export interface HearthOptions {
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
   environment?: Record<string, string | undefined>;
+  /** What the operator API reads and writes, when not the defaults. Tests inject these. */
+  api?: OperatorApiOverrides;
+}
+
+export interface OperatorApiOverrides {
+  /** The ledger file; defaults to `ledger.db` in the hearth's home. */
+  ledgerPath?: string;
+  /** Runs `bd` with an argument array; defaults to the real one, in the main checkout. */
+  runBd?: BdRunner;
+  /** How long a queue read may take before it is reported as failed. */
+  bdTimeoutMs?: number;
+  /** The OS home the machine config file is read from. */
+  configHome?: string;
+  /** How often an open stream looks for new ledger events. */
+  streamPollMs?: number;
+  streamKeepaliveMs?: number;
+  /** The audit append; defaults to the ledger's. */
+  appendEvent?: (event: LedgerEventInput) => AppendResult;
+  /** Wrap the table before it is mounted (a test observing an effect). */
+  decorate?: (routes: readonly ApiRoute[]) => readonly ApiRoute[];
 }
 
 export interface StartedHearth {
@@ -49,6 +82,8 @@ export interface StartedHearth {
   port: number;
   url: string;
   token: string;
+  /** The operator API's mounted table. */
+  routes: readonly ApiRoute[];
   close(): Promise<void>;
 }
 
@@ -106,6 +141,32 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const council = councilHttpHandler(service);
   const tokenFile = tokenPath(home, root);
   let token = "";
+  /**
+   * The token a mutation must present: the one minted at this start, and only
+   * while the published file still holds it. Before it is minted, or once the
+   * file is gone or says something else, nothing is honoured.
+   */
+  const expectedToken = (): string | null =>
+    token !== "" && readToken(tokenFile) === token ? token : null;
+
+  const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
+  const table = operatorRoutes({
+    root,
+    council: service,
+    // The Beads database is machine-local: from a linked worktree, bd finds
+    // none unless it runs in the main checkout.
+    runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
+  });
+  const api = createOperatorApi(
+    {
+      workspace: resolveCheckout(root).workspace,
+      expectedToken,
+      appendEvent:
+        options.api?.appendEvent ??
+        ((event) => appendEvent(event, { path: ledgerFile })),
+    },
+    options.api?.decorate?.(table) ?? table,
+  );
 
   const server: Server = createServer((req, res) => {
     const origin = frontDoorOrigin(req);
@@ -133,18 +194,37 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
           "The token is served only to a same-origin request",
         );
       }
-      if (token === "") {
-        return reply(res, 503, null, "The control plane is still starting");
+      // Never serve a token the check would refuse.
+      const current = expectedToken();
+      if (current === null) {
+        return reply(
+          res,
+          503,
+          null,
+          token === ""
+            ? "The control plane is still starting"
+            : "The operator token file no longer matches this control plane; restart it",
+        );
       }
-      return reply(res, 200, { token });
+      return reply(res, 200, { token: current });
     }
     if (pathname === HEALTH_ROUTE) {
       return reply(res, 200, { pid: process.pid, root });
     }
-    const notFound = (): void =>
-      reply(res, 404, null, "Unknown control-plane route");
-    void devApiHttpHandler(root, req, res, () => {
-      void council(req, res, notFound);
+    const notFound = (): void => {
+      // A path the table serves, asked with a method nothing serves.
+      const allow = api.allowedMethods(pathname);
+      if (allow.length === 0) {
+        reply(res, 404, null, "Unknown control-plane route");
+        return;
+      }
+      res.setHeader("Allow", allow.join(", "));
+      reply(res, 405, null, "Method not allowed");
+    };
+    void api.handle(req, res, () => {
+      void devApiHttpHandler(root, req, res, () => {
+        void council(req, res, notFound);
+      });
     });
   });
 
@@ -189,6 +269,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     port,
     url: `http://127.0.0.1:${port}`,
     token,
+    routes: api.routes,
     close: async () => {
       releaseLock(lockFile, process.pid);
       rmSync(tokenFile, { force: true });
