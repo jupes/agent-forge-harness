@@ -202,9 +202,10 @@ Every sequence ends the same way: `session.ended` exactly once, with `payload.re
    order of their rows can therefore differ slightly from the order things happened in, and each event
    carries its own `ts`.
 3. **SessionEnd hook.** `session.ended` with `payload.reason` from stdin, appended **before** anything
-   slow; then the mirror is removed if it is still this session's, and Beads is pushed once
-   (`bd dolt push`), with the outcome logged to `session.jsonl`. The hook command carries its own
-   `timeout`, because the host's default budget for SessionEnd hooks is too short for a push.
+   slow; then the mirror is removed if it is still this session's, and the hook writes its one line to
+   `session.jsonl`. It runs no `bd` command: the tracker is local-only, and nothing pushes it when a
+   session ends. The `timeout` on the hook's registration was sized for a push the hook used to make
+   and is longer than it now needs.
 
 ### 2. Claude teammate or subagent (hooks + `parentSessionId`)
 
