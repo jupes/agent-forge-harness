@@ -150,8 +150,11 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     token !== "" && readToken(tokenFile) === token ? token : null;
 
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
+  const workspace = resolveCheckout(root).workspace;
   const table = operatorRoutes({
     root,
+    workspace,
+    ledgerPath: ledgerFile,
     council: service,
     // The Beads database is machine-local: from a linked worktree, bd finds
     // none unless it runs in the main checkout.
@@ -159,7 +162,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   const api = createOperatorApi(
     {
-      workspace: resolveCheckout(root).workspace,
+      workspace,
       expectedToken,
       appendEvent:
         options.api?.appendEvent ??

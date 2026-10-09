@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import type { LedgerEventOf, OperatorEnvelope } from "../../types/hearth";
-import type { AppendResult } from "../ledger/append";
+import { join } from "node:path";
+import type {
+  EventsPage,
+  LedgerEventInput,
+  LedgerEventOf,
+  OperatorEnvelope,
+  Reservation,
+  RunDetail,
+  SessionSummary,
+} from "../../types/hearth";
+import { type AppendResult, appendEvent } from "../ledger/append";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
@@ -162,7 +171,11 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /sessions": "/sessions",
   "GET /runs": "/runs",
+  "GET /runs/:slug": "/runs/demo",
+  "GET /events": "/events",
+  "GET /reservations": "/reservations",
 };
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -739,5 +752,368 @@ describe("request bounds", () => {
     }
     expect(h.events()).toEqual([]);
     expect(probes).toEqual([]);
+  });
+});
+
+function get(
+  h: TestHearth,
+  path: string,
+  headers: Record<string, string> = h.headers(),
+): Promise<Response> {
+  return fetch(`${h.api}${path}`, { headers });
+}
+
+/** Append to the hearth's ledger under another workspace: what a second checkout on this machine would write. */
+function appendElsewhere(
+  h: TestHearth,
+  event: Omit<LedgerEventInput, "workspace">,
+): void {
+  // justification: the caller's kind and payload stay paired; only the workspace is added.
+  const stored = appendEvent(
+    { ...event, workspace: "c:/work/another-checkout" } as LedgerEventInput,
+    { path: h.ledger },
+  );
+  if (!stored.ok) throw new Error(stored.error);
+}
+
+const TOOL = { tool: "Bash", argsHash: "sha256:ab12" };
+
+describe("every read row (iterating the table)", () => {
+  test("answers a valid envelope for its fixture path", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    const rows = h.hearth.routes.filter((route) => route.kind === "read");
+    if (rows.length === 0) throw new Error("the table has no read rows");
+    for (const row of rows) {
+      const path = READS[key(row)];
+      if (path === undefined)
+        throw new Error(`no fixture for read row ${key(row)}`);
+      const response = await get(h, path);
+      const body = await envelope(response);
+      expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
+        row: key(row),
+        status: 200,
+        ok: true,
+      });
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+  });
+
+  test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    const rows = h.hearth.routes.filter((route) => route.kind === "read");
+    if (rows.length === 0) throw new Error("the table has no read rows");
+    const refused: Array<[string, Record<string, string>]> = [
+      ["no declaration at all", {}],
+      ["a foreign Origin", { Origin: "https://evil.example" }],
+      ["another loopback port as Origin", { Origin: "http://127.0.0.1:1" }],
+      ["Sec-Fetch-Site: same-site", { "Sec-Fetch-Site": "same-site" }],
+      ["Sec-Fetch-Site: cross-site", { "Sec-Fetch-Site": "cross-site" }],
+    ];
+    for (const row of rows) {
+      const path = READS[key(row)] ?? "";
+      for (const [label, headers] of refused) {
+        const response = await get(h, path, headers);
+        expect({ row: key(row), label, status: response.status }).toEqual({
+          row: key(row),
+          label,
+          status: 403,
+        });
+        expect((await envelope(response)).ok).toBe(false);
+      }
+      // A browser on the same origin sends no Origin on a GET; its fetch metadata is the declaration.
+      const browser = await get(h, path, { "Sec-Fetch-Site": "same-origin" });
+      expect({ row: key(row), status: browser.status }).toEqual({
+        row: key(row),
+        status: 200,
+      });
+    }
+    expect(h.events()).toEqual([]);
+    expect(h.bd.calls.every((args) => args[0] === "list")).toBe(true);
+  });
+});
+
+describe("reads over the ledger and run state", () => {
+  test("/sessions and /reservations return what the ledger holds for this workspace, and nothing from another", async () => {
+    const h = await start();
+    h.append({
+      kind: "session.started",
+      sessionId: "s-1",
+      payload: { kind: "interactive", worktree: "trees/a" },
+    });
+    h.append({
+      kind: "tool.called",
+      sessionId: "s-1",
+      beadId: "b-1",
+      payload: TOOL,
+    });
+    h.append({ kind: "session.started", sessionId: "s-2", payload: {} });
+    h.append({ kind: "session.ended", sessionId: "s-2", payload: {} });
+    h.append({
+      kind: "reservation.acquired",
+      beadId: "b-1",
+      sessionId: "s-1",
+      payload: { worktree: "trees/a", globs: ["scripts/**"] },
+    });
+    appendElsewhere(h, {
+      kind: "session.started",
+      sessionId: "other",
+      payload: {},
+    });
+    appendElsewhere(h, {
+      kind: "reservation.acquired",
+      beadId: "b-9",
+      payload: { worktree: "trees/z", globs: ["**"] },
+    });
+
+    const sessions = await envelope<SessionSummary[]>(
+      await get(h, "/sessions"),
+    );
+    expect(sessions.data?.map((session) => session.sessionId)).toEqual([
+      "s-1",
+      "s-2",
+    ]);
+    expect(sessions.data?.[0]).toMatchObject({
+      workspace: h.workspace,
+      kind: "interactive",
+      worktree: "trees/a",
+      beadId: "b-1",
+    });
+    expect(sessions.data?.[1]).toHaveProperty("endedAt");
+
+    const openOnly = await envelope<SessionSummary[]>(
+      await get(h, "/sessions?open=1&limit=5"),
+    );
+    expect(openOnly.data?.map((session) => session.sessionId)).toEqual(["s-1"]);
+    const one = await envelope<SessionSummary[]>(
+      await get(h, "/sessions?limit=1"),
+    );
+    expect(one.data?.map((session) => session.sessionId)).toEqual(["s-1"]);
+
+    const reservations = await envelope<Reservation[]>(
+      await get(h, "/reservations"),
+    );
+    expect(reservations.data).toEqual([
+      {
+        beadId: "b-1",
+        worktree: "trees/a",
+        workspace: h.workspace,
+        globs: ["scripts/**"],
+        sessionId: "s-1",
+        acquiredAt: expect.any(String),
+      },
+    ]);
+
+    for (const bad of [
+      "/sessions?limit=0",
+      "/sessions?limit=501",
+      "/sessions?limit=ten",
+      "/sessions?open=yes",
+      "/sessions?active=1",
+      "/sessions?limit=1&limit=2",
+      "/reservations?bead=b-1",
+    ]) {
+      const response = await get(h, bad);
+      expect({ bad, status: response.status }).toEqual({ bad, status: 400 });
+      expect((await envelope(response)).ok).toBe(false);
+    }
+  });
+
+  test("/events applies each filter and pages by `after`; events of another workspace never appear", async () => {
+    const h = await start();
+    const first = h.append({
+      kind: "tool.called",
+      sessionId: "s-1",
+      beadId: "b-1",
+      runId: "r-1",
+      ts: "2026-10-01T10:00:00.000Z",
+      payload: TOOL,
+    });
+    h.append({
+      kind: "gate.ran",
+      sessionId: "s-1",
+      ts: "2026-10-02T10:00:00.000Z",
+      payload: { gate: "typecheck", passed: true },
+    });
+    h.append({
+      kind: "tool.called",
+      sessionId: "s-2",
+      beadId: "b-2",
+      ts: "2026-10-03T10:00:00.000Z",
+      payload: TOOL,
+    });
+    appendElsewhere(h, {
+      kind: "tool.called",
+      sessionId: "s-1",
+      beadId: "b-1",
+      runId: "r-1",
+      payload: TOOL,
+    });
+    const last = h.append({
+      kind: "gate.ran",
+      runId: "r-1",
+      ts: "2026-10-04T10:00:00.000Z",
+      payload: { gate: "lint", passed: false },
+    });
+    const [a, b, c, d] = [first, first + 1, first + 2, last];
+
+    const ids = async (query: string): Promise<number[]> => {
+      const response = await get(h, `/events${query}`);
+      const body = await envelope<EventsPage>(response);
+      if (!body.ok) throw new Error(`${query}: ${body.error}`);
+      expect(
+        body.data.events.every((event) => event.workspace === h.workspace),
+      ).toBe(true);
+      return body.data.events.map((event) => event.id);
+    };
+    expect(await ids("")).toEqual([a, b, c, d]);
+    expect(await ids("?kind=gate.ran")).toEqual([b, d]);
+    expect(await ids("?kind=gate.ran,tool.called")).toEqual([a, b, c, d]);
+    expect(await ids("?run=r-1")).toEqual([a, d]);
+    expect(await ids("?session=s-2")).toEqual([c]);
+    // A bead brings the other events of a session that touched it; beadExact does not.
+    expect(await ids("?bead=b-1")).toEqual([a, b]);
+    expect(await ids("?bead=b-1&beadExact=1")).toEqual([a]);
+    expect(await ids("?since=2026-10-03T00:00:00Z")).toEqual([c, d]);
+    expect(await ids("?kind=tool.called&session=s-1")).toEqual([a]);
+
+    const tail = await envelope<EventsPage>(await get(h, "/events?limit=2"));
+    expect(tail.data).toMatchObject({ cursor: d, more: true });
+    expect(tail.data?.events.map((event) => event.id)).toEqual([c, d]);
+
+    const page = await envelope<EventsPage>(
+      await get(h, `/events?after=${a}&limit=2`),
+    );
+    expect(page.data).toMatchObject({ cursor: c, more: true });
+    expect(page.data?.events.map((event) => event.id)).toEqual([b, c]);
+    const rest = await envelope<EventsPage>(
+      await get(h, `/events?after=${c}&limit=2`),
+    );
+    expect(rest.data).toMatchObject({ cursor: d, more: false });
+    // An empty page keeps the cursor it was given, so a poller does not go backwards.
+    const empty = await envelope<EventsPage>(
+      await get(h, `/events?after=${d}`),
+    );
+    expect(empty.data).toEqual({ events: [], cursor: d, more: false });
+    expect(
+      (await envelope<EventsPage>(await get(h, "/events?kind=shift.started")))
+        .data,
+    ).toEqual({ events: [], cursor: 0, more: false });
+  });
+
+  test("/events refuses anything outside its filters, and the ledger commands the audit CLI also has", async () => {
+    const h = await start();
+    h.append({ kind: "tool.called", payload: TOOL });
+    const long = "x".repeat(201);
+    const refused = [
+      "?kinds=gate.ran",
+      "?kind=gate.ran&kind=tool.called",
+      "?backup=1",
+      "?compact=1",
+      "?all-workspaces=1",
+      "?allWorkspaces=1",
+      "?workspace=c:/work/another-checkout",
+      "?bead=--backup",
+      "?run=--compact",
+      "?session=--all-workspaces",
+      "?kind=not.a.kind",
+      "?kind=",
+      "?since=yesterday",
+      "?since=2026-13-45T00:00:00Z",
+      "?limit=0",
+      "?limit=1001",
+      "?limit=ten",
+      "?limit=-1",
+      "?after=-1",
+      "?after=1.5",
+      `?after=${"9".repeat(400)}`,
+      "?bead=",
+      `?bead=${long}`,
+      `?run=${long}`,
+      `?session=${long}`,
+      "?beadExact=1",
+      "?bead=b-1&beadExact=yes",
+    ];
+    for (const query of refused) {
+      const response = await get(h, `/events${query}`);
+      const body = await envelope(response);
+      expect({ query, status: response.status, ok: body.ok }).toEqual({
+        query,
+        status: 400,
+        ok: false,
+      });
+    }
+    // Nothing was backed up, compacted or widened: the one event is still the only thing there.
+    expect(h.events().length).toBe(1);
+    expect(existsSync(join(h.home, "backups"))).toBe(false);
+  });
+
+  test("/runs/:slug returns the run, its state and its newest events; unknown is 404, not a slug is 400", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    const entered = h.append({
+      kind: "run.phase.entered",
+      runId: "demo",
+      payload: { phase: "research" },
+    });
+    h.append({
+      kind: "run.phase.entered",
+      runId: "another",
+      payload: { phase: "plan" },
+    });
+
+    const response = await get(h, "/runs/demo");
+    expect(response.status).toBe(200);
+    const body = await envelope<RunDetail>(response);
+    expect(body.data?.run).toMatchObject({
+      slug: "demo",
+      phase: "research",
+      next: "plan",
+      complete: false,
+    });
+    expect(body.data?.state).toMatchObject({
+      slug: "demo",
+      feature: "Demo run",
+      completed: ["research"],
+    });
+    expect(body.data?.events).toMatchObject({ cursor: entered, more: false });
+    expect(body.data?.events.events.map((event) => event.id)).toEqual([
+      entered,
+    ]);
+
+    const unknown = await get(h, "/runs/never-ran");
+    expect(unknown.status).toBe(404);
+    expect((await envelope(unknown)).ok).toBe(false);
+
+    for (const bad of [
+      "/runs/has%20space",
+      `/runs/${"a".repeat(81)}`,
+      "/runs/-leading-dash",
+      "/runs/demo?verbose=1",
+      "/runs/%E0%A4%A",
+    ]) {
+      const refused = await get(h, bad);
+      expect({ bad, status: refused.status }).toEqual({ bad, status: 400 });
+      expect((await envelope(refused)).ok).toBe(false);
+    }
+  });
+
+  test("/runs/:slug bounds the events it returns", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    for (let i = 0; i < 205; i++)
+      h.append({
+        kind: "gate.ran",
+        runId: "demo",
+        payload: { gate: "typecheck", passed: true },
+      });
+    const body = await envelope<RunDetail>(await get(h, "/runs/demo"));
+    expect(body.data?.events.events.length).toBe(200);
+    expect(body.data?.events.more).toBe(true);
   });
 });

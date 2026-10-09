@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { EventsPage, RunDetail } from "../../../types/hearth";
 import { assertCouncilRunId } from "../../council/artifacts";
 import {
   type CouncilServiceInput,
@@ -15,9 +16,24 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
-import { listRuns } from "../../forge/runs-store";
+import { isValidSlug, summarizeRun } from "../../forge/runs";
+import { listRuns, readRunState } from "../../forge/runs-store";
+import { parseAuditArgs } from "../../ledger/audit-cli";
+import {
+  activeReservations,
+  type EventFilter,
+  type EventPage,
+  listSessions,
+  queryEventPage,
+} from "../../ledger/query";
 import { redactSecrets } from "../../secret-patterns";
-import type { ActionRoute, ApiRoute, RouteReply, RouteRequest } from "../api";
+import type {
+  ActionRoute,
+  ApiRoute,
+  ReadRoute,
+  RouteReply,
+  RouteRequest,
+} from "../api";
 import type { ValidationResult } from "../validate";
 import { applyReview, type BdRunner } from "./dev-api";
 
@@ -26,6 +42,9 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 export interface OperatorDeps {
   /** The checkout this hearth serves: run state is read from it. */
   root: string;
+  /** The ledger's name for that checkout; every ledger read is scoped to it. */
+  workspace: string;
+  ledgerPath: string;
   council: CouncilService;
   /** Runs `bd` in the checkout that holds the tracker. */
   runBd: BdRunner;
@@ -33,12 +52,235 @@ export interface OperatorDeps {
 
 const fail = <T>(error: string): ValidationResult<T> => ({ ok: false, error });
 
+/**
+ * The request's query parameters, when every one of them is in `allowed` and
+ * none is repeated. A misspelt filter must be a refusal, never a wider answer.
+ */
+function parameters(
+  request: RouteRequest,
+  allowed: readonly string[],
+): ValidationResult<Map<string, string>> {
+  const found = new Map<string, string>();
+  for (const [name, value] of request.query) {
+    if (!allowed.includes(name))
+      return fail(
+        allowed.length === 0
+          ? `${name}: this route takes no parameters`
+          : `${name}: unknown parameter (expected ${allowed.join(", ")})`,
+      );
+    if (found.has(name)) return fail(`${name}: given more than once`);
+    found.set(name, value);
+  }
+  return { ok: true, value: found };
+}
+
 /** A row that takes no query parameter refuses any. */
 function noParameters(request: RouteRequest): ValidationResult<null> {
-  const first = [...request.query.keys()][0];
-  return first === undefined
-    ? { ok: true, value: null }
-    : fail(`${first}: this route takes no parameters`);
+  const checked = parameters(request, []);
+  return checked.ok ? { ok: true, value: null } : checked;
+}
+
+/** A whole number in a range, written in plain digits. */
+function integer(
+  name: string,
+  text: string | undefined,
+  range: { min: number; max: number; fallback: number },
+): ValidationResult<number> {
+  if (text === undefined) return { ok: true, value: range.fallback };
+  const value = /^\d{1,15}$/.test(text) ? Number(text) : Number.NaN;
+  return value >= range.min && value <= range.max
+    ? { ok: true, value }
+    : fail(
+        `${name}: expected a whole number from ${range.min} to ${range.max}`,
+      );
+}
+
+function flag(
+  name: string,
+  text: string | undefined,
+): ValidationResult<boolean> {
+  if (text === undefined || text === "0") return { ok: true, value: false };
+  return text === "1"
+    ? { ok: true, value: true }
+    : fail(`${name}: expected 0 or 1`);
+}
+
+interface SessionsQuery {
+  open: boolean;
+  limit: number;
+}
+
+function sessionsQuery(request: RouteRequest): ValidationResult<SessionsQuery> {
+  const given = parameters(request, ["open", "limit"]);
+  if (!given.ok) return given;
+  const open = flag("open", given.value.get("open"));
+  if (!open.ok) return open;
+  const limit = integer("limit", given.value.get("limit"), {
+    min: 1,
+    max: 500,
+    fallback: 100,
+  });
+  return limit.ok
+    ? { ok: true, value: { open: open.value, limit: limit.value } }
+    : limit;
+}
+
+/** How many events `/events` returns when the request does not say, and at most. */
+const EVENTS_DEFAULT_LIMIT = 200;
+const EVENTS_MAX_LIMIT = 1000;
+/** How many of a run's newest events `/runs/:slug` carries; the rest are paged through `/events?run=`. */
+const RUN_EVENTS = 200;
+const MAX_ID_LENGTH = 200;
+
+/** The `/events` parameters and the `forge:audit` flag each one is. Nothing else reaches the parser. */
+const EVENT_FLAGS: ReadonlyArray<[string, string]> = [
+  ["bead", "--bead"],
+  ["run", "--run"],
+  ["session", "--session"],
+  ["since", "--since"],
+  ["kind", "--kind"],
+  ["after", "--after-id"],
+  ["limit", "--limit"],
+];
+
+type EventsQuery = Omit<EventFilter, "workspace"> & { limit: number };
+
+/**
+ * The filters of `forge:audit`, by the rules of `forge:audit`: the request's
+ * parameters become that command's flags and its own parser judges them. Only
+ * the flags listed above can be produced, so the command's other switches
+ * (backup, compaction, every workspace) cannot be reached from a request, and
+ * a result that is not a plain scoped query is refused regardless.
+ */
+function eventsQuery(request: RouteRequest): ValidationResult<EventsQuery> {
+  const given = parameters(request, [
+    ...EVENT_FLAGS.map(([name]) => name),
+    "beadExact",
+  ]);
+  if (!given.ok) return given;
+  const argv: string[] = [];
+  for (const [name, option] of EVENT_FLAGS) {
+    const value = given.value.get(name);
+    if (value === undefined) continue;
+    if (value.length === 0 || value.length > MAX_ID_LENGTH)
+      return fail(`${name}: expected 1 to ${MAX_ID_LENGTH} characters`);
+    if ((name === "after" || name === "limit") && !/^\d{1,15}$/.test(value))
+      return fail(`${name}: expected a whole number`);
+    argv.push(option, value);
+  }
+  const exact = flag("beadExact", given.value.get("beadExact"));
+  if (!exact.ok) return exact;
+  if (given.value.has("beadExact") && !given.value.has("bead"))
+    return fail("beadExact: needs bead");
+  if (exact.value) argv.push("--bead-exact");
+
+  const parsed = parseAuditArgs(argv);
+  // The parser names its own flags; a request never sent one.
+  if (!parsed.ok)
+    return fail(
+      parsed.error.replace(/^--after-id/, "after").replace(/^--/, ""),
+    );
+  if (parsed.value.command !== "query" || parsed.value.allWorkspaces)
+    return fail("Only a query of this workspace can be asked for");
+  const limit = parsed.value.filter.limit ?? EVENTS_DEFAULT_LIMIT;
+  if (limit > EVENTS_MAX_LIMIT)
+    return fail(`limit: expected a whole number from 1 to ${EVENTS_MAX_LIMIT}`);
+  return { ok: true, value: { ...parsed.value.filter, limit } };
+}
+
+function runSlug(request: RouteRequest): ValidationResult<string> {
+  const given = noParameters(request);
+  if (!given.ok) return given;
+  const slug = request.params["slug"] ?? "";
+  return isValidSlug(slug)
+    ? { ok: true, value: slug }
+    : fail("slug: not a forge run slug");
+}
+
+/** A page of events as the API answers it. */
+function eventsPage(page: EventPage, after: number | undefined): EventsPage {
+  return {
+    events: page.events,
+    cursor: page.events.at(-1)?.id ?? after ?? 0,
+    more: page.more,
+  };
+}
+
+/** The reads over the ledger and the run state. */
+function ledgerReads(deps: OperatorDeps): ApiRoute[] {
+  const ledger = { path: deps.ledgerPath };
+  const { workspace } = deps;
+  const sessions: ReadRoute<SessionsQuery> = {
+    kind: "read",
+    method: "GET",
+    path: "/sessions",
+    collection: "sessions",
+    validate: sessionsQuery,
+    read: (query) => ({
+      status: 200,
+      data: listSessions({ workspace, ...query }, ledger),
+    }),
+  };
+  const run: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/runs/:slug",
+    validate: runSlug,
+    read: (slug) => {
+      const state = readRunState(slug, deps.root);
+      if (state === null)
+        return {
+          status: 404,
+          error: `No forge run named "${slug}" in this checkout`,
+        };
+      const detail: RunDetail = {
+        run: summarizeRun(state),
+        state,
+        events: eventsPage(
+          queryEventPage({ workspace, runId: slug, limit: RUN_EVENTS }, ledger),
+          undefined,
+        ),
+      };
+      return { status: 200, data: detail };
+    },
+  };
+  const events: ReadRoute<EventsQuery> = {
+    kind: "read",
+    method: "GET",
+    path: "/events",
+    validate: eventsQuery,
+    read: (filter) => ({
+      status: 200,
+      data: eventsPage(
+        queryEventPage({ ...filter, workspace }, ledger),
+        filter.afterId,
+      ),
+    }),
+  };
+  return [
+    sessions,
+    {
+      kind: "read",
+      method: "GET",
+      path: "/runs",
+      collection: "runs",
+      validate: noParameters,
+      read: () => ({ status: 200, data: listRuns(deps.root) }),
+    },
+    run,
+    events,
+    {
+      kind: "read",
+      method: "GET",
+      path: "/reservations",
+      collection: "reservations",
+      validate: noParameters,
+      read: () => ({
+        status: 200,
+        data: activeReservations({ workspace }, ledger),
+      }),
+    },
+  ];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,15 +467,5 @@ function actions(deps: OperatorDeps): ApiRoute[] {
 }
 
 export function operatorRoutes(deps: OperatorDeps): ApiRoute[] {
-  return [
-    {
-      kind: "read",
-      method: "GET",
-      path: "/runs",
-      collection: "runs",
-      validate: noParameters,
-      read: () => ({ status: 200, data: listRuns(deps.root) }),
-    },
-    ...actions(deps),
-  ];
+  return [...ledgerReads(deps), ...actions(deps)];
 }
