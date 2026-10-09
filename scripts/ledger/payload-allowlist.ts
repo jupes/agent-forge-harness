@@ -5,6 +5,7 @@
  */
 
 import type { LedgerEventKind } from "../../types/hearth";
+import { parseEvaluatorIdentity } from "../eval-verdict";
 
 /** One entry per kind: adding a kind to `LEDGER_EVENT_KINDS` fails typecheck until it has a list. */
 export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
@@ -37,29 +38,43 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
 
 const EXECUTOR_KEYS = ["provider", "model", "effort", "smith", "sessionId"];
 const FINDING_KEYS = ["blocker", "high", "medium", "low"];
-/** Both kinds of `EvaluatorIdentity`: a human has the first two, a model all but `actorKind`. */
-const EVALUATOR_IDENTITY_KEYS = [
-  "kind",
-  "actorKind",
-  "requestedProvider",
-  "requestedModel",
-  "requestedRank",
-  "observedProvider",
-  "observedModel",
-  "providerEvidence",
-  "modelEvidence",
-  "rankPolicyDecision",
-  "rankPolicyRule",
-  "sessionId",
-];
 const VERDICT_ARTIFACT_KEYS = ["path", "sha256", "bytes", "schemaVersion"];
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** Returned by a nested cut for a value that is not worth storing under its key. */
+const DROP = Symbol("drop");
+
+/** An evaluator identity as the verdict parser reads it, or nothing: never a half-valid one. */
+function evaluatorIdentity(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return DROP;
+  // A copy of the value's own properties: nothing inherited is read.
+  const parsed = parseEvaluatorIdentity({ ...value });
+  return parsed.ok ? parsed.value : DROP;
+}
+
+/** A verdict file reference with a real digest and size, or nothing. */
+function verdictArtifact(value: unknown): unknown {
+  const cut = pick(value, VERDICT_ARTIFACT_KEYS);
+  const { path, sha256, bytes, schemaVersion } = cut;
+  return typeof path === "string" &&
+    path.length > 0 &&
+    typeof sha256 === "string" &&
+    SHA256_HEX.test(sha256) &&
+    typeof bytes === "number" &&
+    Number.isInteger(bytes) &&
+    bytes >= 0 &&
+    typeof schemaVersion === "number" &&
+    Number.isInteger(schemaVersion)
+    ? cut
+    : DROP;
+}
 
 /** Payload keys whose value is an object or array, and the shape each is cut to. */
 const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   builder: (value) => pick(value, EXECUTOR_KEYS),
   evaluator: (value) => pick(value, EXECUTOR_KEYS),
-  evaluatorIdentity: (value) => pick(value, EVALUATOR_IDENTITY_KEYS),
-  verdictArtifact: (value) => pick(value, VERDICT_ARTIFACT_KEYS),
+  evaluatorIdentity,
+  verdictArtifact,
   findings: (value) => pick(value, FINDING_KEYS),
   globs: (value) =>
     Array.isArray(value)
@@ -76,7 +91,7 @@ function isScalar(value: unknown): boolean {
   );
 }
 
-/** The listed keys of an object, scalars only. */
+/** The listed keys of an object: its own properties, scalars only. */
 function pick(
   value: unknown,
   keys: readonly string[],
@@ -85,7 +100,11 @@ function pick(
   if (typeof value !== "object" || value === null) return out;
   const record = value as Record<string, unknown>;
   for (const key of keys) {
-    if (record[key] !== undefined && isScalar(record[key]))
+    if (
+      Object.hasOwn(record, key) &&
+      record[key] !== undefined &&
+      isScalar(record[key])
+    )
       out[key] = record[key];
   }
   return out;
@@ -93,8 +112,9 @@ function pick(
 
 /**
  * A payload reduced to its kind's allowlist. Unknown keys are dropped, nested
- * values are cut to their own shape, and anything that is not a scalar under a
- * scalar key is dropped too.
+ * values are cut to their own shape (an evaluator identity or a verdict
+ * artifact that is not well formed is dropped whole), and anything that is not
+ * a scalar under a scalar key is dropped too.
  */
 export function stripPayload(
   kind: LedgerEventKind,
@@ -107,8 +127,10 @@ export function stripPayload(
     const value = record[key];
     if (value === undefined) continue;
     const nested = NESTED[key];
-    if (nested) out[key] = nested(value);
-    else if (isScalar(value)) out[key] = value;
+    if (nested) {
+      const cut = nested(value);
+      if (cut !== DROP) out[key] = cut;
+    } else if (isScalar(value)) out[key] = value;
   }
   return out;
 }

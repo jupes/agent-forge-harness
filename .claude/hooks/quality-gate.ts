@@ -385,7 +385,9 @@ function strictVerdictCheck(
   const verdict = mine.value;
   const builder = strict.runState?.executor;
   const problem = strictEvaluatorProblem(verdict.evaluator, {
-    smiths: deps.smiths(strict.checkout),
+    // Only a model evaluator has a rank to look up.
+    smiths:
+      verdict.evaluator.kind === "model" ? deps.smiths(strict.checkout) : [],
     ...(builder ? { builder } : {}),
   });
   if (problem !== null) return refused(problem);

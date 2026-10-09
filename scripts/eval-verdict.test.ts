@@ -115,7 +115,7 @@ const MODEL_EVALUATOR = {
   requestedModel: "claude-opus-5-5",
   requestedRank: "master",
   observedProvider: "claude",
-  observedModel: "claude-opus-5-5",
+  observedModel: "claude-sonnet-5-5",
   providerEvidence: "selected-direct-transport",
   modelEvidence: "response-field",
   rankPolicyDecision: "allowed",
@@ -158,6 +158,10 @@ describe("parseEvalVerdictJson, schema 2", () => {
       expect(r.value.evaluator).toEqual({
         ...MODEL_EVALUATOR,
         sessionId: "session-9",
+      });
+      expect(r.value.evaluator).toMatchObject({
+        requestedModel: "claude-opus-5-5",
+        observedModel: "claude-sonnet-5-5",
       });
     }
   });

@@ -40,23 +40,23 @@ export interface RankPolicy {
 
 const RANK_TAG = "rank:";
 
-/** The rank a smith is tagged with, or null when it has no (or no known) rank tag. */
-function smithRank(smith: Smith): Rank | null {
-  for (const tag of smith.tags) {
-    if (!tag.startsWith(RANK_TAG)) continue;
+/** Every rank a smith is tagged with: none when it has no (or no known) rank tag. */
+function smithRanks(smith: Smith): Rank[] {
+  return smith.tags.flatMap((tag) => {
+    if (!tag.startsWith(RANK_TAG)) return [];
     const rank = RANKS.find((known) => known === tag.slice(RANK_TAG.length));
-    if (rank !== undefined) return rank;
-  }
-  return null;
+    return rank !== undefined ? [rank] : [];
+  });
 }
 
 /**
  * The rank of a provider and model: that of the smith the executor names, when
  * that smith is this provider and model; else that of the configured smiths
  * using them. Smiths of different ranks can share a model (the same model at
- * two efforts), so the caller says which end to take: the lowest for an
- * evaluator and the highest for a builder, the reading least favourable to
- * "grader >= subject". Null when no ranked smith uses the model.
+ * two efforts), and one smith can carry two rank tags, so the caller says
+ * which end to take: the lowest for an evaluator and the highest for a
+ * builder, the reading least favourable to "grader >= subject". Null when no
+ * ranked smith uses the model.
  */
 export function rankOf(
   smiths: readonly Smith[],
@@ -68,8 +68,7 @@ export function rankOf(
   );
   const named = using.find((smith) => smith.name === who.smith);
   const positions = (named ? [named] : using)
-    .map(smithRank)
-    .filter((rank): rank is Rank => rank !== null)
+    .flatMap(smithRanks)
     .map((rank) => RANKS.indexOf(rank));
   if (positions.length === 0) return null;
   const position =

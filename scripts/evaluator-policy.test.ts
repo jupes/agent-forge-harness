@@ -66,6 +66,22 @@ describe("rankOf", () => {
   });
 });
 
+describe("rankOf, a smith with more than one rank tag", () => {
+  test("takes the end the caller asked for, whatever the order of the tags", () => {
+    for (const tags of [
+      ["rank:master", "rank:apprentice"],
+      ["rank:apprentice", "rank:master"],
+    ]) {
+      const both = [smith("both", "claude-opus-5-5", tags)];
+      expect(rankOf(both, OPUS, "lowest")).toBe("apprentice");
+      expect(rankOf(both, OPUS, "highest")).toBe("master");
+      expect(rankOf(both, { ...OPUS, smith: "both" }, "lowest")).toBe(
+        "apprentice",
+      );
+    }
+  });
+});
+
 describe("rankPolicy", () => {
   test("an evaluator at or above the builder's rank is allowed", () => {
     for (const [evaluator, builder] of [
@@ -230,6 +246,41 @@ describe("strictEvaluatorProblem", () => {
     ).toBe(
       "observed evaluator claude/claude-next has no rank: no configured smith with a rank:* tag uses that provider and model",
     );
+  });
+
+  test("when smiths of two ranks share a model, the evaluator is read at the lower and the builder at the higher", () => {
+    const shared = [
+      ...SMITHS,
+      smith("opus-quick", "claude-opus-5-5", ["rank:journeyman"]),
+    ];
+    // An opus evaluator may have been the journeyman smith: it cannot grade a master's work.
+    expect(
+      strictEvaluatorProblem(model(), {
+        smiths: [
+          ...shared,
+          smith("gpt-master", "gpt-5-codex", ["rank:master"], "codex"),
+        ],
+        builder: { provider: "codex", model: "gpt-5-codex" },
+      }),
+    ).toBe(
+      "observed evaluator claude/claude-opus-5-5 (rank journeyman) is below the builder's rank (master)",
+    );
+    // An opus builder may have been the master smith: a journeyman cannot grade it.
+    expect(
+      strictEvaluatorProblem(model({ observedModel: "claude-sonnet-5-5" }), {
+        smiths: shared,
+        builder: OPUS,
+      }),
+    ).toBe(
+      "observed evaluator claude/claude-sonnet-5-5 (rank journeyman) is below the builder's rank (master)",
+    );
+    // A builder that names its smith is read at that smith's rank.
+    expect(
+      strictEvaluatorProblem(model({ observedModel: "claude-sonnet-5-5" }), {
+        smiths: shared,
+        builder: { ...OPUS, smith: "opus-quick" },
+      }),
+    ).toBeNull();
   });
 
   test("with no known builder only a master evaluator passes", () => {

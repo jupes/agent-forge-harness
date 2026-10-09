@@ -74,10 +74,17 @@ export function recordRound(state: ForgeState, round: ReviewRound): ForgeState {
   return { ...state, reviews: [...(state.reviews ?? []), round] };
 }
 
-/** The Beads comment a round records, under the harness's `review:` prefix. */
-export function reviewComment(round: ReviewRound): string {
+/**
+ * The Beads comment a round records, under the harness's `review:` prefix.
+ * `legacy` marks a round graded from a schema 1 verdict, which names neither
+ * the run nor the evaluator.
+ */
+export function reviewComment(
+  round: ReviewRound,
+  opts: { legacy?: boolean } = {},
+): string {
   const { blocker, high, medium, low } = round.findings;
-  return `review: ${round.verdict} — ${blocker} blocker, ${high} high, ${medium} medium, ${low} low (${round.phase} round ${round.round})`;
+  return `review: ${round.verdict} — ${blocker} blocker, ${high} high, ${medium} medium, ${low} low (${round.phase} round ${round.round}${opts.legacy ? "; legacy verdict" : ""})`;
 }
 
 /**

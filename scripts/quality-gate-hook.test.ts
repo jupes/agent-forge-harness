@@ -1022,6 +1022,96 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     SPAWN_TIMEOUT_MS,
   );
 
+  /** The eval-verdict check of a spawned strict run over one model verdict. */
+  async function spawnedStrictCheck(
+    box: Box,
+    evaluator: Record<string, unknown>,
+  ): Promise<{ check: Record<string, unknown> | undefined; stderr: string }> {
+    const pointer = correlate(box, "bead-1", "run-1");
+    verdict(box, "bead-1", v2({ evaluator }));
+    const out = await spawnGate(box, "", {
+      [RUN_CORRELATION_ENV]: pointer,
+      AGENT_FORGE_EVAL_VERDICT: "strict",
+    });
+    const [logged] = gateLog(box);
+    return {
+      check: (logged?.checks as Array<Record<string, unknown>>).find(
+        (entry) => entry.name === "eval-verdict",
+      ),
+      stderr: out.stderr,
+    };
+  }
+
+  test(
+    "strict mode ranks a model evaluator from the smiths configured for the checkout",
+    async () => {
+      // Built-in smiths only: an observed master passes with no builder on record.
+      const builtin = await spawnedStrictCheck(sandbox(), modelEvaluator());
+      expect(builtin.check).toMatchObject({ passed: true });
+
+      // A model only the checkout's own config ranks.
+      const local = { observedModel: "house-model", requestedModel: "x" };
+      const unranked = await spawnedStrictCheck(
+        sandbox(),
+        modelEvaluator(local),
+      );
+      expect(unranked.check).toEqual({
+        name: "eval-verdict",
+        passed: false,
+        output:
+          "observed evaluator claude/house-model has no rank: no configured smith with a rank:* tag uses that provider and model",
+      });
+
+      const configured = sandbox();
+      writeFileSync(
+        join(configured.cwd, "agent-forge.toml"),
+        [
+          "[smiths.house]",
+          'provider = "claude"',
+          'model = "house-model"',
+          'effort = "high"',
+          'tags = ["rank:master"]',
+          "",
+        ].join("\n"),
+      );
+      const ranked = await spawnedStrictCheck(
+        configured,
+        modelEvaluator(local),
+      );
+      expect(ranked.check).toMatchObject({ passed: true });
+    },
+    SPAWN_TIMEOUT_MS * 3,
+  );
+
+  test(
+    "strict mode fails closed when the smith config cannot be read, and says so",
+    async () => {
+      const box = sandbox();
+      writeFileSync(join(box.cwd, "agent-forge.toml"), "[smiths.broken\n");
+      const broken = await spawnedStrictCheck(box, modelEvaluator());
+      expect(broken.check).toEqual({
+        name: "eval-verdict",
+        passed: false,
+        output:
+          "observed evaluator claude/claude-opus-5-5 has no rank: no configured smith with a rank:* tag uses that provider and model",
+      });
+      expect(broken.stderr).toContain(
+        "quality-gate: smith config not readable, so no evaluator has a rank:",
+      );
+
+      // A human verdict needs no rank: the config is not read for it.
+      const human = sandbox();
+      writeFileSync(join(human.cwd, "agent-forge.toml"), "[smiths.broken\n");
+      const judged = await spawnedStrictCheck(human, {
+        kind: "human",
+        actorKind: "operator",
+      });
+      expect(judged.check).toMatchObject({ passed: true });
+      expect(judged.stderr).not.toContain("smith config not readable");
+    },
+    SPAWN_TIMEOUT_MS * 2,
+  );
+
   test(
     "a --correlation flag that points at nothing fails explicitly; an environment pointer that does is reported and logged unlinked",
     async () => {

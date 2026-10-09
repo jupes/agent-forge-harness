@@ -8,7 +8,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { LedgerEvent } from "../../types/hearth";
+import type { LedgerEvent, LedgerEventOf } from "../../types/hearth";
 import { type EvalVerdictParsed, parseEvalVerdictJson } from "../eval-verdict";
 import { closeLedger } from "../ledger/db";
 import type { Attach } from "../ledger/identity";
@@ -54,6 +54,7 @@ const PHASE_GATE = join(import.meta.dir, "phase-gate.ts");
 const REVIEW = join(import.meta.dir, "auto-loop-cli.ts");
 const RUNS = join(import.meta.dir, "runs-cli.ts");
 const AUDIT = join(import.meta.dir, "..", "ledger", "audit-cli.ts");
+const CORRELATE = join(import.meta.dir, "..", "run-correlation-cli.ts");
 const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
 
 /** The parent's environment minus anything that names a live session, run or ledger. */
@@ -222,13 +223,16 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       "m-1",
     ]);
     expect(wrote.exitCode).toBe(0);
+    // The run named its bead, so it is correlated: its verdict is schema 2.
+    const verdict = join(box.cwd, "v.json");
+    writeFileSync(verdict, v2Json());
     const reviewed = await run(box, REVIEW, [
       "--slug",
       "x",
       "--phase",
       "research",
       "--verdict",
-      verdictFile(box, "v.json", "PASS", 0),
+      verdict,
     ]);
     expect(reviewed.exitCode).toBe(0);
 
@@ -345,7 +349,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     ).toEqual([]);
   }, 60_000);
 
-  test("a verdict file recorded by forge:review produces one verdict.bound for the run", async () => {
+  test("a schema 1 verdict recorded by forge:review for an uncorrelated run produces one verdict.bound, labelled legacy", async () => {
     const box = sandbox();
     writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
     await run(box, PHASE_GATE, [
@@ -355,7 +359,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       "--write",
       "--mode",
       "auto",
-      "--bead",
+      "--epic",
       "b-1",
       "--provider",
       "claude",
@@ -371,6 +375,10 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       verdictFile(box, "v.json", "PASS", 0, `looks right; key ${SECRET} seen`),
     ]);
     expect(reviewed.exitCode).toBe(0);
+    // The command says the verdict it took was a legacy one.
+    const printed = JSON.parse(reviewed.stdout).data;
+    expect(printed.verdictSchemaVersion).toBe(1);
+    expect(printed.comment).toEndWith("(research round 1; legacy verdict)");
 
     const bound = runEvents(box, "x").filter((e) => e.kind === "verdict.bound");
     expect(bound).toHaveLength(1);
@@ -394,10 +402,11 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     ).toEqual(["verdict.bound", "review.recorded"]);
   }, 60_000);
 
-  test("a schema 2 verdict recorded by forge:review stores its evaluator", async () => {
+  /** A run `x` whose phase gate named bead `b-1`, which is what correlates it. */
+  async function correlatedRun(extra: string[] = []): Promise<Box> {
     const box = sandbox();
     writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
-    await run(box, PHASE_GATE, [
+    const written = await run(box, PHASE_GATE, [
       "research",
       "--slug",
       "x",
@@ -406,27 +415,54 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       "auto",
       "--bead",
       "b-1",
-      "--provider",
-      "claude",
-      "--model",
-      "m-1",
+      ...extra,
     ]);
-    const file = join(box.cwd, "v2.json");
-    writeFileSync(file, v2Json({ summary: "second opinion" }));
-    const reviewed = await run(box, REVIEW, [
-      "--slug",
-      "x",
-      "--phase",
-      "research",
-      "--verdict",
-      file,
-    ]);
-    expect(reviewed.exitCode).toBe(0);
-    expect(JSON.parse(reviewed.stdout).data.verdictError).toBeUndefined();
+    expect(JSON.parse(written.stdout).data.correlation).toMatchObject({
+      beadsIssueId: "b-1",
+      executionRunId: "x",
+    });
+    return box;
+  }
 
-    const bound = runEvents(box, "x").filter((e) => e.kind === "verdict.bound");
+  async function review(
+    box: Box,
+    json: string,
+    env: Record<string, string> = {},
+  ): Promise<{ exitCode: number; data: Record<string, unknown> }> {
+    const file = join(
+      box.cwd,
+      `verdict-${Math.random().toString(36).slice(2)}.json`,
+    );
+    writeFileSync(file, json);
+    const reviewed = await run(
+      box,
+      REVIEW,
+      ["--slug", "x", "--phase", "research", "--verdict", file],
+      env,
+    );
+    return {
+      exitCode: reviewed.exitCode,
+      data: JSON.parse(reviewed.stdout).data,
+    };
+  }
+
+  function boundRows(box: Box): LedgerEventOf<"verdict.bound">[] {
+    return queryEvents({ kinds: ["verdict.bound"] }, { path: box.path }).filter(
+      (event) => event.kind === "verdict.bound",
+    );
+  }
+
+  test("a schema 2 verdict recorded by forge:review stores its evaluator", async () => {
+    const box = await correlatedRun(["--provider", "claude", "--model", "m-1"]);
+    const reviewed = await review(box, v2Json({ summary: "second opinion" }));
+    expect(reviewed.exitCode).toBe(0);
+    expect(reviewed.data.verdictError).toBeUndefined();
+    expect(reviewed.data.verdictSchemaVersion).toBe(2);
+
+    const bound = boundRows(box);
     expect(bound).toHaveLength(1);
     expect(bound[0]?.beadId).toBe("b-1");
+    expect(bound[0]?.runId).toBe("x");
     expect<unknown>(bound[0]?.payload).toEqual({
       verdict: "pass",
       builder: { provider: "claude", model: "m-1" },
@@ -447,41 +483,122 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
         'verdict beadsIssueId "b-9" is not this run\'s bead ("b-1")',
       ],
     ] as const) {
-      const box = sandbox();
-      writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
-      await run(box, PHASE_GATE, [
-        "research",
-        "--slug",
-        "x",
-        "--write",
-        "--mode",
-        "auto",
-        "--bead",
-        "b-1",
-      ]);
-      const file = join(box.cwd, "foreign.json");
-      writeFileSync(file, v2Json(overrides));
-      const reviewed = await run(box, REVIEW, [
-        "--slug",
-        "x",
-        "--phase",
-        "research",
-        "--verdict",
-        file,
-      ]);
+      const box = await correlatedRun();
+      const reviewed = await review(box, v2Json(overrides));
       expect(reviewed.exitCode).toBe(2);
-      const data = JSON.parse(reviewed.stdout).data;
-      expect(data.verdictError).toBe(error);
-      expect(data.round.verdict).toBe("UNREADABLE");
-
-      const bound = runEvents(box, "x").filter(
-        (e) => e.kind === "verdict.bound",
-      );
-      expect(bound.map((event) => event.payload)).toEqual([
+      expect(reviewed.data.verdictError).toBe(error);
+      expect(reviewed.data.round).toMatchObject({ verdict: "UNREADABLE" });
+      expect(boundRows(box).map((event) => event.payload)).toEqual([
         { verdict: "unreadable" },
       ]);
       closeLedger();
     }
+  }, 120_000);
+
+  test("the bead a schema 2 verdict must name is the run correlation's, not the run state's", async () => {
+    const box = await correlatedRun();
+    // The run is rebound to a narrower issue; its state still says b-1.
+    const rebound = await run(box, CORRELATE, ["--bead", "b-2", "--run", "x"]);
+    expect(rebound.exitCode).toBe(0);
+
+    const stale = await review(box, v2Json({ beadsIssueId: "b-1" }));
+    expect(stale.exitCode).toBe(2);
+    expect(stale.data.verdictError).toBe(
+      'verdict beadsIssueId "b-1" is not this run\'s bead ("b-2")',
+    );
+
+    const current = await review(box, v2Json({ beadsIssueId: "b-2" }));
+    expect(current.data.verdictError).toBeUndefined();
+    expect(current.data.round).toMatchObject({ verdict: "PASS" });
+    // Filed under the bead the verdict names, which is the correlation's.
+    expect(boundRows(box).map((event) => event.beadId)).toEqual(["b-1", "b-2"]);
+    expect(boundRows(box).map((event) => event.payload.verdict)).toEqual([
+      "unreadable",
+      "pass",
+    ]);
+  }, 120_000);
+
+  test("a schema 2 verdict's event is filed under the verdict's bead, whatever the environment names", async () => {
+    const box = await correlatedRun();
+    const reviewed = await review(box, v2Json(), {
+      AGENT_FORGE_BEAD_ID: "b-env",
+    });
+    expect(reviewed.exitCode).toBe(0);
+    const [event] = boundRows(box);
+    expect(event?.beadId).toBe("b-1");
+    expect(event?.runId).toBe("x");
+  }, 60_000);
+
+  test("a run with no correlation cannot take a schema 2 verdict: there is nothing to check its ids against", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--epic",
+      "e-1",
+    ]);
+    const reviewed = await review(box, v2Json({ beadsIssueId: "b-999" }));
+    expect(reviewed.exitCode).toBe(2);
+    expect(reviewed.data.verdictError).toBe(
+      'run "x" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run x)',
+    );
+    expect(boundRows(box).map((event) => event.payload)).toEqual([
+      { verdict: "unreadable" },
+    ]);
+  }, 60_000);
+
+  test("a correlated run refuses a schema 1 verdict: it names no run", async () => {
+    const box = await correlatedRun();
+    const reviewed = await review(
+      box,
+      JSON.stringify({
+        schemaVersion: 1,
+        taskId: "some-other-bead",
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+      }),
+    );
+    expect(reviewed.exitCode).toBe(2);
+    expect(reviewed.data.verdictError).toBe(
+      'run "x" is correlated to b-1, so its verdict must be schema 2; the verdict is schema 1 (legacy): it names no run and no evaluator',
+    );
+    expect(boundRows(box).map((event) => event.payload)).toEqual([
+      { verdict: "unreadable" },
+    ]);
+  }, 60_000);
+
+  test("forge:review says when the evaluator would not satisfy strict completion, and still records the round", async () => {
+    const box = await correlatedRun([
+      "--provider",
+      "claude",
+      "--model",
+      "claude-opus-5-5",
+    ]);
+    const weaker = await review(
+      box,
+      v2Json({
+        evaluator: {
+          ...MODEL_EVALUATOR,
+          observedModel: "claude-haiku-4-5-20251001",
+        },
+      }),
+    );
+    expect(weaker.exitCode).toBe(0);
+    expect(weaker.data.evaluatorProblem).toBe(
+      "observed evaluator claude/claude-haiku-4-5-20251001 (rank apprentice) is below the builder's rank (master)",
+    );
+    expect(weaker.data.round).toMatchObject({ verdict: "PASS" });
+
+    const human = await review(
+      box,
+      v2Json({ evaluator: { kind: "human", actorKind: "operator" } }),
+    );
+    expect("evaluatorProblem" in human.data).toBe(false);
   }, 120_000);
 
   test("an unreadable verdict file is bound as unreadable", async () => {

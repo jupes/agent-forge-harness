@@ -4,7 +4,9 @@
  *
  * `/forgemaster-auto` runs unattended, so "did that review pass, and what now?"
  * has to be a command with an exit code rather than a judgement call the agent
- * makes about its own work. This reads the evaluator's verdict file, appends
+ * makes about its own work. This reads the evaluator's verdict file (a schema
+ * 2 verdict must name the run and the bead of the run's correlation; a run
+ * with no correlation can only be graded from a legacy schema 1 verdict), appends
  * the round to the run's ledger together with the decision it reached, and
  * prints that decision. The stored decision is what the phase gate and the
  * runs table read afterwards, so a halt here is a halt everywhere; the round
@@ -25,12 +27,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
+import { loadConfig } from "../config/load";
 import {
   EVAL_VERDICT_SCHEMA_VERSION,
   type EvalVerdictParsed,
   parseEvalVerdictJson,
   verdictForRun,
 } from "../eval-verdict";
+import { strictEvaluatorProblem } from "../evaluator-policy";
+import { type RunCorrelation, runCorrelationPath } from "../run-correlation";
 import {
   type AutoDecision,
   decideNext,
@@ -75,6 +80,48 @@ function emit(result: CliResult, code: number): never {
 
 function fail(error: string): never {
   emit({ ok: false, data: null, error }, 2);
+}
+
+/**
+ * `parsed` as the verdict of run `slug`, or why it is not.
+ *
+ * The run's bead is its correlation's, not its state's: the two differ once a
+ * run is rebound to a narrower issue. A correlated run takes only a schema 2
+ * verdict naming that bead and run. A run with no correlation has nothing a
+ * schema 2 verdict could be checked against, and takes only a legacy one.
+ */
+export function verdictOfRun(
+  parsed: EvalVerdictParsed,
+  slug: string,
+  correlation:
+    | { kind: "found"; value: RunCorrelation }
+    | { kind: "none" }
+    | { kind: "refused"; error: string },
+): { ok: true; value: EvalVerdictParsed } | { ok: false; error: string } {
+  if (correlation.kind === "refused") {
+    return {
+      ok: false,
+      error: `run "${slug}" has a run correlation that cannot be used (${correlation.error}), so no verdict can be checked against it`,
+    };
+  }
+  if (correlation.kind === "found") {
+    const mine = verdictForRun(parsed, correlation.value);
+    return mine.ok
+      ? mine
+      : parsed.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION
+        ? mine
+        : {
+            ok: false,
+            error: `run "${slug}" is correlated to ${correlation.value.beadsIssueId}, so its verdict must be schema 2; ${mine.error}`,
+          };
+  }
+  if (parsed.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      error: `run "${slug}" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run ${slug})`,
+    };
+  }
+  return { ok: true, value: parsed };
 }
 
 if (import.meta.main) {
@@ -122,29 +169,53 @@ if (import.meta.main) {
     fail("Missing required --verdict <path to the evaluator verdict JSON>.");
   }
 
+  // The run's correlation lives in the checkout the run builds in.
+  const checkout = state.checkout ?? process.cwd();
+  const { loadRunCorrelation } = await import("../run-correlation-store");
+  const pointer = runCorrelationPath(slug) ?? "";
+  const loaded = loadRunCorrelation(pointer, checkout);
+  const correlation = loaded.ok
+    ? ({ kind: "found", value: loaded.value } as const)
+    : existsSync(join(checkout, pointer))
+      ? ({ kind: "refused", error: loaded.error } as const)
+      : ({ kind: "none" } as const);
+
   // An unreadable or invalid verdict is recorded, not swallowed: decideNext
   // halts on it, which is the point — an auto run must not grade itself blind.
-  // A schema 2 verdict that names another run, or another bead than this
-  // run's, is as unusable as one that cannot be read. A legacy (schema 1)
-  // verdict names neither and is taken as given.
+  // A verdict that is not this run's is as unusable as one that cannot be read.
   let verdict: EvalVerdictParsed | null = null;
   let verdictError: string | null = null;
   try {
     const parsed = parseEvalVerdictJson(readFileSync(verdictPath, "utf8"));
     if (!parsed.ok) {
       verdictError = parsed.error;
-    } else if (parsed.value.schemaVersion !== EVAL_VERDICT_SCHEMA_VERSION) {
-      verdict = parsed.value;
     } else {
-      const mine = verdictForRun(parsed.value, {
-        executionRunId: slug,
-        ...(state.beadId !== undefined ? { beadsIssueId: state.beadId } : {}),
-      });
+      const mine = verdictOfRun(parsed.value, slug, correlation);
       if (mine.ok) verdict = mine.value;
       else verdictError = mine.error;
     }
   } catch {
     verdictError = `could not read ${verdictPath}`;
+  }
+  const bound =
+    verdict?.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION ? verdict : null;
+
+  // Whether the evaluator would satisfy strict completion. Reported, not
+  // enforced: the review loop's own rule is the verdict's findings.
+  let evaluatorProblem: string | null = null;
+  if (bound?.evaluator.kind === "model") {
+    let smiths: Parameters<typeof strictEvaluatorProblem>[1]["smiths"] = [];
+    try {
+      smiths = Object.values(
+        loadConfig({ harnessRoot: checkout }).config.smiths,
+      );
+    } catch {
+      // Config that cannot be read ranks nobody, which the problem then says.
+    }
+    evaluatorProblem = strictEvaluatorProblem(bound.evaluator, {
+      smiths,
+      ...(state.executor ? { builder: state.executor } : {}),
+    });
   }
 
   const graded = roundFromVerdict({
@@ -178,9 +249,17 @@ if (import.meta.main) {
     ...(executor ? { executor } : {}),
   };
   writeRunState(next);
-  // The verdict file as it was read, then what the loop decided about it.
+  // The verdict file as it was read, then what the loop decided about it. A
+  // schema 2 verdict's event is filed under the bead and run the verdict
+  // names, which are the correlation's.
   ledger.emitRunEvent(
-    attach,
+    bound
+      ? {
+          ...attach,
+          beadId: bound.beadsIssueId,
+          runId: bound.executionRunId,
+        }
+      : attach,
     ledger.verdictBound({
       verdict,
       ...(state.executor ? { builder: state.executor } : {}),
@@ -217,7 +296,11 @@ if (import.meta.main) {
       data: {
         round,
         decision,
-        comment: reviewComment(round),
+        comment: reviewComment(round, {
+          legacy: verdict !== null && bound === null,
+        }),
+        ...(verdict ? { verdictSchemaVersion: verdict.schemaVersion } : {}),
+        ...(evaluatorProblem ? { evaluatorProblem } : {}),
         ...(verdictError ? { verdictError } : {}),
         ...(handoff ? { handoff } : {}),
       },
