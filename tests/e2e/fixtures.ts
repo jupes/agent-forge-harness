@@ -111,7 +111,7 @@ export const BEADS = {
 } satisfies BeadsPayload;
 
 /** A gate run correlated to the fixture run and one of its beads. */
-export const GATE: GateRun = {
+const GATE: GateRun = {
   event: "TaskCompleted",
   timestamp: ts,
   passed: false,
@@ -364,8 +364,6 @@ export async function stubRepos(
   overrides: Partial<ReposKnowledge> = {},
 ): Promise<void> {
   await page.route("**/__agent-forge/dev-api/repos-knowledge", (route) =>
-    route.fulfill({
-      json: { ...REPOS, data: { ...REPOS.data, ...overrides } },
-    }),
+    route.fulfill({ json: { ...REPOS, data: { ...REPOS.data, ...overrides } } }),
   );
 }

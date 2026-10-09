@@ -464,7 +464,6 @@ describe("hostile stdin", () => {
       ["show", "bead-1"],
       ["comments", "bead-1", "--json"],
     ]);
-    expect(existsSync(join(box.cwd, "pwned.txt"))).toBe(false);
   });
 
   test("appears in the result only inside the host object", () => {
@@ -640,6 +639,16 @@ function gateLog(box: Box): Array<Record<string, unknown>> {
 
 const SPAWN_TIMEOUT_MS = 60_000;
 
+/**
+ * A PATH on which the gate's command runner finds a shell and nothing the
+ * gate asks for by name (`bun` and `bd` are not installed in system
+ * directories; where `git` is, the scratch checkout is not a repository).
+ */
+const SHELL_ONLY_PATH =
+  process.platform === "win32"
+    ? join(process.env.SystemRoot ?? "C:\\Windows", "System32")
+    : "/bin:/usr/bin";
+
 describe("the gate entrypoint, spawned with stdin piped", () => {
   test(
     "malformed JSON fails explicitly with the blocking exit code and checks nothing",
@@ -667,6 +676,27 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
       expect(out.stderr).toContain(
         "stdin hook_event_name must be TaskCompleted or TeammateIdle",
       );
+      expect(gateLog(box)).toEqual([]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a payload over the gate's size bound is refused, however well formed",
+    async () => {
+      const box = sandbox();
+      const out = await spawnGate(
+        box,
+        JSON.stringify({
+          hook_event_name: "TaskCompleted",
+          task_description: "x".repeat(1_200_000),
+        }),
+      );
+      expect(out.exitCode).toBe(2);
+      expect(out.stderr).toContain(
+        "quality-gate: stdin is larger than 1048576 bytes. Nothing was checked.",
+      );
+      expect(out.stdout).toBe("");
       expect(gateLog(box)).toEqual([]);
     },
     SPAWN_TIMEOUT_MS,
@@ -730,7 +760,12 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     async () => {
       const box = sandbox();
       const pointer = correlate(box, "bead-1", "run-1");
-      const hostileTaskId = 'x" & echo PWNED > pwned.txt & echo "';
+      verdict(box, "bead-1", { summary: "looks right" });
+      // Unlike the other spawned cases this one can reach a shell (and nothing
+      // else), so a host id spliced into a command line would run: under
+      // cmd.exe and under sh alike, this one writes the canary file.
+      const hostileTaskId =
+        "x & echo PWNED > pwned.txt & rem ; echo PWNED > pwned.txt #";
       const out = await spawnGate(
         box,
         JSON.stringify({
@@ -739,7 +774,11 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
           cwd: box.cwd,
           task_id: hostileTaskId,
         }),
-        { [RUN_CORRELATION_ENV]: pointer, AGENT_FORGE_EVAL_VERDICT: "strict" },
+        {
+          [RUN_CORRELATION_ENV]: pointer,
+          AGENT_FORGE_EVAL_VERDICT: "strict",
+          PATH: SHELL_ONLY_PATH,
+        },
       );
       const [logged] = gateLog(box);
 
@@ -757,20 +796,36 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
       expect(logged && "unlinkedReason" in logged).toBe(false);
       expect(logged && "taskId" in logged).toBe(false);
       const strict = (
-        logged?.checks as Array<{ name: string; output?: string }>
+        logged?.checks as Array<{
+          name: string;
+          passed: boolean;
+          output?: string;
+        }>
       ).find((entry) => entry.name === "eval-verdict");
-      // The verdict looked for is the correlated bead's, by its file name.
-      expect(strict?.output).toContain("bead-1-verdict.json");
+      // The verdict read is the one filed under the correlated bead.
+      expect(strict).toMatchObject({ passed: true, output: "PASS B=0 H=0" });
       expect(existsSync(join(box.cwd, "pwned.txt"))).toBe(false);
+      // The base checks still fail here: no bun and no usable git.
       expect(out.exitCode).toBe(2);
 
-      const [event] = queryEvents(
-        { kinds: ["gate.ran"] },
+      // Both ledger rows carry the correlation's bead and run.
+      const events = queryEvents(
+        { kinds: ["gate.ran", "verdict.bound"] },
         { path: box.ledger },
       );
-      expect(event?.beadId).toBe("bead-1");
-      expect(event?.runId).toBe("run-1");
-      expect(event?.payload).toMatchObject({ trigger: "TaskCompleted" });
+      expect(events.map((event) => event.kind)).toEqual([
+        "verdict.bound",
+        "gate.ran",
+      ]);
+      for (const event of events) {
+        expect(event.beadId).toBe("bead-1");
+        expect(event.runId).toBe("run-1");
+      }
+      expect(events[0]?.payload).toMatchObject({
+        verdict: "pass",
+        summary: "looks right",
+      });
+      expect(events[1]?.payload).toMatchObject({ trigger: "TaskCompleted" });
     },
     SPAWN_TIMEOUT_MS,
   );

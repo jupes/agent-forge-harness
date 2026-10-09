@@ -226,3 +226,15 @@ describe("correlationPointer", () => {
     });
   });
 });
+
+describe("correlationPointer and stray whitespace", () => {
+  test("a pointer is trimmed, wherever it came from", () => {
+    expect(correlationPointer(["--correlation", " a/b.json\n"], {})).toEqual({
+      path: "a/b.json",
+      source: "flag",
+    });
+    expect(
+      correlationPointer([], { AGENT_FORGE_RUN_CORRELATION: "\tc.json \r\n" }),
+    ).toEqual({ path: "c.json", source: "env" });
+  });
+});

@@ -15,7 +15,7 @@
 
 import { comparableCheckout, isValidSlug } from "./forge/runs";
 
-export const RUN_CORRELATION_SCHEMA_VERSION = 1 as const;
+const RUN_CORRELATION_SCHEMA_VERSION = 1 as const;
 
 /** Repo-relative directory holding one correlation file per run. */
 export const RUN_CORRELATIONS_DIR = ".tmp/work/run-correlations";
@@ -134,7 +134,7 @@ export function runCorrelationPath(executionRunId: string): string | null {
 export const RUN_CORRELATION_FLAG = "--correlation";
 
 export interface CorrelationPointer {
-  /** A path, absolute or relative to the checkout. Empty when the flag had no value. */
+  /** A path, absolute or relative to the checkout, trimmed. Empty when the flag had no value. */
   path: string;
   source: "flag" | "env";
 }
@@ -149,17 +149,17 @@ export function correlationPointer(
 ): CorrelationPointer | null {
   for (const [index, arg] of argv.entries()) {
     if (arg === RUN_CORRELATION_FLAG) {
-      return { path: argv[index + 1] ?? "", source: "flag" };
+      return { path: (argv[index + 1] ?? "").trim(), source: "flag" };
     }
     if (arg.startsWith(`${RUN_CORRELATION_FLAG}=`)) {
       return {
-        path: arg.slice(RUN_CORRELATION_FLAG.length + 1),
+        path: arg.slice(RUN_CORRELATION_FLAG.length + 1).trim(),
         source: "flag",
       };
     }
   }
-  const fromEnv = env[RUN_CORRELATION_ENV];
-  return fromEnv !== undefined && fromEnv.trim().length > 0
+  const fromEnv = env[RUN_CORRELATION_ENV]?.trim();
+  return fromEnv !== undefined && fromEnv.length > 0
     ? { path: fromEnv, source: "env" }
     : null;
 }

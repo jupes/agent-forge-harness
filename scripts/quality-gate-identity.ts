@@ -23,31 +23,22 @@ import type { HookStdin } from "../.claude/hooks/utils/hook-input";
 import type { BeadsIssueId, RunCorrelation } from "./run-correlation";
 
 /** The hook events the gate is registered for. */
-export const GATE_EVENTS = ["TaskCompleted", "TeammateIdle"] as const;
+const GATE_EVENTS = ["TaskCompleted", "TeammateIdle"] as const;
 
 export type GateEvent = (typeof GATE_EVENTS)[number];
 
-export function isGateEvent(value: unknown): value is GateEvent {
+function isGateEvent(value: unknown): value is GateEvent {
   return (GATE_EVENTS as readonly unknown[]).includes(value);
 }
 
 /** Who said which event this is: the host's payload, the command line, or nobody. */
-export const GATE_EVENT_SOURCES = ["stdin", "argv", "default"] as const;
-
-export type GateEventSource = (typeof GATE_EVENT_SOURCES)[number];
+export type GateEventSource = "stdin" | "argv" | "default";
 
 /**
  * What stdin was when the gate ran. `silent` is a pipe that sent nothing in
  * the time allowed: with the default event, a payload that never arrived.
  */
-export const GATE_STDIN_STATES = [
-  "payload",
-  "terminal",
-  "empty",
-  "silent",
-] as const;
-
-export type GateStdinState = (typeof GATE_STDIN_STATES)[number];
+export type GateStdinState = "payload" | "terminal" | "empty" | "silent";
 
 /**
  * The host task list a host task id is local to: the agent team the payload

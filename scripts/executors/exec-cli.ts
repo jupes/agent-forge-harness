@@ -13,10 +13,11 @@
  *
  * With --run, the run's correlation (`scripts/run-correlation.ts`) is written
  * in the worktree and its path put in the child's environment, so a quality
- * gate that runs inside the child is linked to this bead and run. A run
- * already correlated to another bead is left alone: the child then runs
- * unlinked and `data.correlationNote` says how to rebind. The child never
- * inherits a pointer from this process.
+ * gate that runs inside the child is linked to this bead and run. The worktree
+ * must be a checkout's top level for that. A run already correlated to
+ * another bead is left alone. Whenever no pointer is handed on, the child
+ * runs unlinked and `data.correlationNote` says why. The child never inherits
+ * a pointer from this process.
  *
  * Exit code 0 when the provider exits 0, 2 otherwise.
  */
@@ -26,11 +27,10 @@ import { join, resolve } from "path";
 import { BENCH_NAMES, type BenchName } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
-import { RUN_CORRELATION_ENV, runCorrelationPath } from "../run-correlation";
+import { RUN_CORRELATION_ENV } from "../run-correlation";
 import {
   correlationReport,
   initRunCorrelation,
-  loadRunCorrelation,
   type RunCorrelationReport,
 } from "../run-correlation-store";
 import { buildChildEnv } from "./env";
@@ -91,19 +91,21 @@ function correlateChild(input: {
     };
   }
   const made = initRunCorrelation({
+    // The worktree is where the child runs its gate, so the file goes there
+    // and nowhere a directory that is not a checkout might resolve to.
     checkout: worktree,
+    topLevel: true,
     beadsIssueId: beadId,
     executionRunId: runId,
   });
   if (made.ok) {
     return { env: made.env, correlation: correlationReport(made.correlation) };
   }
-  const held = loadRunCorrelation(runCorrelationPath(runId) ?? "", worktree);
   return {
     env: {},
     correlation: null,
-    note: held.ok
-      ? `run ${held.value.executionRunId} is already correlated to ${held.value.beadsIssueId}; rebind it with: bun run forge:correlate --bead ${beadId} --run ${runId}`
+    note: made.held
+      ? `${made.error}; rebind it with: bun run forge:correlate --bead ${beadId} --run ${runId}`
       : `run correlation not written: ${made.error}`,
   };
 }

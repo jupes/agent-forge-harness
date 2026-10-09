@@ -99,7 +99,7 @@ describe("execFileNoShell (the runner bd is called through)", () => {
       rmSync(dir, { recursive: true, force: true });
   });
 
-  test("hands each argument to the program verbatim: nothing is run by a shell", () => {
+  test("hands each argument to an executable verbatim, shell syntax included", () => {
     const cwd = mkdtempSync(join(tmpdir(), "gate beads test "));
     temporary.push(cwd);
     const hostile = [
@@ -129,7 +129,34 @@ describe("execFileNoShell (the runner bd is called through)", () => {
 
   test("a program that is not there is a failed call, not a crash", () => {
     const missing = execFileNoShell("agent-forge-no-such-program", ["x"]);
-    expect(missing.ok).toBe(false);
-    expect(existsSync("agent-forge-no-such-program")).toBe(false);
+    expect(missing).toEqual({
+      ok: false,
+      output: "agent-forge-no-such-program is not on PATH",
+    });
   });
+
+  // A batch file can only be run by cmd.exe, which parses its arguments: the
+  // one way an argument array still ends up in a shell. Windows only, so this
+  // does not run in CI.
+  test.skipIf(process.platform !== "win32")(
+    "a name that resolves to a batch shim is refused rather than handed to cmd.exe",
+    () => {
+      const cwd = mkdtempSync(join(tmpdir(), "gate beads test "));
+      const bin = mkdtempSync(join(tmpdir(), "gate beads shim "));
+      temporary.push(cwd, bin);
+      writeFileSync(
+        join(bin, "fakebd.cmd"),
+        "@echo off\r\necho ran > ran.txt\r\necho %*\r\n",
+      );
+      const refused = execFileNoShell(
+        "fakebd",
+        ["show", "x & echo pwned > pwned.txt & echo %OS%", "--json"],
+        { cwd, path: bin },
+      );
+      expect(refused.ok).toBe(false);
+      expect(refused.output).toContain("batch file");
+      // Neither the shim nor anything in its argument ran.
+      expect(readdirSync(cwd)).toEqual([]);
+    },
+  );
 });

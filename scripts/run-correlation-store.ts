@@ -11,6 +11,7 @@
  */
 
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -45,12 +46,15 @@ export type InitRunCorrelation =
       correlation: RunCorrelation;
       /** Absolute path of the file. */
       path: string;
-      /** The same file relative to the checkout: the pointer to print for a person. */
-      pointer: string;
-      /** The same pointer, as the environment a launched child should get. */
+      /** The pointer to it, as the environment a launched child should get. */
       env: Record<typeof RUN_CORRELATION_ENV, string>;
     }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /** Set when the run is already correlated to another bead: what holds it. */
+      held?: RunCorrelation;
+    };
 
 export type LoadedRunCorrelation =
   | { ok: true; value: RunCorrelation; path: string }
@@ -58,6 +62,41 @@ export type LoadedRunCorrelation =
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The top level of the checkout a correlation for `dir` belongs in.
+ *
+ * `dir` must exist and be inside a git checkout; a correlation is never
+ * written into a directory this had to create or guess. With `topLevel`, `dir`
+ * must be that checkout's top level itself: for a directory a caller named as
+ * "the checkout", where resolving to some enclosing checkout would put the
+ * file somewhere nobody asked for.
+ */
+function checkoutRoot(
+  dir: string,
+  topLevel: boolean,
+): { ok: true; root: string } | { ok: false; error: string } {
+  let given: string;
+  try {
+    if (!statSync(dir).isDirectory()) {
+      return { ok: false, error: "the checkout directory does not exist" };
+    }
+    given = comparableCheckout(realpathSync.native(dir));
+  } catch {
+    return { ok: false, error: "the checkout directory does not exist" };
+  }
+  const root = resolveCheckout(dir).worktree;
+  if (!existsSync(join(root, ".git"))) {
+    return { ok: false, error: "the directory is not in a git checkout" };
+  }
+  if (topLevel && given !== root) {
+    return {
+      ok: false,
+      error: "the directory is not the top level of a checkout",
+    };
+  }
+  return { ok: true, root };
 }
 
 /**
@@ -70,8 +109,10 @@ function message(error: unknown): string {
  * caller that was told the bead outright should.
  */
 export function initRunCorrelation(input: {
-  /** Any directory inside the checkout the run builds in. */
+  /** A directory in the checkout the run builds in. */
   checkout: string;
+  /** Require `checkout` to be the top level of its checkout. */
+  topLevel?: boolean;
   beadsIssueId: string;
   executionRunId?: string;
   /** Replace a correlation that names another bead for this run. */
@@ -79,7 +120,9 @@ export function initRunCorrelation(input: {
   now?: () => string;
   mint?: () => string;
 }): InitRunCorrelation {
-  const root = resolveCheckout(input.checkout).worktree;
+  const where = checkoutRoot(input.checkout, input.topLevel === true);
+  if (!where.ok) return where;
+  const { root } = where;
   const made = createRunCorrelation({
     executionRunId: input.executionRunId ?? (input.mint ?? ulid)(),
     beadsIssueId: input.beadsIssueId,
@@ -96,7 +139,6 @@ export function initRunCorrelation(input: {
     ok: true,
     correlation,
     path,
-    pointer: relative,
     env: { [RUN_CORRELATION_ENV]: path },
   });
 
@@ -113,6 +155,7 @@ export function initRunCorrelation(input: {
       return {
         ok: false,
         error: `run ${held.executionRunId} is already correlated to ${held.beadsIssueId}`,
+        held,
       };
     }
   }
@@ -231,10 +274,12 @@ export function pointedRunCorrelation(input: {
 
 /** A correlation as a launcher's JSON output reports it. */
 export interface RunCorrelationReport {
-  /** The file, relative to the checkout: what to pass as `--correlation`. */
+  /** The file, relative to `checkout`: what to pass as `--correlation` there. */
   pointer: string;
   beadsIssueId: string;
   executionRunId: string;
+  /** The checkout the file is in, and the only one whose gate accepts it. */
+  checkout: string;
 }
 
 export function correlationReport(
@@ -244,6 +289,7 @@ export function correlationReport(
     pointer: runCorrelationPath(correlation.executionRunId) ?? "",
     beadsIssueId: correlation.beadsIssueId,
     executionRunId: correlation.executionRunId,
+    checkout: correlation.checkout,
   };
 }
 
@@ -254,10 +300,13 @@ export function correlationReport(
  * `named` is a bead given outright on this call: it rebinds the run. `stored`
  * is the bead the run already had: it creates a correlation and never replaces
  * one, so a run someone correlated to a narrower issue stays there. A run that
- * names no bead gets no correlation.
+ * names no bead gets no correlation. `note` is set when a correlation was
+ * wanted and could not be written.
  */
 export function correlateRun(input: {
   checkout: string;
+  /** Require `checkout` to be the top level of its checkout. */
+  topLevel?: boolean;
   executionRunId: string;
   named?: string;
   stored?: string;
@@ -267,17 +316,26 @@ export function correlateRun(input: {
   if (bead === undefined) return { correlation: null };
   const made = initRunCorrelation({
     checkout: input.checkout,
+    ...(input.topLevel !== undefined ? { topLevel: input.topLevel } : {}),
     beadsIssueId: bead,
     executionRunId: input.executionRunId,
     rebind: input.named !== undefined,
     ...(input.now ? { now: input.now } : {}),
   });
   if (made.ok) return { correlation: correlationReport(made.correlation) };
+  if (made.held) return { correlation: correlationReport(made.held) };
+
+  // Not written for another reason. Say so, beside what the run's file still
+  // holds: looked up only in a checkout that could have held it.
+  const note = `run correlation not written: ${made.error}`;
+  const where = checkoutRoot(input.checkout, input.topLevel === true);
+  if (!where.ok) return { correlation: null, note };
   const held = loadRunCorrelation(
     runCorrelationPath(input.executionRunId) ?? "",
-    input.checkout,
+    where.root,
   );
-  return held.ok
-    ? { correlation: correlationReport(held.value) }
-    : { correlation: null, note: `run correlation not written: ${made.error}` };
+  return {
+    correlation: held.ok ? correlationReport(held.value) : null,
+    note,
+  };
 }

@@ -25,6 +25,7 @@ import { type GateDeps, runQualityGate } from "../.claude/hooks/quality-gate";
 import { claudeAdapter } from "./executors/claude";
 import { type ExecDeps, runExec } from "./executors/exec-cli";
 import { closeLedger } from "./ledger/db";
+import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "./run-correlation";
 import { runCorrelate } from "./run-correlation-cli";
 import {
@@ -75,6 +76,7 @@ interface Printed {
       pointer: string;
       beadsIssueId: string;
       executionRunId: string;
+      checkout: string;
     } | null;
     correlationNote?: string;
   } | null;
@@ -156,6 +158,7 @@ describe("forge:phase-gate --write", () => {
         pointer: `${RUN_CORRELATIONS_DIR}/run-x.json`,
         beadsIssueId: "bead-1",
         executionRunId: "run-x",
+        checkout: resolveCheckout(box.cwd).worktree,
       });
       const pointer = wrote.printed.data?.correlation?.pointer ?? "";
       // The run id is the run's slug: one id for run state and correlation.
@@ -217,6 +220,95 @@ describe("forge:phase-gate --write", () => {
   );
 });
 
+describe("forge:phase-gate --write for a run that builds in another checkout", () => {
+  test(
+    "the correlation goes in the checkout the run recorded, and its pointer links the gate there",
+    async () => {
+      const box = sandbox();
+      // The run's worktree: a second checkout, not the directory the command runs in.
+      const worktree = join(box.root, "work tree");
+      mkdirSync(join(worktree, ".git"), { recursive: true });
+      mkdirSync(join(box.cwd, "plans", "research"), { recursive: true });
+      writeFileSync(join(box.cwd, "plans", "research", "run-x.md"), "x");
+
+      const wrote = await command(box, PHASE_GATE, [
+        "research",
+        "--slug",
+        "run-x",
+        "--write",
+        "--checkout",
+        worktree,
+        "--bead",
+        "bead-1",
+      ]);
+      expect(wrote.exitCode).toBe(0);
+      const correlation = wrote.printed.data?.correlation;
+      expect(correlation?.checkout).toBe(resolveCheckout(worktree).worktree);
+      expect(
+        existsSync(join(worktree, RUN_CORRELATIONS_DIR, "run-x.json")),
+      ).toBe(true);
+      expect(existsSync(join(box.cwd, RUN_CORRELATIONS_DIR))).toBe(false);
+      expect<unknown>(
+        gateLink(worktree, {
+          argv: ["--correlation", correlation?.pointer ?? ""],
+        }),
+      ).toEqual({ beadsIssueId: "bead-1", executionRunId: "run-x" });
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a recorded checkout that is not a checkout's top level gets no correlation, and stderr says why",
+    async () => {
+      const box = sandbox();
+      const inside = join(box.cwd, "packages", "app");
+      mkdirSync(inside, { recursive: true });
+      mkdirSync(join(box.cwd, "plans", "research"), { recursive: true });
+      writeFileSync(join(box.cwd, "plans", "research", "run-x.md"), "x");
+
+      const wrote = await command(box, PHASE_GATE, [
+        "research",
+        "--slug",
+        "run-x",
+        "--write",
+        "--checkout",
+        inside,
+        "--bead",
+        "bead-1",
+      ]);
+      // The phase is still recorded: a run does not fail on its correlation.
+      expect(wrote.exitCode).toBe(0);
+      expect(wrote.printed.data?.correlation).toBeNull();
+      expect(wrote.stderr).toContain(
+        "forge:phase-gate: run correlation not written: the directory is not the top level of a checkout",
+      );
+      expect(existsSync(join(box.cwd, RUN_CORRELATIONS_DIR))).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a --bead that is not a Beads id is reported on stderr, beside the correlation the run still has",
+    async () => {
+      const box = sandbox();
+      mkdirSync(join(box.cwd, "plans", "research"), { recursive: true });
+      writeFileSync(join(box.cwd, "plans", "research", "run-x.md"), "x");
+      const args = ["research", "--slug", "run-x", "--write", "--bead"];
+      await command(box, PHASE_GATE, [...args, "bead-1"]);
+
+      const wrote = await command(box, PHASE_GATE, [...args, "bad id!"]);
+      expect(wrote.exitCode).toBe(0);
+      expect(wrote.printed.data?.correlation).toMatchObject({
+        beadsIssueId: "bead-1",
+      });
+      expect(wrote.stderr).toContain(
+        "forge:phase-gate: run correlation not written: beadsIssueId must be a Beads issue id",
+      );
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
 describe("forge:correlate", () => {
   test(
     "mints a run id when none is given and prints a pointer the gate links through",
@@ -270,6 +362,42 @@ describe("forge:correlate", () => {
       expect(refused.code).toBe(2);
       expect(refused.body.ok).toBe(false);
     }
+  });
+
+  test("--checkout writes in the checkout it names, and refuses a directory that is not one", () => {
+    const box = sandbox();
+    const other = join(box.root, "other checkout");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    const elsewhere = join(box.root, "elsewhere");
+    mkdirSync(elsewhere);
+
+    const made = runCorrelate(
+      ["--bead", "bead-1", "--run", "run-7", "--checkout", other],
+      { cwd: elsewhere },
+    );
+    expect(made.body.data).toMatchObject({
+      correlation: {
+        executionRunId: "run-7",
+        checkout: resolveCheckout(other).worktree,
+      },
+    });
+    expect(existsSync(join(other, RUN_CORRELATIONS_DIR, "run-7.json"))).toBe(
+      true,
+    );
+
+    const inside = join(other, "src");
+    mkdirSync(inside);
+    for (const dir of [inside, join(other, "missing")]) {
+      const refused = runCorrelate(
+        ["--bead", "bead-1", "--run", "run-8", "--checkout", dir],
+        { cwd: elsewhere },
+      );
+      expect(refused.code).toBe(2);
+    }
+    expect(existsSync(join(other, RUN_CORRELATIONS_DIR, "run-8.json"))).toBe(
+      false,
+    );
+    expect(existsSync(join(other, "missing"))).toBe(false);
   });
 });
 
@@ -389,6 +517,89 @@ describe("forge:exec", () => {
       box.cwd,
     );
     expect(loaded.ok && String(loaded.value.beadsIssueId)).toBe("bead-a");
+  });
+});
+
+describe("forge:exec with a worktree or a bead it cannot correlate", () => {
+  test("a --worktree that is only a directory inside a checkout gets no pointer, and nothing is written around it", async () => {
+    const box = sandbox();
+    const inside = join(box.cwd, "packages", "app");
+    mkdirSync(inside, { recursive: true });
+    const dump = join(box.root, "dump.json");
+    const out = await runExec(
+      [
+        "--bead",
+        "bead-1",
+        "--run",
+        "run-1",
+        "--worktree",
+        inside,
+        "--prompt",
+        "x",
+      ],
+      {
+        harnessRoot: box.root,
+        home: box.root,
+        env: { PATH: process.env.PATH },
+        adapters: { claude: claudeAdapter },
+        sink: () => undefined,
+        command: [
+          process.execPath,
+          FAKE,
+          "--fake-provider",
+          "claude",
+          "--fake-dump",
+          dump,
+        ],
+      },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body.data).toMatchObject({
+      correlation: null,
+      correlationNote:
+        "run correlation not written: the directory is not the top level of a checkout",
+    });
+    const seen = (
+      JSON.parse(readFileSync(dump, "utf8")) as { env: Record<string, string> }
+    ).env;
+    expect(RUN_CORRELATION_ENV in seen).toBe(false);
+    expect(existsSync(join(box.cwd, ".tmp"))).toBe(false);
+    expect(existsSync(join(inside, ".tmp"))).toBe(false);
+  });
+
+  test("a bead that is not a Beads id gets a plain reason, not a rebind command", async () => {
+    const box = sandbox();
+    const held = initRunCorrelation({
+      checkout: box.cwd,
+      beadsIssueId: "bead-a",
+      executionRunId: "run-1",
+    });
+    expect(held.ok).toBe(true);
+    const out = await runExec(
+      [
+        "--bead",
+        "bad id!",
+        "--run",
+        "run-1",
+        "--worktree",
+        box.cwd,
+        "--prompt",
+        "x",
+      ],
+      {
+        harnessRoot: box.root,
+        home: box.root,
+        env: { PATH: process.env.PATH },
+        adapters: { claude: claudeAdapter },
+        sink: () => undefined,
+        command: [process.execPath, FAKE, "--fake-provider", "claude"],
+      },
+    );
+    expect(out.body.data).toMatchObject({
+      correlation: null,
+      correlationNote:
+        "run correlation not written: beadsIssueId must be a Beads issue id",
+    });
   });
 });
 

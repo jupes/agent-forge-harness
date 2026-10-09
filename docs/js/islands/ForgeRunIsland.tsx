@@ -686,8 +686,11 @@ function GateCard({
               The TaskCompleted and TeammateIdle hooks log every run to one log
               shared by all checkouts, recording where each ran. This panel
               shows the newest run from {scopeText}. Runs from other worktrees
-              or forge runs, runs that were given no run correlation, and
-              entries logged before runs recorded that, are not shown.
+              or forge runs, and entries logged before runs recorded that, are
+              not shown.
+              {scope.slug
+                ? " A gate run that was given no run correlation belongs to no forge run: it is listed on its own, below."
+                : ""}
             </>
           }
         />

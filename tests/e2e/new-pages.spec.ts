@@ -286,6 +286,8 @@ test.describe("Forge run", () => {
     await expect(card).toContainText(CHECKOUT);
     await expect(card).toContainText("forge run design-system");
     await expect(card).toContainText("Runs from other worktrees");
+    // On a run's card, an uncorrelated gate run is said to live elsewhere.
+    await expect(card).toContainText("belongs to no forge run");
     await expect(page.locator(".af-gate-check")).toHaveCount(0);
   });
 
@@ -406,8 +408,6 @@ test.describe("Repos & knowledge", () => {
     await expect(conventions).toContainText(
       "<type>(<scope>): <short description>",
     );
-    await expect(
-      page.getByRole("heading", { name: "Worktrees" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Worktrees" })).toBeVisible();
   });
 });

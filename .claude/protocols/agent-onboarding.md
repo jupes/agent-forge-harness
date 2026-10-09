@@ -192,16 +192,20 @@ its bead and run come from one place only: a **run correlation**, a small file a
   run id: the run's slug, the ledger's `runId`. The directory is gitignored. The gate accepts a file only
   at that path, inside its own checkout, named after the run it holds.
 - **Who writes it:** `forge:phase-gate <phase> --slug <slug> --write --bead <id>` (for a pipeline run;
-  the run's epic is never used), `forge:exec --bead <id> --run <slug>` (for the child it spawns), and
-  `bun run forge:correlate --bead <id> [--run <slug>]` for work with no phase gate. Each prints the file
-  as `data.correlation.pointer`. Only a bead given outright rebinds a run that is already correlated.
+  the run's epic is never used; the file goes in the checkout the run recorded with `--checkout`, else
+  the one the command ran in), `forge:exec --bead <id> --run <slug>` (in the `--worktree` it spawns its
+  child in, which must be a checkout's top level), and `bun run forge:correlate --bead <id>
+  [--run <slug>]` for work with no phase gate. Each prints `data.correlation`: the `pointer`, the two
+  ids, and the `checkout` the pointer is valid in. Only a bead given outright rebinds a run that is
+  already correlated. A correlation is never written into a directory that does not exist or is not in
+  a git checkout.
 - **How the gate gets it:** `bun run quality-gate --correlation <pointer>`, else
   `AGENT_FORGE_RUN_CORRELATION`. `forge:exec` puts the variable in its child's environment. Nothing else
   selects a correlation: not `FORGE_SLUG`, not `AGENT_FORGE_BEAD_ID`, not the checkout.
 - **Without one** the gate still runs its base checks and logs the result as **unlinked**: the entry and
-  its `gate.ran` event name no bead and no run, nothing is asked of Beads, and the strict verdict check
-  fails. A `--correlation` that does not validate fails the gate outright; a pointer from the
-  environment that does not validate is reported and the run is unlinked.
+  its `gate.ran` event name no bead and no run, nothing is asked of Beads, and in strict mode the
+  verdict check fails. A `--correlation` that does not validate fails the gate outright; a pointer from
+  the environment that does not validate is reported and the run is unlinked.
 - **Limit:** the `TaskCompleted` / `TeammateIdle` hooks are registered with no arguments, and a session
   cannot change the environment of the host that runs its hooks. In an interactive session a
   hook-triggered gate is therefore unlinked unless the session was started with the variable; the linked

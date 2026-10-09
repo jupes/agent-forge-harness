@@ -1,28 +1,49 @@
 /**
  * What the quality gate asks Beads about the issue a run is correlated to.
  *
- * `bd` is run with an argument array and no shell, and the only id it is given
- * is a `BeadsIssueId`: a value that came out of a validated run correlation.
- * Nothing read from a hook payload can be passed here, by type.
+ * Two things keep a value out of a shell here, and both are needed. The only
+ * id `bd` is given is a `BeadsIssueId`: a value that came out of a validated
+ * run correlation and holds nothing a shell could act on. Nothing read from a
+ * hook payload can be passed, by type. And `bd` is run with an argument array
+ * through a runner that refuses the one target a shell would still parse them
+ * for (a Windows batch file).
  */
 
 import { execFileSync } from "child_process";
+import { isAbsolute } from "path";
 import type { CloseGateIssueType } from "./close-testing-attestation";
 import type { BeadsIssueId } from "./run-correlation";
 
 export type ExecFile = (
   file: string,
   args: readonly string[],
-  opts?: { cwd?: string },
+  /** `path` replaces PATH for finding `file` (tests). */
+  opts?: { cwd?: string; path?: string },
 ) => { ok: boolean; output: string };
 
+/** A file only cmd.exe can run, and cmd.exe parses the arguments it is given. */
+const BATCH_FILE = /\.(cmd|bat)$/i;
+
 /**
- * Run a program with its arguments as given: no shell reads them. On Windows
- * that means only a real executable is found; a `.cmd` shim is not run.
+ * Run a program with its arguments as given, without a shell.
+ *
+ * The program is found first, because on Windows a bare name can resolve to a
+ * batch shim, and spawning one goes through cmd.exe whatever API is used. A
+ * batch file is refused: the call fails rather than reach a shell.
  */
 export const execFileNoShell: ExecFile = (file, args, opts = {}) => {
+  const program = isAbsolute(file)
+    ? file
+    : Bun.which(file, opts.path !== undefined ? { PATH: opts.path } : {});
+  if (program === null) return { ok: false, output: `${file} is not on PATH` };
+  if (process.platform === "win32" && BATCH_FILE.test(program)) {
+    return {
+      ok: false,
+      output: `${file} resolves to a batch file (${program}), which only a shell can run`,
+    };
+  }
   try {
-    const output = execFileSync(file, [...args], {
+    const output = execFileSync(program, [...args], {
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

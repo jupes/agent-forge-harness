@@ -306,7 +306,7 @@ function gateRunFrom(line: string): GateRun | null {
  * The run whose card shows an entry: the run a linked entry's correlation
  * names, or the run a legacy entry recorded. An unlinked entry has none.
  */
-export function gateRunScope(run: GateRun): string | null {
+function gateRunScope(run: GateRun): string | null {
   switch (run.link) {
     case "linked":
       return run.executionRunId;

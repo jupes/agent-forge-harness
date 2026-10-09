@@ -15,6 +15,7 @@ import { comparableCheckout } from "./forge/runs";
 import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "./run-correlation";
 import {
+  correlateRun,
   initRunCorrelation,
   loadRunCorrelation,
 } from "./run-correlation-store";
@@ -159,7 +160,7 @@ describe("initRunCorrelation (the launcher boundary)", () => {
     if (!first.ok) throw new Error(first.error);
 
     const refused = init(dir, { beadsIssueId: "bead-2" });
-    expect(refused).toEqual({
+    expect(refused).toMatchObject({
       ok: false,
       error: "run run-1 is already correlated to bead-1",
     });
@@ -283,5 +284,109 @@ describe("loadRunCorrelation (what the gate accepts through a pointer)", () => {
     writeFileSync(file, `{"pad":"${"x".repeat(20_000)}"}`);
     const huge = loadRunCorrelation(file, dir);
     expect(!huge.ok && huge.error).toContain("larger than");
+  });
+});
+
+describe("where a correlation may be written", () => {
+  test("a directory that does not exist is refused, and nothing is created", () => {
+    const dir = checkout();
+    const missing = join(dir, "no", "such", "dir");
+    expect(init(missing)).toEqual({
+      ok: false,
+      error: "the checkout directory does not exist",
+    });
+    expect(existsSync(join(dir, "no"))).toBe(false);
+    expect(existsSync(join(dir, ".tmp"))).toBe(false);
+  });
+
+  test("a directory named as the checkout must be its top level: a directory inside one is refused", () => {
+    const dir = checkout();
+    const inside = join(dir, "packages", "app");
+    mkdirSync(inside, { recursive: true });
+
+    expect(init(inside, { topLevel: true })).toEqual({
+      ok: false,
+      error: "the directory is not the top level of a checkout",
+    });
+    // Nothing was written in the checkout it happens to sit in.
+    expect(existsSync(join(dir, ".tmp"))).toBe(false);
+    expect(existsSync(join(inside, ".tmp"))).toBe(false);
+
+    // Without that demand, a directory inside a checkout stands for the checkout.
+    const made = init(inside);
+    expect(made.ok && made.correlation.checkout).toBe(
+      resolveCheckout(dir).worktree,
+    );
+    expect(init(dir, { executionRunId: "run-2", topLevel: true }).ok).toBe(
+      true,
+    );
+  });
+
+  test("a refusal because the run is correlated elsewhere says which correlation holds it", () => {
+    const dir = checkout();
+    init(dir);
+    const refused = init(dir, { beadsIssueId: "bead-2" });
+    expect(refused.ok).toBe(false);
+    expect(!refused.ok && String(refused.held?.beadsIssueId)).toBe("bead-1");
+    // Any other refusal names no holder.
+    const invalid = init(dir, { beadsIssueId: "bad id!" });
+    expect(!invalid.ok && invalid.held).toBeUndefined();
+  });
+});
+
+describe("correlateRun (what a launcher that keeps run state calls)", () => {
+  const run = (dir: string, over: Record<string, unknown> = {}) =>
+    correlateRun({ checkout: dir, executionRunId: "run-1", ...over });
+
+  test("reports the pointer, the two ids and the checkout the pointer is relative to", () => {
+    const dir = checkout();
+    expect(run(dir, { named: "bead-1" })).toEqual({
+      correlation: {
+        pointer: `${RUN_CORRELATIONS_DIR}/run-1.json`,
+        beadsIssueId: "bead-1",
+        executionRunId: "run-1",
+        checkout: resolveCheckout(dir).worktree,
+      },
+    });
+  });
+
+  test("a run that names no bead gets none, and no note", () => {
+    const dir = checkout();
+    expect(run(dir)).toEqual({ correlation: null });
+    expect(existsSync(join(dir, ".tmp"))).toBe(false);
+  });
+
+  test("a stored bead creates a correlation and never replaces one; a named bead rebinds", () => {
+    const dir = checkout();
+    expect(run(dir, { stored: "bead-1" }).correlation?.beadsIssueId).toBe(
+      "bead-1",
+    );
+    init(dir, { beadsIssueId: "task-9", rebind: true });
+    const kept = run(dir, { stored: "bead-1" });
+    expect(kept).toMatchObject({ correlation: { beadsIssueId: "task-9" } });
+    expect("note" in kept).toBe(false);
+    expect(run(dir, { named: "bead-2" }).correlation?.beadsIssueId).toBe(
+      "bead-2",
+    );
+  });
+
+  test("a named bead that is not a Beads id is reported, beside what the run's file still holds", () => {
+    const dir = checkout();
+    run(dir, { named: "bead-1" });
+    expect(run(dir, { named: "bad id!", stored: "bad id!" })).toMatchObject({
+      correlation: { beadsIssueId: "bead-1" },
+      note: "run correlation not written: beadsIssueId must be a Beads issue id",
+    });
+  });
+
+  test("a checkout that cannot hold one is reported and nothing is looked up or written", () => {
+    const dir = checkout();
+    const inside = join(dir, "sub");
+    mkdirSync(inside);
+    init(dir);
+    expect(run(inside, { named: "bead-1", topLevel: true })).toEqual({
+      correlation: null,
+      note: "run correlation not written: the directory is not the top level of a checkout",
+    });
   });
 });

@@ -23,8 +23,10 @@
  * A `--write` for a run that names its bead (`--bead`, now or on an earlier
  * write) also writes the run's correlation (`scripts/run-correlation.ts`) and
  * prints it as `data.correlation`: its `pointer` is what the quality gate takes
- * as `--correlation`. Only a `--bead` on this call rebinds a run; a run that
- * names no bead prints `correlation: null`. The epic is never used for this.
+ * as `--correlation`, in the checkout it names. The file goes in the checkout
+ * the run recorded with `--checkout`, else the one this command ran in. Only a
+ * `--bead` on this call rebinds a run; a run that names no bead prints
+ * `correlation: null`. The epic is never used for this.
  *
  * Output is always a single JSON object: { ok, data, error }.
  * Exit code 0 when ok, 2 when not (so callers and hooks can gate on it).
@@ -366,7 +368,10 @@ if (import.meta.main) {
     // and the pointer to hand the quality gate is part of what this prints.
     const { correlateRun } = await import("../run-correlation-store");
     const correlated = correlateRun({
-      checkout: process.cwd(),
+      // Where the run builds is where its gate runs: the checkout the run
+      // recorded, which need not be the directory this command ran in.
+      checkout: recorded.checkout ?? process.cwd(),
+      topLevel: recorded.checkout !== undefined,
       executionRunId: slugValue,
       ...(bead ? { named: bead } : {}),
       ...(recorded.beadId ? { stored: recorded.beadId } : {}),

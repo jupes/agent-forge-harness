@@ -6,7 +6,9 @@
  *
  * For work that has no phase gate to do it (`forge:phase-gate --write --bead`
  * writes the same file for a pipeline run). Writes the run's correlation in
- * the checkout and prints where it is; hand that to the quality gate:
+ * the checkout — the one the current directory is in, or the one --checkout
+ * names, which must be a checkout's top level — and prints where it is; hand
+ * that to the quality gate, run in that checkout:
  *
  *   bun run quality-gate --correlation <data.correlation.pointer>
  *
@@ -17,7 +19,6 @@
  * Exit code 0 when ok, 2 when not.
  */
 
-import { RUN_CORRELATION_ENV } from "./run-correlation";
 import { correlationReport, initRunCorrelation } from "./run-correlation-store";
 
 export interface CorrelateOutcome {
@@ -48,8 +49,12 @@ export function runCorrelate(
     };
   }
   const run = flagValue(argv, "run");
+  const named = flagValue(argv, "checkout");
   const made = initRunCorrelation({
-    checkout: flagValue(argv, "checkout") ?? deps.cwd,
+    // A directory named with --checkout must be a checkout's top level; the
+    // current directory may be anywhere inside one.
+    checkout: named ?? deps.cwd,
+    topLevel: named !== undefined,
     beadsIssueId: bead,
     ...(run !== undefined ? { executionRunId: run } : {}),
     rebind: true,
@@ -64,7 +69,7 @@ export function runCorrelate(
       data: {
         correlation: correlationReport(made.correlation),
         path: made.path,
-        env: { [RUN_CORRELATION_ENV]: made.path },
+        env: made.env,
       },
       error: null,
     },
