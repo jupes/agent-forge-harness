@@ -7,9 +7,12 @@
  * in a scratch checkout.
  *
  * As a subprocess: the real `.claude/hooks/quality-gate.ts` with JSON piped on
- * stdin, in a scratch directory with an empty PATH. There its own checks fail
- * fast (no `bun`, no `git`, no `bd`), so it never runs this suite again; what
- * is asserted is the event, the identity it logs and its exit code.
+ * stdin, in a scratch directory that is not a repository and has no
+ * package.json, with a PATH that reaches nothing able to run its checks: empty,
+ * or for one case system directories only (so a shell is reachable). There
+ * its own checks fail fast, so it never runs this suite again; what is
+ * asserted is the event, the identity it logs, the ledger rows and its exit
+ * code.
  *
  * Neither proves a live host session calls the hook.
  */

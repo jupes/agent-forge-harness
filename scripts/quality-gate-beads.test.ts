@@ -148,13 +148,18 @@ describe("execFileNoShell (the runner bd is called through)", () => {
         join(bin, "fakebd.cmd"),
         "@echo off\r\necho ran > ran.txt\r\necho %*\r\n",
       );
-      const refused = execFileNoShell(
+      const args = ["show", "x & echo pwned > pwned.txt & echo %OS%", "--json"];
+      // By bare name, found on PATH; and by full path, with and without the
+      // extension Windows would add for itself.
+      for (const file of [
         "fakebd",
-        ["show", "x & echo pwned > pwned.txt & echo %OS%", "--json"],
-        { cwd, path: bin },
-      );
-      expect(refused.ok).toBe(false);
-      expect(refused.output).toContain("batch file");
+        join(bin, "fakebd.cmd"),
+        join(bin, "fakebd"),
+      ]) {
+        const refused = execFileNoShell(file, args, { cwd, path: bin });
+        expect(refused.ok).toBe(false);
+        expect(refused.output).toContain("only a shell");
+      }
       // Neither the shim nor anything in its argument ran.
       expect(readdirSync(cwd)).toEqual([]);
     },

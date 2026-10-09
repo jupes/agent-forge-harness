@@ -390,3 +390,44 @@ describe("correlateRun (what a launcher that keeps run state calls)", () => {
     });
   });
 });
+
+describe("the writer and a linked correlations directory", () => {
+  /** A checkout whose correlations directory (or a parent of it) links outside. */
+  function linked(at: string): { dir: string; outside: string } {
+    const dir = checkout();
+    const outside = join(dirname(dir), "linked target");
+    mkdirSync(outside, { recursive: true });
+    const link = join(dir, at);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(outside, link, "junction");
+    return { dir, outside };
+  }
+
+  test("a correlations directory that links outside the checkout is not written through", () => {
+    for (const at of [RUN_CORRELATIONS_DIR, ".tmp/work", ".tmp"]) {
+      const { dir, outside } = linked(at);
+      expect(init(dir)).toEqual({
+        ok: false,
+        error: `${RUN_CORRELATIONS_DIR} resolves outside this checkout`,
+      });
+      // Nothing was written at the link's target, at any depth.
+      expect(
+        readdirSync(outside, { recursive: true }).filter((entry) =>
+          String(entry).endsWith(".json"),
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  test("a file already sitting behind such a link is neither reported as holding the run nor overwritten", () => {
+    const { dir, outside } = linked(RUN_CORRELATIONS_DIR);
+    const planted = join(outside, "run-1.json");
+    plant(planted, { checkout: resolveCheckout(dir).worktree });
+    const before = readFileSync(planted, "utf8");
+
+    const refused = init(dir, { beadsIssueId: "bead-2", rebind: true });
+    expect(refused.ok).toBe(false);
+    expect(!refused.ok && refused.held).toBeUndefined();
+    expect(readFileSync(planted, "utf8")).toBe(before);
+  });
+});

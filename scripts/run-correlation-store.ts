@@ -100,6 +100,28 @@ function checkoutRoot(
 }
 
 /**
+ * True when the correlations directory of `root`, as far as it exists, really
+ * is inside `root`: no part of it is a link to somewhere else. Checked before
+ * anything is created, so nothing is ever made or written behind a link. The
+ * loader refuses such a file on its side.
+ */
+function correlationsDirIsInside(root: string): boolean {
+  let dir = root;
+  for (const part of RUN_CORRELATIONS_DIR.split("/")) {
+    dir = `${dir}/${part}`;
+    let real: string;
+    try {
+      real = comparableCheckout(realpathSync.native(dir));
+    } catch {
+      // Not there yet, so neither is anything below it.
+      return true;
+    }
+    if (real !== dir) return false;
+  }
+  return true;
+}
+
+/**
  * Start (or rejoin) a run's correlation: the one call a launcher makes.
  *
  * `executionRunId` is the id the caller already reserved for the run — a Forge
@@ -142,6 +164,12 @@ export function initRunCorrelation(input: {
     env: { [RUN_CORRELATION_ENV]: path },
   });
 
+  if (!correlationsDirIsInside(root)) {
+    return {
+      ok: false,
+      error: `${RUN_CORRELATIONS_DIR} resolves outside this checkout`,
+    };
+  }
   const existing = loadRunCorrelation(path, root);
   if (existing.ok) {
     const held = existing.value;
