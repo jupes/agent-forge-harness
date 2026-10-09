@@ -293,6 +293,35 @@ describe("forge:exec", () => {
     expect(JSON.parse(readFileSync(dump, "utf8")).stdin).toBe("x");
   });
 
+  test("a sink that returns nothing has taken the event: it is counted as recorded", async () => {
+    const { worktree, deps } = setup();
+    const seen: string[] = [];
+    const out = await runExec(
+      ["--bead", "b-10", "--worktree", worktree, "--prompt", "x"],
+      {
+        ...deps,
+        command: fake("claude"),
+        sink: (event) => {
+          seen.push(event.kind);
+        },
+      },
+    );
+    expect(out.code).toBe(0);
+    expect(seen).toEqual([
+      "session.started",
+      "tool.called",
+      "tool.called",
+      "session.ended",
+    ]);
+    expect(out.body.data).toMatchObject({
+      events: 4,
+      recorded: 4,
+      notRecorded: 0,
+      ledgerError: null,
+      ledger: null,
+    });
+  });
+
   test("a sink that throws does not kill the child: the run finishes and the failure is reported", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(

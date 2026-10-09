@@ -6,8 +6,9 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
 - The prompt goes on **stdin**, never argv. Child env is built by `buildChildEnv` — never pass `process.env` through.
 - Events are metadata only (hash of tool input, never the input). Validate with `scripts/hearth/validate.ts`.
 - `EventSink` is the seam to the ledger: `sinks.ts` has `ledgerSink`, one `appendEvent` per event. A sink reports a
-  failure (`{ ok: false, error }`) and never throws. `forge:exec` counts what was not recorded and lets the provider
-  finish: a run is never stopped because its audit trail could not be written, and its exit code is the provider's.
+  failure (`{ ok: false, error }`) and never throws; one that returns nothing has taken the event. `forge:exec` counts
+  what was not recorded and lets the provider finish: a run is never stopped because its audit trail could not be
+  written, and its exit code is the provider's.
 - Events carry the harness's main checkout as `workspace`, so `forge:audit` finds them when the run was launched from
   a linked worktree. `session.started` says `kind: "headless"`, names the checkout the executor runs in, and names
   the launching session when one is mirrored into the directory `forge:exec` was started from.

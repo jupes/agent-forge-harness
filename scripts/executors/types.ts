@@ -6,11 +6,12 @@ export type SinkResult = { ok: true } | { ok: false; error: string };
 /**
  * Where a run's events are stored (`sinks.ts` has the ledger's). A sink
  * reports a failure instead of throwing: a run must not stop because its
- * audit trail could not be written.
+ * audit trail could not be written. A sink that returns nothing has taken the
+ * event.
  */
 export type EventSink = (
   event: LedgerEventInput,
-) => SinkResult | Promise<SinkResult>;
+) => SinkResult | void | Promise<SinkResult> | Promise<void>;
 
 export interface SpawnRequest {
   beadId: string;

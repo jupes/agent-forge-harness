@@ -85,13 +85,16 @@ function launchingSession(cwd: string): string | undefined {
   return readSessionMirror(resolveCheckout(cwd).worktree) ?? undefined;
 }
 
-/** Hand one event to the sink; a sink that throws is a refusal like any other. */
+/**
+ * Hand one event to the sink. A sink that returns nothing has taken it; one
+ * that throws is a refusal like any other.
+ */
 async function store(
   sink: EventSink,
   event: LedgerEventInput,
 ): Promise<SinkResult> {
   try {
-    return await sink(event);
+    return (await sink(event)) ?? { ok: true };
   } catch (error) {
     return {
       ok: false,
