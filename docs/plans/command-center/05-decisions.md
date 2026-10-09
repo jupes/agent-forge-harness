@@ -21,7 +21,7 @@ Built-in smiths: `claude-master` (highest Claude rank, effort high), `claude-jou
 1. **Desktop shell:** Tauri 2 wrapping the existing Preact dashboard; the hearth compiled with `bun build --compile` as a supervised sidecar. The D1 spike is folded into `f8-shell` as its first checkpoint.
 2. **Process model:** one hearth per machine serving every registered workspace. Lock file `~/.agent-forge/hearth.lock` with pid, port, token. Vite dev, the desktop shell and `bun run hearth` may all start it; the lock prevents duplicates.
 3. **Ledger location:** one `~/.agent-forge/ledger.db` with a `workspace` column; workspace-scoped queries. Absorbs the `ulpz.3` schema (see Scope 11).
-4. **Session attach:** Claude Code hooks append in-process; spawned CLIs stream through their adapter; remote workers POST to the hearth. Identity minted as a ULID at `<worktree>/.agent-forge-session` when the provider gives none.
+4. **Session attach:** Claude Code hooks append in-process; spawned CLIs stream through their adapter; remote workers POST to the hearth. Identity is the provider's session id, mirrored by the SessionStart hook into `<worktree>/.agent-forge-session` so script emitters can attach to the live session; a ULID is minted there only when the provider gives none. One line, the id verbatim; freshness is the file's mtime. (Amended 2026-10-07 by `x1gs.2.2`: the file was originally written only for minted ids.)
 
 ## Execution safety
 

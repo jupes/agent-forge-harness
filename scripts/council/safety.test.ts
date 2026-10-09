@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { closeLedger } from "../ledger/db";
+import { queryEvents } from "../ledger/query";
 import {
   assertCouncilRunId,
   readCouncilRun,
@@ -152,6 +154,69 @@ describe("context confidentiality", () => {
     expect(JSON.stringify(packed)).not.toContain(secret);
     expect(renderContextForPrompt(packed)).not.toContain(secret);
     expect(renderContextForPrompt(packed)).toContain("1: Title");
+  });
+
+  test("the default policy refuses text whose key follows an escape, an encoded delimiter, a colour code, digits or a letter", () => {
+    const keys = [
+      "sk-ant-abcdefghijklmnopqrstuvwxyz123456",
+      "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+      "sk-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+      "sk-0123456789abcdef0123456789abcdef",
+    ];
+    for (const key of keys) {
+      const texts = [
+        JSON.stringify({ text: `my key is:\n${key}` }),
+        JSON.stringify({ text: `key\t${key}` }),
+        `https://example.com/?key%3D${key}`,
+        `https://example.com/?key%3d${key}`,
+        `\u001b[31m${key}\u001b[0m`,
+        JSON.stringify(`\u001b[0m${key}`),
+        `7${key}`,
+        `deadbeef${key}`,
+        `0xc0ffee${key}`,
+        `x${key}`,
+        `token${key}`,
+        `TOKEN=${key}`,
+        `"${key}"`,
+        `token:${key}`,
+        `the key is ${key}`,
+      ];
+      for (const text of texts) {
+        let refused = "";
+        try {
+          buildContextPack({ kind: "stdin", text });
+        } catch (error) {
+          refused = error instanceof Error ? error.message : String(error);
+        }
+        expect({ text, refused }).toEqual({
+          text,
+          refused: expect.stringContaining("potential secrets"),
+        });
+        const packed = buildContextPack({
+          kind: "stdin",
+          text,
+          secretPolicy: "redact",
+        });
+        expect(JSON.stringify(packed)).not.toContain(key);
+      }
+    }
+  });
+
+  test("the default policy accepts an ordinary slug that has sk- inside a word, and still refuses sk-ant- and sk-proj- glued to one", () => {
+    const slugs =
+      "see plans/drafts/task-queue-state-machine-v2.md and risk-assessment-for-the-ledger-rollout";
+    const packed = buildContextPack({ kind: "stdin", text: slugs });
+    expect(packed.redactions).toEqual([]);
+    expect(renderContextForPrompt(packed)).toContain(
+      "task-queue-state-machine-v2",
+    );
+    for (const text of [
+      "risk-ant-abcdefghijklmnopqrstuvwxyz123456",
+      "desk-proj-abcdefghijklmnopqrstuvwxyz",
+    ])
+      expect(() => buildContextPack({ kind: "stdin", text })).toThrow(
+        "potential secrets",
+      );
   });
 });
 
@@ -443,16 +508,21 @@ describe("MCP job integration", () => {
       await server.close();
     }
   });
-  test("runs through the real stdio entry point from another project", async () => {
+  test("runs through the real stdio entry point from another project and records the run in the ledger it was pointed at", async () => {
     const root = temp();
+    const ledgerHome = temp();
+    const ledger = join(ledgerHome, "ledger.db");
     const client = new Client({ name: "stdio-test", version: "1" });
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["run", resolve("scripts/council/mcp.ts")],
       cwd: root,
+      // The transport adds the OS home to this; without AGENT_FORGE_HOME the
+      // server would record the run in the ledger under the user's home.
       env: {
         COUNCIL_WORKSPACE_ROOT: root,
         COUNCIL_RUNS_DIR: join(root, "runs"),
+        AGENT_FORGE_HOME: ledgerHome,
       },
       stderr: "pipe",
     });
@@ -474,6 +544,20 @@ describe("MCP job integration", () => {
       );
     } finally {
       await client.close();
+    }
+    try {
+      const recorded = queryEvents({}, { path: ledger });
+      expect(recorded.map((event) => event.kind)).toEqual([
+        "council.run.started",
+        "council.run.finished",
+      ]);
+      expect(
+        recorded.map(
+          (event) => (event.payload as { councilRunId?: string }).councilRunId,
+        ),
+      ).toEqual(["stdio", "stdio"]);
+    } finally {
+      closeLedger(ledger);
     }
   });
 });

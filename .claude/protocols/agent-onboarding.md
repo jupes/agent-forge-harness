@@ -42,7 +42,7 @@ interface Session {
   worktree?: string;        // absolute path of the checkout the agent works in
   beadId?: string;          // the Beads issue this session works on, when known
   parentSessionId?: string; // set for teammates and subagents
-  kind: "interactive" | "teammate" | "headless" | "remote";
+  kind: "interactive" | "teammate" | "subagent" | "headless" | "remote";
   smith?: string;           // set when the harness chose the smith (adapters, shifts)
 }
 ```
@@ -82,7 +82,8 @@ Rules every emitter follows:
 
 - **Metadata only.** Hashes, sizes, names, durations. Never prompt text, source text or tool output
   (decision #10). `prompt.submitted` carries `{ hash, length }`; `tool.called` carries
-  `{ name, durationMs?, exit?, argsHash }`.
+  `{ tool, argsHash, durationMs?, exitCode? }` (field names as in `types/hearth.ts`). Hook-sourced
+  `tool.called` events carry no exit code: the hook payload has none. An adapter that knows it fills it.
 - **Redaction at write**, not at read. The ledger applies the secret patterns; emitters do not rely on it
   for bodies they should not be sending in the first place.
 - **Append-only.** There is no update or delete; corrections are new events.
@@ -110,7 +111,8 @@ different owners — never conflate them:
 2. **Adapter-chosen id**, when the CLI lets the harness pick one at spawn (so the id exists before the
    first byte of output).
 3. **Minted ULID** persisted at `<worktree>/.agent-forge-session` — the fallback when the provider gives
-   none (see below).
+   none (see below). The same file also **mirrors** a provider-issued id, so that scripts launched from
+   the session can attach to it.
 
 ### The identity gap from `0xxt`, closed
 
@@ -125,12 +127,16 @@ the `TaskCreated` / `TaskCompleted` stdin JSON). Therefore:
   derived from host ids. This matches `0xxt`'s expected behaviour: the launcher supplies
   `beadsIssueId` + `executionRunId`; the hook parses stdin and treats host identity as optional metadata.
 
-### Minted identity (`<worktree>/.agent-forge-session`)
+### Minted and mirrored identity (`<worktree>/.agent-forge-session`)
 
-Used by emitters that run **outside any provider session** (a hand-run `forge:*` script, a gate invoked
-from a shell) and by providers whose output carries no id.
+One file, two uses. It holds a **minted** id for providers whose output carries no id, and it **mirrors**
+the provider's id for a live session, because the scripts a session launches through its shell
+(`forge:phase-gate`, `forge:review`, a hand-run quality gate) get no hook payload and could not
+otherwise tag their events with the session that ran them.
 
-- **Content:** one line, a 26-character ULID, plus a trailing newline. Nothing else — no JSON, no pid.
+- **Content:** one line holding the session id verbatim — a 26-character ULID when minted, the
+  provider's id when mirrored — plus a trailing newline. Nothing else — no JSON, no pid, no timestamp;
+  freshness is the file's modification time.
 - **Created** atomically on first need (open with exclusive-create). If the create loses a race, read the
   winner's value; never overwrite.
 - **Reused** by every emitter in that worktree until the session ends, so the events of one working
@@ -140,8 +146,17 @@ from a shell) and by providers whose output carries no id.
   new one and appends `session.ended` with `payload.reason = "superseded"` for the old id first.
 - **Never committed.** `.agent-forge-session` is in `.gitignore`. It is per-worktree, so a worktree
   created for a bead gets its own identity and the main checkout keeps its own.
-- A provider-issued id always wins over the file: when `session_id` is present the file is neither read
-  nor written.
+- **Mirror.** The SessionStart hook writes the provider's `session_id` into the file (overwriting what
+  is there: the session that started last in a worktree owns it). A hook never *reads* the file — its
+  own stdin `session_id` always wins. Script emitters read it, ignore it when it is older than 24 hours,
+  and take the model from the ledger's per-session model cache.
+- **Removal of a mirror.** The SessionEnd hook removes the file only if it still holds its own session
+  id; a newer session's mirror is left in place.
+- **Explicit correlation beats the mirror.** `FORGE_SLUG` and the `AGENT_FORGE_*` variables (see
+  *Correlation*) and command-line flags win over anything derived through the file. The mirror supplies
+  `sessionId` and, through the model cache, the executor — never the bead or the run.
+- **Not built yet:** minting an id for a script that runs outside any session. Until an emitter does
+  that, such events simply carry no `sessionId`.
 
 ### Correlation (`beadId`, `runId`, `smith`, parent)
 
@@ -168,25 +183,42 @@ Every sequence ends the same way: `session.ended` exactly once, with `payload.re
 
 ### 1. Interactive Claude Code (hooks, in-process)
 
-1. **SessionStart hook.** Read stdin JSON: `session_id`, `cwd`, `source`, `model`, `effort.level` when
-   present. Build the Session (`kind: "interactive"`, `provider: "claude"`, `worktree` from `cwd`'s git
-   top level, `workspace` from the registry). `appendEvent({ kind: "session.started" })`.
+1. **SessionStart hook.** Read stdin JSON: `session_id`, `cwd`, `source`, and `model` when present —
+   the host may omit `model` (after a clear, or when a conversation is recovered). SessionStart carries
+   no effort: the effort level arrives as `effort.level` on events in a tool-use context (`PostToolUse`,
+   `Stop`) and is remembered from there. Build the Session (`kind: "interactive"`, `provider: "claude"`,
+   `worktree` and `workspace` from `cwd`'s checkout). Record the model in the per-session model cache,
+   `appendEvent({ kind: "session.started" })`, then write the session mirror (see *Minted and mirrored
+   identity*).
+   When no model is known yet, events carry no executor — never a placeholder. The first `PostToolUse`
+   of such a session reads the model from the end of the session transcript, once, and caches it.
    A SessionStart with `source` of `resume`, `clear` or `compact` for an id already seen **does not**
    emit a second `session.started`; it emits nothing (or `payload.source` on a `prompt.submitted`), so one
    conversation stays one session.
 2. **During the session.** `UserPromptSubmit` → `prompt.submitted`; `PostToolUse` (matcher `*`) →
-   `tool.called`; `Stop` → forge phase-gate as today. All append in-process, same `sessionId`.
-3. **SessionEnd hook.** `session.ended` with `payload.reason` from stdin. (`session.ts` currently has a
-   dead SessionEnd branch; `x1gs.2.2` wires it.)
+   `tool.called`; `Stop` → forge phase-gate as today, plus a refresh of the cached model from the
+   transcript (no event: there is no stop kind). All append in-process, same `sessionId`. The ledger
+   commands for these three events are registered `async`, so the session does not wait for them; the
+   order of their rows can therefore differ slightly from the order things happened in, and each event
+   carries its own `ts`.
+3. **SessionEnd hook.** `session.ended` with `payload.reason` from stdin, appended **before** anything
+   slow; then the mirror is removed if it is still this session's, and Beads is pushed once
+   (`bd dolt push`), with the outcome logged to `session.jsonl`. The hook command carries its own
+   `timeout`, because the host's default budget for SessionEnd hooks is too short for a push.
 
 ### 2. Claude teammate or subagent (hooks + `parentSessionId`)
 
-Subagents and teammates run in the lead's process tree and their hooks carry the **parent's**
-`session_id` plus an `agent_id` (and `agent_type`) of their own.
+A hook that fires inside a subagent call carries the **parent's** `session_id` plus an `agent_id` (and
+`agent_type`) of its own. That is documented for subagents; whether a teammate arrives the same way is
+still to be confirmed (see *Verify*).
 
 1. A hook that sees `agent_id` on stdin attaches a **child** session:
-   `sessionId = "<session_id>:<agent_id>"`, `parentSessionId = <session_id>`, `kind: "teammate"`.
-   The first hook event for an unseen `agent_id` emits `session.started` for the child, then the event.
+   `sessionId = "<session_id>:<agent_id>"`, `parentSessionId = <session_id>`, and `kind: "subagent"` —
+   `kind: "teammate"` only when the payload also carries a teammate signal (`teammate_name`). Not every
+   `agent_id` is a teammate.
+   The child's `session.started` is offered before each of its events and the ledger keeps exactly one
+   (a unique index, so concurrent hooks cannot produce two). A child with no model of its own is tagged
+   with its parent's cached model.
 2. Tool and prompt events from that actor carry the child `sessionId`; the lead's keep the plain one.
 3. `TeammateIdle` / `TaskCompleted` are **gate** events (`gate.ran`), not session ends. The child ends on
    the lead's SessionEnd (the hook emits `session.ended` for every open child first, `reason:
@@ -235,6 +267,7 @@ detect `AGENT_FORGE_ADAPTER=1` in the environment and return without appending.
 | Hearth down (remote worker) | Buffer locally, retry with backoff; `ulid` dedupes |
 | Provider id changes mid-run (`resume` gives a new id) | Treat as a new session with `parentSessionId` = old id and `payload.source = "resume"` |
 | Two interactive sessions in one worktree, no provider id | They share the minted id — accepted limit; provider ids make this rare |
+| Two sessions in one worktree, provider ids mirrored (two sessions, a resumed session with a new id, or a lead plus a child that shares its shell) | The file is last-writer-wins, so a **script-launched** event can be attributed to the other session and its model — accepted limit. Hook events are unaffected (they use stdin). `forge:audit` treats script-launched events as best-effort attributed when sessions share a worktree; one session per worktree keeps it rare |
 
 ---
 
@@ -242,8 +275,12 @@ detect `AGENT_FORGE_ADAPTER=1` in the environment and return without appending.
 
 Facts this file leans on that the adapter and hook beads must confirm and, if wrong, correct **here**:
 
-1. Teammate hooks: whether a teammate presents the lead's `session_id` plus `agent_id` (assumed, per the
-   hooks reference) or its own `session_id`. Bead `x1gs.2.2`. Attach rule 2.1 vs 2.4 depends on it.
+1. Teammate hooks: whether a teammate presents the lead's `session_id` plus `agent_id` or its own
+   `session_id`, and whether `teammate_name` is present on its tool events. **Still open:** `x1gs.2.2`
+   built the probe for it (`AGENT_FORGE_HOOK_PROBE=1` appends the field and variable *names* of each
+   hook call to `<ledger home>/hook-probe.jsonl`) but could not run it in a live session. Until it is
+   run, a payload with `agent_id` and no `teammate_name` is recorded as a subagent (rule 2.1) and a
+   teammate with its own `session_id` follows rule 2.4.
 2. `codex exec --json` session/thread id on its stream, and whether `claude --session-id` can pre-assign
    an id. Beads `x1gs.4.2` and the Codex adapter bead.
 3. Whether SessionEnd fires for a headless child (assumed not relied on, hence the adapter emits).

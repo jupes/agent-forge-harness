@@ -48,6 +48,14 @@ A halt writes `.tmp/work/session-handoff.md` (or `session-handoff-<slug>.md` whe
 exists) naming what stopped it and the command that resumes the work. The run's state is intact;
 nothing is force-advanced past a failing review.
 
+**The decision is enforced, not just printed.** `forge:review` stores what it decided on the round,
+and everything that describes the run reads it back: while a completed phase is halted, under
+revision, or not yet reviewed, `forge:phase-gate <next phase>` exits non-zero, `forge:runs` shows
+`halted in <phase>` or `review <phase>` instead of the next phase command, and the Stop reminder
+says the same. Recording the phase again (`--write`) does not clear a halt — only a new
+`forge:review` round that advances does. To take a halted run back under human gates, re-record
+with `--mode gated`.
+
 ---
 
 ## The loop, per phase
@@ -59,7 +67,9 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
 2. **Do the phase** by following its skill end to end (`.claude/skills/forge-<phase>/SKILL.md`),
    exactly as the gated pipeline does.
 3. **Record it.** `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto
-   --checkout <worktree>`.
+   --checkout <worktree>`. Optional: `--bead <id>` names the bead the run works, and
+   `--provider <id> --model <id> [--effort <level>] [--smith <name>]` records who is building it;
+   both are kept on the run and stamped on its ledger events.
 4. **Review it with a fresh subagent.** Spawn an **Evaluator** (`.claude/agents/evaluator.md`) on
    the phase's exit artifact. It must be a *different* agent from the one that produced the work —
    the evaluator refuses to grade its own output — and run at a tier **≥** the builder's
@@ -119,4 +129,5 @@ a human is still cheaper than an unattended full run.
 
 - `bun run forge:runs` — every run in flight, its phase, and the command that continues it.
 - `bun run forge:review --slug <slug> --ledger` — every review round the run has recorded.
+- `bun run forge:audit --run <slug>` — the run's phase and review history from the event ledger.
 - `bun run dashboard` → Forge run — phases, checkpoints and the quality gate, per run.

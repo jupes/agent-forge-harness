@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { recordRound } from "./auto-loop";
 import {
   artifactPath,
+  executorFromFlags,
   type ForgeState,
   isRunComplete,
   nextPhase,
@@ -10,6 +12,8 @@ import {
   recordComplete,
   validateEnter,
 } from "./phase-gate";
+import type { ReviewRound } from "./phases";
+import { summarizeRun } from "./runs";
 
 const NEVER = () => false;
 const ALWAYS = () => true;
@@ -208,5 +212,158 @@ describe("the review ledger survives the pipeline", () => {
     const second = recordComplete("plan", "demo", ALWAYS, first, {}, FIXED);
     expect(second.data?.mode).toBe("auto");
     expect(second.data?.checkout).toBe("C:/trees/aa11");
+  });
+});
+
+describe("an auto run's reviews gate the next phase", () => {
+  const round = (
+    phase: ReviewRound["phase"],
+    n: number,
+    verdict: ReviewRound["verdict"],
+    high = 0,
+  ): ReviewRound => ({
+    phase,
+    round: n,
+    verdict,
+    findings: { blocker: 0, high, medium: 0, low: 0 },
+    at: FIXED(),
+  });
+
+  const haltedPlan: ForgeState = {
+    ...stateAfter(["research", "plan"]),
+    mode: "auto",
+    reviews: [
+      round("research", 1, "PASS"),
+      round("plan", 1, "FAIL", 1),
+      round("plan", 2, "FAIL", 1),
+    ],
+  };
+
+  test("the following phase cannot start while the prior phase is halted", () => {
+    const r = validateEnter("implement", "demo", ALWAYS, haltedPlan);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('"plan" is halted');
+    expect(r.error).toContain("not converging");
+    expect(r.error).toContain("/forge-plan demo");
+    expect(r.error).toContain("bun run forge:review --slug demo --phase plan");
+  });
+
+  test("the following phase cannot start while the prior phase is awaiting review", () => {
+    const unreviewed: ForgeState = {
+      ...stateAfter(["research", "plan"]),
+      mode: "auto",
+      reviews: [round("research", 1, "PASS")],
+    };
+    const r = validateEnter("implement", "demo", ALWAYS, unreviewed);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('"plan" has not been reviewed');
+    expect(r.error).toContain("bun run forge:review --slug demo --phase plan");
+  });
+
+  test("the halted phase itself can be re-entered", () => {
+    expect(validateEnter("plan", "demo", ALWAYS, haltedPlan).ok).toBe(true);
+  });
+
+  test("a gated run with the same rounds may start the following phase", () => {
+    const gated: ForgeState = { ...haltedPlan, mode: "gated" };
+    expect(validateEnter("implement", "demo", ALWAYS, gated).ok).toBe(true);
+  });
+
+  test("phase-gate --write does not clear a halt; a new advancing round does", () => {
+    // Exercises recordComplete, the function behind --write, not the CLI.
+    const rewritten = recordComplete(
+      "plan",
+      "demo",
+      ALWAYS,
+      haltedPlan,
+      {},
+      FIXED,
+    ).data as ForgeState;
+    expect(summarizeRun(rewritten).halted?.phase).toBe("plan");
+    expect(validateEnter("implement", "demo", ALWAYS, rewritten).ok).toBe(
+      false,
+    );
+
+    const cleared = recordRound(rewritten, round("plan", 3, "PASS"));
+    expect(summarizeRun(cleared).halted).toBeNull();
+    expect(summarizeRun(cleared).next).toBe("implement");
+    expect(validateEnter("implement", "demo", ALWAYS, cleared).ok).toBe(true);
+  });
+});
+
+describe("the executor and bead on a run", () => {
+  test("recording a phase stores the executor and bead it was given and keeps them on the next write", () => {
+    const executor = { provider: "claude", model: "m-1", effort: "high" };
+    const first = recordComplete(
+      "research",
+      "demo",
+      ALWAYS,
+      null,
+      { executor, beadId: "bd-7" },
+      FIXED,
+    ).data;
+    expect(first?.schemaVersion).toBe(2);
+    expect(first?.executor).toEqual(executor);
+    expect(first?.beadId).toBe("bd-7");
+
+    const second = recordComplete("plan", "demo", ALWAYS, first, {}, FIXED);
+    expect(second.data?.executor).toEqual(executor);
+    expect(second.data?.beadId).toBe("bd-7");
+  });
+
+  test("a later executor or bead replaces the stored one", () => {
+    const first = recordComplete(
+      "research",
+      "demo",
+      ALWAYS,
+      null,
+      { executor: { provider: "claude", model: "m-1" }, beadId: "bd-7" },
+      FIXED,
+    ).data;
+    const second = recordComplete(
+      "plan",
+      "demo",
+      ALWAYS,
+      first,
+      { executor: { provider: "codex", model: "m-2" }, beadId: "bd-8" },
+      FIXED,
+    ).data;
+    expect(second?.executor).toEqual({ provider: "codex", model: "m-2" });
+    expect(second?.beadId).toBe("bd-8");
+  });
+
+  test("the announced review status carries across a write", () => {
+    const base: ForgeState = {
+      ...stateAfter(["research"]),
+      announcedPhase: "research",
+      announcedStatus: "awaiting-review",
+    };
+    const next = recordComplete("plan", "demo", ALWAYS, base, {}, FIXED).data;
+    expect(next?.announcedStatus).toBe("awaiting-review");
+  });
+
+  test("executor flags need a provider and a model together", () => {
+    expect(executorFromFlags({})).toEqual({
+      ok: true,
+      data: undefined,
+      error: null,
+    });
+    expect(executorFromFlags({ provider: "claude" }).ok).toBe(false);
+    expect(executorFromFlags({ model: "m-1" }).ok).toBe(false);
+    expect(executorFromFlags({ effort: "high" }).ok).toBe(false);
+    expect(executorFromFlags({ provider: "claude", model: "" }).ok).toBe(false);
+    expect(
+      executorFromFlags({
+        provider: "claude",
+        model: "m-1",
+        effort: "high",
+        smith: "anvil",
+      }).data,
+    ).toEqual({
+      provider: "claude",
+      model: "m-1",
+      effort: "high",
+      smith: "anvil",
+    });
   });
 });
