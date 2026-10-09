@@ -16,7 +16,14 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
   "run.phase.completed": ["phase", "artifact"],
   "review.recorded": ["phase", "round", "verdict", "findings", "action"],
   "gate.ran": ["gate", "passed", "durationMs", "exitCode", "trigger"],
-  "verdict.bound": ["verdict", "builder", "evaluator", "summary"],
+  "verdict.bound": [
+    "verdict",
+    "builder",
+    "evaluator",
+    "evaluatorIdentity",
+    "verdictArtifact",
+    "summary",
+  ],
   "bead.transitioned": ["from", "to", "reason"],
   "reservation.acquired": ["worktree", "globs"],
   "reservation.released": ["worktree", "globs"],
@@ -30,11 +37,29 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
 
 const EXECUTOR_KEYS = ["provider", "model", "effort", "smith", "sessionId"];
 const FINDING_KEYS = ["blocker", "high", "medium", "low"];
+/** Both kinds of `EvaluatorIdentity`: a human has the first two, a model all but `actorKind`. */
+const EVALUATOR_IDENTITY_KEYS = [
+  "kind",
+  "actorKind",
+  "requestedProvider",
+  "requestedModel",
+  "requestedRank",
+  "observedProvider",
+  "observedModel",
+  "providerEvidence",
+  "modelEvidence",
+  "rankPolicyDecision",
+  "rankPolicyRule",
+  "sessionId",
+];
+const VERDICT_ARTIFACT_KEYS = ["path", "sha256", "bytes", "schemaVersion"];
 
 /** Payload keys whose value is an object or array, and the shape each is cut to. */
 const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   builder: (value) => pick(value, EXECUTOR_KEYS),
   evaluator: (value) => pick(value, EXECUTOR_KEYS),
+  evaluatorIdentity: (value) => pick(value, EVALUATOR_IDENTITY_KEYS),
+  verdictArtifact: (value) => pick(value, VERDICT_ARTIFACT_KEYS),
   findings: (value) => pick(value, FINDING_KEYS),
   globs: (value) =>
     Array.isArray(value)

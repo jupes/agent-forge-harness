@@ -35,6 +35,8 @@ import {
   runQualityGate,
 } from "../.claude/hooks/quality-gate";
 import type { HookStdin } from "../.claude/hooks/utils/hook-input";
+import type { Executor } from "../types/hearth";
+import { BUILTIN_SMITHS } from "./config/defaults";
 import { closeLedger } from "./ledger/db";
 import { queryEvents } from "./ledger/query";
 import { RUN_CORRELATION_ENV } from "./run-correlation";
@@ -93,23 +95,47 @@ function correlate(box: Box, bead = "bead-1", run = "run-1"): string {
   return made.path;
 }
 
+/** A schema 2 verdict for bead-1 / run-1 by a human reviewer, unless `body` says otherwise. */
+function v2(body: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schemaVersion: 2,
+    beadsIssueId: "bead-1",
+    executionRunId: "run-1",
+    verdict: "PASS",
+    findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+    evaluator: { kind: "human", actorKind: "reviewer" },
+    ...body,
+  };
+}
+
+/** A model evaluator that asked for a master and, unless told otherwise, observed one. */
+function modelEvaluator(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    kind: "model",
+    requestedProvider: "claude",
+    requestedModel: "claude-opus-5-5",
+    requestedRank: "master",
+    observedProvider: "claude",
+    observedModel: "claude-opus-5-5",
+    providerEvidence: "selected-direct-transport",
+    modelEvidence: "response-field",
+    rankPolicyDecision: "allowed",
+    rankPolicyRule: "evaluator-at-or-above-builder",
+    ...overrides,
+  };
+}
+
+/** Put `content` where the strict check looks for the verdict of `fileId`. */
 function verdict(
   box: Box,
   fileId: string,
-  body: Record<string, unknown>,
+  content: Record<string, unknown> = v2(),
 ): string {
   const file = join(box.cwd, ".tmp", "work", `${fileId}-verdict.json`);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(
-    file,
-    JSON.stringify({
-      schemaVersion: 1,
-      taskId: fileId,
-      verdict: "PASS",
-      findings: { blocker: 0, high: 0, medium: 0, low: 0 },
-      ...body,
-    }),
-  );
+  writeFileSync(file, JSON.stringify(content));
   return file;
 }
 
@@ -138,6 +164,8 @@ function gate(
     env?: Record<string, string>;
     answers?: Record<string, { ok: boolean; output: string }>;
     bd?: Record<string, { ok: boolean; output: string }>;
+    /** Who the run's state says built the work. */
+    builder?: Executor;
   } = {},
 ): Recorded {
   const commands: string[] = [];
@@ -161,6 +189,19 @@ function gate(
     },
     hasScript: () => true,
     hasTestFiles: () => true,
+    smiths: () => Object.values(BUILTIN_SMITHS),
+    runState: (runId) =>
+      input.builder
+        ? {
+            slug: runId,
+            feature: runId,
+            phase: "implement",
+            completed: ["research", "plan"],
+            artifacts: {},
+            updatedAt: "2026-06-04T00:00:00.000Z",
+            executor: input.builder,
+          }
+        : null,
   };
   const outcome = runQualityGate({
     stdin: input.stdin ?? BY_HAND,
@@ -233,7 +274,7 @@ describe("an unbound host event", () => {
 
   test("cannot satisfy strict completion, even with a passing verdict filed under the host's task id", () => {
     const box = sandbox();
-    verdict(box, "host-task", {});
+    verdict(box, "host-task", v2({ beadsIssueId: "host-task" }));
     const recorded = gate(box, {
       stdin: payload({
         hook_event_name: "TaskCompleted",
@@ -249,7 +290,7 @@ describe("an unbound host event", () => {
     expect(check(recorded, "eval-verdict")?.output).toContain(
       "requires a run correlation",
     );
-    expect(ran(recorded).strictVerdict).toBeNull();
+    expect(ran(recorded).boundVerdict).toBeNull();
   });
 
   test("the variables that used to carry identity carry none", () => {
@@ -396,30 +437,166 @@ describe("a correlated run", () => {
     ]);
   });
 
-  test("strict mode reads the verdict filed under the correlated bead and binds it", () => {
+  test("strict mode binds a schema 2 verdict that names the correlated bead and run", () => {
     const box = sandbox();
-    verdict(box, "bead-1", { summary: "looks right" });
+    verdict(box, "bead-1", v2({ summary: "looks right" }));
     const passing = gate(box, {
       argv: ["--correlation", correlate(box)],
       env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
     });
-    expect(check(passing, "eval-verdict")).toMatchObject({ passed: true });
-    expect(ran(passing).strictVerdict).toMatchObject({
-      taskId: "bead-1",
+    expect(check(passing, "eval-verdict")).toEqual({
+      name: "eval-verdict",
+      passed: true,
+      output: "PASS B=0 H=0; evaluator: human reviewer",
+    });
+    expect<unknown>(ran(passing).boundVerdict).toMatchObject({
+      schemaVersion: 2,
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
       verdict: "PASS",
+      evaluator: { kind: "human", actorKind: "reviewer" },
     });
+  });
+});
 
-    // A verdict that names another issue is not this run's verdict.
-    verdict(box, "bead-1", { taskId: "bead-9" });
-    const mismatched = gate(box, {
-      argv: ["--correlation", correlate(box)],
-      env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
-    });
-    expect(check(mismatched, "eval-verdict")).toMatchObject({
+/** The strict check of a correlated run (bead-1 / run-1) over one verdict file. */
+function strict(
+  content: Record<string, unknown>,
+  builder?: Executor,
+): Recorded {
+  const box = sandbox();
+  verdict(box, "bead-1", content);
+  return gate(box, {
+    argv: ["--correlation", correlate(box)],
+    env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
+    ...(builder ? { builder } : {}),
+  });
+}
+
+function refusedWith(recorded: Recorded, output: string): void {
+  expect(check(recorded, "eval-verdict")).toEqual({
+    name: "eval-verdict",
+    passed: false,
+    output,
+  });
+  expect(ran(recorded).result.blockingFailures).toEqual(["eval-verdict"]);
+  expect(ran(recorded).boundVerdict).toBeNull();
+}
+
+const SONNET_BUILDER: Executor = {
+  provider: "claude",
+  model: "claude-sonnet-5-5",
+};
+
+describe("strict completion: whose verdict it is", () => {
+  test("a schema 1 file under the right bead is a legacy verdict and does not satisfy it", () => {
+    refusedWith(
+      strict({
+        schemaVersion: 1,
+        taskId: "bead-1",
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+      }),
+      "the verdict is schema 1 (legacy): it names no run and no evaluator",
+    );
+  });
+
+  test("a stale verdict, left by an earlier run of the same bead, is refused", () => {
+    refusedWith(
+      strict(v2({ executionRunId: "run-0" })),
+      'verdict executionRunId "run-0" is not this run ("run-1")',
+    );
+  });
+
+  test("a verdict for another bead is refused", () => {
+    refusedWith(
+      strict(v2({ beadsIssueId: "bead-9" })),
+      'verdict beadsIssueId "bead-9" is not this run\'s bead ("bead-1")',
+    );
+  });
+
+  test("a FAIL with a blocker is this run's verdict, and blocks", () => {
+    const recorded = strict(
+      v2({
+        verdict: "FAIL",
+        findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+      }),
+    );
+    expect(check(recorded, "eval-verdict")).toMatchObject({
       passed: false,
-      output: 'verdict taskId "bead-9" !== correlation beadsIssueId "bead-1"',
+      output:
+        'verdict FAIL with blocker/high — {"blocker":1,"high":0,"medium":0,"low":0}',
     });
-    expect(ran(mismatched).strictVerdict).toBeNull();
+    expect(ran(recorded).boundVerdict).toMatchObject({ verdict: "FAIL" });
+  });
+});
+
+describe("strict completion: who judged", () => {
+  test("a verdict with no evaluator identity is refused", () => {
+    const { evaluator: _evaluator, ...anonymous } = v2();
+    refusedWith(strict(anonymous), "evaluator must be an object");
+    refusedWith(
+      strict(v2({ evaluator: { kind: "human" } })),
+      "evaluator actorKind must be operator or reviewer",
+    );
+  });
+
+  test("a model evaluator observed at or above the builder's rank satisfies it", () => {
+    const recorded = strict(
+      v2({ evaluator: modelEvaluator() }),
+      SONNET_BUILDER,
+    );
+    expect(check(recorded, "eval-verdict")).toEqual({
+      name: "eval-verdict",
+      passed: true,
+      output:
+        "PASS B=0 H=0; evaluator: model claude/claude-opus-5-5 (requested claude/claude-opus-5-5, rank master)",
+    });
+    expect(ran(recorded).boundVerdict).toMatchObject({
+      evaluator: { kind: "model", observedModel: "claude-opus-5-5" },
+    });
+  });
+
+  test("a model evaluator with nothing observed is refused: the request is not evidence", () => {
+    const {
+      observedProvider: _provider,
+      observedModel: _model,
+      providerEvidence: _providerEvidence,
+      modelEvidence: _modelEvidence,
+      ...requestedOnly
+    } = modelEvaluator();
+    refusedWith(
+      strict(v2({ evaluator: requestedOnly }), SONNET_BUILDER),
+      "the verdict records no observed evaluator provider and model (requested claude/claude-opus-5-5 is not evidence of what ran)",
+    );
+  });
+
+  test("a weaker fallback is refused: a master was requested, an apprentice answered a journeyman's work", () => {
+    refusedWith(
+      strict(
+        v2({
+          evaluator: modelEvaluator({
+            observedModel: "claude-haiku-4-5-20251001",
+          }),
+        }),
+        SONNET_BUILDER,
+      ),
+      "observed evaluator claude/claude-haiku-4-5-20251001 (rank apprentice) is below the builder's rank (journeyman)",
+    );
+  });
+
+  test("with no builder on the run's state, only a master evaluator satisfies it", () => {
+    expect(
+      check(strict(v2({ evaluator: modelEvaluator() })), "eval-verdict"),
+    ).toMatchObject({ passed: true });
+    refusedWith(
+      strict(
+        v2({
+          evaluator: modelEvaluator({ observedModel: "claude-sonnet-5-5" }),
+        }),
+      ),
+      "the run records no builder whose rank is known, so only a master evaluator satisfies grader >= subject; observed evaluator claude/claude-sonnet-5-5 is rank journeyman",
+    );
   });
 });
 
@@ -486,11 +663,15 @@ describe("hostile stdin", () => {
   test("a host task id that is itself a plausible Beads id selects neither the bead nor the verdict", () => {
     const box = sandbox();
     // The host's id has a passing verdict on file; the correlated bead's fails.
-    verdict(box, "other-bead", {});
-    verdict(box, "bead-1", {
-      verdict: "FAIL",
-      findings: { blocker: 1, high: 0, medium: 0, low: 0 },
-    });
+    verdict(box, "other-bead", v2({ beadsIssueId: "other-bead" }));
+    verdict(
+      box,
+      "bead-1",
+      v2({
+        verdict: "FAIL",
+        findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+      }),
+    );
     const recorded = gate(box, {
       stdin: payload({
         hook_event_name: "TaskCompleted",
@@ -763,7 +944,7 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     async () => {
       const box = sandbox();
       const pointer = correlate(box, "bead-1", "run-1");
-      verdict(box, "bead-1", { summary: "looks right" });
+      verdict(box, "bead-1", v2({ summary: "looks right" }));
       // Unlike the other spawned cases this one can reach a shell (and nothing
       // else), so a host id spliced into a command line would run: under
       // cmd.exe and under sh alike, this one writes the canary file.
@@ -806,7 +987,10 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
         }>
       ).find((entry) => entry.name === "eval-verdict");
       // The verdict read is the one filed under the correlated bead.
-      expect(strict).toMatchObject({ passed: true, output: "PASS B=0 H=0" });
+      expect(strict).toMatchObject({
+        passed: true,
+        output: "PASS B=0 H=0; evaluator: human reviewer",
+      });
       expect(existsSync(join(box.cwd, "pwned.txt"))).toBe(false);
       // The base checks still fail here: no bun and no usable git.
       expect(out.exitCode).toBe(2);
@@ -827,7 +1011,12 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
       expect(events[0]?.payload).toMatchObject({
         verdict: "pass",
         summary: "looks right",
+        evaluatorIdentity: { kind: "human", actorKind: "reviewer" },
       });
+      // A human is not an executor: there is no observed model to record.
+      expect(events[0]?.payload && "evaluator" in events[0].payload).toBe(
+        false,
+      );
       expect(events[1]?.payload).toMatchObject({ trigger: "TaskCompleted" });
     },
     SPAWN_TIMEOUT_MS,

@@ -8,7 +8,7 @@
  */
 
 import type { Executor, LedgerEventInput } from "../types/hearth";
-import type { EvalVerdictParsed } from "./eval-verdict";
+import type { EvalVerdict } from "./eval-verdict";
 import { verdictBound } from "./forge/ledger-events";
 import type { ForgeState } from "./forge/phases";
 import { type Attach, resolveAttach } from "./ledger/identity";
@@ -99,13 +99,13 @@ export function gateRanEvent(input: {
 }
 
 /**
- * The verdict the strict check read. The strict check only binds a verdict
- * whose `taskId` is the correlated bead, so the bead here is that one.
- * `builder` is the run's stored executor, when there is one. The verdict file
- * names no evaluator, so the event has none.
+ * The verdict the strict check bound. It binds only a schema 2 verdict that
+ * names the correlated bead and run, so the event's bead and run are the ones
+ * the verdict names. `builder` is the run's stored executor, when there is
+ * one; the evaluator is the one the verdict declares.
  */
 export function strictVerdictEvent(input: {
-  verdict: EvalVerdictParsed;
+  verdict: EvalVerdict;
   builder?: Executor;
   attach: Attach;
 }): LedgerEventInput & { kind: "verdict.bound" } {
@@ -116,7 +116,8 @@ export function strictVerdictEvent(input: {
   return {
     kind: "verdict.bound",
     ...correlation(input.attach),
-    beadId: input.verdict.taskId,
+    beadId: input.verdict.beadsIssueId,
+    runId: input.verdict.executionRunId,
     payload,
   };
 }

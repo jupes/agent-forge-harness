@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEvent } from "../../types/hearth";
+import { type EvalVerdictParsed, parseEvalVerdictJson } from "../eval-verdict";
 import { closeLedger } from "../ledger/db";
 import type { Attach } from "../ledger/identity";
 import { queryEvents } from "../ledger/query";
@@ -18,6 +19,7 @@ import {
   executorToPersist,
   phaseCompleted,
   reviewRecorded,
+  verdictBound,
   withLiveSession,
 } from "./ledger-events";
 import { parseState } from "./runs";
@@ -109,6 +111,97 @@ function verdictFile(
 function runEvents(box: Box, runId: string): LedgerEvent[] {
   return queryEvents({ runId }, { path: box.path });
 }
+
+const MODEL_EVALUATOR = {
+  kind: "model",
+  requestedProvider: "claude",
+  requestedModel: "claude-opus-5-5",
+  requestedRank: "master",
+  observedProvider: "claude",
+  observedModel: "claude-sonnet-5-5",
+  providerEvidence: "selected-direct-transport",
+  modelEvidence: "response-field",
+  rankPolicyDecision: "allowed",
+  rankPolicyRule: "evaluator-at-or-above-builder",
+} as const;
+
+/** A schema 2 verdict's JSON for run `x` and bead `b-1`, unless overridden. */
+function v2Json(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    schemaVersion: 2,
+    beadsIssueId: "b-1",
+    executionRunId: "x",
+    verdict: "PASS",
+    findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+    evaluator: MODEL_EVALUATOR,
+    ...overrides,
+  });
+}
+
+function parsedVerdict(json: string): EvalVerdictParsed {
+  const parsed = parseEvalVerdictJson(json);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value;
+}
+
+describe("verdictBound", () => {
+  test("a schema 2 model verdict fills the evaluator from what was observed and keeps the typed identity", () => {
+    expect<unknown>(
+      verdictBound({ verdict: parsedVerdict(v2Json()) }).payload,
+    ).toEqual({
+      verdict: "pass",
+      evaluator: { provider: "claude", model: "claude-sonnet-5-5" },
+      evaluatorIdentity: MODEL_EVALUATOR,
+    });
+  });
+
+  test("a model verdict with nothing observed has no evaluator executor: the request is not used", () => {
+    const {
+      observedProvider: _provider,
+      observedModel: _model,
+      providerEvidence: _providerEvidence,
+      modelEvidence: _modelEvidence,
+      ...requestedOnly
+    } = MODEL_EVALUATOR;
+    const { payload } = verdictBound({
+      verdict: parsedVerdict(v2Json({ evaluator: requestedOnly })),
+    });
+    expect("evaluator" in payload).toBe(false);
+    expect<unknown>(payload.evaluatorIdentity).toEqual(requestedOnly);
+  });
+
+  test("a human verdict has a typed identity and no evaluator executor", () => {
+    expect<unknown>(
+      verdictBound({
+        verdict: parsedVerdict(
+          v2Json({ evaluator: { kind: "human", actorKind: "reviewer" } }),
+        ),
+      }).payload,
+    ).toEqual({
+      verdict: "pass",
+      evaluatorIdentity: { kind: "human", actorKind: "reviewer" },
+    });
+  });
+
+  test("a legacy verdict yields no evaluator of either kind", () => {
+    expect(
+      verdictBound({
+        verdict: parsedVerdict(
+          JSON.stringify({
+            schemaVersion: 1,
+            taskId: "b-1",
+            verdict: "FAIL",
+            findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+          }),
+        ),
+        builder: { provider: "claude", model: "m-1" },
+      }).payload,
+    ).toEqual({
+      verdict: "fail",
+      builder: { provider: "claude", model: "m-1" },
+    });
+  });
+});
 
 describe("the Forge CLIs write run events to the ledger (spawned scripts, scratch ledger)", () => {
   test("a phase-gate write and a review round appear in order under the run", async () => {
@@ -300,6 +393,96 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
         .slice(-2),
     ).toEqual(["verdict.bound", "review.recorded"]);
   }, 60_000);
+
+  test("a schema 2 verdict recorded by forge:review stores its evaluator", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--bead",
+      "b-1",
+      "--provider",
+      "claude",
+      "--model",
+      "m-1",
+    ]);
+    const file = join(box.cwd, "v2.json");
+    writeFileSync(file, v2Json({ summary: "second opinion" }));
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      file,
+    ]);
+    expect(reviewed.exitCode).toBe(0);
+    expect(JSON.parse(reviewed.stdout).data.verdictError).toBeUndefined();
+
+    const bound = runEvents(box, "x").filter((e) => e.kind === "verdict.bound");
+    expect(bound).toHaveLength(1);
+    expect(bound[0]?.beadId).toBe("b-1");
+    expect<unknown>(bound[0]?.payload).toEqual({
+      verdict: "pass",
+      builder: { provider: "claude", model: "m-1" },
+      evaluator: { provider: "claude", model: "claude-sonnet-5-5" },
+      evaluatorIdentity: MODEL_EVALUATOR,
+      summary: "second opinion",
+    });
+  }, 60_000);
+
+  test("a schema 2 verdict for another run, or another bead, is recorded as unreadable and halts", async () => {
+    for (const [overrides, error] of [
+      [
+        { executionRunId: "y" },
+        'verdict executionRunId "y" is not this run ("x")',
+      ],
+      [
+        { beadsIssueId: "b-9" },
+        'verdict beadsIssueId "b-9" is not this run\'s bead ("b-1")',
+      ],
+    ] as const) {
+      const box = sandbox();
+      writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+      await run(box, PHASE_GATE, [
+        "research",
+        "--slug",
+        "x",
+        "--write",
+        "--mode",
+        "auto",
+        "--bead",
+        "b-1",
+      ]);
+      const file = join(box.cwd, "foreign.json");
+      writeFileSync(file, v2Json(overrides));
+      const reviewed = await run(box, REVIEW, [
+        "--slug",
+        "x",
+        "--phase",
+        "research",
+        "--verdict",
+        file,
+      ]);
+      expect(reviewed.exitCode).toBe(2);
+      const data = JSON.parse(reviewed.stdout).data;
+      expect(data.verdictError).toBe(error);
+      expect(data.round.verdict).toBe("UNREADABLE");
+
+      const bound = runEvents(box, "x").filter(
+        (e) => e.kind === "verdict.bound",
+      );
+      expect(bound.map((event) => event.payload)).toEqual([
+        { verdict: "unreadable" },
+      ]);
+      closeLedger();
+    }
+  }, 120_000);
 
   test("an unreadable verdict file is bound as unreadable", async () => {
     const box = sandbox();

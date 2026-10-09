@@ -25,7 +25,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
-import { parseEvalVerdictJson } from "../eval-verdict";
+import {
+  EVAL_VERDICT_SCHEMA_VERSION,
+  type EvalVerdictParsed,
+  parseEvalVerdictJson,
+  verdictForRun,
+} from "../eval-verdict";
 import {
   type AutoDecision,
   decideNext,
@@ -119,12 +124,25 @@ if (import.meta.main) {
 
   // An unreadable or invalid verdict is recorded, not swallowed: decideNext
   // halts on it, which is the point — an auto run must not grade itself blind.
-  let verdict = null;
+  // A schema 2 verdict that names another run, or another bead than this
+  // run's, is as unusable as one that cannot be read. A legacy (schema 1)
+  // verdict names neither and is taken as given.
+  let verdict: EvalVerdictParsed | null = null;
   let verdictError: string | null = null;
   try {
     const parsed = parseEvalVerdictJson(readFileSync(verdictPath, "utf8"));
-    if (parsed.ok) verdict = parsed.value;
-    else verdictError = parsed.error;
+    if (!parsed.ok) {
+      verdictError = parsed.error;
+    } else if (parsed.value.schemaVersion !== EVAL_VERDICT_SCHEMA_VERSION) {
+      verdict = parsed.value;
+    } else {
+      const mine = verdictForRun(parsed.value, {
+        executionRunId: slug,
+        ...(state.beadId !== undefined ? { beadsIssueId: state.beadId } : {}),
+      });
+      if (mine.ok) verdict = mine.value;
+      else verdictError = mine.error;
+    }
   } catch {
     verdictError = `could not read ${verdictPath}`;
   }

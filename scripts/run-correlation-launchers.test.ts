@@ -119,6 +119,8 @@ function gateLink(
     execFile: () => ({ ok: false, output: "" }),
     hasScript: () => false,
     hasTestFiles: () => false,
+    smiths: () => [],
+    runState: () => null,
   };
   const outcome = runQualityGate({
     stdin: { kind: "none", reason: "terminal" },
