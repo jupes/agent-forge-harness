@@ -22,6 +22,7 @@
     "forge:doctor": "bun run scripts/executors/doctor-cli.ts",
     "forge:review": "bun run scripts/forge/auto-loop-cli.ts",
     "forge:audit": "bun run scripts/ledger/audit-cli.ts",
+    "forge:correlate": "bun run scripts/run-correlation-cli.ts",
     "pr:check": "bun run .claude/skills/pr-description/scripts/check-pr-body.ts",
     "beads:import-anthropic-plan": "bun run scripts/beads/import-anthropic-harness-plan.ts",
     "beads:import-command-center-plan": "bun run scripts/beads/import-command-center-plan.ts",
