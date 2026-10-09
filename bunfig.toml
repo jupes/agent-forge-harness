@@ -1,5 +1,6 @@
 [test]
 root = "scripts"
+preload = ["./scripts/ledger/test-preload.ts"]
 pathIgnorePatterns = [
   "repos/a2ui/samples/client/angular/**",
 ]

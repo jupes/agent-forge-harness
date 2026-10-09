@@ -16,7 +16,9 @@
  * Exit code 0 when ok, 2 when not.
  */
 
-import { nextPhase, phaseCommand } from "./phase-gate";
+import { phaseCommand, reviewCommand } from "./phase-gate";
+import type { ForgePhase, ForgeState, ReviewStatus } from "./phases";
+import { reviewGate } from "./review-rules";
 import { activeRuns, type RunSummary } from "./runs";
 import { listRuns, readRunState, removeRunState } from "./runs-store";
 
@@ -26,14 +28,73 @@ interface CliResult<T = unknown> {
   error: string | null;
 }
 
+/**
+ * What a run held by its reviews has to do: record the review it is waiting
+ * on, or — when the last review asked for changes — revise first.
+ */
+function pendingStep(run: RunSummary, phase: ForgePhase): string {
+  const command = reviewCommand(phase, run.slug);
+  return run.revising
+    ? `revise ${phase}, then record a review (${command})`
+    : `review ${phase} (${command})`;
+}
+
+/**
+ * What comes next for a run, in words. A halt outranks a pending review, which
+ * outranks "shipped": a run is never offered the following phase's command
+ * while its reviews hold it.
+ */
+function nextStep(run: RunSummary): string {
+  if (run.halted !== null) {
+    return `halted in ${run.halted.phase} — ${run.halted.reason}`;
+  }
+  if (run.reviewPending !== null) {
+    return pendingStep(run, run.reviewPending);
+  }
+  if (run.complete || run.next === null) return "shipped";
+  return phaseCommand(run.next, run.slug);
+}
+
+/** The Stop hook's reminder line for a run: the halt or the pending review when there is one, else the next phase. */
+export function stopAnnouncement(run: RunSummary): string {
+  const done = run.completed.join(" → ") || "none";
+  const head = `[forge] Run "${run.slug}" (${run.mode}) — completed: ${done}.`;
+  if (run.halted !== null) {
+    return `${head} HALTED in ${run.halted.phase}: ${run.halted.reason} Nothing advances until a new review of ${run.halted.phase} does (${reviewCommand(run.halted.phase, run.slug)}).`;
+  }
+  if (run.reviewPending !== null) {
+    return `${head} Next: ${pendingStep(run, run.reviewPending)}.`;
+  }
+  if (run.complete || run.next === null) return `${head} Shipped.`;
+  const resume =
+    run.mode === "auto"
+      ? `(or continue /forgemaster-auto ${run.slug})`
+      : `(or continue /forgemaster ${run.slug})`;
+  return `${head} Next: ${phaseCommand(run.next, run.slug)} ${resume}.`;
+}
+
+/** The review status the Stop hook records beside the phase it announced. */
+export function announcedStatusFor(state: ForgeState): ReviewStatus {
+  return reviewGate(state).status;
+}
+
+/**
+ * Should the Stop hook speak for this run? Once per change of phase or of
+ * review status — so a halt that lands after the phase was announced is still
+ * said once, and so is the review that later clears it. A state file from
+ * before statuses were recorded counts as having announced "clear".
+ */
+export function shouldAnnounce(state: ForgeState): boolean {
+  return (
+    state.announcedPhase !== state.phase ||
+    (state.announcedStatus ?? "clear") !== announcedStatusFor(state)
+  );
+}
+
 /** What a run looks like on one line of the table. */
 export function runLine(run: RunSummary): string {
   const done = run.completed.join(" → ") || "none";
-  const next = run.complete
-    ? "shipped"
-    : run.next
-      ? phaseCommand(run.next, run.slug)
-      : (nextPhase(run.phase) ?? "ship");
+  const next = nextStep(run);
   const where = run.checkout ? ` @ ${run.checkout}` : "";
   return `${run.slug} [${run.mode}]${where}\n    completed: ${done}\n    next: ${next}\n    updated: ${run.updatedAt}`;
 }

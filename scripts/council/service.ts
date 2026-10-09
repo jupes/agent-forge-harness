@@ -20,6 +20,7 @@ import {
   writeCouncilJobFailure,
 } from "./artifacts";
 import { sanitizeContent } from "./context";
+import type { CouncilAppend, CouncilAttachResolver } from "./ledger-events";
 import { assertProvidersReady, providerReadiness } from "./providers";
 import type {
   CouncilDiscussionRound,
@@ -44,6 +45,8 @@ export type CouncilServiceInput = {
   maxBytes?: number | undefined;
   runId?: string | undefined;
   redactSecrets?: boolean | undefined;
+  /** The Beads issue the review is for; recorded on its ledger events. */
+  beadId?: string | undefined;
 };
 
 export type CouncilServiceJob = {
@@ -70,6 +73,14 @@ export type CouncilServiceOptions = {
   resolveTransport?: (
     profile: CouncilProfile,
   ) => (seat: CouncilSeat) => ModelTransport;
+  /**
+   * The ledger a run's started and finished events go to, and who they belong
+   * to. Injected by the host — today the MCP server; the hearth injects
+   * neither — because this module never imports the ledger itself. Without
+   * both, runs record nothing in the ledger.
+   */
+  appendEvent?: CouncilAppend;
+  resolveAttach?: CouncilAttachResolver;
 };
 
 export function safeCouncilError(error: unknown): string {
@@ -295,6 +306,11 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       typeof input.redactSecrets !== "boolean"
     )
       throw new Error("redactSecrets must be a boolean");
+    if (
+      input.beadId !== undefined &&
+      (typeof input.beadId !== "string" || !input.beadId.trim())
+    )
+      throw new Error("beadId must be a nonempty string");
     if (active.size >= 4)
       throw new Error("At most 4 council runs may execute concurrently");
     const selected = profile(input.profile);
@@ -372,6 +388,17 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         if (options.fetchImpl) engineOptions.fetchImpl = options.fetchImpl;
         if (options.resolveTransport)
           engineOptions.resolveTransport = options.resolveTransport(selected);
+        if (options.appendEvent && options.resolveAttach) {
+          try {
+            engineOptions.attach = options.resolveAttach({
+              cwd: workspaceRoot,
+              ...(input.beadId !== undefined ? { beadId: input.beadId } : {}),
+            });
+            engineOptions.appendEvent = options.appendEvent;
+          } catch {
+            // A review runs whether or not its audit identity resolves.
+          }
+        }
         const { artifacts } = await executeCouncilReview(engineOptions);
         job.artifacts = artifacts;
         job.persistenceStatus = "saved";

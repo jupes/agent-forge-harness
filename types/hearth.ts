@@ -8,7 +8,8 @@
  * in the same PR as any change here.
  *
  * Ledger rows are metadata only (hashes, sizes, names, durations): no prompt,
- * source or tool-output bodies.
+ * source or tool-output bodies. The two `summary` fields (`verdict.bound` and
+ * `council.run.finished`) are the only opt-in bodies, stored redacted and capped.
  */
 
 import type { ForgePhase, ReviewFindings } from "../scripts/forge/phases";
@@ -63,11 +64,23 @@ export const BENCH_NAMES = ["low", "medium", "high"] as const;
 
 export type BenchName = (typeof BENCH_NAMES)[number];
 
+/** What kind of agent process a session is. */
+export const SESSION_KINDS = [
+  "interactive",
+  "teammate",
+  "subagent",
+  "headless",
+  "remote",
+] as const;
+
+export type SessionKind = (typeof SESSION_KINDS)[number];
+
 /** How a session attached to the harness. */
 export interface SessionEnvelope {
   /** Provider-issued where available, else a ULID minted by the harness. */
   sessionId: string;
   provider: Provider;
+  kind?: SessionKind;
   model?: string;
   effort?: string;
   workspace: string;
@@ -152,7 +165,12 @@ export type VerdictOutcome = "pass" | "fail" | "unreadable";
 
 /** Payload per event kind. Metadata only: hashes, sizes, names, durations. */
 export interface LedgerPayloads {
-  "session.started": { source?: string };
+  "session.started": {
+    source?: string;
+    kind?: SessionKind;
+    worktree?: string;
+    parentSessionId?: string;
+  };
   "session.ended": { reason?: string; durationMs?: number };
   "tool.called": {
     tool: string;
@@ -169,18 +187,25 @@ export interface LedgerPayloads {
     round: number;
     verdict: "PASS" | "FAIL" | "UNREADABLE";
     findings: ReviewFindings;
+    /** What the review loop decided to do with this round. */
+    action?: "advance" | "revise" | "halt";
   };
   "gate.ran": {
     gate: string;
     passed: boolean;
     durationMs?: number;
     exitCode?: number;
+    /** The hook event that ran the gate, when known. */
+    trigger?: string;
   };
   "verdict.bound": {
     verdict: VerdictOutcome;
     /** The executor that produced the output under review, when known. */
     builder?: Executor;
-    evaluator: Executor;
+    /** Absent until the verdict file itself names its evaluator. */
+    evaluator?: Executor;
+    /** Opt-in body: redacted and capped by the ledger. */
+    summary?: string;
   };
   "bead.transitioned": {
     from: QueueState | null;
@@ -205,6 +230,8 @@ export interface LedgerPayloads {
     councilRunId: string;
     outcome: VerdictOutcome | "cancelled";
     costUsd?: number;
+    /** Opt-in body: redacted and capped by the ledger. */
+    summary?: string;
   };
   /** The friction itself is a Beads chore; this event links it to its cause. */
   "friction.recorded": { frictionBeadId: string; causeEventUlid?: string };

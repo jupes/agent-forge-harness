@@ -27,110 +27,20 @@ import type {
   ReviewRound,
 } from "./phases";
 
-/** The ledger's shape lives with the run's state; the rules live here. */
-export type { ReviewFindings, ReviewRound };
-
-/** How many times a phase may be revised before the run stops for a human. */
-export const DEFAULT_MAX_REVISIONS = 2;
-
-export type AutoAction = "advance" | "revise" | "halt";
-
-export interface AutoDecision {
-  action: AutoAction;
-  /** One sentence, written to be read in a log or a handoff. */
-  reason: string;
-  /** The round number the next review will carry, when revising. */
-  nextRound?: number;
-  /** Medium/low findings survive as follow-up Beads issues, not as blockers. */
-  fileFollowUps: boolean;
-}
-
-const blocking = (findings: ReviewFindings): number =>
-  findings.blocker + findings.high;
-
-/** True when `latest` is no better than `previous` — the loop is stuck. */
-function notImproving(latest: ReviewRound, previous: ReviewRound): boolean {
-  if (latest.findings.blocker !== previous.findings.blocker) {
-    return latest.findings.blocker > previous.findings.blocker;
-  }
-  return latest.findings.high >= previous.findings.high;
-}
+import type { AutoDecision } from "./review-rules";
 
 /**
- * What an unattended run does after a review round.
- *
- * `history` is every round recorded for the run; only this phase's rounds
- * count, because each phase gets its own budget.
+ * The decision rules moved to `review-rules.ts` so the registry and the
+ * dashboard bundle can read them; they are re-exported for existing callers.
  */
-export function decideNext(input: {
-  phase: ForgePhase;
-  history: readonly ReviewRound[];
-  maxRevisions?: number;
-}): AutoDecision {
-  const maxRevisions = input.maxRevisions ?? DEFAULT_MAX_REVISIONS;
-  const rounds = input.history.filter((r) => r.phase === input.phase);
-  const latest = rounds[rounds.length - 1];
-
-  if (latest === undefined) {
-    return {
-      action: "halt",
-      reason: `No review recorded for "${input.phase}" — an auto run does not advance a phase nobody reviewed.`,
-      fileFollowUps: false,
-    };
-  }
-
-  if (latest.verdict === "UNREADABLE") {
-    return {
-      action: "halt",
-      reason: `The review of "${input.phase}" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.`,
-      fileFollowUps: false,
-    };
-  }
-
-  const soft = latest.findings.medium + latest.findings.low > 0;
-
-  if (latest.verdict === "PASS") {
-    return {
-      action: "advance",
-      reason: `Review PASSED "${input.phase}"${soft ? " with medium/low findings to file" : ""}.`,
-      fileFollowUps: soft,
-    };
-  }
-
-  if (blocking(latest.findings) === 0) {
-    // Matches the strict eval gate: only blocker/high stop the pipeline.
-    return {
-      action: "advance",
-      reason: `Review of "${input.phase}" found no blocker or high findings; the rest become follow-up issues.`,
-      fileFollowUps: true,
-    };
-  }
-
-  const revisionsUsed = rounds.length - 1;
-  if (revisionsUsed >= maxRevisions) {
-    return {
-      action: "halt",
-      reason: `${maxRevisions} revision round${maxRevisions === 1 ? "" : "s"} did not clear "${input.phase}" (still ${latest.findings.blocker} blocker, ${latest.findings.high} high).`,
-      fileFollowUps: false,
-    };
-  }
-
-  const previous = rounds[rounds.length - 2];
-  if (previous !== undefined && notImproving(latest, previous)) {
-    return {
-      action: "halt",
-      reason: `Review of "${input.phase}" is not converging: round ${latest.round} is no better than round ${previous.round} (${latest.findings.blocker} blocker, ${latest.findings.high} high).`,
-      fileFollowUps: false,
-    };
-  }
-
-  return {
-    action: "revise",
-    reason: `Review FAILED "${input.phase}" with ${latest.findings.blocker} blocker and ${latest.findings.high} high findings; revising.`,
-    nextRound: latest.round + 1,
-    fileFollowUps: false,
-  };
-}
+export {
+  type AutoAction,
+  type AutoDecision,
+  DEFAULT_MAX_REVISIONS,
+  decideNext,
+} from "./review-rules";
+/** The ledger's shape lives with the run's state; the rules live here. */
+export type { ReviewFindings, ReviewRound };
 
 const NO_FINDINGS: ReviewFindings = {
   blocker: 0,

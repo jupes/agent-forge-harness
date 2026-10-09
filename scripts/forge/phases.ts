@@ -6,6 +6,8 @@
  * anything the dashboard needs has to live in a plain module.
  */
 
+import type { Executor } from "../../types/hearth";
+
 export type ForgePhase = "research" | "plan" | "implement" | "ship";
 
 /**
@@ -34,7 +36,7 @@ export interface ReviewFindings {
  * One review round: what a fresh evaluator said about a phase's output.
  *
  * Lives here with the rest of the run's shape; the rules that read it are in
- * `auto-loop.ts`. `UNREADABLE` is not an evaluator verdict — it is what the
+ * `review-rules.ts`. `UNREADABLE` is not an evaluator verdict — it is what the
  * harness records when a review produced no parseable verdict at all.
  */
 export interface ReviewRound {
@@ -46,7 +48,36 @@ export interface ReviewRound {
   /** The model tier that graded, for the grader-≥-subject audit. */
   tier?: string;
   summary?: string;
+  /**
+   * What `forge:review` decided after this round, and why. Stored because the
+   * decision depends on a revision budget only that command was given. Rounds
+   * recorded before decisions were stored have neither field.
+   */
+  action?: ReviewAction;
+  reason?: string;
   at: string;
+}
+
+/** Where a run's reviews leave it; the rules are `reviewGate` in `review-rules.ts`. */
+export const REVIEW_STATUSES = [
+  "clear",
+  "awaiting-review",
+  "revise",
+  "halted",
+] as const;
+
+export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
+
+export function isReviewStatus(value: unknown): value is ReviewStatus {
+  return (REVIEW_STATUSES as readonly unknown[]).includes(value);
+}
+
+export const REVIEW_ACTIONS = ["advance", "revise", "halt"] as const;
+
+export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
+
+export function isReviewAction(value: unknown): value is ReviewAction {
+  return (REVIEW_ACTIONS as readonly unknown[]).includes(value);
 }
 
 export const FORGE_PHASES: readonly ForgePhase[] = [
@@ -57,6 +88,8 @@ export const FORGE_PHASES: readonly ForgePhase[] = [
 ] as const;
 
 export interface ForgeState {
+  /** Absent on files written before executors were recorded; read as 2. */
+  schemaVersion?: 2;
   slug: string;
   feature?: string;
   /** The most recently completed (or active) phase. */
@@ -65,6 +98,10 @@ export interface ForgeState {
   completed: ForgePhase[];
   /** Beads epic id grouping the work, if any. */
   epic?: string;
+  /** The bead this run works, when it is narrower than the epic. */
+  beadId?: string;
+  /** Who is building this run, as last recorded by the phase gate. */
+  executor?: Executor;
   /** Map of phase -> repo-relative artifact path. */
   artifacts: Partial<Record<ForgePhase, string>>;
   /**
@@ -74,6 +111,8 @@ export interface ForgeState {
   reviews?: ReviewRound[];
   /** Last phase announced by the Stop hook (noise control). */
   announcedPhase?: ForgePhase;
+  /** The review status the Stop hook last announced, so a later halt is not swallowed. */
+  announcedStatus?: ReviewStatus;
   /** How the run advances between phases. Absent means `gated`. */
   mode?: ForgeMode;
   /**
