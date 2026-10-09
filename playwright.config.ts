@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 import { HEALTH_ROUTE } from "./scripts/hearth/paths";
 import {
@@ -80,6 +81,9 @@ export default defineConfig({
       env: {
         HEARTH_PORT: String(HEARTH_PORT),
         AGENT_FORGE_HOME: HEARTH_HOME,
+        // One spec starts a (simulated) council run. Its artifacts go to this
+        // run's own home, not to reports/ in the checkout.
+        COUNCIL_RUNS_DIR: join(HEARTH_HOME, "council-runs"),
       },
       url: `${HEARTH_URL}${HEALTH_ROUTE}`,
       reuseExistingServer: false,
