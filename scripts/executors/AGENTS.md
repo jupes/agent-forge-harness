@@ -14,8 +14,9 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
 - An adapter marks its child: `childEnv` (`env.ts`) adds `AGENT_FORGE_ADAPTER=1` plus the bead, smith, run and parent
   session. The harness's session and tool hooks (`session.ts`, `ledger-hook.ts`) record nothing inside such a child
   (`isAdapterChild`), so a session its adapter records is not recorded a second time. The quality-gate hook does not
-  consult the marker: a gate run inside the child still records its own `gate.ran`, attributed through the bead,
-  smith and run variables. The values come from the request, never from the parent environment.
+  consult the marker: by the code, a gate run inside the child would still record its own `gate.ran`, taking the bead
+  and run from these variables and the smith only when it can otherwise resolve an executor. That path has not been
+  exercised. The values come from the request, never from the parent environment.
 - Tests use `fixtures/fake-cli.ts` and their own ledger file (`ExecDeps.ledgerPath`). The one test of the default
   ledger path cannot pass a file, so it points `AGENT_FORGE_HOME` at its own temp home for its duration instead of
   relying on the test preload. Every temp root plants a `.git` directory: the adapter resolves checkouts, and a bare
