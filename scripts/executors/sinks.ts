@@ -1,19 +1,15 @@
-import { appendFileSync, mkdirSync } from "fs";
-import { dirname } from "path";
-import { validateLedgerEventInput } from "../hearth/validate";
+import { appendEvent } from "../ledger/append";
 import type { EventSink } from "./types";
 
 /**
- * Stand-in for the ledger until `scripts/ledger` (x1gs.2.1) exists: one JSON
- * event per line. Events are validated first, so a file written here can be
- * replayed into `appendEvent` unchanged.
+ * The executors' way into the ledger: one `appendEvent` per event. Like
+ * `appendEvent` it never throws; a refusal comes back as `{ ok: false }` (and
+ * one stderr line from the ledger), so the caller can report it and carry on.
+ * Without `path` the event goes to the ledger of the process environment.
  */
-export function ndjsonSink(file: string): EventSink {
-  mkdirSync(dirname(file), { recursive: true });
+export function ledgerSink(options: { path?: string } = {}): EventSink {
   return (event) => {
-    const checked = validateLedgerEventInput(event);
-    if (!checked.ok)
-      throw new Error(`refusing invalid event: ${checked.error}`);
-    appendFileSync(file, `${JSON.stringify(event)}\n`);
+    const result = appendEvent(event, options);
+    return result.ok ? { ok: true } : result;
   };
 }

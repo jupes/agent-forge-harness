@@ -19,9 +19,10 @@ import { join, resolve } from "path";
 import { BENCH_NAMES, type BenchName } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
+import { ledgerPath } from "../ledger/paths";
 import { buildChildEnv } from "./env";
 import { ADAPTERS } from "./registry";
-import { ndjsonSink } from "./sinks";
+import { ledgerSink } from "./sinks";
 import type { EventSink, ExecutorAdapter } from "./types";
 
 /** A "bounded" task: 30 minutes unless --timeout-ms says otherwise. */
@@ -34,7 +35,9 @@ export interface ExecDeps {
   adapters?: Readonly<Record<string, ExecutorAdapter>>;
   /** Replaces the provider binary (tests). */
   command?: string[];
-  /** Replaces the default NDJSON sink. */
+  /** The ledger file to write (tests). Default: the ledger of the process environment. */
+  ledgerPath?: string;
+  /** Replaces the ledger sink altogether. */
   sink?: EventSink;
 }
 
@@ -112,14 +115,9 @@ export async function runExec(
     );
   }
 
-  const eventsFile = join(
-    deps.harnessRoot,
-    ".tmp",
-    "work",
-    "exec-events",
-    `${beadId.replace(/[^\w.-]/g, "_")}.ndjson`,
-  );
-  const sink = deps.sink ?? ndjsonSink(eventsFile);
+  const sink =
+    deps.sink ??
+    ledgerSink(deps.ledgerPath === undefined ? {} : { path: deps.ledgerPath });
   const timeoutArg = args.get("timeout-ms");
   const timeoutMs = timeoutArg ? Number(timeoutArg) : DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -168,7 +166,7 @@ export async function runExec(
         provider: smith.provider,
         via,
         events: count,
-        eventsFile: deps.sink ? null : eventsFile,
+        ledger: deps.sink ? null : (deps.ledgerPath ?? ledgerPath()),
         exitCode: result.exitCode,
         timedOut: result.timedOut,
       },

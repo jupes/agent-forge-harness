@@ -1,7 +1,16 @@
 import type { LedgerEventInput, Provider, Smith } from "../../types/hearth";
 
-/** Where adapters send events. Swap for the ledger's `appendEvent` once it exists. */
-export type EventSink = (event: LedgerEventInput) => void | Promise<void>;
+/** What a sink says about one event: stored, or not and why. */
+export type SinkResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Where a run's events are stored (`sinks.ts` has the ledger's). A sink
+ * reports a failure instead of throwing: a run must not stop because its
+ * audit trail could not be written.
+ */
+export type EventSink = (
+  event: LedgerEventInput,
+) => SinkResult | Promise<SinkResult>;
 
 export interface SpawnRequest {
   beadId: string;

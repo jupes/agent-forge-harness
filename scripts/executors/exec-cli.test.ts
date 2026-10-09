@@ -1,14 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { LedgerEventInput } from "../../types/hearth";
+import { closeLedger } from "../ledger/db";
+import { ledgerPath } from "../ledger/paths";
+import { queryEvents } from "../ledger/query";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { runDoctor } from "./doctor-cli";
@@ -24,51 +27,61 @@ const fake = (provider: string, mode = "ok") => [
   mode,
 ];
 
+const ledgers: string[] = [];
+afterAll(() => {
+  for (const ledger of ledgers) closeLedger(ledger);
+});
+
+/**
+ * A harness root and a run directory that are each their own checkout (a bare
+ * temp directory would resolve to whatever checkout the temp directory sits
+ * in), a launch directory with no session mirror, and a ledger file nothing
+ * else writes.
+ */
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "forge exec "));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "forge exec ")));
+  mkdirSync(join(root, ".git"));
   const worktree = join(root, "wt dir");
-  mkdirSync(worktree);
+  mkdirSync(join(worktree, ".git"), { recursive: true });
+  const ledger = join(root, "forge home", "ledger.db");
+  ledgers.push(ledger);
   const deps: ExecDeps = {
     harnessRoot: root,
     home: root,
+    ledgerPath: ledger,
     env: { PATH: process.env.PATH, DATABASE_URL: "postgres://planted" },
     adapters: {
       claude: claudeAdapter,
       codex: createCodexAdapter({ prepare: () => undefined }),
     },
   };
-  return { root, worktree, deps };
+  return { root, worktree, ledger, deps };
 }
 
 describe("forge:exec", () => {
-  test("runs the default smith and writes validated events to NDJSON", async () => {
+  test("with no ledger path injected, rows go to the ledger of the process environment, not to the home handed to the child", async () => {
     const { root, worktree, deps } = setup();
+    const childHome = join(root, "child forge home");
+    const beadId = `b-default-${crypto.randomUUID().slice(0, 8)}`;
+    const { ledgerPath: _injected, ...withoutLedger } = deps;
     const out = await runExec(
-      ["--bead", "b-1", "--worktree", worktree, "--prompt", "hi"],
-      { ...deps, command: fake("claude") },
+      ["--bead", beadId, "--worktree", worktree, "--prompt", "hi"],
+      {
+        ...withoutLedger,
+        env: { ...deps.env, AGENT_FORGE_HOME: childHome },
+        command: fake("claude"),
+      },
     );
     expect(out.code).toBe(0);
-    const data = out.body.data as {
-      smith: string;
-      via: string;
-      events: number;
-    };
-    expect(data).toMatchObject({
-      smith: "claude-journeyman",
-      via: "default",
-      events: 4,
-    });
-    const file = join(root, ".tmp", "work", "exec-events", "b-1.ndjson");
-    const kinds = readFileSync(file, "utf8")
-      .trim()
-      .split("\n")
-      .map((l) => (JSON.parse(l) as LedgerEventInput).kind);
-    expect(kinds).toEqual([
+    // The test process's own ledger: the preload points it at a temp home.
+    expect(queryEvents({ beadId }).map((row) => row.kind)).toEqual([
       "session.started",
       "tool.called",
       "tool.called",
       "session.ended",
     ]);
+    expect(out.body.data).toMatchObject({ events: 4, ledger: ledgerPath() });
+    expect(existsSync(join(childHome, "ledger.db"))).toBe(false);
   });
 
   test("--smith routes to the codex adapter", async () => {
