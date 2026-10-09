@@ -4,9 +4,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
+import type { StreamSnapshot } from "../../types/hearth";
+import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
+import { resolveCheckout } from "../ledger/workspace";
 import { OPERATOR_HEADER } from "./paths";
 import { createHearth } from "./server";
+import { openEventStream } from "./testing";
 import { guardRequest, hearthPlugin } from "./vite-plugin";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -132,6 +136,37 @@ test("starts a council run through the proxy with the operator token, and stream
   }
   expect(body).toContain("event: snapshot");
   expect(body).toContain('"status":"completed"');
+}, 20_000);
+
+test("the hearth stream stays open through the proxy: a snapshot, then a delta as it happens", async () => {
+  const { url, ledger, root } = await fixture();
+  const client = await openEventStream(`${url}/__agent-forge/stream`, {
+    Origin: url,
+  });
+  cleanup.push(async () => client.close());
+  expect(client.response.status).toBe(200);
+  expect(client.response.headers.get("content-type")).toBe("text/event-stream");
+
+  // Read while the stream is open: a proxy that buffered would deliver nothing yet.
+  const first = await client.next(5000);
+  expect(first?.event).toBe("snapshot");
+  const snapshot = JSON.parse(first?.data ?? "{}") as StreamSnapshot;
+  expect(snapshot.queue).toEqual({ ok: true, data: [], error: null });
+
+  const stored = appendEvent(
+    {
+      kind: "gate.ran",
+      workspace: resolveCheckout(root).workspace,
+      payload: { gate: "typecheck", passed: true },
+    },
+    { path: ledger },
+  );
+  if (!stored.ok || !("id" in stored)) throw new Error("event not stored");
+  const appended = performance.now();
+  const delta = await client.next(1000);
+  expect(performance.now() - appended).toBeLessThan(1000);
+  expect(delta).toMatchObject({ event: "delta", id: String(stored.id) });
+  expect(stored.id).toBeGreaterThan(snapshot.cursor);
 }, 20_000);
 
 test("refuses a foreign Origin through the proxy", async () => {

@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import {
   type EventsPage,
+  type OperatorEnvelope,
   QUEUE_STATES,
   type QueueEntry,
   type QueueState,
@@ -31,8 +32,10 @@ import {
   activeReservations,
   type EventFilter,
   type EventPage,
+  latestEventId,
   listSessions,
   queryEventPage,
+  queryEvents,
 } from "../../ledger/query";
 import { redactSecrets } from "../../secret-patterns";
 import {
@@ -41,8 +44,10 @@ import {
   type ReadRoute,
   type RouteReply,
   type RouteRequest,
+  type StreamRoute,
   safeMessage,
 } from "../api";
+import { createLedgerStream } from "../stream";
 import { isQueueState, type ValidationResult } from "../validate";
 import { applyReview, type BdRunner } from "./dev-api";
 
@@ -61,6 +66,9 @@ export interface OperatorDeps {
   bdTimeoutMs?: number | undefined;
   /** The OS home the machine config file is read from; defaults to the real one. */
   configHome?: string | undefined;
+  /** How often an open stream looks for new events, and how often it sends a keepalive. */
+  streamPollMs?: number | undefined;
+  streamKeepaliveMs?: number | undefined;
 }
 
 const fail = <T>(error: string): ValidationResult<T> => ({ ok: false, error });
@@ -699,11 +707,52 @@ function actions(deps: OperatorDeps): ApiRoute[] {
   ];
 }
 
-export function operatorRoutes(deps: OperatorDeps): ApiRoute[] {
+/** An absent `Last-Event-ID`, or the ledger id it names. */
+function lastEventId(request: RouteRequest): ValidationResult<number | null> {
+  const given = noParameters(request);
+  if (!given.ok) return given;
+  const header = request.headers["last-event-id"];
+  // An empty id is "no id" to an event source, the same as not sending one.
+  if (header === undefined || header === "") return { ok: true, value: null };
+  return typeof header === "string" && /^\d{1,15}$/.test(header)
+    ? { ok: true, value: Number(header) }
+    : fail("Last-Event-ID: expected a ledger event id");
+}
+
+const NO_REQUEST: RouteRequest = {
+  params: {},
+  query: new URLSearchParams(),
+  headers: {},
+  body: undefined,
+};
+
+/** What a collection row answers when asked with no parameters, as its envelope. */
+async function collectionEnvelope(row: ReadRoute): Promise<OperatorEnvelope> {
+  let reply: RouteReply;
+  try {
+    const input = row.validate(NO_REQUEST);
+    reply = input.ok
+      ? await row.read(input.value)
+      : { status: 400, error: input.error };
+  } catch (error) {
+    reply = { status: 500, error: safeMessage(error) };
+  }
+  return "error" in reply
+    ? { ok: false, data: null, error: reply.error }
+    : { ok: true, data: reply.data, error: null };
+}
+
+export interface OperatorTable {
+  routes: ApiRoute[];
+  /** End what the table holds open (the event streams). */
+  close(): void;
+}
+
+export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { sessions, runs, run, events, reservations } = ledgerReads(deps);
   const { queue, smiths, config } = workspaceReads(deps);
   // In the order section 6 lists them.
-  return [
+  const reads: ReadRoute[] = [
     sessions,
     runs,
     run,
@@ -712,6 +761,35 @@ export function operatorRoutes(deps: OperatorDeps): ApiRoute[] {
     reservations,
     smiths,
     config,
-    ...actions(deps),
   ];
+
+  const ledger = { path: deps.ledgerPath };
+  const { workspace } = deps;
+  const live = createLedgerStream({
+    cursor: () => latestEventId({ workspace }, ledger),
+    // Every collection row, whatever a later bead adds to the table.
+    collections: async () => {
+      const rows = reads.filter((row) => row.collection !== undefined);
+      const envelopes = await Promise.all(rows.map(collectionEnvelope));
+      return Object.fromEntries(
+        rows.map((row, index) => [row.collection ?? "", envelopes[index]]),
+      );
+    },
+    eventsAfter: (afterId, limit) =>
+      queryEvents({ workspace, afterId, limit }, ledger),
+    pollMs: deps.streamPollMs,
+    keepaliveMs: deps.streamKeepaliveMs,
+  });
+  const stream: StreamRoute<number | null> = {
+    kind: "stream",
+    method: "GET",
+    path: "/stream",
+    validate: lastEventId,
+    open: (resumeAfter, req, res) => live.open(req, res, resumeAfter),
+  };
+
+  return {
+    routes: [...reads, stream, ...actions(deps)],
+    close: () => live.close(),
+  };
 }

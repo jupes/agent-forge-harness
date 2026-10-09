@@ -262,6 +262,13 @@ describe("the route table", () => {
         .map(key)
         .sort(),
     ).toEqual(Object.keys(READS).sort());
+    // One stream, and nothing in the table of a kind this suite does not cover.
+    expect(rows.filter((route) => route.kind === "stream").map(key)).toEqual([
+      "GET /stream",
+    ]);
+    expect(rows.length).toBe(
+      Object.keys(ACTIONS).length + Object.keys(READS).length + 1,
+    );
   });
 });
 

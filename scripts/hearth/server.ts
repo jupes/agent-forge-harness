@@ -161,6 +161,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
+    streamPollMs: options.api?.streamPollMs,
+    streamKeepaliveMs: options.api?.streamKeepaliveMs,
   });
   const api = createOperatorApi(
     {
@@ -170,7 +172,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         options.api?.appendEvent ??
         ((event) => appendEvent(event, { path: ledgerFile })),
     },
-    options.api?.decorate?.(table) ?? table,
+    options.api?.decorate?.(table.routes) ?? table.routes,
   );
 
   const server: Server = createServer((req, res) => {
@@ -249,6 +251,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const claimed = acquireLock(lockFile, lock);
 
   const stop = async (): Promise<void> => {
+    table.close();
     await service.close();
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));

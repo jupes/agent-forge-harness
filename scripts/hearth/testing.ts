@@ -150,3 +150,102 @@ export async function startTestHearth(
     },
   };
 }
+
+/** One server-sent event, or a `: …` comment line. */
+export interface StreamMessage {
+  /** `snapshot`, `delta`, or `comment` for a `: …` line. */
+  event: string;
+  id?: string;
+  data: string;
+}
+
+export interface StreamClient {
+  response: Response;
+  /** The next message, or null when the stream ended. Rejects after `withinMs`. */
+  next(withinMs?: number): Promise<StreamMessage | null>;
+  /** True when nothing arrives for `ms`. */
+  quiet(ms: number): Promise<boolean>;
+  close(): void;
+}
+
+/**
+ * Read server-sent events as they arrive, one message at a time: the body is
+ * read chunk by chunk, so a test sees a message when it is sent, not when the
+ * stream ends. The caller closes the client.
+ */
+export async function openEventStream(
+  url: string,
+  headers: Record<string, string>,
+): Promise<StreamClient> {
+  const controller = new AbortController();
+  const response = await fetch(url, { headers, signal: controller.signal });
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  const ready: Array<StreamMessage | null> = [];
+  let buffer = "";
+  let pending: Promise<void> | null = null;
+
+  const pump = async (): Promise<void> => {
+    if (!reader) {
+      ready.push(null);
+      return;
+    }
+    const { value, done } = await reader.read();
+    if (done) {
+      ready.push(null);
+      return;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    for (;;) {
+      const end = buffer.indexOf("\n\n");
+      if (end === -1) break;
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const message: StreamMessage = { event: "message", data: "" };
+      for (const line of block.split("\n")) {
+        if (line.startsWith(":")) {
+          message.event = "comment";
+          message.data = line.slice(1).trim();
+        } else if (line.startsWith("event: ")) message.event = line.slice(7);
+        else if (line.startsWith("id: ")) message.id = line.slice(4);
+        else if (line.startsWith("data: ")) message.data += line.slice(6);
+      }
+      ready.push(message);
+    }
+  };
+  const fill = (): Promise<void> => {
+    pending ??= pump()
+      .catch(() => {
+        ready.push(null);
+      })
+      .finally(() => {
+        pending = null;
+      });
+    return pending;
+  };
+  const timeout = (ms: number): Promise<"timeout"> =>
+    new Promise((done) => setTimeout(() => done("timeout"), ms));
+
+  const client: StreamClient = {
+    response,
+    async next(withinMs = 5000) {
+      const deadline = performance.now() + withinMs;
+      while (ready.length === 0) {
+        const left = deadline - performance.now();
+        if (
+          left <= 0 ||
+          (await Promise.race([fill(), timeout(left)])) === "timeout"
+        )
+          throw new Error(`no stream message within ${withinMs} ms`);
+      }
+      return ready.shift() ?? null;
+    },
+    async quiet(ms) {
+      if (ready.length > 0) return false;
+      await Promise.race([fill(), timeout(ms)]);
+      return ready.length === 0;
+    },
+    close: () => controller.abort(),
+  };
+  return client;
+}
