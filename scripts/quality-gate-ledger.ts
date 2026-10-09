@@ -12,6 +12,7 @@ import type { EvalVerdictParsed } from "./eval-verdict";
 import { verdictBound } from "./forge/ledger-events";
 import type { ForgeState } from "./forge/phases";
 import { type Attach, resolveAttach } from "./ledger/identity";
+import type { RunCorrelation } from "./run-correlation";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -23,47 +24,54 @@ const EXIT_PASSED = 0;
 const EXIT_BLOCKED = 2;
 
 /**
- * Who a gate run belongs to. The session comes from the worktree's mirror, the
- * executor from that session's cached model or else the run's stored executor,
- * the bead from the environment or else the run. `forgeSlug` is the run the
- * gate already established for its log entry, so it is not re-derived here.
+ * Who a gate run belongs to.
+ *
+ * The bead and the run are the correlation's, or absent: a gate that was not
+ * correlated claims neither, whatever the environment or a run's state could
+ * suggest. The session comes from the worktree's mirror and the executor from
+ * that session's cached model, else from the correlated run's stored executor.
  */
 export function gateAttach(input: {
   cwd: string;
   env: Env;
-  forgeSlug: string | null;
-  /** The state of the run named by `forgeSlug`, when it has one on disk. */
+  /** The validated correlation the gate was pointed at, or null. */
+  correlation: RunCorrelation | null;
+  /** The state of the correlated run, when it has one on disk. */
   state: ForgeState | null;
   /** The ledger file the session's cached model is read from. */
   path?: string;
 }): Attach {
-  const { state } = input;
-  const fallbackBead = state?.beadId ?? state?.epic;
-  return resolveAttach({
+  const { correlation, state } = input;
+  const {
+    beadId: _bead,
+    runId: _run,
+    ...who
+  } = resolveAttach({
     cwd: input.cwd,
     env: input.env,
-    explicit: input.forgeSlug !== null ? { runId: input.forgeSlug } : {},
-    fallback: {
-      ...(fallbackBead ? { beadId: fallbackBead } : {}),
-      ...(state?.executor ? { executor: state.executor } : {}),
-    },
+    fallback: state?.executor ? { executor: state.executor } : {},
     ...(input.path !== undefined ? { path: input.path } : {}),
   });
+  return correlation === null
+    ? who
+    : {
+        ...who,
+        beadId: correlation.beadsIssueId,
+        runId: correlation.executionRunId,
+      };
 }
 
 /** The correlation fields of `attach`, with only the known ones present. */
 function correlation(
   attach: Attach,
-  forgeSlug: string | null,
 ): Pick<
   LedgerEventInput,
   "workspace" | "beadId" | "runId" | "sessionId" | "executor"
 > {
-  const runId = forgeSlug ?? attach.runId;
   return {
     workspace: attach.workspace,
     ...(attach.beadId !== undefined ? { beadId: attach.beadId } : {}),
-    ...(runId !== undefined ? { runId } : {}),
+    ...(attach.runId !== undefined ? { runId: attach.runId } : {}),
     ...(attach.sessionId !== undefined ? { sessionId: attach.sessionId } : {}),
     ...(attach.executor ? { executor: attach.executor } : {}),
   };
@@ -71,7 +79,7 @@ function correlation(
 
 /** One gate run as a `gate.ran` event. `trigger` is the hook event that ran it, when known. */
 export function gateRanEvent(input: {
-  result: { passed: boolean; forgeSlug: string | null };
+  result: { passed: boolean };
   durationMs: number;
   trigger?: string;
   attach: Attach;
@@ -79,7 +87,7 @@ export function gateRanEvent(input: {
   const { result } = input;
   return {
     kind: "gate.ran",
-    ...correlation(input.attach, result.forgeSlug),
+    ...correlation(input.attach),
     payload: {
       gate: QUALITY_GATE_NAME,
       passed: result.passed,
@@ -91,14 +99,13 @@ export function gateRanEvent(input: {
 }
 
 /**
- * The verdict the strict check read, bound to the bead the verdict itself
- * names (its `taskId` is a Beads id by the evaluation-verdict protocol).
+ * The verdict the strict check read. The strict check only binds a verdict
+ * whose `taskId` is the correlated bead, so the bead here is that one.
  * `builder` is the run's stored executor, when there is one. The verdict file
  * names no evaluator, so the event has none.
  */
 export function strictVerdictEvent(input: {
   verdict: EvalVerdictParsed;
-  forgeSlug: string | null;
   builder?: Executor;
   attach: Attach;
 }): LedgerEventInput & { kind: "verdict.bound" } {
@@ -108,7 +115,7 @@ export function strictVerdictEvent(input: {
   });
   return {
     kind: "verdict.bound",
-    ...correlation(input.attach, input.forgeSlug),
+    ...correlation(input.attach),
     beadId: input.verdict.taskId,
     payload,
   };

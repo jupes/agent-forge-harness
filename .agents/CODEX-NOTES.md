@@ -36,7 +36,9 @@ must run their intent manually (or wire a Codex-side equivalent if one exists):
   `forge:phase-gate` scripts, but the automatic "don't stop until ship" enforcement
   is gone (convention-driven instead of hook-enforced).
 - **TaskCompleted / TeammateIdle**: `quality-gate.ts` — run `bun run quality-gate`
-  manually before shipping.
+  manually before shipping. Add `--correlation <pointer>` to tie the result to a Beads
+  issue and a run (`.claude/protocols/agent-onboarding.md`, *Run correlation*); without
+  it the result is logged unlinked.
 - **PreCompact**: `bd prime` — re-run `bd prime` after a context reset.
 
 ## Permissions
