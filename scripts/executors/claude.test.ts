@@ -1,11 +1,18 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
+import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
 import { claudeAdapter, parseClaudeLine } from "./claude";
 import { type ExecDeps, runExec } from "./exec-cli";
 
@@ -101,6 +108,67 @@ describe("claude adapter through forge:exec (fake binary)", () => {
     });
     expect(data).not.toHaveProperty("eventsFile");
     expect(existsSync(join(root, ".tmp", "work", "exec-events"))).toBe(false);
+  });
+});
+
+describe("forge:exec --run (fake binary): the ledger and the run correlation in one run", () => {
+  test("the run's rows carry the bead and run, the envelope reports the correlation, and the child gets the pointer beside the adapter's variables", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const dump = join(root, "dump.json");
+    const out = await runExec(
+      [
+        "--bead",
+        "b-both",
+        "--run",
+        "run-both",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "hi",
+      ],
+      { ...deps, command: [...fake(), "--fake-dump", dump] },
+    );
+    expect(out.code).toBe(0);
+
+    // The ledger half.
+    const rows = queryEvents({ beadId: "b-both" }, { path: ledger });
+    expect(rows.map((row) => row.kind)).toEqual([
+      "session.started",
+      "tool.called",
+      "tool.called",
+      "session.ended",
+    ]);
+    for (const row of rows) expect(row.runId).toBe("run-both");
+
+    // The correlation half, in the same envelope.
+    expect(out.body.data).toMatchObject({
+      recorded: 4,
+      notRecorded: 0,
+      ledger,
+      correlation: {
+        pointer: `${RUN_CORRELATIONS_DIR}/run-both.json`,
+        beadsIssueId: "b-both",
+        executionRunId: "run-both",
+      },
+    });
+    expect(out.body.data).not.toHaveProperty("correlationNote");
+
+    // What the child received: the launcher's pointer and the adapter's own.
+    const seen = JSON.parse(readFileSync(dump, "utf8")).env as Record<
+      string,
+      string
+    >;
+    const pointer = seen[RUN_CORRELATION_ENV] ?? "";
+    expect(existsSync(pointer)).toBe(true);
+    expect(pointer.replaceAll("\\", "/")).toEndWith(
+      `${RUN_CORRELATIONS_DIR}/run-both.json`,
+    );
+    expect(seen).toMatchObject({
+      AGENT_FORGE_ADAPTER: "1",
+      AGENT_FORGE_BEAD_ID: "b-both",
+      AGENT_FORGE_SMITH: "claude-journeyman",
+      FORGE_SLUG: "run-both",
+    });
   });
 });
 
