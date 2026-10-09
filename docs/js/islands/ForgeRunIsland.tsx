@@ -314,6 +314,13 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
 
       <CheckpointsCard payload={payload} epicId={run.epic} />
       <GateCard gate={run.gate} scope={run.gateScope} />
+      {data.unattributedGate ? (
+        <GateCard
+          gate={data.unattributedGate}
+          scope={{ checkout: data.checkout, slug: null }}
+          unattributed
+        />
+      ) : null}
     </>
   );
 }
@@ -608,14 +615,53 @@ function ReviewActions({
   );
 }
 
+/** How a gate run that is not correlated to the run on show came to be here. */
+function GateLinkNote({ gate }: { gate: GateRun }): JSX.Element | null {
+  if (gate.link === "unlinked") {
+    return (
+      <p class="af-muted af-gate-link">
+        Not correlated to a Beads issue or a forge run
+        {gate.unlinkedReason ? `: ${gate.unlinkedReason}` : ""}. It counts
+        toward no run.
+      </p>
+    );
+  }
+  if (gate.link === "legacy") {
+    return (
+      <p class="af-muted af-gate-link">
+        Logged before gate runs carried a run correlation
+        {gate.taskId ? (
+          <>
+            ; its task field read <code>{gate.taskId}</code>
+          </>
+        ) : null}
+        . It does not count toward the run's health.
+      </p>
+    );
+  }
+  return null;
+}
+
+/**
+ * One gate run. `unattributed` is the card for a gate run of this checkout
+ * that no forge run's card shows: one that was given no run correlation, or
+ * one correlated to a run that has no state here.
+ */
 function GateCard({
   gate,
   scope,
+  unattributed = false,
 }: {
   gate: GateRun | null;
   scope: GateScope;
+  unattributed?: boolean;
 }): JSX.Element {
-  const scopeText = (
+  const scopeText = unattributed ? (
+    <>
+      this checkout (<code>{scope.checkout}</code>) that belongs to none of its
+      forge runs
+    </>
+  ) : (
     <>
       this checkout (<code>{scope.checkout}</code>)
       {scope.slug ? (
@@ -628,10 +674,11 @@ function GateCard({
       )}
     </>
   );
+  const title = unattributed ? "Unattributed gate run" : "Quality gate";
 
   if (!gate) {
     return (
-      <Card title="Quality gate" headingLevel={2}>
+      <Card title={title} headingLevel={2}>
         <EmptyState
           title="No quality-gate run recorded for this checkout"
           hint={
@@ -639,8 +686,8 @@ function GateCard({
               The TaskCompleted and TeammateIdle hooks log every run to one log
               shared by all checkouts, recording where each ran. This panel
               shows the newest run from {scopeText}. Runs from other worktrees
-              or forge runs, and entries logged before runs recorded that, are
-              not shown.
+              or forge runs, runs that were given no run correlation, and
+              entries logged before runs recorded that, are not shown.
             </>
           }
         />
@@ -650,13 +697,16 @@ function GateCard({
 
   return (
     <Card
-      title="Quality gate"
+      title={title}
       headingLevel={2}
       kicker={gate.event || "latest run"}
       actions={
-        <Tag tone={gate.passed ? "neutral" : "outline"}>
-          {gate.passed ? "passed" : "failed"}
-        </Tag>
+        <>
+          {gate.link === "linked" ? null : <Tag tone="muted">{gate.link}</Tag>}
+          <Tag tone={gate.passed ? "neutral" : "outline"}>
+            {gate.passed ? "passed" : "failed"}
+          </Tag>
+        </>
       }
     >
       <p class="af-muted af-gate-scope">
@@ -670,14 +720,21 @@ function GateCard({
             on <code>{gate.branch}</code>
           </>
         ) : null}
-        {gate.taskId ? (
+        {gate.link === "linked" && gate.beadsIssueId ? (
           <>
             {" "}
-            for task <code>{gate.taskId}</code>
+            for bead <code>{gate.beadsIssueId}</code>
+            {unattributed && gate.executionRunId ? (
+              <>
+                , correlated to run <code>{gate.executionRunId}</code>, which
+                has no state in this checkout
+              </>
+            ) : null}
           </>
         ) : null}
         .
       </p>
+      <GateLinkNote gate={gate} />
       <ul class="af-gate-grid">
         {gate.checks.map((check) => {
           const state = check.skipped

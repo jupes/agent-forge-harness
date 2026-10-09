@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 import type { ForgeRunSnapshot } from "../../scripts/dashboard/forge-run-model";
-import { CHECKOUT, stubForgeRun, stubRepos } from "./fixtures";
+import {
+  CHECKOUT,
+  LEGACY_GATE,
+  stubForgeRun,
+  stubRepos,
+  UNLINKED_GATE,
+} from "./fixtures";
 import { collectErrors } from "./routes";
 
 /**
@@ -190,7 +196,79 @@ test.describe("Forge run", () => {
     await expect(scope).toContainText(`this checkout (${CHECKOUT})`);
     await expect(scope).toContainText("forge run design-system");
     await expect(scope).toContainText("on feat/design-system");
-    await expect(scope).toContainText("for task demo-primitives");
+    // The bead comes from the gate's run correlation, and is named as a bead.
+    await expect(scope).toContainText("for bead demo-primitives");
+    await expect(page.locator(".af-gate-link")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Unattributed gate run" }),
+    ).toHaveCount(0);
+  });
+
+  test("a gate run with no run correlation is shown beside the run, labelled unlinked, and is not the run's gate", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { unattributedGate: UNLINKED_GATE });
+    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+
+    // The run's own card still shows the gate that was correlated to it.
+    const own = page.locator(".af-card", {
+      has: page.getByRole("heading", { name: "Quality gate", exact: true }),
+    });
+    await expect(own.locator(".af-gate-check")).toHaveCount(5);
+    await expect(own.locator(".af-gate-scope")).toContainText(
+      "for bead demo-primitives",
+    );
+    await expect(own).not.toContainText("unlinked");
+
+    const stray = page.locator(".af-card", {
+      has: page.getByRole("heading", { name: "Unattributed gate run" }),
+    });
+    await expect(stray).toContainText("TeammateIdle");
+    await expect(stray).toContainText("unlinked");
+    await expect(stray.locator(".af-gate-scope")).toContainText(
+      "belongs to none of its forge runs",
+    );
+    await expect(stray.locator(".af-gate-scope")).not.toContainText("for bead");
+    await expect(stray.locator(".af-gate-link")).toContainText(
+      "Not correlated to a Beads issue or a forge run: no run correlation was given",
+    );
+    await expect(stray.locator(".af-gate-check")).toHaveCount(1);
+  });
+
+  test("a gate run logged before entries were versioned is labelled legacy, and its task field is not called a bead", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { gate: LEGACY_GATE });
+    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+
+    const card = page.locator(".af-card", {
+      has: page.getByRole("heading", { name: "Quality gate", exact: true }),
+    });
+    await expect(card).toContainText("legacy");
+    await expect(card.locator(".af-gate-scope")).not.toContainText("for bead");
+    await expect(card.locator(".af-gate-link")).toContainText(
+      "its task field read demo-primitives",
+    );
+    await expect(card.locator(".af-gate-check")).toHaveCount(5);
+  });
+
+  test("with no run in flight, an unlinked gate run is the checkout's card and says it is unlinked", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { empty: true, unattributedGate: UNLINKED_GATE });
+    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+
+    const card = page.locator(".af-card", {
+      has: page.getByRole("heading", { name: "Quality gate", exact: true }),
+    });
+    await expect(card).toContainText("TeammateIdle");
+    await expect(card).toContainText("unlinked");
+    await expect(card.locator(".af-gate-scope")).toContainText(
+      "with no forge run in flight",
+    );
+    await expect(
+      page.getByRole("heading", { name: "Unattributed gate run" }),
+    ).toHaveCount(0);
   });
 
   test("names the checkout and run it searched when no gate run belongs to them", async ({
@@ -328,6 +406,8 @@ test.describe("Repos & knowledge", () => {
     await expect(conventions).toContainText(
       "<type>(<scope>): <short description>",
     );
-    await expect(page.getByRole("heading", { name: "Worktrees" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Worktrees" }),
+    ).toBeVisible();
   });
 });

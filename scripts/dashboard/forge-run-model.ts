@@ -20,9 +20,17 @@ import {
 import {
   byRecency,
   comparableCheckout,
+  isValidSlug,
   parseState,
   summarizeRun,
 } from "../forge/runs";
+import {
+  GATE_HOST_TEXT_FIELDS,
+  GATE_LOG_SCHEMA_VERSION,
+  type GateHostIdentity,
+  hostText,
+} from "../quality-gate-identity";
+import { parseBeadsIssueId } from "../run-correlation";
 
 export type PhaseState = "complete" | "active" | "locked";
 
@@ -44,11 +52,24 @@ export interface GateCheck {
 }
 
 /**
+ * How a gate entry is tied to work.
+ *
+ * - `linked`: a schema 2 entry carrying the bead and run of the run
+ *   correlation the gate was pointed at.
+ * - `unlinked`: a schema 2 entry from a gate that was given no correlation.
+ *   It belongs to its checkout and to no run.
+ * - `legacy`: an entry written before entries had a schema version. It keeps
+ *   the run it recorded then; its single task field was never a reliable
+ *   Beads id and is not treated as one.
+ */
+export type GateLink = "linked" | "unlinked" | "legacy";
+
+/**
  * One quality-gate run, as `.claude/hooks/quality-gate.ts` logs it.
  *
  * The log is shared by every checkout on the machine, so each entry records
- * where it ran. Entries written before the hook did that have no identity and
- * are never attributed to a run.
+ * where it ran. Entries written before the hook did that have no checkout and
+ * are never attributed to one.
  */
 export interface GateRun {
   event: string;
@@ -57,7 +78,18 @@ export interface GateRun {
   checks: GateCheck[];
   checkout: string | null;
   branch: string | null;
+  link: GateLink;
+  /** From the entry's run correlation. Null unless the entry is linked. */
+  beadsIssueId: string | null;
+  /** From the entry's run correlation: the Forge run. Null unless linked. */
+  executionRunId: string | null;
+  /** Why an unlinked entry is unlinked, when it says. */
+  unlinkedReason: string | null;
+  /** What the host said about itself. For display; never a bead or a run. */
+  host: GateHostIdentity | null;
+  /** Legacy entries only: the old task field. Never shown as a bead. */
   taskId: string | null;
+  /** Legacy entries only: the run the entry recorded. */
   forgeSlug: string | null;
 }
 
@@ -92,6 +124,12 @@ export interface ForgeRunSnapshot {
   checkout: string;
   /** This checkout's newest gate run whatever it belongs to, for when no run does. */
   gate: GateRun | null;
+  /**
+   * This checkout's newest gate run that no run's card shows: an unlinked one,
+   * or one linked to a run with no state here. Null when every entry read
+   * belongs to a run.
+   */
+  unattributedGate: GateRun | null;
 }
 
 /**
@@ -151,12 +189,88 @@ function detailFor(check: {
 const text = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value.trim() : null;
 
+/** The host object of an entry, with only the fields that are short plain text. */
+function hostFrom(value: unknown): GateHostIdentity | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  // justification: a non-null, non-array object is a record of unknown fields.
+  const raw = value as Record<string, unknown>;
+  const host: GateHostIdentity = {};
+  const scope = raw["hostTaskScope"] as
+    | { kind?: unknown; id?: unknown }
+    | null
+    | undefined;
+  const team = scope?.kind === "agent-team" ? hostText(scope.id) : undefined;
+  if (team !== undefined) host.hostTaskScope = { kind: "agent-team", id: team };
+  for (const field of GATE_HOST_TEXT_FIELDS) {
+    const text = hostText(raw[field]);
+    if (text !== undefined) host[field] = text;
+  }
+  return Object.keys(host).length > 0 ? host : null;
+}
+
+type GateLinkage = Pick<
+  GateRun,
+  | "link"
+  | "beadsIssueId"
+  | "executionRunId"
+  | "unlinkedReason"
+  | "host"
+  | "taskId"
+  | "forgeSlug"
+>;
+
+/**
+ * How an entry is tied to work, or null for an entry that cannot be trusted
+ * to say: a schema this reader does not know, or a schema 2 entry whose two
+ * ids are not both valid or both null. Such an entry is skipped; it is never
+ * read as a legacy one, which would let it join a run by another field.
+ */
+function linkageFrom(raw: Record<string, unknown>): GateLinkage | null {
+  const version = raw["schemaVersion"];
+  if (version === undefined) {
+    return {
+      link: "legacy",
+      beadsIssueId: null,
+      executionRunId: null,
+      unlinkedReason: null,
+      host: null,
+      taskId: text(raw["taskId"]),
+      forgeSlug: text(raw["forgeSlug"]),
+    };
+  }
+  if (version !== GATE_LOG_SCHEMA_VERSION) return null;
+  const rest = { host: hostFrom(raw["host"]), taskId: null, forgeSlug: null };
+  if (raw["beadsIssueId"] === null && raw["executionRunId"] === null) {
+    return {
+      link: "unlinked",
+      beadsIssueId: null,
+      executionRunId: null,
+      unlinkedReason: text(raw["unlinkedReason"]),
+      ...rest,
+    };
+  }
+  const bead = parseBeadsIssueId(raw["beadsIssueId"]);
+  const run = text(raw["executionRunId"]);
+  if (bead === null || run === null || !isValidSlug(run)) return null;
+  return {
+    link: "linked",
+    beadsIssueId: bead,
+    executionRunId: run,
+    unlinkedReason: null,
+    ...rest,
+  };
+}
+
 function gateRunFrom(line: string): GateRun | null {
   try {
     const raw = JSON.parse(line) as Record<string, unknown>;
     if (typeof raw["passed"] !== "boolean" || !Array.isArray(raw["checks"])) {
       return null;
     }
+    const linkage = linkageFrom(raw);
+    if (linkage === null) return null;
     return {
       event: text(raw["event"]) ?? "",
       timestamp: text(raw["timestamp"]) ?? "",
@@ -181,11 +295,25 @@ function gateRunFrom(line: string): GateRun | null {
       }),
       checkout: text(raw["checkout"]),
       branch: text(raw["branch"]),
-      taskId: text(raw["taskId"]),
-      forgeSlug: text(raw["forgeSlug"]),
+      ...linkage,
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * The run whose card shows an entry: the run a linked entry's correlation
+ * names, or the run a legacy entry recorded. An unlinked entry has none.
+ */
+export function gateRunScope(run: GateRun): string | null {
+  switch (run.link) {
+    case "linked":
+      return run.executionRunId;
+    case "legacy":
+      return run.forgeSlug;
+    case "unlinked":
+      return null;
   }
 }
 
@@ -196,7 +324,7 @@ export function gateRunBelongsTo(run: GateRun, scope: GateScope): boolean {
   return (
     run.checkout !== null &&
     comparableCheckout(run.checkout) === comparableCheckout(scope.checkout) &&
-    run.forgeSlug === scope.slug
+    gateRunScope(run) === scope.slug
   );
 }
 
@@ -224,22 +352,28 @@ export function latestGateRun(
 }
 
 /**
- * The newest gate run for each of `slugs`, plus this checkout's newest overall,
- * in **one** pass over the logs.
+ * The newest gate run for each of `slugs`, plus this checkout's newest overall
+ * and its newest that belongs to none of `slugs`, in **one** pass over the logs.
  *
  * Several runs can be in flight, and `gateLogs` is a generator that reads files
  * lazily — running `latestGateRun` once per run would consume it on the first
- * one. Iteration stops as soon as every run has its gate.
+ * one. Iteration stops as soon as every run has its gate, so `unattributed` is
+ * the newest such entry among those read, not among all that exist.
  */
 export function latestGateRunsFor(
   logs: Iterable<string | null>,
   checkout: string,
   slugs: readonly string[],
-): { byRun: Map<string, GateRun>; checkoutLatest: GateRun | null } {
+): {
+  byRun: Map<string, GateRun>;
+  checkoutLatest: GateRun | null;
+  unattributed: GateRun | null;
+} {
   const here = comparableCheckout(checkout);
   const wanted = new Set(slugs);
   const byRun = new Map<string, GateRun>();
   let checkoutLatest: GateRun | null = null;
+  let unattributed: GateRun | null = null;
 
   for (const jsonl of logs) {
     if (!jsonl) continue;
@@ -256,17 +390,18 @@ export function latestGateRunsFor(
         continue;
       }
       checkoutLatest ??= run;
-      if (
-        run.forgeSlug !== null &&
-        wanted.has(run.forgeSlug) &&
-        !byRun.has(run.forgeSlug)
-      ) {
-        byRun.set(run.forgeSlug, run);
-        if (byRun.size === wanted.size) return { byRun, checkoutLatest };
+      const scope = gateRunScope(run);
+      if (scope === null || !wanted.has(scope)) {
+        unattributed ??= run;
+      } else if (!byRun.has(scope)) {
+        byRun.set(scope, run);
+        if (byRun.size === wanted.size) {
+          return { byRun, checkoutLatest, unattributed };
+        }
       }
     }
   }
-  return { byRun, checkoutLatest };
+  return { byRun, checkoutLatest, unattributed };
 }
 
 export function forgeRunSnapshot(input: {
@@ -283,7 +418,7 @@ export function forgeRunSnapshot(input: {
     return state === null ? [] : [state];
   });
   const summaries = byRecency(states.map(summarizeRun));
-  const { byRun, checkoutLatest } = latestGateRunsFor(
+  const { byRun, checkoutLatest, unattributed } = latestGateRunsFor(
     input.gateLogs,
     input.checkout,
     summaries.map((run) => run.slug),
@@ -314,7 +449,13 @@ export function forgeRunSnapshot(input: {
   const selected =
     runs.find((run) => !run.complete)?.slug ?? runs[0]?.slug ?? null;
 
-  return { runs, selected, checkout: input.checkout, gate: checkoutLatest };
+  return {
+    runs,
+    selected,
+    checkout: input.checkout,
+    gate: checkoutLatest,
+    unattributedGate: unattributed,
+  };
 }
 
 // ── The runs board ───────────────────────────────────────────────────────────
@@ -328,6 +469,17 @@ export function forgeRunSnapshot(input: {
  */
 export type RunHealth = "shipped" | "attention" | "running";
 
+/**
+ * Whether the run's gate passed, counting only a gate that was correlated to
+ * the run. A legacy entry stays on the run's card, labelled, but an old result
+ * that nothing newer can replace must not decide how the run reads.
+ */
+function countedGate(run: ForgeRunView): boolean | null {
+  return run.gate !== null && run.gate.link === "linked"
+    ? run.gate.passed
+    : null;
+}
+
 /** The newest review round, whatever phase it graded, or null if none. */
 function latestReview(run: ForgeRunView): ReviewRound | null {
   return run.reviews[run.reviews.length - 1] ?? null;
@@ -338,7 +490,7 @@ export function runHealth(run: ForgeRunView): RunHealth {
   // should not make a finished run look broken.
   if (run.complete) return "shipped";
 
-  if (run.gate !== null && !run.gate.passed) return "attention";
+  if (countedGate(run) === false) return "attention";
   if (run.phases.some((phase) => phase.artifactMissing)) return "attention";
 
   const review = latestReview(run);
@@ -360,7 +512,7 @@ export interface RunBoardRow {
   status: string;
   completedCount: number;
   totalPhases: number;
-  /** The scoped gate's verdict, or null when no gate run belongs to this one. */
+  /** The run's correlated gate's verdict, or null when no linked gate run belongs to it. */
   gatePassed: boolean | null;
   reviewRounds: number;
   latestVerdict: ReviewRound["verdict"] | null;
@@ -388,7 +540,7 @@ export function boardRows(runs: readonly ForgeRunView[]): RunBoardRow[] {
       completedCount: run.phases.filter((phase) => phase.state === "complete")
         .length,
       totalPhases: run.phases.length,
-      gatePassed: run.gate?.passed ?? null,
+      gatePassed: countedGate(run),
       reviewRounds: run.reviews.length,
       latestVerdict: review?.verdict ?? null,
       updatedAt: run.updatedAt,
@@ -402,9 +554,6 @@ export const REVIEW_NOTE_LIMIT = 2000;
 
 /** The only Beads status a review can be recorded against. */
 export const REVIEWABLE_STATUS = "in_progress";
-
-/** A Beads id. Must start alphanumeric so `bd` can never read it as a flag. */
-const ISSUE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
 export type ReviewComment =
   | { ok: true; issueId: string; body: string }
@@ -423,8 +572,8 @@ export function reviewCommentFor(input: unknown): ReviewComment {
     decision?: unknown;
     note?: unknown;
   };
-  const issueId = typeof raw.issueId === "string" ? raw.issueId.trim() : "";
-  if (!ISSUE_ID.test(issueId)) {
+  const issueId = parseBeadsIssueId(raw.issueId);
+  if (issueId === null) {
     return { ok: false, error: "issueId must be a Beads issue id" };
   }
   if (raw.decision !== "approve" && raw.decision !== "request-changes") {

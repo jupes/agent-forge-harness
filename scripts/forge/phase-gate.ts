@@ -20,6 +20,12 @@
  * waiting on its review (`reviewGate` in `review-rules.ts`). A successful entry
  * check and every `--write` are appended to the ledger (`forge:audit --run`).
  *
+ * A `--write` for a run that names its bead (`--bead`, now or on an earlier
+ * write) also writes the run's correlation (`scripts/run-correlation.ts`) and
+ * prints it as `data.correlation`: its `pointer` is what the quality gate takes
+ * as `--correlation`. Only a `--bead` on this call rebinds a run; a run that
+ * names no bead prints `correlation: null`. The epic is never used for this.
+ *
  * Output is always a single JSON object: { ok, data, error }.
  * Exit code 0 when ok, 2 when not (so callers and hooks can gate on it).
  */
@@ -356,7 +362,21 @@ if (import.meta.main) {
       attach,
       ledger.phaseCompleted(phase, recorded.artifacts[phase]),
     );
-    emit({ ok: true, data: recorded, error: null });
+    // The launcher boundary: a run that names its bead gets a run correlation,
+    // and the pointer to hand the quality gate is part of what this prints.
+    const { correlateRun } = await import("../run-correlation-store");
+    const correlated = correlateRun({
+      checkout: process.cwd(),
+      executionRunId: slugValue,
+      ...(bead ? { named: bead } : {}),
+      ...(recorded.beadId ? { stored: recorded.beadId } : {}),
+    });
+    if (correlated.note) console.error(`forge:phase-gate: ${correlated.note}`);
+    emit({
+      ok: true,
+      data: { ...recorded, correlation: correlated.correlation },
+      error: null,
+    });
   } else {
     const result = validateEnter(phase, slugValue, existsSync, state);
     if (result.ok) {

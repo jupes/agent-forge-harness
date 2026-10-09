@@ -110,14 +110,20 @@ export const BEADS = {
   ],
 } satisfies BeadsPayload;
 
-const GATE: GateRun = {
+/** A gate run correlated to the fixture run and one of its beads. */
+export const GATE: GateRun = {
   event: "TaskCompleted",
   timestamp: ts,
   passed: false,
   checkout: CHECKOUT,
   branch: "feat/design-system",
-  taskId: "demo-primitives",
-  forgeSlug: "design-system",
+  link: "linked",
+  beadsIssueId: "demo-primitives",
+  executionRunId: "design-system",
+  unlinkedReason: null,
+  host: null,
+  taskId: null,
+  forgeSlug: null,
   checks: [
     { name: "typecheck", passed: true, skipped: false, detail: null },
     {
@@ -135,6 +141,30 @@ const GATE: GateRun = {
     { name: "clean-tree", passed: true, skipped: false, detail: null },
     { name: "ac-verify", passed: true, skipped: false, detail: null },
   ],
+};
+
+/** A gate that was given no run correlation: it belongs to the checkout only. */
+export const UNLINKED_GATE: GateRun = {
+  ...GATE,
+  event: "TeammateIdle",
+  passed: true,
+  link: "unlinked",
+  beadsIssueId: null,
+  executionRunId: null,
+  unlinkedReason:
+    "no run correlation was given (--correlation <path> or AGENT_FORGE_RUN_CORRELATION)",
+  host: { idleTeammateName: "worker-2" },
+  checks: [{ name: "typecheck", passed: true, skipped: false, detail: null }],
+};
+
+/** An entry logged before entries had a schema version. */
+export const LEGACY_GATE: GateRun = {
+  ...GATE,
+  link: "legacy",
+  beadsIssueId: null,
+  executionRunId: null,
+  taskId: "demo-primitives",
+  forgeSlug: "design-system",
 };
 
 /** One gated run, mid-implement. Runs are concurrent; the API returns a list. */
@@ -184,6 +214,7 @@ export const FORGE = {
     selected: RUN.slug,
     checkout: CHECKOUT,
     gate: GATE,
+    unattributedGate: null,
   } satisfies ForgeRunSnapshot,
 };
 
@@ -272,6 +303,8 @@ export interface ForgeRunStub {
   statuses?: Record<string, IssueStatus>;
   /** Replace the gate run; null means no run belongs to this checkout. */
   gate?: GateRun | null;
+  /** A newer gate run of this checkout that belongs to no run's card. */
+  unattributedGate?: GateRun;
   /** Serve a checkout with no forge run at all, as a fresh clone has. */
   empty?: boolean;
 }
@@ -286,9 +319,23 @@ export async function stubForgeRun(
 ): Promise<unknown[]> {
   const statuses = stub.statuses ?? {};
   const gate = stub.gate === undefined ? GATE : stub.gate;
+  // As the API reports it: the checkout's newest gate run overall, and its
+  // newest that no run's card shows. With no run those are the same entry.
+  const newest = stub.unattributedGate ?? gate;
   const data: ForgeRunSnapshot = stub.empty
-    ? { runs: [], selected: null, checkout: CHECKOUT, gate }
-    : { ...FORGE.data, runs: [{ ...RUN, gate }], gate };
+    ? {
+        runs: [],
+        selected: null,
+        checkout: CHECKOUT,
+        gate: newest,
+        unattributedGate: newest,
+      }
+    : {
+        ...FORGE.data,
+        runs: [{ ...RUN, gate }],
+        gate: newest,
+        unattributedGate: stub.unattributedGate ?? null,
+      };
   const forge = { ...FORGE, data };
 
   const posts: unknown[] = [];
@@ -317,6 +364,8 @@ export async function stubRepos(
   overrides: Partial<ReposKnowledge> = {},
 ): Promise<void> {
   await page.route("**/__agent-forge/dev-api/repos-knowledge", (route) =>
-    route.fulfill({ json: { ...REPOS, data: { ...REPOS.data, ...overrides } } }),
+    route.fulfill({
+      json: { ...REPOS, data: { ...REPOS.data, ...overrides } },
+    }),
   );
 }

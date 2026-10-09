@@ -100,7 +100,7 @@ different owners — never conflate them:
 |---|---|---|
 | `sessionId` | The provider, else the harness | See precedence below |
 | `beadId` | Beads | Explicit correlation; never inferred from a host id |
-| `runId` | Forge | `FORGE_SLUG`, else the run state file for this checkout (`scripts/quality-gate-identity.ts`) |
+| `runId` | Forge | Explicit correlation: the `--slug` a forge script is given, or `FORGE_SLUG`. The quality gate takes it from a run correlation (see *Run correlation*) |
 
 ### `sessionId` precedence
 
@@ -119,13 +119,18 @@ different owners — never conflate them:
 Claude Code does **not** set `CLAUDE_TASK_ID` for hooks (there is no such variable; only `task_id` on
 the `TaskCreated` / `TaskCompleted` stdin JSON). Therefore:
 
-- **Never read `CLAUDE_TASK_ID`** to identify a session, a bead or a run. Hooks read `session_id` from
+- **Never read `CLAUDE_TASK_ID`** to identify a session, a bead or a run.
+- **Never read `CLAUDE_HOOK_EVENT`** for the event. Hooks read `session_id` and `hook_event_name` from
   stdin.
 - **Never send a host `task_id` to Beads or the evaluator lookup.** It belongs to a task-list-scoped host
-  namespace and can collide across lists. Record it, if at all, as optional `payload.hostTaskId`.
+  namespace and can collide across lists. The quality gate records it, with the team, session and
+  teammate the payload names, in the optional `host` object of its log entry
+  (`scripts/quality-gate-identity.ts`) and nowhere else: not in the ledger, not in a command line, not in
+  a file path.
 - **Bead and run correlation is explicit**, passed by whoever launches the work (see *Correlation*), not
-  derived from host ids. This matches `0xxt`'s expected behaviour: the launcher supplies
-  `beadsIssueId` + `executionRunId`; the hook parses stdin and treats host identity as optional metadata.
+  derived from host ids. For the quality gate that is a run correlation file holding `beadsIssueId` and
+  `executionRunId` (see *Run correlation*); the gate parses stdin for the event and treats host identity
+  as optional metadata.
 
 ### Minted and mirrored identity (`<worktree>/.agent-forge-session`)
 
@@ -165,15 +170,42 @@ launching by hand can `export` them):
 
 | Variable | Meaning |
 |---|---|
-| `FORGE_SLUG` | Forge run slug → `runId` (already read by the quality gate) |
-| `AGENT_FORGE_BEAD_ID` | Beads issue → `beadId` |
+| `FORGE_SLUG` | Forge run slug → `runId` on session and script events (the quality gate does not read it) |
+| `AGENT_FORGE_BEAD_ID` | Beads issue → `beadId` on session and script events (the quality gate does not read it) |
 | `AGENT_FORGE_SMITH` | Smith name → `smith` |
 | `AGENT_FORGE_PARENT_SESSION` | Parent `sessionId` → `parentSessionId` |
+| `AGENT_FORGE_RUN_CORRELATION` | Path of the run's correlation file → the quality gate's `beadId` and `runId` |
 
 Resolution order for `beadId`: the env var → the worktree registry entry for this checkout (once
 `f4-worktrees` lands; a file read, never a `bd` call from a hook) → omitted. A session that attaches
 without a bead is legal; the first event that learns the bead carries it, and readers group by the
-`beadId` on events rather than on the session row.
+`beadId` on events rather than on the session row. The quality gate is the exception: see below.
+
+### Run correlation (the quality gate)
+
+The quality gate asks Beads about an issue and, in strict mode, reads that issue's evaluator verdict, so
+its bead and run come from one place only: a **run correlation**, a small file a launcher writes
+(`scripts/run-correlation.ts`).
+
+- **File:** `<checkout>/.tmp/work/run-correlations/<runId>.json`, holding
+  `{ schemaVersion: 1, executionRunId, beadsIssueId, checkout, createdAt }`. `executionRunId` is the Forge
+  run id: the run's slug, the ledger's `runId`. The directory is gitignored. The gate accepts a file only
+  at that path, inside its own checkout, named after the run it holds.
+- **Who writes it:** `forge:phase-gate <phase> --slug <slug> --write --bead <id>` (for a pipeline run;
+  the run's epic is never used), `forge:exec --bead <id> --run <slug>` (for the child it spawns), and
+  `bun run forge:correlate --bead <id> [--run <slug>]` for work with no phase gate. Each prints the file
+  as `data.correlation.pointer`. Only a bead given outright rebinds a run that is already correlated.
+- **How the gate gets it:** `bun run quality-gate --correlation <pointer>`, else
+  `AGENT_FORGE_RUN_CORRELATION`. `forge:exec` puts the variable in its child's environment. Nothing else
+  selects a correlation: not `FORGE_SLUG`, not `AGENT_FORGE_BEAD_ID`, not the checkout.
+- **Without one** the gate still runs its base checks and logs the result as **unlinked**: the entry and
+  its `gate.ran` event name no bead and no run, nothing is asked of Beads, and the strict verdict check
+  fails. A `--correlation` that does not validate fails the gate outright; a pointer from the
+  environment that does not validate is reported and the run is unlinked.
+- **Limit:** the `TaskCompleted` / `TeammateIdle` hooks are registered with no arguments, and a session
+  cannot change the environment of the host that runs its hooks. In an interactive session a
+  hook-triggered gate is therefore unlinked unless the session was started with the variable; the linked
+  paths are the gate run with `--correlation` and the gate inside a `forge:exec` child.
 
 ---
 
@@ -235,6 +267,9 @@ not relied on.
 
 1. `spawn(req)` builds the env (allowlist + the correlation variables above), starts the CLI in the
    worktree, and registers the child for cleanup (panic-safe, success/failure/timeout/parent exit).
+   `forge:exec --run <slug>` writes the run's correlation in the worktree first and adds
+   `AGENT_FORGE_RUN_CORRELATION` to that env; a pointer inherited from the launcher's own environment
+   is never passed on.
 2. The adapter appends `session.started` as soon as it has a `sessionId` (adapter-chosen at spawn, else
    from the first stream message), `kind: "headless"`, with `smith`, `beadId`, `runId`, `parentSessionId`
    from the request.

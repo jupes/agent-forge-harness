@@ -24,7 +24,8 @@ function phases(completed: ForgePhase[], missing: ForgePhase[] = []) {
   }));
 }
 
-function gate(passed: boolean): GateRun {
+/** A gate run correlated to run "alpha"; `over` turns it into another kind. */
+function gate(passed: boolean, over: Partial<GateRun> = {}): GateRun {
   return {
     event: "TaskCompleted",
     timestamp: AT,
@@ -32,10 +33,24 @@ function gate(passed: boolean): GateRun {
     checks: [],
     checkout: "C:/work",
     branch: "feat/x",
+    link: "linked",
+    beadsIssueId: "bead-1",
+    executionRunId: "alpha",
+    unlinkedReason: null,
+    host: null,
     taskId: null,
-    forgeSlug: "alpha",
+    forgeSlug: null,
+    ...over,
   };
 }
+
+/** The same result as an entry from before entries had a schema version. */
+const LEGACY: Partial<GateRun> = {
+  link: "legacy",
+  beadsIssueId: null,
+  executionRunId: null,
+  forgeSlug: "alpha",
+};
 
 function round(over: Partial<ReviewRound> = {}): ReviewRound {
   return {
@@ -84,6 +99,14 @@ describe("runHealth", () => {
 
   test("a failing quality gate wants attention", () => {
     expect(runHealth(view({ gate: gate(false) }))).toBe("attention");
+  });
+
+  test("a failing legacy gate stays on the run but does not decide how the run reads", () => {
+    const run = view({ gate: gate(false, LEGACY) });
+    expect(runHealth(run)).toBe("running");
+    expect(boardRows([run])[0]?.gatePassed).toBeNull();
+    // A correlated gate still counts, pass or fail.
+    expect(boardRows([view({ gate: gate(false) })])[0]?.gatePassed).toBe(false);
   });
 
   test("a phase claiming an artifact that is gone wants attention", () => {
