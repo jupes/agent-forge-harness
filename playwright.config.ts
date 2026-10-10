@@ -2,11 +2,16 @@ import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 import { HEALTH_ROUTE } from "./scripts/hearth/paths";
 import {
+  bunPath,
   DASHBOARD_PORT,
   DASHBOARD_URL,
+  dashboardPathDirectories,
   HEARTH_HOME,
   HEARTH_PORT,
   HEARTH_URL,
+  NODE_DIR,
+  refuseAReachableBd,
+  standInEnvironment,
 } from "./tests/e2e/servers";
 
 /**
@@ -21,6 +26,14 @@ import {
  */
 
 const CI = Boolean(process.env["CI"]);
+
+/**
+ * The suite never reaches a tracker: its servers run a recording stand-in for
+ * `bd` (see `tests/e2e/servers.ts`). They are started by bun's absolute path
+ * because their PATH holds the stand-in's directory and next to nothing else.
+ */
+const BUN = `"${bunPath()}"`;
+refuseAReachableBd(dashboardPathDirectories(process.cwd()));
 
 /**
  * What a normal run leaves out, so that "skipped" only ever means something
@@ -45,6 +58,9 @@ export default defineConfig({
   reporter: "list",
   timeout: 45_000,
   expect: { timeout: 10_000 },
+  // Builds the stand-in for `bd`. The servers below start first, and find no
+  // `bd` at all until it has.
+  globalSetup: "./tests/e2e/global-setup.ts",
   globalTeardown: "./tests/e2e/global-teardown.ts",
 
   use: {
@@ -57,12 +73,18 @@ export default defineConfig({
     {
       name: "desktop",
       grepInvert: [...CAPTURES, /@mobile/],
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 900 } },
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1280, height: 900 },
+      },
     },
     {
       name: "mobile",
       grepInvert: CAPTURES,
-      use: { ...devices["Desktop Chrome"], viewport: { width: 375, height: 812 } },
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 375, height: 812 },
+      },
     },
   ],
 
@@ -77,8 +99,10 @@ export default defineConfig({
       // the dashboard would spawn one and discard what it prints.
       name: "hearth",
       // Not `bun run hearth`: see scripts/hearth/AGENTS.md.
-      command: "bun scripts/hearth/server.ts",
+      command: `${BUN} scripts/hearth/server.ts`,
       env: {
+        // The stand-in's directory and nothing else: this hearth can run no other `bd`.
+        ...standInEnvironment(),
         HEARTH_PORT: String(HEARTH_PORT),
         AGENT_FORGE_HOME: HEARTH_HOME,
         // One spec starts a (simulated) council run. Its artifacts go to this
@@ -95,8 +119,11 @@ export default defineConfig({
       name: "dashboard",
       // --strictPort: a taken port is an error, not a silent move to the next
       // one while this config waits on the old one.
-      command: "bun run dashboard --strictPort",
+      command: `${BUN} run dashboard --strictPort`,
       env: {
+        // The stand-in first, then node for Vite: a hearth the dashboard starts
+        // in place of the one above inherits this, and finds the stand-in.
+        ...standInEnvironment([NODE_DIR]),
         PORT: String(DASHBOARD_PORT),
         // Keeps the suite from regenerating the Beads snapshot on every run;
         // whatever docs/data/beads.json holds is what gets rendered.
