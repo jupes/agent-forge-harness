@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -27,4 +27,23 @@ export function readToken(file: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether `presented` is the expected token.
+ *
+ * Both sides are hashed first, so the comparison takes the same time whatever
+ * the presented value's length or content, and `timingSafeEqual` never sees
+ * buffers of different lengths. Anything but a non-empty string on either side
+ * is a refusal: no token minted yet, a header sent twice, a header not sent.
+ */
+export function tokenMatches(
+  expected: string | null,
+  presented: unknown,
+): boolean {
+  if (expected === null || expected.length === 0) return false;
+  if (typeof presented !== "string" || presented.length === 0) return false;
+  const digest = (value: string): Buffer =>
+    createHash("sha256").update(value, "utf8").digest();
+  return timingSafeEqual(digest(expected), digest(presented));
 }

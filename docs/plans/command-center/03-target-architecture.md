@@ -25,7 +25,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
                  └──────────────┬──────────────────────┬──────────────────┬────────────┬──────────┘
                                 │ HTTP + SSE (loopback, typed routes)     │            │ stdio
                  ┌──────────────▼──────────────────────────────────────────▼────────────▼──────────┐
-                 │                      Control-plane server  (Bun.serve, scripts/hearth/)   │
+                 │                      Control-plane server  (node:http, scripts/hearth/)  │
                  │   operator API · event stream · queue + reservations · smiths · council bridge     │
                  └──────┬───────────────┬──────────────────┬──────────────────┬──────────────────────┘
                         │               │                  │                  │
@@ -73,15 +73,42 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 
 ## 6. Control-plane server
 
-- `scripts/hearth/server.ts` (`bun run hearth`), `Bun.serve` on `127.0.0.1:<port>`; the Vite dashboard proxies `/__agent-forge/*` to it in dev; the Tauri sidecar supervises it in desktop mode.
-- Routes (all JSON `{ ok, data, error }`; mutations need `X-Agent-Forge-Operator` token and same-origin):
+- `scripts/hearth/server.ts` (`bun run hearth`), a `node:http` server on `127.0.0.1:<port>`; the Vite dashboard proxies `/__agent-forge/*` to it in dev; the Tauri sidecar supervises it in desktop mode.
+- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts` and `operator-reads.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
+- Every row answers JSON `{ ok, data, error }` and requires a **declared same-origin** request: an `Origin` equal to the control plane's own, or `Sec-Fetch-Site: same-origin`. A script declares `Origin: http://127.0.0.1:<port>`. A request that repeats `Origin`, `Sec-Fetch-Site`, `Host` or either header below is refused.
+- A mutation also needs the operator token in `X-Agent-Forge-Operator`. The token is per hearth and per start: the one this hearth minted, honoured only while the file its lock names (`tokenFile`, `<home>/tokens/<hash(root)>.token`) still holds it. Missing or wrong is 403 and nothing is written. `GET /token` serves it to a same-origin page and answers 503 whenever no token could be honoured.
+- `X-Agent-Forge-Surface` (`ui` | `cli` | `mcp` | `api`; absent means `api`) is stored on the audit row. It is a label the client declares, not a credential.
+- Every `POST` writes `operator.action` first, then performs the effect through the same scripts the CLI uses (no second implementation). The effect runs only if the ledger stored the row; otherwise the answer is 503 and nothing was done. A request refused for its origin, its token or its content writes nothing. The row records an authorised, valid attempt: an effect that then refuses leaves the row, and the effect's own events or comment carry the outcome.
+- Routes (the contract):
   - `GET /sessions`, `GET /runs`, `GET /runs/:slug`, `GET /events?…`, `GET /queue`, `GET /reservations`, `GET /smiths`, `GET /config` (with provenance), `GET /stream` (SSE: snapshot + deltas)
   - `POST /beads` (create), `POST /beads/:id/claim|close|comment`
   - `POST /queue/:id/approve|queue|pause|resume|reassign` (`{ smith }`)
   - `POST /council/runs` (`{ source: { kind: "bead", id } , profile, budget }`), `POST /council/runs/:id/cancel`
   - `POST /shifts` (`{ for, concurrency, filter }`), `POST /shifts/:id/stop`
   - `POST /runs/:slug/replan` (hands a run back to forgemaster with a reason)
-- Every `POST` writes `operator.action` first, then performs the effect through the same scripts the CLI uses (no second implementation).
+- What is mounted (`x1gs.3.2`). A route is mounted only once its effect exists; nothing accepts a mutation and does nothing.
+
+  | Route | State | Notes |
+  |---|---|---|
+  | `GET /sessions` | mounted | `?open=1`, `?limit=` (1–500, default 100). Folded from the newest 50,000 ledger events of the workspace. Reports `lastEventAt` and `endedAt`; asserts nothing about a session being alive. |
+  | `GET /runs`, `GET /runs/:slug` | mounted | The run registry of the checkout. `/runs/:slug` adds the stored state and the run's newest 200 ledger events. |
+  | `GET /events` | mounted | `bead`, `beadExact`, `run`, `session`, `since`, `kind`, `after`, `limit` (1–1000, default 200), by the rules of `forge:audit`. Always this workspace. Answers `{ events, cursor, more }`. An unknown or repeated parameter is 400. |
+  | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label). Empty until `x1gs.5.1` writes those labels. |
+  | `GET /reservations` | mounted | Claims acquired and not released, from the ledger. Empty until `x1gs.5.3` emits them. |
+  | `GET /smiths`, `GET /config` | mounted | Both read what `forge:config show` reads for the hearth's checkout (its `agent-forge.toml` and the machine file); the hearth's own environment is not read. `/config` answers the merged config with provenance and the files read; `/smiths` answers the smiths, the benches and the default smith, without provenance. |
+  | `GET /stream` | mounted | See below. |
+  | `POST /council/runs`, `POST /council/runs/:id/cancel` | mounted | Body today is the council service's input (`sourceType`, `source`, `profile?`, `maxUsd?`, `maxBytes?`, `runId?`, `redactSecrets?`, `beadId?`). The `{ source: { kind: "bead", id } }` form arrives with `x1gs.7.1`. Also served at `/council-api/runs…`, the paths the dashboard has always used. |
+  | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path, and the same answers once a request is accepted; now an audited action, so it refuses what every action refuses (no token, no declared origin, a query string, a body over the cap). |
+  | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | not mounted | `x1gs.3.3` |
+  | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | not mounted | `x1gs.5.1` |
+  | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.4` |
+  | `POST /runs/:slug/replan` | not mounted | `x1gs.6`, the forgemaster expansion (its caller is `x1gs.6.2`) |
+
+- Stream (`scripts/hearth/stream.ts`). A new connection gets one `snapshot` event: `{ cursor, sessions, runs, queue, reservations, smiths, config }`, where `cursor` is the ledger's newest id and each collection is the envelope its own `GET` route answers, so one that could not be read carries its own error. Then one `delta` event per ledger event, in `id` order, each with its `id` as the SSE id. A reconnect that sends `Last-Event-ID` gets the deltas after it and no snapshot, unless that id is ahead of the ledger: then the client is out of step and gets a snapshot. A keepalive comment every 15 s; at most 32 streams.
+  - The ledger is the only change feed, and other processes write it, so each connection polls for ids above its cursor (250 ms). The cursor is read before the collections: an event appended meanwhile follows the snapshot as a delta, so a delta may repeat what the snapshot shows and never miss it.
+  - A client that falls behind on reading is not buffered for: a connection with more than 1 MB waiting is given nothing new until it drains (its cursor does not move, so it misses nothing), and has its socket closed if it stays that way for 30 s; it resumes with `Last-Event-ID`.
+  - `queue` changes reach a client as `bead.transitioned` deltas (it reads `/queue` again). `smiths` and `config` have no ledger event; they change with a new snapshot.
+- Council runs started through the hearth are recorded in the ledger (`council.run.started`, `council.run.finished`) with the workspace and the bead the request named. They carry no session and no executor: the operator started them, not an agent session.
 
 ## 7. MCP operator surface
 

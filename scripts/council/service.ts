@@ -75,8 +75,8 @@ export type CouncilServiceOptions = {
   ) => (seat: CouncilSeat) => ModelTransport;
   /**
    * The ledger a run's started and finished events go to, and who they belong
-   * to. Injected by the host — today the MCP server; the hearth injects
-   * neither — because this module never imports the ledger itself. Without
+   * to. Injected by the host — the MCP server, and the hearth when it runs as
+   * a command — because this module never imports the ledger itself. Without
    * both, runs record nothing in the ledger.
    */
   appendEvent?: CouncilAppend;
@@ -88,6 +88,49 @@ export function safeCouncilError(error: unknown): string {
     error instanceof Error ? error.message : String(error),
     "redact",
   ).text.slice(0, 1000);
+}
+
+/**
+ * The checks on a start request that need nothing but the request. Throws
+ * what `start` has always thrown, in the order it always has. A host that
+ * records something before it starts a run (the hearth's audit row) calls
+ * this first, so a malformed request is refused before anything is written.
+ */
+export function assertCouncilInput(input: CouncilServiceInput): void {
+  if (
+    !input ||
+    !["file", "plan", "pr", "text", "bead"].includes(input.sourceType) ||
+    typeof input.source !== "string" ||
+    !input.source.trim() ||
+    Buffer.byteLength(input.source, "utf8") > 2_000_000
+  )
+    throw new Error(
+      "source must be a nonempty supported input of at most 2 MB",
+    );
+  if (input.profile !== undefined && typeof input.profile !== "string")
+    throw new Error("profile must be a path string");
+  if (
+    input.maxBytes !== undefined &&
+    (!Number.isInteger(input.maxBytes) ||
+      input.maxBytes < 1 ||
+      input.maxBytes > 2_000_000)
+  )
+    throw new Error("maxBytes must be between 1 and 2000000");
+  if (
+    input.maxUsd !== undefined &&
+    (!Number.isFinite(input.maxUsd) || input.maxUsd < 0)
+  )
+    throw new Error("maxUsd must be finite and nonnegative");
+  if (
+    input.redactSecrets !== undefined &&
+    typeof input.redactSecrets !== "boolean"
+  )
+    throw new Error("redactSecrets must be a boolean");
+  if (
+    input.beadId !== undefined &&
+    (typeof input.beadId !== "string" || !input.beadId.trim())
+  )
+    throw new Error("beadId must be a nonempty string");
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -277,40 +320,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   }
   function start(input: CouncilServiceInput): CouncilServiceJob {
     if (closed) throw new Error("council service is closed");
-    if (
-      !input ||
-      !["file", "plan", "pr", "text", "bead"].includes(input.sourceType) ||
-      typeof input.source !== "string" ||
-      !input.source.trim() ||
-      Buffer.byteLength(input.source, "utf8") > 2_000_000
-    )
-      throw new Error(
-        "source must be a nonempty supported input of at most 2 MB",
-      );
-    if (input.profile !== undefined && typeof input.profile !== "string")
-      throw new Error("profile must be a path string");
-    if (
-      input.maxBytes !== undefined &&
-      (!Number.isInteger(input.maxBytes) ||
-        input.maxBytes < 1 ||
-        input.maxBytes > 2_000_000)
-    )
-      throw new Error("maxBytes must be between 1 and 2000000");
-    if (
-      input.maxUsd !== undefined &&
-      (!Number.isFinite(input.maxUsd) || input.maxUsd < 0)
-    )
-      throw new Error("maxUsd must be finite and nonnegative");
-    if (
-      input.redactSecrets !== undefined &&
-      typeof input.redactSecrets !== "boolean"
-    )
-      throw new Error("redactSecrets must be a boolean");
-    if (
-      input.beadId !== undefined &&
-      (typeof input.beadId !== "string" || !input.beadId.trim())
-    )
-      throw new Error("beadId must be a nonempty string");
+    assertCouncilInput(input);
     if (active.size >= 4)
       throw new Error("At most 4 council runs may execute concurrently");
     const selected = profile(input.profile);

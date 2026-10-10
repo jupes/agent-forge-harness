@@ -30,7 +30,7 @@ import {
 } from "../../types/hearth";
 import { backupLedger, compact } from "./backup";
 import { ledgerPath } from "./paths";
-import { type EventFilter, queryEvents } from "./query";
+import { type EventFilter, queryEventPage } from "./query";
 import { resolveCheckout } from "./workspace";
 
 export const DEFAULT_LIMIT = 500;
@@ -260,23 +260,20 @@ export function runAudit(
       );
     }
     const limit = filter.limit ?? DEFAULT_LIMIT;
-    // One more than asked for: its presence is how a cut result is told from a whole one.
-    const fetched = queryEvents(
+    const { events, more } = queryEventPage(
       {
         ...filter,
-        limit: limit + 1,
+        limit,
         ...(allWorkspaces
           ? {}
           : { workspace: resolveCheckout(context.cwd).workspace }),
       },
       { path },
     );
-    if (fetched.length <= limit)
-      return success(fetched, json, formatTable(fetched));
+    if (!more) return success(events, json, formatTable(events));
     // A page after a cursor keeps its first events; a tail keeps its newest.
     const paged = filter.afterId !== undefined;
     const shown = `${limit} matching event${limit === 1 ? "" : "s"}`;
-    const events = paged ? fetched.slice(0, limit) : fetched.slice(1);
     const note = paged
       ? `forge:audit: showing the first ${shown} after id ${filter.afterId}; more follow — continue with --after-id ${events[events.length - 1]?.id}`
       : `forge:audit: showing the newest ${shown}; older ones were left out — raise --limit or narrow the filters`;

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import type { CouncilServiceJob } from "../../../scripts/council/service";
 import { EmptyState } from "../ds/EmptyState";
+import { operatorPost } from "../operator";
 import { CouncilHistory } from "./CouncilHistory";
 import { CouncilMembers } from "./CouncilMembers";
 import { CouncilResult } from "./CouncilResult";
@@ -13,16 +14,11 @@ import {
 
 const API = "/__agent-forge/council-api";
 async function request<T>(path: string, input?: unknown): Promise<T> {
-  const response = await fetch(
-    `${API}${path}`,
+  // A request with a body starts or cancels a run: an operator action.
+  const response =
     input === undefined
-      ? {}
-      : {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(input),
-        },
-  );
+      ? await fetch(`${API}${path}`)
+      : await operatorPost(`${API}${path}`, input);
   const envelope = (await response.json()) as {
     ok: boolean;
     data: T;

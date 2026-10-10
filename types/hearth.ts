@@ -12,7 +12,13 @@
  * `council.run.finished`) are the only opt-in bodies, stored redacted and capped.
  */
 
-import type { ForgePhase, ReviewFindings } from "../scripts/forge/phases";
+import type { LoadedConfig } from "../scripts/config/load";
+import type {
+  ForgePhase,
+  ForgeState,
+  ReviewFindings,
+} from "../scripts/forge/phases";
+import type { RunSummary } from "../scripts/forge/runs";
 
 // ── Executors ───────────────────────────────────────────────────────────────
 
@@ -360,3 +366,94 @@ export type LedgerEventOf<K extends LedgerEventKind> = Extract<
 export type OperatorEnvelope<T = unknown> =
   | { ok: true; data: T; error: null }
   | { ok: false; data: null; error: string };
+
+// ── Operator API responses ──────────────────────────────────────────────────
+//
+// What the read routes of the operator API answer as `data`, and what the
+// stream sends. Added with the API; every type above this line is unchanged.
+
+/**
+ * What the ledger knows about one session, folded from its events. Not a
+ * `SessionEnvelope`: nothing here is required beyond the id, because a session
+ * whose events named no model has no known provider, and one whose start was
+ * compacted away has no start.
+ */
+export interface SessionSummary {
+  sessionId: string;
+  workspace: string;
+  kind?: SessionKind;
+  worktree?: string;
+  parentSessionId?: string;
+  /** The executor of the newest event that carried one. */
+  executor?: Executor;
+  /** The bead and run of the newest events that carried them. */
+  beadId?: string;
+  runId?: string;
+  /** ISO 8601; absent when the ledger never saw the session start. */
+  startedAt?: string;
+  /** ISO 8601 time of the session's newest event. */
+  lastEventAt: string;
+  /**
+   * Present when the session's newest event is `session.ended`. A session
+   * that ended without saying so has none: judge staleness by `lastEventAt`.
+   */
+  endedAt?: string;
+}
+
+/** One bead in one queue state, read from its `queue:<state>` label. */
+export interface QueueEntry {
+  beadId: string;
+  title: string;
+  state: QueueState;
+  /** The bead's own Beads status (`open`, `in_progress`, `closed`, …). */
+  status: string;
+  priority?: number;
+  type?: string;
+}
+
+/** A page of ledger events, oldest first. */
+export interface EventsPage {
+  events: LedgerEvent[];
+  /**
+   * The id to continue after: the newest id in `events`, or the cursor the
+   * request gave (0 without one) when the page is empty.
+   */
+  cursor: number;
+  /**
+   * More events matched than the limit. After a cursor, they follow this
+   * page; without one, the page is the newest and older ones were left out.
+   */
+  more: boolean;
+}
+
+/** One Forge run: its summary, its stored state and its newest ledger events. */
+export interface RunDetail {
+  run: RunSummary;
+  state: ForgeState;
+  events: EventsPage;
+}
+
+/** The configured smiths and benches. */
+export interface SmithsView {
+  smiths: Smith[];
+  benches: Record<BenchName, Array<{ smith: string; weight: number }>>;
+  /** The smith used when nothing else selects one. */
+  defaultSmith: string;
+}
+
+/**
+ * The first event of `GET /stream`: where the ledger stood, and each
+ * collection as the envelope its own read route answers, so one that could
+ * not be read carries its own error. `event: delta` messages follow, one
+ * `LedgerEvent` each, in `id` order after `cursor`.
+ */
+export interface StreamSnapshot {
+  /** Newest ledger id when the snapshot was taken. */
+  cursor: number;
+  sessions: OperatorEnvelope<SessionSummary[]>;
+  runs: OperatorEnvelope<RunSummary[]>;
+  queue: OperatorEnvelope<QueueEntry[]>;
+  reservations: OperatorEnvelope<Reservation[]>;
+  smiths: OperatorEnvelope<SmithsView>;
+  config: OperatorEnvelope<LoadedConfig>;
+}

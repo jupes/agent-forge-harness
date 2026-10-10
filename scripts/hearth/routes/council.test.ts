@@ -51,24 +51,18 @@ async function envelope(response: Response): Promise<{
   }
 }
 
-test("local dashboard starts, streams, and replays a preserved council", async () => {
+test("the handler lists, streams and replays a council run it did not start", async () => {
   const { service, url } = await fixture();
   const profiles = await envelope(await fetch(`${url}/profiles`));
   expect(profiles.ok).toBe(true);
   expect(Array.isArray(profiles.data)).toBe(true);
-  const started = await envelope(
-    await fetch(`${url}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceType: "text",
-        source: "Evaluate this plan and record any missing evidence.",
-        runId: "http-review",
-      }),
-    }),
-  );
-  expect(started.ok).toBe(true);
-  expect(started.data.status).toBe("running");
+  // Starting a run is an operator action (scripts/hearth/api.test.ts posts it
+  // through a hearth); here the service starts it and the handler only reads.
+  service.start({
+    sourceType: "text",
+    source: "Evaluate this plan and record any missing evidence.",
+    runId: "http-review",
+  });
   const finished = await service.wait("http-review");
   expect(finished.status).toBe("completed");
   const stream = await fetch(`${url}/runs/http-review/events`);
@@ -80,21 +74,34 @@ test("local dashboard starts, streams, and replays a preserved council", async (
   expect(replay.data.run).toEqual(finished.run);
   const list = await envelope(await fetch(`${url}/runs`));
   expect(Array.isArray(list.data)).toBe(true);
-  const duplicate = await envelope(
-    await fetch(`${url}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceType: "text",
-        source: "Do not overwrite",
-        runId: "http-review",
-      }),
-    }),
-  );
-  expect(duplicate.ok).toBe(false);
 }, 10000);
 
-test("local dashboard refuses cross-origin requests and invalid bodies", async () => {
+test("mounted alone, the handler performs no mutation for any POST", async () => {
+  const { service, url } = await fixture();
+  const json = { "Content-Type": "application/json" };
+  const started = await fetch(`${url}/runs`, {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({
+      sourceType: "text",
+      source: "This must not start a run.",
+      runId: "never",
+    }),
+  });
+  expect(started.status).toBe(404);
+  expect(service.list()).toEqual([]);
+
+  service.start({ sourceType: "text", source: "Leave me be.", runId: "kept" });
+  const cancelled = await fetch(`${url}/runs/kept/cancel`, {
+    method: "POST",
+    headers: json,
+    body: "{}",
+  });
+  expect(cancelled.status).toBe(405);
+  expect((await service.wait("kept")).status).toBe("completed");
+}, 10000);
+
+test("local dashboard refuses cross-origin requests and other methods", async () => {
   const { url } = await fixture();
   expect(
     (
@@ -114,20 +121,6 @@ test("local dashboard refuses cross-origin requests and invalid bodies", async (
     (await fetch(`${url}/profiles`, { headers: { Host: "attacker.example" } }))
       .status,
   ).toBe(403);
-  const invalid = await envelope(
-    await fetch(`${url}/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{broken",
-    }),
-  );
-  expect(invalid.ok).toBe(false);
-  expect(invalid.error).toContain("valid JSON");
-  const wrongType = await fetch(`${url}/runs`, {
-    method: "POST",
-    body: "not-json",
-  });
-  expect(wrongType.status).toBe(400);
   expect(
     (await fetch(`${url}/runs/missing`, { method: "DELETE" })).status,
   ).toBe(405);
