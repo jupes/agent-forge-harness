@@ -774,12 +774,6 @@ export async function createHearthMcpServer(
       `${name} needs an operator session: this server was started without --operator and holds no operator token.`,
     );
 
-  const lifetime = new AbortController();
-  if (options.gone?.aborted) lifetime.abort();
-  options.gone?.addEventListener("abort", () => lifetime.abort(), {
-    once: true,
-  });
-
   const forge = new Map(FORGE_TOOLS.map((tool) => [tool.name, tool]));
   const bridge = options.council
     ? await bridgeCouncil(options.council())
@@ -891,8 +885,13 @@ export async function createHearthMcpServer(
   server.setRequestHandler("tools/list", async () => ({ tools }));
   server.setRequestHandler("tools/call", async (request, ctx) => {
     const { name } = request.params;
-    // Ends with the caller's own cancellation, or when the client has gone.
-    const signal = AbortSignal.any([ctx.mcpReq.signal, lifetime.signal]);
+    // Ends with the caller's own cancellation, or when the client has gone:
+    // nobody is left to answer. The council itself is not closed for that; a
+    // review it began on its own account runs to its end, as it does under
+    // `bun run council:mcp`.
+    const signal = options.gone
+      ? AbortSignal.any([ctx.mcpReq.signal, options.gone])
+      : ctx.mcpReq.signal;
     const tool = forge.get(name);
     if (!tool) {
       if (bridge?.has(name)) return bridge.call(request.params, signal);
@@ -911,13 +910,8 @@ export async function createHearthMcpServer(
     );
   });
 
-  // A call still waiting when its client has gone is ended: nobody is left to
-  // answer. The council itself is not closed for that; a review it began on
-  // its own account runs to its end, as it does under `bun run council:mcp`.
-  server.onclose = () => lifetime.abort();
   const close = server.close.bind(server);
   server.close = async () => {
-    lifetime.abort();
     await bridge?.close();
     await close();
   };
