@@ -291,13 +291,33 @@ function linkageFrom(raw: Record<string, unknown>): GateLinkage | null {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+/** The shape of the path the gate reads a run's verdict from. */
+const DECLARED_VERDICT_PATH =
+  /^\.tmp\/work\/evaluations\/[0-9a-f]{64}\/verdict\.json$/;
+
+/** The most bytes the gate reads as a verdict. */
+const MAX_VERDICT_BYTES = 64 * 1024;
+
+/** True for an evaluator the gate binds: a human, or a model that was observed and not rejected. */
+function bindable(evaluator: EvaluatorIdentity): boolean {
+  return (
+    evaluator.kind === "human" ||
+    (evaluator.observedProvider !== undefined &&
+      evaluator.observedModel !== undefined &&
+      evaluator.rankPolicyDecision === "allowed")
+  );
+}
+
 /** The name of the gate's strict evaluator-verdict check. */
 const VERDICT_CHECK = "eval-verdict";
 
 /**
  * What an entry's evaluator-verdict check rested on. The reference on the
- * entry counts only when it is whole and is for the entry's own bead and run;
- * anything less leaves a passed check as a legacy verdict.
+ * entry counts only when it is one the gate could have written: whole, for the
+ * entry's own bead and run, at a declared verdict path, no larger than a
+ * verdict, by an evaluator the gate binds. Anything less leaves a passed check
+ * as a legacy verdict. (The reader cannot hash a run id in the browser, so it
+ * checks the path's shape, not that it is this run's.)
  */
 function evaluatorVerdictFrom(
   raw: Record<string, unknown>,
@@ -325,12 +345,15 @@ function evaluatorVerdictFrom(
       reference["executionRunId"] === linkage.executionRunId &&
       reference["beadsIssueId"] === linkage.beadsIssueId &&
       path !== null &&
+      DECLARED_VERDICT_PATH.test(path) &&
       typeof sha256 === "string" &&
       SHA256_HEX.test(sha256) &&
       typeof bytes === "number" &&
       Number.isInteger(bytes) &&
       bytes >= 0 &&
-      evaluator.ok
+      bytes <= MAX_VERDICT_BYTES &&
+      evaluator.ok &&
+      bindable(evaluator.value)
     ) {
       return {
         evidence: "schema-2",

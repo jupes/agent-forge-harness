@@ -50,12 +50,14 @@ import {
   readEvaluationFile,
 } from "./eval-verdict-store";
 import { comparableCheckout } from "./forge/runs";
+import { queryEvents } from "./ledger/query";
 import { resolveCheckout } from "./ledger/workspace";
 
 /**
- * Days a swept file is kept after its bead closes, unless `TTL_DAYS` says
- * otherwise. One period for task-scoped files and evaluator verdicts alike:
- * the retention policy still to be decided (bead ulpz.1) replaces this value.
+ * How many days old a file must be (since it was last written) before it may
+ * be swept, once its bead is closed, unless `TTL_DAYS` says otherwise. One
+ * period for task-scoped files and evaluator verdicts alike: the retention
+ * policy still to be decided (bead ulpz.1) replaces this value.
  */
 export const DEFAULT_TTL_DAYS = 14;
 
@@ -177,6 +179,29 @@ export interface LedgerDigest {
   executionRunId: string;
 }
 
+/**
+ * True when the ledger holds a `verdict.bound` for that run whose file
+ * reference carries exactly that digest. A ledger that cannot be read holds
+ * nothing: the sweep then removes nothing.
+ */
+export function ledgerHoldsVerdict(
+  digest: LedgerDigest,
+  opts: { path?: string } = {},
+): boolean {
+  try {
+    return queryEvents(
+      { runId: digest.executionRunId, kinds: ["verdict.bound"] },
+      opts,
+    ).some(
+      (event) =>
+        event.kind === "verdict.bound" &&
+        event.payload.verdictArtifact?.sha256 === digest.sha256,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface EvaluationSweep {
   /** Paths are relative to the checkout. */
   candidates: SweepCandidate[];
@@ -212,11 +237,15 @@ function isOwnDirectory(root: string, relative: string): boolean {
  * - the ledger holds a `verdict.bound` for that run with the file's digest.
  *   Until then the file is the only copy of that evidence.
  *
- * Files are unlinked one at a time; a run's directory is removed only once it
- * is empty. Anything else found there is left as it is.
+ * Files are unlinked one at a time; a run's directory is removed only by the
+ * sweep that emptied it. Anything else found there is left as it is.
+ *
+ * `checkout` must be the top level of a checkout: from a directory inside one
+ * nothing is swept, so the issues consulted and the files removed are always
+ * the same checkout's.
  */
 export function sweepEvaluations(input: {
-  /** A directory in the checkout to sweep. */
+  /** The top level of the checkout to sweep. */
   checkout: string;
   issuesById: Map<string, BeadsIssue>;
   ttlDays: number;
@@ -227,6 +256,19 @@ export function sweepEvaluations(input: {
   const root = resolveCheckout(input.checkout).worktree;
   const candidates: SweepCandidate[] = [];
   const deleted: string[] = [];
+  let given: string;
+  try {
+    given = comparableCheckout(realpathSync.native(input.checkout));
+  } catch {
+    return { candidates, deleted };
+  }
+  if (given !== root) {
+    return {
+      candidates,
+      deleted,
+      note: "evaluations are swept from the top level of a checkout: this directory is inside one",
+    };
+  }
   try {
     lstatSync(`${root}/${EVALUATIONS_DIR}`);
   } catch {
@@ -245,6 +287,7 @@ export function sweepEvaluations(input: {
     if (!isEvaluationDirName(dir) || !isOwnDirectory(root, relativeDir)) {
       continue;
     }
+    let removedHere = 0;
     for (const file of readdirSync(`${root}/${relativeDir}`).sort()) {
       if (!isManagedVerdictFile(file)) continue;
       const relative = `${relativeDir}/${file}`;
@@ -254,13 +297,15 @@ export function sweepEvaluations(input: {
       try {
         unlinkSync(`${root}/${relative}`);
         deleted.push(relative);
+        removedHere++;
       } catch (e) {
         console.error(
           `warn: could not delete ${relative}: ${(e as Error).message}`,
         );
       }
     }
-    if (input.apply) {
+    // Only a directory this sweep emptied: one found empty is not its to judge.
+    if (removedHere > 0) {
       try {
         // Fails, as it should, while anything is left in the directory.
         rmdirSync(`${root}/${relativeDir}`);
@@ -346,7 +391,7 @@ function classifyEvaluationFile(
   };
 }
 
-async function main(): Promise<void> {
+function main(): void {
   const apply = process.argv.includes("--apply");
   const ttlDays = parseTtl();
   const nowMs = Date.now();
@@ -393,31 +438,25 @@ async function main(): Promise<void> {
     }
   }
 
-  // Evaluator verdicts. The ledger is loaded here, not at the top: it needs
-  // Bun's SQLite, which the functions above are tested without. A ledger that
-  // cannot be read holds nothing, so nothing is removed.
-  const { queryEvents } = await import("./ledger/query");
-  const evaluations = sweepEvaluations({
-    checkout: process.cwd(),
-    issuesById: byId,
-    ttlDays,
-    ledgerHolds: ({ sha256, executionRunId }) => {
-      try {
-        return queryEvents({
-          runId: executionRunId,
-          kinds: ["verdict.bound"],
-        }).some(
-          (event) =>
-            event.kind === "verdict.bound" &&
-            event.payload.verdictArtifact?.sha256 === sha256,
-        );
-      } catch {
-        return false;
-      }
-    },
-    apply,
-    nowMs,
-  });
+  // Evaluator verdicts, in this same directory's checkout. A failure here is
+  // reported in the envelope: the task-scoped files above are already done.
+  let evaluations: EvaluationSweep;
+  try {
+    evaluations = sweepEvaluations({
+      checkout: process.cwd(),
+      issuesById: byId,
+      ttlDays,
+      ledgerHolds: (digest) => ledgerHoldsVerdict(digest),
+      apply,
+      nowMs,
+    });
+  } catch (e) {
+    evaluations = {
+      candidates: [],
+      deleted: [],
+      note: `evaluations were not swept: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 
   console.log(
     JSON.stringify(
@@ -440,5 +479,5 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  main();
 }

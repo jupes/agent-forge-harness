@@ -135,7 +135,7 @@ describe("the task-scoped verdict path", () => {
     }
   });
 
-  test("no instruction shows a schema 1 verdict as the thing to write", () => {
+  test("no instruction file holds a schema 1 verdict example (schemaVersion 1 next to taskId)", () => {
     const schema1 = /"schemaVersion":\s*1,\s*"taskId"/;
     const stray = files
       .filter((path) => /^\.(claude|agents)\//.test(path))

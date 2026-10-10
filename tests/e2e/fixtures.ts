@@ -175,7 +175,7 @@ export const VERDICT_BOUND_GATE: GateRun = {
   ],
   evaluatorVerdict: {
     evidence: "schema-2",
-    path: ".tmp/work/evaluations/5f2c9a/verdict.json",
+    path: `.tmp/work/evaluations/${"5f2c9a1e".repeat(8)}/verdict.json`,
     sha256: "9b74c9897bac770ffc029102a200c5de".repeat(2),
     bytes: 412,
     evaluator: {

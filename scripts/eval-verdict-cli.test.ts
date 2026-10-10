@@ -27,6 +27,7 @@ import {
 import { closeLedger } from "./ledger/db";
 import { writeSessionMirror } from "./ledger/identity";
 import { setSessionModel } from "./ledger/session-models";
+import { resolveCheckout } from "./ledger/workspace";
 import { initRunCorrelation } from "./run-correlation-store";
 
 const CLI = join(import.meta.dir, "eval-verdict-cli.ts");
@@ -71,19 +72,26 @@ const SONNET = { provider: "claude", model: "claude-sonnet-5-5" };
 const HAIKU = { provider: "claude", model: "claude-haiku-4-5-20251001" };
 
 interface World {
-  /** The session the worktree's mirror names, if any. */
+  /** The session the mirror of the worktree the command runs in names, if any. */
   session?: string;
   /** The model the ledger has cached for a session. */
   models?: Record<string, { provider: string; model: string }>;
   /** Who the run's state says built the work. */
   builder?: Executor;
+  env?: Record<string, string>;
+  /** Where the command runs, when that is not the run's checkout. */
+  cwd?: string;
 }
 
 function deps(box: Box, world: World = {}): VerdictWriteDeps {
   return {
-    cwd: box.cwd,
-    env: {},
-    sessionMirror: () => world.session ?? null,
+    cwd: world.cwd ?? box.cwd,
+    env: world.env ?? {},
+    // A session's mirror is in the worktree that session works in.
+    sessionMirror: (worktree) =>
+      worktree === resolveCheckout(world.cwd ?? box.cwd).worktree
+        ? (world.session ?? null)
+        : null,
     sessionModel: (sessionId) => world.models?.[sessionId] ?? null,
     smiths: () => Object.values(BUILTIN_SMITHS),
     runState: (runId) =>
@@ -121,6 +129,12 @@ function write(box: Box, argv: string[], world: World = {}) {
 
 function stored(box: Box, relative: string | null): Record<string, unknown> {
   return JSON.parse(readFileSync(join(box.cwd, relative ?? ""), "utf8"));
+}
+
+/** What the run's verdict file holds, or null when there is none. */
+function runVerdict(box: Box, run = "run-1"): Record<string, unknown> | null {
+  const read = readVerdictOnce({ checkout: box.cwd, executionRunId: run });
+  return read.ok ? JSON.parse(read.buffer.toString("utf8")) : null;
 }
 
 /** The strict gate over the same checkout, as a second opinion on what was written. */
@@ -184,6 +198,8 @@ describe("forge:verdict, a human verdict", () => {
       ok: true,
       data: {
         path,
+        // The same file by its full path: what another command is handed.
+        file: `${resolveCheckout(box.cwd).worktree}/${path}`,
         sha256: sha256Hex(bytes),
         bytes: bytes.byteLength,
         beadsIssueId: "bead-1",
@@ -231,12 +247,116 @@ describe("forge:verdict, a human verdict", () => {
   });
 });
 
+describe("forge:verdict, its arguments", () => {
+  test("a flag is taken in either spelling, and a blocking count is never lost to a spelling", () => {
+    for (const argv of [
+      ["--verdict", "FAIL", "--high", "1", "--low", "1", "--human", "reviewer"],
+      ["--verdict=FAIL", "--high=1", "--low=1", "--human=reviewer"],
+    ]) {
+      const box = sandbox();
+      expect(write(box, argv).code).toBe(0);
+      expect(runVerdict(box)).toMatchObject({
+        verdict: "FAIL",
+        findings: { blocker: 0, high: 1, medium: 0, low: 1 },
+      });
+      // The verdict blocks, as its writer meant.
+      expect(gateCheck(box).check).toMatchObject({
+        passed: false,
+        output:
+          'verdict FAIL with blocker/high — {"blocker":0,"high":1,"medium":0,"low":1}',
+      });
+    }
+  });
+
+  test("anything it does not know, cannot pair with a value, or is told twice is refused, and nothing is written", () => {
+    const FAIL_LOW = ["--verdict", "FAIL", "--low", "1", ...AS_REVIEWER];
+    const cases: Array<[string[], string]> = [
+      // A typo of a count must not become a verdict without that count.
+      [
+        [
+          "--verdict",
+          "FAIL",
+          "--blockers",
+          "2",
+          "--medium",
+          "1",
+          ...AS_REVIEWER,
+        ],
+        'unknown argument "--blockers"',
+      ],
+      [[...FAIL_LOW, "--high"], "--high needs a value"],
+      [[...FAIL_LOW, "--high="], "--high needs a value"],
+      [[...PASS, ...AS_REVIEWER, "--review"], "--review needs a value"],
+      [
+        [...PASS, "--verdict", "FAIL", ...AS_REVIEWER],
+        "--verdict was given more than once",
+      ],
+      [[...PASS, ...AS_REVIEWER, "extra"], 'unexpected argument "extra"'],
+      // Ids and the observation have no flag: they are not typed.
+      [
+        [...PASS, ...AS_REVIEWER, "--bead", "bead-9"],
+        'unknown argument "--bead"',
+      ],
+      [[...PASS, ...AS_REVIEWER, "--run", "run-9"], 'unknown argument "--run"'],
+      [
+        [...PASS, ...REQUEST_MASTER, "--observed-model", "claude-opus-5-5"],
+        'unknown argument "--observed-model"',
+      ],
+      [
+        [...PASS, ...REQUEST_MASTER, "--session", "session-9"],
+        'unknown argument "--session"',
+      ],
+      [
+        [...PASS, ...AS_REVIEWER, "--attest", "__proto__=1"],
+        "--attest __proto__ is not a known dimension (quality|reliability|creativity|maintainability|ux)",
+      ],
+    ];
+    for (const [argv, error] of cases) {
+      const box = sandbox();
+      const wrote = write(box, argv);
+      expect({ argv, code: wrote.code, error: wrote.body.error }).toEqual({
+        argv,
+        code: 2,
+        error,
+      });
+      expect(runVerdict(box)).toBeNull();
+    }
+  });
+
+  test("--review in either spelling writes the round's file and leaves the run's verdict unwritten", () => {
+    for (const argv of [["--review", "plan-1"], ["--review=plan-1"]]) {
+      const box = sandbox();
+      const wrote = write(box, [...PASS, ...AS_REVIEWER, ...argv]);
+      expect(wrote.body.data).toMatchObject({
+        path: `${evaluationDir("run-1")}/review-plan-1.json`,
+        strict: false,
+      });
+      expect(runVerdict(box)).toBeNull();
+    }
+  });
+
+  test("a value may look like a flag: it is still that flag's value", () => {
+    const box = sandbox();
+    expect(
+      write(box, [...PASS, ...AS_REVIEWER, "--summary", "--human was right"])
+        .code,
+    ).toBe(0);
+    expect(runVerdict(box)).toMatchObject({
+      summary: "--human was right",
+      evaluator: { kind: "human", actorKind: "reviewer" },
+    });
+  });
+});
+
 describe("forge:verdict, a model verdict", () => {
-  test("records what the ledger cached for the worktree's session as observed, and the gate accepts it", () => {
+  test("records what the ledger cached for the session working where the command runs as observed, and the gate accepts it", () => {
     const box = sandbox();
     const world = {
       session: "session-9",
-      models: { "session-9": OPUS },
+      // The cache's strings are taken as plain text.
+      models: {
+        "session-9": { provider: " claude ", model: " claude-opus-5-5 " },
+      },
       builder: SONNET,
     };
     const wrote = write(box, [...PASS, ...REQUEST_MASTER], world);
@@ -273,27 +393,77 @@ describe("forge:verdict, a model verdict", () => {
           "not written: this verdict could never satisfy strict completion, and a run's verdict is written once. observed evaluator claude/claude-haiku-4-5-20251001 (rank apprentice) is below the builder's rank (journeyman)",
       },
     });
-    expect(
-      readVerdictOnce({ checkout: box.cwd, executionRunId: "run-1" }),
-    ).toMatchObject({ ok: false, missing: true });
+    expect(runVerdict(box)).toBeNull();
   });
 
-  test("with no session to observe, or no model cached for it, the run's verdict is refused rather than written from the request", () => {
-    for (const world of [
-      {},
-      { session: "session-9" },
-      { session: "session-9", models: { "another-session": OPUS } },
-    ]) {
+  test("with nothing to observe the run's verdict is refused rather than written from the request, and the refusal says what was missing", () => {
+    const cases: Array<[World, string]> = [
+      [
+        {},
+        "no session is recorded as working in the worktree this command runs in (no session mirror there, or one older than a day)",
+      ],
+      [
+        { session: "session-9" },
+        "the ledger has no model cached for the session working in this worktree",
+      ],
+      [
+        { session: "session-9", models: { "another-session": OPUS } },
+        "the ledger has no model cached for the session working in this worktree",
+      ],
+    ];
+    for (const [world, reason] of cases) {
       const box = sandbox();
       const wrote = write(box, [...PASS, ...REQUEST_MASTER], world);
       expect(wrote.code).toBe(2);
       expect(wrote.body.error).toBe(
-        "not written: this verdict could never satisfy strict completion, and a run's verdict is written once. the verdict records no observed evaluator provider and model (requested claude/claude-opus-5-5 is not evidence of what ran)",
+        `not written: this verdict could never satisfy strict completion, and a run's verdict is written once. the verdict records no observed evaluator provider and model (requested claude/claude-opus-5-5 is not evidence of what ran). Nothing was observed: ${reason}`,
       );
-      expect(
-        readVerdictOnce({ checkout: box.cwd, executionRunId: "run-1" }),
-      ).toMatchObject({ ok: false, missing: true });
+      expect(runVerdict(box)).toBeNull();
     }
+  });
+
+  test("the session that built the work is not an observation of who judged it", () => {
+    const sameSession: World = {
+      session: "session-9",
+      models: { "session-9": OPUS },
+      // The run's state names this very session as its builder.
+      builder: { ...OPUS, sessionId: "session-9" },
+    };
+    const strict = sandbox();
+    const refused = write(strict, [...PASS, ...REQUEST_MASTER], sameSession);
+    expect(refused.code).toBe(2);
+    expect(refused.body.error).toEndWith(
+      "Nothing was observed: the session filing this verdict is the one the run's state names as its builder, so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+    );
+    expect(runVerdict(strict)).toBeNull();
+
+    // A round's verdict is still written, with nothing observed.
+    const round = sandbox();
+    const wrote = write(
+      round,
+      [...PASS, ...REQUEST_MASTER, "--review", "plan-1"],
+      sameSession,
+    );
+    expect(wrote.code).toBe(0);
+    expect(wrote.body.data).toMatchObject({
+      unobserved:
+        "the session filing this verdict is the one the run's state names as its builder, so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+    });
+    const evaluator = stored(
+      round,
+      `${evaluationDir("run-1")}/review-plan-1.json`,
+    ).evaluator as Record<string, unknown>;
+    expect("observedModel" in evaluator).toBe(false);
+    expect("sessionId" in evaluator).toBe(false);
+
+    // Another session than the builder's is an observation.
+    const other = sandbox();
+    expect(
+      write(other, [...PASS, ...REQUEST_MASTER], {
+        ...sameSession,
+        builder: { ...OPUS, sessionId: "the-builder-session" },
+      }).code,
+    ).toBe(0);
   });
 });
 
@@ -316,6 +486,8 @@ describe("forge:verdict --review, a review round's verdict", () => {
       strict: false,
       evaluatorProblem:
         "the verdict records no observed evaluator provider and model (requested claude/claude-opus-5-5 is not evidence of what ran)",
+      unobserved:
+        "no session is recorded as working in the worktree this command runs in (no session mirror there, or one older than a day)",
     });
     const file = stored(box, path);
     expect(file.evaluator).toEqual({
@@ -331,9 +503,7 @@ describe("forge:verdict --review, a review round's verdict", () => {
       parseEvalVerdictJson(readFileSync(join(box.cwd, path), "utf8")).ok,
     ).toBe(true);
     // The run's own verdict is still unwritten: a round is not it.
-    expect(
-      readVerdictOnce({ checkout: box.cwd, executionRunId: "run-1" }),
-    ).toMatchObject({ ok: false, missing: true });
+    expect(runVerdict(box)).toBeNull();
 
     expect(
       write(box, [...PASS, ...AS_REVIEWER, "--review", "plan-1"]),
@@ -349,7 +519,27 @@ describe("forge:verdict --review, a review round's verdict", () => {
   });
 });
 
-describe("forge:verdict, what it refuses", () => {
+describe("forge:verdict, where the run and the session are", () => {
+  test("the ids are the correlation's, whatever the environment names", () => {
+    const box = sandbox();
+    const wrote = runVerdictWrite(
+      [...PASS, ...AS_REVIEWER],
+      deps(box, {
+        env: {
+          AGENT_FORGE_RUN_CORRELATION: box.pointer,
+          AGENT_FORGE_BEAD_ID: "bead-from-the-environment",
+          FORGE_SLUG: "run-from-the-environment",
+          AGENT_FORGE_SMITH: "claude-master",
+        },
+      }),
+    );
+    expect(wrote.code).toBe(0);
+    expect(runVerdict(box)).toMatchObject({
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+    });
+  });
+
   test("no correlation, or one that does not validate: the ids come from nowhere else", () => {
     const box = sandbox();
     const none = runVerdictWrite([...PASS, ...AS_REVIEWER], deps(box));
@@ -364,15 +554,73 @@ describe("forge:verdict, what it refuses", () => {
     expect(bad.body.error).toBe(
       "run correlation refused: the pointer names no readable file",
     );
-
-    // The environment pointer works like the flag.
-    const viaEnv = runVerdictWrite([...PASS, ...AS_REVIEWER], {
-      ...deps(box),
-      env: { AGENT_FORGE_RUN_CORRELATION: box.pointer },
-    });
-    expect(viaEnv.code).toBe(0);
+    expect(runVerdict(box)).toBeNull();
   });
 
+  test("--checkout names the checkout the run builds in; the session observed is the one where the command runs", () => {
+    // The run builds in `box.cwd`; the command runs in another checkout.
+    const box = sandbox();
+    const elsewhere = join(box.root, "session tree");
+    mkdirSync(join(elsewhere, ".git"), { recursive: true });
+    const world: World = {
+      cwd: elsewhere,
+      session: "session-9",
+      models: { "session-9": OPUS },
+    };
+
+    // Without --checkout the correlation is looked for where the command runs.
+    const lost = runVerdictWrite(
+      [
+        "--correlation",
+        ".tmp/work/run-correlations/run-1.json",
+        ...PASS,
+        ...REQUEST_MASTER,
+      ],
+      deps(box, world),
+    );
+    expect(lost.body.error).toBe(
+      "run correlation refused: the pointer names no readable file",
+    );
+
+    const wrote = runVerdictWrite(
+      [
+        "--correlation",
+        ".tmp/work/run-correlations/run-1.json",
+        "--checkout",
+        box.cwd,
+        ...PASS,
+        ...REQUEST_MASTER,
+      ],
+      deps(box, world),
+    );
+    expect(wrote.code).toBe(0);
+    expect(wrote.body.data).toMatchObject({
+      path: evaluatorVerdictPath("run-1"),
+      file: `${resolveCheckout(box.cwd).worktree}/${evaluatorVerdictPath("run-1")}`,
+      evaluator: { observedModel: "claude-opus-5-5", sessionId: "session-9" },
+    });
+    expect(runVerdict(box)).not.toBeNull();
+
+    // A directory inside a checkout is not that checkout.
+    const nested = join(box.cwd, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    expect(
+      runVerdictWrite(
+        [
+          "--correlation",
+          box.pointer,
+          "--checkout",
+          nested,
+          ...PASS,
+          ...AS_REVIEWER,
+        ],
+        deps(box, world),
+      ).body.error,
+    ).toBe("--checkout must be the top level of a checkout");
+  });
+});
+
+describe("forge:verdict, what it refuses", () => {
   test("a verdict that contradicts its own counts, and an evaluator that is not exactly one kind", () => {
     const box = sandbox();
     const cases: Array<[string[], string]> = [
@@ -407,11 +655,15 @@ describe("forge:verdict, what it refuses", () => {
       ],
       [
         [...PASS, ...AS_REVIEWER, "--attest", "vibes=5"],
-        "attestations.vibes is not a known dimension (quality|reliability|creativity|maintainability|ux)",
+        "--attest vibes is not a known dimension (quality|reliability|creativity|maintainability|ux)",
       ],
       [
         [...PASS, ...AS_REVIEWER, "--attest", "quality"],
         "--attest takes <dimension>=<0..5>",
+      ],
+      [
+        [...PASS, ...AS_REVIEWER, "--attest", "quality=9"],
+        "attestations.quality must be an integer 0..5",
       ],
     ];
     for (const [argv, error] of cases) {
@@ -419,9 +671,7 @@ describe("forge:verdict, what it refuses", () => {
       expect(wrote.code).toBe(2);
       expect(wrote.body.error).toBe(error);
     }
-    expect(
-      readVerdictOnce({ checkout: box.cwd, executionRunId: "run-1" }),
-    ).toMatchObject({ ok: false, missing: true });
+    expect(runVerdict(box)).toBeNull();
   });
 });
 

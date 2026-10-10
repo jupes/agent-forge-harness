@@ -19,10 +19,13 @@ import {
   sha256Hex,
   writeVerdictOnce,
 } from "./eval-verdict-store";
+import { appendEvent } from "./ledger/append";
+import { closeLedger } from "./ledger/db";
 import {
   classifyFile,
   DEFAULT_TTL_DAYS,
   type LedgerDigest,
+  ledgerHoldsVerdict,
   sweepEvaluations,
 } from "./tmp-work-cleanup";
 
@@ -89,8 +92,13 @@ describe("classifyFile", () => {
 const temporary: string[] = [];
 
 afterEach(() => {
+  closeLedger();
   for (const dir of temporary.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // A ledger file a child still holds on Windows: the OS temp directory reclaims it.
+    }
   }
 });
 
@@ -173,7 +181,7 @@ function sweep(
 }
 
 describe("sweepEvaluations", () => {
-  test("the retention period is the one the task-scoped files have", () => {
+  test("the default retention period is 14 days", () => {
     expect(DEFAULT_TTL_DAYS).toBe(14);
   });
 
@@ -399,6 +407,35 @@ describe("sweepEvaluations", () => {
     ).toBe(true);
   });
 
+  test("a run's directory is removed only by the sweep that emptied it: an empty one found there is left", () => {
+    const { checkout } = sandbox();
+    const empty = join(checkout, EVALUATIONS_DIR, sha256Hex("some-run"));
+    mkdirSync(empty, { recursive: true });
+    expect(sweep(checkout, { apply: true })).toEqual({
+      candidates: [],
+      deleted: [],
+    });
+    expect(existsSync(empty)).toBe(true);
+  });
+
+  test("it sweeps a checkout from its top level only: from a directory inside one it does nothing and says so", () => {
+    const { checkout } = sandbox();
+    const file = agedVerdict(checkout, "run-1", 30);
+    const nested = join(checkout, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    expect(
+      sweep(nested, {
+        held: [{ sha256: file.sha256, executionRunId: "run-1" }],
+        apply: true,
+      }),
+    ).toEqual({
+      candidates: [],
+      deleted: [],
+      note: "evaluations are swept from the top level of a checkout: this directory is inside one",
+    });
+    expect(existsSync(join(checkout, file.relative))).toBe(true);
+  });
+
   test("a checkout with no evaluations has nothing to sweep", () => {
     const { checkout } = sandbox();
     expect(sweep(checkout, { apply: true })).toEqual({
@@ -406,4 +443,146 @@ describe("sweepEvaluations", () => {
       deleted: [],
     });
   });
+});
+
+describe("ledgerHoldsVerdict (the script's own lookup, scratch ledger)", () => {
+  const DIGEST = sha256Hex("the bytes the gate read");
+
+  function ledgerWith(
+    run: string,
+    payload: Record<string, unknown>,
+  ): { path: string } {
+    const root = mkdtempSync(join(tmpdir(), "tmp cleanup ledger "));
+    temporary.push(root);
+    const path = join(root, "ledger.db");
+    const stored = appendEvent(
+      {
+        kind: "verdict.bound",
+        workspace: "c:/work/repo",
+        beadId: "bead-1",
+        runId: run,
+        // justification: the payload is the case under test, built by hand.
+        payload: payload as { verdict: "pass" },
+      },
+      { path },
+    );
+    if (!stored.ok) throw new Error(stored.error);
+    return { path };
+  }
+
+  const artifact = (sha256: string) => ({
+    verdict: "pass",
+    verdictArtifact: {
+      path: ".tmp/work/evaluations/abc/verdict.json",
+      sha256,
+      bytes: 312,
+      schemaVersion: 2,
+    },
+  });
+
+  test("holds a digest only when a verdict.bound of that run carries exactly it", () => {
+    const { path } = ledgerWith("run-1", artifact(DIGEST));
+    const held = (sha256: string, executionRunId: string) =>
+      ledgerHoldsVerdict({ sha256, executionRunId }, { path });
+    expect(held(DIGEST, "run-1")).toBe(true);
+    // The run has a verdict.bound, but for other bytes.
+    expect(held(sha256Hex("other bytes"), "run-1")).toBe(false);
+    // The bytes are held, but for another run.
+    expect(held(DIGEST, "run-2")).toBe(false);
+  });
+
+  test("a verdict.bound with no file reference holds nothing", () => {
+    const { path } = ledgerWith("run-1", { verdict: "pass" });
+    expect(
+      ledgerHoldsVerdict({ sha256: DIGEST, executionRunId: "run-1" }, { path }),
+    ).toBe(false);
+  });
+
+  test("a ledger that cannot be read holds nothing", () => {
+    const root = mkdtempSync(join(tmpdir(), "tmp cleanup ledger "));
+    temporary.push(root);
+    const garbage = join(root, "ledger.db");
+    writeFileSync(garbage, "not a database");
+    expect(
+      ledgerHoldsVerdict(
+        { sha256: DIGEST, executionRunId: "run-1" },
+        { path: garbage },
+      ),
+    ).toBe(false);
+    // A directory where the ledger file would be.
+    expect(
+      ledgerHoldsVerdict(
+        { sha256: DIGEST, executionRunId: "run-1" },
+        { path: root },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)", () => {
+  const SCRIPT = join(import.meta.dir, "tmp-work-cleanup.ts");
+
+  async function cleanup(
+    checkout: string,
+    home: string,
+  ): Promise<{ exitCode: number; data: Record<string, unknown> }> {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
+      if (/^(CLAUDE_|AGENT_FORGE_|FORGE_|TTL_DAYS$)/.test(key)) continue;
+      env[key] = value;
+    }
+    env.AGENT_FORGE_HOME = home;
+    const child = Bun.spawn([process.execPath, "run", SCRIPT, "--apply"], {
+      cwd: checkout,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(child.stdout).text();
+    return {
+      exitCode: await child.exited,
+      data: JSON.parse(stdout).data,
+    };
+  }
+
+  test("removes the verdict the ledger holds and keeps the one it does not", async () => {
+    const { checkout } = sandbox();
+    const home = join(dirname(checkout), "forge home");
+    mkdirSync(home, { recursive: true });
+    // The script takes its issues from the checkout's own export.
+    mkdirSync(join(checkout, ".beads"), { recursive: true });
+    writeFileSync(
+      join(checkout, ".beads", "issues.jsonl"),
+      `${JSON.stringify(mkClosed("bead-1"))}\n`,
+    );
+    const held = agedVerdict(checkout, "run-held", 30);
+    const unheld = agedVerdict(checkout, "run-unheld", 30);
+    const stored = appendEvent(
+      {
+        kind: "verdict.bound",
+        workspace: checkout,
+        beadId: "bead-1",
+        runId: "run-held",
+        payload: {
+          verdict: "pass",
+          verdictArtifact: {
+            path: held.relative,
+            sha256: held.sha256,
+            bytes: 1,
+            schemaVersion: 2,
+          },
+        },
+      },
+      { path: join(home, "ledger.db") },
+    );
+    expect(stored.ok).toBe(true);
+    closeLedger();
+
+    const swept = await cleanup(checkout, home);
+    expect(swept.exitCode).toBe(0);
+    expect(swept.data.evaluations).toMatchObject({ deleted: [held.relative] });
+    expect(existsSync(join(checkout, held.relative))).toBe(false);
+    expect(existsSync(join(checkout, unheld.relative))).toBe(true);
+  }, 60_000);
 });

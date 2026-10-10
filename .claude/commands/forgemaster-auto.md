@@ -80,11 +80,13 @@ For each phase in order, run the loop in `.claude/workflows/forge-auto.md`:
    artifact — a different agent from the one that built it, at a tier **≥** the builder's
    (`.claude/protocols/model-tier-policy.md`). Have it file its verdict with
    `bun run forge:verdict --correlation <pointer> --review <phase>-<round> …` per
-   `.claude/protocols/evaluation-verdict.md`; the command prints the file's `path`. The pointer is
-   `data.correlation.pointer` from step 3 when the run names its bead (`--bead`); otherwise
-   `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one.
+   `.claude/protocols/evaluation-verdict.md`; the command prints the file's full path as
+   `data.file`. The pointer is `data.correlation.pointer` from step 3 when the run names its bead
+   (`--bead`); otherwise `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one. When
+   the run builds in another checkout (step 3's `--checkout`), give that same `--checkout <dir>` to
+   `forge:correlate` and to `forge:verdict`: the correlation and the verdict live there.
 5. ```bash
-   bun run forge:review --slug <slug> --phase <phase> --verdict <path printed by forge:verdict> --tier <tier>
+   bun run forge:review --slug <slug> --phase <phase> --verdict <data.file printed by forge:verdict> --tier <tier>
    # add --max-revisions <n> when the caller passed it
    ```
    Record the printed `comment` on the phase's Beads issue (`bd comments add <id> "<comment>"`).

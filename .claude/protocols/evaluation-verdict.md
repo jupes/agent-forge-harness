@@ -10,10 +10,11 @@ A verdict belongs to one **execution run** of one Beads issue, and says who judg
 .tmp/work/evaluations/<sha256 of the executionRunId>/verdict.json
 ```
 
-The path is a rule, not a setting: it is derived from the `executionRunId` of the run's **run correlation** (`.claude/protocols/agent-onboarding.md`, *Run correlation*), in the checkout the run builds in. Nothing else selects a verdict: not the Beads id, not an environment variable, not the host's task id. Two runs of the same Beads issue have two different files.
+The path is a rule, not a setting: it is derived from the `executionRunId` of the run's **run correlation** (`.claude/protocols/agent-onboarding.md`, *Run correlation*), in the checkout the run builds in. Nothing else selects a verdict: not the Beads id, not the host's task id, and no environment variable other than the one that points at the run correlation. Two runs of the same Beads issue have two different files.
 
 - **One run, one verdict.** The file is created only where nothing is; a second write for the same run fails and says so. It appears whole or not at all.
 - **A re-evaluation is a new run.** After a FAIL is repaired, `bun run forge:correlate --bead <TASK-ID>` mints a new run with its own path. The earlier file stays as evidence of the earlier run.
+- **Once the sweep has removed a verdict** (see *Cleanup*) its digest stays in the ledger and the run's place is free again.
 - The `.tmp/` tree is gitignored; the file is **not** committed.
 
 ## Writing it
@@ -30,7 +31,9 @@ bun run forge:verdict --correlation <pointer> --verdict FAIL --high 1 \
   --requested-provider claude --requested-model claude-opus-5-5 --requested-rank master
 ```
 
-`<pointer>` is the run correlation's pointer: `data.correlation.pointer` from `forge:phase-gate … --write --bead <TASK-ID>`, or from `bun run forge:correlate --bead <TASK-ID> [--run <slug>]`. A launcher can set `AGENT_FORGE_RUN_CORRELATION` instead. The Beads id and the run id in the file are the correlation's; there is no flag for either.
+`<pointer>` is the run correlation's pointer: `data.correlation.pointer` from `forge:phase-gate … --write --bead <TASK-ID>`, or from `bun run forge:correlate --bead <TASK-ID> [--run <slug>]`. A launcher can set `AGENT_FORGE_RUN_CORRELATION` instead. The Beads id and the run id in the file are the correlation's; there is no flag for either, and none for what was observed.
+
+Every argument is one of the flags below, written `--flag value` or `--flag=value`, and given once (`--attest` may repeat). **Anything else is refused and nothing is written**: an unknown flag, a flag with no value, a repeated flag, a stray word. The file cannot be corrected afterwards, so a mistyped count must not become a verdict without that count.
 
 | Flag | Meaning |
 |------|---------|
@@ -41,10 +44,12 @@ bun run forge:verdict --correlation <pointer> --verdict FAIL --high 1 \
 | `--summary <text>` | Optional short rationale. |
 | `--attest <dimension>=<0..5>` | Optional, repeatable: `quality`, `reliability`, `creativity`, `maintainability`, `ux`. |
 | `--review <label>` | Write a review round's verdict instead of the run's (see *Review rounds*). |
+| `--correlation <pointer>` | The run correlation. Relative pointers are relative to the checkout the run builds in. |
+| `--checkout <dir>` | The top level of the checkout the run builds in, when that is not the checkout the command runs in. |
 
-The command prints `{ ok, data, error }`; `data.path` is the file it wrote, with its SHA-256 and size.
+The command prints `{ ok, data, error }`: `data.path` is the file it wrote, relative to the run's checkout, and `data.file` is its full path (what to hand another command), with its SHA-256 and size.
 
-**The run's verdict is refused, and nothing is written, when it could never satisfy strict completion:** a model evaluator with nothing observed, or one the rank policy rejects. The file is written once, so a verdict that cannot pass would leave the run without one that can. Have a person file it (`--human`), or re-run the evaluator at a rank at or above the builder's.
+**The run's verdict is refused, and nothing is written, when it could never satisfy strict completion:** a model evaluator with nothing observed, or one the rank policy rejects. The refusal says which, and when nothing was observed, why. The file is written once, so a verdict that cannot pass would leave the run without one that can. Have a person file it (`--human`), run the Evaluator as a session of its own, or re-run it at a rank at or above the builder's.
 
 ## Schema (version 2)
 
@@ -103,7 +108,13 @@ Provider, model and session values are short plain text: at most 200 characters,
 
 The four observed fields are all present or all absent. When nothing was observed they are absent: a value is never copied from the request.
 
-**Where an observation comes from today:** the model the event ledger has cached for the session working in the worktree when `forge:verdict` runs (the session mirror the SessionStart hook leaves there; the cache is filled from the host's session start and the session's transcript). `gateway-routing` is named by the schema and produced by nothing here.
+**Where an observation comes from today:** the model the event ledger has cached for the session working in the worktree `forge:verdict` runs in (the session mirror the SessionStart hook leaves there; the cache is filled from the host's session start and the session's transcript). There is no observation, and the fields are absent, when:
+
+- that worktree has no session mirror, or one older than a day;
+- the ledger has no model cached for that session;
+- that session is the one the run's state names as its builder. The session that built the work is not an observation of who judged it, and an Evaluator subagent shares its spawner's session.
+
+`gateway-routing` is named by the schema and produced by nothing here.
 
 **Rank policy** (`.claude/protocols/model-tier-policy.md`, *Grader ≥ subject*). A provider and model have a rank through the `rank:*` tag of the smiths configured with them. When smiths of different ranks share a model, the evaluator is read at the lowest and the builder at the highest. The builder is the executor stored on the run's state.
 
@@ -134,7 +145,7 @@ When the variable is unset or not `strict`, the hook does not read the file. A `
 
 An unattended run reviews each phase, possibly several times, so one run has several round verdicts. A round verdict is written with `--review <label>` (for example `--review plan-2`): the same schema, in the run's directory as `review-<label>.json`, once per label. It is written whatever was observed, and the command reports what a strict gate would object to (`data.evaluatorProblem`).
 
-`bun run forge:review --slug <slug> --phase <phase> --verdict <data.path>` then:
+`bun run forge:review --slug <slug> --phase <phase> --verdict <data.file>` then:
 
 - for a **correlated** run, takes only a schema 2 verdict naming the correlation's bead and run; anything else is recorded `UNREADABLE` and halts the loop;
 - for a run with **no correlation**, cannot check a schema 2 verdict against anything and refuses it; it still takes a legacy schema 1 verdict and marks the round as one;
@@ -157,7 +168,9 @@ Nothing writes schema 1 any more.
 
 - **The gate checks what the verdict declares; it does not observe the evaluator itself.** The observation is made by `forge:verdict`. A hand-written file can declare anything, like every other file under `.tmp/work`: the directory is the working tree's own and is not protected from the session that works in it. The same goes for the run correlation, the run's state and the smith config the rank check reads.
 - **A verdict can call itself human.** The gate takes a human verdict on its actor kind alone. The log entry and the ledger event record that it was a human verdict, so it can be seen.
-- **The observation is of a session.** An Evaluator subagent shares its session with whoever spawned it and is observed as that session's model. Spawn it without a weaker model override, run the evaluator as a session of its own, or have a person file the verdict.
+- **The observation is of a session, never of a subagent.** An Evaluator subagent shares its session with whoever spawned it. When the run's state names that session as the builder, nothing is recorded as observed and strict completion needs a person's verdict or an Evaluator running as a session of its own. When the run's state names no builder session (a run with no phase gate, or one whose phase gate recorded no session), the writer cannot tell: a subagent given a weaker model than its session is then recorded as the session's model. Tracked in `agent-forge-harness-5eqw`.
+- **The session mirror is a file.** It can name a session that has ended (it is trusted for a day), and anyone who can write the worktree can put another session's id in it.
+- **The gate looks for the builder where it runs.** When a run builds in another checkout than the one its phase gates ran in, the run's state is not in the checkout the gate runs in, so the gate sees no builder and accepts only a master evaluator or a person. The writer applies the policy the same way.
 - **A hard link is not seen as a link.** The reader refuses symbolic links and junctions anywhere on the path. A `verdict.json` that is a hard link to another file is read like any file; what is recorded is still the digest of the bytes read.
 - **A run that is rebound after its verdict was filed needs a new run.** `forge:correlate --bead` and `forge:phase-gate --bead` can point a run at another Beads issue. The verdict already filed names the earlier issue, the gate refuses it, and the run's one place is taken.
 - **A writer that dies part-way leaves a scratch file.** The verdict is written beside its place (`.verdict.json.<pid>.<stamp>.tmp`) and linked in, so `verdict.json` is whole or absent and the run is not blocked. The scratch file stays; the sweep leaves it, and that run's directory, alone.

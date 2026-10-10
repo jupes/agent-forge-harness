@@ -57,6 +57,7 @@ const REVIEW = join(import.meta.dir, "auto-loop-cli.ts");
 const RUNS = join(import.meta.dir, "runs-cli.ts");
 const AUDIT = join(import.meta.dir, "..", "ledger", "audit-cli.ts");
 const CORRELATE = join(import.meta.dir, "..", "run-correlation-cli.ts");
+const VERDICT = join(import.meta.dir, "..", "eval-verdict-cli.ts");
 const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
 
 /** The parent's environment minus anything that names a live session, run or ledger. */
@@ -456,7 +457,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       box,
       REVIEW,
       ["--slug", "x", "--phase", "research", "--verdict", file],
-      env,
+      { ...scratchHome(box), ...env },
     );
     return {
       exitCode: reviewed.exitCode,
@@ -464,6 +465,13 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       file: name,
       stderr: reviewed.stderr,
     };
+  }
+
+  /** A user home of the test's own: the developer's smith config is not read. */
+  function scratchHome(box: Box): Record<string, string> {
+    const home = join(dirname(box.cwd), "user home");
+    mkdirSync(home, { recursive: true });
+    return { HOME: home, USERPROFILE: home };
   }
 
   function boundRows(box: Box): LedgerEventOf<"verdict.bound">[] {
@@ -689,10 +697,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       "--model",
       "claude-opus-5-5",
     ]);
-    // A scratch user home: the developer's own smith config is not read.
-    const home = join(dirname(box.cwd), "user home");
-    mkdirSync(home, { recursive: true });
-    const hermetic = { HOME: home, USERPROFILE: home };
+    const hermetic = scratchHome(box);
     const weaker = await review(
       box,
       v2Json({
@@ -727,6 +732,198 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     expect(unranked.stderr).toContain(
       "forge:review: smith config not readable, so no evaluator has a rank:",
     );
+  }, 180_000);
+
+  /** Run the verdict writer as the documents say to, and return what it printed. */
+  async function fileRoundVerdict(
+    box: Box,
+    args: string[],
+  ): Promise<{
+    exitCode: number;
+    data: Record<string, unknown> | null;
+    error: string | null;
+  }> {
+    const wrote = await run(
+      box,
+      VERDICT,
+      [
+        "--verdict",
+        "PASS",
+        "--human",
+        "reviewer",
+        "--review",
+        "research-1",
+        ...args,
+      ],
+      scratchHome(box),
+    );
+    const printed = JSON.parse(wrote.stdout);
+    return {
+      exitCode: wrote.exitCode,
+      data: printed.data,
+      error: printed.error,
+    };
+  }
+
+  test("the unattended review step as documented, in one checkout: the gate's pointer, forge:verdict, then forge:review with the file it printed", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    const gate = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--bead",
+      "b-1",
+    ]);
+    const pointer = JSON.parse(gate.stdout).data.correlation.pointer as string;
+
+    const wrote = await fileRoundVerdict(box, ["--correlation", pointer]);
+    expect(wrote.exitCode).toBe(0);
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      String(wrote.data?.file),
+    ]);
+    expect(reviewed.exitCode).toBe(0);
+    expect(JSON.parse(reviewed.stdout).data.round).toMatchObject({
+      verdict: "PASS",
+      verdictSchemaVersion: 2,
+    });
+    expect(boundRows(box).map((event) => event.payload)).toMatchObject([
+      {
+        verdict: "pass",
+        evaluatorIdentity: { kind: "human", actorKind: "reviewer" },
+        verdictArtifact: { path: wrote.data?.path, sha256: wrote.data?.sha256 },
+      },
+    ]);
+  }, 120_000);
+
+  test("the same step when the run builds in another checkout: --checkout on the writer, and the full path it prints", async () => {
+    const box = sandbox();
+    const building = join(dirname(box.cwd), "build tree");
+    mkdirSync(join(building, ".git"), { recursive: true });
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    const gate = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--bead",
+      "b-1",
+      "--checkout",
+      building,
+    ]);
+    const pointer = JSON.parse(gate.stdout).data.correlation.pointer as string;
+
+    // The pointer is relative to the checkout the run builds in: without
+    // --checkout the writer looks where it runs, and says what it did not find.
+    const lost = await fileRoundVerdict(box, ["--correlation", pointer]);
+    expect(lost.exitCode).toBe(2);
+    expect(lost.error).toBe(
+      "run correlation refused: the pointer names no readable file",
+    );
+
+    const wrote = await fileRoundVerdict(box, [
+      "--correlation",
+      pointer,
+      "--checkout",
+      building,
+    ]);
+    expect(wrote.exitCode).toBe(0);
+    expect(existsSync(String(wrote.data?.file))).toBe(true);
+    expect(existsSync(join(building, String(wrote.data?.path)))).toBe(true);
+
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      String(wrote.data?.file),
+    ]);
+    expect(reviewed.exitCode).toBe(0);
+    expect(JSON.parse(reviewed.stdout).data.verdictError).toBeUndefined();
+  }, 120_000);
+
+  test("a run that named no bead: forge:review's hint is a command that works for the checkout the run builds in", async () => {
+    const box = sandbox();
+    const building = join(dirname(box.cwd), "build tree");
+    mkdirSync(join(building, ".git"), { recursive: true });
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--checkout",
+      building,
+    ]);
+    const before = await review(box, v2Json());
+    const hint = String(before.data.verdictError);
+    expect(hint).toStartWith(
+      'run "x" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run x --checkout ',
+    );
+
+    // The hinted command, with the bead filled in.
+    const correlated = await run(box, CORRELATE, [
+      "--bead",
+      "b-1",
+      "--run",
+      "x",
+      "--checkout",
+      building,
+    ]);
+    const pointer = JSON.parse(correlated.stdout).data.correlation
+      .pointer as string;
+    const wrote = await fileRoundVerdict(box, [
+      "--correlation",
+      pointer,
+      "--checkout",
+      building,
+      "--review",
+      "research-2",
+    ]);
+    // --review was given twice (the helper's and this one): refused, not guessed.
+    expect(wrote.error).toBe("--review was given more than once");
+    const filed = await run(
+      box,
+      VERDICT,
+      [
+        "--verdict",
+        "PASS",
+        "--human",
+        "reviewer",
+        "--review",
+        "research-2",
+        "--correlation",
+        pointer,
+        "--checkout",
+        building,
+      ],
+      scratchHome(box),
+    );
+    const reviewed = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      String(JSON.parse(filed.stdout).data.file),
+    ]);
+    expect(JSON.parse(reviewed.stdout).data.verdictError).toBeUndefined();
+    expect(JSON.parse(reviewed.stdout).data.round).toMatchObject({
+      verdict: "PASS",
+    });
   }, 180_000);
 
   test("a verdict file over the size a verdict has is refused without being taken in", async () => {

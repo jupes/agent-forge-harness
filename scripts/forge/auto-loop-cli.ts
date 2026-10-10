@@ -119,7 +119,11 @@ export function verdictOfRun(
   slug: string,
   correlation:
     | { kind: "found"; value: RunCorrelation }
-    | { kind: "none" }
+    | {
+        kind: "none";
+        /** The checkout the run builds in, when the run's state names one. */
+        checkout?: string;
+      }
     | { kind: "refused"; error: string },
 ): { ok: true; value: EvalVerdictParsed } | { ok: false; error: string } {
   if (correlation.kind === "refused") {
@@ -142,7 +146,8 @@ export function verdictOfRun(
   if (parsed.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION) {
     return {
       ok: false,
-      error: `run "${slug}" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run ${slug})`,
+      // The correlation has to be in the checkout the run builds in.
+      error: `run "${slug}" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run ${slug}${correlation.checkout !== undefined ? ` --checkout "${correlation.checkout}"` : ""})`,
     };
   }
   return { ok: true, value: parsed };
@@ -204,7 +209,10 @@ if (import.meta.main) {
     ? ({ kind: "found", value: loaded.value } as const)
     : existsSync(join(checkout, pointer))
       ? ({ kind: "refused", error: loaded.error } as const)
-      : ({ kind: "none" } as const);
+      : ({
+          kind: "none",
+          ...(state.checkout !== undefined ? { checkout: state.checkout } : {}),
+        } as const);
 
   // An unreadable or invalid verdict is recorded, not swallowed: decideNext
   // halts on it, which is the point — an auto run must not grade itself blind.

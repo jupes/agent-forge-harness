@@ -39,7 +39,8 @@ Safety:
   on the way; its bytes are a schema 2 verdict whose run id hashes to the directory it is in; the Beads issue it names
   is closed and the file is older than the TTL; and the event ledger holds a `verdict.bound` for that run with the
   file's SHA-256. Until the ledger holds it, the file is the only copy of that evidence. A run's directory is removed
-  only once it is empty; anything else found there is left alone.
+  only by the sweep that emptied it; anything else found there is left alone. Evaluations are swept only when the
+  script runs at the top level of a checkout.
 - Run correlation files are not swept.
 - `--apply` is required to delete. Without it, the script prints what it **would** remove.
 - `<EPIC-ID>-interfaces.md` and `session-handoff.md` are always skipped.

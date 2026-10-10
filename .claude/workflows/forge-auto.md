@@ -75,11 +75,13 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
    the evaluator refuses to grade its own output — and run at a tier **≥** the builder's
    (`.claude/protocols/model-tier-policy.md`). Have it file its verdict with
    `bun run forge:verdict --correlation <pointer> --review <phase>-<round> …` per
-   `.claude/protocols/evaluation-verdict.md`; the command prints the file's `path`. The pointer is
-   `data.correlation.pointer` from step 3 when the run names its bead (`--bead`); otherwise
-   `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one.
-5. **Decide.** `bun run forge:review --slug <slug> --phase <phase> --verdict <path> --tier <tier>`,
-   with the `path` that command printed.
+   `.claude/protocols/evaluation-verdict.md`; the command prints the file's full path as
+   `data.file`. The pointer is `data.correlation.pointer` from step 3 when the run names its bead
+   (`--bead`); otherwise `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one. When
+   the run builds in another checkout (step 3's `--checkout`), give that same `--checkout <dir>` to
+   `forge:correlate` and to `forge:verdict`: the correlation and the verdict live there.
+5. **Decide.** `bun run forge:review --slug <slug> --phase <phase> --verdict <file> --tier <tier>`,
+   with the `data.file` that command printed.
    Record the printed `comment` on the phase's Beads issue.
 6. **Act on the exit code:**
    - **0 (advance)** — file any follow-ups, then start the next phase.

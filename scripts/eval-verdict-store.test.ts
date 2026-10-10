@@ -23,6 +23,7 @@ import {
   evaluationDir,
   evaluatorVerdictPath,
   MAX_VERDICT_BYTES,
+  readEvaluationFile,
   readVerdictOnce,
   reviewVerdictFile,
   writeVerdictOnce,
@@ -543,6 +544,36 @@ describe("readVerdictOnce", () => {
       ok: false,
       error: `${evaluatorVerdictPath("run-2")} is not a regular file`,
     });
+  });
+
+  test("by directory name: reads a managed file of a directory the path rule can produce, and nothing else", () => {
+    const { checkout } = sandbox();
+    writeVerdictOnce({ checkout, executionRunId: "run-1", content: BODY });
+    const dir = sha256("run-1");
+    expect(
+      readEvaluationFile({ checkout, dir, file: "verdict.json" }),
+    ).toMatchObject({ ok: true, sha256: sha256(BODY) });
+
+    // A file the sweep does not manage, planted beside the verdict.
+    writeFileSync(join(checkout, EVALUATIONS_DIR, dir, "notes.json"), BODY);
+    // A directory name the rule cannot produce, holding a good verdict.
+    const odd = join(checkout, EVALUATIONS_DIR, "run-1");
+    mkdirSync(odd, { recursive: true });
+    writeFileSync(join(odd, "verdict.json"), BODY);
+    for (const [name, file] of [
+      [dir, "notes.json"],
+      [dir, "../" + dir + "/verdict.json"],
+      ["run-1", "verdict.json"],
+      [dir.toUpperCase(), "verdict.json"],
+      ["..", "verdict.json"],
+    ]) {
+      expect(
+        readEvaluationFile({ checkout, dir: name ?? "", file: file ?? "" }),
+      ).toEqual({
+        ok: false,
+        error: "the file is not a verdict file of an evaluation directory",
+      });
+    }
   });
 
   test("reads from the checkout it is given, found from any directory inside it", () => {

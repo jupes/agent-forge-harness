@@ -250,7 +250,7 @@ test.describe("Forge run", () => {
       "Evaluator verdict by claude/claude-opus-5-5, observed (requested claude/claude-opus-5-5, rank master)",
     );
     await expect(note).toContainText(
-      ".tmp/work/evaluations/5f2c9a/verdict.json",
+      `.tmp/work/evaluations/${"5f2c9a1e".repeat(8)}/verdict.json`,
     );
     await expect(note).toContainText("412 bytes, SHA-256 9b74c9897bac");
     await expect(note).not.toContainText("legacy");
