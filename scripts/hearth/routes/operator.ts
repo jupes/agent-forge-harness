@@ -14,6 +14,7 @@ import { assertCouncilRunId } from "../../council/artifacts";
 import {
   assertCouncilInput,
   type CouncilServiceInput,
+  councilBeadId,
   type createCouncilService,
   safeCouncilError,
 } from "../../council/service";
@@ -92,10 +93,13 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
   } catch (error) {
     return fail(safeCouncilError(error));
   }
-  // Stricter than the service on the two ids, because both go on the audit row.
+  // The bead the run is recorded against: the one the caller named, or, for a
+  // bead source, the bead under review. Stricter than the service on the two
+  // ids, because both go on the audit row.
+  const beadId = councilBeadId(input);
   if (
-    input.beadId !== undefined &&
-    (!BEAD_ID.test(input.beadId) || looksLikeSecret(input.beadId))
+    beadId !== undefined &&
+    (!BEAD_ID.test(beadId) || looksLikeSecret(beadId))
   )
     return fail("beadId must be a Beads issue id");
   const runId =
@@ -119,7 +123,7 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
       ...(input.redactSecrets !== undefined
         ? { redactSecrets: input.redactSecrets }
         : {}),
-      ...(input.beadId !== undefined ? { beadId: input.beadId } : {}),
+      ...(beadId !== undefined ? { beadId } : {}),
     },
   };
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { contextListing } from "./context";
 import {
   aggregateFindings,
   isIndependentSuccess,
@@ -98,10 +99,13 @@ export async function runCouncil(
   };
 
   const estimate = estimateCouncilCost(options.profile);
+  // The first event, out before any model is called: it says what is about to
+  // be sent, part by part.
   emit("run.started", {
     profileId: options.profile.id,
     sourceKind: options.context.source.kind,
     estimatedCostUsd: estimate,
+    listing: contextListing(options.context),
   });
 
   const finishFailure = (

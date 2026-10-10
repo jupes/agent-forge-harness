@@ -1,6 +1,6 @@
 # Deliberative council reviews
 
-Agent Forge can review a pull request, plan, local research/text file, or pasted text with a council of models. Council seats work in parallel, anonymously challenge the other candidates, and then a chair model synthesizes the final review. The same engine serves the local dashboard, CLI, and stdio MCP server.
+Agent Forge can review a pull request, plan, Beads issue, local research/text file, or pasted text with a council of models. Council seats work in parallel, anonymously challenge the other candidates, and then a chair model synthesizes the final review. The same engine serves the local dashboard, CLI, and stdio MCP server.
 
 The checked-in default profile uses deterministic fake agents, so the complete workflow can be tried without an account or API key. Use `councils/multi-provider.example.json` for direct hosted-provider connections, or `councils/openrouter.example.json` for four model vendors behind one OpenRouter key. You can mix gateway and direct seats in a custom profile.
 
@@ -30,6 +30,27 @@ bun run council -- pr https://github.com/owner/repo/pull/123 --profile councils/
 ```
 
 PR review captures the base and head commit SHAs, changed-file list, patch, and linked Agent Forge Beads acceptance criteria when available. If GitHub's metadata response omits any changed files (including its 100-file list cap), the capture fails before fetching or reviewing the diff rather than silently dropping patch sections. Oversized complete patches are truncated at a UTF-8 boundary and the omission is recorded. The GitHub CLI is invoked with argument arrays rather than a shell, and only a PR number or an HTTPS pull-request URL is accepted.
+
+Review a Beads issue by its full id. Look at the dry run first: it lists every part that would be sent.
+
+```powershell
+bun run council -- bead <beads-issue-id> --dry-run
+bun run council -- bead <beads-issue-id> --profile councils/my-council.json
+```
+
+A bead source packs these parts, and spends the evidence budget on them in this order:
+
+1. the acceptance criteria, with the bead's id, title, type, priority, status, labels and the ids and types of what it depends on (the title, the labels and the dependency list are shortened when they are very long);
+2. its comments, newest first (timestamp and quoted text, never the author);
+3. its description, design and notes;
+4. the plan, research and report of the bead's forge run, and Markdown files the bead names under `plans/research/`, `plans/drafts/`, `plans/committed/`, `docs/plans/` or directly inside `reports/` — at most six, each at most 2 MB, read only from this workspace, and never anything under a `council-runs` directory;
+5. the most recently mentioned pull request of this workspace's own origin repository, captured by the same packer as a `pr` source but without looking up the beads its description names, and with the patch capped at the evidence budget.
+
+Each part is its own evidence item (`E1`, `E2`, ...). The acceptance criteria and the comments take what they need first. The description is held to a tenth of the budget and each linked file to 15% until every later part has had its turn; what is then left goes back to the parts that were cut. So when the budget is short, a long description or plan can be cut while the pull request after it is still packed. A linked file that is missing, unreadable or too large, and a pull request URL that is not this repository's, are named in the listing and never fetched. A pull request that exists but could not be captured, and a linked file too large to read, mark the evidence as truncated, so the run cannot read as a pass.
+
+Every field that is read is scanned for credential-like values in full before anything is taken from it or cut: the title, labels, criteria, description, design, notes, external reference, spec id, every comment, every linked file and the pull request, including parts the budget then drops. A hit refuses the whole source and names where it was. Everything that will be sent is also read as one text, in the order it is sent and in the reverse order, so a key written across two comments, two fields or two parts is caught whichever half comes first. Such a key can be replaced in place only when both halves sit in one part in the order they are sent; otherwise the source is refused under either policy. What is shown to you (the source name, evidence titles, listing lines, command errors) is scanned as written and again after control and invisible formatting characters have been replaced by spaces; a title or a label is scanned in the one-line form it is shown in before it is shortened. Because text is also read across the boundaries between parts, a field, comment or patch that ends with a provider variable name and `=` or `:` can be refused for what is packed next to it, and so can a bead where one part shows a key's first line and another its last line with no key anywhere; `--redact-secrets` does not lift such a refusal.
+
+Bead content is private and a council run sends it to every provider in the profile. A bead is therefore packed only when you name it: nothing selects one for you, the bead is read with `bd --readonly`, a partial id is refused, and no other bead's text is read (of a dependency only its id and type are sent). A plan, research or report path the bead mentions is sent whichever bead it was written for; the listing names each file. A run of a bead is recorded in the ledger against that bead, whether it was started from the CLI, the MCP server or the hearth's council route (`POST /__agent-forge/council/runs` with `{ "sourceType": "bead", "source": "<beads-issue-id>" }` and the operator token), and whether or not the caller also named the bead for the ledger; a request that names a different bead for the ledger is refused before anything is recorded or started. The dashboard's council page does not offer a bead as a source. A real CLI run prints the listing on stderr before it starts.
 
 Useful controls:
 
@@ -187,6 +208,14 @@ Example tool sequence:
 {"name":"council_start","arguments":{"sourceType":"text","source":"Review this design and its supplied evidence...","profile":"C:\\absolute\\harness\\councils\\multi-provider.example.json","maxUsd":3}}
 ```
 
+To review a Beads issue, give `kind` and `id` instead of `sourceType` and `source` (giving both shapes is refused):
+
+```json
+{"name":"council_start","arguments":{"kind":"bead","id":"<beads-issue-id>","profile":"C:\\absolute\\harness\\councils\\multi-provider.example.json","maxUsd":3}}
+```
+
+`council_status` then returns `listing`: one line per part of the source, with sizes, cuts and anything left out. It comes from the run's first event, which is written before any provider is called; the start call itself returns before the bead has been read, so poll once to see it.
+
 Then call `council_status` with `{"runId":"<returned ID>"}` until its status is `completed`, `failed`, or `cancelled`. Status polling is deliberately compact: it includes progress counters, bounded finding summaries, and round metadata without repeating source evidence, events, model outputs, or the full run. Call `council_replay` once for the complete terminal record. A cancellation request first returns `cancelling` while in-flight calls stop. Read both the transport envelope and the job status: a successful status lookup can describe a failed review. Failed synchronous reviews retain their run ID, diagnostics, and artifact paths in `data` even when `ok` is false.
 
 Async jobs survive a request timeout, **not termination of the server process**. Keep the MCP subprocess alive. Completed and failed results survive restarts; interrupted in-flight runs are reported as failed, never silently resumed or rebilled. A service instance permits at most four concurrent council runs. It does not share active in-memory progress with a separate CLI/dashboard process, although persisted results can be reopened from a common runs directory.
@@ -227,6 +256,7 @@ Review behavior is shared across all three interfaces. Start with `scripts/counc
 | `run-result.ts` | Limitations and final run assembly. |
 | `fake-transport.ts` | The no-charge demo and deterministic test transport. |
 | `workflow.ts` | Shared profile loading, source preparation, provider dispatch and artifact persistence for CLI and jobs. |
+| `bead-source.ts` | Reads one Beads issue read-only and returns its parts in budget order: criteria, comments, description, linked files, pull request. |
 
 The original exports from `engine.ts` and `cli.ts` remain available. Runtime parsing accepts omitted or null peer severity suggestions and strips unknown fields; provider schemas require all properties and represent an omitted suggestion as null. Semantic-equivalence groups must contain known, distinct candidate IDs and are revalidated locally. Provider-specific schema transformations stay in `providers.ts`. Context-dependent evidence and voting rules cannot be expressed by the output shape alone and remain explicit validation. Reviewer-reported unknowns remain visible as limitations; structural incompleteness such as truncation, failed/reduced participation, inadequate supported-verdict quorum, or unresolved/unreviewed high-severity findings can mechanically downgrade a pass. Low-severity dissent remains reported without vetoing an otherwise supported pass.
 

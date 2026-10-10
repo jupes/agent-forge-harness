@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseBeadsIssueId } from "../run-correlation";
 import {
   assertCouncilRunId,
   type CouncilArtifactPaths,
@@ -21,6 +22,7 @@ import {
 } from "./artifacts";
 import { sanitizeContent } from "./context";
 import type { CouncilAppend, CouncilAttachResolver } from "./ledger-events";
+import type { CommandRunner } from "./pr-source";
 import { assertProvidersReady, providerReadiness } from "./providers";
 import type {
   CouncilDiscussionRound,
@@ -38,7 +40,7 @@ import {
 } from "./workflow";
 
 export type CouncilServiceInput = {
-  sourceType: "file" | "plan" | "pr" | "text";
+  sourceType: "file" | "plan" | "pr" | "text" | "bead";
   source: string;
   profile?: string | undefined;
   maxUsd?: number | undefined;
@@ -81,6 +83,11 @@ export type CouncilServiceOptions = {
    */
   appendEvent?: CouncilAppend;
   resolveAttach?: CouncilAttachResolver;
+  /**
+   * Runs `bd`, `git` and `gh` for the bead and pr sources; the local one when
+   * absent. Tests hand in a fake, so no test reads the real tracker.
+   */
+  runCommand?: CommandRunner;
 };
 
 export function safeCouncilError(error: unknown): string {
@@ -92,14 +99,15 @@ export function safeCouncilError(error: unknown): string {
 
 /**
  * The checks on a start request that need nothing but the request. Throws
- * what `start` has always thrown, in the order it always has. A host that
- * records something before it starts a run (the hearth's audit row) calls
- * this first, so a malformed request is refused before anything is written.
+ * what `start` has always thrown, in the order it always has, and after
+ * those the two refusals of a bead source. A host that records something
+ * before it starts a run (the hearth's audit row) calls this first, so a
+ * malformed request is refused before anything is written.
  */
 export function assertCouncilInput(input: CouncilServiceInput): void {
   if (
     !input ||
-    !["file", "plan", "pr", "text"].includes(input.sourceType) ||
+    !["file", "plan", "pr", "text", "bead"].includes(input.sourceType) ||
     typeof input.source !== "string" ||
     !input.source.trim() ||
     Buffer.byteLength(input.source, "utf8") > 2_000_000
@@ -131,6 +139,66 @@ export function assertCouncilInput(input: CouncilServiceInput): void {
     (typeof input.beadId !== "string" || !input.beadId.trim())
   )
     throw new Error("beadId must be a nonempty string");
+  if (input.sourceType === "bead") {
+    // The bead under review is the bead the run is recorded against: a host
+    // that audits the request first (the hearth) must be able to name it, and
+    // no caller may have one bead packed and another one credited.
+    const bead = parseBeadsIssueId(input.source);
+    if (bead === null)
+      throw new Error(
+        "source must be a Beads issue id when the source is a bead",
+      );
+    if (input.beadId !== undefined && input.beadId !== bead)
+      throw new Error(
+        "beadId must name the bead under review when the source is a bead",
+      );
+  }
+}
+
+/**
+ * One reading of each field of a start request, whatever kind of object the
+ * caller handed over: its own fields and inherited ones, plain or computed.
+ * The queued job runs after `start` returns and must use what was checked,
+ * not what the caller's object says by then.
+ */
+function councilInputFrom(request: CouncilServiceInput): CouncilServiceInput {
+  if (
+    request === null ||
+    (typeof request !== "object" && typeof request !== "function")
+  )
+    return request;
+  const {
+    sourceType,
+    source,
+    profile,
+    maxUsd,
+    maxBytes,
+    runId,
+    redactSecrets,
+    beadId,
+  } = request;
+  return {
+    sourceType,
+    source,
+    profile,
+    maxUsd,
+    maxBytes,
+    runId,
+    redactSecrets,
+    beadId,
+  };
+}
+
+/**
+ * The bead a run is recorded against: the one the caller named, else, for a
+ * bead source, the bead under review. Only for an input that has passed
+ * `assertCouncilInput`.
+ */
+export function councilBeadId(input: CouncilServiceInput): string | undefined {
+  if (input.beadId !== undefined) return input.beadId;
+  return input.sourceType === "bead"
+    ? (parseBeadsIssueId(input.source) ?? undefined)
+    : undefined;
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -318,8 +386,13 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, 100);
   }
-  function start(input: CouncilServiceInput): CouncilServiceJob {
+  function start(request: CouncilServiceInput): CouncilServiceJob {
     if (closed) throw new Error("council service is closed");
+    // The caller's object is read here and nowhere else: `begin` checks and
+    // runs the copy, and never sees the object itself.
+    return begin(councilInputFrom(request));
+  }
+  function begin(input: CouncilServiceInput): CouncilServiceJob {
     assertCouncilInput(input);
     if (active.size >= 4)
       throw new Error("At most 4 council runs may execute concurrently");
@@ -371,6 +444,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
           ...(input.sourceType === "text"
             ? { displayName: "Pasted review text" }
             : {}),
+          ...(options.runCommand ? { runner: options.runCommand } : {}),
         });
         const engineOptions: CouncilReviewOptions = {
           profile: selected,
@@ -400,9 +474,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
           engineOptions.resolveTransport = options.resolveTransport(selected);
         if (options.appendEvent && options.resolveAttach) {
           try {
+            const beadId = councilBeadId(input);
             engineOptions.attach = options.resolveAttach({
               cwd: workspaceRoot,
-              ...(input.beadId !== undefined ? { beadId: input.beadId } : {}),
+              ...(beadId !== undefined ? { beadId } : {}),
             });
             engineOptions.appendEvent = options.appendEvent;
           } catch {
