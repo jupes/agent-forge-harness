@@ -4,10 +4,22 @@ import {
   buildBdCreateCommand,
 } from "@docs/bead-builder";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { parseBeadsIssueId } from "../../../scripts/run-correlation";
 import { Button } from "../ds/Button";
 import { Card } from "../ds/Card";
 import { Dialog } from "../ds/Dialog";
 import { Field, Input, Select, Textarea } from "../ds/Field";
+import { Tag } from "../ds/Tag";
+import { statusLabel, statusTone } from "../issue-presentation";
+import { BeadActions } from "./BeadActions";
+import {
+  applied,
+  beadWrites,
+  createState,
+  useBeadWrites,
+  useCreated,
+} from "./bead-writes";
+import { CopyIdButton } from "./CopyIdButton";
 
 type ModalState =
   | { open: false }
@@ -18,12 +30,42 @@ type ModalState =
       fallbackText: string | null;
     };
 
+const DEFAULT_TYPE = "task";
+const DEFAULT_PRIORITY = "P2";
+
+/** The acceptance criteria as one text: a line each, blank lines dropped. */
+function acceptanceText(lines: string): string {
+  return lines
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function BeadBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
   const submitRef = useRef<HTMLButtonElement>(null);
   const fallbackRef = useRef<HTMLTextAreaElement>(null);
   const [modal, setModal] = useState<ModalState>({ open: false });
   const [submitting, setSubmitting] = useState(false);
+
+  // Held here, not left to the DOM: this island re-renders while the form is
+  // being filled, and a <select> given a fixed value is put back to it each time.
+  const [type, setType] = useState(DEFAULT_TYPE);
+  const [priority, setPriority] = useState(DEFAULT_PRIORITY);
+  // What decides whether Create is offered. The inputs themselves stay the form's.
+  const [labels, setLabels] = useState("");
+  const [repo, setRepo] = useState(".");
+  const [parent, setParent] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createResult, setCreateResult] = useState<{
+    tone: "done" | "failed" | "unknown";
+    message: string;
+  } | null>(null);
+
+  const plane = useBeadWrites();
+  const made = useCreated();
+  const latest = made[0];
 
   // Select the whole command so Ctrl+C / Cmd+C copies it straight away. Child
   // effects run first, so the dialog is already shown when this runs.
@@ -52,26 +94,50 @@ export function BeadBuilderIsland() {
     });
   }
 
-  async function onSubmit(e: Event) {
-    e.preventDefault();
+  const parentId = parent.trim();
+  const parentIsAnId =
+    parentId === "" || parseBeadsIssueId(parentId) === parentId;
+
+  /** What the form holds, or null (and the browser's own message) when it has no title. */
+  function read() {
     const form = formRef.current;
-    if (!form) return;
+    if (!form) return null;
     const fd = new FormData(form);
     const title = String(fd.get("title") ?? "").trim();
     if (!title) {
       form.reportValidity();
-      return;
+      return null;
     }
-
-    const data = {
+    return {
+      form,
       title,
-      type: String(fd.get("type") ?? "task"),
-      priority: String(fd.get("priority") ?? "P2"),
+      type,
+      priority,
       repo: String(fd.get("repo") ?? "."),
       description: String(fd.get("description") ?? ""),
       acceptanceCriteria: String(fd.get("acceptanceCriteria") ?? ""),
       labels: String(fd.get("labels") ?? ""),
+      // Only an id goes into the command or the request.
+      parent: parentIsAnId ? parentId : "",
     };
+  }
+
+  function flash(form: HTMLFormElement) {
+    const card = form.closest("#bead-form-card");
+    if (!(card instanceof HTMLElement)) return;
+    card.classList.add("is-success-flash");
+    const onAnim = () => {
+      card.removeEventListener("animationend", onAnim);
+      card.classList.remove("is-success-flash");
+    };
+    card.addEventListener("animationend", onAnim, { once: true });
+  }
+
+  async function onSubmit(e: Event) {
+    e.preventDefault();
+    const data = read();
+    if (!data) return;
+    const { form } = data;
 
     const command = buildBdCreateCommand(data);
     setSubmitting(true);
@@ -91,15 +157,7 @@ export function BeadBuilderIsland() {
         copied = false;
       }
 
-      const card = form.closest("#bead-form-card");
-      if (card instanceof HTMLElement) {
-        card.classList.add("is-success-flash");
-        const onAnim = () => {
-          card.removeEventListener("animationend", onAnim);
-          card.classList.remove("is-success-flash");
-        };
-        card.addEventListener("animationend", onAnim, { once: true });
-      }
+      flash(form);
 
       if (copied) {
         openModal(
@@ -120,6 +178,45 @@ export function BeadBuilderIsland() {
     }
   }
 
+  async function onCreate() {
+    const data = read();
+    if (!data) return;
+    setCreating(true);
+    setCreateResult(null);
+    const outcome = await beadWrites.create({
+      title: data.title,
+      type: data.type,
+      priority: data.priority,
+      parent: data.parent,
+      description: data.description,
+      acceptance: acceptanceText(data.acceptanceCriteria),
+    });
+    if (outcome.ok) {
+      applied.record(outcome.data, {
+        created: {
+          title: data.title,
+          type: data.type,
+          priority: data.priority,
+          ...(data.parent ? { parent: data.parent } : {}),
+        },
+      });
+      flash(data.form);
+      setCreateResult({
+        tone: "done",
+        message: outcome.data.recorded
+          ? `Created ${outcome.data.id}.`
+          : `Created ${outcome.data.id}. The bead exists, but the ledger did not record it${
+              outcome.data.recordError ? `: ${outcome.data.recordError}` : "."
+            }`,
+      });
+    } else
+      setCreateResult({
+        tone: outcome.unknown ? "unknown" : "failed",
+        message: outcome.error,
+      });
+    setCreating(false);
+  }
+
   function onClear() {
     closeModal();
     const form = formRef.current;
@@ -127,6 +224,13 @@ export function BeadBuilderIsland() {
       form.reset();
       form.classList.remove("is-submitting");
     }
+    // `reset()` fires no input event, so what mirrors the form is reset with it.
+    setType(DEFAULT_TYPE);
+    setPriority(DEFAULT_PRIORITY);
+    setLabels("");
+    setRepo(".");
+    setParent("");
+    setCreateResult(null);
     setSubmitting(false);
     const first = form?.querySelector("#bb-title");
     if (first instanceof HTMLElement) first.focus();
@@ -135,19 +239,34 @@ export function BeadBuilderIsland() {
   const fallbackText =
     modal.open && modal.fallbackText ? modal.fallbackText : "";
 
+  const served = plane?.available ? plane.options : null;
+  const types = served?.types ?? BEAD_TYPES;
+  const rubric = served?.priorities.find((option) => option.value === priority);
+  const offer =
+    plane === null
+      ? { enabled: false, reason: "Looking for the local control plane…" }
+      : !parentIsAnId
+        ? { enabled: false, reason: "Parent is not a Beads issue id." }
+        : createState(
+            plane.available
+              ? { available: true, labels, repo }
+              : { available: false, reason: plane.reason, labels, repo },
+          );
+  const createReason = offer.enabled ? null : offer.reason;
+
   return (
     <>
       <Card
         id="bead-form-card"
-        title="Compose a bd create command"
+        title="File a bead"
         headingLevel={2}
         class="af-builder"
       >
         <p class="af-prose af-muted">
-          Describe the bead you want to file. On submit we build a
-          ready-to-paste <code>bd create</code> command and copy it to your
-          clipboard — run it in a terminal that has <code>bd</code> on{" "}
-          <code>PATH</code>.
+          Describe the bead you want to file. <strong>Create bead</strong> files
+          it in this checkout's tracker through the local control plane and
+          shows the new id. <strong>Build command &amp; copy</strong> gives you
+          a <code>bd create</code> line to paste into a terminal instead.
         </p>
 
         <form
@@ -170,17 +289,18 @@ export function BeadBuilderIsland() {
             <Field
               label="Type"
               id="bb-type"
-              hint="bug for defects, feature for net-new capability, chore for maintenance, task otherwise."
+              hint="bug for defects, feature for net-new capability, chore for maintenance, epic for a body of work, task otherwise."
             >
               <Select
                 id="bb-type"
                 name="type"
-                value="task"
+                value={type}
                 describedBy="bb-type-hint"
+                onChange={(event) => setType(event.currentTarget.value)}
               >
-                {BEAD_TYPES.map((type) => (
-                  <option key={type} value={type}>
-                    {type}
+                {types.map((known) => (
+                  <option key={known} value={known}>
+                    {known}
                   </option>
                 ))}
               </Select>
@@ -189,26 +309,56 @@ export function BeadBuilderIsland() {
             <Field
               label="Priority"
               id="bb-priority"
-              hint="Follow .claude/skills/beads-priority-assignment/SKILL.md. Default P2 when the rubric is silent."
+              hint={
+                rubric
+                  ? `${rubric.tier}: ${rubric.meaning}.`
+                  : "Follow .claude/skills/beads-priority-assignment/SKILL.md. Default P2 when the rubric is silent."
+              }
             >
               <Select
                 id="bb-priority"
                 name="priority"
-                value="P2"
+                value={priority}
                 describedBy="bb-priority-hint"
+                onChange={(event) => setPriority(event.currentTarget.value)}
               >
-                {BEAD_PRIORITIES.map((priority) => (
-                  <option key={priority} value={priority}>
-                    {priority}
-                  </option>
-                ))}
+                {served
+                  ? served.priorities.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.value} · {option.tier}
+                      </option>
+                    ))
+                  : BEAD_PRIORITIES.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
               </Select>
+            </Field>
+
+            <Field
+              label="Parent"
+              id="bb-parent"
+              hint={
+                parentIsAnId
+                  ? "Optional. The id of the epic or feature this bead belongs under."
+                  : "This is not a Beads issue id; it is left out of the command, and Create is not offered."
+              }
+            >
+              <Input
+                id="bb-parent"
+                name="parent"
+                placeholder="e.g. the id of an epic"
+                autocomplete="off"
+                describedBy="bb-parent-hint"
+                onInput={(event) => setParent(event.currentTarget.value)}
+              />
             </Field>
 
             <Field
               label="Repo"
               id="bb-repo"
-              hint="`.` for the harness root; ./repos/<name> for a registered sub-repo."
+              hint="`.` for the harness root; ./repos/<name> for a registered sub-repo. Copied command only."
             >
               <Input
                 id="bb-repo"
@@ -217,15 +367,22 @@ export function BeadBuilderIsland() {
                 placeholder="."
                 autocomplete="off"
                 describedBy="bb-repo-hint"
+                onInput={(event) => setRepo(event.currentTarget.value)}
               />
             </Field>
 
-            <Field label="Labels" id="bb-labels">
+            <Field
+              label="Labels"
+              id="bb-labels"
+              hint="Comma-separated. Copied command only."
+            >
               <Input
                 id="bb-labels"
                 name="labels"
-                placeholder="Comma-separated, e.g. dashboard,ui"
+                placeholder="e.g. dashboard,ui"
                 autocomplete="off"
+                describedBy="bb-labels-hint"
+                onInput={(event) => setLabels(event.currentTarget.value)}
               />
             </Field>
 
@@ -234,7 +391,7 @@ export function BeadBuilderIsland() {
                 id="bb-description"
                 name="description"
                 rows={4}
-                placeholder="Context, links, reproduction steps. Newlines become \n in the command."
+                placeholder="Context, links, reproduction steps."
               />
             </Field>
 
@@ -242,7 +399,7 @@ export function BeadBuilderIsland() {
               label="Acceptance criteria"
               id="bb-ac"
               class="af-form-wide"
-              hint="One per line. Each non-empty line becomes a separate --acceptance flag."
+              hint="Something verifiable, one per line."
             >
               <Textarea
                 id="bb-ac"
@@ -256,17 +413,130 @@ export function BeadBuilderIsland() {
 
           <div class="af-form-actions">
             <Button onClick={onClear}>Clear form</Button>
+            <Button
+              class="af-bead-create"
+              disabled={!offer.enabled || creating || submitting}
+              {...(createReason ? { title: createReason } : {})}
+              onClick={() => void onCreate()}
+            >
+              {creating ? "Creating…" : "Create bead"}
+            </Button>
             <button
               ref={submitRef}
               type="submit"
               class="af-btn af-btn-primary"
-              disabled={submitting}
+              disabled={submitting || creating}
             >
               {submitting ? "Building…" : "Build command & copy"}
             </button>
           </div>
+          {createReason ? (
+            <p id="bb-create-reason" class="af-field-hint af-bead-why">
+              Create bead is not offered: {createReason}
+            </p>
+          ) : null}
+          {createResult ? (
+            <p
+              id="bb-create-result"
+              role="status"
+              class={`af-review-result af-bead-result${
+                createResult.tone === "done" ? "" : " is-error"
+              }`}
+              data-outcome={createResult.tone}
+            >
+              {createResult.tone === "unknown" ? "Outcome not known. " : ""}
+              {createResult.message}
+            </p>
+          ) : null}
         </form>
       </Card>
+
+      {latest ? (
+        <Card
+          id="bead-created-card"
+          kicker="created from this page"
+          title={latest.created?.title ?? latest.id}
+          headingLevel={2}
+        >
+          <dl class="af-detail-facts">
+            <div class="af-detail-row">
+              <dt>ID</dt>
+              <dd>
+                <CopyIdButton issueId={latest.id} />
+              </dd>
+            </div>
+            <div class="af-detail-row">
+              <dt>Status</dt>
+              <dd>
+                <Tag tone={statusTone(latest.status ?? "open")}>
+                  {statusLabel(latest.status ?? "open")}
+                </Tag>
+              </dd>
+            </div>
+            {latest.assignee ? (
+              <div class="af-detail-row">
+                <dt>Assignee (claimed)</dt>
+                <dd>{latest.assignee}</dd>
+              </div>
+            ) : null}
+            {latest.created ? (
+              <div class="af-detail-row">
+                <dt>Filed as</dt>
+                <dd>
+                  {latest.created.type} · {latest.created.priority}
+                  {latest.created.parent ? (
+                    <>
+                      {" "}
+                      under <code>{latest.created.parent}</code>
+                    </>
+                  ) : null}
+                </dd>
+              </div>
+            ) : null}
+            {latest.labels && latest.labels.length > 0 ? (
+              <div class="af-detail-row">
+                <dt>Labels</dt>
+                <dd>
+                  <span class="af-detail-tags">
+                    {latest.labels.map((label) => (
+                      <Tag key={label} tone="muted">
+                        {label}
+                      </Tag>
+                    ))}
+                  </span>
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+          <p class="af-muted af-prose">
+            This is what <code>bd</code> answered when each action was taken
+            here. This page is given no view of the tracker, so nothing above is
+            checked against it afterwards, and the issue lists show the new bead
+            only once their snapshot is rebuilt from the tracker.
+          </p>
+          {latest.comments.length > 0 ? (
+            <ul class="af-detail-comments">
+              {latest.comments.map((comment) => (
+                <li key={comment.id}>
+                  <p class="af-detail-comment-meta">
+                    {comment.author} · {comment.createdAt}
+                  </p>
+                  <p class="af-detail-comment-body">{comment.text}</p>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <BeadActions id={latest.id} status={latest.status ?? "open"} />
+          {made.length > 1 ? (
+            <p class="af-muted af-bead-earlier">
+              Created earlier from this page:{" "}
+              {made.slice(1).map((bead) => (
+                <CopyIdButton key={bead.id} issueId={bead.id} />
+              ))}
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
 
       <Dialog
         open={modal.open}
