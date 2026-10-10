@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import type { BeadWriteResult } from "../../../types/hearth";
 import { Button } from "../ds/Button";
 import { Field, Textarea } from "../ds/Field";
@@ -7,7 +7,9 @@ import {
   actionState,
   applied,
   beadWrites,
+  type Unsettled,
   useBeadWrites,
+  useUnsettled,
   type WriteOutcome,
 } from "./bead-writes";
 
@@ -20,10 +22,47 @@ export interface BeadActionsProps {
 
 type Action = "claim" | "comment" | "close";
 
+/** What the last action here came to. An outcome nobody knows is not one of these: the store keeps it. */
 interface Result {
-  /** `unknown`: the change may have been made and the page cannot tell. */
-  tone: "done" | "failed" | "unknown";
+  tone: "done" | "failed";
   message: string;
+}
+
+/**
+ * One write whose outcome is not known: the change may have been made, and the
+ * page cannot tell. It comes from the page's store, not from the component
+ * that sent it, so it is still said after the panel was closed or the page
+ * reloaded, until the operator has checked and dismisses it.
+ */
+export function UnsettledNotice({
+  attempt,
+}: {
+  attempt: Unsettled;
+}): JSX.Element {
+  const what =
+    attempt.action === "create"
+      ? `create "${attempt.title ?? ""}"`
+      : attempt.action;
+  return (
+    <div class="af-bead-unsettled">
+      <p
+        role="status"
+        class="af-review-result af-bead-result is-error"
+        data-outcome="unknown"
+      >
+        Outcome not known ({what}). {attempt.message}
+      </p>
+      <div class="af-button-row">
+        <Button
+          variant="ghost"
+          aria-label={`Dismiss the ${attempt.action} notice`}
+          onClick={() => applied.dismiss(attempt.key)}
+        >
+          Dismiss
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /** What the page says once `bd` confirmed a write. */
@@ -44,10 +83,12 @@ function said(action: Action, data: BeadWriteResult): string {
 /**
  * Claim, comment on and close one bead, through the control plane.
  *
- * Each action is posted once. Its result comes from the answer: what `bd`
- * said is shown here and kept in the page's store, so the views that show
- * this bead can show it too. With no control plane every control is disabled
- * and one line says why.
+ * Each action is posted once: while one is out, every control here is
+ * disabled and a second press does nothing. Its result comes from the answer:
+ * what `bd` said is shown here and kept in the page's store, so the views
+ * that show this bead can show it too. An answer that leaves the outcome
+ * unknown is kept there as well. With no control plane every control is
+ * disabled and one line says why.
  */
 export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
   const plane = useBeadWrites();
@@ -55,6 +96,10 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
   const [result, setResult] = useState<Result | null>(null);
   const [comment, setComment] = useState("");
   const [reason, setReason] = useState("");
+  const unsettled = useUnsettled(id);
+  // Set before the first await and read before anything else: two presses in
+  // one turn of the event loop arrive before the disabled state is drawn.
+  const sending = useRef(false);
 
   const offers = actionState(
     plane === null
@@ -75,20 +120,28 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
     send: () => Promise<WriteOutcome>,
     sent: { text?: string } = {},
   ): Promise<void> {
+    if (sending.current) return;
+    sending.current = true;
     setPending(action);
     setResult(null);
-    const outcome = await send();
-    if (outcome.ok) {
-      applied.record(outcome.data, sent);
-      setResult({ tone: "done", message: said(action, outcome.data) });
-      if (action === "comment") setComment("");
-      if (action === "close") setReason("");
-    } else
-      setResult({
-        tone: outcome.unknown ? "unknown" : "failed",
-        message: outcome.error,
-      });
-    setPending(null);
+    const key = applied.begin({ action, id });
+    try {
+      const outcome = await send();
+      if (outcome.ok) {
+        applied.settle(key);
+        applied.record(outcome.data, sent);
+        setResult({ tone: "done", message: said(action, outcome.data) });
+        if (action === "comment") setComment("");
+        if (action === "close") setReason("");
+      } else if (outcome.unknown) applied.unknown(key, outcome.error);
+      else {
+        applied.settle(key);
+        setResult({ tone: "failed", message: outcome.error });
+      }
+    } finally {
+      sending.current = false;
+      setPending(null);
+    }
   }
 
   // Ids hold dots; an element id and a label's `for` take them as they are.
@@ -181,10 +234,12 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
           }`}
           data-outcome={result.tone}
         >
-          {result.tone === "unknown" ? "Outcome not known. " : ""}
           {result.message}
         </p>
       ) : null}
+      {unsettled.map((attempt) => (
+        <UnsettledNotice key={attempt.key} attempt={attempt} />
+      ))}
     </section>
   );
 }

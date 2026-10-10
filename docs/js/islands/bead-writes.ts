@@ -13,13 +13,21 @@
  *   inviting a second create or a second comment;
  * - what this page's actions changed. The issue lists are a snapshot that a
  *   write does not rebuild, so the answers are kept here, by bead, and shown
- *   over the snapshot until the snapshot says the same or something later.
+ *   over the snapshot until the snapshot says the same or something later;
+ * - which writes it sent and has no answer for. A write is noted when it is
+ *   sent. One whose outcome nobody knows, or whose page was reloaded while it
+ *   was out, stays on the page until the operator dismisses it.
  */
 
 import { useEffect, useState } from "preact/hooks";
 import { API_PREFIX } from "../../../scripts/hearth/paths";
 import { parseBeadsIssueId } from "../../../scripts/run-correlation";
-import type { BeadOptions, BeadWriteResult } from "../../../types/hearth";
+import {
+  BEAD_WRITES,
+  type BeadOptions,
+  type BeadWrite,
+  type BeadWriteResult,
+} from "../../../types/hearth";
 import { type OperatorPost, operatorPost } from "../operator";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -84,13 +92,14 @@ function isResult(value: unknown): value is BeadWriteResult {
   );
 }
 
+/** How an outcome nobody can vouch for is worded: what happened, and how to see for oneself. */
+function notKnown(what: string, check: string): string {
+  return `${what} The change may have been made: check with \`${check}\` before trying again.`;
+}
+
 /** How an outcome nobody can vouch for is put: never as a failure. */
 function unknownOutcome(what: string, check: string): WriteOutcome {
-  return {
-    ok: false,
-    unknown: true,
-    error: `${what} The change may have been made: check with \`${check}\` before trying again.`,
-  };
+  return { ok: false, unknown: true, error: notKnown(what, check) };
 }
 
 export interface BeadWrites {
@@ -312,6 +321,26 @@ export interface Applied {
   at: number;
 }
 
+/** A write as the page sent it: which, and to what. A create has no id yet, only its title. */
+export type Sent =
+  | { action: "create"; title: string }
+  | { action: Exclude<BeadWrite, "create">; id: string };
+
+/** A write this page sent whose outcome it does not know. */
+export interface Unsettled {
+  /** What `begin` returned for it. */
+  key: string;
+  action: BeadWrite;
+  /** The bead it was for; absent for a create. */
+  id?: string;
+  /** The title a create sent. */
+  title?: string;
+  /** Order of sending: larger is later. */
+  at: number;
+  /** Why the outcome is not known, and how to check. */
+  message: string;
+}
+
 /** What the snapshot says about a bead: what the detail panel is given. */
 export interface SnapshotIssue {
   status: string;
@@ -336,6 +365,24 @@ export interface AppliedStore {
    * drops nothing: its issue is the same.
    */
   reconcile(id: string, issue: SnapshotIssue): void;
+  /**
+   * Note a write as it is sent, and get the key to end the note with. The note
+   * is stored at once: if the page is reloaded before the answer arrives, the
+   * next page finds it and says so.
+   */
+  begin(sent: Sent): string;
+  /** The write was answered, done or refused: nothing is left unknown about it. */
+  settle(key: string): void;
+  /** The answer left the outcome unknown: keep it, with what was said. */
+  unknown(key: string, message: string): void;
+  /**
+   * The writes whose outcome is not known, oldest first: those to `id`, or
+   * the creates when no id is given. One still awaited on this page is not
+   * among them.
+   */
+  unsettled(id?: string): Unsettled[];
+  /** The operator has checked: forget it. */
+  dismiss(key: string): void;
   subscribe(listener: () => void): () => void;
 }
 
@@ -344,6 +391,17 @@ type Stored = Pick<Storage, "getItem" | "setItem">;
 const STORE_KEY = "agent-forge.bead-writes.v1";
 /** How many beads are remembered; the one changed longest ago goes first. */
 const KEPT = 50;
+/** How many writes without an answer are remembered; the oldest goes first. */
+const KEPT_ATTEMPTS = 20;
+/** As much of a create's title as a notice shows. */
+const TITLE_SHOWN = 200;
+
+/** A write that was sent. Without a message it is still awaited by the page that sent it. */
+type Attempt = Omit<Unsettled, "message"> & { message?: string };
+
+/** How to see for oneself what became of a write. */
+const checkFor = (attempt: { id?: string }): string =>
+  attempt.id === undefined ? "bd list" : `bd show ${attempt.id}`;
 
 const text = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
@@ -401,6 +459,29 @@ function entryOf(value: unknown): Applied | null {
   };
 }
 
+/** One sent write as it was stored, or null. One stored without a message was still awaited. */
+function attemptOf(value: unknown): Attempt | null {
+  if (!isRecord(value)) return null;
+  const key = value["key"];
+  const action = value["action"];
+  const message = value["message"];
+  if (typeof key !== "string" || key === "") return null;
+  if (!BEAD_WRITES.some((known) => known === action)) return null;
+  if (message !== undefined && typeof message !== "string") return null;
+  const at = typeof value["at"] === "number" ? value["at"] : 0;
+  const said = message === undefined ? {} : { message };
+  if (action === "create") {
+    const title = value["title"];
+    return typeof title === "string"
+      ? { key, action, title: title.slice(0, TITLE_SHOWN), at, ...said }
+      : null;
+  }
+  const id = value["id"];
+  return typeof id === "string" && parseBeadsIssueId(id) === id
+    ? { key, action: action as BeadWrite, id, at, ...said }
+    : null;
+}
+
 /** Line endings as the control plane hands them to `bd`. */
 const folded = (value: string): string => value.replace(/\r\n?/g, "\n");
 
@@ -411,9 +492,14 @@ const folded = (value: string): string => value.replace(/\r\n?/g, "\n");
  * changes, and a lost confirmation invites a second create or comment.
  * A storage that is absent or throws leaves a store that lasts as long as the
  * page does.
+ *
+ * A store is made once per page. A sent write it finds in storage with no
+ * answer was sent by the page before this one, and that page is gone: its
+ * outcome is not known.
  */
 export function createAppliedStore(storage: Stored | null): AppliedStore {
   const beads = new Map<string, Applied>();
+  const attempts = new Map<string, Attempt>();
   const listeners = new Set<() => void>();
   let clock = 0;
 
@@ -427,6 +513,24 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
       beads.set(entry.id, entry);
       clock = Math.max(clock, entry.at);
     }
+    const sent =
+      isRecord(stored) && Array.isArray(stored["attempts"])
+        ? stored["attempts"]
+        : [];
+    for (const value of sent) {
+      const attempt = attemptOf(value);
+      if (attempt === null) continue;
+      attempts.set(attempt.key, {
+        ...attempt,
+        message:
+          attempt.message ??
+          notKnown(
+            "The page was reloaded before the answer arrived.",
+            checkFor(attempt),
+          ),
+      });
+      clock = Math.max(clock, attempt.at);
+    }
   } catch {
     // Unreadable storage is an empty store.
   }
@@ -435,7 +539,10 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
     try {
       storage?.setItem(
         STORE_KEY,
-        JSON.stringify({ beads: [...beads.values()] }),
+        JSON.stringify({
+          beads: [...beads.values()],
+          attempts: [...attempts.values()],
+        }),
       );
     } catch {
       // A full or forbidden storage costs only the survival of a reload.
@@ -512,6 +619,46 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
       else beads.set(id, next);
       changed();
     },
+    begin(sent) {
+      const at = ++clock;
+      const key = `w${at}`;
+      attempts.set(
+        key,
+        sent.action === "create"
+          ? {
+              key,
+              action: sent.action,
+              title: sent.title.slice(0, TITLE_SHOWN),
+              at,
+            }
+          : { key, action: sent.action, id: sent.id, at },
+      );
+      if (attempts.size > KEPT_ATTEMPTS) {
+        const oldest = [...attempts.values()].sort((a, b) => a.at - b.at)[0];
+        if (oldest !== undefined) attempts.delete(oldest.key);
+      }
+      changed();
+      return key;
+    },
+    settle(key) {
+      if (attempts.delete(key)) changed();
+    },
+    unknown(key, message) {
+      const attempt = attempts.get(key);
+      if (attempt === undefined) return;
+      attempts.set(key, { ...attempt, message });
+      changed();
+    },
+    unsettled: (id) =>
+      [...attempts.values()]
+        .filter(
+          (attempt): attempt is Unsettled =>
+            attempt.message !== undefined && attempt.id === id,
+        )
+        .sort((a, b) => a.at - b.at),
+    dismiss(key) {
+      if (attempts.delete(key)) changed();
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -566,4 +713,10 @@ export function useApplied(id: string): Applied | undefined {
 export function useCreated(): Applied[] {
   useStore();
   return applied.created();
+}
+
+/** The writes to `id` (or the creates) whose outcome is not known, kept current. */
+export function useUnsettled(id?: string): Unsettled[] {
+  useStore();
+  return applied.unsettled(id);
 }

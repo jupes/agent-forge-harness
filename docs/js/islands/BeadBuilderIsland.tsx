@@ -11,13 +11,14 @@ import { Dialog } from "../ds/Dialog";
 import { Field, Input, Select, Textarea } from "../ds/Field";
 import { Tag } from "../ds/Tag";
 import { statusLabel, statusTone } from "../issue-presentation";
-import { BeadActions } from "./BeadActions";
+import { BeadActions, UnsettledNotice } from "./BeadActions";
 import {
   applied,
   beadWrites,
   createState,
   useBeadWrites,
   useCreated,
+  useUnsettled,
 } from "./bead-writes";
 import { CopyIdButton } from "./CopyIdButton";
 
@@ -58,14 +59,19 @@ export function BeadBuilderIsland() {
   const [repo, setRepo] = useState(".");
   const [parent, setParent] = useState("");
   const [creating, setCreating] = useState(false);
+  // An outcome nobody knows is not held here: the page's store keeps it.
   const [createResult, setCreateResult] = useState<{
-    tone: "done" | "failed" | "unknown";
+    tone: "done" | "failed";
     message: string;
   } | null>(null);
+  // Set before the first await: two presses in one turn of the event loop
+  // arrive before the disabled state is drawn, and a second create is a second bead.
+  const sending = useRef(false);
 
   const plane = useBeadWrites();
   const made = useCreated();
   const latest = made[0];
+  const unsettledCreates = useUnsettled();
 
   // Select the whole command so Ctrl+C / Cmd+C copies it straight away. Child
   // effects run first, so the dialog is already shown when this runs.
@@ -179,42 +185,50 @@ export function BeadBuilderIsland() {
   }
 
   async function onCreate() {
+    if (sending.current) return;
     const data = read();
     if (!data) return;
+    sending.current = true;
     setCreating(true);
     setCreateResult(null);
-    const outcome = await beadWrites.create({
-      title: data.title,
-      type: data.type,
-      priority: data.priority,
-      parent: data.parent,
-      description: data.description,
-      acceptance: acceptanceText(data.acceptanceCriteria),
-    });
-    if (outcome.ok) {
-      applied.record(outcome.data, {
-        created: {
-          title: data.title,
-          type: data.type,
-          priority: data.priority,
-          ...(data.parent ? { parent: data.parent } : {}),
-        },
+    const key = applied.begin({ action: "create", title: data.title });
+    try {
+      const outcome = await beadWrites.create({
+        title: data.title,
+        type: data.type,
+        priority: data.priority,
+        parent: data.parent,
+        description: data.description,
+        acceptance: acceptanceText(data.acceptanceCriteria),
       });
-      flash(data.form);
-      setCreateResult({
-        tone: "done",
-        message: outcome.data.recorded
-          ? `Created ${outcome.data.id}.`
-          : `Created ${outcome.data.id}. The bead exists, but the ledger did not record it${
-              outcome.data.recordError ? `: ${outcome.data.recordError}` : "."
-            }`,
-      });
-    } else
-      setCreateResult({
-        tone: outcome.unknown ? "unknown" : "failed",
-        message: outcome.error,
-      });
-    setCreating(false);
+      if (outcome.ok) {
+        applied.settle(key);
+        applied.record(outcome.data, {
+          created: {
+            title: data.title,
+            type: data.type,
+            priority: data.priority,
+            ...(data.parent ? { parent: data.parent } : {}),
+          },
+        });
+        flash(data.form);
+        setCreateResult({
+          tone: "done",
+          message: outcome.data.recorded
+            ? `Created ${outcome.data.id}.`
+            : `Created ${outcome.data.id}. The bead exists, but the ledger did not record it${
+                outcome.data.recordError ? `: ${outcome.data.recordError}` : "."
+              }`,
+        });
+      } else if (outcome.unknown) applied.unknown(key, outcome.error);
+      else {
+        applied.settle(key);
+        setCreateResult({ tone: "failed", message: outcome.error });
+      }
+    } finally {
+      sending.current = false;
+      setCreating(false);
+    }
   }
 
   function onClear() {
@@ -444,9 +458,15 @@ export function BeadBuilderIsland() {
               }`}
               data-outcome={createResult.tone}
             >
-              {createResult.tone === "unknown" ? "Outcome not known. " : ""}
               {createResult.message}
             </p>
+          ) : null}
+          {unsettledCreates.length > 0 ? (
+            <div id="bb-create-unsettled">
+              {unsettledCreates.map((attempt) => (
+                <UnsettledNotice key={attempt.key} attempt={attempt} />
+              ))}
+            </div>
           ) : null}
         </form>
       </Card>
@@ -481,7 +501,7 @@ export function BeadBuilderIsland() {
             ) : null}
             {latest.created ? (
               <div class="af-detail-row">
-                <dt>Filed as</dt>
+                <dt>Sent as</dt>
                 <dd>
                   {latest.created.type} · {latest.created.priority}
                   {latest.created.parent ? (
@@ -509,10 +529,12 @@ export function BeadBuilderIsland() {
             ) : null}
           </dl>
           <p class="af-muted af-prose">
-            This is what <code>bd</code> answered when each action was taken
-            here. This page is given no view of the tracker, so nothing above is
-            checked against it afterwards, and the issue lists show the new bead
-            only once their snapshot is rebuilt from the tracker.
+            The id, status, assignee and labels are what <code>bd</code>{" "}
+            answered when each action was taken here; the title, type, priority
+            and parent are what this page sent. This page is given no view of
+            the tracker, so nothing above is checked against it afterwards, and
+            the issue lists show the new bead only once their snapshot is
+            rebuilt from the tracker.
           </p>
           {latest.comments.length > 0 ? (
             <ul class="af-detail-comments">
@@ -526,7 +548,12 @@ export function BeadBuilderIsland() {
               ))}
             </ul>
           ) : null}
-          <BeadActions id={latest.id} status={latest.status ?? "open"} />
+          {/* Keyed: a comment typed for one bead is not left in the field of the next. */}
+          <BeadActions
+            key={latest.id}
+            id={latest.id}
+            status={latest.status ?? "open"}
+          />
           {made.length > 1 ? (
             <p class="af-muted af-bead-earlier">
               Created earlier from this page:{" "}

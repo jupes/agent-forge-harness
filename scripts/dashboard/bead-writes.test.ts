@@ -594,3 +594,237 @@ describe("when the snapshot is read again", () => {
     expect(store.get("demo-task")?.status).toBe("in_progress");
   });
 });
+
+describe("an answer that says done without saying what was written", () => {
+  test("a 2xx envelope with no result, or with an id that is not a Beads id, is an unknown outcome, not a done one", async () => {
+    const answers: unknown[] = [
+      {},
+      null,
+      { id: "demo-task" },
+      { action: "claim" },
+      { id: "--force", action: "claim" },
+      { id: " demo-task", action: "claim" },
+      { id: 7, action: "claim" },
+      "done",
+    ];
+    for (const data of answers) {
+      const { writes } = plane(() => envelope(data));
+      const outcome = await writes.claim("demo-task");
+      expect({ data, ok: outcome.ok }).toEqual({ data, ok: false });
+      expect(outcome).toMatchObject({ unknown: true });
+      expect(outcome.ok ? "" : outcome.error).toContain("bd show demo-task");
+    }
+  });
+});
+
+describe("what the store keeps of a text, and in what order", () => {
+  test("a comment is kept as the control plane hands it to bd: CR LF as LF, so the snapshot's copy is recognised", () => {
+    const store = createAppliedStore(memory());
+    store.record(COMMENTED, { text: "first line\r\nsecond line\rthird" });
+    expect(store.get("demo-task")?.comments[0]?.text).toBe(
+      "first line\nsecond line\nthird",
+    );
+    // A snapshot that spells the line ends the other way is the same comment.
+    store.reconcile("demo-task", {
+      status: "open",
+      updatedAt: "2026-07-25T09:00:00Z",
+      comments: [{ body: "first line\r\nsecond line\r\nthird" }],
+    });
+    expect(store.get("demo-task")).toBeUndefined();
+  });
+
+  test("a bead created after a reload is newer than the ones created before it", () => {
+    const storage = memory();
+    const before = createAppliedStore(storage);
+    for (const id of ["made-1", "made-2"])
+      before.record(
+        { id, action: "create", status: "open", recorded: true },
+        { created: { title: id, type: "task", priority: "P2" } },
+      );
+    const afterReload = createAppliedStore(storage);
+    afterReload.record(
+      { id: "made-3", action: "create", status: "open", recorded: true },
+      { created: { title: "made-3", type: "task", priority: "P2" } },
+    );
+    expect(afterReload.created().map((bead) => bead.id)).toEqual([
+      "made-3",
+      "made-2",
+      "made-1",
+    ]);
+  });
+
+  test("a stored field of the wrong kind is left out, not shown", () => {
+    const store = createAppliedStore(
+      memory({
+        "agent-forge.bead-writes.v1": JSON.stringify({
+          beads: [
+            {
+              id: "demo-task",
+              status: 7,
+              assignee: { name: "x" },
+              updatedAt: ["now"],
+              labels: ["kept", 7, null],
+              comments: [
+                { id: "c-1", author: "a", createdAt: "t", text: "kept" },
+                { id: "c-2", author: "a", createdAt: "t", text: 7 },
+                "not a comment",
+              ],
+              created: { title: 7, type: "task", priority: "P2" },
+              at: "soon",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(store.get("demo-task")).toEqual({
+      id: "demo-task",
+      labels: ["kept"],
+      comments: [{ id: "c-1", author: "a", createdAt: "t", text: "kept" }],
+      at: 0,
+    });
+  });
+});
+
+describe("a write whose answer the page does not have", () => {
+  test("while the answer is awaited on this page it is not listed; a refusal or a confirmation ends it", () => {
+    const store = createAppliedStore(memory());
+    const first = store.begin({ action: "claim", id: "demo-task" });
+    const second = store.begin({ action: "comment", id: "demo-task" });
+    expect(store.unsettled("demo-task")).toEqual([]);
+    store.settle(first);
+    store.settle(second);
+    expect(store.unsettled("demo-task")).toEqual([]);
+  });
+
+  test("an answer that leaves the outcome unknown is kept, with what was said, until it is dismissed", () => {
+    const store = createAppliedStore(memory());
+    const key = store.begin({ action: "comment", id: "demo-task" });
+    store.unknown(key, "bd comments add did not finish within its time limit.");
+    expect(store.unsettled("demo-task")).toEqual([
+      {
+        key,
+        action: "comment",
+        id: "demo-task",
+        at: expect.any(Number),
+        message: "bd comments add did not finish within its time limit.",
+      },
+    ]);
+    expect(store.unsettled("demo-other")).toEqual([]);
+    expect(store.unsettled()).toEqual([]);
+    store.dismiss(key);
+    expect(store.unsettled("demo-task")).toEqual([]);
+  });
+
+  test("a write still awaited when the page is reloaded is listed afterwards: the page that would have shown its answer is gone", () => {
+    const storage = memory();
+    const page = createAppliedStore(storage);
+    const settled = page.begin({ action: "claim", id: "demo-task" });
+    page.settle(settled);
+    // Begun last: each is in storage from the moment it is sent, not from the
+    // next change to the store.
+    page.begin({ action: "create", title: "A bead in flight" });
+    page.begin({ action: "close", id: "demo-task" });
+
+    const afterReload = createAppliedStore(storage);
+    expect(afterReload.unsettled()).toEqual([
+      {
+        key: expect.any(String),
+        action: "create",
+        title: "A bead in flight",
+        at: expect.any(Number),
+        message: expect.stringContaining("reloaded before the answer"),
+      },
+    ]);
+    expect(afterReload.unsettled("demo-task")).toEqual([
+      {
+        key: expect.any(String),
+        action: "close",
+        id: "demo-task",
+        at: expect.any(Number),
+        message: expect.stringContaining("reloaded before the answer"),
+      },
+    ]);
+    // And it stays listed across another reload, until it is dismissed.
+    const again = createAppliedStore(storage);
+    const [left] = again.unsettled("demo-task");
+    expect(left?.action).toBe("close");
+    again.dismiss(left?.key ?? "");
+    expect(createAppliedStore(storage).unsettled("demo-task")).toEqual([]);
+  });
+
+  test("a listener is told when one becomes unknown or is dismissed", () => {
+    const store = createAppliedStore(memory());
+    let told = 0;
+    store.subscribe(() => {
+      told++;
+    });
+    const key = store.begin({ action: "claim", id: "demo-task" });
+    const sent = told;
+    store.unknown(key, "not known");
+    expect(told).toBe(sent + 1);
+    store.dismiss(key);
+    expect(told).toBe(sent + 2);
+    // Nothing is told for a key the store does not hold.
+    store.dismiss(key);
+    store.unknown(key, "gone");
+    store.settle(key);
+    expect(told).toBe(sent + 2);
+  });
+
+  test("what storage holds about them is not trusted, and a storage that throws does not break a write", () => {
+    const tampered = createAppliedStore(
+      memory({
+        "agent-forge.bead-writes.v1": JSON.stringify({
+          beads: [],
+          attempts: [
+            { key: "a", action: "claim", id: "--help", at: 1, message: "x" },
+            {
+              key: "b",
+              action: "delete",
+              id: "demo-task",
+              at: 1,
+              message: "x",
+            },
+            { key: "c", action: "claim", id: "demo-task", at: 1, message: 7 },
+            {
+              key: "d",
+              action: "claim",
+              id: "demo-task",
+              at: 1,
+              message: "kept",
+            },
+            { action: "claim", id: "demo-task", at: 1, message: "no key" },
+            "not an attempt",
+          ],
+        }),
+      }),
+    );
+    expect(
+      tampered.unsettled("demo-task").map((attempt) => attempt.key),
+    ).toEqual(["d"]);
+    expect(tampered.unsettled("--help")).toEqual([]);
+    expect(tampered.unsettled()).toEqual([]);
+
+    const broken = createAppliedStore({
+      getItem: (): string | null => {
+        throw new Error("SecurityError");
+      },
+      setItem: (): void => {
+        throw new Error("QuotaExceededError");
+      },
+    });
+    const key = broken.begin({ action: "claim", id: "demo-task" });
+    broken.unknown(key, "not known");
+    expect(broken.unsettled("demo-task")).toHaveLength(1);
+  });
+
+  test("only the twenty most recent are kept", () => {
+    const store = createAppliedStore(memory());
+    for (let n = 1; n <= 25; n++)
+      store.unknown(store.begin({ action: "claim", id: "demo-task" }), `n${n}`);
+    const kept = store.unsettled("demo-task").map((attempt) => attempt.message);
+    expect(kept).toHaveLength(20);
+    expect(kept[0]).toBe("n6");
+    expect(kept.at(-1)).toBe("n25");
+  });
+});

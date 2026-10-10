@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   OPERATOR_HEADER,
   SURFACE_HEADER,
@@ -258,6 +258,14 @@ test("create, claim and comment from the bead builder go through the control pla
   expect(request.headers()[SURFACE_HEADER]).toBe("ui");
   expect((await request.response())?.status()).toBe(201);
 
+  // Typed for the parent and never sent: it must not be waiting in the fields
+  // of the next bead this card shows, one press away from the wrong issue.
+  const parentCard = page.locator("#bead-created-card");
+  await parentCard.getByLabel("Comment").fill("typed for the parent");
+  await parentCard
+    .getByLabel("Reason for closing")
+    .fill("a reason typed for the parent");
+
   // A child of it, with a type and a priority that are not the defaults. A
   // label is typed and cleared in between: the form re-renders, and what was
   // chosen must still be what is sent.
@@ -279,6 +287,8 @@ test("create, claim and comment from the bead builder go through the control pla
 
   const card = page.locator("#bead-created-card");
   const actions = card.getByRole("region", { name: `Actions on ${childId}` });
+  await expect(actions.getByLabel("Comment")).toHaveValue("");
+  await expect(actions.getByLabel("Reason for closing")).toHaveValue("");
 
   await actions.getByRole("button", { name: "Claim", exact: true }).click();
   await expect(actions.getByRole("status")).toContainText(`Claimed ${childId}`);
@@ -600,4 +610,263 @@ test("a refusal by bd is shown as the error, and nothing says a bead was created
   await expect(result).toHaveAttribute("data-outcome", "failed");
   await expect(result).not.toContainText("Created");
   await expect(page.locator("#bead-created-card")).toHaveCount(0);
+});
+
+/** A snapshot that holds `id` as an open task: what a rebuild from the tracker would give. */
+function snapshotWith(id: string, title: string): typeof BEADS {
+  return {
+    ...BEADS,
+    issues: [
+      ...BEADS.issues,
+      {
+        id,
+        type: "task",
+        title,
+        status: "open",
+        createdAt: "2026-09-11T00:00:00.000Z",
+        updatedAt: "2026-09-11T00:00:00.000Z",
+      },
+    ],
+  };
+}
+
+/**
+ * Hold every POST to `url` until `release()` is called, counting them as they
+ * arrive. A request the page gave up on (it was reloaded) is let go quietly.
+ */
+async function holdPosts(
+  page: Page,
+  url: string,
+): Promise<{ count: () => number; release: () => void }> {
+  let seen = 0;
+  let open: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  await page.route(url, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    seen++;
+    await released;
+    await route.continue().catch(() => undefined);
+  });
+  return { count: () => seen, release: () => open() };
+}
+
+/** Press a button twice in one turn of the event loop: before the page can draw it disabled. */
+async function pressTwiceAtOnce(button: Locator): Promise<void> {
+  await button.evaluate((element: HTMLButtonElement) => {
+    element.click();
+    element.click();
+  });
+}
+
+test("an outcome nobody knows is said as not known, is still said after the view is left and the page reloaded, and goes when it is dismissed", async ({
+  page,
+}) => {
+  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Unknown outcome bead");
+  const callsBefore = standInCalls().length;
+
+  // What the control plane answers when bd did not finish.
+  await page.route(`**${API}/beads/${id}/comment`, (route) =>
+    route.fulfill({
+      status: 504,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: `bd comments add did not finish within its time limit; the change may still have been made. Check with \`bd show ${id}\` before trying again.`,
+      }),
+    }),
+  );
+  const card = page.locator("#bead-created-card");
+  const actions = card.getByRole("region", { name: `Actions on ${id}` });
+  await actions.getByLabel("Comment").fill("worklog: was this added?");
+  await actions.getByRole("button", { name: "Add comment" }).click();
+  const notice = actions.locator('[data-outcome="unknown"]');
+  await expect(notice).toContainText("Outcome not known (comment).");
+  await expect(notice).toContainText("did not finish within its time limit");
+  await expect(notice).toContainText(`bd show ${id}`);
+  await expect(notice).toHaveClass(/is-error/);
+  // Not as done, and not as a failure that invites another try.
+  await expect(actions.locator('[data-outcome="done"]')).toHaveCount(0);
+  await expect(actions.locator('[data-outcome="failed"]')).toHaveCount(0);
+  await expect(card.locator(".af-detail-comments")).toHaveCount(0);
+  // What was typed is kept: nothing confirmed that it was taken.
+  await expect(actions.getByLabel("Comment", { exact: true })).toHaveValue(
+    "worklog: was this added?",
+  );
+
+  // Seen from another view, after a reload: the page has not forgotten.
+  await stubSnapshot(page, snapshotWith(id, "Unknown outcome bead"));
+  await openIssues(page);
+  await page.locator(`[data-issue-id="${id}"]`).click();
+  const panel = page
+    .locator(".af-detail")
+    .getByRole("region", { name: `Actions on ${id}` });
+  const kept = panel.locator('[data-outcome="unknown"]');
+  await expect(kept).toContainText("Outcome not known (comment).");
+  await expect(kept).toContainText(`bd show ${id}`);
+
+  // The operator has checked: dismissed, it is gone, and a reload does not bring it back.
+  await panel
+    .getByRole("button", { name: "Dismiss the comment notice" })
+    .click();
+  await expect(kept).toHaveCount(0);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(`[data-issue-id="${id}"]`).click();
+  await expect(panel).toBeVisible();
+  await expect(kept).toHaveCount(0);
+
+  // A create whose request never completed: no id came back to look up.
+  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await page.route(`**${API}/beads`, (route) =>
+    route.request().method() === "POST"
+      ? route.abort("connectionreset")
+      : route.continue(),
+  );
+  await page.fill("#bb-title", "Was this one made?");
+  await createButton(page).click();
+  const lost = page.locator('#bb-create-unsettled [data-outcome="unknown"]');
+  await expect(lost).toContainText(
+    'Outcome not known (create "Was this one made?").',
+  );
+  await expect(lost).toContainText("The request did not complete.");
+  await expect(lost).toContainText("bd list");
+  await expect(page.locator("#bb-create-result")).toHaveCount(0);
+  await expect(page.getByText("Created ")).toHaveCount(0);
+
+  // Clearing the form does not hide it; dismissing it does.
+  await page.getByRole("button", { name: "Clear form" }).click();
+  await expect(lost).toHaveCount(1);
+  await page.getByRole("button", { name: "Dismiss the create notice" }).click();
+  await expect(lost).toHaveCount(0);
+
+  // Neither request was let through to the control plane: nothing reached bd.
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([]);
+});
+
+test("while a write is out its controls are disabled, and a second press in the same instant sends nothing", async ({
+  page,
+}) => {
+  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
+
+  const create = await holdPosts(page, `**${API}/beads`);
+  await page.fill("#bb-title", "Pressed twice");
+  await expect(createButton(page)).toBeEnabled();
+  await pressTwiceAtOnce(createButton(page));
+  await expect(page.getByRole("button", { name: "Creating…" })).toBeDisabled();
+  await expect(page.locator("button[type=submit]")).toBeDisabled();
+  await expect.poll(create.count).toBe(1);
+  create.release();
+  await expect(page.locator("#bb-create-result")).toContainText("Created ");
+  const id = await createdId(page);
+
+  const actions = page
+    .locator("#bead-created-card")
+    .getByRole("region", { name: `Actions on ${id}` });
+  const comment = await holdPosts(page, `**${API}/beads/${id}/comment`);
+  await actions.getByLabel("Comment").fill("worklog: pressed twice");
+  // With a reason typed, Close is offered: it is the write being out that disables it.
+  await actions.getByLabel("Reason for closing").fill("Not sent");
+  await expect(
+    actions.getByRole("button", { name: "Close issue" }),
+  ).toBeEnabled();
+  await pressTwiceAtOnce(actions.getByRole("button", { name: "Add comment" }));
+  await expect(actions.getByRole("button", { name: "Adding…" })).toBeDisabled();
+  for (const name of ["Claim", "Close issue"])
+    await expect(
+      actions.getByRole("button", { name, exact: true }),
+    ).toBeDisabled();
+  await expect(actions.getByLabel("Comment")).toBeDisabled();
+  await expect(actions.getByLabel("Reason for closing")).toBeDisabled();
+  await expect.poll(comment.count).toBe(1);
+  comment.release();
+  await expect(actions.locator('[data-outcome="done"]')).toContainText(
+    `Comment added to ${id}`,
+  );
+  await expect(
+    actions.getByRole("button", { name: "Close issue" }),
+  ).toBeEnabled();
+
+  // One create and one comment reached bd, whatever was pressed.
+  expect(create.count()).toBe(1);
+  expect(comment.count()).toBe(1);
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=Pressed twice",
+      "--type=task",
+      "--priority=2",
+      "--json",
+    ],
+    ["comments", "add", "--json", "--", id, "worklog: pressed twice"],
+  ]);
+});
+
+test("a page reloaded while a write is out says afterwards that its outcome is not known", async ({
+  page,
+}) => {
+  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Reloaded mid-write");
+  const callsBefore = standInCalls().length;
+  const actions = page
+    .locator("#bead-created-card")
+    .getByRole("region", { name: `Actions on ${id}` });
+
+  const close = await holdPosts(page, `**${API}/beads/${id}/close`);
+  await actions
+    .getByLabel("Reason for closing")
+    .fill("Closed just before a reload");
+  await actions.getByRole("button", { name: "Close issue" }).click();
+  await expect(
+    actions.getByRole("button", { name: "Closing…" }),
+  ).toBeDisabled();
+  await expect.poll(close.count).toBe(1);
+  // While the answer is awaited nothing is said about its outcome.
+  await expect(actions.locator("[data-outcome]")).toHaveCount(0);
+
+  await page.reload({ waitUntil: "networkidle" });
+  close.release();
+  const notice = actions.locator('[data-outcome="unknown"]');
+  await expect(notice).toContainText("Outcome not known (close).");
+  await expect(notice).toContainText("reloaded before the answer arrived");
+  await expect(notice).toContainText(`bd show ${id}`);
+  await expect(actions.locator('[data-outcome="done"]')).toHaveCount(0);
+
+  // A create that was out when the page went: there is no id to show, only its title.
+  const create = await holdPosts(page, `**${API}/beads`);
+  await page.fill("#bb-title", "Created just before a reload");
+  await createButton(page).click();
+  await expect.poll(create.count).toBe(1);
+  await page.reload({ waitUntil: "networkidle" });
+  create.release();
+  const lost = page.locator('#bb-create-unsettled [data-outcome="unknown"]');
+  await expect(lost).toContainText(
+    'Outcome not known (create "Created just before a reload").',
+  );
+  await expect(lost).toContainText("reloaded before the answer arrived");
+  await expect(lost).toContainText("bd list");
+  // The close is still said too.
+  await expect(notice).toContainText("Outcome not known (close).");
+
+  // Here both requests were held before the control plane: nothing reached bd.
+  // On a real page either may have: that is why the page will not say.
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([]);
 });
