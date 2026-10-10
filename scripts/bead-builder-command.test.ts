@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildBdCreateCommand } from "@docs/bead-builder";
+import { BEAD_TYPES, buildBdCreateCommand } from "@docs/bead-builder";
 
 const base = {
   title: "My bead",
@@ -112,5 +112,14 @@ describe("buildBdCreateCommand", () => {
       title: "Price is $PRICE",
     });
     expect(cmd).toContain('--title "Price is \\$PRICE"');
+  });
+});
+
+describe("the issue types the builder knows", () => {
+  test("an epic is copied as an epic, not turned into a task", () => {
+    expect(BEAD_TYPES).toEqual(["task", "feature", "bug", "chore", "epic"]);
+    expect(buildBdCreateCommand({ ...base, type: "epic" })).toBe(
+      'bd create --repo "." --type epic --priority P2 --title "My bead"',
+    );
   });
 });

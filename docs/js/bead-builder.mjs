@@ -14,8 +14,13 @@
  * @property {string} labels
  */
 
-/** @type {readonly string[]} */
-export const BEAD_TYPES = ["task", "feature", "bug", "chore"];
+/**
+ * The issue types a bead can be filed as. The control plane's create route
+ * serves the same list (`scripts/hearth/routes/beads.ts`); a test holds the
+ * two equal.
+ * @type {readonly string[]}
+ */
+export const BEAD_TYPES = ["task", "feature", "bug", "chore", "epic"];
 
 /** @type {readonly string[]} */
 export const BEAD_PRIORITIES = ["P0", "P1", "P2", "P3", "P4"];

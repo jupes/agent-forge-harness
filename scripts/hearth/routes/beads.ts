@@ -16,6 +16,8 @@
  */
 
 import type {
+  BeadOptions,
+  BeadPriorityOption,
   BeadWrite,
   BeadWriteResult,
   LedgerEventInput,
@@ -26,6 +28,7 @@ import { parseBeadsIssueId } from "../../run-correlation";
 import {
   type ActionRoute,
   type ApiRoute,
+  type ReadRoute,
   type RouteReply,
   type RouteRequest,
   safeMessage,
@@ -51,8 +54,55 @@ export interface BeadDeps {
 /** The issue types a bead can be created as. */
 export const BEAD_TYPES = ["task", "feature", "bug", "chore", "epic"] as const;
 
-const PRIORITIES = ["P0", "P1", "P2", "P3", "P4"] as const;
-const DEFAULT_PRIORITY = "P2";
+/**
+ * The priority rubric, as `.claude/skills/beads-priority-assignment/SKILL.md`
+ * has it: one option per value bd takes. A test reads that table and fails
+ * when this differs from it.
+ */
+export const BEAD_PRIORITIES: readonly BeadPriorityOption[] = [
+  {
+    value: "P0",
+    tier: "critical",
+    meaning:
+      "Drop other work: production down, active exploit, data loss, irreversible customer harm",
+  },
+  {
+    value: "P1",
+    tier: "high",
+    meaning:
+      "Urgent: broken main path, release blocker, failing CI on default branch, severe bug with weak workaround",
+  },
+  {
+    value: "P2",
+    tier: "medium",
+    meaning:
+      "Default scheduled work: most features, typical bugs, refactors with agreed dates",
+  },
+  {
+    value: "P3",
+    tier: "low",
+    meaning:
+      "Backlog: polish, nice-to-have, cleanup, research spikes with no near deadline",
+  },
+  {
+    value: "P4",
+    tier: "low",
+    meaning:
+      "Backlog: polish, nice-to-have, cleanup, research spikes with no near deadline",
+  },
+];
+
+/** What the rubric says to use when it gives no signal. */
+export const DEFAULT_BEAD_PRIORITY = "P2";
+
+/** The longest text each field takes, in UTF-16 units: what fits on a `bd` command line. */
+export const BEAD_TEXT_LIMITS = {
+  title: 200,
+  description: 4000,
+  acceptance: 2000,
+  comment: 4000,
+  reason: 1000,
+} as const;
 
 /** A string that is a Beads id exactly as given, and that the ledger would store. */
 function beadId(value: unknown): value is string {
@@ -80,12 +130,16 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
   if (!isRecord(body)) return fail("Expected a JSON object");
   const title = typeof body["title"] === "string" ? body["title"].trim() : "";
   if (title.length === 0) return fail("title: a bead needs a title");
-  const type = body["type"] ?? "task";
+  // Absent means the default; a key that is present must be right, null included.
+  const type = body["type"] === undefined ? "task" : body["type"];
   if (!BEAD_TYPES.some((known) => known === type))
     return fail(`type: expected one of ${BEAD_TYPES.join(", ")}`);
-  const priority = body["priority"] ?? DEFAULT_PRIORITY;
-  if (!PRIORITIES.some((known) => known === priority))
-    return fail(`priority: expected one of ${PRIORITIES.join(", ")}`);
+  const priority =
+    body["priority"] === undefined ? DEFAULT_BEAD_PRIORITY : body["priority"];
+  if (!BEAD_PRIORITIES.some((option) => option.value === priority))
+    return fail(
+      `priority: expected one of ${BEAD_PRIORITIES.map((option) => option.value).join(", ")}`,
+    );
   const parent = body["parent"];
   if (parent !== undefined && !beadId(parent))
     return fail("parent: expected a Beads issue id");
@@ -244,5 +298,22 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
       }),
   };
 
-  return [create];
+  /** What a create may say: the page builds its form from this, and learns from it that a hearth is there. */
+  const options: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/beads/options",
+    validate: noParameters,
+    read: () => {
+      const data: BeadOptions = {
+        types: [...BEAD_TYPES],
+        priorities: [...BEAD_PRIORITIES],
+        defaultPriority: DEFAULT_BEAD_PRIORITY,
+        limits: { ...BEAD_TEXT_LIMITS },
+      };
+      return { status: 200, data };
+    },
+  };
+
+  return [options, create];
 }
