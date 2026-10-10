@@ -432,9 +432,12 @@ function queueStates(
 export function workspaceReads(deps: ReadDeps) {
   const timeout = deps.bdTimeoutMs ?? BD_QUEUE_TIMEOUT_MS;
   const readQueue = coalesced(async (): Promise<QueueRead> => {
+    // The runner kills its own process at the limit. The wait here is one
+    // second longer and only ends a runner that never answers at all, so the
+    // next read cannot start while this one's process is still alive.
     const result = await withTimeout(
-      Promise.resolve(deps.runBd([...QUEUE_LIST_ARGS])),
-      timeout,
+      Promise.resolve(deps.runBd([...QUEUE_LIST_ARGS], { timeoutMs: timeout })),
+      timeout + 1000,
       "bd list",
     );
     if (result.status !== 0)

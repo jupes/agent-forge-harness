@@ -495,6 +495,8 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     connections: () => number;
     socket: Socket;
     received: () => string;
+    /** Whether the server has closed its end of the connection. */
+    serverClosed: () => boolean;
   }
 
   /** A stream with a backlog, and a client that has asked for it and reads nothing. */
@@ -516,7 +518,11 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
       keepaliveMs: 60_000,
       ...options,
     });
+    let serverClosed = false;
     const server = createServer((req, res) => {
+      req.socket.once("close", () => {
+        serverClosed = true;
+      });
       void ledgerStream.open(req, res, null);
     });
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
@@ -542,6 +548,7 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
       connections: () => ledgerStream.connections(),
       socket,
       received: () => received,
+      serverClosed: () => serverClosed,
     };
   }
 
@@ -582,14 +589,51 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     );
     await pause(100);
     expect(client.connections()).toBe(1);
+    expect(client.serverClosed()).toBe(false);
     for (let i = 0; i < 200 && client.connections() !== 0; i++) await pause(20);
     expect(client.connections()).toBe(0);
     const reads = client.reads();
     await pause(100);
     expect(client.reads()).toBe(reads);
+    // The connection itself is closed, not left for the client to finish: the
+    // client is still attached and has read nothing, and the server's end is gone.
+    expect(client.received()).toBe("");
+    expect(client.serverClosed()).toBe(true);
   }, 20_000);
 
-  test("the defaults bound a connection to about a megabyte, for thirty seconds", () => {
+  test("a client that falls behind and catches up, again and again, is never counted as stalled", async () => {
+    // A backlog far larger than the socket's own buffers, so every pause finds
+    // the connection full again.
+    const events = backlog(20_000);
+    const client = await stalled(
+      { maxBufferedBytes: 64_000, stalledMs: 600 },
+      events,
+    );
+    // Each pause is half the stall limit; together they are twice it.
+    for (let round = 0; round < 4; round++) {
+      await pause(300);
+      expect({ round, open: client.connections() }).toEqual({ round, open: 1 });
+      client.socket.resume();
+      await pause(60);
+      client.socket.pause();
+    }
+    client.socket.resume();
+    for (
+      let i = 0;
+      i < 800 && !client.received().includes("\nid: 20000\n");
+      i++
+    )
+      await pause(25);
+    const ids = [
+      ...client.received().matchAll(/event: delta\nid: (\d+)\n/g),
+    ].map((match) => Number(match[1]));
+    expect(ids.length).toBe(events.length);
+    expect(ids).toEqual(events.map((event) => event.id));
+    expect(client.connections()).toBe(1);
+    expect(client.serverClosed()).toBe(false);
+  }, 60_000);
+
+  test("the default limits are one megabyte waiting and thirty seconds stalled", () => {
     expect(STREAM_MAX_BUFFERED_BYTES).toBe(1_000_000);
     expect(STREAM_STALLED_MS).toBe(30_000);
   });

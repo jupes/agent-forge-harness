@@ -304,8 +304,11 @@ export function createOperatorApi(
         id?: unknown;
         error?: unknown;
       };
+      // A row id is a positive whole number; nothing else counts as stored.
       if (ok === true)
-        return typeof id === "number" ? null : "the ledger stored no row";
+        return typeof id === "number" && Number.isSafeInteger(id) && id > 0
+          ? null
+          : "the ledger stored no row";
       const reason = typeof error === "string" ? error : "the ledger refused";
       const busy = /busy|locked/i.test(reason);
       if (!busy || attempt >= AUDIT_ATTEMPTS) return safeMessage(reason);

@@ -29,11 +29,13 @@ const REPO = resolve(import.meta.dir, "..", "..");
 /** A stand-in for `bd` that records every argument array it is called with. */
 export interface FakeBd {
   calls: string[][];
+  /** The options each call was given, in the same order as `calls`. */
+  options: Array<{ timeoutMs?: number } | undefined>;
   /** What `bd list` prints; replace to change the queue. */
   list: BdResult | (() => Promise<BdResult>);
   /** The status `bd show` reports for any issue. */
   status: string;
-  run(args: string[]): Promise<BdResult>;
+  run(args: string[], options?: { timeoutMs?: number }): Promise<BdResult>;
 }
 
 export function fakeBd(): FakeBd {
@@ -41,8 +43,10 @@ export function fakeBd(): FakeBd {
     calls: [],
     list: { status: 0, stdout: "[]", stderr: "" },
     status: "in_progress",
-    async run(args) {
+    options: [],
+    async run(args, options) {
       bd.calls.push(args);
+      bd.options.push(options);
       if (args[0] === "list")
         return typeof bd.list === "function" ? bd.list() : bd.list;
       if (args[0] === "show")
@@ -110,7 +114,7 @@ export async function startTestHearth(
       : {}),
     api: {
       ledgerPath: ledger,
-      runBd: (args) => bd.run(args),
+      runBd: (args, options) => bd.run(args, options),
       configHome,
       ...options.api,
     },

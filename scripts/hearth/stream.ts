@@ -13,6 +13,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import type { LedgerEvent } from "../../types/hearth";
 import type { RouteReply } from "./api";
 
@@ -62,11 +63,14 @@ export interface LedgerStream {
 
 interface Connection {
   res: ServerResponse;
+  socket: Socket;
   cursor: number;
   closed: boolean;
   timers: Array<ReturnType<typeof setInterval>>;
   /** When its buffer was first found over the limit, while it still is. */
   fullSince: number | null;
+  /** True while events are being written to it: a write can emit `drain` before it returns. */
+  pumping: boolean;
 }
 
 export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
@@ -77,12 +81,19 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
   const stalledMs = deps.stalledMs ?? STREAM_STALLED_MS;
   const open = new Set<Connection>();
 
-  function drop(connection: Connection): void {
+  /**
+   * Stop serving a connection. `abandon` is for a client that is not reading:
+   * ending the response would only queue a terminator behind data it will not
+   * take, and the socket and that data would stay until the client left. Its
+   * socket is destroyed instead; it resumes by `Last-Event-ID`.
+   */
+  function drop(connection: Connection, abandon = false): void {
     if (connection.closed) return;
     connection.closed = true;
     for (const timer of connection.timers) clearInterval(timer);
     open.delete(connection);
-    connection.res.end();
+    if (abandon) connection.socket.destroy();
+    else connection.res.end();
   }
 
   function message(event: string, id: number, data: unknown): string {
@@ -93,8 +104,9 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
   /**
    * Whether the client is behind on reading. A connection that is gets nothing
    * new: its cursor stays where it is, so what it has not been sent is still
-   * in the ledger and follows when it catches up. One that stays behind is
-   * closed, so a client that never reads cannot hold memory or a slot.
+   * in the ledger and follows when it catches up. One that stays behind for
+   * the stall limit has its socket destroyed, which frees its slot and what
+   * was waiting for it.
    *
    * `writableLength` is the measure: under Bun `write` returns true however
    * much is waiting.
@@ -106,25 +118,33 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
     }
     const now = Date.now();
     connection.fullSince ??= now;
-    if (now - connection.fullSince >= stalledMs) drop(connection);
+    if (now - connection.fullSince >= stalledMs) drop(connection, true);
     return true;
   }
 
   function pump(connection: Connection): void {
-    for (let batch = 0; batch < BATCHES_PER_TICK; batch++) {
-      if (connection.closed || congested(connection)) return;
-      let events: LedgerEvent[];
-      try {
-        events = deps.eventsAfter(connection.cursor, BATCH);
-      } catch {
-        // A busy ledger: the cursor has not moved, so the next tick asks again.
-        return;
+    // Not re-entered: `drain` can fire inside a write below, before the cursor
+    // has moved past the event being written, and a second pass would send it again.
+    if (connection.pumping) return;
+    connection.pumping = true;
+    try {
+      for (let batch = 0; batch < BATCHES_PER_TICK; batch++) {
+        if (connection.closed || congested(connection)) return;
+        let events: LedgerEvent[];
+        try {
+          events = deps.eventsAfter(connection.cursor, BATCH);
+        } catch {
+          // A busy ledger: the cursor has not moved, so the next tick asks again.
+          return;
+        }
+        for (const event of events) {
+          connection.res.write(message("delta", event.id, event));
+          connection.cursor = event.id;
+        }
+        if (events.length < BATCH) return;
       }
-      for (const event of events) {
-        connection.res.write(message("delta", event.id, event));
-        connection.cursor = event.id;
-      }
-      if (events.length < BATCH) return;
+    } finally {
+      connection.pumping = false;
     }
   }
 
@@ -147,10 +167,12 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
       // together cannot pass the limit between them.
       const connection: Connection = {
         res,
+        socket: req.socket,
         cursor: newest,
         closed: false,
         timers: [],
         fullSince: null,
+        pumping: false,
       };
       open.add(connection);
       // Under Bun, a client that goes away closes the request and the socket;
@@ -160,6 +182,9 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
       req.once("close", gone);
       res.once("close", gone);
       req.socket.once("close", gone);
+      // A client that was behind has caught up: carry on at once rather than
+      // at the next poll, or a long replay crawls at one buffer per tick.
+      res.on("drain", () => pump(connection));
 
       res.writeHead(200, {
         "Content-Type": "text/event-stream",

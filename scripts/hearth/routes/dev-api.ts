@@ -205,8 +205,15 @@ export interface BdResult {
   stderr: string;
 }
 
-/** Runs `bd` with an argument array — never a shell — and reports how it went. */
-export type BdRunner = (args: string[]) => BdResult | Promise<BdResult>;
+/**
+ * Runs `bd` with an argument array — never a shell — and reports how it went.
+ * `timeoutMs` is how long this call may run before it is killed; without it
+ * the runner's own limit applies.
+ */
+export type BdRunner = (
+  args: string[],
+  options?: { timeoutMs?: number },
+) => BdResult | Promise<BdResult>;
 
 export interface ApiReply {
   status: number;
@@ -274,7 +281,7 @@ const BD_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
  * with a null or non-zero status and the reason on stderr; it never rejects.
  */
 export function bdRunner(root: string): BdRunner {
-  return (args) =>
+  return (args, options) =>
     new Promise<BdResult>((done) => {
       execFile(
         "bd",
@@ -283,7 +290,7 @@ export function bdRunner(root: string): BdRunner {
           cwd: root,
           encoding: "utf8",
           shell: false,
-          timeout: BD_TIMEOUT_MS,
+          timeout: options?.timeoutMs ?? BD_TIMEOUT_MS,
           maxBuffer: BD_MAX_OUTPUT_BYTES,
           windowsHide: true,
         },

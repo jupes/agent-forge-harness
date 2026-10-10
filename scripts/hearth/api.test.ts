@@ -246,6 +246,8 @@ function fixture(route: ApiRoute): ActionFixture {
 
 interface Probe {
   row: string;
+  /** What the validator handed the effect. */
+  input: unknown;
   /** The audit rows in the ledger at the moment the effect was called. */
   audit: LedgerEventOf<"operator.action">[];
 }
@@ -272,7 +274,7 @@ async function probed(
             : {
                 ...route,
                 effect: (input: unknown) => {
-                  probes.push({ row: key(route), audit: audit() });
+                  probes.push({ row: key(route), input, audit: audit() });
                   return route.effect(input);
                 },
               },
@@ -508,6 +510,16 @@ describe("every action row (iterating the table)", () => {
       // justification: a result the ledger's type does not allow; the runner must not trust the shape.
       () => ({ ok: true, id: undefined, ulid: "x" }) as unknown as AppendResult,
     ],
+    [
+      "answers ok as a word, not as true",
+      // justification: as above.
+      () => ({ ok: "true", id: 1, ulid: "x" }) as unknown as AppendResult,
+    ],
+    [
+      "answers ok with an id that is no row id",
+      () => ({ ok: true, id: Number.NaN, ulid: "x" }),
+    ],
+    ["answers ok with a negative id", () => ({ ok: true, id: -1, ulid: "x" })],
     [
       "answers nothing at all",
       // justification: as above — a broken appender, not a typed one.
@@ -1663,4 +1675,48 @@ describe("council runs started through the hearth", () => {
     const events = await councilEvents(h, job?.runId ?? "");
     expect(events[0]?.payload).toMatchObject({ councilRunId: job?.runId });
   }, 20_000);
+});
+
+describe("what travels from a request into an effect", () => {
+  test("a council start hands the service only the fields it knows, whatever else the body holds", async () => {
+    const { h, probes } = await probed();
+    const response = await fetch(`${h.api}/council/runs`, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      // Written out, so `__proto__` is a key of the JSON and not a prototype.
+      body: `{"sourceType":"text","source":"Evaluate this.","runId":"only-known","beadId":"demo-7","maxUsd":1,"extra":"nope","nested":{"a":1},"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}`,
+    });
+    expect(response.status).toBe(202);
+    const input = probes.at(-1)?.input as Record<string, unknown>;
+    expect(Object.keys(input).sort()).toEqual([
+      "beadId",
+      "maxUsd",
+      "runId",
+      "source",
+      "sourceType",
+    ]);
+    expect(input).toEqual({
+      sourceType: "text",
+      source: "Evaluate this.",
+      runId: "only-known",
+      beadId: "demo-7",
+      maxUsd: 1,
+    });
+    expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
+    await councilRunFinished(h, "only-known");
+  }, 20_000);
+
+  test("the queue read gives bd its own time limit; the review's calls keep the runner's", async () => {
+    const h = await start({ api: { bdTimeoutMs: 1234 } });
+    expect((await get(h, "/queue")).status).toBe(200);
+    expect((await post(h, "/dev-api/forge-run/review", REVIEW)).status).toBe(
+      200,
+    );
+    expect(h.bd.calls.map((args) => args[0])).toEqual([
+      "list",
+      "show",
+      "comments",
+    ]);
+    expect(h.bd.options).toEqual([{ timeoutMs: 1234 }, undefined, undefined]);
+  });
 });
