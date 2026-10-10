@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -32,7 +33,7 @@ import {
   type Socket,
 } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import {
   InMemoryTransport,
@@ -157,6 +158,8 @@ interface Session {
   /** Every token file the server read, in order. */
   tokenReads: string[];
   call(name: string, args?: Record<string, unknown>): Promise<Answer>;
+  /** Close the client and the server now, instead of when the test ends. */
+  close(): Promise<void>;
 }
 
 interface SessionOptions {
@@ -201,14 +204,19 @@ async function session(
   const [near, far] = InMemoryTransport.createLinkedPair();
   await server.connect(far);
   await client.connect(near);
-  cleanup.push(async () => {
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
     await client.close();
     await server.close();
-  });
+  };
+  cleanup.push(close);
   return {
     client,
     sent,
     tokenReads,
+    close,
     async call(name, args) {
       const result = await client.callTool({
         name,
@@ -296,6 +304,14 @@ describe("tools/list", () => {
       expect(listed?.inputSchema).toMatchObject({
         type: "object",
         additionalProperties: false,
+      });
+      // A client may let a read-only tool run unasked: only a row that does not act says so.
+      expect({ tool: row.name, annotations: listed?.annotations }).toEqual({
+        tool: row.name,
+        annotations:
+          row.authority === "operator"
+            ? { readOnlyHint: false, destructiveHint: false }
+            : { readOnlyHint: true },
       });
     }
   });
@@ -421,16 +437,21 @@ interface Peer {
   connections: number;
   /** Each request as it arrived, head and body. */
   requests: string[];
+  /** How many of its connections have been closed. */
+  closed: number;
 }
 
 async function peer(
   respond: (socket: Socket, request: string) => void,
 ): Promise<Peer> {
-  const seen: Peer = { port: 0, connections: 0, requests: [] };
+  const seen: Peer = { port: 0, connections: 0, requests: [], closed: 0 };
   const sockets = new Set<Socket>();
   const server = createTcpServer((socket) => {
     seen.connections++;
     sockets.add(socket);
+    socket.once("close", () => {
+      seen.closed++;
+    });
     let received = Buffer.alloc(0);
     let answered = false;
     socket.on("error", () => {});
@@ -554,6 +575,8 @@ describe("the loopback exchange", () => {
       expect({ label, answer }).toEqual({ label, answer: expected });
       // Complete answers are not waited on: nowhere near the 2 s limit.
       expect(performance.now() - started).toBeLessThan(1000);
+      // The connection is closed from this side, whether or not the peer closes its own.
+      await until(() => stub.closed === 1, `${label}: the socket was closed`);
     }
   });
 
@@ -582,6 +605,24 @@ describe("the loopback exchange", () => {
           socket.end("HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\nSECRET"),
         {},
         /ended/,
+      ],
+      [
+        "an answer framed both ways",
+        (socket) =>
+          socket.write(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 6\r\n\r\n6\r\nSECRET\r\n0\r\n\r\n",
+          ),
+        {},
+        /framed in a way/,
+      ],
+      [
+        "an answer with two lengths",
+        (socket) =>
+          socket.write(
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 6\r\n\r\nSECRET",
+          ),
+        {},
+        /says twice how long/,
       ],
       [
         "a chunk that is not one",
@@ -1316,6 +1357,17 @@ describe("when no hearth can be used", () => {
           }),
       ],
       [
+        "a token file of the right name in another directory",
+        (where, port) => {
+          const other = join(where.root, "elsewhere", "tokens");
+          mkdirSync(other, { recursive: true });
+          const copy = join(other, basename(tokenPath(where.home, where.root)));
+          publish(where, port, { tokenFile: copy });
+          writeFileSync(copy, `${"c".repeat(64)}\n`);
+          tokens.add("c".repeat(64));
+        },
+      ],
+      [
         "a root that is not absolute",
         (where, port) =>
           publish(where, port, { root: relative(process.cwd(), where.root) }),
@@ -1335,6 +1387,17 @@ describe("when no hearth can be used", () => {
       });
       write(where, liar.port);
       const { agent, operator } = await refusedBoth(where);
+      // A relative root names no directory, so that lock is not even a candidate.
+      if (label !== "a root that is not absolute")
+        expect({
+          label,
+          why: (await agent.call("forge_runs_list")).envelope.error,
+        }).toEqual({
+          label,
+          why: expect.stringMatching(
+            /A lock was found and not used: hearth-[0-9a-f]{12}\.lock: /,
+          ),
+        });
       expect({
         label,
         probes: liar.requests.length,
@@ -1374,6 +1437,24 @@ describe("when no hearth can be used", () => {
           void healthy(where.root.toUpperCase())(req, res),
       ],
       ["answers HTML", () => (_req, res) => void res.end("<html>hello</html>")],
+      [
+        "answers the right pid and root with another status",
+        (where) => (_req, res) =>
+          json(res, 201, {
+            ok: true,
+            data: { pid: process.pid, root: where.root },
+            error: null,
+          }),
+      ],
+      [
+        "answers the right pid and root in an envelope that is not ok",
+        (where) => (_req, res) =>
+          json(res, 200, {
+            ok: false,
+            data: { pid: process.pid, root: where.root },
+            error: "no",
+          }),
+      ],
       [
         "answers an error envelope",
         () => (_req, res) =>
@@ -1879,6 +1960,7 @@ describe("the operator token", () => {
       ],
       ["upper case", () => writeFileSync(file, `${"B".repeat(64)}\n`)],
       ["too short", () => writeFileSync(file, `${"b".repeat(63)}\n`)],
+      ["too long", () => writeFileSync(file, `${"b".repeat(65)}\n`)],
     ];
     for (const [label, change] of states) {
       change();
@@ -2437,6 +2519,7 @@ describe("the council's tools, re-exported", () => {
       ["a name with no prefix", ["review"], /review/],
       ["a near miss", ["Council_start"], /Council_start/],
       ["an empty name", ["council_a", ""], /council_/],
+      ["the prefix alone", ["council_"], /"council_"/],
     ];
     for (const [label, names, expected] of offers) {
       const outcome = await session(emptyPlace(), {
@@ -2751,12 +2834,18 @@ describe("the server as a process, over stdio", () => {
       expect(server.stdout()).not.toContain(hearth.hearth.token);
       expect(server.stderr()).not.toContain(hearth.hearth.token);
     }
-    // One line each, saying which kind of session this is.
-    expect(agent.stderr().trim().split("\n")).toEqual([
-      expect.stringMatching(/agent session/),
-    ]);
+    // The first line says which kind of session this is. The one that was sent
+    // lines it could not take says so, a line each, and repeats none of them.
+    const [first, ...rest] = agent.stderr().trim().split("\n");
+    expect(first).toMatch(/^hearth:mcp: serving .* as an agent session/);
+    expect(rest.length).toBeGreaterThan(0);
+    for (const line of rest) {
+      expect(line).toMatch(/^hearth:mcp: \w+: /);
+      expect(line.length).toBeLessThan(260);
+      expect(line).not.toContain("this is not json");
+    }
     expect(operator.stderr().trim().split("\n")).toEqual([
-      expect.stringMatching(/operator session/),
+      expect.stringMatching(/^hearth:mcp: serving .* as an operator session/),
     ]);
   }, 60_000);
 
@@ -2930,6 +3019,360 @@ describe("the registration", () => {
   }, 60_000);
 });
 
+describe("what the first review found unpinned", () => {
+  test("a client that has gone ends a request still waiting on the hearth, not only a bridged call", async () => {
+    const where = emptyPlace();
+    // Passes for the hearth, and never answers a route.
+    const silent = await standIn(
+      (req, res) => void healthy(where.root)(req, res),
+    );
+    publish(where, silent.port);
+    const gone = new AbortController();
+    const s = await session(where, { gone: gone.signal });
+    const started = performance.now();
+    const pending = s.call("forge_runs_list");
+    await until(() => silent.requests.length === 2, "the route was asked");
+    gone.abort();
+    const answer = await pending;
+    expect(answer.envelope.error).toMatch(
+      /could not be asked: the request was cancelled/,
+    );
+    // Ended by the signal, not by the request limit of 45 s.
+    expect(performance.now() - started).toBeLessThan(3000);
+  });
+
+  test("closing the server closes the council it was handed", async () => {
+    const council = waitingCouncil();
+    const s = await session(emptyPlace(), { council: council.build });
+    expect(council.closed).toEqual([]);
+    await s.close();
+    expect(council.closed).toEqual(["closed"]);
+  });
+
+  test("two live hearths for one directory: the lock that comes first by name is the one used, every time", async () => {
+    const home = tempDir("af-mcp-home-");
+    const real = tempDir("af-mcp-real-");
+    mkdirSync(join(real, ".git"));
+    const link = join(tempDir("af-mcp-link-"), "link");
+    symlinkSync(real, link, "junction");
+    const byRoot = new Map([
+      [real, await serve({ home, root: real })],
+      [link, await serve({ home, root: link })],
+    ]);
+    const [first = ""] = [...byRoot.keys()].sort((a, b) =>
+      basename(lockPath(home, a)).localeCompare(basename(lockPath(home, b))),
+    );
+    const winner = byRoot.get(first);
+    if (!winner) throw new Error("no hearth for the first lock");
+    expect(byRoot.size).toBe(2);
+    for (const root of [real, link]) {
+      const s = await session({ home, root });
+      await s.call("forge_runs_list");
+      await s.call("forge_smiths_list");
+      // Only the winner is ever asked, even for its health.
+      expect({
+        root,
+        ports: [...new Set(s.sent.map((request) => request.port))],
+      }).toEqual({
+        root,
+        ports: [winner.hearth.port],
+      });
+    }
+  });
+
+  test("a hearth that serves exactly the directory the session works in, below a checkout, is its own", async () => {
+    const home = tempDir("af-mcp-home-");
+    const checkout = tempDir("af-mcp-checkout-");
+    mkdirSync(join(checkout, ".git"));
+    const below = join(checkout, "packages", "one");
+    writeIn(below, ".tmp/work/forge-runs/demo.json", RUN_STATE);
+    const served = await serve({ home, root: below });
+    const s = await session({ home, root: below });
+    const runs = await s.call("forge_runs_list");
+    expect(
+      (runs.envelope.data as Array<{ slug: string }>).map((run) => run.slug),
+    ).toEqual(["demo"]);
+    expect(s.sent.at(-1)?.port).toBe(served.hearth.port);
+  });
+
+  test("filters that together are too long for one request line are refused here, counted in bytes", async () => {
+    const hearth = await stocked();
+    const s = await session(place(hearth));
+    // Each is within the bound of a single filter; in bytes they are nine times that.
+    const long = "火".repeat(1000);
+    const answer = await s.call("forge_events_query", {
+      bead: long,
+      run: long,
+      session: long,
+      kind: long,
+      since: long,
+    });
+    expect(answer.envelope.error).toMatch(
+      /^forge_events_query: .*too long for one request/,
+    );
+    expect(s.sent).toEqual([]);
+    // One such filter alone is sent, and judged by the hearth.
+    const one = await s.call("forge_events_query", { bead: "火".repeat(100) });
+    expect(one.envelope.ok).toBe(true);
+  });
+});
+
+describe("a body the hearth will not read", () => {
+  test("every governed row's body limit is the mounted route's, and a body over it is refused here, where the reason can be given", async () => {
+    const hearth = await stocked();
+    const limits = new Map<string, number | undefined>();
+    for (const route of hearth.hearth.routes)
+      if (route.kind === "action")
+        limits.set(shape(route.method, route.path), route.maxBodyBytes);
+    for (const tool of governedRows())
+      expect({ tool: tool.name, maxBodyBytes: tool.maxBodyBytes }).toEqual({
+        tool: tool.name,
+        maxBodyBytes: limits.get(shape(tool.method, tool.path)),
+      });
+
+    const operator = await session(place(hearth), { operator: true });
+    const answer = await operator.call("forge_council_start", {
+      sourceType: "text",
+      source: "x".repeat(2_200_000),
+    });
+    expect(answer.envelope.error).toMatch(
+      /^forge_council_start: .*2100000 bytes/,
+    );
+    expect(operator.sent).toEqual([]);
+    expect(operator.tokenReads).toEqual([]);
+  });
+
+  test("a refusal the hearth gives before it has read a large body comes back as the hearth's refusal", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    const foreign = "d".repeat(64);
+    tokens.add(foreign);
+    writeFileSync(tokenPath(hearth.home, hearth.root), `${foreign}\n`);
+    for (const size of [600_000, 2_000_000]) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const answer = await operator.call("forge_council_start", {
+          sourceType: "text",
+          source: "y".repeat(size),
+          runId: `big-${size}-${attempt}`,
+        });
+        expect({ size, attempt, error: answer.envelope.error }).toEqual({
+          size,
+          attempt,
+          error: "This action needs the operator token of this control plane",
+        });
+      }
+    }
+    expect(hearth.events(["operator.action"])).toEqual([]);
+  }, 30_000);
+});
+
+/** The real serve function with a council that begins work of its own and says when it is closed. */
+const backgroundScript = `
+import { McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
+import { serveHearthMcp } from "./scripts/hearth/mcp";
+serveHearthMcp({
+  root: process.env.MCP_TEST_ROOT ?? "",
+  operator: false,
+  council: () => {
+    const server = new McpServer({ name: "stand-in", version: "0" });
+    let work;
+    server.registerTool("council_begin", { inputSchema: z.object({}) }, async () => {
+      work = setTimeout(() => process.stderr.write("background work finished\\n"), 1500);
+      process.stderr.write("background work begun\\n");
+      return { content: [] };
+    });
+    server.registerTool("council_hang", { inputSchema: z.object({}) }, async () => {
+      process.stderr.write("entered council_hang\\n");
+      await new Promise(() => {});
+      return { content: [] };
+    });
+    const close = server.close.bind(server);
+    server.close = async () => {
+      clearTimeout(work);
+      process.stderr.write("COUNCIL CLOSED\\n");
+      await close();
+    };
+    return server;
+  },
+});
+`;
+
+describe("a client that dies outright (its input and its output both gone)", () => {
+  test("with a call still waiting: what the council began on its own account runs to its end, and then the process leaves", async () => {
+    const where = emptyPlace();
+    const child = spawn("bun", ["-e", backgroundScript], {
+      cwd: REPO,
+      env: serverEnv(where.home, { MCP_TEST_ROOT: where.root }),
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let err = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      err += chunk.toString("utf8");
+    });
+    child.stdout?.on("data", () => {});
+    const exited = new Promise<number | string | null>((done) =>
+      child.once("exit", (code, signal) => done(code ?? signal)),
+    );
+    cleanup.push(async () => {
+      outputs.push(err);
+      child.kill();
+      await exited;
+    });
+    const send = (message: unknown): void =>
+      void child.stdin?.write(`${JSON.stringify(message)}\n`);
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: HELLO });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "council_begin", arguments: {} },
+    });
+    send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "council_hang", arguments: {} },
+    });
+    await until(
+      () =>
+        err.includes("background work begun") &&
+        err.includes("entered council_hang"),
+      "both calls arrived",
+    );
+
+    // The client is gone: nothing reads its output any more, and its input ends.
+    child.stdout?.destroy();
+    child.stdin?.end();
+
+    expect(
+      await Promise.race([
+        exited,
+        new Promise<string>((done) =>
+          setTimeout(() => done("still running"), 8000),
+        ),
+      ]),
+    ).toBe(0);
+    expect(err).toContain("background work finished");
+    expect(err).not.toContain("COUNCIL CLOSED");
+  }, 30_000);
+});
+
+describe("the request limit", () => {
+  test("a route that takes longer than a second to answer is waited for", async () => {
+    const where = emptyPlace();
+    // Passes for the hearth, and answers its routes after a second and a half.
+    const slow = await standIn((req, res) => {
+      if (healthy(where.root)(req, res)) return;
+      setTimeout(
+        () => json(res, 200, { ok: true, data: ["late"], error: null }),
+        1500,
+      );
+    });
+    publish(where, slow.port);
+    const s = await session(where);
+    const answer = await s.call("forge_runs_list");
+    expect(answer.envelope).toEqual({ ok: true, data: ["late"], error: null });
+  }, 15_000);
+});
+
+/** A hearth as its own process, started the way the dashboard starts it. */
+async function hearthProcess(): Promise<{
+  home: string;
+  root: string;
+  pid: number;
+  ledger: string;
+}> {
+  const home = tempDir("af-mcp-home-");
+  const root = tempDir("af-mcp-root-");
+  mkdirSync(join(root, ".git"));
+  // The council profile its `main()` looks for under the root.
+  mkdirSync(join(root, "councils"));
+  copyFileSync(
+    join(REPO, "councils", "default.json"),
+    join(root, "councils", "default.json"),
+  );
+  writeIn(root, ".tmp/work/forge-runs/demo.json", RUN_STATE);
+  const ledger = join(home, "ledger.db");
+  const child = spawn(
+    "bun",
+    [join(REPO, "scripts", "hearth", "server.ts"), "--root", root],
+    {
+      env: { ...serverEnv(home), HEARTH_PORT: "" },
+      stdio: "ignore",
+      windowsHide: true,
+    },
+  );
+  const exited = new Promise<void>((done) => child.once("exit", () => done()));
+  cleanup.push(async () => {
+    child.kill();
+    await exited;
+    closeLedger(ledger);
+  });
+  let lock: HearthLock | null = null;
+  for (let attempt = 0; attempt < 300 && lock === null; attempt++) {
+    await new Promise((done) => setTimeout(done, 100));
+    lock = readLock(lockPath(home, root));
+  }
+  if (lock === null) throw new Error("the hearth did not publish its lock");
+  // The token is published after the lock.
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const token = readToken(lock.tokenFile);
+    if (token !== null) {
+      tokens.add(token);
+      return { home, root, pid: lock.pid, ledger };
+    }
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  throw new Error("the hearth did not publish its token");
+}
+
+describe("three processes: a hearth, an agent server and an operator server", () => {
+  test("the servers find a hearth that is another process, read it, and only the operator's call is recorded as an operator action", async () => {
+    const hearth = await hearthProcess();
+    expect(hearth.pid).not.toBe(process.pid);
+    const env = serverEnv(hearth.home);
+    const agent = spawnServer("bun", [ENTRY, "--root", hearth.root], { env });
+    const operator = spawnServer(
+      "bun",
+      [ENTRY, "--root", hearth.root, "--operator"],
+      { env },
+    );
+    await greeted(agent);
+    await greeted(operator);
+
+    for (const server of [agent, operator]) {
+      const runs = await server.tool("forge_runs_list");
+      expect(
+        (runs.data as Array<{ slug: string }>).map((run) => run.slug),
+      ).toEqual(["demo"]);
+    }
+    const recorded = (): unknown[] =>
+      queryEvents({ kinds: ["operator.action"] }, { path: hearth.ledger }).map(
+        (event) => event.payload,
+      );
+
+    expect(
+      (await agent.tool("forge_council_cancel", { id: "no-such-run" })).error,
+    ).toContain("needs an operator session");
+    expect(recorded()).toEqual([]);
+
+    const cancel = await operator.tool("forge_council_cancel", {
+      id: "no-such-run",
+    });
+    expect(cancel.ok).toBe(false);
+    expect(cancel.error).not.toContain("operator");
+    expect(recorded()).toEqual([
+      { action: "council.run.cancel", surface: "mcp", target: "no-such-run" },
+    ]);
+
+    expect(await agent.end()).toBe(0);
+    expect(await operator.end()).toBe(0);
+  }, 90_000);
+});
+
 describe("the instruction files", () => {
   for (const file of ["CLAUDE.md", "AGENTS.md"])
     test(`${file} says when to use the forge tools and when bd, outside the block bd generates`, () => {
@@ -2975,7 +3418,7 @@ describe("the instruction files", () => {
       expect(section).toContain("`council_*`");
       expect(section).toContain("any session");
       // A section, not a manual.
-      expect(section.length).toBeLessThan(1500);
+      expect(section.length).toBeLessThan(800);
     });
 });
 

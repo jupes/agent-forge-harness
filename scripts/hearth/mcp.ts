@@ -75,6 +75,12 @@ export interface ForgeTool {
   method: "GET" | "POST";
   /** Below `/__agent-forge`, as the route table spells it. */
   path: string;
+  /**
+   * The most the route reads of a body, when the route says: a larger one is
+   * refused here. The hearth refuses it without reading it, and an answer
+   * given to a request still being written can be lost on the way back.
+   */
+  maxBodyBytes?: number;
 }
 
 /**
@@ -83,8 +89,10 @@ export interface ForgeTool {
  */
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const segment = z.string().regex(SEGMENT);
-/** A filter of a GET: bounded so the request line stays a request line. */
+/** A filter of a GET. What the filters of one call come to together is bounded in bytes, where the request is built. */
 const filter = z.string().max(1000);
+/** The longest request target sent. A server answers a longer line with a bare status, not with a reason. */
+const MAX_TARGET_BYTES = 8_000;
 const whole = z.number().int().min(0);
 const none = z.strictObject({});
 
@@ -195,6 +203,7 @@ export const FORGE_TOOLS: readonly ForgeTool[] = [
     }),
     method: "POST",
     path: "/council/runs",
+    maxBodyBytes: 2_100_000,
   },
   {
     name: "forge_council_cancel",
@@ -251,6 +260,9 @@ export interface LoopbackAnswer {
 
 export type Exchange = (request: LoopbackRequest) => Promise<LoopbackAnswer>;
 
+/** A body up to this size is written with the head; a larger one waits `EARLY_ANSWER_MS` for a refusal given on the head alone. */
+const BODY_WITH_HEAD_BYTES = 65_536;
+const EARLY_ANSWER_MS = 100;
 const HEAD_END = Buffer.from("\r\n\r\n");
 const CRLF = Buffer.from("\r\n");
 /** What a request target, a header name and a header value may be made of: nothing that could begin another line. */
@@ -391,10 +403,12 @@ export const loopbackExchange: Exchange = (request) =>
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (outcome: LoopbackAnswer | Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(bodyTimer);
       request.signal?.removeEventListener("abort", onAbort);
       // The peer may keep its end open; one answer is all that is read.
       socket.destroy();
@@ -413,7 +427,16 @@ export const loopbackExchange: Exchange = (request) =>
       else if (reading.state === "bad") finish(new Error(reading.why));
     };
     socket.once("connect", () => {
-      socket.write(payload ? Buffer.concat([head, payload]) : head);
+      if (!payload || payload.byteLength <= BODY_WITH_HEAD_BYTES) {
+        socket.write(payload ? Buffer.concat([head, payload]) : head);
+        return;
+      }
+      // A large body is held back for a moment. A peer that refuses on the
+      // head alone (a token it does not honour) answers at once and closes;
+      // written to a peer that has stopped reading, the body would have that
+      // answer discarded on the way back.
+      socket.write(head);
+      bodyTimer = setTimeout(() => socket.write(payload), EARLY_ANSWER_MS);
     });
     socket.on("data", (chunk: Buffer) => {
       size += chunk.byteLength;
@@ -631,7 +654,12 @@ function requestFor(
     );
   }
   const text = query.toString();
-  return { target: `${API_PREFIX}${path}${text ? `?${text}` : ""}` };
+  const target = `${API_PREFIX}${path}${text ? `?${text}` : ""}`;
+  if (Buffer.byteLength(target) > MAX_TARGET_BYTES)
+    throw new Error(
+      `the filters are too long for one request (${Buffer.byteLength(target)} bytes; at most ${MAX_TARGET_BYTES})`,
+    );
+  return { target };
 }
 
 function refusal(error: string): OperatorEnvelope {
@@ -674,7 +702,7 @@ interface CouncilBridge {
     params: CallToolRequestParams,
     signal: AbortSignal,
   ): Promise<CallToolResult>;
-  close(): Promise<void>;
+  close(leaveCouncilOpen?: boolean): Promise<void>;
 }
 
 const COUNCIL_PREFIX = "council_";
@@ -700,9 +728,10 @@ async function bridgeCouncil(council: CouncilServer): Promise<CouncilBridge> {
   const [near, far] = InMemoryTransport.createLinkedPair();
   await council.connect(far);
   await client.connect(near);
-  const close = async (): Promise<void> => {
+  /** Closing the client ends the calls it was forwarding. Closing the council as well ends everything it is doing. */
+  const close = async (leaveCouncilOpen = false): Promise<void> => {
     await client.close();
-    await council.close();
+    if (!leaveCouncilOpen) await council.close();
   };
   const { tools } = await client.listTools();
   const names = new Set<string>();
@@ -751,6 +780,13 @@ export interface HearthMcpOptions {
   requestTimeoutMs?: number;
   /** Aborts when the client has gone. The stdio entry aborts it when input ends, which the transport does not notice. */
   gone?: AbortSignal;
+  /**
+   * Leave the council's server open when this one closes. The stdio entry
+   * sets it: there this server closes when its transport dies, and that must
+   * not cancel a review the council began on its own account. The process
+   * leaves when that work has ended.
+   */
+  keepCouncilOpen?: boolean;
 }
 
 export async function createHearthMcpServer(
@@ -802,6 +838,11 @@ export async function createHearthMcpServer(
     } catch (error) {
       return refusal(`${tool.name}: ${(error as Error).message}`);
     }
+    const bodyBytes = Buffer.byteLength(request.body ?? "");
+    if (tool.maxBodyBytes !== undefined && bodyBytes > tool.maxBodyBytes)
+      return refusal(
+        `${tool.name}: the request is ${bodyBytes} bytes and its route reads at most ${tool.maxBodyBytes} bytes, so nothing was sent.`,
+      );
 
     const located = await locateHearth(home, options.root, exchange, signal);
     // A row that reads the hearth's own checkout is answered only by the
@@ -912,7 +953,7 @@ export async function createHearthMcpServer(
 
   const close = server.close.bind(server);
   server.close = async () => {
-    await bridge?.close();
+    await bridge?.close(options.keepCouncilOpen === true);
     await close();
   };
   return server;
@@ -924,26 +965,34 @@ export async function createHearthMcpServer(
  * Serve over this process's stdio. The one way the server is served: the
  * entry point below calls it with the real council, tests with a stand-in.
  *
- * Two things the SDK's stdio entry leaves undone are done here. The first
+ * Three things the SDK's stdio entry leaves undone are done here. The first
  * server is built at once, so a council registry this server will not serve
  * stops the process with one line and exit code 1, instead of answering every
- * message with an internal error. And the end of input is noticed, which the
+ * message with an internal error. The end of input is noticed, which the
  * transport does not do: calls still waiting are ended, so that a call which
- * never settles cannot keep the process alive after its client has gone.
+ * never settles cannot keep the process alive after its client has gone. And
+ * what the SDK reports out of band is written to stderr, one line each.
+ *
+ * The council is never closed from here. When the client has gone, ending a
+ * waiting call writes to a pipe nobody reads, the transport fails and the SDK
+ * closes this server; a review the council began on its own account still
+ * runs to its end, and the process leaves when it has.
  */
 export function serveHearthMcp(
-  options: Omit<HearthMcpOptions, "gone">,
+  options: Omit<HearthMcpOptions, "gone" | "keepCouncilOpen">,
 ): StdioServerHandle {
   const gone = new AbortController();
   const build = (): Promise<Server> =>
-    createHearthMcpServer({ ...options, gone: gone.signal }).catch(
-      (error: unknown) => {
-        process.stderr.write(
-          `hearth:mcp cannot start: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-        process.exit(1);
-      },
-    );
+    createHearthMcpServer({
+      ...options,
+      gone: gone.signal,
+      keepCouncilOpen: true,
+    }).catch((error: unknown) => {
+      process.stderr.write(
+        `hearth:mcp cannot start: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exit(1);
+    });
   let first: Promise<Server> | null = build();
   void first.then(() =>
     process.stderr.write(
@@ -956,11 +1005,24 @@ export function serveHearthMcp(
   );
   for (const event of ["end", "close"] as const)
     process.stdin.once(event, () => gone.abort());
-  return serveStdio(() => {
-    const server = first ?? build();
-    first = null;
-    return server;
-  });
+  return serveStdio(
+    () => {
+      const server = first ?? build();
+      first = null;
+      return server;
+    },
+    {
+      // What it says comes from the message that could not be handled, never
+      // from anything this server holds; one bounded line. A schema failure
+      // reports every way the message was wrong as JSON: its name is enough.
+      onerror: (error) => {
+        const text = error.message.replace(/\s+/g, " ");
+        process.stderr.write(
+          `hearth:mcp: ${error.name}: ${/^[[{]/.test(text) ? "a message that is not a valid request" : text.slice(0, 200)}\n`,
+        );
+      },
+    },
+  );
 }
 
 export type ParsedArgs =
