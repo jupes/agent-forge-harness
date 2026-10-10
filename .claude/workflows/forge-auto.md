@@ -25,7 +25,13 @@ mode removes.
 **Concurrency**: auto runs are per-run like every other forge run (`.tmp/work/forge-runs/<slug>.json`),
 so several can be in flight at once. Give each code-touching run its own worktree —
 `bun run worktree create <branch>` — and record it with `--checkout`, so two runs do not build on
-top of each other and the quality gate can tell their results apart.
+top of each other. A quality-gate result belongs to a run only through that run's correlation, not
+through its checkout; `--checkout` is where the phase gate writes that correlation, and where the
+run's review verdicts are filed (the checkout must ignore `.tmp/`: `.claude/workflows/forge.md`).
+
+**An unattended run has an issue from its first phase.** Every review round is filed against a
+Beads issue, so a run started from free text creates one task before research
+(`.claude/commands/forgemaster-auto.md`, Step 0).
 
 ---
 
@@ -54,7 +60,8 @@ revision, or not yet reviewed, `forge:phase-gate <next phase>` exits non-zero, `
 `halted in <phase>` or `review <phase>` instead of the next phase command, and the Stop reminder
 says the same. Recording the phase again (`--write`) does not clear a halt — only a new
 `forge:review` round that advances does. To take a halted run back under human gates, re-record
-with `--mode gated`.
+its last phase with `--mode gated` added to that phase's own write line; the run keeps the bead it
+names.
 
 ---
 
@@ -66,10 +73,15 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
    phase never finished — halt, do not improvise around it.
 2. **Do the phase** by following its skill end to end (`.claude/skills/forge-<phase>/SKILL.md`),
    exactly as the gated pipeline does.
-3. **Record it.** `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto
-   --checkout <worktree>`. Optional: `--bead <id>` names the bead the run works, and
-   `--provider <id> --model <id> [--effort <level>] [--smith <name>]` records who is building it;
-   both are kept on the run and stamped on its ledger events.
+3. **Record it.**
+   `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto --checkout <worktree> --bead <id>`:
+   the skill's own `--write` line, with `--mode auto --checkout` added. `<worktree>` is the top
+   level of the checkout the run builds in; a run that builds where this command runs may leave
+   `--checkout` out. `<id>` is the issue that skill names for its phase
+   (`.claude/workflows/forge.md`, *Which bead a phase names*).
+   `--smith <name>` (or `--provider <id> --model <id> [--effort <level>]`) records who is building
+   it, on this call and on the entry check of step 1 (`.claude/workflows/forge.md`, *`--smith`*).
+   Both are kept on the run and stamped on its ledger events.
 4. **Review it with a fresh subagent.** Spawn an **Evaluator** (`.claude/agents/evaluator.md`) on
    the phase's exit artifact. It must be a *different* agent from the one that produced the work —
    the evaluator refuses to grade its own output — and run at a tier **≥** the builder's
@@ -77,11 +89,14 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
    `bun run forge:verdict --correlation <pointer> --review <phase>-<round> …` per
    `.claude/protocols/evaluation-verdict.md`; the command prints the file's full path as
    `data.file`. The pointer is `data.correlation.pointer` from step 3 when the run names its bead
-   (`--bead`); otherwise `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one. When
+   (`--bead`); otherwise `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one. (The
+   one write that names no bead is the research write of a run started from a feature or an epic:
+   `<TASK-ID>` is then that issue's id, and the plan write moves the run to its first task.) When
    the run builds in another checkout (step 3's `--checkout`), give that same `--checkout <dir>` to
    `forge:correlate` and to `forge:verdict`: the correlation and the verdict live there.
 5. **Decide.** `bun run forge:review --slug <slug> --phase <phase> --verdict <file> --tier <tier>`,
-   with the `data.file` that command printed.
+   with the `data.file` that command printed. `<tier>` is the evaluator's rank (`master`,
+   `journeyman` or `apprentice`; `human` for a person); it is stored on the round as given.
    Record the printed `comment` on the phase's Beads issue.
 6. **Act on the exit code:**
    - **0 (advance)** — file any follow-ups, then start the next phase.
@@ -96,7 +111,7 @@ What each phase reviews:
 |-------|---------------------------|
 | research | `plans/research/<slug>.md` — are the unknowns actually resolved from real code, or asserted? |
 | plan | `plans/drafts/<slug>.md` — do the AC, the file map and the TDD checkpoints match the research and the code? |
-| implement | the diff + tests — AC met, tests real, gates green, no scope creep |
+| implement | the diff + tests — AC met, tests real, gates green, no scope creep; each task's changes inside its file map, or the departure recorded on the task |
 | ship | `reports/<slug>-ship.md` + the PR body — does the summary match what actually changed? |
 
 ---
