@@ -632,6 +632,23 @@ describe("the import boundary (source scan)", () => {
       expect(source).not.toMatch(/from\s+["']\.\.\/ledger\//);
     }
   });
+
+  test("the hearth loads the council ledger wiring only where it runs as a command, so a hearth built in a test records no council run", () => {
+    const source = readFileSync(
+      join(REPO, "scripts", "hearth", "server.ts"),
+      "utf8",
+    );
+    expect(source.includes('await import("../council/ledger-wiring")')).toBe(
+      true,
+    );
+    expect(source).not.toMatch(/from\s+["']\.\.\/council\/ledger-wiring["']/);
+    // The dashboard's helper for posting actions is bundled for the browser:
+    // it reaches the hearth's constants and nothing of the ledger.
+    const helper = reachable(join(REPO, "docs", "js", "operator.ts"));
+    expect(helper.files).toContain(at("scripts", "hearth", "paths.ts"));
+    expect(ledgerReach(helper)).toEqual([]);
+    expect(helper.bare).toEqual([]);
+  });
 });
 
 /** The appender half of the seam, bound to the box's ledger. */

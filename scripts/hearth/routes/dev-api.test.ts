@@ -6,11 +6,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyReview,
   type BdResult,
+  devApiHttpHandler,
   gateLogsNewestFirst,
   readForgeRun,
   readReposKnowledge,
@@ -55,9 +58,9 @@ function fakeBd(
 }
 
 describe("applyReview", () => {
-  test("records a review on an in-progress checkpoint, running bd with argument arrays", () => {
+  test("records a review on an in-progress checkpoint, running bd with argument arrays", async () => {
     const bd = fakeBd("in_progress");
-    const reply = applyReview(
+    const reply = await applyReview(
       { issueId: "agent-forge-harness-j5k3", decision: "approve" },
       bd.run,
     );
@@ -74,10 +77,10 @@ describe("applyReview", () => {
     expect(reply.body.ok).toBe(true);
   });
 
-  test("refuses a checkpoint that is not in progress, and writes nothing", () => {
+  test("refuses a checkpoint that is not in progress, and writes nothing", async () => {
     for (const status of ["open", "blocked", "closed"]) {
       const bd = fakeBd(status);
-      const reply = applyReview(
+      const reply = await applyReview(
         { issueId: "a-1", decision: "approve" },
         bd.run,
       );
@@ -87,9 +90,9 @@ describe("applyReview", () => {
     }
   });
 
-  test("an invalid request never reaches bd", () => {
+  test("an invalid request never reaches bd", async () => {
     const bd = fakeBd("in_progress");
-    const reply = applyReview(
+    const reply = await applyReview(
       { issueId: "a-1", decision: "request-changes" },
       bd.run,
     );
@@ -97,7 +100,7 @@ describe("applyReview", () => {
     expect(reply.status).toBe(400);
   });
 
-  test("a bd failure is reported, not swallowed", () => {
+  test("a bd failure is reported, not swallowed", async () => {
     const missing = fakeBd("in_progress", {
       show: {
         status: 1,
@@ -105,7 +108,7 @@ describe("applyReview", () => {
         stderr: 'Error: no issue found matching "missing-9"\n',
       },
     });
-    const shown = applyReview(
+    const shown = await applyReview(
       { issueId: "missing-9", decision: "approve" },
       missing.run,
     );
@@ -120,7 +123,7 @@ describe("applyReview", () => {
         stderr: "Error: database is locked\n",
       },
     });
-    const added = applyReview(
+    const added = await applyReview(
       { issueId: "a-1", decision: "approve" },
       locked.run,
     );
@@ -394,5 +397,41 @@ describe("readReposKnowledge", () => {
       () => "../../.git/worktrees/wt",
     );
     expect(readReposKnowledge(worktree).localStateFrom).toBe(main);
+  });
+});
+
+describe("devApiHttpHandler mounted alone", () => {
+  test("performs no mutation: a review POST is answered 405, like every other method there", async () => {
+    const root = tempRoot();
+    const server = createServer((req, res) => {
+      void devApiHttpHandler(root, req, res, () => {
+        res.statusCode = 404;
+        res.end();
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const url = `http://127.0.0.1:${port}/__agent-forge/dev-api/forge-run/review`;
+      for (const body of [
+        "{}",
+        JSON.stringify({ issueId: "demo-1", decision: "approve", note: "" }),
+      ]) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: `http://127.0.0.1:${port}`,
+          },
+          body,
+        });
+        expect(response.status).toBe(405);
+        expect(((await response.json()) as { ok: boolean }).ok).toBe(false);
+      }
+      expect((await fetch(url)).status).toBe(405);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
   });
 });

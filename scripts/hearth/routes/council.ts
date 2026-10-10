@@ -23,25 +23,12 @@ function send(
 export function isLocalCouncilRequest(req: IncomingMessage): boolean {
   return passesFrontDoor(req);
 }
-async function bodyJson(req: IncomingMessage): Promise<unknown> {
-  if (!req.headers["content-type"]?.startsWith("application/json")) {
-    throw new Error("Use application/json for council requests");
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.byteLength;
-    if (size > 2_100_000) throw new Error("Council request exceeds 2 MB");
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-  } catch {
-    throw new Error("Council request must contain valid JSON");
-  }
-}
 
+/**
+ * The council routes that only read: profiles, the run list, one run, and a
+ * run's event stream. Starting and cancelling a run are action rows of the
+ * operator API (`./operator.ts`), at these same paths; nothing here mutates.
+ */
 export function councilHttpHandler(service: Service) {
   return async (
     req: IncomingMessage,
@@ -63,21 +50,9 @@ export function councilHttpHandler(service: Service) {
         return send(res, 200, await service.profiles());
       if (req.method === "GET" && route === "/runs")
         return send(res, 200, await service.list());
-      if (req.method === "POST" && route === "/runs") {
-        const input = await bodyJson(req);
-        return send(
-          res,
-          202,
-          service.start(input as Parameters<Service["start"]>[0]),
-        );
-      }
       const match = /^\/runs\/([^/]+)(?:\/(cancel|events))?$/.exec(route);
       if (!match) return send(res, 404, null, "Council endpoint not found");
       const runId = decodeURIComponent(match[1]!);
-      if (req.method === "POST" && match[2] === "cancel") {
-        await bodyJson(req);
-        return send(res, 200, await service.cancel(runId));
-      }
       if (req.method !== "GET")
         return send(res, 405, null, "Method not allowed");
       const job = await service.get(runId);
