@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-forge": {
+      "command": "bun",
+      "args": [
+        "run",
+        "--silent",
+        "hearth:mcp"
+      ]
+    }
+  }
+}

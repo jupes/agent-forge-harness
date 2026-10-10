@@ -10,11 +10,12 @@
  */
 
 import { afterEach, describe, expect, jest, test } from "bun:test";
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -61,6 +62,7 @@ import {
   type LoopbackAnswer,
   type LoopbackRequest,
   loopbackExchange,
+  parseArgs,
 } from "./mcp";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
 import { localStateRoot } from "./routes/dev-api";
@@ -2457,6 +2459,475 @@ describe("the council's tools, re-exported", () => {
       (await fine.client.listTools()).tools.map((tool) => tool.name).slice(-2),
     ).toEqual(["council_a", "council_b"]);
   });
+});
+
+// ── The server as a process ─────────────────────────────────────────────────
+
+const ENTRY = join(REPO, "scripts", "hearth", "mcp.ts");
+
+/** The environment of a spawned server: this one's, without any proxy, and with its own home. */
+function serverEnv(
+  home: string,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env))
+    if (value !== undefined && !/proxy/i.test(name)) env[name] = value;
+  return {
+    ...env,
+    // Nothing a spawned server writes reaches the real home, ledger or council runs.
+    AGENT_FORGE_HOME: home,
+    COUNCIL_RUNS_DIR: join(home, "council-runs"),
+    COUNCIL_WORKSPACE_ROOT: home,
+    ...extra,
+  };
+}
+
+interface Reply {
+  result?: Record<string, unknown>;
+  error?: { code: number; message: string };
+}
+
+/** A server process driven over its stdio with raw JSON-RPC lines. */
+interface Spawned {
+  /** Send a request and wait for the answer with its id. */
+  ask(method: string, params?: unknown): Promise<Reply>;
+  /** Call a tool and return the envelope in its one text item. */
+  tool(name: string, args?: Record<string, unknown>): Promise<OperatorEnvelope>;
+  /** Write a line as it is. */
+  write(line: string): void;
+  stdout(): string;
+  stderr(): string;
+  /** End its input and wait for it to exit by itself; "still running" if it does not. */
+  end(withinMs?: number): Promise<number | string | null>;
+  exited(withinMs?: number): Promise<number | string | null>;
+}
+
+function spawnServer(
+  command: string,
+  args: string[],
+  options: { env: Record<string, string>; cwd?: string },
+): Spawned {
+  const child: ChildProcess = spawn(command, args, {
+    env: options.env,
+    cwd: options.cwd ?? REPO,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let out = "";
+  let err = "";
+  child.stdout?.on("data", (chunk: Buffer) => {
+    out += chunk.toString("utf8");
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    err += chunk.toString("utf8");
+  });
+  let code: number | string | null | undefined;
+  const gone = new Promise<number | string | null>((done) =>
+    child.once("exit", (exit, signal) => {
+      code = exit ?? signal;
+      done(code);
+    }),
+  );
+  cleanup.push(async () => {
+    // Whatever it printed is searched for tokens with everything else.
+    outputs.push(out, err);
+    if (code === undefined) {
+      child.kill();
+      await gone;
+    }
+  });
+  let nextId = 1;
+  const exited = (withinMs = 8000): Promise<number | string | null> =>
+    Promise.race([
+      gone,
+      new Promise<string>((done) =>
+        setTimeout(() => done("still running"), withinMs),
+      ),
+    ]);
+  const self: Spawned = {
+    async ask(method, params) {
+      const id = nextId++;
+      child.stdin?.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) })}\n`,
+      );
+      for (let attempt = 0; attempt < 1500; attempt++) {
+        for (const line of out.split("\n")) {
+          if (!line.includes(`"id":${id}`)) continue;
+          try {
+            const message = JSON.parse(line) as Reply & { id?: number };
+            if (message.id === id) return message;
+          } catch {
+            // A line still arriving.
+          }
+        }
+        if (code !== undefined)
+          throw new Error(
+            `the server exited (${code}) before answering ${method}: ${err}`,
+          );
+        await new Promise((done) => setTimeout(done, 10));
+      }
+      throw new Error(`no answer to ${method}: ${err}`);
+    },
+    async tool(name, args) {
+      const reply = await self.ask("tools/call", {
+        name,
+        arguments: args ?? {},
+      });
+      const content = (reply.result?.["content"] ?? []) as Array<{
+        text?: string;
+      }>;
+      const checked = validateOperatorEnvelope(
+        JSON.parse(content[0]?.text ?? "null"),
+      );
+      if (!checked.ok)
+        throw new Error(
+          `${name} did not answer an envelope: ${JSON.stringify(reply)}`,
+        );
+      return checked.value;
+    },
+    write: (line) => void child.stdin?.write(`${line}\n`),
+    stdout: () => out,
+    stderr: () => err,
+    end(withinMs) {
+      child.stdin?.end();
+      return exited(withinMs);
+    },
+    exited,
+  };
+  return self;
+}
+
+const HELLO = {
+  protocolVersion: "2025-06-18",
+  capabilities: {},
+  clientInfo: { name: "mcp-spawn-test", version: "0" },
+};
+
+async function greeted(server: Spawned): Promise<Reply> {
+  const hello = await server.ask("initialize", HELLO);
+  server.write(
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  );
+  return hello;
+}
+
+const toolNames = (reply: Reply): string[] =>
+  ((reply.result?.["tools"] ?? []) as Array<{ name: string }>).map(
+    (tool) => tool.name,
+  );
+
+describe("parseArgs", () => {
+  test("takes --operator and --root, and refuses anything else", () => {
+    expect(parseArgs([])).toEqual({ ok: true, operator: false, root: null });
+    expect(parseArgs(["--operator"])).toEqual({
+      ok: true,
+      operator: true,
+      root: null,
+    });
+    expect(parseArgs(["--root", "C:/a b", "--operator"])).toEqual({
+      ok: true,
+      operator: true,
+      root: "C:/a b",
+    });
+    expect(parseArgs(["--root=/srv/x"])).toEqual({
+      ok: true,
+      operator: false,
+      root: "/srv/x",
+    });
+    for (const argv of [
+      ["--operater"],
+      ["operator"],
+      ["--operator=false"],
+      ["--operator", "--operator"],
+      ["--root"],
+      ["--root", "--operator"],
+      ["--root", "a", "--root", "b"],
+      ["--root="],
+      ["-o"],
+      ["--token", "x"],
+    ]) {
+      const parsed = parseArgs(argv);
+      expect({ argv, ok: parsed.ok }).toEqual({ argv, ok: false });
+    }
+  });
+});
+
+describe("the server as a process, over stdio", () => {
+  test("an agent process and an operator process list the same tools; the governed tool refuses in one and is recorded as an operator action from the other; both leave when their input ends", async () => {
+    const hearth = await stocked();
+    const env = serverEnv(hearth.home);
+    const agent = spawnServer("bun", [ENTRY, "--root", hearth.root], { env });
+    const operator = spawnServer(
+      "bun",
+      [ENTRY, "--root", hearth.root, "--operator"],
+      { env },
+    );
+
+    const [helloA, helloO] = [await greeted(agent), await greeted(operator)];
+    expect(helloA.result).toEqual(helloO.result as Record<string, unknown>);
+    expect(helloA.result).toMatchObject({
+      serverInfo: { name: "agent-forge" },
+      capabilities: { tools: {} },
+    });
+    expect(helloA.result?.["instructions"]).toBeUndefined();
+
+    const [listA, listO] = [
+      await agent.ask("tools/list"),
+      await operator.ask("tools/list"),
+    ];
+    expect(listA.result).toEqual(listO.result as Record<string, unknown>);
+    expect(toolNames(listA).slice(0, FORGE_TOOLS.length)).toEqual(
+      FORGE_TOOLS.map((tool) => tool.name),
+    );
+    // The real council's registry follows.
+    expect(toolNames(listA).slice(FORGE_TOOLS.length)).toContain(
+      "council_start",
+    );
+    for (const name of toolNames(listA).slice(FORGE_TOOLS.length))
+      expect(name).toStartWith("council_");
+
+    // Both read the hearth.
+    for (const server of [agent, operator]) {
+      const runs = await server.tool("forge_runs_list");
+      expect(
+        (runs.data as Array<{ slug: string }>).map((run) => run.slug),
+      ).toEqual(["demo"]);
+    }
+
+    for (const tool of governedRows()) {
+      const refused = await agent.tool(
+        tool.name,
+        OPERATOR_FIXTURES[tool.name]?.args,
+      );
+      expect(refused).toEqual({
+        ok: false,
+        data: null,
+        error: `${tool.name} needs an operator session: this server was started without --operator and holds no operator token.`,
+      });
+    }
+    expect(hearth.events(["operator.action"])).toEqual([]);
+
+    // The run does not exist, so the hearth's effect refuses; its audit row is the operator's.
+    const cancel = await operator.tool("forge_council_cancel", {
+      id: "no-such-run",
+    });
+    expect(cancel.ok).toBe(false);
+    expect(cancel.error).not.toContain("operator");
+    expect(
+      hearth.events(["operator.action"]).map((event) => event.payload),
+    ).toEqual([
+      { action: "council.run.cancel", surface: "mcp", target: "no-such-run" },
+    ]);
+
+    // Lines that are not requests do not stop it.
+    for (const line of [
+      "this is not json",
+      "[1,2,3]",
+      '{"jsonrpc":"2.0","id":77}',
+      "{broken",
+      "",
+    ])
+      agent.write(line);
+    expect((await agent.ask("no/such/method")).error?.code).toBe(-32601);
+    expect((await agent.ask("tools/call", { name: 7 })).error?.code).toBe(
+      -32602,
+    );
+    expect(
+      (await agent.ask("tools/call", { name: "forge_nope", arguments: {} }))
+        .error?.code,
+    ).toBe(-32602);
+    expect(toolNames(await agent.ask("tools/list"))).toEqual(toolNames(listA));
+
+    expect(await agent.end()).toBe(0);
+    expect(await operator.end()).toBe(0);
+    for (const server of [agent, operator]) {
+      // Nothing but JSON-RPC on stdout.
+      for (const line of server
+        .stdout()
+        .split("\n")
+        .filter((text) => text.length > 0))
+        expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
+      expect(server.stdout()).not.toContain(hearth.hearth.token);
+      expect(server.stderr()).not.toContain(hearth.hearth.token);
+    }
+    // One line each, saying which kind of session this is.
+    expect(agent.stderr().trim().split("\n")).toEqual([
+      expect.stringMatching(/agent session/),
+    ]);
+    expect(operator.stderr().trim().split("\n")).toEqual([
+      expect.stringMatching(/operator session/),
+    ]);
+  }, 60_000);
+
+  test("an argument it does not know stops it with exit code 2 and nothing on stdout", async () => {
+    const where = emptyPlace();
+    for (const args of [["--operater"], ["--root"], ["--operator", "extra"]]) {
+      const server = spawnServer("bun", [ENTRY, ...args], {
+        env: serverEnv(where.home),
+      });
+      expect({ args, code: await server.exited() }).toEqual({ args, code: 2 });
+      expect(server.stdout()).toBe("");
+      expect(server.stderr()).toContain("--operator");
+    }
+  }, 30_000);
+
+  test("with a proxy in its environment, requests still go to the hearth and nothing goes to the proxy", async () => {
+    const hearth = await stocked();
+    const proxy = await standIn((_req, res) =>
+      json(res, 200, { ok: true, data: "FROM THE PROXY", error: null }),
+    );
+    const through = `http://127.0.0.1:${proxy.port}`;
+    const env = serverEnv(hearth.home, {
+      HTTP_PROXY: through,
+      http_proxy: through,
+    });
+    const operator = spawnServer(
+      "bun",
+      [ENTRY, "--root", hearth.root, "--operator"],
+      { env },
+    );
+    await greeted(operator);
+
+    const runs = await operator.tool("forge_runs_list");
+    expect(
+      (runs.data as Array<{ slug: string }>).map((run) => run.slug),
+    ).toEqual(["demo"]);
+    await operator.tool("forge_council_cancel", { id: "no-such-run" });
+    expect(hearth.events(["operator.action"]).length).toBe(1);
+
+    expect(proxy.requests).toEqual([]);
+    expect(await operator.end()).toBe(0);
+  }, 60_000);
+});
+
+/** A script for `bun -e`, run from the repository root: the real serve function with a stand-in council. */
+const standInScript = (tools: string): string => `
+import { McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
+import { serveHearthMcp } from "./scripts/hearth/mcp";
+serveHearthMcp({
+  root: process.env.MCP_TEST_ROOT ?? "",
+  operator: false,
+  council: () => {
+    const server = new McpServer({ name: "stand-in", version: "0" });
+    for (const name of ${tools})
+      server.registerTool(name, { inputSchema: z.object({}) }, async () => {
+        process.stderr.write("entered " + name + "\\n");
+        await new Promise(() => {});
+        return { content: [] };
+      });
+    return server;
+  },
+});
+`;
+
+describe("the stdio entry itself (the real serve function, a stand-in council)", () => {
+  test("input ending while a bridged call is still waiting: the process leaves", async () => {
+    const where = emptyPlace();
+    const server = spawnServer(
+      "bun",
+      ["-e", standInScript('["council_hang"]')],
+      {
+        env: serverEnv(where.home, { MCP_TEST_ROOT: where.root }),
+      },
+    );
+    await greeted(server);
+    server.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 900,
+        method: "tools/call",
+        params: { name: "council_hang", arguments: {} },
+      }),
+    );
+    for (
+      let attempt = 0;
+      attempt < 500 && !server.stderr().includes("entered council_hang");
+      attempt++
+    )
+      await new Promise((done) => setTimeout(done, 10));
+    expect(server.stderr()).toContain("entered council_hang");
+    expect(await server.end()).toBe(0);
+  }, 30_000);
+
+  test("a council registry it will not serve stops it at once, with one line saying why and exit code 1", async () => {
+    const where = emptyPlace();
+    const server = spawnServer(
+      "bun",
+      ["-e", standInScript('["council_fine", "forge_council_start"]')],
+      {
+        env: serverEnv(where.home, { MCP_TEST_ROOT: where.root }),
+      },
+    );
+    // No request is needed to find out.
+    expect(await server.exited()).toBe(1);
+    expect(server.stdout()).toBe("");
+    expect(server.stderr()).toContain("forge_council_start");
+    expect(server.stderr().trim().split("\n").length).toBe(1);
+  }, 30_000);
+});
+
+describe("the registration", () => {
+  test(".mcp.json registers the server as an agent session, and package.json has the script it runs", () => {
+    const config = JSON.parse(readFileSync(join(REPO, ".mcp.json"), "utf8"));
+    expect(config).toEqual({
+      mcpServers: {
+        "agent-forge": {
+          command: "bun",
+          args: ["run", "--silent", "hearth:mcp"],
+        },
+      },
+    });
+    expect(JSON.stringify(config)).not.toContain("operator");
+    const manifest = JSON.parse(
+      readFileSync(join(REPO, "package.json"), "utf8"),
+    ) as { scripts: Record<string, string> };
+    expect(manifest.scripts["hearth:mcp"]).toBe(
+      "bun run scripts/hearth/mcp.ts",
+    );
+  });
+
+  test("the registered command, run from the repository root, serves the tools as an agent session and leaves when its input ends", async () => {
+    const config = JSON.parse(
+      readFileSync(join(REPO, ".mcp.json"), "utf8"),
+    ) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    const entry = config.mcpServers["agent-forge"];
+    if (!entry) throw new Error("no agent-forge entry");
+    const where = emptyPlace();
+    const server = spawnServer(entry.command, entry.args, {
+      cwd: REPO,
+      env: serverEnv(where.home),
+    });
+    await greeted(server);
+    const names = toolNames(await server.ask("tools/list"));
+    expect(names.slice(0, FORGE_TOOLS.length)).toEqual(
+      FORGE_TOOLS.map((tool) => tool.name),
+    );
+    expect(names).toContain("council_start");
+
+    // Its home is empty, so no hearth; and it holds no operator token.
+    expect((await server.tool("forge_runs_list")).error).toStartWith(
+      "No hearth is running for ",
+    );
+    expect(
+      (
+        await server.tool("forge_council_start", {
+          sourceType: "text",
+          source: "x",
+        })
+      ).error,
+    ).toContain("needs an operator session");
+    expect(await server.end()).toBe(0);
+    for (const line of server
+      .stdout()
+      .split("\n")
+      .filter((text) => text.length > 0))
+      expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
+    expect(server.stderr()).toMatch(/agent session/);
+  }, 60_000);
 });
 
 describe("the token", () => {

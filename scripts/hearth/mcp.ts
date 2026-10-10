@@ -28,8 +28,13 @@ import {
   type Tool,
   type Transport,
 } from "@modelcontextprotocol/server";
+import {
+  type StdioServerHandle,
+  serveStdio,
+} from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { type OperatorEnvelope, QUEUE_STATES } from "../../types/hearth";
+import { createCouncilMcpServer } from "../council/mcp";
 import { resolveCheckout } from "../ledger/workspace";
 import { hearthHome, lockPath, rootKey, tokenPath } from "./home";
 import { type HearthLock, isPidAlive, readLock } from "./lock";
@@ -916,4 +921,97 @@ export async function createHearthMcpServer(
     await close();
   };
   return server;
+}
+
+// ── Over stdio ──────────────────────────────────────────────────────────────
+
+/**
+ * Serve over this process's stdio. The one way the server is served: the
+ * entry point below calls it with the real council, tests with a stand-in.
+ *
+ * Two things the SDK's stdio entry leaves undone are done here. The first
+ * server is built at once, so a council registry this server will not serve
+ * stops the process with one line and exit code 1, instead of answering every
+ * message with an internal error. And the end of input is noticed, which the
+ * transport does not do: calls still waiting are ended, so that a call which
+ * never settles cannot keep the process alive after its client has gone.
+ */
+export function serveHearthMcp(
+  options: Omit<HearthMcpOptions, "gone">,
+): StdioServerHandle {
+  const gone = new AbortController();
+  const build = (): Promise<Server> =>
+    createHearthMcpServer({ ...options, gone: gone.signal }).catch(
+      (error: unknown) => {
+        process.stderr.write(
+          `hearth:mcp cannot start: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        process.exit(1);
+      },
+    );
+  let first: Promise<Server> | null = build();
+  void first.then(() =>
+    process.stderr.write(
+      `hearth:mcp: serving ${resolve(options.root)} as ${
+        options.operator
+          ? "an operator session"
+          : "an agent session (no operator token)"
+      }\n`,
+    ),
+  );
+  for (const event of ["end", "close"] as const)
+    process.stdin.once(event, () => gone.abort());
+  return serveStdio(() => {
+    const server = first ?? build();
+    first = null;
+    return server;
+  });
+}
+
+export type ParsedArgs =
+  | { ok: true; operator: boolean; root: string | null }
+  | { ok: false; error: string };
+
+/**
+ * `--operator` and `--root <dir>`, each at most once, and nothing else. A
+ * mistyped `--operator` must stop the server, not start an agent session its
+ * operator believes is something else.
+ */
+export function parseArgs(argv: readonly string[]): ParsedArgs {
+  let operator = false;
+  let root: string | null = null;
+  const fail = (error: string): ParsedArgs => ({ ok: false, error });
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (arg === "--operator") {
+      if (operator) return fail("--operator is given twice");
+      operator = true;
+    } else if (arg === "--root" || arg.startsWith("--root=")) {
+      if (root !== null) return fail("--root is given twice");
+      const value =
+        arg === "--root" ? argv[++index] : arg.slice("--root=".length);
+      if (value === undefined || value === "" || value.startsWith("--"))
+        return fail("--root needs a directory");
+      root = value;
+    } else return fail(`unknown argument ${JSON.stringify(arg)}`);
+  }
+  return { ok: true, operator, root };
+}
+
+if (import.meta.main) {
+  const args = parseArgs(process.argv.slice(2));
+  if (!args.ok) {
+    process.stderr.write(
+      `hearth:mcp: ${args.error}\nUsage: bun run hearth:mcp [--operator] [--root <dir>]\n`,
+    );
+    process.exit(2);
+  }
+  // Loaded here, not at the top: the ledger needs Bun's SQLite, and a
+  // re-exported council tool records its run as it does under council:mcp.
+  const { councilLedger } = await import("../council/ledger-wiring");
+  serveHearthMcp({
+    root: args.root ?? process.cwd(),
+    operator: args.operator,
+    council: () => createCouncilMcpServer(councilLedger(process.env)),
+  });
 }
