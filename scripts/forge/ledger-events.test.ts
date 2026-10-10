@@ -734,7 +734,12 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     );
   }, 180_000);
 
-  /** Run the verdict writer as the documents say to, and return what it printed. */
+  /**
+   * Run the verdict writer as the documents have the Evaluator run it, as a
+   * model evaluator, and return what it printed. No session works in the
+   * scratch checkout, so nothing is observed: the round is written with the
+   * request alone.
+   */
   async function fileRoundVerdict(
     box: Box,
     args: string[],
@@ -749,8 +754,12 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       [
         "--verdict",
         "PASS",
-        "--human",
-        "reviewer",
+        "--requested-provider",
+        "claude",
+        "--requested-model",
+        "claude-opus-5-5",
+        "--requested-rank",
+        "master",
         "--review",
         "research-1",
         ...args,
@@ -765,7 +774,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     };
   }
 
-  test("the unattended review step as documented, in one checkout: the gate's pointer, forge:verdict, then forge:review with the file it printed", async () => {
+  test("the unattended review step's commands, in one checkout: the phase gate's pointer, forge:verdict as a model Evaluator, then forge:review with the file it printed", async () => {
     const box = sandbox();
     writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
     const gate = await run(box, PHASE_GATE, [
@@ -791,20 +800,34 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       String(wrote.data?.file),
     ]);
     expect(reviewed.exitCode).toBe(0);
-    expect(JSON.parse(reviewed.stdout).data.round).toMatchObject({
+    const outcome = JSON.parse(reviewed.stdout).data;
+    expect(outcome.round).toMatchObject({
       verdict: "PASS",
       verdictSchemaVersion: 2,
     });
-    expect(boundRows(box).map((event) => event.payload)).toMatchObject([
-      {
-        verdict: "pass",
-        evaluatorIdentity: { kind: "human", actorKind: "reviewer" },
-        verdictArtifact: { path: wrote.data?.path, sha256: wrote.data?.sha256 },
+    // Nothing was observed of the evaluator: the writer said so, forge:review
+    // says a strict gate would object, and the round still advances.
+    expect(wrote.data?.unobserved).toBe(
+      "no session is recorded as working in the worktree this command runs in (no session mirror there, or one older than a day)",
+    );
+    expect(outcome.evaluatorProblem).toBe(
+      "the verdict records no observed evaluator provider and model (requested claude/claude-opus-5-5 is not evidence of what ran)",
+    );
+    expect(outcome.decision).toMatchObject({ action: "advance" });
+    const [bound] = boundRows(box);
+    expect(bound?.payload).toMatchObject({
+      verdict: "pass",
+      evaluatorIdentity: {
+        kind: "model",
+        requestedModel: "claude-opus-5-5",
+        rankPolicyDecision: "rejected",
       },
-    ]);
+      verdictArtifact: { path: wrote.data?.path, sha256: wrote.data?.sha256 },
+    });
+    expect("evaluator" in (bound?.payload ?? {})).toBe(false);
   }, 120_000);
 
-  test("the same step when the run builds in another checkout: --checkout on the writer, and the full path it prints", async () => {
+  test("the same commands when the run builds in another checkout: --checkout on the writer, and the full path it prints", async () => {
     const box = sandbox();
     const building = join(dirname(box.cwd), "build tree");
     mkdirSync(join(building, ".git"), { recursive: true });
@@ -901,8 +924,12 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
       [
         "--verdict",
         "PASS",
-        "--human",
-        "reviewer",
+        "--requested-provider",
+        "claude",
+        "--requested-model",
+        "claude-opus-5-5",
+        "--requested-rank",
+        "master",
         "--review",
         "research-2",
         "--correlation",

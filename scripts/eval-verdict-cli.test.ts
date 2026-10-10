@@ -79,8 +79,8 @@ interface World {
   models?: Record<string, { provider: string; model: string }>;
   /** Who the run's state says built the work. */
   builder?: Executor;
-  /** The sessions the ledger shows building this run's work. */
-  builderSessions?: string[];
+  /** The sessions the ledger shows building this run's work; null when it cannot be read. */
+  builderSessions?: string[] | null;
   env?: Record<string, string>;
   /** Where the command runs, when that is not the run's checkout. */
   cwd?: string;
@@ -98,7 +98,9 @@ function deps(box: Box, world: World = {}): VerdictWriteDeps {
     sessionModel: (sessionId) => world.models?.[sessionId] ?? null,
     builderSessions: (run) =>
       run.executionRunId === "run-1" && run.beadsIssueId === "bead-1"
-        ? (world.builderSessions ?? [])
+        ? world.builderSessions === undefined
+          ? []
+          : world.builderSessions
         : [],
     smiths: () => Object.values(BUILTIN_SMITHS),
     runState: (runId) =>
@@ -305,15 +307,28 @@ describe("forge:verdict, its arguments", () => {
           "--summary",
           "--high=1",
         ],
-        "--summary needs a value: the next argument is the flag --high (for text that starts with dashes, write --summary=<text>)",
+        "--summary needs a value: the next argument, --high=1, looks like a flag (for text that starts with dashes, write --summary=<text>)",
       ],
       [
         [...PASS, ...AS_REVIEWER, "--summary", "--review=plan-1"],
-        "--summary needs a value: the next argument is the flag --review (for text that starts with dashes, write --summary=<text>)",
+        "--summary needs a value: the next argument, --review=plan-1, looks like a flag (for text that starts with dashes, write --summary=<text>)",
       ],
       [
         [...PASS, ...AS_REVIEWER, "--summary", "--human"],
-        "--summary needs a value: the next argument is the flag --human (for text that starts with dashes, write --summary=<text>)",
+        "--summary needs a value: the next argument, --human, looks like a flag (for text that starts with dashes, write --summary=<text>)",
+      ],
+      // A mistyped flag after a forgotten value is not text either.
+      [
+        [
+          "--verdict",
+          "FAIL",
+          "--low",
+          "1",
+          ...AS_REVIEWER,
+          "--summary",
+          "--hihg=1",
+        ],
+        "--summary needs a value: the next argument, --hihg=1, looks like a flag (for text that starts with dashes, write --summary=<text>)",
       ],
       [
         [
@@ -325,6 +340,17 @@ describe("forge:verdict, its arguments", () => {
           "quality=1",
         ],
         "--attest quality was given more than once",
+      ],
+      // A count is a count, not a number a float can only approximate.
+      [
+        [
+          "--verdict",
+          "FAIL",
+          "--high",
+          "99999999999999999999999",
+          ...AS_REVIEWER,
+        ],
+        "--high must be a non-negative integer of at most nine digits",
       ],
       [
         [...PASS, "--verdict", "FAIL", ...AS_REVIEWER],
@@ -503,7 +529,7 @@ describe("forge:verdict, a model verdict", () => {
     const refused = write(strict, [...PASS, ...REQUEST_MASTER], sameSession);
     expect(refused.code).toBe(2);
     expect(refused.body.error).toEndWith(
-      "Nothing was observed: the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run of the same Beads issue), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+      "Nothing was observed: the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
     );
     expect(runVerdict(strict)).toBeNull();
 
@@ -517,7 +543,7 @@ describe("forge:verdict, a model verdict", () => {
     expect(wrote.code).toBe(0);
     expect(wrote.body.data).toMatchObject({
       unobserved:
-        "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run of the same Beads issue), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+        "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
     });
     const evaluator = stored(
       round,
@@ -551,6 +577,30 @@ describe("forge:verdict, a model verdict", () => {
       }).code,
     ).toBe(2);
     expect(runVerdict(builder)).toBeNull();
+  });
+
+  test("when the ledger cannot say who built the work, no session is taken as the evaluator", () => {
+    const unreadable: World = {
+      session: "session-9",
+      models: { "session-9": OPUS },
+      builderSessions: null,
+    };
+    const reason =
+      "the ledger could not be read to see who built this work, so no session is taken as the evaluator";
+    const strict = sandbox();
+    const refused = write(strict, [...PASS, ...REQUEST_MASTER], unreadable);
+    expect(refused.code).toBe(2);
+    expect(refused.body.error).toEndWith(`Nothing was observed: ${reason}`);
+    expect(runVerdict(strict)).toBeNull();
+
+    const round = sandbox();
+    expect(
+      write(
+        round,
+        [...PASS, ...REQUEST_MASTER, "--review", "plan-1"],
+        unreadable,
+      ).body.data,
+    ).toMatchObject({ unobserved: reason });
   });
 
   test("the builder the rank policy sees is the one the gate will see: the state in the checkout the run builds in", () => {
@@ -762,7 +812,7 @@ describe("forge:verdict, what it refuses", () => {
       ],
       [
         [...PASS, ...AS_REVIEWER, "--low", "-1"],
-        "--low must be a non-negative integer",
+        "--low must be a non-negative integer of at most nine digits",
       ],
       [
         PASS,
@@ -865,11 +915,17 @@ describe("forge:verdict, spawned against a scratch ledger", () => {
     );
   }, 60_000);
 
-  test("takes no observation from a session the ledger shows building the run, or another run of the same bead", async () => {
+  test("takes no observation from a session the ledger shows entering or completing a phase of the run, or of another run recorded under the same bead", async () => {
     for (const built of [
-      { runId: "run-1" },
-      { runId: "an-earlier-run", beadId: "bead-1" },
-    ]) {
+      { kind: "run.phase.completed", runId: "run-1" },
+      // A session that only entered a phase was building too.
+      { kind: "run.phase.entered", runId: "run-1" },
+      {
+        kind: "run.phase.completed",
+        runId: "an-earlier-run",
+        beadId: "bead-1",
+      },
+    ] as const) {
       const box = sandbox();
       const ledger = join(box.home, "ledger.db");
       mkdirSync(box.home, { recursive: true });
@@ -879,7 +935,6 @@ describe("forge:verdict, spawned against a scratch ledger", () => {
       expect(
         appendEvent(
           {
-            kind: "run.phase.completed",
             workspace: box.cwd,
             sessionId: "session-live",
             ...built,
@@ -905,7 +960,7 @@ describe("forge:verdict, spawned against a scratch ledger", () => {
       const stdout = await new Response(child.stdout).text();
       expect(await child.exited).toBe(2);
       expect(JSON.parse(stdout).error).toEndWith(
-        "Nothing was observed: the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run of the same Beads issue), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+        "Nothing was observed: the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
       );
       expect(runVerdict(box)).toBeNull();
     }

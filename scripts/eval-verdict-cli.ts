@@ -27,8 +27,8 @@
  * worktree the command runs in (the session mirror the SessionStart hook
  * leaves there). That session is not an observation of the evaluator when the
  * ledger shows it building the work (entering or completing a phase of this
- * run, or of another run of the same Beads issue): an Evaluator subagent
- * shares its spawner's session. Nothing observed means the observed fields
+ * run, or of another run whose phase events carry the same Beads id): an
+ * Evaluator subagent shares its spawner's session. Nothing observed means the observed fields
  * are absent; the request is never copied into them. The run's verdict is then
  * refused, as it is when the rank policy rejects the evaluator: the file is
  * written once, and one that can never satisfy strict completion would leave
@@ -75,12 +75,13 @@ export interface VerdictWriteDeps {
   sessionModel(sessionId: string): { provider: string; model: string } | null;
   /**
    * The sessions the ledger shows building this work: those that entered or
-   * completed a phase of the run, or of another run of the same Beads issue.
+   * completed a phase of the run, or of another run whose phase events carry
+   * the same Beads id. Null when the ledger could not be asked.
    */
   builderSessions(run: {
     executionRunId: string;
     beadsIssueId: string;
-  }): readonly string[];
+  }): readonly string[] | null;
   /** The smiths configured for the checkout: where a provider and model get a rank. */
   smiths(checkout: string): readonly Smith[];
   /** The stored state of a Forge run in a checkout, when it has one there. */
@@ -116,6 +117,12 @@ type Flag = (typeof FLAGS)[number];
 
 const REPEATABLE: ReadonlySet<Flag> = new Set<Flag>(["attest"]);
 
+/** `--word` or `--word=anything`, with no space before the `=`: how a flag is written. */
+const FLAG_SHAPED = /^--[A-Za-z][A-Za-z0-9-]*(=.*)?$/s;
+
+/** A finding count: digits only, and few enough to be an exact integer. */
+const COUNT = /^\d{1,9}$/;
+
 function refuse(error: string): VerdictWriteOutcome {
   return { code: 2, body: { ok: false, data: null, error } };
 }
@@ -147,17 +154,13 @@ function parseArguments(
     if (value === undefined || value.length === 0) {
       return { ok: false, error: `--${flag} needs a value` };
     }
-    // A value given after its flag may look like anything except another of
-    // the command's flags: that is a forgotten value, and taking the flag as
+    // A value given after its flag may look like anything except a flag,
+    // known or mistyped: that is a forgotten value, and taking the flag as
     // text would drop what it was meant to say.
-    const swallowed =
-      equals === -1 && value.startsWith("--")
-        ? FLAGS.find((known) => known === value.slice(2).split("=")[0])
-        : undefined;
-    if (swallowed !== undefined) {
+    if (equals === -1 && FLAG_SHAPED.test(value)) {
       return {
         ok: false,
-        error: `--${flag} needs a value: the next argument is the flag --${swallowed} (for text that starts with dashes, write --${flag}=<text>)`,
+        error: `--${flag} needs a value: the next argument, ${value.slice(0, 60)}, looks like a flag (for text that starts with dashes, write --${flag}=<text>)`,
       };
     }
     if (REPEATABLE.has(flag)) {
@@ -183,8 +186,19 @@ type Observation =
  */
 function observe(
   deps: VerdictWriteDeps,
-  input: { sessionWorktree: string; builderSessions: ReadonlySet<string> },
+  input: {
+    sessionWorktree: string;
+    /** Null when the ledger could not say who built the work. */
+    builderSessions: ReadonlySet<string> | null;
+  },
 ): Observation {
+  if (input.builderSessions === null) {
+    return {
+      ok: false,
+      reason:
+        "the ledger could not be read to see who built this work, so no session is taken as the evaluator",
+    };
+  }
   const sessionId = deps.sessionMirror(input.sessionWorktree);
   if (sessionId === null) {
     return {
@@ -197,7 +211,7 @@ function observe(
     return {
       ok: false,
       reason:
-        "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run of the same Beads issue), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+        "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
     };
   }
   const cached = deps.sessionModel(sessionId);
@@ -288,8 +302,11 @@ function bodyFrom(
   const findings: Record<string, number> = {};
   for (const name of FINDING_FLAGS) {
     const raw = values.get(name) ?? "0";
-    if (!/^\d+$/.test(raw)) {
-      return { ok: false, error: `--${name} must be a non-negative integer` };
+    if (!COUNT.test(raw)) {
+      return {
+        ok: false,
+        error: `--${name} must be a non-negative integer of at most nine digits`,
+      };
     }
     findings[name] = Number(raw);
   }
@@ -405,12 +422,11 @@ export function runVerdictWrite(
   // asked of the ledger, not of that state: the state's executor is repointed
   // at whichever session last recorded something for the run.
   const state = deps.runState(correlation.executionRunId, checkout);
-  const builderSessions = new Set(
-    deps.builderSessions({
-      executionRunId: correlation.executionRunId,
-      beadsIssueId: correlation.beadsIssueId,
-    }),
-  );
+  const builders = deps.builderSessions({
+    executionRunId: correlation.executionRunId,
+    beadsIssueId: correlation.beadsIssueId,
+  });
+  const builderSessions = builders === null ? null : new Set(builders);
   const observation = observe(deps, { sessionWorktree, builderSessions });
   const evaluator = evaluatorFrom(values, {
     observation,
@@ -516,9 +532,9 @@ if (import.meta.main) {
           ),
         ];
       } catch {
-        // A ledger that cannot be read has no session model either: nothing
-        // will be observed.
-        return [];
+        // Not knowing who built the work is not the same as nobody having
+        // built it: nothing is observed.
+        return null;
       }
     },
     smiths: (checkout) => {

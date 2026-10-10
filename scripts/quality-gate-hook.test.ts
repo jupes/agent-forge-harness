@@ -9,11 +9,13 @@
  *
  * As a subprocess: the real `.claude/hooks/quality-gate.ts` with JSON piped on
  * stdin, in a scratch directory that is not a repository and has no
- * package.json, with a PATH that reaches nothing able to run its checks: empty,
- * or for one case system directories only (so a shell is reachable). There
- * its own checks fail fast, so it never runs this suite again; what is
- * asserted is the event, the identity it logs, the ledger rows and its exit
- * code.
+ * package.json, with a PATH that reaches no real `bun` or `git`: empty; or
+ * system directories only (so a shell is reachable); or, for two tests, a
+ * directory of stand-ins in front of those. It therefore never runs this
+ * suite again. With no stand-ins its own checks fail fast, and what is
+ * asserted is the event, the identity it logs and the ledger rows; with a
+ * stand-in `bun` and `git` every base check passes without running
+ * anything, and the exit code is asserted too.
  *
  * Neither proves a live host session calls the hook.
  */
