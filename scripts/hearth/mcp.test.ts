@@ -2930,6 +2930,55 @@ describe("the registration", () => {
   }, 60_000);
 });
 
+describe("the instruction files", () => {
+  for (const file of ["CLAUDE.md", "AGENTS.md"])
+    test(`${file} says when to use the forge tools and when bd, outside the block bd generates`, () => {
+      const text = readFileSync(join(REPO, file), "utf8");
+      const start = text.indexOf("\n## Forge MCP tools");
+      const generated = text.indexOf("<!-- BEGIN BEADS INTEGRATION");
+      expect(start).toBeGreaterThan(-1);
+      expect(generated).toBeGreaterThan(-1);
+      // bd rewrites what is between its markers.
+      expect(start).toBeLessThan(generated);
+      const next = text.indexOf("\n## ", start + 1);
+      const section = text.slice(
+        start,
+        next === -1 ? generated : Math.min(next, generated),
+      );
+
+      // The rule of thumb, how the server gets there, and who may do what.
+      for (const needed of [
+        "`forge_*`",
+        "`bd`",
+        "`.mcp.json`",
+        "approve",
+        "`bun run hearth`",
+        "agent session",
+        "`--operator`",
+      ])
+        expect({ file, needed, there: section.includes(needed) }).toEqual({
+          file,
+          needed,
+          there: true,
+        });
+      for (const tool of governedRows())
+        expect({
+          file,
+          tool: tool.name,
+          there: section.includes(`\`${tool.name}\``),
+        }).toEqual({
+          file,
+          tool: tool.name,
+          there: true,
+        });
+      // It does not make starting a council the operator's alone: the council's own tools stay for any session.
+      expect(section).toContain("`council_*`");
+      expect(section).toContain("any session");
+      // A section, not a manual.
+      expect(section.length).toBeLessThan(1500);
+    });
+});
+
 describe("the token", () => {
   test("is in nothing any test of this file was answered", () => {
     // Enough was collected for the search to mean something.

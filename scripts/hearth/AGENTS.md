@@ -1,6 +1,6 @@
 # AGENTS.md — scripts\hearth
 
-The hearth: the standalone loopback control-plane server (`bun run hearth`) and its Vite integration.
+The hearth: the standalone loopback control-plane server (`bun run hearth`), its Vite integration, and the MCP server that is its client (`bun run hearth:mcp`).
 
 ## Scope
 
@@ -23,8 +23,20 @@ The hearth: the standalone loopback control-plane server (`bun run hearth`) and 
 - Under Vite the peer is always the dev server, so the loopback check for proxied traffic is `guardRequest` in `vite-plugin.ts`. Keep it failing closed.
 - Spawn the hearth as `bun scripts/hearth/server.ts`, never through `bun run`, so the pid in the lock is the server's.
 
+## The MCP server (`mcp.ts`, `bun run hearth:mcp`)
+
+- It is a client of the running hearth and nothing more. A tool is a row of `FORGE_TOOLS` naming a mounted route; a call is one request to it and the route's envelope is the result, as one text item. Never answer for a route there, read the ledger or run `bd`; never start a hearth from it.
+- A tool is added with its route, as a row: `authority` is `operator` exactly when the route is an action row, and `scope` is `checkout` when the route reads the hearth's own root (run state, config files, the council's directory) and `workspace` when it reads the ledger or Beads. `mcp.test.ts` iterates the table against a real hearth: a governed row needs an entry in `OPERATOR_FIXTURES`, an agent row one in `READS`, every row one in `SCOPE_FIXTURES`, or the suite fails. The refusal matrix needs nothing per tool.
+- Order of a call, and it is not to be rearranged: the name; the authority rule (a governed row in a session without `--operator` is refused before its arguments are looked at); the arguments; the request; the hearth; the token; one request. `tools/list` and `initialize` are the same for every session.
+- The token is read for one governed call, from the path this module computes for the verified hearth (never a path taken from a lock), must be what `createToken` writes, is sent on that request only and is kept nowhere. An agent session has no function that reads a token file. Never put the token, a header value or a byte of an answer in an error message.
+- Requests go through `loopbackExchange`, a `node:net` socket to `127.0.0.1`, never `fetch` or `node:http`: under Bun both send a loopback request to `HTTP_PROXY` when the process started with one, and no request option or change at run time turns that off. The query is built by `URLSearchParams`; a path parameter must match `SEGMENT`.
+- A lock is used only after its file name, token file, port and pid check out and its port answers the health route with that pid and that exact root; locks are found by reading the home and comparing real paths (`realpathSync.native`), so another spelling of a checkout is the same checkout.
+- The council's tools are re-exported through a client in this process, not copied: `scripts/council/mcp.ts` is not edited for them. They keep the council's authority (no token, never the hearth). A forwarded call has no time limit of the bridge's own; the SDK client's default would cancel a review after 60 s.
+- The SDK's stdio transport does not notice the end of input. `serveHearthMcp` does, and ends the calls still waiting; it does not close the council, so a review begun with `council_start` runs to its end.
+- Registered: `forge_sessions_list`, `forge_runs_list`, `forge_run_get`, `forge_events_query`, `forge_queue_list`, `forge_reservations_list`, `forge_smiths_list`, `forge_config_get` (any session); `forge_council_start`, `forge_council_cancel` (operator). Not registered, because no route is mounted: the queue actions (approve, pause, resume, reassign), the shift actions (start, stop), run replan, bead propose, friction add, event note.
+
 ## Notes
 
-- Tests: `bun test scripts/hearth`. `supervisor.test.ts` and `api-spawned.test.ts` start real `bun` child processes.
+- Tests: `bun test scripts/hearth`. `supervisor.test.ts`, `api-spawned.test.ts` and `mcp.test.ts` start real `bun` child processes.
 - A temp root used as a hearth root in a test needs a planted `.git`: the OS temp directory can sit inside a checkout, and the ledger's workspace would otherwise be that checkout.
 - `loadDashboardServerEnvironment` pulls in `vite`; a compiled sidecar will need an env loader without it.

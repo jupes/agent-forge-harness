@@ -35,8 +35,9 @@ import {
 import * as z from "zod/v4";
 import { type OperatorEnvelope, QUEUE_STATES } from "../../types/hearth";
 import { createCouncilMcpServer } from "../council/mcp";
+import { comparableCheckout } from "../forge/runs";
 import { resolveCheckout } from "../ledger/workspace";
-import { hearthHome, lockPath, rootKey, tokenPath } from "./home";
+import { hearthHome, lockPath, tokenPath } from "./home";
 import { type HearthLock, isPidAlive, readLock } from "./lock";
 import {
   API_PREFIX,
@@ -476,9 +477,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function onDisk(path: string): string {
   try {
-    return rootKey(realpathSync.native(path));
+    return comparableCheckout(realpathSync.native(path));
   } catch {
-    return rootKey(path);
+    return comparableCheckout(resolve(path));
   }
 }
 

@@ -164,6 +164,14 @@ When working inside `repos/<repo-name>/`:
 - Follow the sub-repo's own commit format, branch naming, and test commands
 - Create Beads issues with `bd create --repo ./repos/<repo-name> --priority <value>` (choose **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md`)
 
+---
+
+## Forge MCP tools (`forge_*`)
+
+`.mcp.json` registers the hearth's MCP server (`bun run hearth:mcp`); an interactive client asks you to approve it before first use. Rule of thumb: **`bd` for your own task tracking** (create, claim, comment, close), **`forge_*` tools to see what the rest of the harness is doing** (sessions, runs, events, queue, reservations, smiths, config). They answer only while the operator has a hearth running (`bun run hearth` or the dashboard); an agent session does not start one.
+
+The registered server is an agent session: it holds no operator token, so `forge_council_start` and `forge_council_cancel`, which act through the hearth as the operator, refuse there. An operator opts in on their own machine by registering the same server name in their local scope with `--operator`. The council's own `council_*` tools are listed beside them and stay available to any session, as before.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 
