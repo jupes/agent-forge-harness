@@ -9,6 +9,7 @@
  */
 
 import {
+  BEAD_WRITES,
   BENCH_NAMES,
   type Executor,
   LEDGER_EVENT_KINDS,
@@ -204,6 +205,45 @@ const phase = oneOf(["research", "plan", "implement", "ship"]);
 const queueState = oneOf(QUEUE_STATES);
 const verdictOutcome = oneOf(["pass", "fail", "unreadable"]);
 
+const sha256Hex: Check = (v, path) =>
+  typeof v === "string" && /^[0-9a-f]{64}$/.test(v)
+    ? null
+    : `${path}: expected a SHA-256 in lower-case hex`;
+
+/** A key that one form of a payload must not carry at all. */
+function absent(form: string): Check {
+  return (v, path) =>
+    v === undefined ? null : `${path}: must be absent from ${form}`;
+}
+
+const queueTransition = shape({
+  from: nullable(queueState),
+  to: queueState,
+  reason: optional(str),
+  hash: absent("a queue transition"),
+  length: absent("a queue transition"),
+});
+
+const trackerWrite = shape({
+  action: oneOf(BEAD_WRITES),
+  hash: optional(sha256Hex),
+  length: optional(nonNegInt),
+  from: absent("a tracker write"),
+  to: absent("a tracker write"),
+  reason: absent("a tracker write"),
+});
+
+/**
+ * `bead.transitioned` has two forms and a payload is exactly one of them: with
+ * `action` it is a tracker write and carries no queue key, so no text can
+ * travel under `reason`; without it, it is a queue transition and carries no
+ * hash or length.
+ */
+const beadTransitioned: Check = (v, path) =>
+  isRecord(v) && v.action !== undefined
+    ? trackerWrite(v, path)
+    : queueTransition(v, path);
+
 /** One entry per kind: adding a kind to `LEDGER_EVENT_KINDS` fails typecheck until it has a check. */
 const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
   "session.started": shape({
@@ -250,11 +290,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     evaluator: optional(executorCheck),
     summary: optional(str),
   }),
-  "bead.transitioned": shape({
-    from: nullable(queueState),
-    to: queueState,
-    reason: optional(str),
-  }),
+  "bead.transitioned": beadTransitioned,
   "reservation.acquired": shape({
     worktree: nonEmptyStr,
     globs: arrayOf(nonEmptyStr),

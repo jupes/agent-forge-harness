@@ -25,7 +25,8 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
     "verdictArtifact",
     "summary",
   ],
-  "bead.transitioned": ["from", "to", "reason"],
+  // Two forms: a queue transition (the first three) or a tracker write (the last three).
+  "bead.transitioned": ["from", "to", "reason", "action", "hash", "length"],
   "reservation.acquired": ["worktree", "globs"],
   "reservation.released": ["worktree", "globs"],
   "shift.started": ["shiftId", "concurrency", "durationMs", "filter"],

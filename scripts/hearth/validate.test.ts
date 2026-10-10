@@ -5,6 +5,7 @@ import {
   type LedgerEventKind,
   type LedgerPayloads,
   QUEUE_STATES,
+  type QueueState,
   SESSION_KINDS,
 } from "../../types/hearth";
 import {
@@ -472,5 +473,116 @@ describe("validateOperatorEnvelope", () => {
     ).toBe(false);
     expect(validateOperatorEnvelope("ok").ok).toBe(false);
     expect(validateOperatorEnvelope(null).ok).toBe(false);
+  });
+});
+
+describe("bead.transitioned — a queue transition, or a tracker write", () => {
+  const HASH =
+    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+  const checked = (payload: unknown) =>
+    validateLedgerEventInput(input("bead.transitioned", payload));
+  const refusal = (payload: unknown): string => {
+    const result = checked(payload);
+    return result.ok ? "accepted" : result.error;
+  };
+
+  test("a tracker write is accepted: its action, with or without a hash and a length", () => {
+    for (const payload of [
+      { action: "create", hash: HASH, length: 4 },
+      { action: "claim" },
+      { action: "comment", hash: HASH, length: 0 },
+      { action: "close", hash: HASH, length: 1000 },
+    ]) {
+      expect({ payload, refusal: refusal(payload) }).toEqual({
+        payload,
+        refusal: "accepted",
+      });
+      expect(validateLedgerEvent(stored("bead.transitioned", payload)).ok).toBe(
+        true,
+      );
+    }
+  });
+
+  test("a tracker write is refused for an action it does not know, a hash that is not a SHA-256, or a length that is not a count", () => {
+    const refused: Array<[unknown, string]> = [
+      [{ action: "delete" }, "payload.action"],
+      [{ action: "" }, "payload.action"],
+      [{ action: "create", hash: "sha256:ab12" }, "payload.hash"],
+      [{ action: "create", hash: HASH.toUpperCase() }, "payload.hash"],
+      [{ action: "create", hash: HASH.slice(1) }, "payload.hash"],
+      [{ action: "create", hash: `${HASH}0` }, "payload.hash"],
+      [{ action: "create", hash: 7 }, "payload.hash"],
+      [{ action: "comment", hash: HASH, length: -1 }, "payload.length"],
+      [{ action: "comment", hash: HASH, length: 1.5 }, "payload.length"],
+      [{ action: "comment", hash: HASH, length: "12" }, "payload.length"],
+    ];
+    for (const [payload, where] of refused)
+      expect({ payload, refusal: refusal(payload) }).toEqual({
+        payload,
+        refusal: expect.stringContaining(where),
+      });
+  });
+
+  test("a tracker write may not carry a queue key: from, to and reason must be absent, so no text travels under reason", () => {
+    for (const [key, value] of [
+      ["reason", "a close reason typed by the operator"],
+      ["from", null],
+      ["from", "queued"],
+      ["to", "proposed"],
+      ["to", null],
+    ] as const) {
+      const payload = { action: "close", hash: HASH, length: 4, [key]: value };
+      expect({ payload, refusal: refusal(payload) }).toEqual({
+        payload,
+        refusal: expect.stringContaining(
+          `payload.${key}: must be absent from a tracker write`,
+        ),
+      });
+    }
+  });
+
+  test("a queue transition is what it was: from and to are both needed", () => {
+    expect(refusal({ from: null, to: "proposed" })).toBe("accepted");
+    expect(refusal({ from: "queued", to: "running", reason: "picked" })).toBe(
+      "accepted",
+    );
+    expect(refusal({ to: "proposed" })).toContain("payload.from");
+    expect(refusal({ from: null })).toContain("payload.to");
+    expect(refusal({ from: null, to: null })).toContain("payload.to");
+    expect(refusal({})).toContain("payload.from");
+    expect(refusal(null)).toContain("expected object");
+  });
+
+  test("a queue transition may not carry a write's keys: hash and length must be absent", () => {
+    for (const [key, value] of [
+      ["hash", "free text under a key the ledger stores"],
+      ["hash", HASH],
+      ["length", 12],
+      ["length", "also text"],
+    ] as const) {
+      const payload = { from: null, to: "proposed", [key]: value };
+      expect({ payload, refusal: refusal(payload) }).toEqual({
+        payload,
+        refusal: expect.stringContaining(
+          `payload.${key}: must be absent from a queue transition`,
+        ),
+      });
+    }
+  });
+
+  test("to, read without narrowing, is a queue state or nothing", () => {
+    type Payload = LedgerPayloads["bead.transitioned"];
+    const toOf = (payload: Payload): QueueState | undefined => payload.to;
+    const always = (payload: Payload): QueueState =>
+      // @ts-expect-error a tracker write has no `to`, so `to` is not always a queue state
+      payload.to;
+    const awaitsApproval = (payload: Payload): boolean =>
+      payload.to === "proposed";
+
+    expect(toOf({ from: null, to: "proposed" })).toBe("proposed");
+    expect(toOf({ action: "claim" })).toBeUndefined();
+    expect(always({ action: "claim" })).toBeUndefined();
+    expect(awaitsApproval({ from: null, to: "proposed" })).toBe(true);
+    expect(awaitsApproval({ action: "create" })).toBe(false);
   });
 });
