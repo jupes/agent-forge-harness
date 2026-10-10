@@ -99,9 +99,10 @@ export function safeCouncilError(error: unknown): string {
 
 /**
  * The checks on a start request that need nothing but the request. Throws
- * what `start` has always thrown, in the order it always has. A host that
- * records something before it starts a run (the hearth's audit row) calls
- * this first, so a malformed request is refused before anything is written.
+ * what `start` has always thrown, in the order it always has, and after
+ * those the two refusals of a bead source. A host that records something
+ * before it starts a run (the hearth's audit row) calls this first, so a
+ * malformed request is refused before anything is written.
  */
 export function assertCouncilInput(input: CouncilServiceInput): void {
   if (
@@ -351,8 +352,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, 100);
   }
-  function start(input: CouncilServiceInput): CouncilServiceJob {
+  function start(request: CouncilServiceInput): CouncilServiceJob {
     if (closed) throw new Error("council service is closed");
+    // The caller's object is read once: the queued job below runs after this
+    // returns, and must use what was checked, not what the object says later.
+    const input: CouncilServiceInput =
+      request && typeof request === "object" ? { ...request } : request;
     assertCouncilInput(input);
     if (active.size >= 4)
       throw new Error("At most 4 council runs may execute concurrently");

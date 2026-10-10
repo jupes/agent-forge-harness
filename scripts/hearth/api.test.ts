@@ -1750,7 +1750,7 @@ describe("a bead as the source of a council run started through the hearth", () 
     return { h, handed };
   }
 
-  test("an id that is not one, an id shaped like a secret, and a beadId naming another bead are refused before anything is recorded or started", async () => {
+  test("an id that is not one, an id shaped like a secret, and a beadId that is not exactly the bead under review are refused before anything is recorded or started", async () => {
     const { h, handed } = await recording();
     const refused: Array<[Record<string, unknown>, string]> = [
       [
@@ -1761,10 +1761,12 @@ describe("a bead as the source of a council run started through the hearth", () 
         { sourceType: "bead", source: "--help" },
         "source must be a Beads issue id when the source is a bead",
       ],
-      [
-        { sourceType: "bead", source: "demo-7", beadId: "demo-8" },
-        "beadId must name the bead under review when the source is a bead",
-      ],
+      ...["demo-8", " demo-7 ", "demo-7\n", "DEMO-7", "demo-7.1", "demo"].map(
+        (beadId): [Record<string, unknown>, string] => [
+          { sourceType: "bead", source: "demo-7", beadId },
+          "beadId must name the bead under review when the source is a bead",
+        ],
+      ),
       [
         // Twenty characters shaped like an access key id are a valid id by form.
         { sourceType: "bead", source: ["AKIA", "ZQ9ZQ8ZQ7ZQ6ZQ5Z"].join("") },
@@ -1780,7 +1782,7 @@ describe("a bead as the source of a council run started through the hearth", () 
     expect(h.events()).toEqual([]);
   });
 
-  test("an accepted bead source is audited against its bead and handed to the service with it, whether or not the caller repeated the id", async () => {
+  test("an accepted bead source is audited against its bead and handed to the route's effect with it, whether or not the caller repeated the id or wrote space around it", async () => {
     const { h, handed } = await recording();
     for (const [runId, body] of [
       ["bead-plain", { sourceType: "bead", source: "demo-7" }],
@@ -1788,6 +1790,7 @@ describe("a bead as the source of a council run started through the hearth", () 
         "bead-named",
         { sourceType: "bead", source: "demo-7", beadId: "demo-7" },
       ],
+      ["bead-spaced", { sourceType: "bead", source: " demo-7\n" }],
     ] as const) {
       const response = await post(h, "/council-api/runs", { ...body, runId });
       expect({ runId, status: response.status }).toEqual({
@@ -1808,6 +1811,12 @@ describe("a bead as the source of a council run started through the hearth", () 
         runId: "bead-named",
         beadId: "demo-7",
       },
+      {
+        sourceType: "bead",
+        source: " demo-7\n",
+        runId: "bead-spaced",
+        beadId: "demo-7",
+      },
     ]);
     const audits = h.events(["operator.action"]);
     expect(audits.map((event) => [event.payload, event.beadId])).toEqual([
@@ -1822,6 +1831,13 @@ describe("a bead as the source of a council run started through the hearth", () 
         expect.objectContaining({
           action: "council.run.start",
           target: "bead-named",
+        }),
+        "demo-7",
+      ],
+      [
+        expect.objectContaining({
+          action: "council.run.start",
+          target: "bead-spaced",
         }),
         "demo-7",
       ],

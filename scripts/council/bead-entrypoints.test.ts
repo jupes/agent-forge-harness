@@ -557,7 +557,7 @@ describe("MCP council_start with a bead", () => {
     }
   });
 
-  test("the service refuses a bead source whose id is not one, or whose beadId names another bead, before it reserves a run", async () => {
+  test("the service refuses a bead source whose id is not one, or whose beadId is not exactly the bead under review, before it reserves a run", async () => {
     const root = workspace();
     const fake = beadRunner();
     const service = createCouncilService({
@@ -572,16 +572,25 @@ describe("MCP council_start with a bead", () => {
         expect(() =>
           service.start({ sourceType: "bead", source, runId: "refused" }),
         ).toThrow("source must be a Beads issue id when the source is a bead");
-      expect(() =>
-        service.start({
-          sourceType: "bead",
-          source: BEAD,
-          beadId: "demo-harness-zz9",
-          runId: "refused",
-        }),
-      ).toThrow(
-        "beadId must name the bead under review when the source is a bead",
-      );
+      for (const beadId of [
+        "demo-harness-zz9",
+        // The same bead written another way, its child and its parent are not that id.
+        ` ${BEAD} `,
+        `${BEAD}\n`,
+        BEAD.toUpperCase(),
+        `${BEAD}.1`,
+        BEAD.slice(0, BEAD.lastIndexOf(".")),
+      ])
+        expect(() =>
+          service.start({
+            sourceType: "bead",
+            source: BEAD,
+            beadId,
+            runId: "refused",
+          }),
+        ).toThrow(
+          "beadId must name the bead under review when the source is a bead",
+        );
       expect(fake.calls).toEqual([]);
       expect(existsSync(join(root, "runs", "refused"))).toBe(false);
       // The other kinds keep taking any bead as the one a review is for.
@@ -603,7 +612,7 @@ describe("MCP council_start with a bead", () => {
     }
   });
 
-  test("a bead job through the real service packs the bead and is recorded against it, though the caller named no bead for the ledger", async () => {
+  test("a bead job through the real service packs the bead and is recorded against it, though the caller named no bead for the ledger and wrote the id with space around it", async () => {
     const root = workspace();
     const fake = beadRunner();
     const appended: LedgerEventInput[] = [];
@@ -622,7 +631,7 @@ describe("MCP council_start with a bead", () => {
     try {
       const started = service.start({
         sourceType: "bead",
-        source: BEAD,
+        source: ` ${BEAD}\n`,
         runId: "job-bead",
       });
       expect(started.status).toBe("running");
@@ -644,6 +653,73 @@ describe("MCP council_start with a bead", () => {
       expect(fake.calls.map((call) => call.slice(0, 3).join(" "))).toEqual([
         "bd --readonly show",
         "bd --readonly comments",
+      ]);
+    } finally {
+      await service.close();
+    }
+  });
+
+  test("a job uses the request as it was checked: a caller's object that changes after start, or answers differently each time it is read, changes neither the bead packed nor the bead credited", async () => {
+    const root = workspace();
+    const fake = beadRunner();
+    const appended: LedgerEventInput[] = [];
+    const service = createCouncilService({
+      workspaceRoot: root,
+      harnessRoot: process.cwd(),
+      runsRoot: join(root, "runs"),
+      runCommand: fake.runner,
+      resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 0 }),
+      appendEvent: (event) => appended.push(event),
+      resolveAttach: ({ cwd, beadId }) => ({
+        workspace: cwd,
+        ...(beadId !== undefined ? { beadId } : {}),
+      }),
+    });
+    try {
+      const input: CouncilServiceInput = {
+        sourceType: "bead",
+        source: BEAD,
+        runId: "job-kept",
+      };
+      const started = service.start(input);
+      input.sourceType = "text";
+      input.source = "demo-harness-zz9";
+      input.beadId = "demo-harness-zz9";
+      const kept = await service.wait(started.runId);
+      expect(kept.status).toBe("completed");
+      expect(kept.run?.context.source).toMatchObject({
+        kind: "bead",
+        locator: BEAD,
+      });
+
+      let reads = 0;
+      const shifting = {
+        sourceType: "bead",
+        runId: "job-read-once",
+        get source() {
+          reads += 1;
+          return reads === 1 ? BEAD : "demo-harness-zz9";
+        },
+      } as CouncilServiceInput;
+      const once = await service.wait(service.start(shifting).runId);
+      expect(reads).toBe(1);
+      expect(once.status).toBe("completed");
+      expect(once.run?.context.source).toMatchObject({
+        kind: "bead",
+        locator: BEAD,
+      });
+
+      expect(appended.map((event) => event.beadId)).toEqual([
+        BEAD,
+        BEAD,
+        BEAD,
+        BEAD,
+      ]);
+      expect(fake.calls.map((call) => call[3])).toEqual([
+        BEAD,
+        BEAD,
+        BEAD,
+        BEAD,
       ]);
     } finally {
       await service.close();
