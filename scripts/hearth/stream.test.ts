@@ -168,7 +168,9 @@ describe("GET /stream on a hearth", () => {
     h.bd.list = () => new Promise<BdResult>(() => {});
     const snapshot = snapshotOf(await (await stream(h)).next(3000));
     expect(snapshot.queue.ok).toBe(false);
-    expect(snapshot.queue.error).toContain("did not answer");
+    expect(snapshot.queue.error).toContain(
+      "did not answer within its 100 ms limit",
+    );
     expect(snapshot.sessions.ok && snapshot.runs.ok && snapshot.config.ok).toBe(
       true,
     );

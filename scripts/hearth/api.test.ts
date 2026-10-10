@@ -122,7 +122,7 @@ async function runStatus(h: TestHearth, runId: string): Promise<string> {
   return ((await response.json()) as { data?: Job }).data?.status ?? "";
 }
 
-/** The start really started a run: the service lists it. */
+/** The start really started a run: the service reports it as running or completed. */
 const started =
   (runId: string) =>
   async (h: TestHearth): Promise<void> => {
@@ -1446,7 +1446,10 @@ describe("/queue", () => {
     const response = await get(h, "/queue");
     expect(response.status).toBe(502);
     expect(performance.now() - began).toBeLessThan(2000);
-    expect((await envelope(response)).error).toContain("did not answer");
+    // The message names the limit bd was given, not the backstop a second after it.
+    expect((await envelope(response)).error).toContain(
+      "did not answer within its 100 ms limit",
+    );
 
     h.bd.list = listed([BD_ISSUES[0]]);
     const next = await get(h, "/queue");
