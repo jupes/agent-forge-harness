@@ -510,6 +510,70 @@ describe("parsePlanFileMaps: what the second review found", () => {
   });
 });
 
+describe("parsePlanFileMaps: a fence, or a missing map, never hides a checkpoint", () => {
+  const broken = "/etc/passwd and prose";
+
+  test("a fence opened on a list line does not swallow the checkpoints after it", () => {
+    const plan = [
+      "### Checkpoint A — first",
+      "1. ```bash",
+      "   bun test src/a.test.ts",
+      "   ```",
+      "",
+      "#### Files",
+      "src/a.ts",
+      "",
+      "### Checkpoint B — second",
+      "#### Files",
+      broken,
+    ].join("\n");
+    const maps = parsePlanFileMaps(plan);
+    expect(maps.map(({ checkpoint }) => checkpoint)).toEqual([
+      "Checkpoint A — first",
+      "Checkpoint B — second",
+    ]);
+    expect(maps[1]?.map).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  test("a fence that is never closed does not swallow them either", () => {
+    const plan = [
+      "### Checkpoint A — first",
+      "Demo:",
+      "```bash",
+      "# never closed",
+      "",
+      "#### Files",
+      "src/a.ts",
+      "",
+      "### Checkpoint B — second",
+      "#### Files",
+      broken,
+    ].join("\n");
+    const maps = parsePlanFileMaps(plan);
+    expect(maps).toHaveLength(2);
+    expect(maps[0]?.map).toEqual({ ok: true, globs: ["src/a.ts"] });
+    expect(maps[1]?.map).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  test("a checkpoint with no map does not take a plan-level `Files` section that follows it", () => {
+    const plan = [
+      "### Checkpoint A — first",
+      "#### Files",
+      "src/a.ts",
+      "",
+      "### Checkpoint B — second",
+      "Steps: two",
+      "",
+      "## Files",
+      "src/whole-plan.ts",
+    ].join("\n");
+    expect(parsePlanFileMaps(plan)[1]).toMatchObject({
+      checkpoint: "Checkpoint B — second",
+      map: { ok: false, reason: "missing" },
+    });
+  });
+});
+
 // ── The documents that show the format ───────────────────────────────────────
 
 const FILES_HEADING = /^#{2,6}[ \t]+Files$/m;

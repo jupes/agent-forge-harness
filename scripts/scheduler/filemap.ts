@@ -180,37 +180,38 @@ export function parseFileMap(text: string): FileMap {
  *
  * `parseFileMap` reads the first `Files` section of a text, so a plan has to
  * be read checkpoint by checkpoint. A heading whose text starts with
- * `Checkpoint` opens one, at whatever level it was written, and it runs to
- * the next checkpoint or the next heading of its own level or above; a
- * `Files` heading is never that end, and neither is a `#` line inside a
- * fenced block. Line numbers in a refusal are lines of the plan.
+ * `Checkpoint` opens one, at whatever level it was written. It runs to the
+ * next checkpoint heading, or to the next heading of its own level or above;
+ * a `Files` heading of its own level or deeper is its map and not its end,
+ * and a `#` line inside a fenced block is not a heading. Line numbers in a
+ * refusal are lines of the plan.
+ *
+ * A checkpoint heading always opens a checkpoint, fenced or not: a fence
+ * that is opened oddly or never closed may stretch one checkpoint, and must
+ * never hide the ones after it.
  */
 export function parsePlanFileMaps(plan: string): CheckpointFileMap[] {
   const lines = plan.split(/\r?\n/).map((line) => line.trim());
   const found: CheckpointFileMap[] = [];
-  let fenced = false;
   for (let at = 0; at < lines.length; at++) {
-    const line = lines[at] as string;
-    if (FENCE.test(line)) {
-      fenced = !fenced;
-      continue;
-    }
-    const opened = fenced ? null : CHECKPOINT_HEADING.exec(line);
+    const opened = CHECKPOINT_HEADING.exec(lines[at] as string);
     if (opened === null) continue;
     const level = (opened[1] as string).length;
 
     let end = at + 1;
-    let inner = false;
+    let fenced = false;
     for (; end < lines.length; end++) {
       const next = lines[end] as string;
+      if (CHECKPOINT_HEADING.test(next)) break;
       if (FENCE.test(next)) {
-        inner = !inner;
+        fenced = !fenced;
         continue;
       }
-      if (inner || FILES_HEADING.test(next)) continue;
-      if (CHECKPOINT_HEADING.test(next)) break;
-      const heading = ANY_HEADING.exec(next);
-      if (heading !== null && (heading[1] as string).length <= level) break;
+      if (fenced) continue;
+      const depth = ANY_HEADING.exec(next)?.[1]?.length;
+      if (depth === undefined) continue;
+      if (FILES_HEADING.test(next) && depth >= level) continue;
+      if (depth <= level) break;
     }
     found.push({
       checkpoint: (opened[2] as string).trim(),

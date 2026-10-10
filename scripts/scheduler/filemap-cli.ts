@@ -95,7 +95,8 @@ export function runFileMapCli(
 
   const checkpoints = parsePlanFileMaps(text);
   if (!asPlan) {
-    if (checkpoints.length > 0) {
+    // What Beads holds is one task's description, whatever headings it carries.
+    if (!asBd && checkpoints.length > 0) {
       return refuse(
         `this text has ${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}: check a plan with --plan, which reads each one`,
       );

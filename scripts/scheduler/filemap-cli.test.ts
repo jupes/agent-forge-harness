@@ -170,3 +170,20 @@ describe("the file-map check command: a description straight from Beads, and a p
     expect(outcome.body.error).toContain("--plan");
   });
 });
+
+describe("the file-map check command: a task whose description carries its checkpoint heading", () => {
+  test("--bd-json reads it as the one task it is, not as a plan", () => {
+    const stored =
+      "### Checkpoint A — The export document\nBuild it.\n\n## Files\nsrc/settings/export.ts\n";
+    const outcome = runFileMapCli(["-", "--bd-json"], {
+      read: files({
+        "-": JSON.stringify([{ id: "bd-1", description: stored }]),
+      }),
+    });
+    expect(outcome.code).toBe(0);
+    expect(outcome.body.data).toEqual({
+      ok: true,
+      globs: ["src/settings/export.ts"],
+    });
+  });
+});
