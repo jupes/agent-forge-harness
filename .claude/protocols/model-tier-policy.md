@@ -26,13 +26,15 @@ Built-in smiths: `claude-master` (high effort), `claude-journeyman` (default), `
 
 `--smith` flag → bead `smith` metadata → bench by the bead's `complexity:*` label (stable weighted pick per bead id)
 → `workflow.default_crew` → `claude-journeyman` (`scripts/config/resolve.ts`). An unknown or disabled smith is an
-error, never a silent fall-through.
+error, never a silent fall-through. `forge:exec` is given the middle two as flags, `--bead-smith <name>` and
+`--complexity <low|medium|high>`: it does not read the bead, and nothing reads a `complexity:*` label from Beads yet.
 
 The phase gate takes a smith by name too:
 `bun run forge:phase-gate <phase> --slug <slug> --write --bead <id> --smith <name>` records that smith on the run as
 its executor (`.claude/workflows/forge.md`, *`--smith`*). It reads the flag and nothing else: no bead metadata, no
-bench, no default. A `--provider`, `--model` or `--effort` beside the smith must agree with it, and with no `--smith`
-the write records the live session.
+bench, no default. A `--provider`, `--model` or `--effort` beside the smith must agree with it. A write with no
+`--smith` records the live session whenever the ledger knows that session's model, and otherwise the run keeps the
+executor it had.
 
 ## Running a smith
 

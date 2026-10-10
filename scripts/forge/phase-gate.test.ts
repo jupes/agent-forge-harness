@@ -18,6 +18,7 @@ import {
   type ForgeState,
   isRunComplete,
   nextPhase,
+  parseGateArgs,
   parseState,
   phaseCommand,
   prereqPhase,
@@ -380,9 +381,10 @@ describe("the executor and bead on a run", () => {
 });
 
 /** The builtin smiths and nothing from this machine: no workspace file, no user file, no environment. */
+const NOWHERE = join(tmpdir(), "phase-gate-test-no-such-directory");
 const BUILTIN = loadConfig({
-  harnessRoot: mkdtempSync(join(tmpdir(), "phase-gate-smiths-")),
-  home: mkdtempSync(join(tmpdir(), "phase-gate-home-")),
+  harnessRoot: join(NOWHERE, "checkout"),
+  home: join(NOWHERE, "home"),
   env: {},
 }).config;
 const builtin = () => BUILTIN;
@@ -418,6 +420,15 @@ describe("a smith named on the command line", () => {
     );
     expect(refused.ok).toBe(false);
     expect(refused.error).toContain('unknown smith "anvil"');
+  });
+
+  test("a name every object has as a key is an unknown smith like any other, not a disabled one", () => {
+    for (const smith of ["constructor", "__proto__", "toString"]) {
+      const refused = executorFromFlags({ smith }, builtin);
+      expect({ smith, ok: refused.ok }).toEqual({ smith, ok: false });
+      expect(refused.error).toContain(`unknown smith "${smith}"`);
+      expect(refused.error).toContain("claude-master");
+    }
   });
 
   test("a disabled smith is refused, without the list", () => {
@@ -528,6 +539,110 @@ describe("a smith named on the command line", () => {
     expect(only.beadId).toBe("bd-9");
     expect(isRunComplete(only)).toBe(true);
     expect(activeRuns([summarizeRun(only)])).toEqual([]);
+  });
+});
+
+describe("the command line, read strictly", () => {
+  test("a phase, --write and the value flags are read, in either form", () => {
+    expect(
+      parseGateArgs([
+        "plan",
+        "--slug",
+        "demo",
+        "--write",
+        "--bead=bd-7",
+        "--checkout",
+        "C:/trees/demo",
+        "--smith=claude-master",
+      ]),
+    ).toEqual({
+      ok: true,
+      data: {
+        phase: "plan",
+        write: true,
+        values: {
+          slug: "demo",
+          bead: "bd-7",
+          checkout: "C:/trees/demo",
+          smith: "claude-master",
+        },
+      },
+      error: null,
+    });
+  });
+
+  test("a flag with no value is refused, rather than dropped or fed the next flag", () => {
+    for (const argv of [
+      ["plan", "--slug", "demo", "--write", "--bead"],
+      ["plan", "--slug", "demo", "--write", "--checkout", "--bead", "bd-7"],
+      [
+        "plan",
+        "--slug",
+        "demo",
+        "--write",
+        "--bead",
+        "--smith",
+        "claude-master",
+      ],
+      ["plan", "--slug", "demo", "--write", "--bead="],
+      ["plan", "--slug", "demo", "--write", "--bead", ""],
+    ]) {
+      const refused = parseGateArgs(argv);
+      expect({ argv, ok: refused.ok }).toEqual({ argv, ok: false });
+      expect(refused.error).toMatch(/--(bead|checkout) needs a value/);
+    }
+  });
+
+  test("--smith with no name keeps its own message", () => {
+    for (const argv of [
+      ["plan", "--slug", "demo", "--smith"],
+      ["plan", "--slug", "demo", "--smith", "--write"],
+      ["plan", "--slug", "demo", "--smith="],
+    ]) {
+      expect(parseGateArgs(argv).error).toContain(
+        "--smith needs the name of a configured smith",
+      );
+    }
+  });
+
+  test("an unknown flag is refused with the known ones, so a mistyped --bead cannot record a run that names none", () => {
+    for (const flag of ["--baed", "--smth", "--executor", "--bead-id=bd-7"]) {
+      const refused = parseGateArgs([
+        "plan",
+        "--slug",
+        "demo",
+        "--write",
+        flag,
+        "x",
+      ]);
+      expect({ flag, ok: refused.ok }).toEqual({ flag, ok: false });
+      expect(refused.error).toContain(`unknown flag ${flag.split("=")[0]}`);
+      expect(refused.error).toContain("--bead");
+    }
+  });
+
+  test("a flag given twice, a value on --write, and a second word that is not a flag are refused", () => {
+    expect(
+      parseGateArgs(["plan", "--slug", "a", "--bead", "bd-1", "--bead", "bd-2"])
+        .error,
+    ).toContain("--bead is given twice");
+    expect(
+      parseGateArgs(["plan", "--slug", "a", "--write=yes"]).error,
+    ).toContain("--write takes no value");
+    expect(parseGateArgs(["plan", "ship", "--slug", "a"]).error).toContain(
+      'unexpected argument "ship"',
+    );
+  });
+
+  test("the phase and the slug are not this function's to judge: it returns what was typed", () => {
+    expect(parseGateArgs([]).data).toEqual({
+      phase: undefined,
+      write: false,
+      values: {},
+    });
+    expect(parseGateArgs(["nonsense", "--slug", "x"]).data?.phase).toBe(
+      "nonsense",
+    );
   });
 });
 
@@ -661,7 +776,7 @@ describe("forge:phase-gate --smith, as a command", () => {
     expect(stored().executor).toMatchObject(expected);
   });
 
-  test("an unknown smith, and --smith with no name, exit 2 and record nothing: on a write and on an entry check", async () => {
+  test("an unknown smith, and --smith with no name, exit 2 on a write and on an entry check, and no run state file is written", async () => {
     const box = sandbox("refused-run");
     for (const args of [
       [
@@ -674,6 +789,7 @@ describe("forge:phase-gate --smith, as a command", () => {
       ],
       ["research", "--slug", "refused-run", "--smith", "no-such-smith"],
       ["research", "--slug", "refused-run", "--write", "--smith"],
+      ["research", "--slug", "refused-run", "--smith"],
     ]) {
       const refused = await run(box, PHASE_GATE, args);
       expect({ args, exitCode: refused.exitCode }).toEqual({
@@ -727,5 +843,64 @@ describe("forge:phase-gate --smith, as a command", () => {
     const active = await run(box, RUNS, ["--active", "--json"]);
     expect(active.exitCode).toBe(0);
     expect(active.printed.data).toEqual([]);
+  });
+});
+
+describe("forge:phase-gate, as a command: a flag it cannot read stops the write", () => {
+  test("a valueless, mistyped or repeated flag exits 2 and writes no run state: the run is never recorded without the bead it meant to name", async () => {
+    const box = sandbox("strict-run");
+    for (const args of [
+      [
+        "research",
+        "--slug",
+        "strict-run",
+        "--write",
+        "--checkout",
+        "--bead",
+        "bd-1",
+      ],
+      ["research", "--slug", "strict-run", "--write", "--bead", "--smith", "x"],
+      ["research", "--slug", "strict-run", "--write", "--baed", "bd-1"],
+      [
+        "research",
+        "--slug",
+        "strict-run",
+        "--write",
+        "--bead",
+        "bd-1",
+        "--bead",
+        "bd-2",
+      ],
+    ]) {
+      const refused = await run(box, PHASE_GATE, args);
+      expect({ args, exitCode: refused.exitCode }).toEqual({
+        args,
+        exitCode: 2,
+      });
+      expect(refused.printed.ok).toBe(false);
+    }
+    expect(
+      existsSync(
+        join(box.cwd, ".tmp", "work", "forge-runs", "strict-run.json"),
+      ),
+    ).toBe(false);
+  });
+
+  test("--bead=<id> and --smith=<name> are read like the spaced forms", async () => {
+    const box = sandbox("equals-run");
+    const smith = configuredSmith(box);
+    const written = await run(box, PHASE_GATE, [
+      "research",
+      "--slug=equals-run",
+      "--write",
+      "--bead=bd-3",
+      `--smith=${smith.name}`,
+    ]);
+    expect(written.exitCode).toBe(0);
+    expect(written.printed.data).toMatchObject({
+      beadId: "bd-3",
+      executor: { smith: smith.name },
+      correlation: { beadsIssueId: "bd-3", executionRunId: "equals-run" },
+    });
   });
 });

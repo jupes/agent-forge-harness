@@ -151,7 +151,7 @@ bd comments add <close-id> "worklog: testing-attestation automation=<yes|no> uni
 ```
 
 ```bash
-bd close <close-id>
+bd close <close-id>            # skip when the implement phase already closed it (a run that closes no feature or epic)
 bd comments add <close-id> "worklog: shipped — PR #<n>; report reports/<slug>-ship.md"
 # The tracker is local-only: do not run `bd dolt push`.
 bun run forge:phase-gate ship --slug <slug> --write --bead <close-id>     # records the run complete

@@ -78,14 +78,22 @@ names no bead, on a run that never named one, prints `correlation: null`.
 
 | Write | `--bead` | Why |
 |-------|----------|-----|
-| research | The issue the run was started from, when that is a task, a bug or a chore. Omit `--bead` when the run was started from free text, a feature or an epic. | Until the plan phase creates the tasks, no task exists to name. A feature or an epic goes in `--epic`, which only groups the run. |
-| plan | The issue the run was started from, else the first task the plan created. | From here on, a gate that runs belongs to the task being built. |
-| implement | The issue the run was started from, else the last task this phase closed. | The same. The ship step gates with the run's pointer while it still names a task. |
+| research | The issue the run was started from, when that is a task, a bug or a chore. Omit `--bead` when the run was started from free text, a feature or an epic. | Until the plan phase creates the tasks, no task exists to name. A feature or an epic goes in `--epic`: that groups the run and is never used for its correlation. |
+| plan | The issue the run was started from (a task, a bug or a chore), else the first task the plan created. | From here on, a gate that runs belongs to the task being built. |
+| implement | The issue the run was started from (a task, a bug or a chore), else the last task this phase closed. | The same. The ship step gates with the run's pointer while it still names a task. |
 | ship | The issue this run closes: the feature or the epic. A run that closes neither keeps the id of its implement write. | The close. |
 
 **A feature or an epic is named only by the ship write.** A quality gate that runs linked to a
 feature or an epic demands that issue's close-testing attestation (a `testing-attestation` comment),
 so a run that named one earlier would fail every gate before its close.
+
+One exception, for unattended runs: the research review of a run started from a feature or an epic
+is filed against that issue through `forge:correlate` (`.claude/workflows/forge-auto.md`), because a
+review round needs an issue and no task exists yet. No gate runs before the plan write moves the run
+to its first task.
+
+`--epic` is not `--bead`, but it is not invisible either: until a write names a bead, the run's
+ledger events carry the `--epic` id, so `bun run forge:audit --bead <that id>` shows them.
 
 Three things follow from a run being able to move from one issue to the next:
 
@@ -93,7 +101,8 @@ Three things follow from a run being able to move from one issue to the next:
   in between, which means a task handed to a spawned CLI. Move the run to that task first:
   `bun run forge:correlate --bead <task-id> --run <slug>` (add `--checkout <path>` when the run
   builds in another checkout). `forge:exec` leaves a run that names another issue alone, and its
-  child's gate then runs unlinked.
+  child's gate then runs unlinked. `forge:correlate` moves the correlation, which is what a gate
+  reads; `bun run forge:runs show <slug>` goes on printing the id of the run's last write.
 - **A run has one strict verdict, and it names the issue the run was bound to when it was filed.**
   Strict verdict mode (`AGENT_FORGE_EVAL_VERDICT=strict`) is opt-in and nothing here turns it on.
   When it is on, file it in the ship step, after the implement write and before the gate
@@ -123,20 +132,26 @@ no linked gate entry (`agent-forge-harness-g043`).
   `bun run forge:phase-gate <phase> --slug <slug> --write --bead <id> --smith <name>`. A name that
   is not configured is refused, with the list of the ones that are; a write stores the smith on the
   run as its executor and stamps it on the run's ledger events.
-- **It is per call.** A write without it records the live session instead (whenever the ledger
-  knows that session's model), in place of a smith an earlier write stored. A resumed run, or a
-  single `/forge-*` command run on its own, passes it again; `bun run forge:runs show <slug>` prints
-  what the run holds.
+- **It is per call.** A write without it records the live session instead, whenever the ledger
+  knows that session's model, in place of a smith an earlier write stored; when it does not, the run
+  keeps the executor it had. Do not rely on either: a resumed run, or a single `/forge-*` command
+  run on its own, passes `--smith` again. `bun run forge:runs show <slug>` prints what the run
+  holds.
 - **It does not change the model of the session that reads the command.** That session builds with
   the model it is running. Record the smith that really builds: the executor on the run is the
-  builder the evaluator's rank is compared against when the opt-in strict verdict is on.
+  builder the evaluator's rank is compared against when the opt-in strict verdict is on. For work
+  this session builds itself, that is the smith whose provider and model are this session's
+  (`bun run forge:config show` prints each smith's). Nothing checks that the name is true.
 - **Hand it on when work goes to a spawned CLI.** Point the run at the task, then spawn with the
   same smith: `bun run forge:correlate --bead <task-id> --run <slug>`, then
   `bun run forge:exec --bead <task-id> --run <slug> --smith <name> --worktree <checkout> --prompt <text>`.
 
-With no `--smith`, nothing changes: the phase gate records the live session, and `forge:exec` picks
-a smith in the config's order: its own `--smith`, the bead's `smith` metadata, the bench for the
-bead's `complexity:*` label, then the default smith (`.claude/protocols/model-tier-policy.md`).
+With no `--smith`, nothing changes for the phase gate: a write records the live session whenever the
+ledger knows that session's model, and otherwise the run keeps the executor it had. `forge:exec`
+without `--smith` picks a smith from its own flags, in the config's order
+(`.claude/protocols/model-tier-policy.md`): `--bead-smith <name>` (the bead's `smith` metadata),
+then `--complexity <low|medium|high>` (the value of the task's `complexity:*` label, which selects a
+bench), then the default smith. It does not read the bead: whoever spawns it passes the two values.
 
 The mini path keeps no run state, so there a `--smith` is recorded by one write at the end of the
 wrap step (`.claude/workflows/forge-mini.md`).

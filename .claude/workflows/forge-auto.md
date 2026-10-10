@@ -60,7 +60,8 @@ revision, or not yet reviewed, `forge:phase-gate <next phase>` exits non-zero, `
 `halted in <phase>` or `review <phase>` instead of the next phase command, and the Stop reminder
 says the same. Recording the phase again (`--write`) does not clear a halt — only a new
 `forge:review` round that advances does. To take a halted run back under human gates, re-record
-with `--mode gated`.
+its last phase with `--mode gated` added to that phase's own write line; the run keeps the bead it
+names.
 
 ---
 
@@ -92,7 +93,8 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
    the run builds in another checkout (step 3's `--checkout`), give that same `--checkout <dir>` to
    `forge:correlate` and to `forge:verdict`: the correlation and the verdict live there.
 5. **Decide.** `bun run forge:review --slug <slug> --phase <phase> --verdict <file> --tier <tier>`,
-   with the `data.file` that command printed.
+   with the `data.file` that command printed. `<tier>` is the evaluator's rank (`master`,
+   `journeyman` or `apprentice`; `human` for a person); it is stored on the round as given.
    Record the printed `comment` on the phase's Beads issue.
 6. **Act on the exit code:**
    - **0 (advance)** — file any follow-ups, then start the next phase.
@@ -107,7 +109,7 @@ What each phase reviews:
 |-------|---------------------------|
 | research | `plans/research/<slug>.md` — are the unknowns actually resolved from real code, or asserted? |
 | plan | `plans/drafts/<slug>.md` — do the AC, the file map and the TDD checkpoints match the research and the code? |
-| implement | the diff + tests — AC met, tests real, gates green, no scope creep |
+| implement | the diff + tests — AC met, tests real, gates green, no scope creep; each task's changes inside its file map, or the departure recorded on the task |
 | ship | `reports/<slug>-ship.md` + the PR body — does the summary match what actually changed? |
 
 ---

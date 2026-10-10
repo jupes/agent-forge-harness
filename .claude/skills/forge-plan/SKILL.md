@@ -62,8 +62,9 @@ runnable and observable. Each checkpoint must name a concrete command or action 
 
 Each checkpoint becomes one Beads task, so give each one two more things:
 
-- **A complexity label**: `complexity:low`, `complexity:medium` or `complexity:high`. It says which
-  bench of smiths the task is routed to (`.claude/protocols/model-tier-policy.md`).
+- **A complexity label**: `complexity:low`, `complexity:medium` or `complexity:high`. It names the
+  bench of smiths a task is routed to when its value is handed to `forge:exec --complexity`
+  (`.claude/protocols/model-tier-policy.md`). Nothing reads the label from Beads yet.
 - **A file map**: the globs the task may touch, one per line under a `Files` heading, relative to
   the repository root. The implement phase holds the worker to it. Nothing reserves files from it
   yet: it is written now so that tasks whose maps do not overlap can later be built at the same
@@ -71,13 +72,27 @@ Each checkpoint becomes one Beads task, so give each one two more things:
 
 The file map has one format, read by `parseFileMap` in `scripts/scheduler/filemap.ts`:
 
+- A glob is a relative path with forward slashes. `*` stands for any run of characters inside one
+  path segment, `**` for any number of segments, `?` for one character; every other character
+  stands for itself. `{a,b}` alternation is not part of the format: write one glob per line.
 - Nothing but globs under the heading. A line with a space in it, an absolute path, a `..` segment,
-  a backslash or a `<placeholder>` is refused, and one refused line refuses the whole map.
-- Blank lines and `<!-- comment -->` lines are skipped; a list bullet and backticks around a glob are
-  dropped; `dir/` means everything under `dir`.
-- The section ends at the next heading, so put the `Files` block last in the checkpoint.
+  a backslash, a `<placeholder>` or a `# note` is refused, and one refused line refuses the whole
+  map.
+- Blank lines are skipped, and so is a one-line `<!-- … -->` comment (a comment that wraps onto a
+  second line is refused); a list bullet and backticks around a glob are dropped; `dir/` means
+  everything under `dir`.
+- The section ends at the next heading (`##` or deeper) or horizontal rule, so put the `Files` block
+  last in the checkpoint.
 - The template starts every map at `**`, the whole repository: the map of a task that could touch
-  anything, which overlaps every other task. Replace it with the paths the task really touches.
+  anything, which overlaps every other task. Replace it with the paths the task really touches. A
+  map that has to stay at `**` says why in a one-line `<!-- … -->` comment above it.
+
+Check the maps before you create the tasks. The parser reads only the first `Files` section of a
+text, so a plan is checked checkpoint by checkpoint:
+
+```bash
+bun run scripts/scheduler/filemap-cli.ts plans/drafts/<slug>.md --plan   # exit 0: every checkpoint has a usable map
+```
 
 A worked example is in `references/example-plan.md`.
 
@@ -157,12 +172,14 @@ early when the verdict is **SOUND** (zero Blocker + High + Medium findings).
 turn = 0
 loop:
   1. Spawn Agent (review-plan skill) → returns verdict + findings by severity
-  2. Log: bd comments add <feature-id> "review: plan <VERDICT> — <#B>/<#H>/<#M>/<#L>"
+  2. Log: bd comments add <id> "review: plan <VERDICT> — <#B>/<#H>/<#M>/<#L>"
+     (<id>: the issue the run was started from; if there is none yet, keep the lines and log them
+     on the feature once step 6 has created it)
   3. If SOUND (no Blocker/High/Medium):  break — plan is clean
   4. turn += 1
   5. If turn >= 2:  break — maximum turns reached
   6. Address every Blocker, High, and Medium finding by editing plans/drafts/<slug>.md
-     Log: bd comments add <feature-id> "worklog: plan revised after review turn <turn> — <summary>"
+     Log: bd comments add <id> "worklog: plan revised after review turn <turn> — <summary>"
   7. Continue loop
 ```
 
@@ -176,7 +193,7 @@ Create the issue graph that the implement phase will execute. Set **`--priority`
 using `.claude/skills/beads-priority-assignment/SKILL.md` (see [[beads-priority-assignment]]).
 
 ```bash
-# One feature (or epic) to group the work
+# One feature (or epic) to group the work, unless the run was started from an issue (see below)
 bd create --json --repo <repo> --type feature --title "<feature title>" --priority <p> \
   --description "<summary>" --acceptance "<top-level acceptance criteria>"
 
@@ -186,13 +203,23 @@ bd create --json --repo <repo> --type task --title "<checkpoint/behavior>" --pri
   --acceptance "<the test(s) that prove this done>" \
   --body-file .tmp/work/<slug>-task-<letter>.md
 
-# Sequential dependencies between checkpoints
-bd dep add <later-id> --requires <earlier-id>
+# Sequential dependencies between checkpoints: the later one depends on the earlier one
+bd dep add <later-id> <earlier-id>
 ```
+
+**A run that was started from an existing issue does not get a second one to group it.** That issue
+is the run's tracking issue (`.claude/commands/forgemaster.md`, Step 0): skip the feature, and create
+each checkpoint's task under it by adding `--parent <id>` to the task line. The run then names that
+issue on its writes and closes it at the ship step. A plan with a single checkpoint needs no child
+task at all: the starting issue is the task.
 
 The task's description is read from a file so that the file map keeps its lines. Write one per task
 from its checkpoint: what the task delivers, then the checkpoint's map under `## Files` (the heading
-is `##` in a description).
+is `##` in a description). Check each file before the task is created:
+
+```bash
+bun run scripts/scheduler/filemap-cli.ts .tmp/work/<slug>-task-<letter>.md   # exit 0: the map is usable
+```
 
 ```markdown
 <what this task delivers, in a sentence or two>
@@ -205,7 +232,8 @@ is `##` in a description).
 A map the parser refuses is not a map: fix it in the plan before the task is created.
 
 Prefer **one task per checkpoint** so each closed task maps to something the user saw run.
-Record every created id back into the plan's Beads Issue Map and the forge state.
+Record every created id back into the plan's Beads Issue Map. The run's state learns them from the
+write in step 7: `--bead` for the task it names, `--epic` for the issue that groups them.
 
 If Beads/Dolt is unavailable (`bd` errors), note it in the plan under a `## Beads` heading,
 list the issues that *should* exist, and continue — do not block planning.
@@ -231,7 +259,9 @@ Then point to the next phase: `/forge-implement <slug>` (or `/forgemaster` conti
 
 - [ ] `plans/drafts/<slug>.md` exists with TDD Strategy and Checkpoints filled.
 - [ ] Each checkpoint names a demo command or is explicitly `(no live demo)`.
-- [ ] Each checkpoint has a complexity label and a file map; a map still at `**` says why.
+- [ ] Each checkpoint has a complexity label and a file map, and
+      `bun run scripts/scheduler/filemap-cli.ts plans/drafts/<slug>.md --plan` exits 0; a map still at
+      `**` says why in a comment.
 - [ ] Plan review loop ran: SOUND verdict reached, or 2 turns completed; outcome logged to Beads.
 - [ ] Any remaining Medium+ findings (after 2 turns) surfaced to user before proceeding.
 - [ ] Beads issues created (or their absence noted with reason) and mapped in the plan.

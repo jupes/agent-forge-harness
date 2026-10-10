@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { BENCH_NAMES } from "../../types/hearth";
-import { type FileMap, parseFileMap } from "./filemap";
+import { type FileMap, parseFileMap, parsePlanFileMaps } from "./filemap";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -69,8 +69,8 @@ describe("parseFileMap: where the section is", () => {
     }
   });
 
-  test("the section ends at the next heading of any level, or at a horizontal rule", () => {
-    for (const end of ["## Notes", "# Title", "#### Deeper", "---", "***"]) {
+  test("the section ends at the next heading of level two or deeper, or at a horizontal rule", () => {
+    for (const end of ["## Notes", "#### Deeper", "---", "***"]) {
       expect({
         end,
         globs: globs(
@@ -255,6 +255,152 @@ describe("parseFileMap: what it refuses", () => {
   });
 });
 
+describe("parseFileMap: a line is judged as the glob it becomes", () => {
+  test("a path that is absolute, negated or home-relative once its ./ and bullet are gone is refused like any other", () => {
+    const cases: ReadonlyArray<[string, string]> = [
+      [".//etc/passwd", "absolute"],
+      ["- `.//abs/a.ts`", "absolute"],
+      ["./~/x", "absolute"],
+      ["././/x", "absolute"],
+      ["./!src/a.ts", "negation"],
+      ["./../a.ts", "leaves the repository"],
+    ];
+    for (const [entry, why] of cases) {
+      expect({
+        entry,
+        problems: problems(parseFileMap(`## Files\n${entry}\n`)),
+      }).toEqual({
+        entry,
+        problems: [{ line: 2, why: expect.stringContaining(why) }],
+      });
+    }
+  });
+
+  test("brace alternation is not part of the format: it could hide a `..` or a second path", () => {
+    for (const entry of ["{..,src}/a.ts", "src/{a,b}.ts", "src/a.{ts,tsx}"]) {
+      expect({
+        entry,
+        problems: problems(parseFileMap(`## Files\n${entry}\n`)),
+      }).toEqual({
+        entry,
+        problems: [{ line: 2, why: expect.stringContaining("alternation") }],
+      });
+    }
+  });
+
+  test("the wildcards are *, ** and ?; brackets stand for themselves", () => {
+    expect(
+      globs(parseFileMap("## Files\nsrc/**/a?.ts\napp/[id]/page.tsx\n*.md\n")),
+    ).toEqual(["src/**/a?.ts", "app/[id]/page.tsx", "*.md"]);
+  });
+
+  test("a line that names nothing: an empty bullet, a lone dot, a bare ./", () => {
+    for (const entry of ["-", "+", ".", "./", "- ."]) {
+      expect({
+        entry,
+        problems: problems(parseFileMap(`## Files\nsrc/a.ts\n${entry}\n`)),
+      }).toEqual({
+        entry,
+        problems: [{ line: 3, why: expect.stringContaining("names nothing") }],
+      });
+    }
+  });
+
+  test("a character nobody can see is refused", () => {
+    for (const entry of [
+      "src/a\u200b.ts",
+      "src/\u0000a.ts",
+      "src/\ufeffa.ts",
+    ]) {
+      expect({
+        entry: JSON.stringify(entry),
+        problems: problems(parseFileMap(`## Files\nsrc/ok.ts\n${entry}\n`)),
+      }).toEqual({
+        entry: JSON.stringify(entry),
+        problems: [{ line: 3, why: expect.stringContaining("invisible") }],
+      });
+    }
+  });
+
+  test("a `# …` line inside the section is refused, not taken as its end: the globs after it are not dropped unseen", () => {
+    const map = parseFileMap("## Files\nsrc/a.ts\n# tests\nsrc/a.test.ts\n");
+    expect(problems(map)).toEqual([
+      { line: 3, why: expect.stringContaining("comment") },
+    ]);
+  });
+
+  test("a heading of level two or deeper still ends the section", () => {
+    expect(
+      globs(
+        parseFileMap("#### Files\nsrc/a.ts\n### Checkpoint B\nnot a glob\n"),
+      ),
+    ).toEqual(["src/a.ts"]);
+  });
+});
+
+describe("parsePlanFileMaps: one map per checkpoint of a plan", () => {
+  const plan = [
+    "# Plan: demo",
+    "",
+    "## Build Sequence & Checkpoints",
+    "",
+    "### Checkpoint A — first",
+    "Steps: one",
+    "",
+    "#### Files",
+    "src/a.ts",
+    "",
+    "### Checkpoint B — second",
+    "Steps: two",
+    "",
+    "#### Files",
+    "src/b.ts",
+    "src/b.test.ts",
+    "",
+    "## Files to Create / Modify",
+    "| File | Purpose |",
+    "",
+    "## Files",
+    "src/not-a-checkpoint.ts",
+  ].join("\n");
+
+  test("each `### Checkpoint` heading gives its title and the map under it", () => {
+    expect(parsePlanFileMaps(plan)).toEqual([
+      {
+        checkpoint: "Checkpoint A — first",
+        map: { ok: true, globs: ["src/a.ts"] },
+      },
+      {
+        checkpoint: "Checkpoint B — second",
+        map: { ok: true, globs: ["src/b.ts", "src/b.test.ts"] },
+      },
+    ]);
+  });
+
+  test("a checkpoint ends at the next heading of its level or above, so a later `Files` section is not its map", () => {
+    const withoutMap = plan.replace(
+      "#### Files\nsrc/b.ts\nsrc/b.test.ts\n",
+      "",
+    );
+    expect(parsePlanFileMaps(withoutMap)[1]).toMatchObject({
+      checkpoint: "Checkpoint B — second",
+      map: { ok: false, reason: "missing" },
+    });
+  });
+
+  test("a broken map in a later checkpoint is found, which parsing the whole plan as one text misses", () => {
+    const broken = plan.replace("src/b.ts\n", "src/b.ts and whatever else\n");
+    expect(parseFileMap(broken)).toEqual({ ok: true, globs: ["src/a.ts"] });
+    const maps = parsePlanFileMaps(broken);
+    expect(maps[0]?.map.ok).toBe(true);
+    expect(maps[1]?.map).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  test("a text with no checkpoint heading has no checkpoints", () => {
+    expect(parsePlanFileMaps("## Files\nsrc/a.ts\n")).toEqual([]);
+  });
+});
+
 // ── The documents that show the format ───────────────────────────────────────
 
 const FILES_HEADING = /^#{2,6}[ \t]+Files$/m;
@@ -277,13 +423,6 @@ function fencedBlocks(markdown: string): string[] {
   return blocks;
 }
 
-/** A plan's checkpoints: each `### Checkpoint` heading with the text under it. */
-function checkpoints(plan: string): string[] {
-  return plan
-    .split(/^(?=### Checkpoint\b)/m)
-    .filter((part) => part.startsWith("### Checkpoint"));
-}
-
 const COMPLEXITY = /complexity:([a-z|<>]+)/g;
 
 describe("the forge-plan documents show a file map the parser reads", () => {
@@ -302,13 +441,14 @@ describe("the forge-plan documents show a file map the parser reads", () => {
     );
     // The plan template (one map per checkpoint) and the task description.
     expect(blocks).toHaveLength(2);
+    // A block with checkpoints is the plan template; the other is one description.
     const maps = blocks.flatMap((block) => {
-      const parts = checkpoints(block);
-      return parts.length > 0 ? parts : [block];
+      const perCheckpoint = parsePlanFileMaps(block).map(({ map }) => map);
+      return perCheckpoint.length > 0 ? perCheckpoint : [parseFileMap(block)];
     });
     expect(maps.length).toBeGreaterThanOrEqual(3);
     for (const map of maps) {
-      expect(parseFileMap(map)).toEqual({ ok: true, globs: ["**"] });
+      expect(map).toEqual({ ok: true, globs: ["**"] });
     }
   });
 
@@ -325,24 +465,25 @@ describe("the forge-plan documents show a file map the parser reads", () => {
   });
 
   test("every checkpoint of the example plan has a narrow map that parses, and a complexity label", () => {
-    const parts = checkpoints(example());
+    const parts = parsePlanFileMaps(example());
     expect(parts.length).toBeGreaterThanOrEqual(2);
-    for (const part of parts) {
-      const title = part.split("\n")[0];
-      const map = parseFileMap(part);
-      expect({ title, ok: map.ok }).toEqual({ title, ok: true });
+    for (const { checkpoint, map } of parts) {
+      expect({ checkpoint, ok: map.ok }).toEqual({ checkpoint, ok: true });
       expect(globs(map)).not.toContain("**");
-      const label = /complexity:(\w+)/.exec(part)?.[1];
-      expect({ title, label: BENCH_NAMES.includes(label as never) }).toEqual({
-        title,
-        label: true,
-      });
+    }
+    // One label line per checkpoint, each a bench name.
+    const labels = [...example().matchAll(/^Label: `complexity:(\w+)`$/gm)].map(
+      (match) => match[1] ?? "",
+    );
+    expect(labels).toHaveLength(parts.length);
+    for (const label of labels) {
+      expect(BENCH_NAMES as readonly string[]).toContain(label);
     }
   });
 
   test("the maps of the example plan are different per checkpoint", () => {
-    const maps = checkpoints(example()).map((part) =>
-      globs(parseFileMap(part)).join(","),
+    const maps = parsePlanFileMaps(example()).map(({ map }) =>
+      globs(map).join(","),
     );
     expect(new Set(maps).size).toBe(maps.length);
   });

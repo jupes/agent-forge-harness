@@ -24,7 +24,7 @@ Follow **`.claude/skills/forge-plan/SKILL.md`** in full. In short:
    if it errors, run `bd dolt start` and retry.
 7. Present the plan, get approval, then
    `bun run forge:phase-gate plan --slug <slug> --write --bead <task-id>`: the issue the run was
-   started from, else the first task the plan created. Add `--epic <id>` for the feature or epic that
+   started from when that is a task, a bug or a chore, else the first task the plan created. Add `--epic <id>` for the feature or epic that
    groups the tasks; never pass that one as `--bead` here (`.claude/workflows/forge.md`, *Which bead
    a phase names*).
 

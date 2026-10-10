@@ -550,6 +550,91 @@ describe("the Forge documents: --smith, the file map and the mini path", () => {
   });
 });
 
+describe("the Forge documents: what the review of the first build found", () => {
+  test("the implement documents read the file map from the stored description, not from the rendered one", () => {
+    for (const path of skill("forge-implement")) {
+      expect(
+        missing(path, [
+          "bd show <task-id> --json",
+          "renders the description as Markdown",
+          "bun run scripts/scheduler/filemap-cli.ts",
+        ]),
+      ).toEqual([]);
+    }
+  });
+
+  test("no Forge document gives `bd dep add` a flag this bd does not have", () => {
+    const forge = [
+      ...new Set([
+        ...WRITE_LINE_DOCUMENTS,
+        ".claude/skills/forge-plan/references/example-plan.md",
+      ]),
+    ];
+    const wrong = forge.flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd dep add/)
+        .filter((documented) =>
+          /--(requires|blocks)\b/.test(documented.command),
+        )
+        .map(show),
+    );
+    expect(wrong).toEqual([]);
+    for (const path of skill("forge-plan")) {
+      expect(missing(path, ["bd dep add <later-id> <earlier-id>"])).toEqual([]);
+    }
+  });
+
+  test("the plan skill gives the command that checks a plan's maps, checkpoint by checkpoint, and says where a reason for `**` goes", () => {
+    for (const path of skill("forge-plan")) {
+      expect(
+        missing(path, [
+          "bun run scripts/scheduler/filemap-cli.ts plans/drafts/<slug>.md --plan",
+          "bun run scripts/scheduler/filemap-cli.ts .tmp/work/<slug>-task-<letter>.md",
+          "one-line `<!-- … -->` comment",
+          "--parent <id>",
+        ]),
+      ).toEqual([]);
+    }
+  });
+
+  test("the documents do not say forge:exec reads the bead: the label and the bead's smith reach it as flags", () => {
+    expect(
+      missing(".claude/workflows/forge.md", [
+        "--bead-smith",
+        "--complexity <low|medium|high>",
+        "It does not read the bead",
+      ]),
+    ).toEqual([]);
+    for (const path of skill("forge-plan")) {
+      expect(missing(path, ["Nothing reads the label from Beads yet"])).toEqual(
+        [],
+      );
+    }
+  });
+
+  test("a write without --smith: both documents say what it records, and what the run keeps when the session's model is not known", () => {
+    for (const path of [
+      ".claude/workflows/forge.md",
+      ".claude/protocols/model-tier-policy.md",
+    ]) {
+      expect(
+        missing(path, [
+          "whenever the ledger knows that session's model",
+          "keeps the executor it had",
+        ]),
+      ).toEqual([]);
+    }
+  });
+
+  test("the workflow names the one case where a feature or an epic is bound before the close, and what --epic does to the run's events", () => {
+    expect(
+      missing(".claude/workflows/forge.md", [
+        "One exception, for unattended runs",
+        "carry the `--epic` id",
+      ]),
+    ).toEqual([]);
+  });
+});
+
 describe("the generated mirror carries what its source says", () => {
   test("each Forge skill's copy is its source, byte for byte", () => {
     for (const name of [

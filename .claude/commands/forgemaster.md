@@ -104,8 +104,9 @@ in `forge-mini.md`.
 
 For each phase in order — `research`, `plan`, `implement`, `ship` — do this loop:
 
-1. **Gate entry.** Run `bun run forge:phase-gate <phase> --slug <slug>`. If it exits non-zero, the
-   prerequisite artifact is missing — stop and tell the user which earlier phase to run.
+1. **Gate entry.** Run `bun run forge:phase-gate <phase> --slug <slug>`. If it exits non-zero, read
+   its `error`: usually the prerequisite artifact is missing — stop and tell the user which earlier
+   phase to run. (With `--smith`, it can also be a name that is not configured.)
 2. **Announce.** Tell the user which phase is starting and where its output will land
    (see the table in `.claude/workflows/forge.md`).
 3. **Run the phase** by following its skill end to end:
