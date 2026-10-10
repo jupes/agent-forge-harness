@@ -12,6 +12,7 @@
  * @property {string} description
  * @property {string} acceptanceCriteria
  * @property {string} labels
+ * @property {string} [parent] The id of the parent bead, when the new one is its child.
  */
 
 /**
@@ -79,6 +80,7 @@ export function buildBdCreateCommand(d) {
   const repo = String(d.repo ?? "").trim() || ".";
   const description = String(d.description ?? "").trim();
   const labels = normalizeLabels(d.labels);
+  const parent = String(d.parent ?? "").trim();
   const acLines = splitAcLines(d.acceptanceCriteria);
 
   const parts = [
@@ -86,8 +88,11 @@ export function buildBdCreateCommand(d) {
     `--repo ${JSON.stringify(repo)}`,
     `--type ${type}`,
     `--priority ${priority}`,
-    `--title "${shellEscapeDoubleQuoted(title)}"`,
   ];
+  if (parent) {
+    parts.push(`--parent "${shellEscapeDoubleQuoted(parent)}"`);
+  }
+  parts.push(`--title "${shellEscapeDoubleQuoted(title)}"`);
   if (description) {
     // Shell-escape first so pre-existing backslashes/quotes are handled, then
     // encode real newlines as literal `\n` so the command stays on one line.

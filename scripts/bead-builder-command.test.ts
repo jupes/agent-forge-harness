@@ -123,3 +123,29 @@ describe("the issue types the builder knows", () => {
     );
   });
 });
+
+describe("a parent in the copied command", () => {
+  test("is passed as --parent, quoted like every other value, when the form has one", () => {
+    expect(buildBdCreateCommand({ ...base, parent: "demo-epic.2" })).toBe(
+      'bd create --repo "." --type task --priority P2 --parent "demo-epic.2" --title "My bead"',
+    );
+  });
+
+  test("is left out when the field is empty or blank", () => {
+    for (const parent of ["", "   ", undefined])
+      expect(buildBdCreateCommand({ ...base, parent })).toBe(
+        'bd create --repo "." --type task --priority P2 --title "My bead"',
+      );
+  });
+
+  test("cannot break out of its quotes", () => {
+    // Every quote, dollar and backtick of the value arrives behind a backslash.
+    const command = buildBdCreateCommand({
+      ...base,
+      parent: 'x" --repo "$(id)`id`',
+    });
+    expect(command).toContain(
+      String.raw`--parent "x\" --repo \"\$(id)\`id\`" --title`,
+    );
+  });
+});
