@@ -49,6 +49,69 @@ export const RANKS = ["apprentice", "journeyman", "master"] as const;
 
 export type Rank = (typeof RANKS)[number];
 
+// ── Evaluators ──────────────────────────────────────────────────────────────
+
+/** What a human who files a verdict is acting as. */
+export const EVALUATOR_ACTOR_KINDS = ["operator", "reviewer"] as const;
+
+export type EvaluatorActorKind = (typeof EVALUATOR_ACTOR_KINDS)[number];
+
+/** What shows which provider ran a model evaluator. */
+export const PROVIDER_EVIDENCE_SOURCES = [
+  "selected-direct-transport",
+  "gateway-routing",
+] as const;
+
+export type ProviderEvidence = (typeof PROVIDER_EVIDENCE_SOURCES)[number];
+
+/** What shows which model answered as a model evaluator. */
+export const MODEL_EVIDENCE_SOURCES = [
+  "response-field",
+  "gateway-routing",
+] as const;
+
+export type ModelEvidence = (typeof MODEL_EVIDENCE_SOURCES)[number];
+
+export const RANK_POLICY_DECISIONS = ["allowed", "rejected"] as const;
+
+export type RankPolicyDecision = (typeof RANK_POLICY_DECISIONS)[number];
+
+/**
+ * Who rendered an evaluator verdict (verdict schema 2).
+ *
+ * A model evaluator keeps what was asked for apart from what ran. The four
+ * observed fields are read from a machine source and never copied from the
+ * request: all four are present, or none is.
+ */
+export type EvaluatorIdentity =
+  | { kind: "human"; actorKind: EvaluatorActorKind }
+  | {
+      kind: "model";
+      requestedProvider: Provider;
+      requestedModel: string;
+      requestedRank: Rank;
+      observedProvider?: Provider;
+      observedModel?: string;
+      providerEvidence?: ProviderEvidence;
+      modelEvidence?: ModelEvidence;
+      rankPolicyDecision: RankPolicyDecision;
+      /** The rule that produced the decision. */
+      rankPolicyRule: string;
+      /** The session the observed values were read for, when there was one. */
+      sessionId?: string;
+    };
+
+/** A verdict file as evidence: where it was read and the bytes that were read. */
+export interface VerdictArtifact {
+  /** Relative to the checkout when the file is inside it. */
+  path: string;
+  /** Lower-case hex SHA-256 of the bytes that were parsed. */
+  sha256: string;
+  bytes: number;
+  /** The verdict schema version those bytes parsed as. */
+  schemaVersion: number;
+}
+
 /** A named, configured executor: `[smiths.<name>]` in `agent-forge.toml`. */
 export interface Smith {
   name: string;
@@ -202,8 +265,16 @@ export interface LedgerPayloads {
     verdict: VerdictOutcome;
     /** The executor that produced the output under review, when known. */
     builder?: Executor;
-    /** Absent until the verdict file itself names its evaluator. */
+    /**
+     * The model evaluator that was observed to run: a schema 2 verdict's
+     * observed provider and model. Absent for a human verdict, for a legacy
+     * (schema 1) verdict and when nothing was observed.
+     */
     evaluator?: Executor;
+    /** The evaluator as a schema 2 verdict declares it. Absent for a legacy verdict. */
+    evaluatorIdentity?: EvaluatorIdentity;
+    /** The file the verdict was read from, when the emitter hashed what it read. */
+    verdictArtifact?: VerdictArtifact;
     /** Opt-in body: redacted and capped by the ledger. */
     summary?: string;
   };

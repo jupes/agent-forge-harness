@@ -179,11 +179,14 @@ describe("audit-cli --bead over events from every emitter (spawned scripts, scra
     const verdict = join(box.cwd, "v.json");
     writeFileSync(
       verdict,
+      // The run named its bead, so it is correlated: its verdict is schema 2.
       JSON.stringify({
-        schemaVersion: 1,
-        taskId: BEAD,
+        schemaVersion: 2,
+        beadsIssueId: BEAD,
+        executionRunId: "x",
         verdict: "PASS",
         findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        evaluator: { kind: "human", actorKind: "reviewer" },
       }),
     );
     const reviewed = await spawn(box, REVIEW, [

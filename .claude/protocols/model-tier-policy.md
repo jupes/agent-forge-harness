@@ -56,10 +56,24 @@ the new smith and why.
 
 ## Grader ≥ subject
 
-An Evaluator must be at **≥** the rank that produced the output under review. Write the grader's rank (and smith, when
-known) into the verdict `summary` (`.tmp/work/<TASK-ID>-verdict.json`). Same-rank grading is acceptable only for purely
-mechanical checks such as JSON shape conformance. This rule is still enforced by convention and the Evaluator Agent;
-the config only makes the ranks concrete.
+An Evaluator must be at **≥** the rank that produced the output under review. A filed verdict records it
+(`.claude/protocols/evaluation-verdict.md`): the provider, model and rank that were requested, the provider and model
+that were observed to run, and the rank-policy decision with its rule.
+
+In strict mode (`AGENT_FORGE_EVAL_VERDICT=strict`) the quality gate enforces the rule on the observation the verdict
+records, never on the request: a model evaluator must have been observed, and its observed rank must be at or above the
+builder's. The observation is the model of the session working in the worktree where the verdict is filed. An
+Evaluator subagent shares its spawner's session, so a subagent's own model is never observed. When the ledger shows
+that session building the work, the verdict records nothing as observed; when the ledger shows no builder for the work
+(a run with no phase gate, such as one made by `forge:correlate` alone), that session's model is recorded as the
+evaluator's even if it is the builder's own (`.claude/protocols/evaluation-verdict.md`, *Limits*). A
+provider and model have a rank through the `rank:*` tag of the smiths configured with them; when smiths of different
+ranks share a model, the evaluator is read at the lowest and the builder at the highest. The builder is the executor
+stored on the run's state; with no builder whose rank is known, only a master evaluator passes. A human verdict is
+taken on its actor kind.
+
+Outside strict mode the rule is held by convention and the Evaluator Agent. The gate accepts an equal rank; by
+convention same-rank grading is for purely mechanical checks such as JSON shape conformance.
 
 ## Out of scope
 

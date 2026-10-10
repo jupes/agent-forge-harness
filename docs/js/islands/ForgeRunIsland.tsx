@@ -642,6 +642,42 @@ function GateLinkNote({ gate }: { gate: GateRun }): JSX.Element | null {
   return null;
 }
 
+/** Who judged, in a few words. */
+function evaluatorText(
+  evaluator: Extract<
+    NonNullable<GateRun["evaluatorVerdict"]>,
+    { evidence: "schema-2" }
+  >["evaluator"],
+): string {
+  if (evaluator.kind === "human") return `a human ${evaluator.actorKind}`;
+  const requested = `${evaluator.requestedProvider}/${evaluator.requestedModel}`;
+  return evaluator.observedProvider && evaluator.observedModel
+    ? `${evaluator.observedProvider}/${evaluator.observedModel}, observed (requested ${requested}, rank ${evaluator.requestedRank})`
+    : `${requested}, requested; nothing observed`;
+}
+
+/** What the gate run's evaluator-verdict check rested on, when it ran. */
+function GateVerdictNote({ gate }: { gate: GateRun }): JSX.Element | null {
+  const verdict = gate.evaluatorVerdict;
+  if (verdict === null) return null;
+  if (verdict.evidence === "legacy") {
+    return (
+      <p class="af-muted af-gate-verdict">
+        <Tag tone="muted">legacy verdict</Tag> The evaluator-verdict check
+        passed on a verdict that named no run and no evaluator. It is not
+        evidence that this run was evaluated.
+      </p>
+    );
+  }
+  return (
+    <p class="af-muted af-gate-verdict">
+      Evaluator verdict by {evaluatorText(verdict.evaluator)}, read from{" "}
+      <code>{verdict.path}</code> ({verdict.bytes} bytes, SHA-256{" "}
+      <code title={verdict.sha256}>{verdict.sha256.slice(0, 12)}</code>).
+    </p>
+  );
+}
+
 /**
  * One gate run. `unattributed` is the card for a gate run of this checkout
  * that no forge run's card shows: one that was given no run correlation, or
@@ -738,6 +774,7 @@ function GateCard({
         .
       </p>
       <GateLinkNote gate={gate} />
+      <GateVerdictNote gate={gate} />
       <ul class="af-gate-grid">
         {gate.checks.map((check) => {
           const state = check.skipped

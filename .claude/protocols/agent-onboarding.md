@@ -183,8 +183,9 @@ without a bead is legal; the first event that learns the bead carries it, and re
 
 ### Run correlation (the quality gate)
 
-The quality gate asks Beads about an issue and, in strict mode, reads that issue's evaluator verdict, so
-its bead and run come from one place only: a **run correlation**, a small file a launcher writes
+The quality gate asks Beads about an issue and, in strict mode, reads the run's evaluator verdict (at the
+path the run id declares: `.claude/protocols/evaluation-verdict.md`), so its bead and run come from one
+place only: a **run correlation**, a small file a launcher writes
 (`scripts/run-correlation.ts`).
 
 - **File:** `<checkout>/.tmp/work/run-correlations/<runId>.json`, holding

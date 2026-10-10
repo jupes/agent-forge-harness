@@ -41,7 +41,7 @@ A step may carry a gate that the harness already enforces elsewhere. Allowed `ki
 | `kind` | Enforcer | Meaning |
 |--------|----------|---------|
 | `"quality-gate"` | `.claude/hooks/quality-gate.ts` | Core checks (typecheck, lint, tests, clean tree) |
-| `"eval-verdict"` | `scripts/eval-verdict.ts` + strict hook | `.tmp/work/<TASK-ID>-verdict.json` PASS or only medium/low |
+| `"eval-verdict"` | `scripts/eval-verdict.ts` + strict hook | The run's evaluator verdict (`.claude/protocols/evaluation-verdict.md`) PASS or only medium/low |
 
 The parser validates shape only; runtime enforcement stays with the existing hooks.
 
