@@ -159,6 +159,9 @@ async function finishedRun(h: TestHearth, runId: string): Promise<void> {
 
 const REVIEW = { issueId: "demo-1", decision: "approve", note: "" };
 
+const COMMENT = "worklog: fixture comment";
+const CLOSE_REASON = "Verified by the fixture";
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
   "POST /beads": {
@@ -189,6 +192,83 @@ const ACTIONS: Record<string, ActionFixture> = {
         "--priority=2",
         "--parent=demo-epic",
         "--json",
+      ]);
+    },
+  },
+  "POST /beads/:id/claim": {
+    valid: {
+      path: "/beads/demo-task/claim",
+      body: {},
+      status: 200,
+      target: "demo-task",
+    },
+    // An id that would be read as an option if it ever reached bd.
+    invalid: { path: "/beads/-rf/claim", body: {} },
+    outcome: [{ kind: "bead.transitioned", payload: { action: "claim" } }],
+    happened: async (h) => {
+      expect(h.bd.calls.at(-1)).toEqual([
+        "update",
+        "--claim",
+        "--json",
+        "--",
+        "demo-task",
+      ]);
+    },
+  },
+  "POST /beads/:id/comment": {
+    valid: {
+      path: "/beads/demo-task/comment",
+      body: { text: COMMENT },
+      status: 201,
+      target: "demo-task",
+    },
+    invalid: { path: "/beads/demo-task/comment", body: { text: "  " } },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: {
+          action: "comment",
+          hash: hashText(COMMENT),
+          length: COMMENT.length,
+        },
+      },
+    ],
+    happened: async (h) => {
+      expect(h.bd.calls.at(-1)).toEqual([
+        "comments",
+        "add",
+        "--json",
+        "--",
+        "demo-task",
+        COMMENT,
+      ]);
+    },
+  },
+  "POST /beads/:id/close": {
+    valid: {
+      path: "/beads/demo-task/close",
+      body: { reason: CLOSE_REASON },
+      status: 200,
+      target: "demo-task",
+    },
+    invalid: { path: "/beads/demo-task/close", body: {} },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: {
+          action: "close",
+          hash: hashText(CLOSE_REASON),
+          length: CLOSE_REASON.length,
+        },
+      },
+    ],
+    happened: async (h) => {
+      expect(h.bd.calls.at(-1)).toEqual([
+        "close",
+        `--reason=${CLOSE_REASON}`,
+        "--json",
+        "--",
+        "demo-task",
       ]);
     },
   },
@@ -846,9 +926,6 @@ describe("the paths that existed before the table", () => {
     expect(posted.headers.get("allow")).toBe("GET");
 
     const unmounted = [
-      "/beads/demo-1/claim",
-      "/beads/demo-1/close",
-      "/beads/demo-1/comment",
       "/queue/demo-1/approve",
       "/queue/demo-1/queue",
       "/queue/demo-1/pause",

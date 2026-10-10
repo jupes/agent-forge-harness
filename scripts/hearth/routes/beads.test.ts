@@ -9,6 +9,7 @@ import type {
   OperatorEnvelope,
 } from "../../../types/hearth";
 import { hashText } from "../../hash-text";
+import { type BdIssue, bdAnswers, bdTime } from "../bd-answers";
 import {
   startTestHearth,
   type TestHearth,
@@ -16,6 +17,7 @@ import {
 } from "../testing";
 import { validateOperatorEnvelope } from "../validate";
 import { BEAD_PRIORITIES, BEAD_TYPES, DEFAULT_BEAD_PRIORITY } from "./beads";
+import type { BdResult } from "./dev-api";
 
 /**
  * The Beads write rows, through a hermetic hearth: a request goes in over
@@ -239,4 +241,222 @@ describe("GET /beads/options", () => {
     expect(h.events()).toEqual([]);
     expect(h.bd.calls).toEqual([]);
   });
+});
+
+const BD_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+describe("POST /beads/:id/claim", () => {
+  test("one bd update --claim, the id after the terminator; the status and assignee bd answered; bead.transitioned with no hash", async () => {
+    const h = await start();
+
+    const answer = await post(h, "/beads/demo-task/claim", {});
+
+    expect(answer.status).toBe(200);
+    expect(answer.body.data).toEqual({
+      id: "demo-task",
+      action: "claim",
+      status: "in_progress",
+      assignee: "operator",
+      updatedAt: expect.stringMatching(BD_TIME),
+      recorded: true,
+    });
+    expect(h.bd.calls).toEqual([
+      ["update", "--claim", "--json", "--", "demo-task"],
+    ]);
+    expect(recorded(h)).toEqual([
+      {
+        kind: "operator.action",
+        beadId: "demo-task",
+        payload: { action: "bead.claim", surface: "api", target: "demo-task" },
+      },
+      {
+        kind: "bead.transitioned",
+        beadId: "demo-task",
+        payload: { action: "claim" },
+      },
+    ]);
+  });
+});
+
+describe("POST /beads/:id/comment", () => {
+  const TEXT = "worklog: looked at the lantern\nthe wick is short";
+
+  test("one bd comments add, the id and the text after the terminator; bead.transitioned carries the text's hash and length", async () => {
+    const h = await start();
+
+    const answer = await post(h, "/beads/demo-task/comment", { text: TEXT });
+
+    expect(answer.status).toBe(201);
+    expect(answer.body.data).toEqual({
+      id: "demo-task",
+      action: "comment",
+      comment: {
+        id: expect.any(String),
+        author: "operator",
+        createdAt: expect.stringMatching(BD_TIME),
+      },
+      recorded: true,
+    });
+    expect(h.bd.calls).toEqual([
+      ["comments", "add", "--json", "--", "demo-task", TEXT],
+    ]);
+    expect(recorded(h)).toEqual([
+      {
+        kind: "operator.action",
+        beadId: "demo-task",
+        payload: {
+          action: "bead.comment",
+          surface: "api",
+          target: "demo-task",
+        },
+      },
+      {
+        kind: "bead.transitioned",
+        beadId: "demo-task",
+        payload: {
+          action: "comment",
+          hash: hashText(TEXT),
+          length: TEXT.length,
+        },
+      },
+    ]);
+  });
+
+  test("a comment with no text is refused before anything is recorded", async () => {
+    const h = await start();
+    for (const body of [{}, { text: "" }, { text: "  \n\t " }, { text: 7 }]) {
+      const answer = await post(h, "/beads/demo-task/comment", body);
+      expect({ body, status: answer.status }).toEqual({ body, status: 400 });
+    }
+    expect(h.events()).toEqual([]);
+    expect(h.bd.calls).toEqual([]);
+  });
+});
+
+describe("POST /beads/:id/close", () => {
+  const REASON = "Verified: the lantern lights and stays lit";
+
+  test("one bd close with the reason as a flag value and the id after the terminator; bead.transitioned carries the reason's hash and length", async () => {
+    const h = await start();
+
+    const answer = await post(h, "/beads/demo-task/close", { reason: REASON });
+
+    expect(answer.status).toBe(200);
+    expect(answer.body.data).toEqual({
+      id: "demo-task",
+      action: "close",
+      status: "closed",
+      updatedAt: expect.stringMatching(BD_TIME),
+      recorded: true,
+    });
+    expect(h.bd.calls).toEqual([
+      ["close", `--reason=${REASON}`, "--json", "--", "demo-task"],
+    ]);
+    expect(recorded(h)).toEqual([
+      {
+        kind: "operator.action",
+        beadId: "demo-task",
+        payload: { action: "bead.close", surface: "api", target: "demo-task" },
+      },
+      {
+        kind: "bead.transitioned",
+        beadId: "demo-task",
+        payload: {
+          action: "close",
+          hash: hashText(REASON),
+          length: REASON.length,
+        },
+      },
+    ]);
+  });
+
+  test("a close without a reason is refused before anything is recorded: absent, empty, or only whitespace", async () => {
+    const h = await start();
+    for (const body of [
+      {},
+      { reason: "" },
+      { reason: "   " },
+      { reason: "\n\t" },
+      { reason: null },
+      { reason: ["done"] },
+    ]) {
+      const answer = await post(h, "/beads/demo-task/close", body);
+      expect({ body, status: answer.status }).toEqual({ body, status: 400 });
+    }
+    expect(h.events()).toEqual([]);
+    expect(h.bd.calls).toEqual([]);
+  });
+});
+
+describe("bd acts on a partial id", () => {
+  // Measured: given `o88`, bd 1.1.0 claims, comments on and closes `probe-o88`
+  // and prints the full id. The bead that was written is the one bd printed.
+  const FULL = "demo-o88";
+  const issue = (status: string, extra: Partial<BdIssue> = {}): BdIssue => ({
+    id: FULL,
+    title: "A bead",
+    issue_type: "task",
+    priority: 2,
+    status,
+    created_at: bdTime(),
+    updated_at: bdTime(),
+    ...extra,
+  });
+  const cases: Array<[string, unknown, number, BdResult, string]> = [
+    [
+      "claim",
+      {},
+      200,
+      bdAnswers.claimed(issue("in_progress", { assignee: "operator" })),
+      "bead.claim",
+    ],
+    [
+      "comment",
+      { text: "worklog: by a short id" },
+      201,
+      bdAnswers.commented({
+        id: "comment-1",
+        issueId: FULL,
+        author: "operator",
+        text: "worklog: by a short id",
+        createdAt: bdTime(),
+      }),
+      "bead.comment",
+    ],
+    [
+      "close",
+      { reason: "Verified by a short id" },
+      200,
+      bdAnswers.closed(
+        issue("closed", {
+          close_reason: "Verified by a short id",
+          closed_at: bdTime(),
+        }),
+      ),
+      "bead.close",
+    ],
+  ];
+
+  for (const [verb, body, status, printed, action] of cases)
+    test(`${verb}: the answer and the outcome event name the bead bd printed; the audit row keeps the id as it was given`, async () => {
+      const h = await start();
+      h.bd.answer = () => printed;
+
+      const answer = await post(h, `/beads/o88/${verb}`, body);
+
+      expect(answer.status).toBe(status);
+      expect(answer.body.data?.id).toBe(FULL);
+      expect(recorded(h).map(({ kind, beadId }) => ({ kind, beadId }))).toEqual(
+        [
+          { kind: "operator.action", beadId: "o88" },
+          { kind: "bead.transitioned", beadId: FULL },
+        ],
+      );
+      expect(recorded(h)[0]?.payload).toEqual({
+        action,
+        surface: "api",
+        target: "o88",
+      });
+      expect(h.bd.calls.length).toBe(1);
+    });
 });

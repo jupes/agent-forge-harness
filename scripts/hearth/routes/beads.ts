@@ -162,12 +162,38 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
   };
 }
 
-/** What `bd` printed, once it is known to describe the write that was asked for. */
-interface Confirmed {
-  id: string;
-  status?: string;
-  labels?: string[];
+/** The bead a path names, and nothing else in the request. */
+function namedBead(request: RouteRequest): ValidationResult<string> {
+  const parameters = noParameters(request);
+  if (!parameters.ok) return parameters;
+  const id = request.params["id"];
+  if (!beadId(id)) return fail("id: expected a Beads issue id");
+  return isRecord(request.body)
+    ? { ok: true, value: id }
+    : fail("Expected a JSON object");
 }
+
+/** A bead and the one text a write to it carries. */
+interface Worded {
+  id: string;
+  text: string;
+}
+
+/** The bead a path names and the text the body carries under `key`, which must not be empty. */
+const worded =
+  (key: string) =>
+  (request: RouteRequest): ValidationResult<Worded> => {
+    const id = namedBead(request);
+    if (!id.ok) return id;
+    // justification: `namedBead` returned ok only for a body that is a record.
+    const text = (request.body as Record<string, unknown>)[key];
+    return typeof text === "string" && text.trim().length > 0
+      ? { ok: true, value: { id: id.value, text } }
+      : fail(`${key}: must say something`);
+  };
+
+/** What `bd` printed, once it is known to describe the write that was asked for. */
+type Confirmed = Omit<BeadWriteResult, "action" | "recorded" | "recordError">;
 
 function parsed(stdout: string): unknown {
   try {
@@ -194,6 +220,70 @@ function created(stdout: string): Confirmed | null {
     id: issue["id"],
     ...(typeof issue["status"] === "string" ? { status: issue["status"] } : {}),
     ...(labels !== undefined ? { labels } : {}),
+  };
+}
+
+/**
+ * The one issue `bd update --json` or `bd close --json` printed, with the id
+ * it printed. That id, not the one the request gave, names the bead that was
+ * written: given part of an id, bd acts on the issue it resolves it to.
+ */
+function oneIssue(
+  stdout: string,
+): { id: string; issue: Record<string, unknown> } | null {
+  const issues = parsed(stdout);
+  if (!Array.isArray(issues) || issues.length !== 1) return null;
+  const [issue] = issues;
+  return isRecord(issue) && beadId(issue["id"])
+    ? { id: issue["id"], issue }
+    : null;
+}
+
+/** What an issue bd printed says about the bead, in the answer's terms. */
+function described(issue: Record<string, unknown>, id: string): Confirmed {
+  const labels = strings(issue["labels"]);
+  const text = (name: string): string | undefined =>
+    typeof issue[name] === "string" ? issue[name] : undefined;
+  const status = text("status");
+  const assignee = text("assignee");
+  const updatedAt = text("updated_at");
+  return {
+    id,
+    ...(status !== undefined ? { status } : {}),
+    ...(assignee !== undefined ? { assignee } : {}),
+    ...(labels !== undefined ? { labels } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+  };
+}
+
+/** The issue `bd update --claim --json` printed, when it is now in progress. */
+function claimed(stdout: string): Confirmed | null {
+  const printed = oneIssue(stdout);
+  return printed !== null && printed.issue["status"] === "in_progress"
+    ? described(printed.issue, printed.id)
+    : null;
+}
+
+/** The issue `bd close --json` printed, when it is now closed. */
+function closed(stdout: string): Confirmed | null {
+  const printed = oneIssue(stdout);
+  return printed !== null && printed.issue["status"] === "closed"
+    ? described(printed.issue, printed.id)
+    : null;
+}
+
+/** The comment `bd comments add --json` printed, on the issue it names. */
+function commented(stdout: string): Confirmed | null {
+  const comment = parsed(stdout);
+  if (!isRecord(comment) || !beadId(comment["issue_id"])) return null;
+  const { id: commentId, author, created_at: createdAt } = comment;
+  return {
+    id: comment["issue_id"],
+    ...(typeof commentId === "string" &&
+    typeof author === "string" &&
+    typeof createdAt === "string"
+      ? { comment: { id: commentId, author, createdAt } }
+      : {}),
   };
 }
 
@@ -298,6 +388,63 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
       }),
   };
 
+  const subjectOf = (id: string) => ({ target: id, beadId: id });
+
+  const claim: ActionRoute<string> = {
+    kind: "action",
+    method: "POST",
+    path: "/beads/:id/claim",
+    action: "bead.claim",
+    validate: namedBead,
+    subject: subjectOf,
+    effect: (id) =>
+      write({
+        action: "claim",
+        command: "update --claim",
+        args: ["update", "--claim", "--json", "--", id],
+        status: 200,
+        confirm: claimed,
+      }),
+  };
+
+  const comment: ActionRoute<Worded> = {
+    kind: "action",
+    method: "POST",
+    path: "/beads/:id/comment",
+    action: "bead.comment",
+    validate: worded("text"),
+    subject: (input) => subjectOf(input.id),
+    effect: ({ id, text }) =>
+      write({
+        action: "comment",
+        command: "comments add",
+        // Both positionals after the terminator: a text that looks like an option stays a text.
+        args: ["comments", "add", "--json", "--", id, text],
+        text,
+        status: 201,
+        confirm: commented,
+      }),
+  };
+
+  const close: ActionRoute<Worded> = {
+    kind: "action",
+    method: "POST",
+    path: "/beads/:id/close",
+    action: "bead.close",
+    // This project never closes an issue without saying why.
+    validate: worded("reason"),
+    subject: (input) => subjectOf(input.id),
+    effect: ({ id, text }) =>
+      write({
+        action: "close",
+        command: "close",
+        args: ["close", `--reason=${text}`, "--json", "--", id],
+        text,
+        status: 200,
+        confirm: closed,
+      }),
+  };
+
   /** What a create may say: the page builds its form from this, and learns from it that a hearth is there. */
   const options: ReadRoute<null> = {
     kind: "read",
@@ -315,5 +462,5 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     },
   };
 
-  return [options, create];
+  return [options, create, claim, comment, close];
 }
