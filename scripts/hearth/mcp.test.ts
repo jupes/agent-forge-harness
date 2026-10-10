@@ -1105,7 +1105,7 @@ describe("arguments become the request", () => {
     }
   });
 
-  test("an unknown key, a wrong type or a filter too long for a request line is refused here, and nothing is sent", async () => {
+  test("an unknown key, a wrong type or a filter of more than 1,000 characters is refused here, and nothing is sent", async () => {
     const hearth = await stocked();
     const s = await session(place(hearth));
     const cases: Array<[string, Record<string, unknown>, string]> = [
