@@ -11,7 +11,8 @@ import {
   type EvidenceItem,
 } from "./types";
 
-const DEFAULT_MAX_BYTES = 200_000;
+/** The evidence budget when a caller sets none. */
+export const DEFAULT_MAX_BYTES = 200_000;
 
 const SENSITIVE_BASENAMES = new Set([
   ".npmrc",

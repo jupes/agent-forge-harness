@@ -334,6 +334,23 @@ describe("a bead as a council source", () => {
     expect(JSON.stringify(packed)).not.toContain("OTHER-ISSUE-COMMENT");
   });
 
+  test("comments are ordered by when they were written, whatever form the timestamp takes", async () => {
+    const fake = fakeRunner({
+      comments: [
+        comment("2031-01-05T09:30:00Z", "second"),
+        // 08:00 UTC, written with an offset and milliseconds: the oldest.
+        comment("2031-01-05T10:00:00.000+02:00", "first"),
+        comment("2031-01-05T09:30:00.500Z", "third"),
+      ],
+    });
+    const packed = await pack(fake, workspace());
+    expect(
+      evidenceTitled(packed, "latest comments")
+        .content.split("\n\n")
+        .map((chunk) => chunk.split("\n")[1]),
+    ).toEqual(["third", "second", "first"]);
+  });
+
   test("a bead with no comments and no description says so in the listing", async () => {
     const fake = fakeRunner({
       issue: issue({ description: "" }),
@@ -1131,7 +1148,7 @@ describe("a bead's pull request", () => {
       expect({ mention, gh: ghCalls(fake) }).toEqual({ mention, gh: [] });
       expect({ mention, last: listingOf(packed).at(-1) }).toEqual({
         mention,
-        last: `reference ${shown}: not fetched, not this workspace's origin repository`,
+        last: `reference ${shown}: not fetched, not a pull request URL of this workspace's origin repository`,
       });
       const listing = JSON.stringify(packed.source);
       expect(listing).not.toContain("PRIVATE-PASSWORD");
@@ -1417,6 +1434,21 @@ describe("a bead under the evidence budget", () => {
     expect(sentBytes(packed)).toBeLessThanOrEqual(3000);
     expect(packed.evidence.at(-1)?.title).toContain("PR #12:");
     expect(packed.evidence.at(-1)?.truncated).toBe(true);
+  });
+
+  test("a patch that fits the evidence budget is packed whole: the pull request is not cut earlier than the budget asks", async () => {
+    const fake = fakeRunner({
+      comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+      extra: withPullRequest({
+        // About 170 000 bytes: more than the PR packer's own default, less than the budget.
+        patch: `${PATCH}${"+// filler line of the patch\n".repeat(6000)}+// LAST-LINE-OF-PATCH\n`,
+      }),
+    });
+    const packed = await pack(fake, workspace());
+    expect(packed.evidence.at(-1)?.content).toContain("LAST-LINE-OF-PATCH");
+    expect(packed.evidence.at(-1)?.truncated).toBe(false);
+    expect(packed.truncated).toBe(false);
+    expect(sentBytes(packed)).toBeLessThanOrEqual(200_000);
   });
 
   test("an oversized bead stays inside the budget with its acceptance criteria intact", async () => {

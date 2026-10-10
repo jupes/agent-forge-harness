@@ -17,6 +17,7 @@ import {
   type ContextPart,
   type ContextPartsInput,
   ContextSecurityError,
+  DEFAULT_MAX_BYTES,
   locateWorkspaceFile,
   readUtf8Text,
   type SecretPolicy,
@@ -124,10 +125,18 @@ function commentsOf(id: BeadsIssueId, rows: unknown[]): BeadComment[] {
     if (body.length === 0) continue;
     comments.push({ at: text(row.created_at), text: body });
   }
-  // Array order breaks ties: `bd` lists comments oldest first.
+  // By the instant, not the spelling: an offset or milliseconds must not
+  // reorder them. A timestamp that does not parse counts as the oldest, and
+  // array order breaks ties: `bd` lists comments oldest first.
+  const instant = (at: string): number => {
+    const time = Date.parse(at);
+    return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+  };
   return comments
-    .map((entry, index) => ({ entry, index }))
-    .sort((a, b) => b.entry.at.localeCompare(a.entry.at) || b.index - a.index)
+    .map((entry, index) => ({ entry, index, time: instant(entry.at) }))
+    .sort((a, b) =>
+      a.time === b.time ? b.index - a.index : b.time > a.time ? 1 : -1,
+    )
     .map(({ entry }) => entry);
 }
 
@@ -483,7 +492,9 @@ async function pullRequestParts(
         cwd: options.cwd,
         runner: options.runner,
         secretPolicy: options.secretPolicy,
-        maxDiffBytes: options.maxBytes,
+        // The whole budget: the pack decides how much of the patch fits,
+        // after the parts that come before it.
+        maxDiffBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
         linkedCriteria: false,
       });
       result.parts.push({
@@ -526,7 +537,7 @@ async function pullRequestParts(
       note(
         `reference ${reference.slice(0, 200)}`,
         origin
-          ? "not fetched, not this workspace's origin repository"
+          ? "not fetched, not a pull request URL of this workspace's origin repository"
           : "not fetched, the origin repository could not be read",
       ),
     ),
