@@ -36,8 +36,9 @@ import { dirname, join } from "path";
 import {
   type GateDeps,
   type GateOutcome,
-  gateExitCode,
+  type GateResult,
   runQualityGate,
+  unrecordedVerdict,
 } from "../.claude/hooks/quality-gate";
 import type { HookStdin } from "../.claude/hooks/utils/hook-input";
 import type { Executor } from "../types/hearth";
@@ -759,20 +760,38 @@ describe("strict completion: what the gate entry records", () => {
 });
 
 describe("strict completion: the evidence has to be on record", () => {
-  const passed = { passed: true };
-  const bound = {
-    passed: true,
-    evaluatorArtifact: { kind: "evaluator-verdict" },
-  };
+  /** A passing result as the gate builds it, bound to a verdict or not. */
+  function passing(bound: boolean): GateResult {
+    const box = sandbox();
+    verdict(box, "run-1", v2());
+    return ran(
+      gate(box, {
+        argv: ["--correlation", correlate(box)],
+        env: bound ? { AGENT_FORGE_EVAL_VERDICT: "strict" } : {},
+      }),
+    ).result;
+  }
 
-  test("a run that bound a verdict blocks when its log entry could not be written", () => {
-    expect(gateExitCode(bound, { logged: false })).toBe(2);
-    expect(gateExitCode(bound, { logged: true })).toBe(0);
+  test("a run that bound a verdict and could not write its log entry is a failed run, in the result itself", () => {
+    const result = passing(true);
+    expect(result.passed).toBe(true);
+    const unrecorded = unrecordedVerdict(result, { logged: false });
+    expect(unrecorded.passed).toBe(false);
+    expect(unrecorded.blockingFailures).toEqual(["gate-log"]);
+    expect(unrecorded.checks.at(-1)).toEqual({
+      name: "gate-log",
+      passed: false,
+      output:
+        "the gate log could not be written, so the bound verdict's evidence is not on record: strict completion is blocked",
+    });
+    // Logged, it is as it was.
+    expect(unrecordedVerdict(result, { logged: true })).toBe(result);
   });
 
   test("a run that bound no verdict is not held to its log, as before", () => {
-    expect(gateExitCode(passed, { logged: false })).toBe(0);
-    expect(gateExitCode({ passed: false }, { logged: true })).toBe(2);
+    const result = passing(false);
+    expect("evaluatorArtifact" in result).toBe(false);
+    expect(unrecordedVerdict(result, { logged: false })).toBe(result);
   });
 });
 
@@ -1332,6 +1351,22 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     SPAWN_TIMEOUT_MS * 2,
   );
 
+  /** Put a command of that name, for cmd.exe and for sh, in `bin`. */
+  function standIn(
+    bin: string,
+    name: string,
+    body: { windows: string[]; posix: string[] },
+  ): void {
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, `${name}.cmd`),
+      ["@echo off", ...body.windows, ""].join("\r\n"),
+    );
+    const script = join(bin, name);
+    writeFileSync(script, ["#!/bin/sh", ...body.posix, ""].join("\n"));
+    chmodSync(script, 0o755);
+  }
+
   /**
    * A directory holding a stand-in `git` for the spawned gate: it does nothing
    * but, when asked for the branch name, run `onBranch`. The gate asks for the
@@ -1344,29 +1379,87 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     onBranch: { windows: string; posix: string },
   ): string {
     const bin = join(box.root, "stand-in bin");
-    mkdirSync(bin, { recursive: true });
-    writeFileSync(
-      join(bin, "git.cmd"),
-      [
-        "@echo off",
-        `if "%2"=="--abbrev-ref" ${onBranch.windows}`,
-        "exit /b 1",
-        "",
-      ].join("\r\n"),
-    );
-    const script = join(bin, "git");
-    writeFileSync(
-      script,
-      [
-        "#!/bin/sh",
+    standIn(bin, "git", {
+      windows: [`if "%2"=="--abbrev-ref" ${onBranch.windows}`, "exit /b 1"],
+      posix: [
         `if [ "$2" = "--abbrev-ref" ]; then ${onBranch.posix}; fi`,
         "exit 1",
-        "",
-      ].join("\n"),
-    );
-    chmodSync(script, 0o755);
+      ],
+    });
     return bin;
   }
+
+  /**
+   * Stand-ins under which every base check of the gate passes without running
+   * anything: a `bun` that succeeds at whatever it is asked, and a `git` with
+   * a clean tree whose recent commits name a test file. The scratch checkout
+   * has no package.json and no test files, so lint and tests are skipped.
+   */
+  function passingChecks(box: Box): string {
+    const bin = join(box.root, "passing bin");
+    standIn(bin, "bun", { windows: ["exit /b 0"], posix: ["exit 0"] });
+    standIn(bin, "git", {
+      windows: [
+        'if "%1"=="status" exit /b 0',
+        'if "%1"=="log" echo a.test.ts',
+        'if "%1"=="log" exit /b 0',
+        "exit /b 1",
+      ],
+      posix: [
+        'case "$1" in',
+        "  status) exit 0 ;;",
+        "  log) echo a.test.ts; exit 0 ;;",
+        "esac",
+        "exit 1",
+      ],
+    });
+    return `${bin}${process.platform === "win32" ? ";" : ":"}${SHELL_ONLY_PATH}`;
+  }
+
+  test(
+    "a strict run whose checks all pass exits 0 with its verdict on record; when the record cannot be written it is blocked, and its output and its ledger row say so",
+    async () => {
+      const strictEnv = (box: Box) => ({
+        [RUN_CORRELATION_ENV]: correlate(box, "bead-1", "run-1"),
+        AGENT_FORGE_EVAL_VERDICT: "strict",
+        PATH: passingChecks(box),
+      });
+      const gateRan = (box: Box) =>
+        queryEvents({ kinds: ["gate.ran"] }, { path: box.ledger }).map(
+          (event) => event.payload,
+        );
+
+      // The record can be written: a pass, logged.
+      const recorded = sandbox();
+      verdict(recorded, "run-1", v2());
+      const passed = await spawnGate(recorded, "", strictEnv(recorded));
+      expect(passed.exitCode).toBe(0);
+      expect(JSON.parse(passed.stdout)).toMatchObject({
+        passed: true,
+        blockingFailures: [],
+      });
+      expect(gateLog(recorded)).toHaveLength(1);
+      expect(gateRan(recorded)).toMatchObject([{ passed: true, exitCode: 0 }]);
+
+      // The same run with nowhere to write its log entry.
+      const unrecorded = sandbox();
+      verdict(unrecorded, "run-1", v2());
+      writeFileSync(join(unrecorded.userHome, ".claude"), "not a directory");
+      const blocked = await spawnGate(unrecorded, "", strictEnv(unrecorded));
+      expect(blocked.exitCode).toBe(2);
+      expect(blocked.stderr).toContain(
+        "quality-gate: the gate log could not be written, so the bound verdict's evidence is not on record: strict completion is blocked.",
+      );
+      expect(JSON.parse(blocked.stdout)).toMatchObject({
+        passed: false,
+        blockingFailures: ["gate-log"],
+      });
+      expect(gateRan(unrecorded)).toMatchObject([
+        { passed: false, exitCode: 2 },
+      ]);
+    },
+    SPAWN_TIMEOUT_MS * 2,
+  );
 
   test(
     "a verdict swapped between the gate's read and its recording changes neither the log entry nor the ledger row",

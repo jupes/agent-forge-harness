@@ -25,8 +25,9 @@
  * A model evaluator says what was requested. What was observed is read, never
  * typed: the model the ledger has cached for the session working in the
  * worktree the command runs in (the session mirror the SessionStart hook
- * leaves there). That session is not an observation of the evaluator when it
- * is the one the run's state names as its builder: an Evaluator subagent
+ * leaves there). That session is not an observation of the evaluator when the
+ * ledger shows it building the work (entering or completing a phase of this
+ * run, or of another run of the same Beads issue): an Evaluator subagent
  * shares its spawner's session. Nothing observed means the observed fields
  * are absent; the request is never copied into them. The run's verdict is then
  * refused, as it is when the rank policy rejects the evaluator: the file is
@@ -59,6 +60,7 @@ import { observedRankPolicy, strictEvaluatorProblem } from "./evaluator-policy";
 import type { ForgeState } from "./forge/phases";
 import { comparableCheckout } from "./forge/runs";
 import { resolveCheckout } from "./ledger/workspace";
+import { RUN_CORRELATION_FLAG } from "./run-correlation";
 import { pointedRunCorrelation } from "./run-correlation-store";
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -71,6 +73,14 @@ export interface VerdictWriteDeps {
   sessionMirror(worktree: string): string | null;
   /** The model the ledger has cached for a session: the machine source of an observation. */
   sessionModel(sessionId: string): { provider: string; model: string } | null;
+  /**
+   * The sessions the ledger shows building this work: those that entered or
+   * completed a phase of the run, or of another run of the same Beads issue.
+   */
+  builderSessions(run: {
+    executionRunId: string;
+    beadsIssueId: string;
+  }): readonly string[];
   /** The smiths configured for the checkout: where a provider and model get a rank. */
   smiths(checkout: string): readonly Smith[];
   /** The stored state of a Forge run in a checkout, when it has one there. */
@@ -133,10 +143,22 @@ function parseArguments(
     if (flag === undefined) {
       return { ok: false, error: `unknown argument "--${name}"` };
     }
-    // The value is what follows, whatever it looks like.
     const value = equals === -1 ? argv[++index] : arg.slice(equals + 1);
     if (value === undefined || value.length === 0) {
       return { ok: false, error: `--${flag} needs a value` };
+    }
+    // A value given after its flag may look like anything except another of
+    // the command's flags: that is a forgotten value, and taking the flag as
+    // text would drop what it was meant to say.
+    const swallowed =
+      equals === -1 && value.startsWith("--")
+        ? FLAGS.find((known) => known === value.slice(2).split("=")[0])
+        : undefined;
+    if (swallowed !== undefined) {
+      return {
+        ok: false,
+        error: `--${flag} needs a value: the next argument is the flag --${swallowed} (for text that starts with dashes, write --${flag}=<text>)`,
+      };
     }
     if (REPEATABLE.has(flag)) {
       attest.push(value);
@@ -156,8 +178,8 @@ type Observation =
 
 /**
  * The model the ledger has cached for the session working in the worktree the
- * command runs in. A session the run's state names as its builder is not an
- * observation of who judged its work.
+ * command runs in. A session the ledger shows building the work is not an
+ * observation of who judged it.
  */
 function observe(
   deps: VerdictWriteDeps,
@@ -175,7 +197,7 @@ function observe(
     return {
       ok: false,
       reason:
-        "the session filing this verdict is the one the run's state names as its builder, so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
+        "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run of the same Beads issue), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
     };
   }
   const cached = deps.sessionModel(sessionId);
@@ -294,6 +316,12 @@ function bodyFrom(
         error: `--attest ${name} is not a known dimension (${ATTESTATION_DIMENSIONS.join("|")})`,
       };
     }
+    if (attestations.has(dimension)) {
+      return {
+        ok: false,
+        error: `--attest ${dimension} was given more than once`,
+      };
+    }
     attestations.set(
       dimension,
       /^\d+$/.test(score) ? Number(score) : Number.NaN,
@@ -348,7 +376,14 @@ export function runVerdictWrite(
   if (!where.ok) return refuse(where.error);
   const checkout = where.root;
 
-  const pointed = pointedRunCorrelation({ argv, env: deps.env, checkout });
+  // The pointer is the parsed flag's value, else the environment's: the raw
+  // arguments are not searched again, so no other flag's value can carry one.
+  const pointer = values.get("correlation");
+  const pointed = pointedRunCorrelation({
+    argv: pointer !== undefined ? [RUN_CORRELATION_FLAG, pointer] : [],
+    env: deps.env,
+    checkout,
+  });
   if (!pointed.linked) return refuse(pointed.reason);
   const { correlation } = pointed;
 
@@ -366,17 +401,15 @@ export function runVerdictWrite(
   if (!body.ok) return refuse(body.error);
   const smiths = deps.smiths(checkout);
   // The builder the rank policy is applied to is the one the gate will see:
-  // the state stored in the checkout the run builds in. The session that built
-  // the work is looked for in the launching checkout's state too.
+  // the state stored in the checkout the run builds in. Who built the work is
+  // asked of the ledger, not of that state: the state's executor is repointed
+  // at whichever session last recorded something for the run.
   const state = deps.runState(correlation.executionRunId, checkout);
-  const launcherState =
-    sessionWorktree === checkout
-      ? state
-      : deps.runState(correlation.executionRunId, sessionWorktree);
   const builderSessions = new Set(
-    [state?.executor?.sessionId, launcherState?.executor?.sessionId].filter(
-      (id): id is string => id !== undefined,
-    ),
+    deps.builderSessions({
+      executionRunId: correlation.executionRunId,
+      beadsIssueId: correlation.beadsIssueId,
+    }),
   );
   const observation = observe(deps, { sessionWorktree, builderSessions });
   const evaluator = evaluatorFrom(values, {
@@ -458,11 +491,36 @@ if (import.meta.main) {
   const { readRunState } = await import("./forge/runs-store");
   const { readSessionMirror } = await import("./ledger/identity");
   const { getSessionModel } = await import("./ledger/session-models");
+  const { queryEvents } = await import("./ledger/query");
+  const PHASE_EVENTS = ["run.phase.entered", "run.phase.completed"] as const;
   const outcome = runVerdictWrite(process.argv.slice(2), {
     cwd: process.cwd(),
     env: process.env,
     sessionMirror: (worktree) => readSessionMirror(worktree),
     sessionModel: (sessionId) => getSessionModel(sessionId),
+    builderSessions: ({ executionRunId, beadsIssueId }) => {
+      try {
+        const phases = [
+          ...queryEvents({ runId: executionRunId, kinds: PHASE_EVENTS }),
+          ...queryEvents({
+            beadId: beadsIssueId,
+            beadExact: true,
+            kinds: PHASE_EVENTS,
+          }),
+        ];
+        return [
+          ...new Set(
+            phases.flatMap((event) =>
+              event.sessionId !== undefined ? [event.sessionId] : [],
+            ),
+          ),
+        ];
+      } catch {
+        // A ledger that cannot be read has no session model either: nothing
+        // will be observed.
+        return [];
+      }
+    },
     smiths: (checkout) => {
       try {
         return Object.values(

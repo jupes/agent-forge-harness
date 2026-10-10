@@ -507,21 +507,33 @@ export function runQualityGate(input: {
   };
 }
 
+const UNRECORDED =
+  "the gate log could not be written, so the bound verdict's evidence is not on record: strict completion is blocked";
+
 /**
- * The gate's exit code. A run whose checks failed is blocked. So is a run that
- * bound a verdict and could not append its log entry: the entry is where the
- * verdict's path, digest and evaluator are recorded, and strict completion
- * with no record of what satisfied it is not completion. A run that bound no
- * verdict is not held to its log.
+ * The result of a run once it is known whether its log entry was written.
+ *
+ * The entry is where a bound verdict's path, digest and evaluator are
+ * recorded, and strict completion with no record of what satisfied it is not
+ * completion: a run that bound a verdict and could not append its entry is a
+ * failed run, with a failing `gate-log` check that says so. What is printed,
+ * what goes to the ledger and the exit code all follow from this one result.
+ * A run that bound no verdict is not held to its log.
  */
-export function gateExitCode(
-  result: { passed: boolean; evaluatorArtifact?: unknown },
+export function unrecordedVerdict(
+  result: GateResult,
   recorded: { logged: boolean },
-): 0 | 2 {
-  if (!result.passed) return EXIT_BLOCKED;
-  return result.evaluatorArtifact !== undefined && !recorded.logged
-    ? EXIT_BLOCKED
-    : 0;
+): GateResult {
+  if (recorded.logged || result.evaluatorArtifact === undefined) return result;
+  return {
+    ...result,
+    passed: false,
+    checks: [
+      ...result.checks,
+      { name: "gate-log", passed: false, output: UNRECORDED },
+    ],
+    blockingFailures: [...result.blockingFailures, "gate-log"],
+  };
 }
 
 // ── The hook ─────────────────────────────────────────────────────────────────
@@ -616,24 +628,24 @@ if (import.meta.main) {
     console.error(`quality-gate: ${outcome.error}. Nothing was checked.`);
     process.exit(EXIT_BLOCKED);
   }
-  const { result, correlation, runState, boundVerdict } = outcome;
+  const { correlation, runState, boundVerdict } = outcome;
   if (outcome.notice !== undefined) {
     console.error(`quality-gate: ${outcome.notice}`);
   }
 
   // Log to file. A failure is not fatal to a run that bound no verdict; one
-  // that did has its evidence in this entry (see `gateExitCode`).
+  // that did has its evidence in this entry (see `unrecordedVerdict`).
   let logged = true;
   try {
-    appendFileSync(getQualityGateLogPath(), JSON.stringify(result) + "\n");
+    appendFileSync(
+      getQualityGateLogPath(),
+      JSON.stringify(outcome.result) + "\n",
+    );
   } catch {
     logged = false;
-    if (result.evaluatorArtifact !== undefined) {
-      console.error(
-        "quality-gate: the gate log could not be written, so the bound verdict's evidence is not on record: strict completion is blocked.",
-      );
-    }
   }
+  const result = unrecordedVerdict(outcome.result, { logged });
+  if (result !== outcome.result) console.error(`quality-gate: ${UNRECORDED}.`);
 
   // Record the run in the event ledger. Loaded and run inside the guard: the
   // gate's verdict never depends on its audit trail.
@@ -685,6 +697,8 @@ if (import.meta.main) {
     console.error(
       `\nQuality gate FAILED. Blocking failures: ${result.blockingFailures.join(", ")}`,
     );
+    process.exit(EXIT_BLOCKED);
   }
-  process.exit(gateExitCode(result, { logged }));
+
+  process.exit(0);
 }

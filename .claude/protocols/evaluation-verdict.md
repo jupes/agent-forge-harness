@@ -14,7 +14,7 @@ The path is a rule, not a setting: it is derived from the `executionRunId` of th
 
 - **One run, one verdict.** The file is created only where nothing is; a second write for the same run fails and says so. It appears whole or not at all.
 - **A re-evaluation is a new run.** After a FAIL is repaired, `bun run forge:correlate --bead <TASK-ID>` mints a new run with its own path. The earlier file stays as evidence of the earlier run.
-- **Once the sweep has removed a verdict** (see *Cleanup*) its digest stays in the ledger and the run's place is free again.
+- **Once the sweep has removed a verdict** (see *Cleanup*) the run's place is free again. Its digest stays in the ledger until the ledger's own compaction of old events.
 - The `.tmp/` tree is gitignored; the file is **not** committed.
 
 ## Writing it
@@ -33,7 +33,7 @@ bun run forge:verdict --correlation <pointer> --verdict FAIL --high 1 \
 
 `<pointer>` is the run correlation's pointer: `data.correlation.pointer` from `forge:phase-gate … --write --bead <TASK-ID>`, or from `bun run forge:correlate --bead <TASK-ID> [--run <slug>]`. A launcher can set `AGENT_FORGE_RUN_CORRELATION` instead. The Beads id and the run id in the file are the correlation's; there is no flag for either, and none for what was observed.
 
-Every argument is one of the flags below, written `--flag value` or `--flag=value`, and given once (`--attest` may repeat). **Anything else is refused and nothing is written**: an unknown flag, a flag with no value, a repeated flag, a stray word. The file cannot be corrected afterwards, so a mistyped count must not become a verdict without that count.
+Every argument is one of the flags below, written `--flag value` or `--flag=value`, and given once (`--attest` may repeat). **Anything else is refused and nothing is written**: an unknown flag, a flag with no value, a flag followed by another of the command's flags where its value should be, a repeated flag or attestation dimension, a stray word. (Text that starts with dashes and is itself a flag has to be given as `--summary=<text>`.) The file cannot be corrected afterwards, so a mistyped count must not become a verdict without that count.
 
 | Flag | Meaning |
 |------|---------|
@@ -112,7 +112,7 @@ The four observed fields are all present or all absent. When nothing was observe
 
 - that worktree has no session mirror, or one older than a day;
 - the ledger has no model cached for that session;
-- that session is the one the run's state names as its builder. The session that built the work is not an observation of who judged it, and an Evaluator subagent shares its spawner's session.
+- the ledger shows that session building the work: it entered or completed a phase of this run, or of another run of the same Beads issue (`forge:phase-gate` records both). The session that built the work is not an observation of who judged it, and an Evaluator subagent shares its spawner's session.
 
 `gateway-routing` is named by the schema and produced by nothing here.
 
@@ -137,7 +137,7 @@ When `AGENT_FORGE_EVAL_VERDICT=strict`, on a `TaskCompleted` run of the gate:
 3. From that buffer it requires: schema 2; `beadsIssueId` and `executionRunId` equal to the correlation's; a human evaluator, or a model evaluator that was observed, whose own recorded decision is `allowed`, and whose observed provider and model pass the rank policy as the gate computes it.
 4. **`verdict: "PASS"`** → the check passes. **`"FAIL"`** with `blocker > 0` or `high > 0` → it fails. **`"FAIL"`** with only medium/low → it passes (file follow-up beads).
 5. A verdict that got through step 3 is **bound**: the gate log entry carries `evaluatorArtifact` (the path, the SHA-256 and byte count of that buffer, both ids and the evaluator), and one `verdict.bound` ledger event carries the same path, digest, size and evaluator. The file is not opened again.
-6. That log entry is the record of what satisfied strict completion. If it cannot be appended, a run that bound a verdict is **blocked** and says why. (The ledger event stays best-effort: a ledger that cannot be written is reported and does not block.)
+6. That log entry is the record of what satisfied strict completion. If it cannot be appended, a run that bound a verdict **fails**: its result gains a failing `gate-log` check, so what it prints, its `gate.ran` event and its exit code all say blocked. (The ledger events stay best-effort: a ledger that cannot be written is reported and does not block.)
 
 When the variable is unset or not `strict`, the hook does not read the file. A `TeammateIdle` run never reads it, so a passing `TeammateIdle` says nothing about strict completion.
 
@@ -168,8 +168,8 @@ Nothing writes schema 1 any more.
 
 - **The gate checks what the verdict declares; it does not observe the evaluator itself.** The observation is made by `forge:verdict`. A hand-written file can declare anything, like every other file under `.tmp/work`: the directory is the working tree's own and is not protected from the session that works in it. The same goes for the run correlation, the run's state and the smith config the rank check reads.
 - **A verdict can call itself human.** The gate takes a human verdict on its actor kind alone. The log entry and the ledger event record that it was a human verdict, so it can be seen.
-- **The observation is of a session, never of a subagent.** An Evaluator subagent shares its session with whoever spawned it. When the run's state names that session as the builder, nothing is recorded as observed and strict completion needs a person's verdict or an Evaluator running as a session of its own. When the run's state names no builder session (a run with no phase gate, or one whose phase gate recorded no session), the writer cannot tell: a subagent given a weaker model than its session is then recorded as the session's model. Tracked in `agent-forge-harness-5eqw`.
-- **The session mirror is a file.** It can name a session that has ended (it is trusted for a day), and anyone who can write the worktree can put another session's id in it.
+- **The observation is of a session, never of a subagent.** An Evaluator subagent shares its session with whoever spawned it. When the ledger shows that session building the work, nothing is recorded as observed and strict completion needs a person's verdict or an Evaluator running as a session of its own. When the ledger shows no builder for the work, the writer cannot tell who it is talking to: the filing session's model is recorded as the evaluator's. That is the case for a run with no phase gate, such as one made by `forge:correlate` alone, **including the re-evaluation run this protocol tells you to mint** when the Beads issue never had a Forge run. There the building session can file a model verdict for its own work and be recorded as a master evaluator of it, and a subagent on a weaker model is recorded as its session's model. Tracked in `agent-forge-harness-5eqw`.
+- **The session observed is whichever one's mirror is where the command runs.** The mirror is a file: it can name a session that has ended (it is trusted for a day), and anyone who can write the worktree can put another session's id in it. Without touching it, a command run from another worktree (with `--checkout`) records that worktree's session.
 - **The gate looks for the builder where it runs.** When a run builds in another checkout than the one its phase gates ran in, the run's state is not in the checkout the gate runs in, so the gate sees no builder and accepts only a master evaluator or a person. The writer applies the policy the same way.
 - **A hard link is not seen as a link.** The reader refuses symbolic links and junctions anywhere on the path. A `verdict.json` that is a hard link to another file is read like any file; what is recorded is still the digest of the bytes read.
 - **A run that is rebound after its verdict was filed needs a new run.** `forge:correlate --bead` and `forge:phase-gate --bead` can point a run at another Beads issue. The verdict already filed names the earlier issue, the gate refuses it, and the run's one place is taken.

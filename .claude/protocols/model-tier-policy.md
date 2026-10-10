@@ -57,9 +57,11 @@ that were observed to run, and the rank-policy decision with its rule.
 
 In strict mode (`AGENT_FORGE_EVAL_VERDICT=strict`) the quality gate enforces the rule on the observation the verdict
 records, never on the request: a model evaluator must have been observed, and its observed rank must be at or above the
-builder's. The observation is the model of the session that filed the verdict, and a verdict filed from the session
-that built the work records none: an Evaluator subagent shares its spawner's session, so a subagent's own model is not
-observed (`.claude/protocols/evaluation-verdict.md`, *Limits*). A
+builder's. The observation is the model of the session working in the worktree where the verdict is filed. An
+Evaluator subagent shares its spawner's session, so a subagent's own model is never observed. When the ledger shows
+that session building the work, the verdict records nothing as observed; when the ledger shows no builder for the work
+(a run with no phase gate, such as one made by `forge:correlate` alone), that session's model is recorded as the
+evaluator's even if it is the builder's own (`.claude/protocols/evaluation-verdict.md`, *Limits*). A
 provider and model have a rank through the `rank:*` tag of the smiths configured with them; when smiths of different
 ranks share a model, the evaluator is read at the lowest and the builder at the highest. The builder is the executor
 stored on the run's state; with no builder whose rank is known, only a master evaluator passes. A human verdict is
