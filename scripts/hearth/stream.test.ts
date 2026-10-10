@@ -1,18 +1,25 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import {
+  type AddressInfo,
+  connect as connectSocket,
+  type Socket,
+} from "node:net";
 import type {
   LedgerEvent,
   OperatorEnvelope,
   StreamSnapshot,
 } from "../../types/hearth";
+import { appendEvent } from "../ledger/append";
 import type { BdResult } from "./routes/dev-api";
 import {
   createLedgerStream,
   type LedgerStreamDeps,
   STREAM_KEEPALIVE_MS,
+  STREAM_MAX_BUFFERED_BYTES,
   STREAM_MAX_CONNECTIONS,
   STREAM_POLL_MS,
+  STREAM_STALLED_MS,
 } from "./stream";
 import {
   type StreamClient as Client,
@@ -237,6 +244,46 @@ describe("GET /stream on a hearth", () => {
     expect(withQuery.status).toBe(400);
   });
 
+  test("stays inside the hearth's workspace: another checkout's events move neither the cursor nor the stream", async () => {
+    const h = await start({ api: { streamPollMs: 20 } });
+    const elsewhere = (gate: string): void => {
+      const stored = appendEvent(
+        {
+          kind: "gate.ran",
+          workspace: "c:/work/another-checkout",
+          payload: { gate, passed: true },
+        },
+        { path: h.ledger },
+      );
+      if (!stored.ok) throw new Error(stored.error);
+    };
+    const own = h.append({ kind: "tool.called", payload: TOOL });
+    elsewhere("newer-than-the-cursor");
+
+    const client = await stream(h);
+    // The other checkout's event has the higher id; the cursor is still this workspace's newest.
+    expect(snapshotOf(await client.next()).cursor).toBe(own);
+
+    elsewhere("while-connected");
+    expect(await client.quiet(200)).toBe(true);
+    const next = h.append({
+      kind: "gate.ran",
+      payload: { gate: "mine", passed: true },
+    });
+    const delta = deltaOf(await client.next());
+    expect(delta.id).toBe(next);
+    expect(delta.workspace).toBe(h.workspace);
+
+    // A resume does not replay them either.
+    const resumed = await stream(h, { "Last-Event-ID": "0" });
+    const replayed = [
+      deltaOf(await resumed.next()).id,
+      deltaOf(await resumed.next()).id,
+    ];
+    expect(replayed).toEqual([own, next]);
+    expect(await resumed.quiet(100)).toBe(true);
+  });
+
   test("a keepalive comment arrives at the configured interval; the default is 15 s", async () => {
     expect(STREAM_KEEPALIVE_MS).toBe(15_000);
     expect(STREAM_POLL_MS).toBeLessThanOrEqual(500);
@@ -427,5 +474,123 @@ describe("createLedgerStream (injected ledger, bare server)", () => {
       last = delta.id;
     }
     expect(last).toBe(1200);
+  });
+});
+
+describe("a stream client that does not read (raw socket, injected ledger)", () => {
+  const backlog = (count: number): LedgerEvent[] =>
+    Array.from({ length: count }, (_, index) => ({
+      id: index + 1,
+      ulid: `u${index}`,
+      ts: "2026-10-01T00:00:00.000Z",
+      workspace: "w",
+      kind: "gate.ran" as const,
+      // About a kilobyte each, so a few thousand are megabytes.
+      payload: { gate: "g".repeat(1000), passed: true },
+    }));
+
+  interface Stalled {
+    reads: () => number;
+    asked: () => number;
+    connections: () => number;
+    socket: Socket;
+    received: () => string;
+  }
+
+  /** A stream with a backlog, and a client that has asked for it and reads nothing. */
+  async function stalled(
+    options: Partial<LedgerStreamDeps>,
+    events: LedgerEvent[],
+  ): Promise<Stalled> {
+    let reads = 0;
+    let asked = 0;
+    const ledgerStream = createLedgerStream({
+      cursor: () => 0,
+      collections: async () => ({}),
+      eventsAfter: (cursor, limit) => {
+        reads++;
+        asked = Math.max(asked, cursor);
+        return events.filter((event) => event.id > cursor).slice(0, limit);
+      },
+      pollMs: 5,
+      keepaliveMs: 60_000,
+      ...options,
+    });
+    const server = createServer((req, res) => {
+      void ledgerStream.open(req, res, null);
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const { port } = server.address() as AddressInfo;
+    let received = "";
+    const socket = connectSocket(port, "127.0.0.1", () => {
+      socket.write(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
+      socket.pause();
+    });
+    socket.on("data", (chunk) => {
+      received += chunk.toString("utf8");
+    });
+    socket.on("error", () => {});
+    cleanup.push(async () => {
+      socket.destroy();
+      ledgerStream.close();
+      server.closeAllConnections();
+      await new Promise<void>((done) => server.close(() => done()));
+    });
+    return {
+      reads: () => reads,
+      asked: () => asked,
+      connections: () => ledgerStream.connections(),
+      socket,
+      received: () => received,
+    };
+  }
+
+  const pause = (ms: number): Promise<void> =>
+    new Promise((done) => setTimeout(done, ms));
+
+  test("is not fed without bound: the ledger is not read for it while its buffer is full, and it loses nothing when it reads again", async () => {
+    const events = backlog(6000);
+    const client = await stalled(
+      { maxBufferedBytes: 256_000, stalledMs: 60_000 },
+      events,
+    );
+
+    // Give the stream every chance to push the whole backlog at a client that takes none of it.
+    await pause(400);
+    const readsWhileFull = client.reads();
+    const askedWhileFull = client.asked();
+    await pause(300);
+    expect(client.reads()).toBe(readsWhileFull);
+    // Far short of the backlog: megabytes are still in the ledger, not in this process.
+    expect(askedWhileFull).toBeLessThan(events.length / 2);
+    expect(client.connections()).toBe(1);
+
+    client.socket.resume();
+    for (let i = 0; i < 400 && !client.received().includes("\nid: 6000\n"); i++)
+      await pause(25);
+    const ids = [
+      ...client.received().matchAll(/event: delta\nid: (\d+)\n/g),
+    ].map((match) => Number(match[1]));
+    expect(ids.length).toBe(6000);
+    expect(ids).toEqual(events.map((event) => event.id));
+  }, 30_000);
+
+  test("is dropped once it has stayed full for the stall limit, and its slot is free again", async () => {
+    const client = await stalled(
+      { maxBufferedBytes: 64_000, stalledMs: 150 },
+      backlog(3000),
+    );
+    await pause(100);
+    expect(client.connections()).toBe(1);
+    for (let i = 0; i < 200 && client.connections() !== 0; i++) await pause(20);
+    expect(client.connections()).toBe(0);
+    const reads = client.reads();
+    await pause(100);
+    expect(client.reads()).toBe(reads);
+  }, 20_000);
+
+  test("the defaults bound a connection to about a megabyte, for thirty seconds", () => {
+    expect(STREAM_MAX_BUFFERED_BYTES).toBe(1_000_000);
+    expect(STREAM_STALLED_MS).toBe(30_000);
   });
 });

@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import type { OperatorEnvelope } from "../../../types/hearth";
 import { assertCouncilRunId } from "../../council/artifacts";
 import {
+  assertCouncilInput,
   type CouncilServiceInput,
   type createCouncilService,
   safeCouncilError,
@@ -84,47 +85,17 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
   if (!parameters.ok) return parameters;
   const body = request.body;
   if (!isRecord(body)) return fail("Expected a JSON object");
-  const {
-    sourceType,
-    source,
-    profile,
-    maxUsd,
-    maxBytes,
-    redactSecrets: redact,
-  } = body;
+  // justification: `assertCouncilInput` is the check that makes the body a CouncilServiceInput.
+  const input = body as unknown as CouncilServiceInput;
+  try {
+    assertCouncilInput(input);
+  } catch (error) {
+    return fail(safeCouncilError(error));
+  }
+  // Stricter than the service on the two ids, because both go on the audit row.
   if (
-    (sourceType !== "file" &&
-      sourceType !== "plan" &&
-      sourceType !== "pr" &&
-      sourceType !== "text") ||
-    typeof source !== "string" ||
-    !source.trim() ||
-    Buffer.byteLength(source, "utf8") > 2_000_000
-  )
-    return fail("source must be a nonempty supported input of at most 2 MB");
-  if (profile !== undefined && typeof profile !== "string")
-    return fail("profile must be a path string");
-  if (
-    maxBytes !== undefined &&
-    (typeof maxBytes !== "number" ||
-      !Number.isInteger(maxBytes) ||
-      maxBytes < 1 ||
-      maxBytes > 2_000_000)
-  )
-    return fail("maxBytes must be between 1 and 2000000");
-  if (
-    maxUsd !== undefined &&
-    (typeof maxUsd !== "number" || !Number.isFinite(maxUsd) || maxUsd < 0)
-  )
-    return fail("maxUsd must be finite and nonnegative");
-  if (redact !== undefined && typeof redact !== "boolean")
-    return fail("redactSecrets must be a boolean");
-  const beadId = body["beadId"];
-  if (
-    beadId !== undefined &&
-    (typeof beadId !== "string" ||
-      !BEAD_ID.test(beadId) ||
-      looksLikeSecret(beadId))
+    input.beadId !== undefined &&
+    (!BEAD_ID.test(input.beadId) || looksLikeSecret(input.beadId))
   )
     return fail("beadId must be a Beads issue id");
   const runId =
@@ -135,17 +106,20 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
         } as const)
       : councilRunId(body["runId"]);
   if (!runId.ok) return runId;
+  // Only the fields the service knows: nothing else in the body travels on.
   return {
     ok: true,
     value: {
-      sourceType,
-      source,
+      sourceType: input.sourceType,
+      source: input.source,
       runId: runId.value,
-      ...(profile !== undefined ? { profile } : {}),
-      ...(maxUsd !== undefined ? { maxUsd } : {}),
-      ...(maxBytes !== undefined ? { maxBytes } : {}),
-      ...(redact !== undefined ? { redactSecrets: redact } : {}),
-      ...(beadId !== undefined ? { beadId } : {}),
+      ...(input.profile !== undefined ? { profile: input.profile } : {}),
+      ...(input.maxUsd !== undefined ? { maxUsd: input.maxUsd } : {}),
+      ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}),
+      ...(input.redactSecrets !== undefined
+        ? { redactSecrets: input.redactSecrets }
+        : {}),
+      ...(input.beadId !== undefined ? { beadId: input.beadId } : {}),
     },
   };
 }

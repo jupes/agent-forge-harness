@@ -89,10 +89,14 @@ function clauses(filter: EventFilter): Clause {
     } else {
       // A session that touched the bead brings its other events with it: the
       // tool calls and gates of that session rarely carry the bead themselves.
+      // Within the workspace asked for, when there is one: which of its
+      // sessions count must not depend on what another checkout recorded.
+      const scoped = filter.workspace !== undefined;
       where.push(
-        "(bead_id = ? OR session_id IN (SELECT session_id FROM events WHERE bead_id = ? AND session_id IS NOT NULL))",
+        `(bead_id = ? OR session_id IN (SELECT session_id FROM events WHERE bead_id = ? AND session_id IS NOT NULL${scoped ? " AND workspace = ?" : ""}))`,
       );
       params.push(filter.beadId, filter.beadId);
+      if (scoped) params.push(comparableCheckout(filter.workspace ?? ""));
     }
   }
   if (filter.runId !== undefined) {

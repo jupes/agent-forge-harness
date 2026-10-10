@@ -241,12 +241,20 @@ async function readJsonBody(
     return { ok: false, error: tooLarge };
   const chunks: Buffer[] = [];
   let size = 0;
+  let over = false;
   for await (const chunk of req) {
+    // Past the cap the rest is read and dropped, not abandoned: under Bun,
+    // leaving this loop early makes the runtime end the response itself (an
+    // empty 200), and the refusal below would never be sent.
+    if (over) continue;
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.byteLength;
-    if (size > maxBytes) return { ok: false, error: tooLarge };
-    chunks.push(buffer);
+    if (size > maxBytes) {
+      over = true;
+      chunks.length = 0;
+    } else chunks.push(buffer);
   }
+  if (over) return { ok: false, error: tooLarge };
   try {
     const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     return { ok: true, value };
@@ -281,15 +289,26 @@ export function createOperatorApi(
    */
   async function audited(event: LedgerEventInput): Promise<string | null> {
     for (let attempt = 1; ; attempt++) {
-      let result: AppendResult;
+      // The appender is trusted for nothing but a row id: whatever else it
+      // answers, or throws, the action stops here.
+      let result: unknown;
       try {
         result = deps.appendEvent(event);
       } catch (error) {
         return safeMessage(error);
       }
-      if (result.ok) return "id" in result ? null : "the ledger stored no row";
-      const busy = /busy|locked/i.test(result.error);
-      if (!busy || attempt >= AUDIT_ATTEMPTS) return safeMessage(result.error);
+      if (typeof result !== "object" || result === null)
+        return "the ledger did not answer";
+      const { ok, id, error } = result as {
+        ok?: unknown;
+        id?: unknown;
+        error?: unknown;
+      };
+      if (ok === true)
+        return typeof id === "number" ? null : "the ledger stored no row";
+      const reason = typeof error === "string" ? error : "the ledger refused";
+      const busy = /busy|locked/i.test(reason);
+      if (!busy || attempt >= AUDIT_ATTEMPTS) return safeMessage(reason);
       await sleep(AUDIT_RETRY_MS);
     }
   }

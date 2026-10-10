@@ -21,6 +21,10 @@ export const STREAM_POLL_MS = 250;
 export const STREAM_KEEPALIVE_MS = 15_000;
 /** A page that opens streams in a loop stops here. */
 export const STREAM_MAX_CONNECTIONS = 32;
+/** A connection with more than this waiting to be sent is given nothing new until it drains. */
+export const STREAM_MAX_BUFFERED_BYTES = 1_000_000;
+/** A connection that stays that full for this long is closed. */
+export const STREAM_STALLED_MS = 30_000;
 /** Events sent per ledger read, and reads per tick, when a connection is far behind. */
 const BATCH = 500;
 const BATCHES_PER_TICK = 4;
@@ -35,6 +39,8 @@ export interface LedgerStreamDeps {
   pollMs?: number | undefined;
   keepaliveMs?: number | undefined;
   maxConnections?: number | undefined;
+  maxBufferedBytes?: number | undefined;
+  stalledMs?: number | undefined;
 }
 
 export interface LedgerStream {
@@ -59,12 +65,16 @@ interface Connection {
   cursor: number;
   closed: boolean;
   timers: Array<ReturnType<typeof setInterval>>;
+  /** When its buffer was first found over the limit, while it still is. */
+  fullSince: number | null;
 }
 
 export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
   const pollMs = deps.pollMs ?? STREAM_POLL_MS;
   const keepaliveMs = deps.keepaliveMs ?? STREAM_KEEPALIVE_MS;
   const limit = deps.maxConnections ?? STREAM_MAX_CONNECTIONS;
+  const maxBuffered = deps.maxBufferedBytes ?? STREAM_MAX_BUFFERED_BYTES;
+  const stalledMs = deps.stalledMs ?? STREAM_STALLED_MS;
   const open = new Set<Connection>();
 
   function drop(connection: Connection): void {
@@ -80,9 +90,29 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
     return `event: ${event}\nid: ${id}\ndata: ${JSON.stringify(data)}\n\n`;
   }
 
+  /**
+   * Whether the client is behind on reading. A connection that is gets nothing
+   * new: its cursor stays where it is, so what it has not been sent is still
+   * in the ledger and follows when it catches up. One that stays behind is
+   * closed, so a client that never reads cannot hold memory or a slot.
+   *
+   * `writableLength` is the measure: under Bun `write` returns true however
+   * much is waiting.
+   */
+  function congested(connection: Connection): boolean {
+    if (connection.res.writableLength <= maxBuffered) {
+      connection.fullSince = null;
+      return false;
+    }
+    const now = Date.now();
+    connection.fullSince ??= now;
+    if (now - connection.fullSince >= stalledMs) drop(connection);
+    return true;
+  }
+
   function pump(connection: Connection): void {
     for (let batch = 0; batch < BATCHES_PER_TICK; batch++) {
-      if (connection.closed) return;
+      if (connection.closed || congested(connection)) return;
       let events: LedgerEvent[];
       try {
         events = deps.eventsAfter(connection.cursor, BATCH);
@@ -120,6 +150,7 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
         cursor: newest,
         closed: false,
         timers: [],
+        fullSince: null,
       };
       open.add(connection);
       // Under Bun, a client that goes away closes the request and the socket;

@@ -102,7 +102,41 @@ interface ActionFixture {
   invalid: { path: string; body: unknown };
   /** What the valid request needs to exist first. */
   prepare?(h: TestHearth): Promise<void>;
+  /** The effect itself, not its status: what the valid request must have changed. */
+  happened(h: TestHearth, answer: unknown): Promise<void>;
 }
+
+interface Job {
+  runId: string;
+  status: string;
+}
+
+/** A council run that is still going when the next request arrives. */
+async function runningRun(h: TestHearth, runId: string): Promise<void> {
+  const started = await post(h, "/council/runs", text(runId));
+  if (started.status !== 202) throw new Error(`could not start ${runId}`);
+}
+
+async function runStatus(h: TestHearth, runId: string): Promise<string> {
+  const response = await fetch(`${h.api}/council-api/runs/${runId}`);
+  return ((await response.json()) as { data?: Job }).data?.status ?? "";
+}
+
+/** The start really started a run: the service lists it. */
+const started =
+  (runId: string) =>
+  async (h: TestHearth): Promise<void> => {
+    expect(["running", "completed"]).toContain(await runStatus(h, runId));
+  };
+
+/** The cancel really cancelled: the run was still going, and it ends cancelled, not completed. */
+const cancelled =
+  (runId: string) =>
+  async (h: TestHearth, answer: unknown): Promise<void> => {
+    expect(["cancelling", "cancelled"]).toContain((answer as Job).status);
+    await councilRunFinished(h, runId);
+    expect(await runStatus(h, runId)).toBe("cancelled");
+  };
 
 const text = (runId: string): Record<string, unknown> => ({
   sourceType: "text",
@@ -131,9 +165,11 @@ const ACTIONS: Record<string, ActionFixture> = {
       path: "/council/runs",
       body: { sourceType: "nope", source: "x" },
     },
+    happened: started("fixture-a"),
   },
   "POST /council/runs/:id/cancel": {
-    prepare: (h) => finishedRun(h, "to-cancel-a"),
+    prepare: (h) => runningRun(h, "to-cancel-a"),
+    happened: cancelled("to-cancel-a"),
     valid: {
       path: "/council/runs/to-cancel-a/cancel",
       body: {},
@@ -150,9 +186,11 @@ const ACTIONS: Record<string, ActionFixture> = {
       target: "fixture-b",
     },
     invalid: { path: "/council-api/runs", body: { sourceType: "text" } },
+    happened: started("fixture-b"),
   },
   "POST /council-api/runs/:id/cancel": {
-    prepare: (h) => finishedRun(h, "to-cancel-b"),
+    prepare: (h) => runningRun(h, "to-cancel-b"),
+    happened: cancelled("to-cancel-b"),
     valid: {
       path: "/council-api/runs/to-cancel-b/cancel",
       body: {},
@@ -171,6 +209,19 @@ const ACTIONS: Record<string, ActionFixture> = {
     invalid: {
       path: "/dev-api/forge-run/review",
       body: { issueId: "../x", decision: "approve" },
+    },
+    // The review reached Beads through the hearth's own runner: the status
+    // check, then the comment, each as an argument array.
+    happened: async (h) => {
+      expect(h.bd.calls.slice(-2)).toEqual([
+        ["show", "demo-1", "--json"],
+        [
+          "comments",
+          "add",
+          "demo-1",
+          "review: checkpoint APPROVED via Forge run dashboard",
+        ],
+      ]);
     },
   },
 };
@@ -278,7 +329,7 @@ describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
     for (const row of actionRows(h)) {
-      const { valid, prepare } = fixture(row);
+      const { valid, prepare, happened } = fixture(row);
       await prepare?.(h);
       const before = snapshot(h);
       const seen = probes.length;
@@ -312,6 +363,7 @@ describe("every action row (iterating the table)", () => {
       expect(calls.map((call) => call.row)).toEqual([key(row)]);
       expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
+      await happened(h, body.data);
       if (row.action === "council.run.start")
         await councilRunFinished(h, valid.target);
     }
@@ -452,6 +504,16 @@ describe("every action row (iterating the table)", () => {
     ["refuses", () => ({ ok: false, error: "the ledger is read-only" })],
     ["reports a duplicate", () => ({ ok: true, duplicate: true, ulid: "x" })],
     [
+      "answers ok with no row id",
+      // justification: a result the ledger's type does not allow; the runner must not trust the shape.
+      () => ({ ok: true, id: undefined, ulid: "x" }) as unknown as AppendResult,
+    ],
+    [
+      "answers nothing at all",
+      // justification: as above — a broken appender, not a typed one.
+      () => null as unknown as AppendResult,
+    ],
+    [
       "throws",
       () => {
         throw new Error("ledger offline");
@@ -559,18 +621,27 @@ function raw(
   headerLines: string[],
   body = "",
 ): Promise<{ status: number; body: string }> {
+  return rawRequest(
+    h,
+    [
+      `${method} /__agent-forge${path} HTTP/1.1`,
+      ...headerLines,
+      `Content-Length: ${Buffer.byteLength(body)}`,
+      "Connection: close",
+      "",
+      body,
+    ].join("\r\n"),
+  );
+}
+
+/** Send exactly these bytes, and read the status line and the body of the answer. */
+function rawRequest(
+  h: TestHearth,
+  bytes: string,
+): Promise<{ status: number; body: string }> {
   return new Promise((done, fail) => {
     const socket = connect(h.hearth.port, "127.0.0.1", () => {
-      socket.write(
-        [
-          `${method} /__agent-forge${path} HTTP/1.1`,
-          ...headerLines,
-          `Content-Length: ${Buffer.byteLength(body)}`,
-          "Connection: close",
-          "",
-          body,
-        ].join("\r\n"),
-      );
+      socket.write(bytes);
     });
     let received = "";
     socket.on("data", (chunk) => {
@@ -755,6 +826,35 @@ describe("request bounds", () => {
     });
     expect(big.status).toBe(400);
     expect((await envelope(big)).error).toContain("exceeds");
+
+    // The same body with no Content-Length (chunked): the cap is then found
+    // while reading, and the answer must still be the 400 envelope.
+    const payload = JSON.stringify({ ...REVIEW, padding: "x".repeat(20_000) });
+    const chunks: string[] = [];
+    for (let at = 0; at < payload.length; at += 4096) {
+      const part = payload.slice(at, at + 4096);
+      chunks.push(`${part.length.toString(16)}\r\n${part}\r\n`);
+    }
+    const chunked = await rawRequest(
+      h,
+      [
+        "POST /__agent-forge/dev-api/forge-run/review HTTP/1.1",
+        `Host: 127.0.0.1:${h.hearth.port}`,
+        `Origin: ${h.hearth.url}`,
+        "Content-Type: application/json",
+        `X-Agent-Forge-Operator: ${h.hearth.token}`,
+        "Transfer-Encoding: chunked",
+        "Connection: close",
+        "",
+        `${chunks.join("")}0\r\n\r\n`,
+      ].join("\r\n"),
+    );
+    expect(chunked.status).toBe(400);
+    expect(JSON.parse(chunked.body)).toMatchObject({
+      ok: false,
+      data: null,
+      error: expect.stringContaining("exceeds"),
+    });
 
     const secret = `ghp_${"a1B2c3D4e5".repeat(4)}`;
     for (const [path, body] of [
@@ -1080,6 +1180,12 @@ describe("reads over the ledger and run state", () => {
       kind: "run.phase.entered",
       runId: "another",
       payload: { phase: "plan" },
+    });
+    // Another checkout on this machine has a run of the same name.
+    appendElsewhere(h, {
+      kind: "run.phase.entered",
+      runId: "demo",
+      payload: { phase: "ship" },
     });
 
     const response = await get(h, "/runs/demo");

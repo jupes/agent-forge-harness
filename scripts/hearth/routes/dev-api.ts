@@ -264,7 +264,7 @@ export async function applyReview(
 }
 
 /** How long one `bd` call may run, and how much it may print, before it is given up on. */
-const BD_TIMEOUT_MS = 15_000;
+const BD_TIMEOUT_MS = 30_000;
 const BD_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 /**

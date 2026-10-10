@@ -480,3 +480,26 @@ describe("activeReservations", () => {
     ]);
   });
 });
+
+describe("queryEvents, a bead within a workspace", () => {
+  test("the session join counts only the sessions that touched the bead in that workspace", () => {
+    const other = "c:/work/other";
+    const path = seed([
+      // In this workspace, session s-1 never touched the bead.
+      tool({ sessionId: "s-1" }),
+      tool({ sessionId: "s-2", beadId: "b-1" }),
+      tool({ sessionId: "s-2" }),
+      // In another checkout, a session with the same id did.
+      tool({ sessionId: "s-1", beadId: "b-1", workspace: other }),
+    ]);
+    // s-1's event here is not b-1's: nothing in this workspace ties them.
+    expect(ids(queryEvents({ workspace: W, beadId: "b-1" }, { path }))).toEqual(
+      [2, 3],
+    );
+    expect(
+      ids(queryEvents({ workspace: other, beadId: "b-1" }, { path })),
+    ).toEqual([4]);
+    // Asked across workspaces, the join is across workspaces, as before.
+    expect(ids(queryEvents({ beadId: "b-1" }, { path }))).toEqual([1, 2, 3, 4]);
+  });
+});
