@@ -75,7 +75,9 @@ async function readJson(
 
 /** The bead's free text after the secret scan: what every part and mention is built from. */
 type BeadText = {
+  /** On one line, scanned in that form. */
   title: string;
+  /** Each on one line, scanned in that form. */
   labels: string[];
   criteria: string;
   description: string;
@@ -130,7 +132,7 @@ function dependencyLine(issue: Fields): string {
 }
 
 function shownTitle(safe: BeadText): string {
-  return cutChars(oneLine(safe.title), TITLE_MAX_CHARS) || "(untitled)";
+  return cutChars(safe.title, TITLE_MAX_CHARS) || "(untitled)";
 }
 
 function acceptancePart(
@@ -139,7 +141,7 @@ function acceptancePart(
   safe: BeadText,
 ): ContextPart {
   const labels = safe.labels
-    .map((label) => cutChars(oneLine(label), LABEL_MAX_CHARS))
+    .map((label) => cutChars(label, LABEL_MAX_CHARS))
     .filter((label) => label.length > 0);
   const lines = [
     `Bead: ${id}`,
@@ -758,10 +760,14 @@ export async function compileBead(
   const found = new Map<string, number>();
   const clean = (value: unknown, where: string): string =>
     scanNamed(text(value), policy, where, found);
+  // A title or a label is shown on one line and cut short. Making it one
+  // line can put a secret together, so that form is scanned as well, whole.
+  const cleanLine = (value: unknown, where: string): string =>
+    scanNamed(oneLine(clean(value, where)), policy, where, found);
   const safe: BeadText = {
-    title: clean(issue.title, "the title"),
+    title: cleanLine(issue.title, "the title"),
     labels: (Array.isArray(issue.labels) ? issue.labels : []).map((label) =>
-      clean(label, "the labels"),
+      cleanLine(label, "the labels"),
     ),
     criteria: clean(issue.acceptance_criteria, "the acceptance criteria"),
     description: clean(issue.description, "the description"),

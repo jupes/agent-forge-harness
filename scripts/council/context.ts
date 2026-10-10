@@ -512,7 +512,8 @@ export function buildContextPackFromParts(
     });
     return order === "sent" ? inOrder : inOrder.reverse();
   };
-  if (secretsIn(segments("sent")).length > 0) {
+  let asSent = secretsIn(segments("sent"));
+  if (asSent.length > 0) {
     for (const [index, part] of input.parts.entries()) {
       const chunks = part.chunks.map((chunk) =>
         scan(chunk.text, chunk.name ?? part.label),
@@ -532,22 +533,27 @@ export function buildContextPackFromParts(
   // What is left runs from one part into another, or was written the other
   // way round (its start in an older comment, its end in a newer one, which
   // is packed first). Neither can be redacted in place.
-  for (const order of ["sent", "reversed"] as const) {
-    const ordered = segments(order);
-    const spanning = secretsIn(ordered);
-    if (spanning.length === 0) continue;
+  const refuseSpan = (ordered: Segment[], spanning: ContextRedaction[]) => {
     const { from, to } = spanOf(ordered);
     const where =
       from === to ? `in ${from}` : `across parts (from ${from} to ${to})`;
-    throw new ContextSecurityError(
+    return new ContextSecurityError(
       `potential secrets detected ${withoutControls(redactSecrets(where).text)}; ${policy === "reject" ? "" : "they cannot be redacted and the "}context was not sent (${secretSummary(spanning)})`,
     );
+  };
+  if (asSent.length > 0) {
+    // The closer passes ran and changed the text: read it once more.
+    asSent = secretsIn(segments("sent"));
+    if (asSent.length > 0) throw refuseSpan(segments("sent"), asSent);
   }
+  const reversed = secretsIn(segments("reversed"));
+  if (reversed.length > 0) throw refuseSpan(segments("reversed"), reversed);
 
-  // What is shown is scanned as it will be shown: control characters can
-  // hide a secret from the scan that is plain once they are replaced.
+  // What is shown is scanned twice: as written, and again as it will be
+  // shown. Replacing control characters can put a secret together that the
+  // first scan could not see, and can take one apart that it could.
   const shown = (value: string, where: string): string =>
-    scan(withoutControls(value), where);
+    scan(withoutControls(scan(value, where)), where);
   const displayName = cutChars(
     shown(input.displayName, "the source name"),
     TITLE_MAX_CHARS,

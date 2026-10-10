@@ -139,10 +139,14 @@ function shownStderr(stderr: string): string {
     stderr.length > STDERR_SCAN_CHARS
       ? stderr.slice(0, STDERR_SCAN_CHARS).replace(/\S*$/, "")
       : stderr;
-  // Scanned last, as it will be shown: replacing control characters and
-  // folding whitespace can turn hidden text into a secret's shape.
+  // Scanned twice: as written, and again as it will be shown. Replacing
+  // control characters and folding whitespace can put a secret together that
+  // the first scan could not see, and can take one apart that it could.
+  const shown = withoutControls(sanitizeContent(read, "redact").text)
+    .replace(/\s+/g, " ")
+    .trim();
   return (
-    sanitizeContent(withoutControls(read).replace(/\s+/g, " ").trim(), "redact")
+    sanitizeContent(shown, "redact")
       // A private key with no end line is not a pattern the scanner knows.
       .text.replace(/-----BEGIN[\s\S]*$/, "[REDACTED:private-key]")
       .slice(0, 1_000)

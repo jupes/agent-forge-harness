@@ -334,10 +334,13 @@ describe("PR snapshot safety", () => {
   test("a failed command's error is redacted before it is cut, drops a key that never ends, and carries no control character", () => {
     const token = `ghp_${"Zq9".repeat(12)}`;
     const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    // Markers are put together here so this file holds no literal key block.
+    const rule = "-".repeat(5);
+    const begin = `${rule}BEGIN RSA PRIVATE KEY${rule}`;
     const key = [
-      "-----BEGIN RSA PRIVATE KEY-----",
+      begin,
       ...Array.from({ length: 30 }, () => body),
-      "-----END RSA PRIVATE KEY-----",
+      `${rule}END RSA PRIVATE KEY${rule}`,
     ].join("\n");
     const failed = (stderr: string): string =>
       safeCommandError(["gh", "pr", "view", "x"], {
@@ -353,9 +356,7 @@ describe("PR snapshot safety", () => {
 
     // A whole key longer than the cut, and a key with no end line at all.
     expect(failed(`fatal: ${key}`)).not.toContain(body.slice(0, 20));
-    expect(
-      failed(`fatal: -----BEGIN RSA PRIVATE KEY-----\n${body}`),
-    ).not.toContain(body.slice(0, 20));
+    expect(failed(`fatal: ${begin}\n${body}`)).not.toContain(body.slice(0, 20));
 
     // Longer than what is scanned: the token cut in two by that bound goes too.
     const long = failed(`${`${key}\n`.repeat(12)}`.padEnd(19_985, " ") + token);
@@ -371,9 +372,22 @@ describe("PR snapshot safety", () => {
     ).toBe(false);
     expect(escaped).toContain("bad credentials");
 
+    // Folded to one line and cut to a thousand characters after the scan.
+    expect(failed("line one\n\n   line two")).toContain("line one line two");
+    const prefix = "gh pr view failed (1): ".length;
+    expect(failed("word ".repeat(4000)).length).toBe(prefix + 1000);
+
+    // A secret as written that replacing characters would break apart: an
+    // assignment whose value has an escape sequence inside it.
+    const assignment = [
+      "OPENAI_API_KEY",
+      "abc\u001b[0mZq9Zq8Zq7Zq6Zq5Zq4",
+    ].join("=");
+    expect(failed(`fatal: ${assignment}`)).not.toContain("Zq9Zq8Zq7");
+
     // A key hidden behind control characters is a key once they are replaced.
     const masked = failed(
-      `fatal: -----BEGIN\u0001PRIVATE\tKEY-----${body}-----END\u0001PRIVATE\tKEY-----`,
+      `fatal: ${rule}BEGIN\u0001PRIVATE\tKEY${rule}${body}${rule}END\u0001PRIVATE\tKEY${rule}`,
     );
     expect(masked).not.toContain(body.slice(0, 20));
     expect(
