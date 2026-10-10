@@ -19,6 +19,7 @@ resume the active run.
 /forgemaster                           # resume the run in flight (see: bun run forge:runs)
 /forgemaster --full <input>            # force the full pipeline (skip the complexity check)
 /forgemaster --mini <input>            # force the mini path (skip the complexity check)
+/forgemaster <input> --smith <name>    # record the run as built by a configured smith (see Notes)
 ```
 
 ---
@@ -39,7 +40,7 @@ hook normally starts the server automatically; this is the manual recovery.)
 Detect what was passed and normalize it to one Beads issue plus a kebab-case `<slug>`. Check in this
 order (the first match wins):
 
-1. **Strip flags** (`--full` / `--mini`) and trim whitespace.
+1. **Strip flags** (`--full` / `--mini` / `--smith <name>`) and trim whitespace.
 2. **Empty** → **resume**: run `bun run forge:runs --active`. With exactly one run in flight, resume
    it at its first incomplete phase (always a full run; skip the triage in Step 0.5, go to Step 1).
    With several, ask which one — runs are concurrent, so "the active run" is not a thing to guess.
@@ -88,8 +89,10 @@ change wastes turns and money (cost is the whole point of this step).
 recommended route, letting the user confirm or override:
 
 - **Mini** → follow `.claude/workflows/forge-mini.md` (scope → build → wrap). Do **not** use the
-  `forge:phase-gate` / run state files or write `plans/`/`reports/` docs; track in Beads only.
-  Then go straight to that workflow — the phase-walk below is for the full path.
+  `forge:phase-gate` / run state files or write `plans/`/`reports/` docs; track in Beads only. (A
+  mini run keeps no run state unless it was given `--smith`: then its wrap step records one run, as
+  that workflow says.) Then go straight to that workflow — the phase-walk below is for the full
+  path.
 - **Full** → continue to Step 1 with the `<slug>` resolved in Step 0.
 
 If a mini run outgrows its size mid-flight, escalate to full (`/forge-research <slug>`) as described
@@ -101,8 +104,9 @@ in `forge-mini.md`.
 
 For each phase in order — `research`, `plan`, `implement`, `ship` — do this loop:
 
-1. **Gate entry.** Run `bun run forge:phase-gate <phase> --slug <slug>`. If it exits non-zero, the
-   prerequisite artifact is missing — stop and tell the user which earlier phase to run.
+1. **Gate entry.** Run `bun run forge:phase-gate <phase> --slug <slug>`. If it exits non-zero, read
+   its `error`: usually the prerequisite artifact is missing — stop and tell the user which earlier
+   phase to run. (With `--smith`, it can also be a name that is not configured.)
 2. **Announce.** Tell the user which phase is starting and where its output will land
    (see the table in `.claude/workflows/forge.md`).
 3. **Run the phase** by following its skill end to end:
@@ -110,7 +114,9 @@ For each phase in order — `research`, `plan`, `implement`, `ship` — do this 
    - plan → `.claude/skills/forge-plan/SKILL.md`
    - implement → `.claude/skills/forge-implement/SKILL.md`
    - ship → `.claude/skills/forge-ship/SKILL.md`
-   The phase records its own completion (`forge:phase-gate <phase> --slug <slug> --write`).
+   The phase records its own completion (`forge:phase-gate <phase> --slug <slug> --write --bead <id>`).
+   Which issue each phase names, and when research names none, is in `.claude/workflows/forge.md`,
+   *Which bead a phase names*: a task until the close, the feature or epic only on the ship write.
 4. **Show the exit artifact.** Surface what the phase produced (the research/plan/ship doc, the
    demoed checkpoints, the PR) so the user can inspect it.
 5. **Gate the transition.** Use `AskUserQuestion` to ask whether to proceed to the next phase:
@@ -141,6 +147,11 @@ After the ship phase records complete:
   `bun run forge:runs` lists them. Give each code-touching run its own worktree
   (`bun run worktree create <branch>`, then `--checkout <path>` on the phase-gate write) so two
   runs do not build on top of each other.
+- **`--smith <name>`**: records the run as built by that configured smith (a provider, a model and
+  an effort: `bun run forge:config show`). Add it to every `forge:phase-gate` call of the run, the
+  entry check of Step 1 and each phase's write: a name that is not configured is refused, and the
+  write stores the smith on the run. It does not change the model of the session reading this
+  command. Everything else about it is in `.claude/workflows/forge.md`, *`--smith`*.
 - **Unattended**: `/forgemaster-auto` runs the same four phases with a subagent review at each
   boundary instead of asking you — see `.claude/workflows/forge-auto.md`.
 - **Standalone phases**: you can always run a single phase directly (`/forge-plan <slug>`) instead of

@@ -4,8 +4,9 @@ import {
   type SecretPolicy,
   sanitizeContent,
   truncateUtf8,
+  withoutControls,
 } from "./context";
-import type { ContextSourceMetadata } from "./types";
+import type { ContextRedaction, ContextSourceMetadata } from "./types";
 
 const DEFAULT_DIFF_BYTES = 150_000;
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -27,6 +28,8 @@ export type CompiledPullRequest = {
   locator: string;
   text: string;
   metadata: ContextSourceMetadata;
+  /** What the redact policy replaced in the patch; empty under reject. */
+  redactions: ContextRedaction[];
 };
 
 type PullRequestFile = {
@@ -122,10 +125,40 @@ function validatePullRequestReference(reference: string): string {
   throw new Error("PR reference must be a positive number or pull-request URL");
 }
 
-function safeCommandError(command: string[], result: CommandResult): Error {
-  const detail = sanitizeContent(result.stderr.slice(0, 1_000), "redact")
-    .text.replace(/\s+/g, " ")
+/** How much of a failed command's stderr is read for its error message. */
+const STDERR_SCAN_CHARS = 20_000;
+
+/**
+ * What a failed command said, safe to show: redacted first and cut second, so
+ * a credential cannot survive as the prefix a cut leaves behind.
+ */
+function shownStderr(stderr: string): string {
+  // Longer than what is read: the token the bound cuts in two would not be
+  // recognised, so the unfinished word at the end goes with it.
+  const read =
+    stderr.length > STDERR_SCAN_CHARS
+      ? stderr.slice(0, STDERR_SCAN_CHARS).replace(/\S*$/, "")
+      : stderr;
+  // Scanned twice: as written, and again as it will be shown. Replacing
+  // control characters and folding whitespace can put a secret together that
+  // the first scan could not see, and can take one apart that it could.
+  const shown = withoutControls(sanitizeContent(read, "redact").text)
+    .replace(/\s+/g, " ")
     .trim();
+  return (
+    sanitizeContent(shown, "redact")
+      // A private key with no end line is not a pattern the scanner knows.
+      .text.replace(/-----BEGIN[\s\S]*$/, "[REDACTED:private-key]")
+      .slice(0, 1_000)
+  );
+}
+
+/** A failed command as an error: its first three words, its exit code, and its redacted stderr. */
+export function safeCommandError(
+  command: string[],
+  result: CommandResult,
+): Error {
+  const detail = shownStderr(result.stderr);
   return new Error(
     `${command.slice(0, 3).join(" ")} failed (${result.exitCode})${detail ? `: ${detail}` : ""}`,
   );
@@ -313,10 +346,16 @@ function filterPatch(
 export async function compilePullRequest(
   reference: string,
   options: {
-    cwd?: string;
-    maxDiffBytes?: number;
-    runner?: CommandRunner;
-    secretPolicy?: SecretPolicy;
+    cwd?: string | undefined;
+    maxDiffBytes?: number | undefined;
+    runner?: CommandRunner | undefined;
+    secretPolicy?: SecretPolicy | undefined;
+    /**
+     * False skips the lookup of the acceptance criteria of beads the PR body
+     * names. A bead source passes false: it packs the bead it was given and
+     * no other.
+     */
+    linkedCriteria?: boolean | undefined;
   } = {},
 ): Promise<CompiledPullRequest> {
   const cwd = options.cwd ?? process.cwd();
@@ -371,7 +410,10 @@ export async function compilePullRequest(
     options.secretPolicy ?? "reject",
   );
   const diff = truncateUtf8(safeDiff.text, maxDiffBytes);
-  const linkedIssues = linkedIssueIds(pullRequest.body);
+  const lookUp = options.linkedCriteria !== false;
+  const linkedIssues = lookUp
+    ? linkedIssueIds(pullRequest.body)
+    : { ids: [], omitted: 0 };
   const issueIds = linkedIssues.ids;
   const criteria = await loadAcceptanceCriteria(issueIds, cwd, runner);
   const omissions = [...filtered.omissions, ...criteria.omissions];
@@ -401,7 +443,11 @@ export async function compilePullRequest(
     ...fileLines,
     "",
     "Linked acceptance criteria:",
-    ...(criteria.lines.length > 0 ? criteria.lines : ["(none resolved)"]),
+    ...(!lookUp
+      ? ["(not looked up for this source)"]
+      : criteria.lines.length > 0
+        ? criteria.lines
+        : ["(none resolved)"]),
     "",
     "Known omissions:",
     ...(omissions.length > 0 ? omissions : ["(none)"]),
@@ -429,5 +475,6 @@ export async function compilePullRequest(
     locator: pullRequest.url,
     text,
     metadata,
+    redactions: safeDiff.redactions,
   };
 }

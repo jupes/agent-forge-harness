@@ -26,6 +26,7 @@ import { createCouncilMcpServer } from "./mcp";
 import {
   type CommandRunner,
   compilePullRequest,
+  safeCommandError,
   scrubProviderEnvironment,
 } from "./pr-source";
 import { createCouncilService } from "./service";
@@ -306,6 +307,92 @@ describe("PR snapshot safety", () => {
     expect(compiled.metadata.includedFiles).toEqual(["src/okay.ts"]);
     expect(compiled.text).toContain("Acceptance criteria unavailable");
     expect(compiled.text).toContain("Sensitive file excluded");
+  });
+  test("with the linked-criteria lookup switched off no bead is read; by default the linked bead still is", async () => {
+    const commands = (calls: string[][]) => calls.map((call) => call[0]);
+    const recorded: string[][] = [];
+    const base = prRunner();
+    const runner: CommandRunner = async (command, cwd) => {
+      recorded.push(command);
+      return base(command, cwd);
+    };
+
+    const quiet = await compilePullRequest("42", {
+      runner,
+      linkedCriteria: false,
+    });
+    expect(commands(recorded)).not.toContain("bd");
+    expect(quiet.text).toContain("(not looked up for this source)");
+    expect(quiet.text).not.toContain("Safe review");
+    expect(quiet.metadata.linkedIssueIds).toEqual([]);
+
+    recorded.length = 0;
+    const usual = await compilePullRequest("42", { runner });
+    expect(commands(recorded)).toContain("bd");
+    expect(usual.text).toContain("Safe review");
+  });
+  test("a failed command's error is redacted before it is cut, drops a key that never ends, and carries no control character", () => {
+    const token = `ghp_${"Zq9".repeat(12)}`;
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    // Markers are put together here so this file holds no literal key block.
+    const rule = "-".repeat(5);
+    const begin = `${rule}BEGIN RSA PRIVATE KEY${rule}`;
+    const key = [
+      begin,
+      ...Array.from({ length: 30 }, () => body),
+      `${rule}END RSA PRIVATE KEY${rule}`,
+    ].join("\n");
+    const failed = (stderr: string): string =>
+      safeCommandError(["gh", "pr", "view", "x"], {
+        exitCode: 1,
+        stdout: "",
+        stderr,
+      }).message;
+
+    // A token that straddles character 1000, where the cut used to come first.
+    const straddling = failed(`${" ".repeat(977)}${token}`);
+    expect(straddling).not.toContain("ghp_");
+    expect(straddling).toContain("gh pr view failed (1)");
+
+    // A whole key longer than the cut, and a key with no end line at all.
+    expect(failed(`fatal: ${key}`)).not.toContain(body.slice(0, 20));
+    expect(failed(`fatal: ${begin}\n${body}`)).not.toContain(body.slice(0, 20));
+
+    // Longer than what is scanned: the token cut in two by that bound goes too.
+    const long = failed(`${`${key}\n`.repeat(12)}`.padEnd(19_985, " ") + token);
+    expect(long).not.toContain("ghp_");
+    expect(long).not.toContain(body.slice(0, 20));
+
+    const escaped = failed("HTTP 401 \u001b[1A\u001b[2Kbad credentials\u0007");
+    expect(
+      [...escaped].some((char) => {
+        const code = char.codePointAt(0) ?? 0;
+        return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+      }),
+    ).toBe(false);
+    expect(escaped).toContain("bad credentials");
+
+    // Folded to one line and cut to a thousand characters after the scan.
+    expect(failed("line one\n\n   line two")).toContain("line one line two");
+    const prefix = "gh pr view failed (1): ".length;
+    expect(failed("word ".repeat(4000)).length).toBe(prefix + 1000);
+
+    // A secret as written that replacing characters would break apart: an
+    // assignment whose value has an escape sequence inside it.
+    const assignment = [
+      "OPENAI_API_KEY",
+      "abc\u001b[0mZq9Zq8Zq7Zq6Zq5Zq4",
+    ].join("=");
+    expect(failed(`fatal: ${assignment}`)).not.toContain("Zq9Zq8Zq7");
+
+    // A key hidden behind control characters is a key once they are replaced.
+    const masked = failed(
+      `fatal: ${rule}BEGIN\u0001PRIVATE\tKEY${rule}${body}${rule}END\u0001PRIVATE\tKEY${rule}`,
+    );
+    expect(masked).not.toContain(body.slice(0, 20));
+    expect(
+      failed("OPENAI_API_KEY\u0085=\u0085sk-notarealkeyvalue123"),
+    ).not.toContain("notarealkeyvalue");
   });
   test("rejects a PR changing during capture", async () => {
     await expect(

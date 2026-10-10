@@ -64,7 +64,7 @@ export type ParseCouncilProfileResult =
   | { ok: true; value: CouncilProfile }
   | { ok: false; error: string };
 
-export type ContextSourceKind = "file" | "plan" | "pr" | "stdin";
+export type ContextSourceKind = "file" | "plan" | "pr" | "stdin" | "bead";
 
 export type ContextSourceMetadata = Record<
   string,
