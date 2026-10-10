@@ -28,6 +28,11 @@ bd ready                                             # the tasks created in the 
 Beads must be reachable. If `bd` errors (e.g. Dolt server down), **stop** and fix it
 (`bd dolt start`) — do not proceed without issue tracking.
 
+**`--smith <name>`**: when the run was started with it, add `--smith <name>` to every
+`forge:phase-gate` call in this skill. The phase gate refuses a name that is not configured and
+records the smith on the run as its executor. It does not change the model of the session doing the
+work (`.claude/workflows/forge.md`, *`--smith`*).
+
 ## Process
 
 ### 1. Claim the first task
@@ -38,6 +43,43 @@ bd comments add <task-id> "worklog: starting implement (forge)"
 ```
 
 Work tasks in dependency order. One task in progress at a time.
+
+**Stay inside the task's file map.** The `## Files` section of the task's description lists the
+globs this task may touch (the plan phase wrote it: `.claude/skills/forge-plan/SKILL.md`). Read it
+as it is stored:
+
+```bash
+bd show <task-id> --json | bun run scripts/scheduler/filemap-cli.ts - --bd-json   # prints the task's globs
+```
+
+Do not read the map off plain `bd show <task-id>`: that renders the description as Markdown, and a
+glob that holds `*` comes out garbled (`scripts/forge/**/*.ts` is printed as
+`**scripts/forge/****/*.ts`).
+
+Edit only files those globs match. The map is what the task said it would touch, and the review of
+this phase reads the diff against it. Nothing reserves files from it yet; it is kept honest now so
+that file reservations can be taken from it later.
+
+When the work needs a file outside the map, do not edit it silently and do not stop either. Say so,
+then go on:
+
+```bash
+bd comments add <task-id> "worklog: outside the file map: <path> — <why this task has to touch it>"
+```
+
+Add the path to the task's `## Files` section too, and name it when you show the checkpoint. Work on
+the description as it was written, never on what plain `bd show` printed. Save the stored one to a
+file, add the line, check the file, then store it:
+
+```bash
+bd show <task-id> --json | bun -e 'const issue = JSON.parse(await Bun.stdin.text()); await Bun.write(process.argv[1], [issue].flat()[0].description)' .tmp/work/<task-id>-description.md
+# edit .tmp/work/<task-id>-description.md: one more line under "## Files"
+bun run scripts/scheduler/filemap-cli.ts .tmp/work/<task-id>-description.md      # exit 0: the map is usable
+bd update <task-id> --body-file .tmp/work/<task-id>-description.md
+```
+
+A task whose description has no `## Files` section has no map to hold to (the first command of this
+section says `no Files section`): say that in the first `worklog:` comment.
 
 **Keep Beads current as you work** (do not batch all updates to the end):
 - `--claim` moves the task `open → in_progress` — claim it *before* writing code, not after.
@@ -110,16 +152,21 @@ bun run typecheck
 bun run lint
 bun test
 git status --porcelain          # should be empty
-bun run forge:phase-gate implement --slug <slug> --write    # records implement complete
+bun run forge:phase-gate implement --slug <slug> --write --bead <task-id>    # records implement complete
 ```
+
+`<task-id>` is the issue the run was started from (a task, a bug or a chore), else the last task
+this phase closed. The command prints `data.correlation.pointer`: the ship step runs the quality
+gate with it, so that gate result is tied to this run and that task (`.claude/workflows/forge.md`,
+*Which bead a phase names*).
 
 Report the checkpoints completed and the tasks closed, then point to `/forge-ship <slug>`
 (or `/forgemaster` continues).
 
 ## Hard Stops
 
-- A checkpoint balloons past its planned scope (>8 files or >~200 lines): pause and report; consider
-  splitting the Beads task before continuing.
+- A checkpoint balloons past its planned scope (>8 files or >~200 lines), or keeps leaving its file
+  map: pause and report; consider splitting the Beads task before continuing.
 - A behavior cannot be tested through the public interface: revisit the interface design with the
   user (see `.claude/skills/tdd/interface-design.md`) rather than testing implementation details.
 - Quality gate fails twice after fixes: stop, file a Beads bug, escalate.

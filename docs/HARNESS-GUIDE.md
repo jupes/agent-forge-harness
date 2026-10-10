@@ -48,6 +48,18 @@ Supporting scripts (for example `quality-gate.ts`, `worktree.ts`, `repo` via ski
 
 ---
 
+## The Forge pipeline
+
+`/forgemaster` runs larger work as four gated phases (research, plan, implement, ship). `/forgemaster-auto` runs the same phases with a reviewing subagent in place of the human gates, and `/forgemaster-mini` is the trimmed path for small work. The rules live in [`.claude/workflows/forge.md`](../.claude/workflows/forge.md); three of them decide what a run leaves behind.
+
+| Concern | Mechanism |
+|--------|-----------|
+| **Which issue a run is working** | Each phase records itself with `bun run forge:phase-gate <phase> --slug <slug> --write --bead <id>`. Plan and implement name a task (or a bug, or a chore), and so does research when one exists yet; only the ship phase names the feature or epic the run closes. The command prints a pointer to the run's correlation, and the ship phase runs `bun run quality-gate --correlation <pointer>` before the push, so the gate result is tied to that issue and that run. A run whose work is in another repository runs that repository's own checks instead, and has no linked gate entry. |
+| **Who is recorded as building** | `--smith <name>` on `/forgemaster`, `/forgemaster-auto`, `/forgemaster-mini` and the four `/forge-*` commands names a configured smith: a provider, a model and an effort (`bun run forge:config show`). It goes on every `forge:phase-gate` call of the run: a name that is not configured is refused, and a write stores the smith on the run. The same name goes to `forge:exec --smith` when work is handed to a spawned CLI. It does not change the model of the session you are working in. |
+| **What a task may touch** | The plan phase gives every task a `complexity:low`, `complexity:medium` or `complexity:high` label and a file map: a `## Files` section in the task's description, one glob per line. The implement phase stays inside it and says so when it has to leave. `scripts/scheduler/filemap.ts` parses the section; nothing reserves files from it yet. |
+
+---
+
 ## What it is best for
 
 - **Teams already using (or adopting) Claude Code** who want a **shared playbook** instead of ad-hoc prompts every time.

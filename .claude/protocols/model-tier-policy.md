@@ -26,16 +26,27 @@ Built-in smiths: `claude-master` (high effort), `claude-journeyman` (default), `
 
 `--smith` flag → bead `smith` metadata → bench by the bead's `complexity:*` label (stable weighted pick per bead id)
 → `workflow.default_crew` → `claude-journeyman` (`scripts/config/resolve.ts`). An unknown or disabled smith is an
-error, never a silent fall-through.
+error, never a silent fall-through. `forge:exec` is given the middle two as flags, `--bead-smith <name>` and
+`--complexity <low|medium|high>`: it does not read the bead, and nothing reads a `complexity:*` label from Beads yet.
+
+The phase gate takes a smith by name too:
+`bun run forge:phase-gate <phase> --slug <slug> --write --bead <id> --smith <name>` records that smith on the run as
+its executor (`.claude/workflows/forge.md`, *`--smith`*). It reads the flag and nothing else: no bead metadata, no
+bench, no default. A `--provider`, `--model` or `--effort` beside the smith must agree with it. A write with no
+`--smith` records the live session whenever the ledger knows that session's model, and otherwise the run keeps the
+executor it had.
 
 ## Running a smith
 
-`bun run forge:exec --bead <id> --smith <name> --worktree <path> --prompt <text>` runs one bounded task through the
-smith's provider CLI (`scripts/executors/`). Spawned processes get only the base environment plus
+`bun run forge:exec --bead <id> --run <slug> --smith <name> --worktree <path> --prompt <text>` runs one bounded task
+through the smith's provider CLI (`scripts/executors/`). Spawned processes get only the base environment plus
 `[execution.env] pass`, and the variables the adapter sets itself (the adapter marker, bead, smith, run and parent
 session); nothing else from the parent environment reaches them. With `--run`, the child is also handed the run's
 correlation pointer when one can be written (the worktree must be a checkout's top level); it is what links a quality
 gate run inside the child to the bead and run, and when it is not handed on the output's `correlationNote` says why.
+Without `--run`, or when the run already names another bead, a gate inside the child runs unlinked: `forge:exec` leaves
+a run that is correlated to another bead alone. Move the run to this bead first with
+`bun run forge:correlate --bead <id> --run <slug> --checkout <path>`.
 The run's `session.started`, `tool.called` and `session.ended` events go to the ledger with the smith on each:
 `bun run forge:audit --bead <id>` shows them. A ledger that cannot be written is reported in the command's output and
 never stops the provider. `bun run forge:doctor` reports which provider CLIs are installed.

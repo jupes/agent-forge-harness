@@ -23,6 +23,9 @@ Explore first, ask last. See [[grill-me]] for the interview discipline this phas
 - Free-text feature description, a `bd show <id>` task, or a spec file path.
 - Optional `<slug>` (kebab-case). If absent, derive one from the feature title and reuse it for
   every downstream phase artifact.
+- Optional `--smith <name>`: the configured smith the run is recorded as built by. Add it to the
+  `forge:phase-gate` call in step 6; the phase gate refuses a name that is not configured. It does
+  not change the model of the session doing the work (`.claude/workflows/forge.md`, *`--smith`*).
 
 ## Process
 
@@ -129,8 +132,15 @@ Phase: research (1/4)
 Update the forge state and report:
 
 ```bash
-bun run forge:phase-gate research --slug <slug> --write
+bun run forge:phase-gate research --slug <slug> --write --bead <task-id>
 ```
+
+`<task-id>` is the issue this run was started from, when that is a task, a bug or a chore: it ties
+the run's ledger events, and later its quality gate, to that issue. Omit `--bead` when the run was
+started from free text, a feature or an epic: no task exists until the plan phase creates one, and a
+feature or an epic is named only by the ship write (pass it as `--epic <id>` here: that groups the
+run and is never used for its correlation). See `.claude/workflows/forge.md`, *Which bead a phase
+names*.
 
 Then tell the user: research is complete at `plans/research/<slug>.md`, and the next phase is
 `/forge-plan <slug>` (or `/forgemaster` will offer to continue). Do **not** start planning in this

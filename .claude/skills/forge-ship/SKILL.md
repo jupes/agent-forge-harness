@@ -27,6 +27,11 @@ cat plans/drafts/<slug>.md                      # plan + checkpoints + Beads map
 
 Beads must be reachable. If `bd` errors, stop and fix it (`bd dolt start`) before shipping.
 
+**`--smith <name>`**: when the run was started with it, add `--smith <name>` to every
+`forge:phase-gate` call in this skill. The phase gate refuses a name that is not configured and
+records the smith on the run as its executor. It does not change the model of the session doing the
+work (`.claude/workflows/forge.md`, *`--smith`*).
+
 ## Process
 
 ### 1. Gather the facts
@@ -81,16 +86,39 @@ Epic/Feature: <beads id> · Branch: <branch> · PR: <url once created>
 - <deferred Beads id + reason, or "none">
 ```
 
-### 4. Quality gates, push, PR
+### 4. Quality gate, push, PR
 
-Run the standard ship mechanics (reuse [[ship]] for detail):
+**Gate the run through its correlation** before anything is pushed. One command runs typecheck,
+lint and the tests, checks that the tree is clean and that a test file is among the last five
+commits, and logs the result against this run and the issue it names (reuse [[ship]] for the rest
+of the mechanics):
 
 ```bash
-bun run typecheck && bun run lint && bun test
-git status --porcelain                 # must be empty
+git status --porcelain                           # must be empty: commit what belongs to the run
+bun run quality-gate --correlation <pointer>     # must exit 0
 git pull --rebase origin <base>
 git push origin <branch>
 ```
+
+- `<pointer>` is what every phase-gate write of this run that named a bead printed as
+  `data.correlation.pointer`. It is one path for the whole run,
+  `.tmp/work/run-correlations/<slug>.json`, relative to the checkout the run builds in. Run the gate
+  in that checkout.
+- If that file is not there (a run whose writes named no bead, or one started before the phases
+  named theirs), create it with the task the run worked last:
+  `bun run forge:correlate --bead <id> --run <slug>`.
+- A failing check blocks the push: fix what it names and run the gate again. `test-evidence` fails
+  when none of the last five commits holds a test file. That is the gate's rule for any completed
+  task, and it also stops a run whose tests are further back than five commits
+  (`agent-forge-harness-exeh`); there is no way past it here.
+- Strict verdict mode (`AGENT_FORGE_EVAL_VERDICT=strict`) is opt-in. When it is on, file the run's
+  verdict with this pointer before the gate (`.claude/commands/ship.md`).
+
+**A run whose work is in another repository** (`repos/<repo>`, or a worktree of one) does not run
+the harness gate: it runs this package's checks on the directory it is started in, so it would judge
+the harness and not the run's work. Run that repository's own checks instead (its typecheck, lint
+and tests) and `git status --porcelain`, then pull and push there. Such a run has no linked gate
+entry, and strict completion cannot be reached for it (`agent-forge-harness-g043`).
 
 The PR body MUST follow the canonical template — see [[pr-description]]. The ship report you just
 wrote is the source material: map its sections into the template (What Shipped → What Changed, the
@@ -111,11 +139,22 @@ view of the same run.
 
 ### 5. Close out Beads + state
 
+`<close-id>` is the issue this run closes: the feature or the epic. A run that closes neither keeps
+the id its implement write named. This is the one write that may name a feature or an epic
+(`.claude/workflows/forge.md`, *Which bead a phase names*).
+
+When `<close-id>` is a feature or an epic, add its testing attestation first. A gate that runs
+linked to that issue requires it, and after the write below the run's pointer names that issue:
+
 ```bash
-bd close <epic-or-feature-id>
-bd comments add <epic-or-feature-id> "worklog: shipped — PR #<n>; report reports/<slug>-ship.md"
+bd comments add <close-id> "worklog: testing-attestation automation=<yes|no> unit=<yes|no> notes=<short context>"
+```
+
+```bash
+bd close <close-id>            # skip when the implement phase already closed it (a run that closes no feature or epic)
+bd comments add <close-id> "worklog: shipped — PR #<n>; report reports/<slug>-ship.md"
 # The tracker is local-only: do not run `bd dolt push`.
-bun run forge:phase-gate ship --slug <slug> --write     # records the run complete
+bun run forge:phase-gate ship --slug <slug> --write --bead <close-id>     # records the run complete
 ```
 
 After ship completes, the forge run is finished — the Stop hook goes quiet and the state file can
@@ -135,7 +174,8 @@ Try it: <the single most representative command from the walkthrough>
 ## Exit Criteria
 
 - [ ] `reports/<slug>-ship.md` exists with before/after, Beads table, and a runnable walkthrough.
-- [ ] Quality gates pass; branch pushed; PR created with a [[pr-description]]-conformant body
+- [ ] The quality gate passed through the run's correlation (for a run in another repository: that
+      repository's own checks); branch pushed; PR created with a [[pr-description]]-conformant body
       (`check-pr-body.ts` reports `ok: true`).
 - [ ] Every planned Beads task is closed or deferred-with-reason; epic/feature closed.
 - [ ] Forge state advanced to `ship` complete.
