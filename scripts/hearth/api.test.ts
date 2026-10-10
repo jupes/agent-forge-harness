@@ -15,6 +15,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import type { ActionRoute, ApiRoute } from "./api";
@@ -100,6 +101,12 @@ interface ActionFixture {
   valid: { path: string; body: unknown; status: number; target: string };
   /** A request the row's validator refuses. */
   invalid: { path: string; body: unknown };
+  /**
+   * The events the valid request leaves after its audit row, in order: what a
+   * row records once its effect succeeded. Declared here, on the test's side,
+   * so a row that starts recording something else fails the suite.
+   */
+  outcome?: Array<Pick<LedgerEvent, "kind" | "payload">>;
   /** What the valid request needs to exist first. */
   prepare?(h: TestHearth): Promise<void>;
   /** The effect itself, not its status: what the valid request must have changed. */
@@ -154,6 +161,37 @@ const REVIEW = { issueId: "demo-1", decision: "approve", note: "" };
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /beads": {
+    valid: {
+      path: "/beads",
+      body: { title: "Fixture bead", parent: "demo-epic" },
+      status: 201,
+      // The new id does not exist when the audit row is written: it names the parent.
+      target: "demo-epic",
+    },
+    invalid: { path: "/beads", body: { title: "" } },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: {
+          action: "create",
+          hash: hashText("Fixture bead"),
+          length: 12,
+        },
+      },
+    ],
+    // One call, as an argument array: the type and priority defaulted, never `--repo`.
+    happened: async (h) => {
+      expect(h.bd.calls.at(-1)).toEqual([
+        "create",
+        "--title=Fixture bead",
+        "--type=task",
+        "--priority=2",
+        "--parent=demo-epic",
+        "--json",
+      ]);
+    },
+  },
   "POST /council/runs": {
     valid: {
       path: "/council/runs",
@@ -331,7 +369,7 @@ describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
     for (const row of actionRows(h)) {
-      const { valid, prepare, happened } = fixture(row);
+      const { valid, prepare, happened, outcome = [] } = fixture(row);
       await prepare?.(h);
       const before = snapshot(h);
       const seen = probes.length;
@@ -344,7 +382,8 @@ describe("every action row (iterating the table)", () => {
         ok: true,
       });
 
-      // Exactly one new event, and it is this row's audit row.
+      // This row's audit row first, then exactly the events its fixture says
+      // a successful effect leaves: for most rows, none.
       const added = h.events().filter((event) => !before.includes(event.id));
       expect(
         added.map((event) => ({
@@ -358,6 +397,7 @@ describe("every action row (iterating the table)", () => {
           kind: "operator.action",
           payload: { action: row.action, surface: "api", target: valid.target },
         },
+        ...outcome.map((event) => ({ row: key(row), ...event })),
       ]);
 
       // The effect ran once, and that row was already stored when it started.
@@ -805,7 +845,6 @@ describe("the paths that existed before the table", () => {
     expect(posted.headers.get("allow")).toBe("GET");
 
     const unmounted = [
-      "/beads",
       "/beads/demo-1/claim",
       "/beads/demo-1/close",
       "/beads/demo-1/comment",

@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { OperatorEnvelope } from "../../../types/hearth";
+import type { LedgerEventInput, OperatorEnvelope } from "../../../types/hearth";
 import { assertCouncilRunId } from "../../council/artifacts";
 import {
   assertCouncilInput,
@@ -18,8 +18,8 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
-import { redactSecrets } from "../../secret-patterns";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -31,11 +31,13 @@ import {
 } from "../api";
 import { createLedgerStream } from "../stream";
 import type { ValidationResult } from "../validate";
+import { beadRoutes } from "./beads";
 import { applyReview } from "./dev-api";
 import {
   fail,
   isRecord,
   ledgerReads,
+  looksLikeSecret,
   noParameters,
   type ReadDeps,
   workspaceReads,
@@ -45,21 +47,14 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
   council: CouncilService;
+  /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
+  appendEvent(event: LedgerEventInput): AppendResult;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
 }
 
 const BEAD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
-
-/**
- * An id is stored on the audit row exactly as given, and the ledger refuses a
- * row whose id its secret scanner would change. Refusing here turns that into
- * a 400 for the caller instead of an action that could not be recorded.
- */
-function looksLikeSecret(value: string): boolean {
-  return redactSecrets(value).redactions.length > 0;
-}
 
 function councilRunId(value: unknown): ValidationResult<string> {
   if (typeof value !== "string") return fail("runId must be a string");
@@ -284,7 +279,16 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   };
 
   return {
-    routes: [...reads, stream, ...actions(deps)],
+    routes: [
+      ...reads,
+      stream,
+      ...actions(deps),
+      ...beadRoutes({
+        workspace,
+        runBd: deps.runBd,
+        appendEvent: deps.appendEvent,
+      }),
+    ],
     close: () => live.close(),
   };
 }

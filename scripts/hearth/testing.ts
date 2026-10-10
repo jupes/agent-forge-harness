@@ -16,6 +16,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
 import { OPERATOR_HEADER } from "./paths";
 import type { BdResult } from "./routes/dev-api";
 import {
@@ -35,7 +36,84 @@ export interface FakeBd {
   list: BdResult | (() => Promise<BdResult>);
   /** The status `bd show` reports for any issue. */
   status: string;
+  /**
+   * Answer a call yourself: return a result to use it, or nothing to let the
+   * fake answer. For what a real `bd` does that the fake does not: a refusal,
+   * a call that never finishes, help text, an id it resolved differently.
+   */
+  answer: ((args: string[]) => BdResult | Promise<BdResult> | undefined) | null;
+  /** The issues the fake's own answers to the write routes have described, by id. */
+  issues: Map<string, BdIssue>;
   run(args: string[], options?: { timeoutMs?: number }): Promise<BdResult>;
+}
+
+/**
+ * What the fake answers to a write the Beads routes make (`--json`), in bd's
+ * own shapes. It records and agrees; it does not refuse what bd would refuse
+ * (an unknown parent, a closed issue): a test that needs a refusal sets
+ * `answer`.
+ */
+function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
+  const write = readWrite(args);
+  if (write === null) return null;
+  const now = bdTime();
+  if (write.verb === "create") {
+    const siblings = [...bd.issues.keys()].filter((id) =>
+      write.parent === undefined
+        ? !id.includes(".")
+        : id.startsWith(`${write.parent}.`),
+    ).length;
+    const issue: BdIssue = {
+      id:
+        write.parent === undefined
+          ? `made-${siblings + 1}`
+          : `${write.parent}.${siblings + 1}`,
+      title: write.title,
+      issue_type: write.type,
+      priority: Number(write.priority),
+      status: "open",
+      created_at: now,
+      updated_at: now,
+    };
+    bd.issues.set(issue.id, issue);
+    return bdAnswers.created(issue);
+  }
+  if (write.verb === "comment")
+    return bdAnswers.commented({
+      id: `comment-${bd.calls.length}`,
+      issueId: write.id,
+      author: "operator",
+      text: write.text,
+      createdAt: now,
+    });
+  const known: BdIssue = bd.issues.get(write.id) ?? {
+    id: write.id,
+    title: "",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    created_at: now,
+    updated_at: now,
+  };
+  const issue: BdIssue =
+    write.verb === "claim"
+      ? {
+          ...known,
+          status: "in_progress",
+          assignee: "operator",
+          updated_at: now,
+        }
+      : {
+          ...known,
+          status: "closed",
+          close_reason: write.reason,
+          closed_at: now,
+          updated_at: now,
+        };
+  bd.issues.set(issue.id, issue);
+  return write.verb === "claim"
+    ? bdAnswers.claimed(issue)
+    : bdAnswers.closed(issue);
 }
 
 export function fakeBd(): FakeBd {
@@ -44,9 +122,13 @@ export function fakeBd(): FakeBd {
     list: { status: 0, stdout: "[]", stderr: "" },
     status: "in_progress",
     options: [],
+    answer: null,
+    issues: new Map(),
     async run(args, options) {
       bd.calls.push(args);
       bd.options.push(options);
+      const given = await bd.answer?.(args);
+      if (given !== undefined) return given;
       if (args[0] === "list")
         return typeof bd.list === "function" ? bd.list() : bd.list;
       if (args[0] === "show")
@@ -55,7 +137,7 @@ export function fakeBd(): FakeBd {
           stdout: JSON.stringify([{ id: args[1], status: bd.status }]),
           stderr: "",
         };
-      return { status: 0, stdout: "", stderr: "" };
+      return answerWrite(bd, args) ?? { status: 0, stdout: "", stderr: "" };
     },
   };
   return bd;

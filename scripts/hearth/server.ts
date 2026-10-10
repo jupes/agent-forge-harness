@@ -84,7 +84,7 @@ export interface OperatorApiOverrides {
   /** How often an open stream looks for new ledger events. */
   streamPollMs?: number;
   streamKeepaliveMs?: number;
-  /** The audit append; defaults to the ledger's. */
+  /** The append of audit rows and of the outcome a row records; defaults to the ledger's. */
   appendEvent?: (event: LedgerEventInput) => AppendResult;
   /** Wrap the table before it is mounted (a test observing an effect). */
   decorate?: (routes: readonly ApiRoute[]) => readonly ApiRoute[];
@@ -170,6 +170,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
   const workspace = resolveCheckout(root).workspace;
+  // One appender for the runner's audit rows and for the outcome a row records.
+  const append =
+    options.api?.appendEvent ??
+    ((event: LedgerEventInput) => appendEvent(event, { path: ledgerFile }));
   const table = operatorRoutes({
     root,
     workspace,
@@ -178,6 +182,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // The Beads database is machine-local: from a linked worktree, bd finds
     // none unless it runs in the main checkout.
     runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
+    appendEvent: append,
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
     streamPollMs: options.api?.streamPollMs,
@@ -187,9 +192,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     {
       workspace,
       expectedToken,
-      appendEvent:
-        options.api?.appendEvent ??
-        ((event) => appendEvent(event, { path: ledgerFile })),
+      appendEvent: append,
     },
     options.api?.decorate?.(table.routes) ?? table.routes,
   );
