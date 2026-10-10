@@ -73,8 +73,9 @@ Each checkpoint becomes one Beads task, so give each one two more things:
 The file map has one format, read by `parseFileMap` in `scripts/scheduler/filemap.ts`:
 
 - A glob is a relative path with forward slashes. `*` stands for any run of characters inside one
-  path segment, `**` for any number of segments, `?` for one character; every other character
-  stands for itself. `{a,b}` alternation is not part of the format: write one glob per line.
+  path segment, `?` for one character, and a segment that is exactly `**` for any number of
+  segments (`src/**/a.ts`, not `src/**a.ts`); every other character stands for itself. `{a,b}`
+  alternation is not part of the format: write one glob per line.
 - Nothing but globs under the heading. A line with a space in it, an absolute path, a `..` segment,
   a backslash, a `<placeholder>` or a `# note` is refused, and one refused line refuses the whole
   map.
@@ -87,14 +88,8 @@ The file map has one format, read by `parseFileMap` in `scripts/scheduler/filema
   anything, which overlaps every other task. Replace it with the paths the task really touches. A
   map that has to stay at `**` says why in a one-line `<!-- … -->` comment above it.
 
-Check the maps before you create the tasks. The parser reads only the first `Files` section of a
-text, so a plan is checked checkpoint by checkpoint:
-
-```bash
-bun run scripts/scheduler/filemap-cli.ts plans/drafts/<slug>.md --plan   # exit 0: every checkpoint has a usable map
-```
-
-A worked example is in `references/example-plan.md`.
+A worked example is in `references/example-plan.md`. Step 4 ends with the command that checks every
+checkpoint's map once the plan is written.
 
 ### 4. Write the plan document
 
@@ -161,6 +156,14 @@ bun test <paths>
 - Files: <n new / n modified>; Complexity: Low|Medium|High; Checkpoints: <n>
 ```
 
+Then check the maps, before any task is created from them. The parser reads only the first `Files`
+section of a text, so a plan is checked checkpoint by checkpoint, and a refusal names the line of the
+plan:
+
+```bash
+bun run scripts/scheduler/filemap-cli.ts plans/drafts/<slug>.md --plan   # exit 0: every checkpoint has a usable map
+```
+
 ### 5. Plan review loop
 
 Before creating Beads issues, run a review-plan feedback loop to catch false premises early.
@@ -209,9 +212,18 @@ bd dep add <later-id> <earlier-id>
 
 **A run that was started from an existing issue does not get a second one to group it.** That issue
 is the run's tracking issue (`.claude/commands/forgemaster.md`, Step 0): skip the feature, and create
-each checkpoint's task under it by adding `--parent <id>` to the task line. The run then names that
-issue on its writes and closes it at the ship step. A plan with a single checkpoint needs no child
-task at all: the starting issue is the task.
+each checkpoint's task under it by adding `--parent <id>` to the task line, also when the plan has
+one checkpoint, so that every checkpoint has a task that carries its label and its file map. What
+the run's writes then name depends on what the starting issue is (step 7 and
+`.claude/workflows/forge.md`, *Which bead a phase names*):
+
+- a task, a bug or a chore: the run names it with `--bead` on its plan and implement writes, and
+  closes it at the ship step;
+- a feature or an epic: it is the `--epic` of those writes, which name the checkpoint tasks, and it
+  is named with `--bead` only by the ship write.
+
+A child inherits its parent's labels, a `complexity:*` label included. If the starting issue carries
+one, add `--no-inherit-labels` to the task line so the child has only its own.
 
 The task's description is read from a file so that the file map keeps its lines. Write one per task
 from its checkpoint: what the task delivers, then the checkpoint's map under `## Files` (the heading

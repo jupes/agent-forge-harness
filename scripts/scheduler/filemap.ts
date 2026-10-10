@@ -14,9 +14,10 @@
  * level two or deeper, or to a horizontal rule.
  *
  * A glob is a relative path, with forward slashes, in which `*` stands for
- * any run of characters inside one segment, `**` for any number of segments
- * and `?` for one character. Every other character stands for itself,
- * brackets included; `{a,b}` alternation is not part of the format.
+ * any run of characters inside one segment, `?` for one character, and a
+ * segment that is exactly `**` for any number of segments. Every other
+ * character stands for itself, brackets included; `{a,b}` alternation is not
+ * part of the format, and `**` inside a longer segment means nothing here.
  *
  * Nothing but globs belongs in the section: blank lines and one-line
  * `<!-- -->` comments are skipped, a list bullet and surrounding backticks
@@ -43,13 +44,13 @@ export type FileMap =
 
 /** A plan checkpoint and the file map under it. */
 export interface CheckpointFileMap {
-  /** The checkpoint's heading text, without its `###`. */
+  /** The checkpoint's heading text, without its `#`s. */
   checkpoint: string;
   map: FileMap;
 }
 
 const FILES_HEADING = /^#{2,6}[ \t]+Files$/;
-/** A heading that closes the section. A lone `#` line inside it is not one: see `globOf`. */
+/** A heading that closes the section. A `#` line inside it is not one: see `globOf`. */
 const SECTION_HEADING = /^#{2,6}[ \t]+\S/;
 /** A horizontal rule: it closes a section the way a heading does. */
 const RULE = /^(-{3,}|_{3,}|\*{3,})$/;
@@ -57,33 +58,18 @@ const COMMENT = /^<!--.*-->$/;
 const BULLET = /^[-*+][ \t]+/;
 /** Characters no path holds: an unfilled `<placeholder>`, a drive, a quote, a pipe. */
 const NOT_IN_A_PATH = /[<>:"|`]/;
-const CHECKPOINT_HEADING = /^###[ \t]+(Checkpoint\b.*)$/;
-/** A heading of a checkpoint's own level or above: where the checkpoint ends. */
-const CHECKPOINT_END = /^#{1,3}[ \t]+\S/;
-
-/** A character nobody can see: a control, or a zero-width or direction mark. */
-function hasInvisible(text: string): boolean {
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0;
-    if (
-      (code < 0x20 && code !== 0x09) ||
-      (code >= 0x7f && code <= 0x9f) ||
-      (code >= 0x200b && code <= 0x200f) ||
-      (code >= 0x2028 && code <= 0x202f) ||
-      (code >= 0x2060 && code <= 0x206f) ||
-      code === 0xfeff
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
+/** Format characters (zero-width, direction marks, soft hyphen) and line or paragraph separators. */
+const FORMAT_CHARACTER = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+const CONTROL_CHARACTER = /\p{Cc}/u;
+const ANY_HEADING = /^(#{1,6})[ \t]+\S/;
+const CHECKPOINT_HEADING = /^(#{2,6})[ \t]+(Checkpoint\b.*)$/;
+const FENCE = /^(```|~~~)/;
 
 /** The glob a line holds, or why it holds none. */
 function globOf(written: string): { glob: string } | { why: string } {
-  if (/^#[ \t]/.test(written)) {
+  if (written.startsWith("#")) {
     return {
-      why: "is a `#` line: a comment is `<!-- … -->`, and a section starts with `##`",
+      why: "starts with `#`: a comment is `<!-- … -->`, and a section starts with `##`",
     };
   }
   // What the line becomes first: every check below is on that.
@@ -93,8 +79,12 @@ function globOf(written: string): { glob: string } | { why: string } {
   }
   while (entry.startsWith("./")) entry = entry.slice(2);
 
-  if (hasInvisible(entry)) {
-    return { why: "holds an invisible character" };
+  // A tab is whitespace, and is reported as that.
+  if (
+    FORMAT_CHARACTER.test(entry) ||
+    CONTROL_CHARACTER.test(entry.replaceAll("\t", ""))
+  ) {
+    return { why: "holds a control or format character, which cannot be seen" };
   }
   if (/\s/.test(entry)) {
     return { why: "has whitespace: one glob per line and nothing else" };
@@ -105,7 +95,8 @@ function globOf(written: string): { glob: string } | { why: string } {
   if (/^([/\\~]|[A-Za-z]:)/.test(entry)) {
     return { why: "is absolute: a glob is relative to the repository root" };
   }
-  if (entry.split(/[/\\]/).includes("..")) {
+  const segments = entry.split(/[/\\]/);
+  if (segments.includes("..")) {
     return { why: "leaves the repository (a `..` segment)" };
   }
   if (entry.includes("\\")) {
@@ -125,11 +116,19 @@ function globOf(written: string): { glob: string } | { why: string } {
   if (stray !== null) {
     return { why: `holds \`${stray[0]}\`, which no path does` };
   }
+  if (segments.some((segment) => segment.includes("**") && segment !== "**")) {
+    return {
+      why: "has `**` inside a segment: `**` stands for whole segments, `*` for part of one",
+    };
+  }
   return { glob: entry.endsWith("/") ? `${entry}**` : entry };
 }
 
-export function parseFileMap(text: string): FileMap {
-  const lines = text.split(/\r?\n/).map((line) => line.trim());
+/**
+ * The map in `lines` (already trimmed). `offset` is how many lines of the
+ * whole text come before them, so a refusal names the line of the text.
+ */
+function readMap(lines: readonly string[], offset: number): FileMap {
   const heading = lines.findIndex((line) => FILES_HEADING.test(line));
   if (heading < 0) {
     return { ok: false, reason: "missing", error: "no `Files` section" };
@@ -143,7 +142,7 @@ export function parseFileMap(text: string): FileMap {
     if (line.length === 0 || COMMENT.test(line)) continue;
     const read = globOf(line);
     if ("why" in read) {
-      problems.push({ line: at + 1, text: line, why: read.why });
+      problems.push({ line: offset + at + 1, text: line, why: read.why });
     } else if (!globs.includes(read.glob)) {
       globs.push(read.glob);
     }
@@ -169,30 +168,53 @@ export function parseFileMap(text: string): FileMap {
   return { ok: true, globs };
 }
 
+export function parseFileMap(text: string): FileMap {
+  return readMap(
+    text.split(/\r?\n/).map((line) => line.trim()),
+    0,
+  );
+}
+
 /**
  * The file map of every checkpoint of a plan document, in order.
  *
  * `parseFileMap` reads the first `Files` section of a text, so a plan has to
- * be read checkpoint by checkpoint: each `### Checkpoint …` heading opens one,
- * and it runs to the next heading of its own level or above. Line numbers in
- * a refusal count from the checkpoint's heading.
+ * be read checkpoint by checkpoint. A heading whose text starts with
+ * `Checkpoint` opens one, at whatever level it was written, and it runs to
+ * the next checkpoint or the next heading of its own level or above; a
+ * `Files` heading is never that end, and neither is a `#` line inside a
+ * fenced block. Line numbers in a refusal are lines of the plan.
  */
 export function parsePlanFileMaps(plan: string): CheckpointFileMap[] {
-  const lines = plan.split(/\r?\n/);
+  const lines = plan.split(/\r?\n/).map((line) => line.trim());
   const found: CheckpointFileMap[] = [];
+  let fenced = false;
   for (let at = 0; at < lines.length; at++) {
-    const title = CHECKPOINT_HEADING.exec((lines[at] as string).trim())?.[1];
-    if (title === undefined) continue;
+    const line = lines[at] as string;
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    const opened = fenced ? null : CHECKPOINT_HEADING.exec(line);
+    if (opened === null) continue;
+    const level = (opened[1] as string).length;
+
     let end = at + 1;
-    while (
-      end < lines.length &&
-      !CHECKPOINT_END.test((lines[end] as string).trim())
-    ) {
-      end++;
+    let inner = false;
+    for (; end < lines.length; end++) {
+      const next = lines[end] as string;
+      if (FENCE.test(next)) {
+        inner = !inner;
+        continue;
+      }
+      if (inner || FILES_HEADING.test(next)) continue;
+      if (CHECKPOINT_HEADING.test(next)) break;
+      const heading = ANY_HEADING.exec(next);
+      if (heading !== null && (heading[1] as string).length <= level) break;
     }
     found.push({
-      checkpoint: title.trim(),
-      map: parseFileMap(lines.slice(at, end).join("\n")),
+      checkpoint: (opened[2] as string).trim(),
+      map: readMap(lines.slice(at, end), at),
     });
     at = end - 1;
   }

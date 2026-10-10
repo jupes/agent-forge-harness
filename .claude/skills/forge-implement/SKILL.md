@@ -46,16 +46,15 @@ Work tasks in dependency order. One task in progress at a time.
 
 **Stay inside the task's file map.** The `## Files` section of the task's description lists the
 globs this task may touch (the plan phase wrote it: `.claude/skills/forge-plan/SKILL.md`). Read it
-from the stored description, not from the screen:
+as it is stored:
 
 ```bash
-bd show <task-id> --json        # the "description" field is the text as it was written
+bd show <task-id> --json | bun run scripts/scheduler/filemap-cli.ts - --bd-json   # prints the task's globs
 ```
 
-Plain `bd show <task-id>` renders the description as Markdown, and a glob that holds `*` comes out
-garbled (`scripts/forge/**/*.ts` is printed as `**scripts/forge/****/*.ts`). To see the map the
-way a tool will read it, save the description to a file and run
-`bun run scripts/scheduler/filemap-cli.ts <file>`.
+Do not read the map off plain `bd show <task-id>`: that renders the description as Markdown, and a
+glob that holds `*` comes out garbled (`scripts/forge/**/*.ts` is printed as
+`**scripts/forge/****/*.ts`).
 
 Edit only files those globs match. The map is what the task said it would touch, and the review of
 this phase reads the diff against it. Nothing reserves files from it yet; it is kept honest now so
@@ -68,12 +67,19 @@ then go on:
 bd comments add <task-id> "worklog: outside the file map: <path> — <why this task has to touch it>"
 ```
 
-Add the path to the task's `## Files` section too, and name it when you show the checkpoint. Start
-from the text as it was written (the plan phase's `.tmp/work/<slug>-task-<letter>.md`, or the
-`description` field of `bd show <task-id> --json`), never from what plain `bd show` printed; add the
-line, check the file with `bun run scripts/scheduler/filemap-cli.ts <file>`, then store it with
-`bd update <task-id> --body-file <file>`. A task whose description has no `## Files` section has no
-map to hold to: say that in the first `worklog:` comment.
+Add the path to the task's `## Files` section too, and name it when you show the checkpoint. Work on
+the description as it was written, never on what plain `bd show` printed. Save the stored one to a
+file, add the line, check the file, then store it:
+
+```bash
+bd show <task-id> --json | bun -e 'const issue = JSON.parse(await Bun.stdin.text()); await Bun.write(process.argv[1], [issue].flat()[0].description)' .tmp/work/<task-id>-description.md
+# edit .tmp/work/<task-id>-description.md: one more line under "## Files"
+bun run scripts/scheduler/filemap-cli.ts .tmp/work/<task-id>-description.md      # exit 0: the map is usable
+bd update <task-id> --body-file .tmp/work/<task-id>-description.md
+```
+
+A task whose description has no `## Files` section has no map to hold to (the first command of this
+section says `no Files section`): say that in the first `worklog:` comment.
 
 **Keep Beads current as you work** (do not batch all updates to the end):
 - `--claim` moves the task `open → in_progress` — claim it *before* writing code, not after.

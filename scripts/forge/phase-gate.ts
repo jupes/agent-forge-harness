@@ -243,6 +243,9 @@ export function recordComplete(
   return { ok: true, data: newState, error: null };
 }
 
+const SMITH_NEEDS_A_NAME =
+  "--smith needs the name of a configured smith (`bun run forge:config show` lists them).";
+
 /** The flags that say who is building: a configured smith, or a provider and a model. */
 export interface ExecutorFlags {
   provider?: string;
@@ -263,7 +266,7 @@ function smithExecutor(
     return {
       ok: false,
       data: null,
-      error: "--smith needs the name of a configured smith.",
+      error: SMITH_NEEDS_A_NAME,
     };
   }
   let config: ForgeConfig;
@@ -389,11 +392,7 @@ export function parseGateArgs(argv: readonly string[]): GateResult<GateArgs> {
     error,
   });
   const noValue = (name: ValueFlag): GateResult<GateArgs> =>
-    refuse(
-      name === "smith"
-        ? "--smith needs the name of a configured smith."
-        : `--${name} needs a value.`,
-    );
+    refuse(name === "smith" ? SMITH_NEEDS_A_NAME : `--${name} needs a value.`);
   const args: GateArgs = { phase: undefined, write: false, values: {} };
 
   for (let at = 0; at < argv.length; at++) {
@@ -425,6 +424,13 @@ export function parseGateArgs(argv: readonly string[]): GateResult<GateArgs> {
     const value = equals >= 0 ? word.slice(equals + 1) : argv[++at];
     if (value === undefined || value.trim().length === 0) return noValue(name);
     if (equals < 0 && value.startsWith("--")) return noValue(name);
+    // A line copied from a document with its `<id>` still in it names nothing.
+    if (/^<[^<>]*>$/.test(value.trim())) {
+      return refuse(`--${name} ${value} is a placeholder, not a value.`);
+    }
+    if (name === "mode" && !isForgeMode(value)) {
+      return refuse(`--mode must be "gated" or "auto", not "${value}".`);
+    }
     args.values[name] = value;
   }
   return { ok: true, data: args, error: null };
@@ -491,13 +497,6 @@ if (import.meta.main) {
 
   if (write) {
     const { feature, epic, mode: modeArg, checkout } = args.values;
-    if (modeArg !== undefined && !isForgeMode(modeArg)) {
-      emit({
-        ok: false,
-        data: null,
-        error: `--mode must be "gated" or "auto", not "${modeArg}".`,
-      });
-    }
     const result = recordComplete(phase, slugValue, existsSync, state, {
       ...(feature ? { feature } : {}),
       ...(epic ? { epic } : {}),

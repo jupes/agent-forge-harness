@@ -646,6 +646,51 @@ describe("the command line, read strictly", () => {
   });
 });
 
+describe("the command line: a value that cannot be one", () => {
+  test("a value still in its angle brackets is refused, so a copied line with an unfilled <id> records nothing", () => {
+    for (const [flag, value] of [
+      ["--bead", "<id>"],
+      ["--bead", "<task-id>"],
+      ["--epic", "<feature-or-epic-id>"],
+      ["--checkout", "<checkout>"],
+      ["--smith", "<name>"],
+      ["--slug", "<slug>"],
+    ] as const) {
+      const refused = parseGateArgs(
+        flag === "--slug"
+          ? ["plan", flag, value]
+          : ["plan", "--slug", "demo", flag, value],
+      );
+      expect({ flag, ok: refused.ok }).toEqual({ flag, ok: false });
+      expect(refused.error).toContain("placeholder");
+    }
+    expect(parseGateArgs(["plan", "--slug", "demo", "--bead=<id>"]).ok).toBe(
+      false,
+    );
+  });
+
+  test("--mode is checked wherever it is given, an entry check included", () => {
+    const refused = parseGateArgs([
+      "plan",
+      "--slug",
+      "demo",
+      "--mode",
+      "unattended",
+    ]);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('--mode must be "gated" or "auto"');
+    expect(parseGateArgs(["plan", "--slug", "demo", "--mode", "auto"]).ok).toBe(
+      true,
+    );
+  });
+
+  test("the refusal for a missing smith name says where the names are", () => {
+    expect(
+      parseGateArgs(["plan", "--slug", "demo", "--smith"]).error,
+    ).toContain("bun run forge:config show");
+  });
+});
+
 // ── The command ──────────────────────────────────────────────────────────────
 
 const PHASE_GATE = join(import.meta.dir, "phase-gate.ts");

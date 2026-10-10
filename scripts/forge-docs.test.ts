@@ -596,7 +596,7 @@ describe("the Forge documents: what the review of the first build found", () => 
     }
   });
 
-  test("the documents do not say forge:exec reads the bead: the label and the bead's smith reach it as flags", () => {
+  test("the documents say forge:exec does not read the bead: the label and the bead's smith reach it as flags", () => {
     expect(
       missing(".claude/workflows/forge.md", [
         "--bead-smith",

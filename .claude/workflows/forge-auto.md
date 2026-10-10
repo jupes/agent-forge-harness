@@ -75,8 +75,10 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
    exactly as the gated pipeline does.
 3. **Record it.**
    `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto --checkout <worktree> --bead <id>`:
-   the skill's own `--write` line, with `--mode auto --checkout` added. `<id>` is the issue that
-   skill names for its phase (`.claude/workflows/forge.md`, *Which bead a phase names*).
+   the skill's own `--write` line, with `--mode auto --checkout` added. `<worktree>` is the top
+   level of the checkout the run builds in; a run that builds where this command runs may leave
+   `--checkout` out. `<id>` is the issue that skill names for its phase
+   (`.claude/workflows/forge.md`, *Which bead a phase names*).
    `--smith <name>` (or `--provider <id> --model <id> [--effort <level>]`) records who is building
    it, on this call and on the entry check of step 1 (`.claude/workflows/forge.md`, *`--smith`*).
    Both are kept on the run and stamped on its ledger events.

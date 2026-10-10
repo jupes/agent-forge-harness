@@ -20,8 +20,10 @@ Follow **`.claude/skills/forge-plan/SKILL.md`** in full. In short:
    is explicitly `(no live demo)`).
 5. Write `plans/drafts/<slug>.md`.
 6. Materialize Beads: epic/feature + one task per checkpoint, with dependencies and a `--priority`
-   on every issue (`.claude/skills/beads-priority-assignment/SKILL.md`). `bd` must be reachable —
-   if it errors, run `bd dolt start` and retry.
+   on every issue (`.claude/skills/beads-priority-assignment/SKILL.md`). A run that was started from
+   an existing issue creates no second feature: its tasks go under that issue (`--parent`). Each task
+   carries its checkpoint's `complexity:*` label and file map. `bd` must be reachable — if it errors,
+   run `bd dolt start` and retry.
 7. Present the plan, get approval, then
    `bun run forge:phase-gate plan --slug <slug> --write --bead <task-id>`: the issue the run was
    started from when that is a task, a bug or a chore, else the first task the plan created. Add `--epic <id>` for the feature or epic that

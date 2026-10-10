@@ -5,9 +5,9 @@ What decides which work may run, and beside what. Today it holds one thing: the 
 - `filemap.ts` is pure: text in, globs or a typed refusal out. It reads no file, asks Beads nothing
   and knows no repository. Keep it that way. `filemap-cli.ts` is the only part that reads a file (or
   standard input); its logic is `runFileMapCli`, tested with an injected reader.
-- The glob dialect is small on purpose: `*` inside one path segment, `**` for any number of
-  segments, `?` for one character, every other character for itself (brackets included), and no
-  `{a,b}` alternation. A consumer that hands these globs to a library must not let the library read
+- The glob dialect is small on purpose: `*` inside one path segment, `?` for one character, a
+  segment that is exactly `**` for any number of segments, every other character for itself
+  (brackets included), and no `{a,b}` alternation. A consumer that hands these globs to a library must not let the library read
   more into them than that.
 - The format is documented where authors meet it, in `.claude/skills/forge-plan/SKILL.md`, and that
   skill's template and `references/example-plan.md` are parsed in `filemap.test.ts`. Change the
@@ -17,5 +17,7 @@ What decides which work may run, and beside what. Today it holds one thing: the 
   missing, empty or invalid map means for a task (for example reserving everything) is the caller's
   decision and is not made here.
 - A task's description must reach the parser as it was written: `bd show <id> --json`, field
-  `description`. Plain `bd show` renders Markdown and garbles a glob that holds `*`.
+  `description` (`filemap-cli.ts - --bd-json` takes that output as it is). Plain `bd show` renders
+  Markdown and garbles a glob that holds `*`; the garbled form is refused, because it puts `**`
+  inside a segment.
 - Nothing consumes a file map yet. Reservations and eligibility are not in this directory.
