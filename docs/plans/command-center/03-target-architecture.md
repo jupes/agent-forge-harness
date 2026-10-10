@@ -98,7 +98,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `GET /smiths`, `GET /config` | mounted | Both read what `forge:config show` reads for the hearth's checkout (its `agent-forge.toml` and the machine file); the hearth's own environment is not read. `/config` answers the merged config with provenance and the files read; `/smiths` answers the smiths, the benches and the default smith, without provenance. |
   | `GET /stream` | mounted | See below. |
   | `POST /council/runs`, `POST /council/runs/:id/cancel` | mounted | Body today is the council service's input (`sourceType`, `source`, `profile?`, `maxUsd?`, `maxBytes?`, `runId?`, `redactSecrets?`, `beadId?`). The `{ source: { kind: "bead", id } }` form arrives with `x1gs.7.1`. Also served at `/council-api/runs…`, the paths the dashboard has always used. |
-  | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path and answers; now an audited action. |
+  | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path, and the same answers once a request is accepted; now an audited action, so it refuses what every action refuses (no token, no declared origin, a query string, a body over the cap). |
   | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | not mounted | `x1gs.3.3` |
   | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | not mounted | `x1gs.5.1` |
   | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.4` |
