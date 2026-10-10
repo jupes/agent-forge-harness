@@ -94,15 +94,15 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `GET /runs`, `GET /runs/:slug` | mounted | The run registry of the checkout. `/runs/:slug` adds the stored state and the run's newest 200 ledger events. |
   | `GET /events` | mounted | `bead`, `beadExact`, `run`, `session`, `since`, `kind`, `after`, `limit` (1–1000, default 200), by the rules of `forge:audit`. Always this workspace. Answers `{ events, cursor, more }`. An unknown or repeated parameter is 400. |
   | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label). Empty until `x1gs.5.1` writes those labels. |
-  | `GET /reservations` | mounted | Claims acquired and not released, from the ledger. Empty until `x1gs.5.x` emits them. |
-  | `GET /smiths`, `GET /config` | mounted | The config files of the hearth's checkout, with provenance. The hearth's own environment is not read. |
+  | `GET /reservations` | mounted | Claims acquired and not released, from the ledger. Empty until `x1gs.5.3` emits them. |
+  | `GET /smiths`, `GET /config` | mounted | Both read what `forge:config show` reads for the hearth's checkout (its `agent-forge.toml` and the machine file); the hearth's own environment is not read. `/config` answers the merged config with provenance and the files read; `/smiths` answers the smiths, the benches and the default smith, without provenance. |
   | `GET /stream` | mounted | See below. |
   | `POST /council/runs`, `POST /council/runs/:id/cancel` | mounted | Body today is the council service's input (`sourceType`, `source`, `profile?`, `maxUsd?`, `maxBytes?`, `runId?`, `redactSecrets?`, `beadId?`). The `{ source: { kind: "bead", id } }` form arrives with `x1gs.7.1`. Also served at `/council-api/runs…`, the paths the dashboard has always used. |
   | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path and answers; now an audited action. |
   | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | not mounted | `x1gs.3.3` |
   | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | not mounted | `x1gs.5.1` |
-  | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.3` |
-  | `POST /runs/:slug/replan` | not mounted | the forgemaster expansion (F5) |
+  | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.4` |
+  | `POST /runs/:slug/replan` | not mounted | `x1gs.6`, the forgemaster expansion (its caller is `x1gs.6.2`) |
 
 - Stream (`scripts/hearth/stream.ts`). A new connection gets one `snapshot` event: `{ cursor, sessions, runs, queue, reservations, smiths, config }`, where `cursor` is the ledger's newest id and each collection is the envelope its own `GET` route answers, so one that could not be read carries its own error. Then one `delta` event per ledger event, in `id` order, each with its `id` as the SSE id. A reconnect that sends `Last-Event-ID` gets the deltas after it and no snapshot, unless that id is ahead of the ledger: then the client is out of step and gets a snapshot. A keepalive comment every 15 s; at most 32 streams.
   - The ledger is the only change feed, and other processes write it, so each connection polls for ids above its cursor (250 ms). The cursor is read before the collections: an event appended meanwhile follows the snapshot as a delta, so a delta may repeat what the snapshot shows and never miss it.

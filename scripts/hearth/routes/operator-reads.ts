@@ -346,13 +346,10 @@ function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
 function withTimeout<T>(
   work: Promise<T>,
   ms: number,
-  what: string,
+  refusal: string,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`${what} did not answer within ${ms} ms`)),
-      ms,
-    );
+    const timer = setTimeout(() => reject(new Error(refusal)), ms);
     work.then(
       (value) => {
         clearTimeout(timer);
@@ -438,7 +435,7 @@ export function workspaceReads(deps: ReadDeps) {
     const result = await withTimeout(
       Promise.resolve(deps.runBd([...QUEUE_LIST_ARGS], { timeoutMs: timeout })),
       timeout + 1000,
-      "bd list",
+      `bd list did not answer within its ${timeout} ms limit`,
     );
     if (result.status !== 0)
       return {
