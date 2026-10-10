@@ -14,6 +14,9 @@
  * are looked at, before any file is read and before anything is sent.
  */
 
+import { readdirSync, realpathSync } from "node:fs";
+import { connect } from "node:net";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import {
   type CallToolResult,
@@ -26,6 +29,17 @@ import {
 } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { type OperatorEnvelope, QUEUE_STATES } from "../../types/hearth";
+import { resolveCheckout } from "../ledger/workspace";
+import { hearthHome, lockPath, rootKey, tokenPath } from "./home";
+import { type HearthLock, isPidAlive, readLock } from "./lock";
+import {
+  API_PREFIX,
+  HEALTH_ROUTE,
+  OPERATOR_HEADER,
+  SURFACE_HEADER,
+} from "./paths";
+import { readToken } from "./token";
+import { validateOperatorEnvelope } from "./validate";
 
 /** `agent`: any session. `operator`: the route is an action and needs the operator token. */
 export type ToolAuthority = "agent" | "operator";
@@ -107,7 +121,7 @@ export const FORGE_TOOLS: readonly ForgeTool[] = [
     authority: "agent",
     scope: "workspace",
     description:
-      "Ledger events of this workspace, oldest first. Filter by bead, run, session, kind (comma list) or since (ISO time); page with after (an event id).",
+      "Ledger events of this workspace: the newest, or with after (an event id) the next ones in order. Filter by bead, run, session, kind (comma list) or since (ISO time).",
     input: z.strictObject({
       bead: filter.optional(),
       beadExact: z.boolean().optional(),
@@ -230,8 +244,411 @@ export interface LoopbackAnswer {
 
 export type Exchange = (request: LoopbackRequest) => Promise<LoopbackAnswer>;
 
-export const loopbackExchange: Exchange = () =>
-  Promise.reject(new Error("not built yet"));
+const HEAD_END = Buffer.from("\r\n\r\n");
+const CRLF = Buffer.from("\r\n");
+/** What a request target, a header name and a header value may be made of: nothing that could begin another line. */
+const REQUEST_TARGET = /^\/[\x21-\x7e]*$/;
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HEADER_VALUE = /^[\x20-\x7e]*$/;
+
+type Reading =
+  | { state: "more" }
+  | { state: "done"; answer: LoopbackAnswer }
+  | { state: "bad"; why: string };
+
+const bad = (why: string): Reading => ({ state: "bad", why });
+
+/**
+ * What the bytes received so far amount to. `ended` says the peer has closed,
+ * so nothing more is coming. No message quotes the bytes.
+ */
+function readAnswer(bytes: Buffer, ended: boolean): Reading {
+  const headEnd = bytes.indexOf(HEAD_END);
+  if (headEnd === -1)
+    return ended
+      ? bad("the answer ended before its headers")
+      : { state: "more" };
+  const lines = bytes.subarray(0, headEnd).toString("latin1").split("\r\n");
+  const status = /^HTTP\/1\.[01] (\d{3})(?: |$)/.exec(lines[0] ?? "");
+  if (!status) return bad("the answer is not HTTP");
+  const headers = new Map<string, string>();
+  for (const line of lines.slice(1)) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) return bad("the answer has a malformed header");
+    const name = line.slice(0, colon).trim().toLowerCase();
+    // A framing given twice is two ways to read the same bytes.
+    if (
+      headers.has(name) &&
+      (name === "content-length" || name === "transfer-encoding")
+    )
+      return bad("the answer says twice how long it is");
+    headers.set(name, line.slice(colon + 1).trim());
+  }
+  const rest = bytes.subarray(headEnd + HEAD_END.length);
+  /** One answer is read. Bytes after it would be a second one. */
+  const done = (body: Buffer, after: number): Reading =>
+    after > 0
+      ? bad("the peer sent more than one answer")
+      : {
+          state: "done",
+          answer: { status: Number(status[1]), body: body.toString("utf8") },
+        };
+  const unfinished = (): Reading =>
+    ended ? bad("the answer ended inside its body") : { state: "more" };
+
+  const encoding = headers.get("transfer-encoding");
+  if (encoding !== undefined) {
+    if (encoding.toLowerCase() !== "chunked" || headers.has("content-length"))
+      return bad("the answer is framed in a way this client does not read");
+    const parts: Buffer[] = [];
+    let at = 0;
+    for (;;) {
+      const lineEnd = rest.indexOf(CRLF, at);
+      if (lineEnd === -1) return unfinished();
+      const [sizeText = ""] = rest
+        .subarray(at, lineEnd)
+        .toString("latin1")
+        .split(";");
+      if (!/^[0-9a-fA-F]{1,8}$/.test(sizeText.trim()))
+        return bad("the answer has a malformed chunk");
+      const size = Number.parseInt(sizeText.trim(), 16);
+      const start = lineEnd + CRLF.length;
+      if (size === 0) {
+        // After the last chunk: an empty line, or trailers and then one.
+        const trailersEnd = rest.indexOf(HEAD_END, lineEnd);
+        const end = rest.subarray(start, start + CRLF.length).equals(CRLF)
+          ? start + CRLF.length
+          : trailersEnd === -1
+            ? -1
+            : trailersEnd + HEAD_END.length;
+        if (end === -1) return unfinished();
+        return done(Buffer.concat(parts), rest.length - end);
+      }
+      if (rest.length < start + size + CRLF.length) return unfinished();
+      if (!rest.subarray(start + size, start + size + CRLF.length).equals(CRLF))
+        return bad("the answer has a malformed chunk");
+      parts.push(rest.subarray(start, start + size));
+      at = start + size + CRLF.length;
+    }
+  }
+  const length = headers.get("content-length");
+  if (length !== undefined) {
+    if (!/^\d{1,10}$/.test(length))
+      return bad("the answer has a malformed length");
+    if (rest.length < Number(length)) return unfinished();
+    return done(rest.subarray(0, Number(length)), rest.length - Number(length));
+  }
+  // Neither: the body is whatever arrives before the peer closes.
+  return ended ? done(rest, 0) : { state: "more" };
+}
+
+/**
+ * One HTTP/1.1 exchange over a socket this process opens to `127.0.0.1`.
+ *
+ * Not `fetch` and not `node:http`: under Bun both take `HTTP_PROXY` from the
+ * environment the process started with, and neither a request option nor a
+ * change at run time turns that off, so a loopback request, operator token
+ * included, would go to the proxy. A socket of our own goes where it is told:
+ * no proxy, no redirect followed, no name resolved.
+ */
+export const loopbackExchange: Exchange = (request) =>
+  new Promise((resolve, reject) => {
+    const { port, method, target, headers, body } = request;
+    // Checked before a socket exists. What is written is exactly these lines,
+    // so none of them may hold anything that could begin another.
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      return reject(new Error("the port is not a port"));
+    if (!REQUEST_TARGET.test(target))
+      return reject(
+        new Error("the request target is not one this client sends"),
+      );
+    for (const [name, value] of Object.entries(headers))
+      if (!HEADER_NAME.test(name) || !HEADER_VALUE.test(value))
+        return reject(
+          new Error("a request header is not one this client sends"),
+        );
+    const lines = [
+      `${method} ${target} HTTP/1.1`,
+      `Host: 127.0.0.1:${port}`,
+      "Connection: close",
+    ];
+    for (const [name, value] of Object.entries(headers))
+      lines.push(`${name}: ${value}`);
+    const payload = body === undefined ? null : Buffer.from(body, "utf8");
+    if (payload) lines.push(`Content-Length: ${payload.byteLength}`);
+    const head = Buffer.from(`${lines.join("\r\n")}\r\n\r\n`, "latin1");
+
+    if (request.signal?.aborted)
+      return reject(new Error("the request was cancelled"));
+    const socket = connect({ host: "127.0.0.1", port });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (outcome: LoopbackAnswer | Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.signal?.removeEventListener("abort", onAbort);
+      // The peer may keep its end open; one answer is all that is read.
+      socket.destroy();
+      if (outcome instanceof Error) reject(outcome);
+      else resolve(outcome);
+    };
+    const onAbort = (): void => finish(new Error("the request was cancelled"));
+    const timer = setTimeout(
+      () => finish(new Error(`no answer within ${request.timeoutMs} ms`)),
+      request.timeoutMs,
+    );
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+    const judge = (ended: boolean): void => {
+      const reading = readAnswer(Buffer.concat(chunks), ended);
+      if (reading.state === "done") finish(reading.answer);
+      else if (reading.state === "bad") finish(new Error(reading.why));
+    };
+    socket.once("connect", () => {
+      socket.write(payload ? Buffer.concat([head, payload]) : head);
+    });
+    socket.on("data", (chunk: Buffer) => {
+      size += chunk.byteLength;
+      if (size > request.maxBytes)
+        return finish(
+          new Error(`the answer is over ${request.maxBytes} bytes`),
+        );
+      chunks.push(chunk);
+      judge(false);
+    });
+    socket.once("end", () => judge(true));
+    socket.once("close", () =>
+      finish(new Error("the connection closed before an answer")),
+    );
+    socket.once("error", (error: NodeJS.ErrnoException) =>
+      finish(
+        new Error(
+          error.code === "ECONNREFUSED"
+            ? "nothing is listening on the port"
+            : "the connection failed",
+        ),
+      ),
+    );
+  });
+
+// ── Finding the hearth ──────────────────────────────────────────────────────
+
+/** A hearth that passed every check. */
+interface Hearth {
+  port: number;
+  /** As the hearth spells it: in its lock, and in its health answer. */
+  root: string;
+  /** Where this server computes that hearth's token file to be. Never a path taken from the lock. */
+  tokenFile: string;
+}
+
+interface Located {
+  /** The hearth of the checkout the session works in. */
+  own: Hearth | null;
+  /** The hearth of the main checkout, when the session works in a linked worktree of it. */
+  workspace: Hearth | null;
+  /** Why a lock naming one of those checkouts was not used. */
+  rejected: string[];
+}
+
+const LOCK_FILE = /^hearth-[0-9a-f]{12}\.lock$/;
+/** What `createToken` writes. Anything else in a token file is not sent anywhere. */
+const TOKEN = /^[0-9a-f]{64}$/;
+/** The probe that asks a port whether it is the hearth its lock names. */
+const HEALTH_TIMEOUT_MS = 2000;
+const HEALTH_MAX_BYTES = 16_384;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A directory as the file system knows it, so that two spellings of one place
+ * (a link, a Windows short name, another letter case) compare equal. The
+ * native call: under Bun the plain one leaves a short name as it is.
+ */
+function onDisk(path: string): string {
+  try {
+    return rootKey(realpathSync.native(path));
+  } catch {
+    return rootKey(path);
+  }
+}
+
+/** Why this lock is not used, or null when everything about it holds. */
+async function unusable(
+  home: string,
+  file: string,
+  lock: HearthLock,
+  exchange: Exchange,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  // A hearth writes its lock under the name of the root inside it, and names
+  // the token file of that root in this home. A lock that says otherwise was
+  // not written by a hearth of this home.
+  if (file !== basename(lockPath(home, lock.root)))
+    return "it is not the lock file of the checkout it names";
+  const tokenFile = tokenPath(home, lock.root);
+  if (
+    basename(lock.tokenFile) !== basename(tokenFile) ||
+    onDisk(dirname(lock.tokenFile)) !== onDisk(dirname(tokenFile))
+  )
+    return "the token file it names is not this home's";
+  if (!Number.isInteger(lock.port) || lock.port < 1 || lock.port > 65535)
+    return "it names no usable port";
+  if (!isPidAlive(lock.pid)) return "the process it names is not running";
+
+  // Only now is anything sent, and only this question: a port can outlive the
+  // hearth that published it and belong to another program.
+  let answer: LoopbackAnswer;
+  try {
+    answer = await exchange({
+      port: lock.port,
+      method: "GET",
+      target: HEALTH_ROUTE,
+      headers: {},
+      timeoutMs: HEALTH_TIMEOUT_MS,
+      maxBytes: HEALTH_MAX_BYTES,
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    return `its port did not answer as a hearth (${(error as Error).message})`;
+  }
+  let health: unknown = null;
+  try {
+    health = JSON.parse(answer.body);
+  } catch {
+    // Not JSON: not a hearth.
+  }
+  const data =
+    isRecord(health) && health["ok"] === true ? health["data"] : null;
+  // The hearth answers the very string it wrote into its lock.
+  if (
+    answer.status !== 200 ||
+    !isRecord(data) ||
+    data["pid"] !== lock.pid ||
+    data["root"] !== lock.root
+  )
+    return "what answers on its port is not that hearth";
+  return null;
+}
+
+/**
+ * The live hearths this session may talk to. Every lock in the home is read,
+ * in name order, and judged by the directory it names, not by a name this
+ * server would have derived: a hearth started on another spelling of the
+ * checkout is the same hearth.
+ */
+async function locateHearth(
+  home: string,
+  root: string,
+  exchange: Exchange,
+  signal: AbortSignal | undefined,
+): Promise<Located> {
+  const located: Located = { own: null, workspace: null, rejected: [] };
+  const start = resolve(root);
+  const checkout = resolveCheckout(start);
+  const own = new Set([onDisk(start), onDisk(checkout.worktree)]);
+  const main = onDisk(checkout.workspace);
+  let files: string[];
+  try {
+    files = readdirSync(home)
+      .filter((name) => LOCK_FILE.test(name))
+      .sort();
+  } catch {
+    return located;
+  }
+  for (const file of files) {
+    const lock = readLock(join(home, file));
+    // A relative root names no particular directory.
+    if (!lock || !isAbsolute(lock.root)) continue;
+    const place = onDisk(lock.root);
+    const kind = own.has(place) ? "own" : place === main ? "workspace" : null;
+    if (kind === null || located[kind] !== null) continue;
+    const problem = await unusable(home, file, lock, exchange, signal);
+    if (problem !== null) located.rejected.push(`${file}: ${problem}`);
+    else
+      located[kind] = {
+        port: lock.port,
+        root: lock.root,
+        tokenFile: tokenPath(home, lock.root),
+      };
+  }
+  return located;
+}
+
+// ── A call as a request ─────────────────────────────────────────────────────
+
+/** How long one request may take. A queue read that waits behind another can take 32 s. */
+const REQUEST_TIMEOUT_MS = 45_000;
+const ANSWER_MAX_BYTES = 4_000_000;
+
+/**
+ * The request a row's validated arguments become. Path parameters are checked
+ * again here, whatever the row's schema says; the query is built by
+ * `URLSearchParams`, so a value stays one value whatever characters it holds.
+ */
+function requestFor(
+  tool: ForgeTool,
+  input: Record<string, unknown>,
+): { target: string; body?: string } {
+  const fields = { ...input };
+  const path = tool.path
+    .split("/")
+    .map((part) => {
+      if (!part.startsWith(":")) return part;
+      const name = part.slice(1);
+      const value = fields[name];
+      delete fields[name];
+      if (typeof value !== "string" || !SEGMENT.test(value))
+        throw new Error(`${name}: not a name this server puts in a path`);
+      return value;
+    })
+    .join("/");
+  if (tool.method === "POST")
+    return { target: `${API_PREFIX}${path}`, body: JSON.stringify(fields) };
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries(fields)) {
+    // False and an empty list are what the route assumes when not told, and
+    // it refuses some of them spelled out (`beadExact` without `bead`).
+    if (value === undefined || value === false) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    query.set(
+      name,
+      value === true
+        ? "1"
+        : Array.isArray(value)
+          ? value.join(",")
+          : String(value),
+    );
+  }
+  const text = query.toString();
+  return { target: `${API_PREFIX}${path}${text ? `?${text}` : ""}` };
+}
+
+function refusal(error: string): OperatorEnvelope {
+  return { ok: false, data: null, error };
+}
+
+/** An envelope as a tool result: one text item, and nothing beside it. */
+function result(envelope: OperatorEnvelope): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(envelope) }],
+    isError: !envelope.ok,
+  };
+}
+
+/** The envelope with every occurrence of the token replaced: a hearth that repeats what it was sent must not hand it on. */
+function withoutToken(
+  envelope: OperatorEnvelope,
+  token: string | null,
+): OperatorEnvelope {
+  if (token === null) return envelope;
+  const text = JSON.stringify(envelope);
+  if (!text.includes(token)) return envelope;
+  return JSON.parse(text.split(token).join("[operator token]"));
+}
 
 // ── The council's tools ─────────────────────────────────────────────────────
 
@@ -278,35 +695,141 @@ export interface HearthMcpOptions {
   exchange?: Exchange;
   /** How a token file is read. Tests wrap the real one to see that it was, or was not. */
   readToken?: (file: string) => string | null;
-}
-
-function refusal(error: string): OperatorEnvelope {
-  return { ok: false, data: null, error };
-}
-
-/** An envelope as a tool result: one text item, and nothing beside it. */
-function result(envelope: OperatorEnvelope): CallToolResult {
-  return {
-    content: [{ type: "text", text: JSON.stringify(envelope) }],
-    isError: !envelope.ok,
-  };
+  /** How long one request to the hearth may take. */
+  requestTimeoutMs?: number;
 }
 
 export async function createHearthMcpServer(
   options: HearthMcpOptions,
 ): Promise<Server> {
+  const home = options.home ?? hearthHome();
+  const exchange = options.exchange ?? loopbackExchange;
+  const readTokenFile = options.readToken ?? readToken;
+  /**
+   * How an operator session gets the token for one call. An agent session has
+   * no such function: nothing in it can read a token file.
+   */
+  const operatorToken = options.operator
+    ? (file: string): string | null => {
+        const value = readTokenFile(file);
+        return value !== null && TOKEN.test(value) ? value : null;
+      }
+    : null;
+  const needsOperator = (name: string): OperatorEnvelope =>
+    refusal(
+      `${name} needs an operator session: this server was started without --operator and holds no operator token.`,
+    );
+
   const forge = new Map(FORGE_TOOLS.map((tool) => [tool.name, tool]));
   const bridge = options.council
     ? await bridgeCouncil(options.council())
     : null;
   const tools = [...FORGE_TOOLS.map(listed), ...(bridge?.tools ?? [])];
 
+  /** One call of a forge tool, after the authority rule: arguments, the hearth, the token, one request. */
+  async function callForge(
+    tool: ForgeTool,
+    args: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<OperatorEnvelope> {
+    const parsed = tool.input.safeParse(args);
+    if (!parsed.success)
+      return refusal(
+        `${tool.name}: ${parsed.error.issues
+          .map(
+            (issue) =>
+              `${issue.path.join(".") || "arguments"}: ${issue.message}`,
+          )
+          .join("; ")}`,
+      );
+    let request: { target: string; body?: string };
+    try {
+      request = requestFor(tool, parsed.data);
+    } catch (error) {
+      return refusal(`${tool.name}: ${(error as Error).message}`);
+    }
+
+    const located = await locateHearth(home, options.root, exchange, signal);
+    // A row that reads the hearth's own checkout is answered only by the
+    // hearth of this one: the main checkout's would answer for other files.
+    const hearth =
+      located.own ?? (tool.scope === "workspace" ? located.workspace : null);
+    if (!hearth) {
+      if (located.workspace)
+        return refusal(
+          `${tool.name} is answered only by the hearth of this checkout (${options.root}), and none is running. The hearth of the main checkout (${located.workspace.root}) is running, but its runs, config and council are that checkout's.`,
+        );
+      const found =
+        located.rejected.length > 0
+          ? ` A lock was found and not used: ${located.rejected.join("; ")}.`
+          : "";
+      return refusal(
+        `No hearth is running for ${options.root}. The operator starts one there with \`bun run hearth\` (the dashboard starts one too); an agent session does not start it.${found}`,
+      );
+    }
+
+    const headers: Record<string, string> = {
+      Origin: `http://127.0.0.1:${hearth.port}`,
+      [SURFACE_HEADER]: "mcp",
+    };
+    if (request.body !== undefined)
+      headers["Content-Type"] = "application/json";
+    let token: string | null = null;
+    if (tool.authority === "operator") {
+      if (!operatorToken) return needsOperator(tool.name);
+      // Read for this call and kept no longer: a restarted hearth has a new one.
+      token = operatorToken(hearth.tokenFile);
+      if (token === null)
+        return refusal(
+          `${tool.name}: no operator token could be read from this hearth's token file, so nothing was sent.`,
+        );
+      headers[OPERATOR_HEADER] = token;
+    }
+
+    let answer: LoopbackAnswer;
+    try {
+      answer = await exchange({
+        port: hearth.port,
+        method: tool.method,
+        target: request.target,
+        headers,
+        ...(request.body !== undefined ? { body: request.body } : {}),
+        ...(signal ? { signal } : {}),
+        timeoutMs: options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+        maxBytes: ANSWER_MAX_BYTES,
+      });
+    } catch (error) {
+      return refusal(
+        `The hearth at 127.0.0.1:${hearth.port} could not be asked: ${(error as Error).message}.`,
+      );
+    }
+    let body: unknown = null;
+    try {
+      body = JSON.parse(answer.body);
+    } catch {
+      // Judged below: not an envelope.
+    }
+    const envelope = validateOperatorEnvelope(body);
+    if (!envelope.ok)
+      return refusal(
+        `The hearth answered HTTP ${answer.status} with something that is not the operator API's envelope.`,
+      );
+    // The three fields, and nothing else the answer may have carried.
+    const { value } = envelope;
+    return withoutToken(
+      value.ok
+        ? { ok: true, data: value.data, error: null }
+        : { ok: false, data: null, error: value.error },
+      token,
+    );
+  }
+
   const server = new Server(
     { name: "agent-forge", version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
   server.setRequestHandler("tools/list", async () => ({ tools }));
-  server.setRequestHandler("tools/call", async (request) => {
+  server.setRequestHandler("tools/call", async (request, ctx) => {
     const { name } = request.params;
     const tool = forge.get(name);
     // What the SDK's own server answers for a name it does not know.
@@ -318,12 +841,10 @@ export async function createHearthMcpServer(
     // First, before the arguments are looked at: an agent session gets this
     // and nothing else from a governed tool, whatever it sent.
     if (tool.authority === "operator" && !options.operator)
-      return result(
-        refusal(
-          `${name} needs an operator session: this server was started without --operator and holds no operator token.`,
-        ),
-      );
-    return result(refusal(`No hearth is running for ${options.root}.`));
+      return result(needsOperator(name));
+    return result(
+      await callForge(tool, request.params.arguments ?? {}, ctx.mcpReq.signal),
+    );
   });
 
   const close = server.close.bind(server);
