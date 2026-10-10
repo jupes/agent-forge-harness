@@ -156,6 +156,40 @@ export function assertCouncilInput(input: CouncilServiceInput): void {
 }
 
 /**
+ * One reading of each field of a start request, whatever kind of object the
+ * caller handed over: its own fields and inherited ones, plain or computed.
+ * The queued job runs after `start` returns and must use what was checked,
+ * not what the caller's object says by then.
+ */
+function councilInputFrom(request: CouncilServiceInput): CouncilServiceInput {
+  if (
+    request === null ||
+    (typeof request !== "object" && typeof request !== "function")
+  )
+    return request;
+  const {
+    sourceType,
+    source,
+    profile,
+    maxUsd,
+    maxBytes,
+    runId,
+    redactSecrets,
+    beadId,
+  } = request;
+  return {
+    sourceType,
+    source,
+    profile,
+    maxUsd,
+    maxBytes,
+    runId,
+    redactSecrets,
+    beadId,
+  };
+}
+
+/**
  * The bead a run is recorded against: the one the caller named, else, for a
  * bead source, the bead under review. Only for an input that has passed
  * `assertCouncilInput`.
@@ -354,10 +388,11 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   }
   function start(request: CouncilServiceInput): CouncilServiceJob {
     if (closed) throw new Error("council service is closed");
-    // The caller's object is read once: the queued job below runs after this
-    // returns, and must use what was checked, not what the object says later.
-    const input: CouncilServiceInput =
-      request && typeof request === "object" ? { ...request } : request;
+    // The caller's object is read here and nowhere else: `begin` checks and
+    // runs the copy, and never sees the object itself.
+    return begin(councilInputFrom(request));
+  }
+  function begin(input: CouncilServiceInput): CouncilServiceJob {
     assertCouncilInput(input);
     if (active.size >= 4)
       throw new Error("At most 4 council runs may execute concurrently");

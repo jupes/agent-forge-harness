@@ -1761,12 +1761,20 @@ describe("a bead as the source of a council run started through the hearth", () 
         { sourceType: "bead", source: "--help" },
         "source must be a Beads issue id when the source is a bead",
       ],
-      ...["demo-8", " demo-7 ", "demo-7\n", "DEMO-7", "demo-7.1", "demo"].map(
-        (beadId): [Record<string, unknown>, string] => [
-          { sourceType: "bead", source: "demo-7", beadId },
-          "beadId must name the bead under review when the source is a bead",
-        ],
-      ),
+      ...[
+        "demo-8",
+        " demo-7 ",
+        "demo-7\n",
+        "DEMO-7",
+        "demo-7.1",
+        "demo",
+        // An invisible character after the id, and a digit in its full-width form.
+        `demo-7${String.fromCharCode(0x200b)}`,
+        `demo-${String.fromCharCode(0xff17)}`,
+      ].map((beadId): [Record<string, unknown>, string] => [
+        { sourceType: "bead", source: "demo-7", beadId },
+        "beadId must name the bead under review when the source is a bead",
+      ]),
       [
         // Twenty characters shaped like an access key id are a valid id by form.
         { sourceType: "bead", source: ["AKIA", "ZQ9ZQ8ZQ7ZQ6ZQ5Z"].join("") },
@@ -1791,6 +1799,10 @@ describe("a bead as the source of a council run started through the hearth", () 
         { sourceType: "bead", source: "demo-7", beadId: "demo-7" },
       ],
       ["bead-spaced", { sourceType: "bead", source: " demo-7\n" }],
+      [
+        "bead-spaced-named",
+        { sourceType: "bead", source: " demo-7\n", beadId: "demo-7" },
+      ],
     ] as const) {
       const response = await post(h, "/council-api/runs", { ...body, runId });
       expect({ runId, status: response.status }).toEqual({
@@ -1817,6 +1829,12 @@ describe("a bead as the source of a council run started through the hearth", () 
         runId: "bead-spaced",
         beadId: "demo-7",
       },
+      {
+        sourceType: "bead",
+        source: " demo-7\n",
+        runId: "bead-spaced-named",
+        beadId: "demo-7",
+      },
     ]);
     const audits = h.events(["operator.action"]);
     expect(audits.map((event) => [event.payload, event.beadId])).toEqual([
@@ -1838,6 +1856,13 @@ describe("a bead as the source of a council run started through the hearth", () 
         expect.objectContaining({
           action: "council.run.start",
           target: "bead-spaced",
+        }),
+        "demo-7",
+      ],
+      [
+        expect.objectContaining({
+          action: "council.run.start",
+          target: "bead-spaced-named",
         }),
         "demo-7",
       ],
