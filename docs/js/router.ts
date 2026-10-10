@@ -76,7 +76,8 @@ export const ROUTES = [
     label: "Bead builder",
     icon: "plus-circle",
     group: "author",
-    blurb: "Compose a bd create command with acceptance criteria and labels.",
+    blurb:
+      "File a bead through the local control plane, or compose a bd create command to paste.",
   },
   {
     id: "insights",

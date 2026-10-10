@@ -75,19 +75,19 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 ## 6. Control-plane server
 
 - `scripts/hearth/server.ts` (`bun run hearth`), a `node:http` server on `127.0.0.1:<port>`; the Vite dashboard proxies `/__agent-forge/*` to it in dev; the Tauri sidecar supervises it in desktop mode.
-- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts` and `operator-reads.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
+- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts`, `operator-reads.ts` and `beads.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
 - Every row answers JSON `{ ok, data, error }` and requires a **declared same-origin** request: an `Origin` equal to the control plane's own, or `Sec-Fetch-Site: same-origin`. A script declares `Origin: http://127.0.0.1:<port>`. A request that repeats `Origin`, `Sec-Fetch-Site`, `Host` or either header below is refused.
 - A mutation also needs the operator token in `X-Agent-Forge-Operator`. The token is per hearth and per start: the one this hearth minted, honoured only while the file its lock names (`tokenFile`, `<home>/tokens/<hash(root)>.token`) still holds it. Missing or wrong is 403 and nothing is written. `GET /token` serves it to a same-origin page and answers 503 whenever no token could be honoured.
 - `X-Agent-Forge-Surface` (`ui` | `cli` | `mcp` | `api`; absent means `api`) is stored on the audit row. It is a label the client declares, not a credential.
 - Every `POST` writes `operator.action` first, then performs the effect through the same scripts the CLI uses (no second implementation). The effect runs only if the ledger stored the row; otherwise the answer is 503 and nothing was done. A request refused for its origin, its token or its content writes nothing. The row records an authorised, valid attempt: an effect that then refuses leaves the row, and the effect's own events or comment carry the outcome.
 - Routes (the contract):
   - `GET /sessions`, `GET /runs`, `GET /runs/:slug`, `GET /events?…`, `GET /queue`, `GET /reservations`, `GET /smiths`, `GET /config` (with provenance), `GET /stream` (SSE: snapshot + deltas)
-  - `POST /beads` (create), `POST /beads/:id/claim|close|comment`
+  - `GET /beads/options`, `POST /beads` (create), `POST /beads/:id/claim|close|comment`
   - `POST /queue/:id/approve|queue|pause|resume|reassign` (`{ smith }`)
   - `POST /council/runs` (`{ source: { kind: "bead", id } , profile, budget }`), `POST /council/runs/:id/cancel`
   - `POST /shifts` (`{ for, concurrency, filter }`), `POST /shifts/:id/stop`
   - `POST /runs/:slug/replan` (hands a run back to forgemaster with a reason)
-- What is mounted (`x1gs.3.2`). A route is mounted only once its effect exists; nothing accepts a mutation and does nothing.
+- What is mounted (`x1gs.3.2`, `x1gs.3.3`). A route is mounted only once its effect exists; nothing accepts a mutation and does nothing.
 
   | Route | State | Notes |
   |---|---|---|
@@ -100,11 +100,18 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `GET /stream` | mounted | See below. |
   | `POST /council/runs`, `POST /council/runs/:id/cancel` | mounted | Body today is the council service's input (`sourceType`, `source`, `profile?`, `maxUsd?`, `maxBytes?`, `runId?`, `redactSecrets?`, `beadId?`). The `{ source: { kind: "bead", id } }` form arrives with `x1gs.7.1`. Also served at `/council-api/runs…`, the paths the dashboard has always used. |
   | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path, and the same answers once a request is accepted; now an audited action, so it refuses what every action refuses (no token, no declared origin, a query string, a body over the cap). |
-  | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | not mounted | `x1gs.3.3` |
+  | `GET /beads/options` | mounted | What a create may say: the issue types, the priority rubric (`P0`–`P4`, each with its tier and meaning, the table of the `beads-priority-assignment` skill) and the longest text each field takes. A page that gets no answer has no control plane. |
+  | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | mounted | Writes to the tracker; see below. |
   | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | not mounted | `x1gs.5.1` |
   | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.4` |
   | `POST /runs/:slug/replan` | not mounted | `x1gs.6`, the forgemaster expansion (its caller is `x1gs.6.2`) |
 
+- Tracker writes (`scripts/hearth/routes/beads.ts`). Each is one `bd` call, made with an argument array through the hearth's runner, never repeated and never with `--repo`. Every value travels as `--flag=value` and every positional comes after `--`, because `bd` reads a positional that looks like an option as one.
+  - `POST /beads` takes `{ title, type?, priority?, parent?, description?, acceptance? }`; `claim` takes `{}`; `comment` takes `{ text }`; `close` takes `{ reason }`, which must say something. A body holds only those fields. Ids are Beads ids exactly as given; a title is one clean line; a text holds no control character but newline and tab and fits on a `bd` command line (title 200, description 4,000, acceptance 2,000, comment 4,000, reason 1,000). A description of exactly `-` is refused: `bd` reads it as "take the description from standard input".
+  - Exit 0 is not success. A write is confirmed by what `bd` printed, and the bead that was written is the one it printed (given part of an id, `bd` acts on the issue it resolves it to). The answer is `{ id, action, status?, assignee?, labels?, comment?, updatedAt?, recorded }`.
+  - Then, and only then, `bead.transitioned` is appended for that bead: `{ action, hash?, length? }` (§5). `recorded: false` in the answer means the write happened and the event could not be stored. The audit row of a create names the parent, when there is one: the new id does not exist yet.
+  - Answers: `400` before the audit row. `409`: the issue was already closed (`bd` exits 0 for that and keeps the first reason), nothing changed. `502`: `bd` refused, nothing changed; the message is `bd`'s own. `504`: the outcome is not known, because the call did not finish or exited 0 without confirming; the change may have been made, and the message says how to check (a killed `bd create` still creates the issue). Never `403`, which a page takes for a stale token and posts again.
+  - Not done here: queue labels (a create writes none; a child inherits its parent's labels as with the CLI), labels or another repo on create, closing a friction bead when the bead that resolves it is closed (`x1gs.2.5`).
 - Stream (`scripts/hearth/stream.ts`). A new connection gets one `snapshot` event: `{ cursor, sessions, runs, queue, reservations, smiths, config }`, where `cursor` is the ledger's newest id and each collection is the envelope its own `GET` route answers, so one that could not be read carries its own error. Then one `delta` event per ledger event, in `id` order, each with its `id` as the SSE id. A reconnect that sends `Last-Event-ID` gets the deltas after it and no snapshot, unless that id is ahead of the ledger: then the client is out of step and gets a snapshot. A keepalive comment every 15 s; at most 32 streams.
   - The ledger is the only change feed, and other processes write it, so each connection polls for ids above its cursor (250 ms). The cursor is read before the collections: an event appended meanwhile follows the snapshot as a delta, so a delta may repeat what the snapshot shows and never miss it.
   - A client that falls behind on reading is not buffered for: a connection with more than 1 MB waiting is given nothing new until it drains (its cursor does not move, so it misses nothing), and has its socket closed if it stays that way for 30 s; it resumes with `Last-Event-ID`.
