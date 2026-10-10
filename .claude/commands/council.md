@@ -19,12 +19,13 @@ Review a PR, plan, research document, Beads issue, or supplied text using the sh
 
 ## A bead as the source
 
-`/council bead <id>` packs one Beads issue: its acceptance criteria (with id, title, type, priority, status, labels and dependency ids), its latest comments newest first, its description, the plan, research and report of its forge run or that it names, and the diff of the most recently mentioned pull request of this workspace's own origin repository. When the evidence budget is short, parts give way from the end of that list.
+`/council bead <id>` packs one Beads issue: its acceptance criteria (with id, title, type, priority, status, labels and dependency ids), its latest comments newest first, its description, the plan, research and report of its forge run or that it names, and the most recently mentioned pull request of this workspace's own origin repository. The evidence budget is spent in that order. The acceptance criteria and the comments take what they need first; the description is held to a tenth of the budget and each linked file to 15% until the pull request has had its turn, so under a short budget a long plan can be cut while the pull request is still packed.
 
 - **Only when the user names the bead.** Bead content is private, and a council run sends it to every provider in the profile. Never pick a bead yourself, and never widen a review to a bead the user did not name.
 - **Give the full id.** A partial id is refused. The bead is read with `bd --readonly`; nothing is written to the tracker.
 - **Read the listing before sending.** The `--dry-run` envelope's `data.context.listing` has one line per part: packed, cut, left out, missing, or a pull request URL that was not fetched. Show it to the user with the profile's providers and get their go-ahead before step 3. A real run prints the same listing on stderr before it starts.
-- A secret anywhere in the bead refuses the run and names the part. Tell the user which part; do not reach for `--redact-secrets` on your own.
-- The run is recorded in the ledger against that bead.
+- A credential-like value in anything that would be sent or listed (the bead's title, labels, criteria, description, design, notes, external reference, spec id, comments, a linked file, the pull request) refuses the run and names where. That includes a part the budget would have dropped. Tell the user where; do not reach for `--redact-secrets` on your own.
+- Any plan, research or report path the bead mentions is sent, even when it was written for another bead. The listing shows each one: check it.
+- A run started with this command, or through the MCP server, is recorded in the ledger against that bead. The dashboard does not record council runs.
 
 For interactive use: `bun run dashboard`, then `/council.html`. For another agent or system, prefer MCP `council_start` followed by `council_status`, avoiding a long blocking tool request. See `docs/COUNCIL-REVIEWS.md`.

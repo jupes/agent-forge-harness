@@ -26,6 +26,7 @@ import { createCouncilMcpServer } from "./mcp";
 import {
   type CommandRunner,
   compilePullRequest,
+  safeCommandError,
   scrubProviderEnvironment,
 } from "./pr-source";
 import { createCouncilService } from "./service";
@@ -329,6 +330,48 @@ describe("PR snapshot safety", () => {
     const usual = await compilePullRequest("42", { runner });
     expect(commands(recorded)).toContain("bd");
     expect(usual.text).toContain("Safe review");
+  });
+  test("a failed command's error is redacted before it is cut, drops a key that never ends, and carries no control character", () => {
+    const token = `ghp_${"Zq9".repeat(12)}`;
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    const key = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      ...Array.from({ length: 30 }, () => body),
+      "-----END RSA PRIVATE KEY-----",
+    ].join("\n");
+    const failed = (stderr: string): string =>
+      safeCommandError(["gh", "pr", "view", "x"], {
+        exitCode: 1,
+        stdout: "",
+        stderr,
+      }).message;
+
+    // A token that straddles character 1000, where the cut used to come first.
+    const straddling = failed(`${" ".repeat(977)}${token}`);
+    expect(straddling).not.toContain("ghp_");
+    expect(straddling).toContain("gh pr view failed (1)");
+
+    // A whole key longer than the cut, and a key with no end line at all.
+    expect(failed(`fatal: ${key}`)).not.toContain(body.slice(0, 20));
+    expect(
+      failed(`fatal: -----BEGIN RSA PRIVATE KEY-----\n${body}`),
+    ).not.toContain(body.slice(0, 20));
+
+    // Longer than what is scanned: the token cut in two by that bound goes too.
+    const long = failed(
+      `${`${key}\n`.repeat(11)}${" ".repeat(400)}`.slice(0, 19_985) + token,
+    );
+    expect(long).not.toContain("ghp_");
+    expect(long).not.toContain(body.slice(0, 20));
+
+    const escaped = failed("HTTP 401 \u001b[1A\u001b[2Kbad credentials\u0007");
+    expect(
+      [...escaped].some((char) => {
+        const code = char.codePointAt(0) ?? 0;
+        return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+      }),
+    ).toBe(false);
+    expect(escaped).toContain("bad credentials");
   });
   test("rejects a PR changing during capture", async () => {
     await expect(

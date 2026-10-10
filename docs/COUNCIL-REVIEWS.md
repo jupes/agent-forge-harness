@@ -38,17 +38,19 @@ bun run council -- bead <beads-issue-id> --dry-run
 bun run council -- bead <beads-issue-id> --profile councils/my-council.json
 ```
 
-A bead source packs, in the order the parts survive the evidence budget:
+A bead source packs these parts, and spends the evidence budget on them in this order:
 
-1. the acceptance criteria, with the bead's id, title, type, priority, status, labels and the ids and types of what it depends on;
-2. its comments, newest first (timestamp and text, never the author);
+1. the acceptance criteria, with the bead's id, title, type, priority, status, labels and the ids and types of what it depends on (the title, the labels and the dependency list are shortened when they are very long);
+2. its comments, newest first (timestamp and quoted text, never the author);
 3. its description, design and notes;
-4. the plan, research and report of the bead's forge run, and Markdown files the bead names under `plans/research/`, `plans/drafts/`, `plans/committed/`, `docs/plans/` or directly inside `reports/`, at most six, read only from this workspace;
-5. the most recently mentioned pull request of this workspace's own origin repository, captured the same way as a `pr` source.
+4. the plan, research and report of the bead's forge run, and Markdown files the bead names under `plans/research/`, `plans/drafts/`, `plans/committed/`, `docs/plans/` or directly inside `reports/` — at most six, each at most 2 MB, read only from this workspace, and never anything under a `council-runs` directory;
+5. the most recently mentioned pull request of this workspace's own origin repository, captured by the same packer as a `pr` source but without looking up the beads its description names, and with the patch capped at the evidence budget.
 
-Each part is its own evidence item (`E1`, `E2`, ...). Every part is scanned for credential-like values in full before anything is cut, and a hit refuses the whole source and names the part. The budget is spent in the order above; a part held to its share (a tenth of the budget for the description, 15% for each linked file) is topped up again when room is left. A missing or unreadable linked file, and a pull request URL of any other repository, are named in the listing and never fetched. A pull request that exists but could not be captured marks the evidence as truncated, so the run cannot read as a pass.
+Each part is its own evidence item (`E1`, `E2`, ...). The acceptance criteria and the comments take what they need first. The description is held to a tenth of the budget and each linked file to 15% until every later part has had its turn; what is then left goes back to the parts that were cut. So when the budget is short, a long description or plan can be cut while the pull request after it is still packed. A linked file that is missing, unreadable or too large, and a pull request URL that is not this repository's, are named in the listing and never fetched. A pull request that exists but could not be captured, and a linked file too large to read, mark the evidence as truncated, so the run cannot read as a pass.
 
-Bead content is private and a council run sends it to every provider in the profile. A bead is therefore packed only when you name it: nothing selects one for you, the bead is read with `bd --readonly`, a partial id is refused, no other bead's text is read (of a dependency only its id and type are sent), and the run is recorded in the ledger against that bead. A real run prints the listing on stderr before it starts.
+Every field that is read is scanned for credential-like values in full before anything is taken from it or cut: the title, labels, criteria, description, design, notes, external reference, spec id, every comment, every linked file and the pull request, including parts the budget then drops. A hit refuses the whole source and names where it was. A key written across two comments or two fields is caught too; one written across two parts cannot be redacted and is refused under either policy.
+
+Bead content is private and a council run sends it to every provider in the profile. A bead is therefore packed only when you name it: nothing selects one for you, the bead is read with `bd --readonly`, a partial id is refused, and no other bead's text is read (of a dependency only its id and type are sent). A plan, research or report path the bead mentions is sent whichever bead it was written for; the listing names each file. A run started from the CLI or the MCP server is recorded in the ledger against that bead; the dashboard does not record council runs. A real CLI run prints the listing on stderr before it starts.
 
 Useful controls:
 

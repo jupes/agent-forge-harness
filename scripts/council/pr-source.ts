@@ -4,6 +4,7 @@ import {
   type SecretPolicy,
   sanitizeContent,
   truncateUtf8,
+  withoutControls,
 } from "./context";
 import type { ContextRedaction, ContextSourceMetadata } from "./types";
 
@@ -124,14 +125,36 @@ function validatePullRequestReference(reference: string): string {
   throw new Error("PR reference must be a positive number or pull-request URL");
 }
 
+/** How much of a failed command's stderr is read for its error message. */
+const STDERR_SCAN_CHARS = 20_000;
+
+/**
+ * What a failed command said, safe to show: redacted first and cut second, so
+ * a credential cannot survive as the prefix a cut leaves behind.
+ */
+function shownStderr(stderr: string): string {
+  // Longer than what is read: the token the bound cuts in two would not be
+  // recognised, so the unfinished word at the end goes with it.
+  const read =
+    stderr.length > STDERR_SCAN_CHARS
+      ? stderr.slice(0, STDERR_SCAN_CHARS).replace(/\S*$/, "")
+      : stderr;
+  return withoutControls(
+    sanitizeContent(read, "redact")
+      // A private key with no end line is not a pattern the scanner knows.
+      .text.replace(/-----BEGIN[\s\S]*$/, "[REDACTED:private-key]"),
+  )
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1_000);
+}
+
 /** A failed command as an error: its first three words, its exit code, and its redacted stderr. */
 export function safeCommandError(
   command: string[],
   result: CommandResult,
 ): Error {
-  const detail = sanitizeContent(result.stderr.slice(0, 1_000), "redact")
-    .text.replace(/\s+/g, " ")
-    .trim();
+  const detail = shownStderr(result.stderr);
   return new Error(
     `${command.slice(0, 3).join(" ")} failed (${result.exitCode})${detail ? `: ${detail}` : ""}`,
   );

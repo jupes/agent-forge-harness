@@ -76,16 +76,24 @@ export function reviewServiceInput(
 ): CouncilServiceInput {
   const { sourceType, source, kind, id, ...options } = input;
   const asSource = sourceType !== undefined && source !== undefined;
-  const asBead = kind !== undefined && id !== undefined;
+  const asBead = kind === "bead" && id !== undefined;
   const mixed =
     (asSource && (kind !== undefined || id !== undefined)) ||
     (asBead && (sourceType !== undefined || source !== undefined));
   if (asSource === asBead || mixed)
     throw new Error('give either sourceType and source, or kind "bead" and id');
-  if (asSource) return { sourceType, source, ...options };
+  if (asSource) {
+    // The schema allows four kinds; a caller that skipped it gets no fifth.
+    if (!["file", "plan", "pr", "text"].includes(sourceType))
+      throw new Error(
+        'give either sourceType and source, or kind "bead" and id',
+      );
+    return { ...options, sourceType, source };
+  }
   const beadId = parseBeadsIssueId(id);
   if (beadId === null) throw new Error("id must be a Beads issue id");
-  return { sourceType: "bead", source: beadId, beadId, ...options };
+  // Last, so nothing in the options can name another bead for the ledger.
+  return { ...options, sourceType: "bead", source: beadId, beadId };
 }
 
 const MAX_LISTING_LINES = 60;

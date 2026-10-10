@@ -9,6 +9,7 @@ import {
   buildContextPack,
   buildContextPackFromParts,
   type ContextInput,
+  maxBytesFrom,
   type SecretPolicy,
 } from "./context";
 import { type CouncilEngineOptions, runCouncil } from "./engine";
@@ -55,6 +56,8 @@ export type CouncilSourceInput = {
 // evidence hashing, redaction and byte limits must never differ by interface.
 export async function prepareCouncilContext(input: CouncilSourceInput) {
   if (input.kind === "bead") {
+    // Before the bead is read: a budget that cannot be used runs no command.
+    maxBytesFrom(input);
     const compiled = await compileBead(input.source, {
       cwd: input.workspaceRoot,
       runner: input.runner,

@@ -5,9 +5,13 @@
  * Bead content is private and a council run sends its evidence to model
  * providers, so this file reads exactly one bead — the one its caller names —
  * and only through `bd --readonly`. It never writes to the tracker.
+ *
+ * Every field it reads is scanned for secrets, whole, before anything is
+ * derived from it: before a label is cut, before a path or a URL is taken out
+ * of it, before a pull request is fetched.
  */
 
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ForgeState } from "../forge/phases";
 import { FORGE_RUNS_DIR, runSlugFromFilename } from "../forge/runs";
@@ -17,11 +21,14 @@ import {
   type ContextPart,
   type ContextPartsInput,
   ContextSecurityError,
+  cutChars,
   DEFAULT_MAX_BYTES,
   locateWorkspaceFile,
   readUtf8Text,
   type SecretPolicy,
   sanitizeContent,
+  scanNamed,
+  withoutControls,
 } from "./context";
 import {
   type CommandRunner,
@@ -46,8 +53,9 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function oneLine(value: unknown): string {
-  return text(value).replace(/\s+/g, " ");
+/** `value` on one line, with nothing in it that could steer a terminal. */
+function oneLine(value: string): string {
+  return withoutControls(value).replace(/\s+/g, " ").trim();
 }
 
 /** What a read-only `bd` command printed, parsed; null when it is not JSON. */
@@ -65,6 +73,40 @@ async function readJson(
   }
 }
 
+/** The bead's free text after the secret scan: what every part and mention is built from. */
+type BeadText = {
+  title: string;
+  labels: string[];
+  criteria: string;
+  description: string;
+  design: string;
+  notes: string;
+  /** Read for a pull request URL or a linked path only; never packed. */
+  externalRef: string;
+  specId: string;
+};
+
+type BeadComment = { at: string; text: string };
+
+// The header rides with the acceptance criteria, so it is kept small enough
+// that it cannot push them out of their own part.
+const TITLE_MAX_CHARS = 300;
+const LABEL_MAX_CHARS = 80;
+const MAX_LABELS = 20;
+const MAX_DEPENDENCIES = 50;
+
+function listed(items: string[], max: number): string {
+  if (items.length === 0) return "(none)";
+  const more = items.length - max;
+  return `${items.slice(0, max).join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
+}
+
+/** A short word the tracker chose (a type, a status), or "" when it is not one. */
+function word(value: unknown): string {
+  const candidate = text(value);
+  return /^[A-Za-z][A-Za-z0-9_ -]{0,39}$/.test(candidate) ? candidate : "";
+}
+
 /** The ids a bead depends on, each with its dependency type; the parent among them. */
 function dependencyLine(issue: Fields): string {
   const seen = new Map<string, string>();
@@ -72,6 +114,7 @@ function dependencyLine(issue: Fields): string {
     ? issue.dependencies
     : [];
   for (const dependency of dependencies) {
+    // Of a dependency, the id and the type: never its title or its text.
     if (!isRecord(dependency)) continue;
     const id = parseBeadsIssueId(dependency.id);
     if (id === null) continue;
@@ -80,31 +123,40 @@ function dependencyLine(issue: Fields): string {
   }
   const parent = parseBeadsIssueId(issue.parent);
   if (parent !== null && !seen.has(parent)) seen.set(parent, "parent-child");
-  if (seen.size === 0) return "Depends on: (none)";
-  return `Depends on: ${[...seen]
-    .map(([id, type]) => (type ? `${id} (${type})` : id))
-    .join(", ")}`;
+  return `Depends on: ${listed(
+    [...seen].map(([id, type]) => (type ? `${id} (${type})` : id)),
+    MAX_DEPENDENCIES,
+  )}`;
 }
 
-function acceptancePart(id: BeadsIssueId, issue: Fields): ContextPart {
-  const labels = Array.isArray(issue.labels)
-    ? issue.labels.map(oneLine).filter((label) => label.length > 0)
-    : [];
+function shownTitle(safe: BeadText): string {
+  return cutChars(oneLine(safe.title), TITLE_MAX_CHARS) || "(untitled)";
+}
+
+function acceptancePart(
+  id: BeadsIssueId,
+  issue: Fields,
+  safe: BeadText,
+): ContextPart {
+  const labels = safe.labels
+    .map((label) => cutChars(oneLine(label), LABEL_MAX_CHARS))
+    .filter((label) => label.length > 0);
   const lines = [
     `Bead: ${id}`,
-    `Title: ${oneLine(issue.title) || "(untitled)"}`,
-    `Type: ${oneLine(issue.issue_type) || "(unknown)"}`,
+    `Title: ${shownTitle(safe)}`,
+    `Type: ${word(issue.issue_type) || "(unknown)"}`,
     ...(typeof issue.priority === "number" &&
     Number.isInteger(issue.priority) &&
-    issue.priority >= 0
+    issue.priority >= 0 &&
+    issue.priority <= 9
       ? [`Priority: P${issue.priority}`]
       : []),
-    `Status: ${oneLine(issue.status) || "(unknown)"}`,
-    `Labels: ${labels.length > 0 ? labels.join(", ") : "(none)"}`,
+    `Status: ${word(issue.status) || "(unknown)"}`,
+    `Labels: ${listed(labels, MAX_LABELS)}`,
     dependencyLine(issue),
     "",
     "Acceptance criteria:",
-    text(issue.acceptance_criteria) || "(none recorded)",
+    safe.criteria || "(none recorded)",
   ];
   return {
     label: "acceptance criteria",
@@ -113,17 +165,19 @@ function acceptancePart(id: BeadsIssueId, issue: Fields): ContextPart {
   };
 }
 
-type BeadComment = { at: string; text: string };
+const TIMESTAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]{5,15}(?:Z|[+-][0-9]{2}:?[0-9]{2})?$/;
 
 /** The bead's own comments, newest first. */
 function commentsOf(id: BeadsIssueId, rows: unknown[]): BeadComment[] {
   const comments: BeadComment[] = [];
   for (const row of rows) {
-    if (!isRecord(row)) continue;
-    if (row.issue_id !== undefined && row.issue_id !== id) continue;
+    // Only rows that say they belong to this bead.
+    if (!isRecord(row) || row.issue_id !== id) continue;
     const body = text(row.text);
     if (body.length === 0) continue;
-    comments.push({ at: text(row.created_at), text: body });
+    const at = text(row.created_at);
+    comments.push({ at: TIMESTAMP.test(at) ? at : "unknown time", text: body });
   }
   // By the instant, not the spelling: an offset or milliseconds must not
   // reorder them. A timestamp that does not parse counts as the oldest, and
@@ -140,13 +194,27 @@ function commentsOf(id: BeadsIssueId, rows: unknown[]): BeadComment[] {
     .map(({ entry }) => entry);
 }
 
+/**
+ * A comment as it is packed: its time on a line of its own, its text quoted.
+ * Only that first line is unquoted, so text inside a comment cannot pass
+ * itself off as the header of another, newer comment.
+ */
+function commentChunk(entry: BeadComment): string {
+  const quoted = entry.text
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `[${entry.at}]\n${quoted}`;
+}
+
 function commentsPart(id: BeadsIssueId, comments: BeadComment[]): ContextPart {
   return {
     label: "latest comments",
     title: `bead ${id}: latest comments, newest first`,
     unit: "comment",
     chunks: comments.map((entry) => ({
-      text: `[${entry.at}]\n${entry.text}`,
+      text: commentChunk(entry),
       name: `the comment of ${entry.at}`,
     })),
   };
@@ -155,11 +223,11 @@ function commentsPart(id: BeadsIssueId, comments: BeadComment[]): ContextPart {
 /** A tenth of the budget until every later part has had its turn. */
 const DESCRIPTION_SHARE = 0.1;
 
-function descriptionPart(id: BeadsIssueId, issue: Fields): ContextPart {
+function descriptionPart(id: BeadsIssueId, safe: BeadText): ContextPart {
   const sections: Array<[string, string]> = [
-    ["Description", text(issue.description)],
-    ["Design", text(issue.design)],
-    ["Notes", text(issue.notes)],
+    ["Description", safe.description],
+    ["Design", safe.design],
+    ["Notes", safe.notes],
   ];
   return {
     label: "description",
@@ -172,16 +240,14 @@ function descriptionPart(id: BeadsIssueId, issue: Fields): ContextPart {
 }
 
 /** Everything the bead says, oldest mention first: its fields, then its comments. */
-function mentionTexts(issue: Fields, newestFirst: BeadComment[]): string[] {
+function mentionTexts(safe: BeadText, newestFirst: BeadComment[]): string[] {
   return [
-    ...[
-      issue.external_ref,
-      issue.spec_id,
-      issue.description,
-      issue.acceptance_criteria,
-      issue.design,
-      issue.notes,
-    ].map(text),
+    safe.externalRef,
+    safe.specId,
+    safe.description,
+    safe.criteria,
+    safe.design,
+    safe.notes,
     ...newestFirst.map((entry) => entry.text).reverse(),
   ];
 }
@@ -189,6 +255,8 @@ function mentionTexts(issue: Fields, newestFirst: BeadComment[]): string[] {
 const MAX_LINKED_FILES = 6;
 /** How much of the budget one linked file takes before the pull request has had its turn. */
 const LINKED_FILE_SHARE = 0.15;
+/** A plan or a report larger than this is not read at all. */
+const MAX_LINKED_FILE_BYTES = 2_000_000;
 
 const PATH_SEGMENT = "[A-Za-z0-9_-][A-Za-z0-9_.-]*";
 const LINKED_PATH = new RegExp(
@@ -197,21 +265,18 @@ const LINKED_PATH = new RegExp(
 
 /**
  * Whether a workspace-relative path is where a plan, a research note or a
- * report lives. Only a file directly inside `reports/` counts: its
- * subdirectories hold council runs, whose reports embed earlier evidence.
+ * report lives. Only a file directly inside `reports/` counts, and nothing
+ * under a `council-runs` directory anywhere: council reports embed the
+ * evidence of earlier runs.
  */
-export function isLinkedArtifactPath(path: string): boolean {
+function isLinkedArtifactPath(path: string): boolean {
   return (
     path.length <= 200 &&
     path.endsWith(".md") &&
     !path.includes("..") &&
+    !path.split("/").includes("council-runs") &&
     LINKED_PATH.test(path)
   );
-}
-
-/** A path as the bead or a run state wrote it, safe to show in a label. */
-function shownPath(path: string): string {
-  return oneLine(path).slice(0, 120);
 }
 
 function note(label: string, words: string): ContextPart {
@@ -225,28 +290,14 @@ const UNREADABLE = {
   sensitive: "not packed, a credential file name",
 } as const;
 
-/** One linked file as a part: its text, or a note saying why it is not packed. */
-function linkedFilePart(cwd: string, label: string, path: string): ContextPart {
-  if (!isLinkedArtifactPath(path))
-    return note(label, "refused, not a plan, research or report path");
-  const found = locateWorkspaceFile(resolve(cwd, path), cwd);
-  if (!found.ok) return note(label, UNREADABLE[found.reason]);
-  // A link inside the workspace can lead anywhere in it: the place the file
-  // really is has to be a plan, research or report path too.
-  if (!isLinkedArtifactPath(found.locator))
-    return note(
-      label,
-      "refused, it resolves to a path that is not a plan, research or report",
-    );
-  const body = readUtf8Text(found.path);
-  if (body === null) return note(label, "not packed, not UTF-8 text");
-  if (body.trim().length === 0) return note(label, "empty, not packed");
-  return {
-    label,
-    maxShare: LINKED_FILE_SHARE,
-    chunks: [{ text: body }],
-  };
+/** One file per real path, whatever spelling named it. */
+function sameFileKey(realPath: string): string {
+  return process.platform === "win32" || process.platform === "darwin"
+    ? realPath.toLowerCase()
+    : realPath;
 }
+
+type LinkedFiles = { parts: ContextPart[]; incomplete: boolean };
 
 /**
  * The forge run that works this bead, newest first: a run that names the bead,
@@ -282,14 +333,18 @@ function beadRun(id: BeadsIssueId, cwd: string): ForgeState | null {
 const PATH_MENTION =
   /(?<![A-Za-z0-9_./-])(?:plans|docs|reports)\/[A-Za-z0-9_./-]+?\.md(?![A-Za-z0-9_-])/g;
 
-/** The run's plan, research and report, then the paths the bead names. */
+/**
+ * The run's plan, research and report, then the paths the bead names: each as
+ * its text, or as a note saying why it is not packed. Never an error.
+ */
 function linkedFileParts(
   cwd: string,
   run: ForgeState | null,
   texts: string[],
-): ContextPart[] {
+): LinkedFiles {
+  const result: LinkedFiles = { parts: [], incomplete: false };
   const linked: Array<{ label: string; path: string }> = [];
-  const seen = new Set<string>();
+  const named = new Set<string>();
   const artifacts: unknown = run?.artifacts;
   if (isRecord(artifacts))
     for (const [kind, key] of [
@@ -298,29 +353,89 @@ function linkedFileParts(
       ["report", "ship"],
     ] as const) {
       const path = text(artifacts[key]);
-      if (path.length === 0 || seen.has(path)) continue;
-      seen.add(path);
-      linked.push({ label: `linked ${kind} ${shownPath(path)}`, path });
+      if (path.length === 0 || named.has(path)) continue;
+      named.add(path);
+      // A run state is a file anyone can write: what it names is shown only
+      // when it is a path this source would read.
+      if (isLinkedArtifactPath(path))
+        linked.push({ label: `linked ${kind} ${path}`, path });
+      else
+        result.parts.push(
+          note(
+            `linked ${kind}`,
+            "refused, the run state names a path that is not a plan, research or report",
+          ),
+        );
     }
   for (const body of texts)
     for (const match of body.matchAll(PATH_MENTION)) {
       const path = match[0];
-      if (seen.has(path) || !isLinkedArtifactPath(path)) continue;
-      seen.add(path);
+      if (named.has(path) || !isLinkedArtifactPath(path)) continue;
+      named.add(path);
       linked.push({ label: `linked file ${path}`, path });
     }
-  const parts = linked
-    .slice(0, MAX_LINKED_FILES)
-    .map(({ label, path }) => linkedFilePart(cwd, label, path));
+
+  const packed = new Map<string, string>();
+  for (const { label, path } of linked.slice(0, MAX_LINKED_FILES)) {
+    const found = locateWorkspaceFile(resolve(cwd, path), cwd);
+    if (!found.ok) {
+      result.parts.push(note(label, UNREADABLE[found.reason]));
+      continue;
+    }
+    // A link inside the workspace can lead anywhere in it: the place the file
+    // really is has to be a plan, research or report path too.
+    if (!isLinkedArtifactPath(found.locator)) {
+      result.parts.push(
+        note(
+          label,
+          "refused, it resolves to a path that is not a plan, research or report",
+        ),
+      );
+      continue;
+    }
+    const first = packed.get(sameFileKey(found.path));
+    if (first !== undefined) {
+      result.parts.push(
+        note(label, `the same file as ${first}, not packed twice`),
+      );
+      continue;
+    }
+    if (statSync(found.path).size > MAX_LINKED_FILE_BYTES) {
+      // It exists and is not sent: the pack is not the whole picture.
+      result.incomplete = true;
+      result.parts.push(
+        note(
+          label,
+          `too large, not packed (over ${MAX_LINKED_FILE_BYTES} bytes)`,
+        ),
+      );
+      continue;
+    }
+    const body = readUtf8Text(found.path);
+    if (body === null) {
+      result.parts.push(note(label, "not packed, not UTF-8 text"));
+      continue;
+    }
+    if (body.trim().length === 0) {
+      result.parts.push(note(label, "empty, not packed"));
+      continue;
+    }
+    packed.set(sameFileKey(found.path), path);
+    result.parts.push({
+      label,
+      maxShare: LINKED_FILE_SHARE,
+      chunks: [{ text: body }],
+    });
+  }
   const more = linked.length - MAX_LINKED_FILES;
   if (more > 0)
-    parts.push(
+    result.parts.push(
       note(
         `${more} more linked file${more === 1 ? "" : "s"}`,
         `not packed (limit ${MAX_LINKED_FILES})`,
       ),
     );
-  return parts;
+  return result;
 }
 
 /** The workspace's own repository, as its origin remote names it. */
@@ -331,7 +446,7 @@ type Origin = { host: string; owner: string; repo: string };
  * this file can match a pull request against. Credentials in the remote are
  * dropped here and the remote's text goes nowhere else.
  */
-export function parseOrigin(remote: string): Origin | null {
+function parseOrigin(remote: string): Origin | null {
   const value = remote.trim();
   if (value.length === 0 || value.length > 500 || /\s/.test(value)) return null;
   let host: string;
@@ -390,22 +505,36 @@ function ownPullRequest(url: URL, origin: Origin): number | null {
 
 const URL_MENTION = /https?:\/\/[^\s<>"'`]+/gi;
 const PULL_REQUEST_PATH = /\/pull\/[0-9]+(?:\/|$)/;
+/** Nothing longer than this is a URL anyone meant. */
+const MAX_URL_CHARS = 2048;
 const MAX_REFERENCES = 10;
 
-/** A URL as it was meant: without the punctuation and brackets of the sentence around it. */
+const OPENERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/**
+ * A URL as it was meant: without the punctuation and the unbalanced closing
+ * brackets of the sentence around it. One pass over the token, however long a
+ * run of brackets follows it.
+ */
 function trimMention(token: string): string {
-  let value = token;
-  for (;;) {
-    const last = value.at(-1) ?? "";
-    const opener = { ")": "(", "]": "[", "}": "{" }[last];
-    if (".,;:!?*_~".includes(last) && last !== "") value = value.slice(0, -1);
-    else if (
+  const count = new Map<string, number>();
+  for (const char of token)
+    if ("()[]{}".includes(char)) count.set(char, (count.get(char) ?? 0) + 1);
+  let end = token.length;
+  while (end > 0) {
+    const last = token.charAt(end - 1);
+    const opener = OPENERS[last];
+    if (".,;:!?*_~".includes(last)) {
+      end -= 1;
+    } else if (
       opener !== undefined &&
-      value.split(last).length > value.split(opener).length
-    )
-      value = value.slice(0, -1);
-    else return value;
+      (count.get(last) ?? 0) > (count.get(opener) ?? 0)
+    ) {
+      count.set(last, (count.get(last) ?? 0) - 1);
+      end -= 1;
+    } else break;
   }
+  return token.slice(0, end);
 }
 
 /** Every pull-request-shaped URL the texts mention, oldest mention first. */
@@ -413,9 +542,11 @@ function pullRequestMentions(texts: string[]): URL[] {
   const mentions: URL[] = [];
   for (const body of texts)
     for (const match of body.matchAll(URL_MENTION)) {
+      const mention = trimMention(match[0]);
+      if (mention.length > MAX_URL_CHARS) continue;
       let url: URL;
       try {
-        url = new URL(trimMention(match[0]));
+        url = new URL(mention);
       } catch {
         continue;
       }
@@ -479,7 +610,8 @@ async function pullRequestParts(
       packed = number;
       continue;
     }
-    // Rebuilt from the parsed URL: no userinfo, no query, no fragment.
+    // Rebuilt from the parsed URL: no userinfo, no query, no fragment. Not
+    // cut here: the pack scans the whole line before it shortens it.
     references.push(`${url.protocol}//${url.host}${url.pathname}`);
   }
 
@@ -487,6 +619,10 @@ async function pullRequestParts(
     const number = packed;
     const label = `pull request #${number}`;
     const url = `https://${origin.host}/${origin.owner}/${origin.repo}/pull/${number}`;
+    const failed = (reason: string): void => {
+      result.parts.push(note(label, `not packed, capture failed (${reason})`));
+      result.incomplete = true;
+    };
     try {
       const compiled = await compilePullRequest(url, {
         cwd: options.cwd,
@@ -497,14 +633,39 @@ async function pullRequestParts(
         maxDiffBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
         linkedCriteria: false,
       });
-      result.parts.push({
-        label,
-        title: compiled.displayName,
-        chunks: [{ text: compiled.text }],
-      });
-      result.url = url;
-      result.redactions = compiled.redactions;
-      if (compiled.metadata.diffTruncated === true) result.incomplete = true;
+      // `gh` was asked for one pull request; anything else it answers with is
+      // not evidence for this bead.
+      let answered: number | null = null;
+      try {
+        answered = ownPullRequest(
+          new URL(String(compiled.metadata.url)),
+          origin,
+        );
+      } catch {
+        answered = null;
+      }
+      if (compiled.metadata.prNumber !== number || answered !== number) {
+        failed("gh answered with a different pull request");
+      } else {
+        result.parts.push({
+          label,
+          title: compiled.displayName,
+          chunks: [{ text: compiled.text }],
+          sourceCut: compiled.metadata.diffTruncated === true,
+        });
+        result.url = url;
+        result.redactions = compiled.redactions;
+        const omissions = Array.isArray(compiled.metadata.omissions)
+          ? compiled.metadata.omissions.length
+          : 0;
+        if (omissions > 0)
+          result.parts.push(
+            note(
+              `${label} omissions`,
+              `${omissions} recorded inside the evidence`,
+            ),
+          );
+      }
     } catch (error) {
       if (error instanceof ContextSecurityError)
         throw new ContextSecurityError(
@@ -513,14 +674,14 @@ async function pullRequestParts(
             `potential secrets detected in ${label};`,
           ),
         );
-      const reason = sanitizeContent(
-        error instanceof Error ? error.message : String(error),
-        "redact",
-      )
-        .text.replace(/\s+/g, " ")
-        .slice(0, 160);
-      result.parts.push(note(label, `not packed, capture failed (${reason})`));
-      result.incomplete = true;
+      failed(
+        sanitizeContent(
+          error instanceof Error ? error.message : String(error),
+          "redact",
+        )
+          .text.replace(/\s+/g, " ")
+          .slice(0, 160),
+      );
     }
   }
 
@@ -535,7 +696,7 @@ async function pullRequestParts(
       ),
     ...[...new Set(references)].map((reference) =>
       note(
-        `reference ${reference.slice(0, 200)}`,
+        `reference ${reference}`,
         origin
           ? "not fetched, not a pull request URL of this workspace's origin repository"
           : "not fetched, the origin repository could not be read",
@@ -567,6 +728,7 @@ export async function compileBead(
   if (id === null) throw new Error("bead source needs a Beads issue id");
   const cwd = options.cwd ?? process.cwd();
   const runner = options.runner ?? runLocalCommand;
+  const policy = options.secretPolicy ?? "reject";
 
   const shown = await readJson(
     ["bd", "--readonly", "show", id, "--json"],
@@ -589,32 +751,68 @@ export async function compileBead(
   );
   if (!Array.isArray(rows))
     throw new Error(`bd printed no readable comments for ${id}`);
-  const comments = commentsOf(id, rows);
-  const texts = mentionTexts(issue, comments);
+
+  // Scanned here, whole, before anything is made of them. Under the reject
+  // policy a hit ends the pack now, before a file is read or a pull request
+  // fetched; under redact, everything below works on the redacted text.
+  const found = new Map<string, number>();
+  const clean = (value: unknown, where: string): string =>
+    scanNamed(text(value), policy, where, found);
+  const safe: BeadText = {
+    title: clean(issue.title, "the title"),
+    labels: (Array.isArray(issue.labels) ? issue.labels : []).map((label) =>
+      clean(label, "the labels"),
+    ),
+    criteria: clean(issue.acceptance_criteria, "the acceptance criteria"),
+    description: clean(issue.description, "the description"),
+    design: clean(issue.design, "the design notes"),
+    notes: clean(issue.notes, "the notes"),
+    externalRef: clean(issue.external_ref, "the external reference"),
+    specId: clean(issue.spec_id, "the spec id"),
+  };
+  const comments = commentsOf(id, rows).map((entry) => ({
+    at: entry.at,
+    text: clean(entry.text, `the comment of ${entry.at}`),
+  }));
+  const own = [
+    acceptancePart(id, issue, safe),
+    commentsPart(id, comments),
+    descriptionPart(id, safe),
+  ];
+  for (const part of own)
+    for (const chunk of part.chunks)
+      chunk.text = scanNamed(
+        chunk.text,
+        policy,
+        chunk.name ?? part.label,
+        found,
+      );
+
+  const texts = mentionTexts(safe, comments);
   const run = beadRun(id, cwd);
+  const linked = linkedFileParts(cwd, run, texts);
   const pullRequest = await pullRequestParts(texts, {
     cwd,
     runner,
-    secretPolicy: options.secretPolicy ?? "reject",
+    secretPolicy: policy,
     maxBytes: options.maxBytes,
   });
+  for (const redaction of pullRequest.redactions)
+    found.set(
+      redaction.kind,
+      (found.get(redaction.kind) ?? 0) + redaction.count,
+    );
 
   return {
-    displayName: `${id}: ${oneLine(issue.title) || "(untitled)"}`,
+    displayName: `${id}: ${shownTitle(safe)}`,
     locator: id,
     metadata: {
       beadId: id,
       ...(run ? { forgeRun: run.slug } : {}),
       ...(pullRequest.url ? { pullRequest: pullRequest.url } : {}),
     },
-    parts: [
-      acceptancePart(id, issue),
-      commentsPart(id, comments),
-      descriptionPart(id, issue),
-      ...linkedFileParts(cwd, run, texts),
-      ...pullRequest.parts,
-    ],
-    incomplete: pullRequest.incomplete,
-    redactions: pullRequest.redactions,
+    parts: [...own, ...linked.parts, ...pullRequest.parts],
+    incomplete: linked.incomplete || pullRequest.incomplete,
+    redactions: [...found].map(([kind, count]) => ({ kind, count })),
   };
 }

@@ -62,7 +62,8 @@ export class ContextSecurityError extends Error {
 
 export { hashText };
 
-function maxBytesFrom(input: { maxBytes?: number | undefined }): number {
+/** The evidence budget a caller asked for, or the default; refuses anything but a positive integer. */
+export function maxBytesFrom(input: { maxBytes?: number | undefined }): number {
   const value = input.maxBytes ?? DEFAULT_MAX_BYTES;
   if (!Number.isInteger(value) || value < 1) {
     throw new Error("maxBytes must be a positive integer");
@@ -304,6 +305,11 @@ export type ContextPart = {
   maxShare?: number | undefined;
   /** The listing's words for a part with nothing to send. */
   note?: string | undefined;
+  /**
+   * True when the chunks were already cut where they were gathered. The
+   * listing then says so and the pack is marked truncated.
+   */
+  sourceCut?: boolean | undefined;
 };
 
 export type ContextPartsInput = {
@@ -324,20 +330,67 @@ export type ContextPartsInput = {
 };
 
 const CHUNK_SEPARATOR = "\n\n";
+const SEPARATOR_BYTES = 2;
 const TITLE_MAX_CHARS = 200;
 const LISTING_LINE_MAX_CHARS = 300;
 
 const bytesOf = (text: string): number => Buffer.byteLength(text, "utf8");
 
 /** `value` cut to `max` UTF-16 units without splitting a surrogate pair. */
-function cutChars(value: string, max: number): string {
+export function cutChars(value: string, max: number): string {
   if (value.length <= max) return value;
   const last = value.charCodeAt(max - 1);
   return value.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
 }
 
+/**
+ * `value` with every C0 and C1 control character replaced by a space. What an
+ * operator is shown before sending must not be able to move the cursor, hide
+ * text or ring the bell.
+ */
+export function withoutControls(value: string): string {
+  let clean = "";
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    clean += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
+  }
+  return clean;
+}
+
+function secretSummary(redactions: ContextRedaction[]): string {
+  return redactions
+    .map((redaction) => `${redaction.kind}=${redaction.count}`)
+    .join(", ");
+}
+
+/**
+ * `value` scanned under `policy`. Reject: a hit throws, naming `where` and
+ * never the match. Redact: the hit is replaced and counted in `found`.
+ */
+export function scanNamed(
+  value: string,
+  policy: SecretPolicy,
+  where: string,
+  found: Map<string, number>,
+): string {
+  const { text, redactions } = redactSecrets(value);
+  if (redactions.length === 0) return value;
+  if (policy === "reject")
+    // The name of the place is caller text too: it is never echoed raw.
+    throw new ContextSecurityError(
+      `potential secrets detected in ${withoutControls(redactSecrets(where).text)}; context was not sent (${secretSummary(redactions)})`,
+    );
+  for (const redaction of redactions)
+    found.set(
+      redaction.kind,
+      (found.get(redaction.kind) ?? 0) + redaction.count,
+    );
+  return text;
+}
+
 type PartFit = {
   content: string;
+  bytes: number;
   /** Chunks kept whole. */
   whole: number;
   /** True when the content is less than the whole part. */
@@ -349,20 +402,23 @@ type PartFit = {
  * not even the first fits, the start of that one.
  */
 function fitChunks(chunks: string[], allowance: number): PartFit {
-  let content = "";
-  let whole = 0;
+  const kept: string[] = [];
+  let bytes = 0;
   for (const chunk of chunks) {
-    const piece = whole === 0 ? chunk : `${CHUNK_SEPARATOR}${chunk}`;
-    if (bytesOf(content) + bytesOf(piece) > allowance) break;
-    content += piece;
-    whole += 1;
+    const size = bytesOf(chunk) + (kept.length === 0 ? 0 : SEPARATOR_BYTES);
+    if (bytes + size > allowance) break;
+    kept.push(chunk);
+    bytes += size;
   }
-  if (whole > 0) return { content, whole, cut: whole < chunks.length };
-  return {
-    content: truncateUtf8(chunks[0] ?? "", Math.max(0, allowance)).text,
-    whole: 0,
-    cut: true,
-  };
+  if (kept.length > 0)
+    return {
+      content: kept.join(CHUNK_SEPARATOR),
+      bytes,
+      whole: kept.length,
+      cut: kept.length < chunks.length,
+    };
+  const content = truncateUtf8(chunks[0] ?? "", Math.max(0, allowance)).text;
+  return { content, bytes: bytesOf(content), whole: 0, cut: true };
 }
 
 function plural(count: number, unit: string): string {
@@ -372,9 +428,11 @@ function plural(count: number, unit: string): string {
 /**
  * A pack with one evidence item per part, inside the evidence budget.
  *
- * The budget is spent in part order: each part first takes what it needs up to
- * its ceiling, then whatever is left goes back, in the same order, to the
- * parts that were cut. So an earlier part never loses bytes to a later one.
+ * The budget is spent in part order, in two passes: each part first takes what
+ * it needs up to its ceiling (`maxShare`), then whatever is left goes back, in
+ * the same order, to the parts that were cut. A part with no ceiling never
+ * loses bytes to a later one; a part with a ceiling can be held to it while a
+ * later part is packed.
  * `source.metadata.parts` lists every part that was considered, packed or not.
  */
 export function buildContextPackFromParts(
@@ -388,38 +446,47 @@ export function buildContextPackFromParts(
       redaction.kind,
       (found.get(redaction.kind) ?? 0) + redaction.count,
     );
-  // Everything below reaches a provider or the run record, so everything is
-  // scanned, and scanned whole: a label before it is cut, a chunk before the
-  // budget can drop or shorten it.
-  const scan = (value: string, where: string): string => {
-    const { text, redactions } = redactSecrets(value);
-    if (redactions.length === 0) return value;
-    if (policy === "reject") {
-      const summary = redactions
-        .map((redaction) => `${redaction.kind}=${redaction.count}`)
-        .join(", ");
-      // The name of the place is caller text too: it is never echoed raw.
-      throw new ContextSecurityError(
-        `potential secrets detected in ${redactSecrets(where).text}; context was not sent (${summary})`,
-      );
-    }
-    for (const redaction of redactions)
-      found.set(
-        redaction.kind,
-        (found.get(redaction.kind) ?? 0) + redaction.count,
-      );
-    return text;
-  };
+  // Everything below reaches a provider, a terminal or the run record, so
+  // everything is scanned, and scanned whole: a label before it is cut, a
+  // chunk before the budget can drop or shorten it.
+  const scan = (value: string, where: string): string =>
+    scanNamed(value, policy, where, found);
 
   // Content first, so a refusal names the part a reader would look in.
-  const scanned = input.parts.map((part) =>
-    part.chunks.map((chunk) => scan(chunk.text, chunk.name ?? part.label)),
-  );
+  const scanned = input.parts.map((part) => {
+    const chunks = part.chunks.map((chunk) =>
+      scan(chunk.text, chunk.name ?? part.label),
+    );
+    if (chunks.length < 2) return { chunks, joined: false };
+    // A secret can be written across two chunks. They are sent as one item,
+    // so they are read as one too; what redaction then changes can no longer
+    // be told apart by chunk, and the part goes on as that one text.
+    const whole = chunks.join(CHUNK_SEPARATOR);
+    const clean = scan(whole, part.label);
+    return clean === whole
+      ? { chunks, joined: false }
+      : { chunks: [clean], joined: true };
+  });
+  // And across parts, which no redaction can mend: the halves sit in two
+  // evidence items.
+  const across = redactSecrets(
+    scanned
+      .filter((part) => part.chunks.length > 0)
+      .map((part) => part.chunks.join(CHUNK_SEPARATOR))
+      .join(CHUNK_SEPARATOR),
+  ).redactions;
+  if (across.length > 0)
+    throw new ContextSecurityError(
+      `potential secrets detected across parts; ${policy === "reject" ? "" : "they cannot be redacted and the "}context was not sent (${secretSummary(across)})`,
+    );
+
+  const shown = (value: string, where: string): string =>
+    withoutControls(scan(value, where));
   const displayName = cutChars(
-    scan(input.displayName, "the source name"),
+    shown(input.displayName, "the source name"),
     TITLE_MAX_CHARS,
   );
-  const locator = scan(input.locator, "the source locator");
+  const locator = shown(input.locator, "the source locator");
   const inMetadata = (value: string) => scan(value, "the source metadata");
   const metadata: ContextSourceMetadata = Object.fromEntries(
     Object.entries(input.metadata ?? {}).map(([key, value]) => [
@@ -434,17 +501,18 @@ export function buildContextPackFromParts(
   const parts = input.parts.map((part, index) => ({
     part: {
       ...part,
-      label: scan(part.label, "the evidence listing"),
+      unit: scanned[index]?.joined ? undefined : part.unit,
+      label: shown(part.label, "the evidence listing"),
       title: cutChars(
-        scan(part.title ?? part.label, "an evidence title"),
+        shown(part.title ?? part.label, "an evidence title"),
         TITLE_MAX_CHARS,
       ),
       note:
         part.note === undefined
           ? undefined
-          : scan(part.note, "the evidence listing"),
+          : shown(part.note, "the evidence listing"),
     },
-    chunks: scanned[index] ?? [],
+    chunks: scanned[index]?.chunks ?? [],
   }));
 
   let remaining = maxBytes;
@@ -455,14 +523,13 @@ export function buildContextPackFromParts(
         ? remaining
         : Math.min(remaining, Math.floor(maxBytes * part.maxShare));
     const fit = fitChunks(chunks, ceiling);
-    remaining -= bytesOf(fit.content);
+    remaining -= fit.bytes;
     return fit;
   });
   for (const [index, fit] of fits.entries()) {
     if (!fit?.cut || remaining === 0) continue;
-    const used = bytesOf(fit.content);
-    const again = fitChunks(parts[index]?.chunks ?? [], used + remaining);
-    remaining -= bytesOf(again.content) - used;
+    const again = fitChunks(parts[index]?.chunks ?? [], fit.bytes + remaining);
+    remaining -= again.bytes - fit.bytes;
     fits[index] = again;
   }
 
@@ -475,34 +542,39 @@ export function buildContextPackFromParts(
       listing.push(`${part.label}: ${part.note ?? "none"}`);
       continue;
     }
-    const byteLength = bytesOf(fit.content);
-    if (byteLength === 0) {
+    if (fit.bytes === 0) {
       truncated = true;
       listing.push(`${part.label}: left out, the evidence budget is spent`);
       continue;
     }
-    if (fit.cut) truncated = true;
+    const partial = fit.cut || part.sourceCut === true;
+    if (partial) truncated = true;
     const id = `E${evidence.length + 1}`;
     evidence.push({
       id,
       title: part.title,
       content: fit.content,
       contentHash: hashText(fit.content),
-      byteLength,
-      truncated: fit.cut,
+      byteLength: fit.bytes,
+      truncated: partial,
     });
-    const total = bytesOf(chunks.join(CHUNK_SEPARATOR));
     let line: string;
     if (!fit.cut) {
       const count =
         part.unit === undefined ? "" : `${plural(chunks.length, part.unit)}, `;
-      line = `${count}${byteLength} bytes`;
+      line = `${count}${fit.bytes} bytes${part.sourceCut ? ", already cut where it was captured" : ""}`;
     } else if (part.unit === undefined) {
-      line = `${byteLength} of ${total} bytes, cut to fit the evidence budget`;
+      // The whole part as it was handed over, which may itself be a cut.
+      const total = chunks.reduce(
+        (sum, chunk, at) =>
+          sum + bytesOf(chunk) + (at === 0 ? 0 : SEPARATOR_BYTES),
+        0,
+      );
+      line = `${fit.bytes} of ${part.sourceCut ? "at least " : ""}${total} bytes, cut to fit the evidence budget`;
     } else if (fit.whole === 0) {
-      line = `the first of ${plural(chunks.length, part.unit)} cut to ${byteLength} bytes; ${chunks.length - 1} left out by the evidence budget`;
+      line = `the first of ${plural(chunks.length, part.unit)} cut to ${fit.bytes} bytes; ${chunks.length - 1} left out by the evidence budget`;
     } else {
-      line = `${fit.whole} of ${plural(chunks.length, part.unit)}, ${byteLength} bytes; ${chunks.length - fit.whole} left out by the evidence budget`;
+      line = `${fit.whole} of ${plural(chunks.length, part.unit)}, ${fit.bytes} bytes; ${chunks.length - fit.whole} left out by the evidence budget`;
     }
     listing.push(`${id} ${part.label}: ${line}`);
   }

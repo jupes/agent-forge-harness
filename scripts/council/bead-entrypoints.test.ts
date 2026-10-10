@@ -43,7 +43,10 @@ function workspace(): string {
 }
 
 /** An invented bead and two comments; any other command fails the test. */
-function beadRunner(): { runner: CommandRunner; calls: string[][] } {
+function beadRunner(title = "Teach the kiln to report its temperature"): {
+  runner: CommandRunner;
+  calls: string[][];
+} {
   const calls: string[][] = [];
   const runner: CommandRunner = async (command) => {
     calls.push(command);
@@ -57,7 +60,7 @@ function beadRunner(): { runner: CommandRunner; calls: string[][] } {
       return answer([
         {
           id: BEAD,
-          title: "Teach the kiln to report its temperature",
+          title,
           description: "The kiln runs blind today.",
           acceptance_criteria: "[ ] The reading is in Celsius.",
           status: "in_progress",
@@ -82,6 +85,14 @@ function beadRunner(): { runner: CommandRunner; calls: string[][] } {
     throw new Error(`unexpected command: ${line}`);
   };
   return { runner, calls };
+}
+
+/** Whether `text` holds a C0 or C1 control character. */
+function hasControl(text: string): boolean {
+  return [...text].some((char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+  });
 }
 
 type Captured = { code: number; stdout: string; stderr: string[] };
@@ -318,7 +329,19 @@ describe("council -- bead <id>", () => {
     expect(envelope<{ run: CouncilRun }>(ran.stdout).ok).toBe(true);
   });
 
-  test("a file source prints nothing new on stderr", async () => {
+  test("a dry run prints no control character a bead's title tried to smuggle in", async () => {
+    const esc = "\u001b";
+    const ran = await cli(["bead", BEAD, "--dry-run"], {
+      cwd: workspace(),
+      runCommand: beadRunner(`Kiln ${esc}[8mhidden${esc}[0m\u0007 report`)
+        .runner,
+    });
+    expect(ran.code).toBe(0);
+    expect(ran.stdout).toContain("Source: demo-harness-ab12.3: Kiln ");
+    expect(hasControl(ran.stdout.replaceAll("\n", ""))).toBe(false);
+  });
+
+  test("a stdin source prints nothing new on stderr", async () => {
     const cwd = workspace();
     const ran = await cli(["stdin", "--run-id", "plain", "--json"], {
       cwd,
@@ -386,6 +409,21 @@ describe("MCP council_start with a bead", () => {
       },
     ])
       expect(() => reviewServiceInput(input)).toThrow(refused);
+    // Called without the schema in front (the tools never do this), the
+    // mapping still decides the ledger bead and still knows its four kinds.
+    const smuggled = {
+      kind: "bead" as const,
+      id: BEAD,
+      beadId: "demo-harness-zz9",
+      redactSecrets: false,
+    };
+    expect(reviewServiceInput(smuggled).beadId).toBe(BEAD);
+    const sideDoor = {
+      sourceType: "bead",
+      source: "--help",
+      redactSecrets: false,
+    } as unknown as Parameters<typeof reviewServiceInput>[0];
+    expect(() => reviewServiceInput(sideDoor)).toThrow(refused);
     for (const id of ["--help", "a b", "$(id)", "../x", "x".repeat(122)])
       expect(() =>
         reviewServiceInput({ kind: "bead", id, redactSecrets: false }),
