@@ -28,6 +28,12 @@ Built-in smiths: `claude-master` (high effort), `claude-journeyman` (default), `
 → `workflow.default_crew` → `claude-journeyman` (`scripts/config/resolve.ts`). An unknown or disabled smith is an
 error, never a silent fall-through.
 
+The phase gate takes a smith by name too:
+`bun run forge:phase-gate <phase> --slug <slug> --write --bead <id> --smith <name>` records that smith on the run as
+its executor (`.claude/workflows/forge.md`, *`--smith`*). It reads the flag and nothing else: no bead metadata, no
+bench, no default. A `--provider`, `--model` or `--effort` beside the smith must agree with it, and with no `--smith`
+the write records the live session.
+
 ## Running a smith
 
 `bun run forge:exec --bead <id> --run <slug> --smith <name> --worktree <path> --prompt <text>` runs one bounded task

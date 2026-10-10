@@ -113,6 +113,36 @@ no linked gate entry (`agent-forge-harness-g043`).
 
 ---
 
+## `--smith`
+
+`/forgemaster`, `/forgemaster-auto`, `/forgemaster-mini` and the four `/forge-*` commands take
+`--smith <name>`: the configured smith (a provider, a model and an effort;
+`bun run forge:config show` lists them) that the run is recorded as built by.
+
+- **It is given on every `forge:phase-gate` call of the run**, the entry checks and the writes:
+  `bun run forge:phase-gate <phase> --slug <slug> --write --bead <id> --smith <name>`. A name that
+  is not configured is refused, with the list of the ones that are; a write stores the smith on the
+  run as its executor and stamps it on the run's ledger events.
+- **It is per call.** A write without it records the live session instead (whenever the ledger
+  knows that session's model), in place of a smith an earlier write stored. A resumed run, or a
+  single `/forge-*` command run on its own, passes it again; `bun run forge:runs show <slug>` prints
+  what the run holds.
+- **It does not change the model of the session that reads the command.** That session builds with
+  the model it is running. Record the smith that really builds: the executor on the run is the
+  builder the evaluator's rank is compared against when the opt-in strict verdict is on.
+- **Hand it on when work goes to a spawned CLI.** Point the run at the task, then spawn with the
+  same smith: `bun run forge:correlate --bead <task-id> --run <slug>`, then
+  `bun run forge:exec --bead <task-id> --run <slug> --smith <name> --worktree <checkout> --prompt <text>`.
+
+With no `--smith`, nothing changes: the phase gate records the live session, and `forge:exec` picks
+a smith in the config's order: its own `--smith`, the bead's `smith` metadata, the bench for the
+bead's `complexity:*` label, then the default smith (`.claude/protocols/model-tier-policy.md`).
+
+The mini path keeps no run state, so there a `--smith` is recorded by one write at the end of the
+wrap step (`.claude/workflows/forge-mini.md`).
+
+---
+
 ## Beads is mandatory
 
 This workflow tracks all work in Beads. If `bd` is unreachable (Dolt server down), **stop and fix

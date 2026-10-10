@@ -6,6 +6,7 @@ a live demo or test and see the work yourself.
 ## Usage
 ```
 /forge-implement <slug>
+/forge-implement <slug> --smith <name>   # record the run as built by a configured smith
 ```
 
 ## What to do
@@ -14,7 +15,9 @@ Follow **`.claude/skills/forge-implement/SKILL.md`** in full. In short:
 
 1. Gate the start: `bun run forge:phase-gate implement --slug <slug>` (requires `plans/drafts/<slug>.md`).
 2. Claim the next Beads task (`bd update <id> --claim`); work in dependency order, one at a time.
-   `bd` must be reachable — if it errors, run `bd dolt start` and retry.
+   `bd` must be reachable — if it errors, run `bd dolt start` and retry. Stay inside the task's file
+   map (the `## Files` section of its description); when the work has to leave it, say so in a
+   `worklog:` comment and add the path to the map.
 3. Per behavior, follow `.claude/skills/tdd/SKILL.md` **vertically**: one failing test → minimal code →
    repeat. Refactor only when green.
 4. At each checkpoint, **stop and show the user** the exact command/URL to run and the expected
@@ -24,6 +27,9 @@ Follow **`.claude/skills/forge-implement/SKILL.md`** in full. In short:
    `bun run forge:phase-gate implement --slug <slug> --write --bead <task-id>`: the issue the run was
    started from, else the last task this phase closed. It prints the pointer the ship step gates with
    (`.claude/workflows/forge.md`, *Which bead a phase names*).
+
+`--smith <name>` records the run as built by that configured smith: add it to both `forge:phase-gate` calls above (steps 1 and 6). It does
+not change the model of this session (`.claude/workflows/forge.md`, *`--smith`*).
 
 ## Next
 `/forge-ship <slug>` — or `/forgemaster` continues.

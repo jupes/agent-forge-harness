@@ -14,7 +14,16 @@
  *   bun run scripts/forge/phase-gate.ts <phase> --slug <slug>            # can I enter <phase>?
  *   bun run scripts/forge/phase-gate.ts <phase> --slug <slug> --write    # mark <phase> complete
  *     [--feature "title"] [--epic <beads-id>] [--mode gated|auto] [--checkout <path>]
- *     [--bead <beads-id>] [--provider <id> --model <id> [--effort <level>] [--smith <name>]]
+ *     [--bead <beads-id>] [--smith <name> | --provider <id> --model <id> [--effort <level>]]
+ *
+ * `--smith <name>` names a configured smith (`bun run forge:config show`) and
+ * is enough on its own: it stands for that smith's provider, model and effort.
+ * An unknown smith is refused with the configured names, a disabled one is
+ * refused, and so is a `--provider`, `--model` or `--effort` beside it that
+ * says something else. The smiths config is read only when the flag is given,
+ * from the checkout this script is in. The executor is checked on an entry
+ * check too, and stored on the run by a `--write`; a write that names none
+ * stores the live session's instead, when its model is known.
  *
  * An auto run cannot enter a phase while an earlier one is halted or still
  * waiting on its review (`reviewGate` in `review-rules.ts`). A successful entry
@@ -33,8 +42,11 @@
  */
 
 import { existsSync } from "fs";
+import { join } from "path";
 
 import type { Executor } from "../../types/hearth";
+import { type ForgeConfig, loadConfig } from "../config/load";
+import { resolveSmith } from "../config/resolve";
 import { validateExecutor } from "../hearth/validate";
 import {
   artifactPath,
@@ -231,31 +243,104 @@ export function recordComplete(
   return { ok: true, data: newState, error: null };
 }
 
-/**
- * The executor named by `--provider/--model [--effort] [--smith]`, or
- * undefined when none of the flags is given. Provider and model come together.
- */
-export function executorFromFlags(flags: {
+/** The flags that say who is building: a configured smith, or a provider and a model. */
+export interface ExecutorFlags {
   provider?: string;
   model?: string;
   effort?: string;
   smith?: string;
-}): GateResult<Executor | undefined> {
+}
+
+/** The executor a configured smith stands for. */
+function smithExecutor(
+  flags: ExecutorFlags,
+  name: string,
+  smiths: () => ForgeConfig,
+): GateResult<Executor | undefined> {
+  // An empty name would resolve to the default smith, and a flag in its place
+  // means the name was left out.
+  if (name.trim().length === 0 || name.startsWith("--")) {
+    return {
+      ok: false,
+      data: null,
+      error: "--smith needs the name of a configured smith.",
+    };
+  }
+  let config: ForgeConfig;
+  try {
+    config = smiths();
+  } catch (error) {
+    return {
+      ok: false,
+      data: null,
+      error: `--smith ${name}: the smiths config could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  // The lookup forge:exec uses, so "unknown" and "disabled" mean one thing.
+  const resolution = resolveSmith(config, { explicit: name });
+  if (!resolution.ok) {
+    const known = Object.keys(config.smiths).sort().join(", ");
+    return {
+      ok: false,
+      data: null,
+      error:
+        config.smiths[name] === undefined
+          ? `--smith: ${resolution.error}. Configured smiths: ${known}.`
+          : `--smith: ${resolution.error}.`,
+    };
+  }
+  const { smith } = resolution;
+  // A smith is its provider, model and effort: a flag beside it may repeat one
+  // of them, never change it.
+  for (const flag of ["provider", "model", "effort"] as const) {
+    const given = flags[flag];
+    if (given !== undefined && given !== smith[flag]) {
+      return {
+        ok: false,
+        data: null,
+        error: `--${flag} ${given} contradicts smith "${smith.name}", whose ${flag} is ${smith[flag]}. Drop --${flag}, or name another smith.`,
+      };
+    }
+  }
+  const checked = validateExecutor({
+    provider: smith.provider,
+    model: smith.model,
+    ...(smith.effort ? { effort: smith.effort } : {}),
+    smith: smith.name,
+  });
+  return checked.ok
+    ? { ok: true, data: checked.value, error: null }
+    : { ok: false, data: null, error: checked.error };
+}
+
+/**
+ * The executor named by `--smith <name>` or by `--provider/--model
+ * [--effort]`, or undefined when none of the flags is given.
+ *
+ * A smith is looked up in the smiths config, which `smiths` reads: it is
+ * called only when a smith is named.
+ */
+export function executorFromFlags(
+  flags: ExecutorFlags,
+  smiths: () => ForgeConfig,
+): GateResult<Executor | undefined> {
   const given = Object.values(flags).some((value) => value !== undefined);
   if (!given) return { ok: true, data: undefined, error: null };
+  if (flags.smith !== undefined) {
+    return smithExecutor(flags, flags.smith, smiths);
+  }
   if (flags.provider === undefined || flags.model === undefined) {
     return {
       ok: false,
       data: null,
       error:
-        "--provider and --model must be given together (--effort and --smith are optional extras).",
+        "--provider and --model must be given together (--effort is an optional extra), or name a configured smith with --smith.",
     };
   }
   const checked = validateExecutor({
     provider: flags.provider,
     model: flags.model,
     ...(flags.effort !== undefined ? { effort: flags.effort } : {}),
-    ...(flags.smith !== undefined ? { smith: flags.smith } : {}),
   });
   return checked.ok
     ? { ok: true, data: checked.value, error: null }
@@ -305,13 +390,21 @@ if (import.meta.main) {
   const provider = getFlag(argv, "provider");
   const model = getFlag(argv, "model");
   const effort = getFlag(argv, "effort");
-  const smith = getFlag(argv, "smith");
-  const flagged = executorFromFlags({
-    ...(provider !== undefined ? { provider } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(effort !== undefined ? { effort } : {}),
-    ...(smith !== undefined ? { smith } : {}),
-  });
+  // `--smith` as the last word has no name: say so instead of dropping the flag.
+  const smith = argv.includes("--smith")
+    ? (getFlag(argv, "smith") ?? "")
+    : undefined;
+  const flagged = executorFromFlags(
+    {
+      ...(provider !== undefined ? { provider } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+      ...(smith !== undefined ? { smith } : {}),
+    },
+    // The smiths of the checkout this script is in, as forge:exec and
+    // forge:config read them.
+    () => loadConfig({ harnessRoot: join(import.meta.dir, "..", "..") }).config,
+  );
   if (!flagged.ok) emit(flagged);
   const explicit = {
     ...(bead ? { beadId: bead } : {}),

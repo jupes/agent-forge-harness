@@ -5,6 +5,7 @@ Turn a research document into a TDD- and Beads-shaped implementation plan with d
 ## Usage
 ```
 /forge-plan <slug>
+/forge-plan <slug> --smith <name>   # record the run as built by a configured smith
 ```
 
 ## What to do
@@ -26,6 +27,9 @@ Follow **`.claude/skills/forge-plan/SKILL.md`** in full. In short:
    started from, else the first task the plan created. Add `--epic <id>` for the feature or epic that
    groups the tasks; never pass that one as `--bead` here (`.claude/workflows/forge.md`, *Which bead
    a phase names*).
+
+`--smith <name>` records the run as built by that configured smith: add it to both `forge:phase-gate` calls above (steps 1 and 7). It does
+not change the model of this session (`.claude/workflows/forge.md`, *`--smith`*).
 
 ## Next
 `/forge-implement <slug>` — or `/forgemaster` continues.

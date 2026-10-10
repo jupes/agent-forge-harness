@@ -28,6 +28,11 @@ bd ready                                             # the tasks created in the 
 Beads must be reachable. If `bd` errors (e.g. Dolt server down), **stop** and fix it
 (`bd dolt start`) — do not proceed without issue tracking.
 
+**`--smith <name>`**: when the run was started with it, add `--smith <name>` to every
+`forge:phase-gate` call in this skill. The phase gate refuses a name that is not configured and
+records the smith on the run as its executor. It does not change the model of the session doing the
+work (`.claude/workflows/forge.md`, *`--smith`*).
+
 ## Process
 
 ### 1. Claim the first task
@@ -38,6 +43,23 @@ bd comments add <task-id> "worklog: starting implement (forge)"
 ```
 
 Work tasks in dependency order. One task in progress at a time.
+
+**Stay inside the task's file map.** `bd show <task-id>` prints the task's description, and its
+`## Files` section lists the globs this task may touch (the plan phase wrote it:
+`.claude/skills/forge-plan/SKILL.md`). Edit only files those globs match. The map is what the task
+said it would touch: a reviewer reads the diff against it. Nothing reserves files from it yet; it is
+kept honest now so that file reservations can be taken from it later.
+
+When the work needs a file outside the map, do not edit it silently and do not stop either. Say so,
+then go on:
+
+```bash
+bd comments add <task-id> "worklog: outside the file map: <path> — <why this task has to touch it>"
+```
+
+Add the path to the task's `## Files` section too (`bd update <task-id> --body-file <file>` with the
+description rewritten), and name it when you show the checkpoint. A task whose description has no
+`## Files` section has no map to hold to: say that in the first `worklog:` comment.
 
 **Keep Beads current as you work** (do not batch all updates to the end):
 - `--claim` moves the task `open → in_progress` — claim it *before* writing code, not after.
@@ -123,8 +145,8 @@ Report the checkpoints completed and the tasks closed, then point to `/forge-shi
 
 ## Hard Stops
 
-- A checkpoint balloons past its planned scope (>8 files or >~200 lines): pause and report; consider
-  splitting the Beads task before continuing.
+- A checkpoint balloons past its planned scope (>8 files or >~200 lines), or keeps leaving its file
+  map: pause and report; consider splitting the Beads task before continuing.
 - A behavior cannot be tested through the public interface: revisit the interface design with the
   user (see `.claude/skills/tdd/interface-design.md`) rather than testing implementation details.
 - Quality gate fails twice after fixes: stop, file a Beads bug, escalate.

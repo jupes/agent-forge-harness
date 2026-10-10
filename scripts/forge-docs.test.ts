@@ -152,6 +152,8 @@ const WRITE_LINE_DOCUMENTS = [
   ...skill("forge-ship"),
   ".claude/workflows/forge.md",
   ".claude/workflows/forge-auto.md",
+  ...command("forgemaster-mini"),
+  ".claude/workflows/forge-mini.md",
 ];
 
 describe("the Forge documents: every recorded phase names its Beads issue", () => {
@@ -406,6 +408,145 @@ describe("the Forge documents: a gate result belongs to a run through its correl
         says: false,
       });
     }
+  });
+});
+
+describe("the Forge documents: --smith, the file map and the mini path", () => {
+  /** The seven commands, and what the mirror carries for them (the four phase commands have no copy of their own: their skills do). */
+  const SMITH_DOCUMENTS = [
+    ".claude/commands/forge-research.md",
+    ".claude/commands/forge-plan.md",
+    ".claude/commands/forge-implement.md",
+    ".claude/commands/forge-ship.md",
+    ...command("forgemaster"),
+    ...command("forgemaster-auto"),
+    ...command("forgemaster-mini"),
+    ...skill("forge-research"),
+    ...skill("forge-plan"),
+    ...skill("forge-implement"),
+    ...skill("forge-ship"),
+  ];
+
+  test("every command that takes --smith documents it and says it does not change the session's model, and so does what the mirror carries", () => {
+    for (const path of SMITH_DOCUMENTS) {
+      expect(
+        missing(path, ["--smith <name>", "does not change the model of"]),
+      ).toEqual([]);
+    }
+  });
+
+  test("the workflow says what --smith is: given on every phase-gate call, what a write without it records, and whom the rank check then reads", () => {
+    expect(
+      missing(".claude/workflows/forge.md", [
+        "## `--smith`",
+        "every `forge:phase-gate` call",
+        "records the live session",
+        "does not change the model of",
+        "the builder the evaluator's rank is compared against",
+        "bun run forge:runs show <slug>",
+      ]),
+    ).toEqual([]);
+  });
+
+  test("where the workflow hands work to a spawned CLI, the command passes the smith, the bead and the run", () => {
+    const text = read(".claude/workflows/forge.md") ?? "";
+    const handOffs = commandsIn(".claude/workflows/forge.md", text, FORGE_EXEC)
+      .map((documented) => documented.command)
+      .filter((documented) => documented.includes("--smith"));
+    expect(handOffs.length).toBeGreaterThan(0);
+    for (const handOff of handOffs) {
+      expect(handOff).toContain("--bead <task-id>");
+      expect(handOff).toContain("--run <slug>");
+      expect(handOff).toContain("--smith <name>");
+    }
+  });
+
+  test("the mini documents record a --smith run with one ship write that names the task and the smith", () => {
+    for (const path of [
+      ...command("forgemaster-mini"),
+      ".claude/workflows/forge-mini.md",
+    ]) {
+      const writes = commandsIn(path, read(path) ?? "", PHASE_GATE)
+        .map((documented) => documented.command)
+        .filter((documented) => documented.includes("--write"));
+      expect({ path, writes: writes.length }).toEqual({ path, writes: 1 });
+      for (const flag of [" ship ", "--bead <task-id>", "--smith <name>"]) {
+        expect({ path, flag, has: writes[0]?.includes(flag) }).toEqual({
+          path,
+          flag,
+          has: true,
+        });
+      }
+      expect(
+        missing(path, ["reports/<slug>-ship.md", "no linked gate entry"]),
+      ).toEqual([]);
+    }
+  });
+
+  test("every place that says the mini path keeps no run state names the --smith exception", () => {
+    for (const path of [
+      ...command("forgemaster"),
+      ...command("forgemaster-mini"),
+      ".claude/workflows/forge-mini.md",
+    ]) {
+      const flat = (read(path) ?? "").replace(/\s+/g, " ");
+      const claims = [...flat.matchAll(/run state file/g)].length;
+      const exceptions = [...flat.matchAll(/unless it was given `--smith`/g)]
+        .length;
+      expect({
+        path,
+        claims: claims > 0,
+        covered: exceptions >= claims,
+      }).toEqual({ path, claims: true, covered: true });
+    }
+  });
+
+  test("the implement documents hold the worker to the task's file map, and say what to do when the work leaves it", () => {
+    for (const path of skill("forge-implement")) {
+      expect(
+        missing(path, [
+          "Stay inside the task's file map",
+          "worklog: outside the file map:",
+          "`## Files`",
+        ]),
+      ).toEqual([]);
+    }
+    expect(
+      missing(".claude/commands/forge-implement.md", [
+        "Stay inside the task's file map",
+      ]),
+    ).toEqual([]);
+  });
+
+  test("the harness guide has a Forge section that documents --smith, the bead each phase names and the file map", () => {
+    const guide = read("docs/HARNESS-GUIDE.md") ?? "";
+    const at = guide.indexOf("## The Forge pipeline");
+    expect(at).toBeGreaterThan(-1);
+    const next = guide.indexOf("\n## ", at + 1);
+    const section = guide
+      .slice(at, next < 0 ? undefined : next)
+      .replace(/\s+/g, " ");
+    for (const phrase of [
+      "--smith <name>",
+      "does not change the model of",
+      "--bead <id>",
+      "bun run quality-gate --correlation <pointer>",
+      "`## Files`",
+      "complexity:low",
+    ]) {
+      expect({ phrase, said: section.includes(phrase) }).toEqual({
+        phrase,
+        said: true,
+      });
+    }
+  });
+
+  test("the model-tier policy says the phase gate takes a smith by name", () => {
+    const policy = ".claude/protocols/model-tier-policy.md";
+    const named = commandsIn(policy, read(policy) ?? "", PHASE_GATE).filter(
+      (documented) => documented.command.includes("--smith <name>"),
+    );
+    expect(named.length).toBeGreaterThan(0);
   });
 });
 

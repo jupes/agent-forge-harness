@@ -17,7 +17,8 @@ For anything bigger — multiple files, a new component/system, several unknowns
 override.
 
 **What's trimmed vs full** (the cost savings): no separate research/plan/ship **doc files**, no
-`forge:phase-gate` / run state file, and far fewer approval gates. Tracking lives in **Beads**
+`forge:phase-gate` / run state file (unless it was given `--smith`: Step 3, item 5), and far fewer
+approval gates. Tracking lives in **Beads**
 (the task status is the source of truth). Run at a lower model tier when quality allows — see
 `.claude/protocols/model-tier-policy.md`.
 
@@ -82,7 +83,7 @@ Show the demo result and pause for the user to look before wrapping.
 
 ## Step 3 — Wrap (short handoff + push)
 
-Keep the summary inline — no `reports/` file unless asked.
+Keep the summary inline — no `reports/` file unless asked, or unless it was given `--smith` (item 5).
 
 1. Quality gates: `bun run typecheck && bun run lint && bun test`; working tree clean.
 2. Close the task with evidence:
@@ -99,6 +100,19 @@ Keep the summary inline — no `reports/` file unless asked.
    The tracker is local-only: do not run `bd dolt push`.
 4. Report inline: **what changed**, **how to verify it** (1–3 steps with expected output), and the
    **Beads id closed** + PR link.
+5. **Only when the run was given `--smith <name>`**: record it. The mini path keeps no run state, so
+   the smith is recorded by one write. Save the report of item 4 as `reports/<slug>-ship.md`
+   (`<slug>`: a kebab-case name for this run), then:
+   ```bash
+   bun run forge:phase-gate ship --slug <slug> --write --bead <task-id> --smith <name>
+   ```
+   `<task-id>` is the task of Step 1. The call refuses a smith that is not configured (it lists the
+   ones that are: correct the name and run it again), stores the smith on the run as its executor,
+   and leaves a run that is already shipped, so it never shows as in flight. `--smith` does not
+   change the model of the session doing the work.
+
+A mini run has no linked gate entry, with or without `--smith`: its gate is the bare checks of
+item 1, not the quality gate run through a correlation that the full pipeline's ship step uses.
 
 ---
 

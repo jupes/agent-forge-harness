@@ -8,6 +8,7 @@ research document the plan phase consumes.
 ```
 /forge-research <feature description>
 /forge-research <slug>            # resume/redo research for an existing slug
+/forge-research <feature> --smith <name>   # record the run as built by a configured smith
 ```
 
 ## What to do
@@ -28,6 +29,9 @@ Follow **`.claude/skills/forge-research/SKILL.md`** in full. In short:
    (`.claude/workflows/forge.md`, *Which bead a phase names*).
 
 Beads must be reachable for `bd show`; if `bd` errors, run `bd dolt start` and retry — do not skip it.
+
+`--smith <name>` records the run as built by that configured smith: add it to the `forge:phase-gate` call of step 5. It does
+not change the model of this session (`.claude/workflows/forge.md`, *`--smith`*).
 
 ## Next
 `/forge-plan <slug>` — or `/forgemaster` continues the pipeline.

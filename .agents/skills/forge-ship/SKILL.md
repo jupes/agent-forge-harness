@@ -27,6 +27,11 @@ cat plans/drafts/<slug>.md                      # plan + checkpoints + Beads map
 
 Beads must be reachable. If `bd` errors, stop and fix it (`bd dolt start`) before shipping.
 
+**`--smith <name>`**: when the run was started with it, add `--smith <name>` to every
+`forge:phase-gate` call in this skill. The phase gate refuses a name that is not configured and
+records the smith on the run as its executor. It does not change the model of the session doing the
+work (`.claude/workflows/forge.md`, *`--smith`*).
+
 ## Process
 
 ### 1. Gather the facts

@@ -23,6 +23,9 @@ Explore first, ask last. See [[grill-me]] for the interview discipline this phas
 - Free-text feature description, a `bd show <id>` task, or a spec file path.
 - Optional `<slug>` (kebab-case). If absent, derive one from the feature title and reuse it for
   every downstream phase artifact.
+- Optional `--smith <name>`: the configured smith the run is recorded as built by. Add it to the
+  `forge:phase-gate` call in step 6; the phase gate refuses a name that is not configured. It does
+  not change the model of the session doing the work (`.claude/workflows/forge.md`, *`--smith`*).
 
 ## Process
 

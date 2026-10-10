@@ -1,4 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import type { Executor, Smith } from "../../types/hearth";
+import { type ForgeConfig, loadConfig } from "../config/load";
 import { recordRound } from "./auto-loop";
 import {
   artifactPath,
@@ -13,11 +25,15 @@ import {
   validateEnter,
 } from "./phase-gate";
 import type { ReviewRound } from "./phases";
-import { summarizeRun } from "./runs";
+import { activeRuns, summarizeRun } from "./runs";
 
 const NEVER = () => false;
 const ALWAYS = () => true;
 const FIXED = () => "2026-06-04T00:00:00.000Z";
+/** A smiths loader for calls that must not need the smiths config. */
+const neverRead = (): ForgeConfig => {
+  throw new Error("the smiths config was read");
+};
 
 function stateAfter(
   completed: ForgeState["completed"],
@@ -342,28 +358,374 @@ describe("the executor and bead on a run", () => {
     expect(next?.announcedStatus).toBe("awaiting-review");
   });
 
-  test("executor flags need a provider and a model together", () => {
-    expect(executorFromFlags({})).toEqual({
+  test("with no smith named, executor flags need a provider and a model together", () => {
+    expect(executorFromFlags({}, neverRead)).toEqual({
       ok: true,
       data: undefined,
       error: null,
     });
-    expect(executorFromFlags({ provider: "claude" }).ok).toBe(false);
-    expect(executorFromFlags({ model: "m-1" }).ok).toBe(false);
-    expect(executorFromFlags({ effort: "high" }).ok).toBe(false);
-    expect(executorFromFlags({ provider: "claude", model: "" }).ok).toBe(false);
+    expect(executorFromFlags({ provider: "claude" }, neverRead).ok).toBe(false);
+    expect(executorFromFlags({ model: "m-1" }, neverRead).ok).toBe(false);
+    expect(executorFromFlags({ effort: "high" }, neverRead).ok).toBe(false);
     expect(
-      executorFromFlags({
-        provider: "claude",
-        model: "m-1",
-        effort: "high",
-        smith: "anvil",
-      }).data,
-    ).toEqual({
-      provider: "claude",
-      model: "m-1",
-      effort: "high",
-      smith: "anvil",
+      executorFromFlags({ provider: "claude", model: "" }, neverRead).ok,
+    ).toBe(false);
+    expect(
+      executorFromFlags(
+        { provider: "claude", model: "m-1", effort: "high" },
+        neverRead,
+      ).data,
+    ).toEqual({ provider: "claude", model: "m-1", effort: "high" });
+  });
+});
+
+/** The builtin smiths and nothing from this machine: no workspace file, no user file, no environment. */
+const BUILTIN = loadConfig({
+  harnessRoot: mkdtempSync(join(tmpdir(), "phase-gate-smiths-")),
+  home: mkdtempSync(join(tmpdir(), "phase-gate-home-")),
+  env: {},
+}).config;
+const builtin = () => BUILTIN;
+
+describe("a smith named on the command line", () => {
+  test("--smith alone is enough: it resolves to the smith's provider, model and effort", () => {
+    const smith = BUILTIN.smiths["claude-master"] as Smith;
+    expect(executorFromFlags({ smith: "claude-master" }, builtin)).toEqual({
+      ok: true,
+      data: {
+        provider: smith.provider,
+        model: smith.model,
+        effort: smith.effort,
+        smith: "claude-master",
+      },
+      error: null,
     });
+  });
+
+  test("an unknown smith is refused, and the refusal lists the configured ones", () => {
+    const refused = executorFromFlags({ smith: "anvil" }, builtin);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('unknown smith "anvil"');
+    for (const name of Object.keys(BUILTIN.smiths)) {
+      expect(refused.error).toContain(name);
+    }
+  });
+
+  test("an unknown smith is refused even beside a provider and a model: a smith is always a configured one", () => {
+    const refused = executorFromFlags(
+      { provider: "claude", model: "m-1", smith: "anvil" },
+      builtin,
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('unknown smith "anvil"');
+  });
+
+  test("a disabled smith is refused, without the list", () => {
+    const withIdle: ForgeConfig = {
+      ...BUILTIN,
+      smiths: {
+        ...BUILTIN.smiths,
+        idle: {
+          name: "idle",
+          provider: "claude",
+          model: "m-0",
+          effort: "low",
+          enabled: false,
+          tags: [],
+        },
+      },
+    };
+    const refused = executorFromFlags({ smith: "idle" }, () => withIdle);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('smith "idle" is disabled');
+    expect(refused.error).not.toContain("claude-master");
+  });
+
+  test("--smith with no name is refused, rather than read as the default smith or as the next flag", () => {
+    for (const smith of ["", "  ", "--write"]) {
+      const refused = executorFromFlags({ smith }, builtin);
+      expect({ smith, ok: refused.ok }).toEqual({ smith, ok: false });
+      expect(refused.error).toContain("--smith needs the name");
+    }
+  });
+
+  test("a provider, model or effort that contradicts the smith is refused; one that agrees is accepted", () => {
+    const smith = BUILTIN.smiths["claude-journeyman"] as Smith;
+    for (const [flag, value] of [
+      ["provider", "codex"],
+      ["model", "some-other-model"],
+      ["effort", "max"],
+    ] as const) {
+      const refused = executorFromFlags(
+        { smith: "claude-journeyman", [flag]: value },
+        builtin,
+      );
+      expect({ flag, ok: refused.ok }).toEqual({ flag, ok: false });
+      expect(refused.error).toContain(`--${flag} ${value} contradicts`);
+      expect(refused.error).toContain("claude-journeyman");
+    }
+    expect(
+      executorFromFlags(
+        {
+          smith: "claude-journeyman",
+          provider: smith.provider,
+          model: smith.model,
+          effort: smith.effort,
+        },
+        builtin,
+      ).data,
+    ).toEqual({
+      provider: smith.provider,
+      model: smith.model,
+      effort: smith.effort,
+      smith: "claude-journeyman",
+    });
+  });
+
+  test("the smiths config is read only when a smith is named, and a config that cannot be read is then a refusal", () => {
+    expect(executorFromFlags({}, neverRead).ok).toBe(true);
+    expect(
+      executorFromFlags({ provider: "claude", model: "m-1" }, neverRead).data,
+    ).toEqual({ provider: "claude", model: "m-1" });
+    const refused = executorFromFlags({ smith: "claude-master" }, () => {
+      throw new Error("agent-forge.toml: cannot parse TOML: line 3");
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain("--smith claude-master");
+    expect(refused.error).toContain("cannot parse TOML: line 3");
+  });
+
+  test("pure: the executor a smith resolves to is stored on the run by recordComplete and kept by a later write that names none", () => {
+    const executor = executorFromFlags({ smith: "claude-apprentice" }, builtin)
+      .data as Executor;
+    const first = recordComplete(
+      "research",
+      "demo",
+      ALWAYS,
+      null,
+      { executor, beadId: "bd-7" },
+      FIXED,
+    ).data;
+    expect(first?.executor).toEqual(executor);
+    expect(first?.executor?.smith).toBe("claude-apprentice");
+    const second = recordComplete("plan", "demo", ALWAYS, first, {}, FIXED);
+    expect(second.data?.executor).toEqual(executor);
+  });
+
+  test("pure: a run recorded by one ship write, as the mini path records itself, is complete and not in flight", () => {
+    const executor = executorFromFlags({ smith: "claude-apprentice" }, builtin)
+      .data as Executor;
+    const only = recordComplete(
+      "ship",
+      "mini-demo",
+      ALWAYS,
+      null,
+      { executor, beadId: "bd-9" },
+      FIXED,
+    ).data as ForgeState;
+    expect(only.completed).toEqual(["ship"]);
+    expect(only.executor?.smith).toBe("claude-apprentice");
+    expect(only.beadId).toBe("bd-9");
+    expect(isRunComplete(only)).toBe(true);
+    expect(activeRuns([summarizeRun(only)])).toEqual([]);
+  });
+});
+
+// ── The command ──────────────────────────────────────────────────────────────
+
+const PHASE_GATE = join(import.meta.dir, "phase-gate.ts");
+const RUNS = join(import.meta.dir, "runs-cli.ts");
+const HARNESS = join(import.meta.dir, "..", "..");
+
+const scratch: string[] = [];
+
+afterEach(() => {
+  for (const dir of scratch.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // A ledger file a child still holds on Windows: the OS temp directory reclaims it.
+    }
+  }
+});
+
+interface Sandbox {
+  /** A scratch checkout: a directory with `.git`, holding the phases' artifacts. */
+  cwd: string;
+  env: Record<string, string | undefined>;
+}
+
+function sandbox(slug: string): Sandbox {
+  const root = mkdtempSync(join(tmpdir(), "phase gate smith "));
+  scratch.push(root);
+  const cwd = join(root, "check out");
+  const home = join(root, "home");
+  mkdirSync(join(cwd, ".git"), { recursive: true });
+  mkdirSync(home, { recursive: true });
+  for (const artifact of [
+    `plans/research/${slug}.md`,
+    `plans/drafts/${slug}.md`,
+    `reports/${slug}-ship.md`,
+  ]) {
+    mkdirSync(join(cwd, artifact, ".."), { recursive: true });
+    writeFileSync(join(cwd, artifact), "# artifact\n");
+  }
+  return {
+    cwd,
+    // The ledger and the user config of a scratch home: nothing of this
+    // machine's is read or written.
+    env: {
+      ...process.env,
+      AGENT_FORGE_HOME: join(home, ".agent-forge"),
+      HOME: home,
+      USERPROFILE: home,
+      AGENT_FORGE_SMITH: undefined,
+    },
+  };
+}
+
+async function run(
+  box: Sandbox,
+  script: string,
+  args: string[],
+): Promise<{
+  exitCode: number;
+  printed: { ok: boolean; data: unknown; error: string | null };
+}> {
+  const child = Bun.spawn([process.execPath, "run", script, ...args], {
+    cwd: box.cwd,
+    env: box.env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(child.stdout).text();
+  return { exitCode: await child.exited, printed: JSON.parse(stdout) };
+}
+
+/** A smith the command will find enabled: the config is the one the child reads. */
+function configuredSmith(box: Sandbox): Smith {
+  const { config } = loadConfig({
+    harnessRoot: HARNESS,
+    home: box.env["HOME"],
+    env: box.env,
+  });
+  const smith = Object.values(config.smiths).find((one) => one.enabled);
+  if (!smith) throw new Error("no enabled smith is configured");
+  return smith;
+}
+
+describe("forge:phase-gate --smith, as a command", () => {
+  test("a write with --smith alone puts the smith's executor in the run's state file, and the next --smith write keeps it", async () => {
+    const box = sandbox("smith-run");
+    const smith = configuredSmith(box);
+    const expected = {
+      provider: smith.provider,
+      model: smith.model,
+      effort: smith.effort,
+      smith: smith.name,
+    };
+
+    const first = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "smith-run",
+      "--write",
+      "--bead",
+      "bd-1",
+      "--smith",
+      smith.name,
+    ]);
+    expect(first.exitCode).toBe(0);
+    const stored = () =>
+      JSON.parse(
+        readFileSync(
+          join(box.cwd, ".tmp", "work", "forge-runs", "smith-run.json"),
+          "utf8",
+        ),
+      ) as ForgeState;
+    expect(stored().executor).toMatchObject(expected);
+
+    const second = await run(box, PHASE_GATE, [
+      "plan",
+      "--slug",
+      "smith-run",
+      "--write",
+      "--bead",
+      "bd-1",
+      "--smith",
+      smith.name,
+    ]);
+    expect(second.exitCode).toBe(0);
+    expect(stored().completed).toEqual(["research", "plan"]);
+    expect(stored().executor).toMatchObject(expected);
+  });
+
+  test("an unknown smith, and --smith with no name, exit 2 and record nothing: on a write and on an entry check", async () => {
+    const box = sandbox("refused-run");
+    for (const args of [
+      [
+        "research",
+        "--slug",
+        "refused-run",
+        "--write",
+        "--smith",
+        "no-such-smith",
+      ],
+      ["research", "--slug", "refused-run", "--smith", "no-such-smith"],
+      ["research", "--slug", "refused-run", "--write", "--smith"],
+    ]) {
+      const refused = await run(box, PHASE_GATE, args);
+      expect({ args, exitCode: refused.exitCode }).toEqual({
+        args,
+        exitCode: 2,
+      });
+      expect(refused.printed.ok).toBe(false);
+    }
+    const unknown = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "refused-run",
+      "--write",
+      "--smith",
+      "no-such-smith",
+    ]);
+    expect(unknown.printed.error).toContain('unknown smith "no-such-smith"');
+    expect(unknown.printed.error).toContain(configuredSmith(box).name);
+    expect(
+      existsSync(
+        join(box.cwd, ".tmp", "work", "forge-runs", "refused-run.json"),
+      ),
+    ).toBe(false);
+  });
+
+  test("one ship write with a bead and a smith, the way the mini path records itself, leaves a shipped run that is not in flight", async () => {
+    const box = sandbox("mini-run");
+    const smith = configuredSmith(box);
+    const written = await run(box, PHASE_GATE, [
+      "ship",
+      "--slug",
+      "mini-run",
+      "--write",
+      "--bead",
+      "bd-9",
+      "--smith",
+      smith.name,
+    ]);
+    expect(written.exitCode).toBe(0);
+    expect(written.printed.data).toMatchObject({
+      completed: ["ship"],
+      beadId: "bd-9",
+      executor: {
+        smith: smith.name,
+        provider: smith.provider,
+        model: smith.model,
+      },
+      correlation: { beadsIssueId: "bd-9", executionRunId: "mini-run" },
+    });
+
+    const active = await run(box, RUNS, ["--active", "--json"]);
+    expect(active.exitCode).toBe(0);
+    expect(active.printed.data).toEqual([]);
   });
 });

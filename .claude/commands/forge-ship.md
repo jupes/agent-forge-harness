@@ -6,6 +6,7 @@ then run quality gates, push, and open the PR with that summary as its body.
 ## Usage
 ```
 /forge-ship <slug>
+/forge-ship <slug> --smith <name>   # record the run as built by a configured smith
 ```
 
 ## What to do
@@ -30,6 +31,9 @@ Follow **`.claude/skills/forge-ship/SKILL.md`** in full. In short:
    issue this run closes (a run that closes no feature or epic keeps the id of its implement write).
 
 For the underlying push/PR mechanics, this reuses the patterns in `.claude/commands/ship.md`.
+
+`--smith <name>` records the run as built by that configured smith: add it to both `forge:phase-gate` calls above (steps 1 and 6). It does
+not change the model of this session (`.claude/workflows/forge.md`, *`--smith`*).
 
 ## Done
 The forge run is complete. Report the PR URL and the single most representative command from the

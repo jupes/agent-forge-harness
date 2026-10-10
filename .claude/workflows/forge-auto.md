@@ -76,7 +76,8 @@ For each phase in order — `research`, `plan`, `implement`, `ship`:
    `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto --checkout <worktree> --bead <id>`:
    the skill's own `--write` line, with `--mode auto --checkout` added. `<id>` is the issue that
    skill names for its phase (`.claude/workflows/forge.md`, *Which bead a phase names*).
-   `--provider <id> --model <id> [--effort <level>] [--smith <name>]` records who is building it.
+   `--smith <name>` (or `--provider <id> --model <id> [--effort <level>]`) records who is building
+   it, on this call and on the entry check of step 1 (`.claude/workflows/forge.md`, *`--smith`*).
    Both are kept on the run and stamped on its ledger events.
 4. **Review it with a fresh subagent.** Spawn an **Evaluator** (`.claude/agents/evaluator.md`) on
    the phase's exit artifact. It must be a *different* agent from the one that produced the work —

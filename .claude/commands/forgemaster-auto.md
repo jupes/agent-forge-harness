@@ -21,6 +21,7 @@ phases themselves.
 /forgemaster-auto <input> --worktree     # build in a fresh worktree (recommended when other
                                          #   runs are in flight)
 /forgemaster-auto <input> --max-revisions <n>   # revision budget per phase (default 2)
+/forgemaster-auto <input> --smith <name>        # record the run as built by a configured smith
 ```
 
 Runs are concurrent — starting one does not disturb another. `bun run forge:runs` lists them.
@@ -110,6 +111,12 @@ For each phase in order, run the loop in `.claude/workflows/forge-auto.md`:
      report which phase stopped and why.
 
 Never advance a phase that has no recorded review, and never edit the verdict to get a better one.
+
+**`--smith <name>`**: add it to both `forge:phase-gate` calls of every phase (steps 1 and 3). A name
+that is not configured is refused; the write records the smith as the run's executor, which is the
+builder the evaluator's rank is compared against. It does not change the model of the session
+running this command, nor of the evaluator subagents it spawns. When a phase is handed to a spawned
+CLI, it is the name to give `forge:exec --smith` (`.claude/workflows/forge.md`, *`--smith`*).
 
 ---
 
