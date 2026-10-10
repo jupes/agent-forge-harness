@@ -74,7 +74,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 ## 6. Control-plane server
 
 - `scripts/hearth/server.ts` (`bun run hearth`), a `node:http` server on `127.0.0.1:<port>`; the Vite dashboard proxies `/__agent-forge/*` to it in dev; the Tauri sidecar supervises it in desktop mode.
-- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
+- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts` and `operator-reads.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
 - Every row answers JSON `{ ok, data, error }` and requires a **declared same-origin** request: an `Origin` equal to the control plane's own, or `Sec-Fetch-Site: same-origin`. A script declares `Origin: http://127.0.0.1:<port>`. A request that repeats `Origin`, `Sec-Fetch-Site`, `Host` or either header below is refused.
 - A mutation also needs the operator token in `X-Agent-Forge-Operator`. The token is per hearth and per start: the one this hearth minted, honoured only while the file its lock names (`tokenFile`, `<home>/tokens/<hash(root)>.token`) still holds it. Missing or wrong is 403 and nothing is written. `GET /token` serves it to a same-origin page and answers 503 whenever no token could be honoured.
 - `X-Agent-Forge-Surface` (`ui` | `cli` | `mcp` | `api`; absent means `api`) is stored on the audit row. It is a label the client declares, not a credential.
