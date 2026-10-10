@@ -122,7 +122,11 @@ function validatePullRequestReference(reference: string): string {
   throw new Error("PR reference must be a positive number or pull-request URL");
 }
 
-function safeCommandError(command: string[], result: CommandResult): Error {
+/** A failed command as an error: its first three words, its exit code, and its redacted stderr. */
+export function safeCommandError(
+  command: string[],
+  result: CommandResult,
+): Error {
   const detail = sanitizeContent(result.stderr.slice(0, 1_000), "redact")
     .text.replace(/\s+/g, " ")
     .trim();

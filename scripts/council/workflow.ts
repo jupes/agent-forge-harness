@@ -4,8 +4,10 @@ import {
   reserveCouncilRun,
   writeCouncilArtifacts,
 } from "./artifacts";
+import { compileBead } from "./bead-source";
 import {
   buildContextPack,
+  buildContextPackFromParts,
   type ContextInput,
   type SecretPolicy,
 } from "./context";
@@ -18,7 +20,7 @@ import {
   councilLedgerEvent,
   councilStarted,
 } from "./ledger-events";
-import { compilePullRequest } from "./pr-source";
+import { type CommandRunner, compilePullRequest } from "./pr-source";
 import {
   assertProvidersReady,
   createProviderResolver,
@@ -45,16 +47,31 @@ export type CouncilSourceInput = {
   secretPolicy: SecretPolicy;
   maxBytes?: number | undefined;
   displayName?: string | undefined;
+  /** Runs `bd`, `git` and `gh` for the bead and pr kinds; the local one when absent. */
+  runner?: CommandRunner | undefined;
 };
 
 // CLI and jobs normalize their interface-specific input here. PR capture,
 // evidence hashing, redaction and byte limits must never differ by interface.
 export async function prepareCouncilContext(input: CouncilSourceInput) {
+  if (input.kind === "bead") {
+    const compiled = await compileBead(input.source, {
+      cwd: input.workspaceRoot,
+      runner: input.runner,
+    });
+    return buildContextPackFromParts({
+      kind: "bead",
+      ...compiled,
+      secretPolicy: input.secretPolicy,
+      maxBytes: input.maxBytes,
+    });
+  }
   let context: ContextInput;
   if (input.kind === "pr") {
     const compiled = await compilePullRequest(input.source, {
       cwd: input.workspaceRoot,
       secretPolicy: input.secretPolicy,
+      ...(input.runner ? { runner: input.runner } : {}),
     });
     context = {
       kind: "pr",
