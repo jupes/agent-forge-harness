@@ -17,11 +17,17 @@ Follow **`.claude/skills/forge-ship/SKILL.md`** in full. In short:
    closed (or deferred with a reason). `bd` must be reachable — if it errors, run `bd dolt start`.
 3. Write `reports/<slug>-ship.md`: what shipped, before→after table, work done, Beads completed
    table, and a **Test It Yourself** walkthrough with exact commands + expected output.
-4. `bun run typecheck && bun run lint && bun test`; clean tree; `git pull --rebase`; push.
+4. Gate the run through its correlation, in a clean tree: `bun run quality-gate --correlation <pointer>`
+   (the pointer the phase gate printed; one path per run, `.tmp/work/run-correlations/<slug>.json`).
+   It must exit 0. Then `git pull --rebase`; push. A run whose work is in another repository runs
+   that repository's own checks instead and has no linked gate entry.
 5. Build the PR body from the canonical template (`.claude/skills/pr-description/`), mapping the
    ship report into its sections; validate with `check-pr-body.ts`; then
    `gh pr create --base <base> --body "$(cat .tmp/work/pr-body.md)"`.
-6. Close the epic/feature (the tracker is local-only — no `bd dolt push`); `bun run forge:phase-gate ship --slug <slug> --write`.
+6. Close the epic/feature (the tracker is local-only — no `bd dolt push`), after its
+   `testing-attestation` comment; then
+   `bun run forge:phase-gate ship --slug <slug> --write --bead <close-id>`, where `<close-id>` is the
+   issue this run closes (a run that closes no feature or epic keeps the id of its implement write).
 
 For the underlying push/PR mechanics, this reuses the patterns in `.claude/commands/ship.md`.
 

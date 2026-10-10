@@ -21,7 +21,11 @@ Follow **`.claude/skills/forge-research/SKILL.md`** in full. In short:
    external systems), each with a recommended answer and reason. Prefer `AskUserQuestion` for
    closed choices.
 4. Write `plans/research/<slug>.md`.
-5. Record completion: `bun run forge:phase-gate research --slug <slug> --write`.
+5. Record completion: `bun run forge:phase-gate research --slug <slug> --write --bead <task-id>`.
+   `<task-id>` is the issue the run was started from, when that is a task, a bug or a chore. Omit
+   `--bead` when the run was started from free text, a feature or an epic: no task exists until the
+   plan phase creates one, and a feature or an epic is named only when the run closes it
+   (`.claude/workflows/forge.md`, *Which bead a phase names*).
 
 Beads must be reachable for `bd show`; if `bd` errors, run `bd dolt start` and retry — do not skip it.
 

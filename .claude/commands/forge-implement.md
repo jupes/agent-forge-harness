@@ -21,7 +21,9 @@ Follow **`.claude/skills/forge-implement/SKILL.md`** in full. In short:
    result (or note `(no live demo)` and point to the passing tests). Wait before the next checkpoint.
 5. Commit per checkpoint with tests; close the Beads task with test evidence.
 6. When done: `bun run typecheck && bun run lint && bun test`, clean tree, then
-   `bun run forge:phase-gate implement --slug <slug> --write`.
+   `bun run forge:phase-gate implement --slug <slug> --write --bead <task-id>`: the issue the run was
+   started from, else the last task this phase closed. It prints the pointer the ship step gates with
+   (`.claude/workflows/forge.md`, *Which bead a phase names*).
 
 ## Next
 `/forge-ship <slug>` — or `/forgemaster` continues.

@@ -164,8 +164,14 @@ Present the plan summary (scope, checkpoints, Beads created) and ask the user to
 On approval, advance the forge state:
 
 ```bash
-bun run forge:phase-gate plan --slug <slug> --write
+bun run forge:phase-gate plan --slug <slug> --write --bead <task-id> --epic <feature-or-epic-id>
 ```
+
+`<task-id>` is the issue the run was started from (a task, a bug or a chore), else the first task
+the plan created: the one the implement phase claims first. `--epic` names the feature or epic that
+groups the tasks; leave it out when there is none, and never pass that issue as `--bead` here. The
+command prints the run's correlation as `data.correlation`: from this write on, a quality gate can be
+tied to the task being built (`.claude/workflows/forge.md`, *Which bead a phase names*).
 
 Then point to the next phase: `/forge-implement <slug>` (or `/forgemaster` continues).
 

@@ -110,8 +110,13 @@ bun run typecheck
 bun run lint
 bun test
 git status --porcelain          # should be empty
-bun run forge:phase-gate implement --slug <slug> --write    # records implement complete
+bun run forge:phase-gate implement --slug <slug> --write --bead <task-id>    # records implement complete
 ```
+
+`<task-id>` is the issue the run was started from (a task, a bug or a chore), else the last task
+this phase closed. The command prints `data.correlation.pointer`: the ship step runs the quality
+gate with it, so that gate result is tied to this run and that task (`.claude/workflows/forge.md`,
+*Which bead a phase names*).
 
 Report the checkpoints completed and the tasks closed, then point to `/forge-ship <slug>`
 (or `/forgemaster` continues).

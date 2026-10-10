@@ -30,12 +30,15 @@ error, never a silent fall-through.
 
 ## Running a smith
 
-`bun run forge:exec --bead <id> --smith <name> --worktree <path> --prompt <text>` runs one bounded task through the
-smith's provider CLI (`scripts/executors/`). Spawned processes get only the base environment plus
+`bun run forge:exec --bead <id> --run <slug> --smith <name> --worktree <path> --prompt <text>` runs one bounded task
+through the smith's provider CLI (`scripts/executors/`). Spawned processes get only the base environment plus
 `[execution.env] pass`, and the variables the adapter sets itself (the adapter marker, bead, smith, run and parent
 session); nothing else from the parent environment reaches them. With `--run`, the child is also handed the run's
 correlation pointer when one can be written (the worktree must be a checkout's top level); it is what links a quality
 gate run inside the child to the bead and run, and when it is not handed on the output's `correlationNote` says why.
+Without `--run`, or when the run already names another bead, a gate inside the child runs unlinked: `forge:exec` leaves
+a run that is correlated to another bead alone. Move the run to this bead first with
+`bun run forge:correlate --bead <id> --run <slug> --checkout <path>`.
 The run's `session.started`, `tool.called` and `session.ended` events go to the ledger with the smith on each:
 `bun run forge:audit --bead <id>` shows them. A ledger that cannot be written is reported in the command's output and
 never stops the provider. `bun run forge:doctor` reports which provider CLIs are installed.

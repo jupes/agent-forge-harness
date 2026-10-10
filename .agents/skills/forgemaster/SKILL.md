@@ -115,7 +115,9 @@ For each phase in order — `research`, `plan`, `implement`, `ship` — do this 
    - plan → `.claude/skills/forge-plan/SKILL.md`
    - implement → `.claude/skills/forge-implement/SKILL.md`
    - ship → `.claude/skills/forge-ship/SKILL.md`
-   The phase records its own completion (`forge:phase-gate <phase> --slug <slug> --write`).
+   The phase records its own completion (`forge:phase-gate <phase> --slug <slug> --write --bead <id>`).
+   Which issue each phase names, and when research names none, is in `.claude/workflows/forge.md`,
+   *Which bead a phase names*: a task until the close, the feature or epic only on the ship write.
 4. **Show the exit artifact.** Surface what the phase produced (the research/plan/ship doc, the
    demoed checkpoints, the PR) so the user can inspect it.
 5. **Gate the transition.** Use `AskUserQuestion` to ask whether to proceed to the next phase:

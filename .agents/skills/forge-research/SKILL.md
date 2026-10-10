@@ -129,8 +129,14 @@ Phase: research (1/4)
 Update the forge state and report:
 
 ```bash
-bun run forge:phase-gate research --slug <slug> --write
+bun run forge:phase-gate research --slug <slug> --write --bead <task-id>
 ```
+
+`<task-id>` is the issue this run was started from, when that is a task, a bug or a chore: it ties
+the run's ledger events, and later its quality gate, to that issue. Omit `--bead` when the run was
+started from free text, a feature or an epic: no task exists until the plan phase creates one, and a
+feature or an epic is named only by the ship write (pass it as `--epic <id>` here, which only groups
+the run). See `.claude/workflows/forge.md`, *Which bead a phase names*.
 
 Then tell the user: research is complete at `plans/research/<slug>.md`, and the next phase is
 `/forge-plan <slug>` (or `/forgemaster` will offer to continue). Do **not** start planning in this

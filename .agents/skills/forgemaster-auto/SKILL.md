@@ -45,6 +45,12 @@ Then resolve the input exactly as `/forgemaster` Step 0 does (existing Beads id 
 → mirror into Beads with `--external-ref jira-<KEY>`; free text → derive a kebab-case `<slug>`).
 **Do not ask the user to confirm the slug** — state it and continue.
 
+**Free text: create the run's task now.** Every review round is filed against a Beads issue, and
+research is reviewed before the plan phase creates any. So when the input is free text, create one
+task for the run and claim it (`bd create --type task --title "<title>" --priority <p>`, then
+`bd update <id> --claim`). From then on this is a run started from that task: it is the `--bead` of
+the research, plan and implement writes, and the plan phase may add child tasks under it.
+
 If the input names an existing run, resume it at its first incomplete phase.
 
 ### Pick a worktree
@@ -55,8 +61,9 @@ If any other run is in flight, or `--worktree` was passed, build in a fresh one:
 bun run worktree create feat/<slug>
 ```
 
-Use its path as `<checkout>` below. Two runs sharing a checkout will interleave commits and the
-quality gate cannot tell their results apart.
+Use its path as `<checkout>` below. Two runs sharing a checkout will interleave commits. A
+quality-gate result belongs to a run only through that run's correlation, not through its checkout;
+`--checkout` is where the phase gate writes that correlation.
 
 ---
 
@@ -79,15 +86,19 @@ For each phase in order, run the loop in `.claude/workflows/forge-auto.md`:
 1. `bun run forge:phase-gate <phase> --slug <slug>` — non-zero means the previous phase never
    finished; **halt**, do not work around it.
 2. Run the phase by following `.claude/skills/forge-<phase>/SKILL.md` end to end.
-3. `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto --checkout <checkout>`
-   (add `--feature` / `--epic` the first time you have them).
+3. `bun run forge:phase-gate <phase> --slug <slug> --write --mode auto --checkout <checkout> --bead <id>`:
+   the skill's own `--write` line, with `--mode auto --checkout` added. `<id>` is the issue that
+   skill names for its phase (`.claude/workflows/forge.md`, *Which bead a phase names*). Add
+   `--feature` / `--epic` the first time you have them.
 4. **Spawn a fresh Evaluator subagent** (`.claude/agents/evaluator.md`) on the phase's exit
    artifact — a different agent from the one that built it, at a tier **≥** the builder's
    (`.claude/protocols/model-tier-policy.md`). Have it file its verdict with
    `bun run forge:verdict --correlation <pointer> --review <phase>-<round> …` per
    `.claude/protocols/evaluation-verdict.md`; the command prints the file's full path as
    `data.file`. The pointer is `data.correlation.pointer` from step 3 when the run names its bead
-   (`--bead`); otherwise `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one. When
+   (`--bead`); otherwise `bun run forge:correlate --bead <TASK-ID> --run <slug>` prints one. (The
+   one write that names no bead is the research write of a run started from a feature or an epic:
+   `<TASK-ID>` is then that issue's id, and the plan write moves the run to its first task.) When
    the run builds in another checkout (step 3's `--checkout`), give that same `--checkout <dir>` to
    `forge:correlate` and to `forge:verdict`: the correlation and the verdict live there.
 5. ```bash
