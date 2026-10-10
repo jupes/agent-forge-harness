@@ -60,7 +60,7 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 | Clone registered repos | After URLs in local `repos/repos.json` (from `repos/repos.json.example`): `bun run repo init --human` |
 | Knowledge YAML | `/sync-knowledge <repo>` or `--all` — see [.claude/skills/syncing-repos/SKILL.md](.claude/skills/syncing-repos/SKILL.md) |
 | GitHub Pages data | `bun run build-pages` (needs `bd` on PATH) |
-| Local dashboard | `bun run dashboard` — Vite + live reload; Beads dashboard, the Forge run board and **Council** (`docs/council.html`). Starts (or attaches to) a loopback **hearth** (`bun run hearth`, `scripts/hearth/`) and proxies `/__agent-forge/*` to it; the APIs refuse non-loopback clients even if `DASHBOARD_HOST` exposes the page. Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD`, `AGENT_FORGE_HOME`, `HEARTH_PORT` |
+| Local dashboard | `bun run dashboard` — Vite + live reload; Beads dashboard, the Forge run board and **Council** (`docs/council.html`). Starts (or attaches to) a loopback **hearth** (`bun run hearth`, `scripts/hearth/`) and proxies `/__agent-forge/*` to it; the APIs refuse non-loopback clients even if `DASHBOARD_HOST` exposes the page. The hearth's operator API (sessions, runs, events, queue, reservations, smiths, config, an event stream) answers only same-origin requests; every mutation also needs the hearth's operator token and is written to the ledger before it happens. Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD`, `AGENT_FORGE_HOME`, `HEARTH_PORT` |
 | Parallel epics | `bun run worktree create feat/…` — see [`.claude/workflows/epic.md`](.claude/workflows/epic.md) |
 
 ---
