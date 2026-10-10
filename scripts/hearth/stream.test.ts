@@ -480,15 +480,21 @@ describe("createLedgerStream (injected ledger, bare server)", () => {
 });
 
 describe("a stream client that does not read (raw socket, injected ledger)", () => {
-  const backlog = (count: number): LedgerEvent[] =>
+  /**
+   * Events waiting to be streamed. What a server can hand to a client that is
+   * not reading, before anything queues in the server itself, is whatever the
+   * operating system's socket buffers take, and that differs by platform: a
+   * megabyte or two on Windows loopback, about ten on Linux. The backlogs here
+   * are 48 MB so that they exceed it on either.
+   */
+  const backlog = (count = 12_000, bytes = 4000): LedgerEvent[] =>
     Array.from({ length: count }, (_, index) => ({
       id: index + 1,
       ulid: `u${index}`,
       ts: "2026-10-01T00:00:00.000Z",
       workspace: "w",
       kind: "gate.ran" as const,
-      // About a kilobyte each, so a few thousand are megabytes.
-      payload: { gate: "g".repeat(1000), passed: true },
+      payload: { gate: "g".repeat(bytes), passed: true },
     }));
 
   interface Stalled {
@@ -497,6 +503,8 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     connections: () => number;
     socket: Socket;
     received: () => string;
+    /** The end of what was received: enough to see whether a given id has arrived. */
+    tail: () => string;
     /** Whether the server has closed its end of the connection. */
     serverClosed: () => boolean;
   }
@@ -529,13 +537,18 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     });
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     const { port } = server.address() as AddressInfo;
-    let received = "";
+    const pieces: string[] = [];
+    let tail = "";
     const socket = connectSocket(port, "127.0.0.1", () => {
       socket.write(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
       socket.pause();
     });
     socket.on("data", (chunk) => {
-      received += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      pieces.push(text);
+      // Long enough to hold the whole of the last message: its id line comes
+      // before four kilobytes of data.
+      tail = (tail + text).slice(-16_384);
     });
     socket.on("error", () => {});
     cleanup.push(async () => {
@@ -549,7 +562,8 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
       asked: () => asked,
       connections: () => ledgerStream.connections(),
       socket,
-      received: () => received,
+      received: () => pieces.join(""),
+      tail: () => tail,
       serverClosed: () => serverClosed,
     };
   }
@@ -558,7 +572,7 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     new Promise((done) => setTimeout(done, ms));
 
   test("is not fed without bound: the ledger is not read for it while its buffer is full, and it loses nothing when it reads again", async () => {
-    const events = backlog(6000);
+    const events = backlog();
     const client = await stalled(
       { maxBufferedBytes: 256_000, stalledMs: 60_000 },
       events,
@@ -570,24 +584,29 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     const askedWhileFull = client.asked();
     await pause(300);
     expect(client.reads()).toBe(readsWhileFull);
-    // Far short of the backlog: megabytes are still in the ledger, not in this process.
+    // Far short of the backlog: most of it is still in the ledger, not in this
+    // process (what did leave it is in the operating system's socket buffers).
     expect(askedWhileFull).toBeLessThan(events.length / 2);
     expect(client.connections()).toBe(1);
 
     client.socket.resume();
-    for (let i = 0; i < 400 && !client.received().includes("\nid: 6000\n"); i++)
+    for (
+      let i = 0;
+      i < 1200 && !client.tail().includes(`\nid: ${events.length}\n`);
+      i++
+    )
       await pause(25);
     const ids = [
       ...client.received().matchAll(/event: delta\nid: (\d+)\n/g),
     ].map((match) => Number(match[1]));
-    expect(ids.length).toBe(6000);
+    expect(ids.length).toBe(events.length);
     expect(ids).toEqual(events.map((event) => event.id));
-  }, 30_000);
+  }, 60_000);
 
   test("is dropped once it has stayed full for the stall limit, and its slot is free again", async () => {
     const client = await stalled(
       { maxBufferedBytes: 64_000, stalledMs: 150 },
-      backlog(3000),
+      backlog(),
     );
     await pause(100);
     expect(client.connections()).toBe(1);
@@ -604,9 +623,9 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
   }, 20_000);
 
   test("a client that falls behind and catches up, again and again, is never counted as stalled", async () => {
-    // A backlog far larger than the socket's own buffers, so every pause finds
-    // the connection full again.
-    const events = backlog(20_000);
+    // The backlog is far larger than the socket's own buffers, so a pause
+    // finds the connection full again.
+    const events = backlog();
     const client = await stalled(
       { maxBufferedBytes: 64_000, stalledMs: 600 },
       events,
@@ -622,7 +641,7 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     client.socket.resume();
     for (
       let i = 0;
-      i < 800 && !client.received().includes("\nid: 20000\n");
+      i < 1200 && !client.tail().includes(`\nid: ${events.length}\n`);
       i++
     )
       await pause(25);
