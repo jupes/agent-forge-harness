@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,7 +17,7 @@ import {
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative } from "path";
 import type { LedgerEvent } from "../../types/hearth";
 import { closeLedger } from "./db";
 import {
@@ -27,7 +28,8 @@ import {
 import { queryEvents } from "./query";
 import { getSessionModel } from "./session-models";
 
-const HOOKS = join(import.meta.dir, "..", "..", ".claude", "hooks");
+const ROOT = join(import.meta.dir, "..", "..");
+const HOOKS = join(ROOT, ".claude", "hooks");
 const SESSION = join(HOOKS, "session.ts");
 const LEDGER_HOOK = join(HOOKS, "ledger-hook.ts");
 const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
@@ -141,6 +143,46 @@ function sessionLog(box: Box): Array<Record<string, unknown>> {
   });
 }
 
+/**
+ * An environment whose whole `PATH` is one directory holding one program: a
+ * `bd` that appends its arguments to a file. Which `bd` commands a hook ran can
+ * then be read back, and no real `bd` or `git` is reachable.
+ */
+function recordingBd(box: Box): {
+  env: Record<string, string>;
+  calls(): string[];
+} {
+  const dir = join(box.emptyPath, "..", "recording bd");
+  const record = join(dir, "bd calls.txt");
+  mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    writeFileSync(
+      join(dir, "bd.cmd"),
+      '@echo off\r\n>>"%RECORDING_BD_FILE%" echo %*\r\n',
+    );
+  } else {
+    const program = join(dir, "bd");
+    writeFileSync(program, '#!/bin/sh\necho "$@" >> "$RECORDING_BD_FILE"\n');
+    chmodSync(program, 0o755);
+  }
+  // The shell a Windows child runs a command line through.
+  const shell = process.env.ComSpec;
+  return {
+    env: {
+      PATH: dir,
+      RECORDING_BD_FILE: record,
+      ...(shell !== undefined ? { ComSpec: shell } : {}),
+    },
+    calls: () =>
+      existsSync(record)
+        ? readFileSync(record, "utf8")
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+        : [],
+  };
+}
+
 function payload(
   event: string,
   box: Box,
@@ -174,11 +216,15 @@ describe("the hook registration in .claude/settings.json", () => {
     }
   });
 
-  test("SessionEnd runs the session script with its own timeout, and the hooks that were there before are still registered", () => {
+  test("SessionEnd runs the session script with a timeout of its own above the host's default, and the hooks that were there before are still registered", () => {
     const end = registered("SessionEnd");
     expect(end).toHaveLength(1);
     expect(end[0]?.command).toContain("session.ts");
-    expect(end[0]?.timeout).toBe(45);
+    // The host gives SessionEnd hooks 1.5 seconds unless one carries a longer
+    // timeout, which it honours up to 60. Where in that range is not pinned:
+    // the value was sized for a tracker push the hook no longer makes.
+    expect(end[0]?.timeout).toBeGreaterThan(1.5);
+    expect(end[0]?.timeout).toBeLessThanOrEqual(60);
     expect(end[0]?.async).toBeUndefined();
 
     const commands = (event: string) =>
@@ -260,17 +306,14 @@ describe("the hook scripts, given a hook payload on stdin", () => {
 
       const log = sessionLog(box);
       expect(log.some((line) => line.event === "SessionStart")).toBe(true);
-      // `bd` cannot be found on the children's PATH, so the push is logged as failed.
-      const pushes = log.filter(
-        (line) => line.event === "SessionEnd" && "push" in line,
-      );
-      expect(pushes).toHaveLength(1);
-      expect(pushes[0]?.push).toMatchObject({ ok: false });
+      // A session end is one log line, and it says nothing of a push.
+      const endLines = log.filter((line) => line.event === "SessionEnd");
+      expect(endLines).toHaveLength(1);
+      expect(log.some((line) => "push" in line)).toBe(false);
       // The end of the session is recorded before the slower work of the hook:
-      // the push, and the git calls behind the log line.
-      const endLine = log.find(
-        (line) => line.event === "SessionEnd" && "git" in line,
-      );
+      // the git calls behind the log line.
+      const [endLine] = endLines;
+      expect("git" in (endLine ?? {})).toBe(true);
       expect(typeof endLine?.timestamp).toBe("string");
       expect((stored[3]?.ts ?? "") <= String(endLine?.timestamp)).toBe(true);
     },
@@ -384,18 +427,15 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       }
       // No session id arrived, so there is no session to end in the ledger.
       expect(events(box)).toHaveLength(0);
+      // Each run wrote its one log line, saying where the event name came from and nothing of a push.
       const log = sessionLog(box);
-      expect(log.map((line) => line.event)).toEqual([
-        "SessionEnd",
-        "SessionEnd",
-        "SessionEnd",
-        "SessionEnd",
+      expect(log.map((line) => [line.event, line.eventSource])).toEqual([
+        ["SessionEnd", "argv"],
+        ["SessionEnd", "argv"],
       ]);
-      // Each run pushed once (`bd` is not on the children's PATH, so it failed) and logged where the event name came from.
-      expect(log.filter((line) => "push" in line)).toHaveLength(2);
-      expect(
-        log.filter((line) => "git" in line).map((line) => line.eventSource),
-      ).toEqual(["argv", "argv"]);
+      expect(log.every((line) => "git" in line && !("push" in line))).toBe(
+        true,
+      );
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -418,10 +458,7 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       expect(await child.exited).toBe(0);
       child.stdin.end();
       expect(stdout).toBe("");
-      expect(sessionLog(box).map((line) => line.event)).toEqual([
-        "SessionEnd",
-        "SessionEnd",
-      ]);
+      expect(sessionLog(box).map((line) => line.event)).toEqual(["SessionEnd"]);
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -457,6 +494,86 @@ describe("the hook scripts, given a hook payload on stdin", () => {
   );
 
   test(
+    "a recording bd on the PATH sees a session start's pull, nothing from the ledger hook or from a session end named by its payload or on the command line, and only a start's commands from a session end named by neither",
+    async () => {
+      const box = sandbox();
+      const bd = recordingBd(box);
+      const started = await hook(
+        box,
+        SESSION,
+        payload("SessionStart", box, { source: "startup", model: "m-1" }),
+        bd.env,
+      );
+      expect(started.exitCode).toBe(0);
+      // The control: the hook reaches the recording `bd`, so a record that
+      // does not grow below means no call was made, not that `bd` was missing.
+      const fromStart = bd.calls();
+      expect(fromStart).toContain("dolt pull");
+      expect(readSessionMirror(box.cwd)).toBe("S");
+      // The start's call went through a shell. A second control for the other
+      // route: a child that spawns `bd` with no shell lands in the record too.
+      const direct = Bun.spawnSync(
+        [
+          process.execPath,
+          "-e",
+          'require("node:child_process").execFileSync("bd", ["reached-without-a-shell"], { stdio: "ignore" })',
+        ],
+        { cwd: box.cwd, env: childEnv(box, bd.env), stderr: "pipe" },
+      );
+      expect(direct.exitCode).toBe(0);
+      const before = bd.calls();
+      expect(before).toEqual([...fromStart, "reached-without-a-shell"]);
+
+      const quiet = [
+        await hook(
+          box,
+          LEDGER_HOOK,
+          payload("UserPromptSubmit", box, { prompt: "hi" }),
+          bd.env,
+        ),
+        await hook(
+          box,
+          LEDGER_HOOK,
+          payload("PostToolUse", box, { tool_name: "Bash" }),
+          bd.env,
+        ),
+        await hook(box, LEDGER_HOOK, payload("Stop", box), bd.env),
+        // An adapter's child records nothing in the ledger; its end is quiet too.
+        await hook(box, SESSION, payload("SessionEnd", box), {
+          ...bd.env,
+          AGENT_FORGE_ADAPTER: "1",
+        }),
+        await hook(
+          box,
+          SESSION,
+          payload("SessionEnd", box, { reason: "logout" }),
+          bd.env,
+        ),
+        await hook(box, SESSION, "", bd.env, ["SessionEnd"]),
+      ];
+      expect(quiet.map((ran) => ran.exitCode)).toEqual([0, 0, 0, 0, 0, 0]);
+      // The hooks did their own work: the session is ended and its mirror is gone.
+      expect(events(box).map((event) => event.kind)).toEqual([
+        "session.started",
+        "prompt.submitted",
+        "tool.called",
+        "session.ended",
+      ]);
+      expect(readSessionMirror(box.cwd)).toBeNull();
+      expect(bd.calls()).toEqual(before);
+
+      // The registration names no event on the command line, so a session end
+      // whose payload never arrives is taken for a start. It runs what a start
+      // runs, once more, and still nothing that pushes.
+      const unnamed = await hook(box, SESSION, "", bd.env);
+      expect(unnamed.stdout).toContain("[session] SessionStart logged.");
+      expect(bd.calls()).toEqual([...before, ...fromStart]);
+      expect(bd.calls().some((call) => call.includes("push"))).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
     "a hook inside an adapter child stores nothing",
     async () => {
       const box = sandbox();
@@ -485,8 +602,11 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       expect(runs.map((ran) => ran.exitCode)).toEqual([0, 0, 0, 0]);
       expect(events(box)).toHaveLength(0);
       expect(readSessionMirror(box.cwd)).toBeNull();
-      // The adapter owns the child's lifecycle, so the child does not push either.
-      expect(sessionLog(box).some((line) => "push" in line)).toBe(false);
+      // The child still logs its start and its end, one line each.
+      expect(sessionLog(box).map((line) => line.event)).toEqual([
+        "SessionStart",
+        "SessionEnd",
+      ]);
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -589,4 +709,118 @@ describe("the hook scripts, given a hook payload on stdin", () => {
     },
     SPAWN_TIMEOUT_MS,
   );
+});
+
+/**
+ * `dolt` then `push` with nothing between them but quotes, commas, brackets,
+ * plus signs and white space: the tracker push typed out as a command, or its
+ * arguments as neighbouring array elements. It reads text, so it cannot see a
+ * command put together while running, and it also flags a comment that types
+ * the command out.
+ */
+const TRACKER_PUSH = /\bdolt\b["'`\s,+[\]]*\bpush\b/gi;
+
+/** The line numbers on which the tracker push is typed out in `text`. */
+function trackerPushLines(text: string): number[] {
+  return [...text.matchAll(TRACKER_PUSH)].map(
+    (match) => text.slice(0, match.index ?? 0).split("\n").length,
+  );
+}
+
+/**
+ * Every regular file under `dir` except Markdown (prose is not a code path) and
+ * installed packages. Links are not followed. Untracked files are read too.
+ */
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory())
+      return entry.name === "node_modules" ? [] : sourceFiles(path);
+    return entry.isFile() && !entry.name.endsWith(".md") ? [path] : [];
+  });
+}
+
+describe("the tracker push is not typed out in the hook, skill, CI and script files", () => {
+  // Spelled apart from the rest so this file does not type the command out itself.
+  const verb = "push";
+
+  test("the pattern finds the tracker push typed as a command or as arguments, and not a pull or another push", () => {
+    for (const text of [
+      `bd dolt ${verb}`,
+      `execFileSync("bd", ["dolt", "${verb}"], { stdio: "ignore" })`,
+      `spawn("bd", ['dolt','${verb}'])`,
+      `run(\`bd  dolt\n  ${verb} 2>&1\`)`,
+      `"bd dolt " + "${verb}"`,
+      `BD DOLT ${verb.toUpperCase()}`,
+    ])
+      expect(trackerPushLines(text)).toHaveLength(1);
+    for (const text of [
+      "bd dolt pull",
+      "bd dolt start 2>/dev/null || true",
+      "bd dolt status && git push origin",
+      "temporary.push(root)",
+      "args.push('dolt')",
+    ])
+      expect(trackerPushLines(text)).toHaveLength(0);
+    expect(trackerPushLines(`one\ntwo bd dolt ${verb}\nthree`)).toEqual([2]);
+  });
+
+  test("no file under .claude/hooks, .claude/skills, .agents/skills, .github or scripts, Markdown aside, types out the tracker push", () => {
+    const trees = [
+      ".claude/hooks",
+      ".claude/skills",
+      ".agents/skills",
+      ".github",
+      "scripts",
+    ];
+    const perTree = trees.map((tree) => sourceFiles(join(ROOT, tree)));
+    // The walk read something in every tree, the session hook and this file
+    // among it.
+    expect(perTree.map((found) => found.length > 0)).toEqual(
+      trees.map(() => true),
+    );
+    const files = perTree.flat();
+    expect(files).toContain(SESSION);
+    expect(files).toContain(join(import.meta.dir, "hooks.test.ts"));
+    const found = files.flatMap((file) =>
+      trackerPushLines(readFileSync(file, "utf8")).map(
+        (line) => `${relative(ROOT, file).replaceAll("\\", "/")}:${line}`,
+      ),
+    );
+    expect(found).toEqual([]);
+  });
+
+  test("no hook command registered in .claude/settings.json and no package.json script types out the tracker push", () => {
+    const settings = JSON.parse(
+      readFileSync(join(HOOKS, "..", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command?: string }> }>>;
+    };
+    // A hook of another type has no command line to read.
+    const commands = Object.entries(settings.hooks).flatMap(
+      ([event, entries]) =>
+        entries.flatMap((entry) =>
+          entry.hooks.flatMap((hook) =>
+            typeof hook.command === "string"
+              ? [{ where: event, text: hook.command }]
+              : [],
+          ),
+        ),
+    );
+    const manifest = JSON.parse(
+      readFileSync(join(ROOT, "package.json"), "utf8"),
+    ) as { scripts: Record<string, string> };
+    const scripts = Object.entries(manifest.scripts).map(([name, text]) => ({
+      where: `package.json ${name}`,
+      text,
+    }));
+    // Both lists were read: the session script is registered, and `test` exists.
+    expect(commands.map((entry) => entry.where)).toContain("SessionEnd");
+    expect(scripts.map((entry) => entry.where)).toContain("package.json test");
+    expect(
+      [...commands, ...scripts]
+        .filter((entry) => trackerPushLines(entry.text).length > 0)
+        .map((entry) => entry.where),
+    ).toEqual([]);
+  });
 });
