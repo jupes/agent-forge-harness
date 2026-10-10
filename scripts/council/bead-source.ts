@@ -194,14 +194,18 @@ function commentsOf(id: BeadsIssueId, rows: unknown[]): BeadComment[] {
     .map(({ entry }) => entry);
 }
 
+/** Everything besides a line feed that ends a line somewhere. */
+const LINE_ENDINGS = ["\r", "\u000b", "\u000c", "\u0085", "\u2028", "\u2029"];
+
 /**
  * A comment as it is packed: its time on a line of its own, its text quoted.
  * Only that first line is unquoted, so text inside a comment cannot pass
  * itself off as the header of another, newer comment.
  */
 function commentChunk(entry: BeadComment): string {
-  const quoted = entry.text
-    .replaceAll("\r\n", "\n")
+  let body = entry.text.replaceAll("\r\n", "\n");
+  for (const ending of LINE_ENDINGS) body = body.replaceAll(ending, "\n");
+  const quoted = body
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
@@ -274,7 +278,7 @@ function isLinkedArtifactPath(path: string): boolean {
     path.length <= 200 &&
     path.endsWith(".md") &&
     !path.includes("..") &&
-    !path.split("/").includes("council-runs") &&
+    !path.toLowerCase().split("/").includes("council-runs") &&
     LINKED_PATH.test(path)
   );
 }
@@ -505,8 +509,6 @@ function ownPullRequest(url: URL, origin: Origin): number | null {
 
 const URL_MENTION = /https?:\/\/[^\s<>"'`]+/gi;
 const PULL_REQUEST_PATH = /\/pull\/[0-9]+(?:\/|$)/;
-/** Nothing longer than this is a URL anyone meant. */
-const MAX_URL_CHARS = 2048;
 const MAX_REFERENCES = 10;
 
 const OPENERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
@@ -542,11 +544,9 @@ function pullRequestMentions(texts: string[]): URL[] {
   const mentions: URL[] = [];
   for (const body of texts)
     for (const match of body.matchAll(URL_MENTION)) {
-      const mention = trimMention(match[0]);
-      if (mention.length > MAX_URL_CHARS) continue;
       let url: URL;
       try {
-        url = new URL(mention);
+        url = new URL(trimMention(match[0]));
       } catch {
         continue;
       }
@@ -645,7 +645,7 @@ async function pullRequestParts(
         answered = null;
       }
       if (compiled.metadata.prNumber !== number || answered !== number) {
-        failed("gh answered with a different pull request");
+        failed("gh answered with another repository or number");
       } else {
         result.parts.push({
           label,
@@ -661,8 +661,8 @@ async function pullRequestParts(
         if (omissions > 0)
           result.parts.push(
             note(
-              `${label} omissions`,
-              `${omissions} recorded inside the evidence`,
+              `${label} capture`,
+              `${omissions} omission${omissions === 1 ? "" : "s"} recorded`,
             ),
           );
       }
@@ -779,15 +779,6 @@ export async function compileBead(
     commentsPart(id, comments),
     descriptionPart(id, safe),
   ];
-  for (const part of own)
-    for (const chunk of part.chunks)
-      chunk.text = scanNamed(
-        chunk.text,
-        policy,
-        chunk.name ?? part.label,
-        found,
-      );
-
   const texts = mentionTexts(safe, comments);
   const run = beadRun(id, cwd);
   const linked = linkedFileParts(cwd, run, texts);

@@ -424,6 +424,12 @@ describe("MCP council_start with a bead", () => {
       redactSecrets: false,
     } as unknown as Parameters<typeof reviewServiceInput>[0];
     expect(() => reviewServiceInput(sideDoor)).toThrow(refused);
+    const otherKind = {
+      kind: "file",
+      id: BEAD,
+      redactSecrets: false,
+    } as unknown as Parameters<typeof reviewServiceInput>[0];
+    expect(() => reviewServiceInput(otherKind)).toThrow(refused);
     for (const id of ["--help", "a b", "$(id)", "../x", "x".repeat(122)])
       expect(() =>
         reviewServiceInput({ kind: "bead", id, redactSecrets: false }),

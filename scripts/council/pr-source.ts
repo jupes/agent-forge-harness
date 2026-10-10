@@ -139,14 +139,14 @@ function shownStderr(stderr: string): string {
     stderr.length > STDERR_SCAN_CHARS
       ? stderr.slice(0, STDERR_SCAN_CHARS).replace(/\S*$/, "")
       : stderr;
-  return withoutControls(
-    sanitizeContent(read, "redact")
+  // Scanned last, as it will be shown: replacing control characters and
+  // folding whitespace can turn hidden text into a secret's shape.
+  return (
+    sanitizeContent(withoutControls(read).replace(/\s+/g, " ").trim(), "redact")
       // A private key with no end line is not a pattern the scanner knows.
-      .text.replace(/-----BEGIN[\s\S]*$/, "[REDACTED:private-key]"),
-  )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1_000);
+      .text.replace(/-----BEGIN[\s\S]*$/, "[REDACTED:private-key]")
+      .slice(0, 1_000)
+  );
 }
 
 /** A failed command as an error: its first three words, its exit code, and its redacted stderr. */

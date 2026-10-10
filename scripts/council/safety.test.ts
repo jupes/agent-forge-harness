@@ -358,9 +358,7 @@ describe("PR snapshot safety", () => {
     ).not.toContain(body.slice(0, 20));
 
     // Longer than what is scanned: the token cut in two by that bound goes too.
-    const long = failed(
-      `${`${key}\n`.repeat(11)}${" ".repeat(400)}`.slice(0, 19_985) + token,
-    );
+    const long = failed(`${`${key}\n`.repeat(12)}`.padEnd(19_985, " ") + token);
     expect(long).not.toContain("ghp_");
     expect(long).not.toContain(body.slice(0, 20));
 
@@ -372,6 +370,15 @@ describe("PR snapshot safety", () => {
       }),
     ).toBe(false);
     expect(escaped).toContain("bad credentials");
+
+    // A key hidden behind control characters is a key once they are replaced.
+    const masked = failed(
+      `fatal: -----BEGIN\u0001PRIVATE\tKEY-----${body}-----END\u0001PRIVATE\tKEY-----`,
+    );
+    expect(masked).not.toContain(body.slice(0, 20));
+    expect(
+      failed("OPENAI_API_KEY\u0085=\u0085sk-notarealkeyvalue123"),
+    ).not.toContain("notarealkeyvalue");
   });
   test("rejects a PR changing during capture", async () => {
     await expect(

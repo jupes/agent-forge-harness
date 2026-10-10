@@ -344,15 +344,24 @@ export function cutChars(value: string, max: number): string {
 }
 
 /**
- * `value` with every C0 and C1 control character replaced by a space. What an
- * operator is shown before sending must not be able to move the cursor, hide
- * text or ring the bell.
+ * `value` with every control character and every invisible formatting
+ * character (zero-width, bidirectional override and isolate marks) replaced
+ * by a space. What an operator is shown before sending must not be able to
+ * move the cursor, hide text, reorder it or ring the bell.
  */
 export function withoutControls(value: string): string {
   let clean = "";
   for (const char of value) {
     const code = char.codePointAt(0) ?? 0;
-    clean += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
+    const hidden =
+      code < 0x20 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2060 && code <= 0x2069) ||
+      code === 0x061c ||
+      code === 0xfeff;
+    clean += hidden ? " " : char;
   }
   return clean;
 }
@@ -386,6 +395,38 @@ export function scanNamed(
       (found.get(redaction.kind) ?? 0) + redaction.count,
     );
   return text;
+}
+
+type Segment = { label: string; text: string };
+
+function secretsIn(segments: Segment[]): ContextRedaction[] {
+  return redactSecrets(
+    segments
+      .filter((segment) => segment.text.length > 0)
+      .map((segment) => segment.text)
+      .join(CHUNK_SEPARATOR),
+  ).redactions;
+}
+
+/** The first and last of `segments` that a secret found in them runs between. */
+function spanOf(segments: Segment[]): { from: string; to: string } {
+  const filled = segments.filter((segment) => segment.text.length > 0);
+  let end = filled.length - 1;
+  for (let last = 0; last < filled.length; last += 1)
+    if (secretsIn(filled.slice(0, last + 1)).length > 0) {
+      end = last;
+      break;
+    }
+  let start = 0;
+  for (let first = end; first >= 0; first -= 1)
+    if (secretsIn(filled.slice(first, end + 1)).length > 0) {
+      start = first;
+      break;
+    }
+  return {
+    from: filled[start]?.label ?? "the first part",
+    to: filled[end]?.label ?? "the last part",
+  };
 }
 
 type PartFit = {
@@ -452,36 +493,61 @@ export function buildContextPackFromParts(
   const scan = (value: string, where: string): string =>
     scanNamed(value, policy, where, found);
 
-  // Content first, so a refusal names the part a reader would look in.
-  const scanned = input.parts.map((part) => {
-    const chunks = part.chunks.map((chunk) =>
-      scan(chunk.text, chunk.name ?? part.label),
-    );
-    if (chunks.length < 2) return { chunks, joined: false };
-    // A secret can be written across two chunks. They are sent as one item,
-    // so they are read as one too; what redaction then changes can no longer
-    // be told apart by chunk, and the part goes on as that one text.
-    const whole = chunks.join(CHUNK_SEPARATOR);
-    const clean = scan(whole, part.label);
-    return clean === whole
-      ? { chunks, joined: false }
-      : { chunks: [clean], joined: true };
-  });
-  // And across parts, which no redaction can mend: the halves sit in two
-  // evidence items.
-  const across = redactSecrets(
-    scanned
-      .filter((part) => part.chunks.length > 0)
-      .map((part) => part.chunks.join(CHUNK_SEPARATOR))
-      .join(CHUNK_SEPARATOR),
-  ).redactions;
-  if (across.length > 0)
+  // Content first, so a refusal names the part a reader would look in. One
+  // pass over everything that will be sent, in the order it will be sent; the
+  // closer passes run only when that one finds something.
+  const texts = input.parts.map((part) =>
+    part.chunks.map((chunk) => chunk.text),
+  );
+  const collapsed = input.parts.map(() => false);
+  const segments = (order: "sent" | "reversed"): Segment[] => {
+    const inOrder = input.parts.map((part, index) => {
+      const chunks = texts[index] ?? [];
+      return {
+        label: part.label,
+        text: (order === "sent" ? chunks : [...chunks].reverse()).join(
+          CHUNK_SEPARATOR,
+        ),
+      };
+    });
+    return order === "sent" ? inOrder : inOrder.reverse();
+  };
+  if (secretsIn(segments("sent")).length > 0) {
+    for (const [index, part] of input.parts.entries()) {
+      const chunks = part.chunks.map((chunk) =>
+        scan(chunk.text, chunk.name ?? part.label),
+      );
+      texts[index] = chunks;
+      if (chunks.length < 2) continue;
+      // Written across two chunks: they are sent as one item, so they are
+      // read as one too. What redaction then changes can no longer be told
+      // apart by chunk, and the part goes on as that one text.
+      const whole = chunks.join(CHUNK_SEPARATOR);
+      const clean = scan(whole, part.label);
+      if (clean === whole) continue;
+      texts[index] = [clean];
+      collapsed[index] = true;
+    }
+  }
+  // What is left runs from one part into another, or was written the other
+  // way round (its start in an older comment, its end in a newer one, which
+  // is packed first). Neither can be redacted in place.
+  for (const order of ["sent", "reversed"] as const) {
+    const ordered = segments(order);
+    const spanning = secretsIn(ordered);
+    if (spanning.length === 0) continue;
+    const { from, to } = spanOf(ordered);
+    const where =
+      from === to ? `in ${from}` : `across parts (from ${from} to ${to})`;
     throw new ContextSecurityError(
-      `potential secrets detected across parts; ${policy === "reject" ? "" : "they cannot be redacted and the "}context was not sent (${secretSummary(across)})`,
+      `potential secrets detected ${withoutControls(redactSecrets(where).text)}; ${policy === "reject" ? "" : "they cannot be redacted and the "}context was not sent (${secretSummary(spanning)})`,
     );
+  }
 
+  // What is shown is scanned as it will be shown: control characters can
+  // hide a secret from the scan that is plain once they are replaced.
   const shown = (value: string, where: string): string =>
-    withoutControls(scan(value, where));
+    scan(withoutControls(value), where);
   const displayName = cutChars(
     shown(input.displayName, "the source name"),
     TITLE_MAX_CHARS,
@@ -501,7 +567,7 @@ export function buildContextPackFromParts(
   const parts = input.parts.map((part, index) => ({
     part: {
       ...part,
-      unit: scanned[index]?.joined ? undefined : part.unit,
+      unit: collapsed[index] ? undefined : part.unit,
       label: shown(part.label, "the evidence listing"),
       title: cutChars(
         shown(part.title ?? part.label, "an evidence title"),
@@ -512,7 +578,7 @@ export function buildContextPackFromParts(
           ? undefined
           : shown(part.note, "the evidence listing"),
     },
-    chunks: scanned[index]?.chunks ?? [],
+    chunks: texts[index] ?? [],
   }));
 
   let remaining = maxBytes;
