@@ -21,8 +21,10 @@ import { FakeCouncilTransport } from "./fake-transport";
 import { createCouncilMcpServer, reviewServiceInput } from "./mcp";
 import type { CommandRunner } from "./pr-source";
 import {
+  assertCouncilInput,
   type CouncilServiceInput,
   type CouncilServiceJob,
+  councilBeadId,
   createCouncilService,
 } from "./service";
 import type { CouncilEvent, CouncilRun } from "./types";
@@ -555,26 +557,136 @@ describe("MCP council_start with a bead", () => {
     }
   });
 
-  test("the real service accepts the bead kind: a job for an id that is not one fails with the bead source's refusal, which comes before any command", async () => {
+  test("the service refuses a bead source whose id is not one, or whose beadId names another bead, before it reserves a run", async () => {
     const root = workspace();
+    const fake = beadRunner();
     const service = createCouncilService({
       workspaceRoot: root,
       harnessRoot: process.cwd(),
       runsRoot: join(root, "runs"),
+      runCommand: fake.runner,
       resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 0 }),
+    });
+    try {
+      for (const source of ["not a bead id", "--help", "../x", "$(id)"])
+        expect(() =>
+          service.start({ sourceType: "bead", source, runId: "refused" }),
+        ).toThrow("source must be a Beads issue id when the source is a bead");
+      expect(() =>
+        service.start({
+          sourceType: "bead",
+          source: BEAD,
+          beadId: "demo-harness-zz9",
+          runId: "refused",
+        }),
+      ).toThrow(
+        "beadId must name the bead under review when the source is a bead",
+      );
+      expect(fake.calls).toEqual([]);
+      expect(existsSync(join(root, "runs", "refused"))).toBe(false);
+      // The other kinds keep taking any bead as the one a review is for.
+      expect(() =>
+        assertCouncilInput({
+          sourceType: "text",
+          source: "review this",
+          beadId: "demo-harness-zz9",
+        }),
+      ).not.toThrow();
+      expect(
+        councilBeadId({ sourceType: "text", source: "review this" }),
+      ).toBeUndefined();
+      expect(councilBeadId({ sourceType: "bead", source: ` ${BEAD} ` })).toBe(
+        BEAD,
+      );
+    } finally {
+      await service.close();
+    }
+  });
+
+  test("a bead job through the real service packs the bead and is recorded against it, though the caller named no bead for the ledger", async () => {
+    const root = workspace();
+    const fake = beadRunner();
+    const appended: LedgerEventInput[] = [];
+    const service = createCouncilService({
+      workspaceRoot: root,
+      harnessRoot: process.cwd(),
+      runsRoot: join(root, "runs"),
+      runCommand: fake.runner,
+      resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 0 }),
+      appendEvent: (event) => appended.push(event),
+      resolveAttach: ({ cwd, beadId }) => ({
+        workspace: cwd,
+        ...(beadId !== undefined ? { beadId } : {}),
+      }),
     });
     try {
       const started = service.start({
         sourceType: "bead",
-        source: "not a bead id",
-        runId: "refused",
+        source: BEAD,
+        runId: "job-bead",
       });
       expect(started.status).toBe("running");
       const finished = await service.wait(started.runId);
-      expect(finished.status).toBe("failed");
-      expect(finished.error).toBe("bead source needs a Beads issue id");
+      expect(finished.status).toBe("completed");
+      expect(finished.run?.context.source).toMatchObject({
+        kind: "bead",
+        locator: BEAD,
+      });
+      expect(finished.run?.context.evidence?.map((item) => item.id)).toEqual([
+        "E1",
+        "E2",
+        "E3",
+      ]);
+      expect(appended.map((event) => [event.kind, event.beadId])).toEqual([
+        ["council.run.started", BEAD],
+        ["council.run.finished", BEAD],
+      ]);
+      expect(fake.calls.map((call) => call.slice(0, 3).join(" "))).toEqual([
+        "bd --readonly show",
+        "bd --readonly comments",
+      ]);
     } finally {
       await service.close();
+    }
+  });
+
+  test("council_review with { kind: 'bead', id } runs through the real service to a finished review of the bead", async () => {
+    const root = workspace();
+    const appended: LedgerEventInput[] = [];
+    const mcp = await connected({
+      workspaceRoot: root,
+      harnessRoot: process.cwd(),
+      runsRoot: join(root, "runs"),
+      runCommand: beadRunner().runner,
+      resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 0 }),
+      appendEvent: (event) => appended.push(event),
+      resolveAttach: ({ cwd, beadId }) => ({
+        workspace: cwd,
+        ...(beadId !== undefined ? { beadId } : {}),
+      }),
+    });
+    try {
+      const reply = await mcp.call("council_review", {
+        kind: "bead",
+        id: BEAD,
+        runId: "mcp-bead",
+      });
+      expect(reply.ok).toBe(true);
+      const run = reply.data?.run as CouncilRun;
+      expect(run.status).toBe("completed");
+      expect(run.context.source).toMatchObject({ kind: "bead", locator: BEAD });
+      expect(run.context.evidence).toHaveLength(3);
+      expect(appended.map((event) => event.beadId)).toEqual([BEAD, BEAD]);
+      const status = await mcp.call("council_status", { runId: "mcp-bead" });
+      expect(
+        (status.data?.listing as string[]).map((line) => line.split(":")[0]),
+      ).toEqual([
+        "E1 acceptance criteria",
+        "E2 latest comments",
+        "E3 description",
+      ]);
+    } finally {
+      await mcp.close();
     }
   });
 });

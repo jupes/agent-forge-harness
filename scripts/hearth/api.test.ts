@@ -1723,3 +1723,108 @@ describe("what travels from a request into an effect", () => {
     expect(h.bd.options).toEqual([{ timeoutMs: 1234 }, undefined, undefined]);
   });
 });
+
+describe("a bead as the source of a council run started through the hearth", () => {
+  /**
+   * A hearth whose council start effect only records what it is handed: a bead
+   * source would otherwise read the tracker, which no test here may do.
+   */
+  async function recording(): Promise<{ h: TestHearth; handed: unknown[] }> {
+    const handed: unknown[] = [];
+    const h = await start({
+      api: {
+        decorate: (routes) =>
+          routes.map((route) =>
+            route.kind === "action" && route.action === "council.run.start"
+              ? {
+                  ...route,
+                  effect: (input: unknown) => {
+                    handed.push(input);
+                    return { status: 202, data: { accepted: true } };
+                  },
+                }
+              : route,
+          ),
+      },
+    });
+    return { h, handed };
+  }
+
+  test("an id that is not one, an id shaped like a secret, and a beadId naming another bead are refused before anything is recorded or started", async () => {
+    const { h, handed } = await recording();
+    const refused: Array<[Record<string, unknown>, string]> = [
+      [
+        { sourceType: "bead", source: "not a bead id" },
+        "source must be a Beads issue id when the source is a bead",
+      ],
+      [
+        { sourceType: "bead", source: "--help" },
+        "source must be a Beads issue id when the source is a bead",
+      ],
+      [
+        { sourceType: "bead", source: "demo-7", beadId: "demo-8" },
+        "beadId must name the bead under review when the source is a bead",
+      ],
+      [
+        // Twenty characters shaped like an access key id are a valid id by form.
+        { sourceType: "bead", source: ["AKIA", "ZQ9ZQ8ZQ7ZQ6ZQ5Z"].join("") },
+        "beadId must be a Beads issue id",
+      ],
+    ];
+    for (const [body, message] of refused) {
+      const response = await post(h, "/council/runs", body);
+      expect({ body, status: response.status }).toEqual({ body, status: 400 });
+      expect((await envelope(response)).error).toBe(message);
+    }
+    expect(handed).toEqual([]);
+    expect(h.events()).toEqual([]);
+  });
+
+  test("an accepted bead source is audited against its bead and handed to the service with it, whether or not the caller repeated the id", async () => {
+    const { h, handed } = await recording();
+    for (const [runId, body] of [
+      ["bead-plain", { sourceType: "bead", source: "demo-7" }],
+      [
+        "bead-named",
+        { sourceType: "bead", source: "demo-7", beadId: "demo-7" },
+      ],
+    ] as const) {
+      const response = await post(h, "/council-api/runs", { ...body, runId });
+      expect({ runId, status: response.status }).toEqual({
+        runId,
+        status: 202,
+      });
+    }
+    expect(handed).toEqual([
+      {
+        sourceType: "bead",
+        source: "demo-7",
+        runId: "bead-plain",
+        beadId: "demo-7",
+      },
+      {
+        sourceType: "bead",
+        source: "demo-7",
+        runId: "bead-named",
+        beadId: "demo-7",
+      },
+    ]);
+    const audits = h.events(["operator.action"]);
+    expect(audits.map((event) => [event.payload, event.beadId])).toEqual([
+      [
+        expect.objectContaining({
+          action: "council.run.start",
+          target: "bead-plain",
+        }),
+        "demo-7",
+      ],
+      [
+        expect.objectContaining({
+          action: "council.run.start",
+          target: "bead-named",
+        }),
+        "demo-7",
+      ],
+    ]);
+  });
+});
