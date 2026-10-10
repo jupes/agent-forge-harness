@@ -305,6 +305,12 @@ function sameFileKey(realPath: string): string {
 
 type LinkedFiles = { parts: ContextPart[]; incomplete: boolean };
 
+/** When a run last recorded something, as text that sorts; "" when the file does not say. */
+function stamp(state: ForgeState): string {
+  const at: unknown = state.updatedAt;
+  return typeof at === "string" ? at : "";
+}
+
 /** A run by the name of its state file, which is checked; the name inside the file is not. */
 type BeadRun = { slug: string; state: ForgeState };
 
@@ -330,10 +336,9 @@ function beadRun(id: BeadsIssueId, cwd: string): BeadRun | null {
     const owns =
       state.beadId !== undefined ? state.beadId === id : state.epic === id;
     if (!owns) continue;
-    if (
-      newest === null ||
-      String(state.updatedAt).localeCompare(String(newest.state.updatedAt)) > 0
-    )
+    // A run state is a file anyone can write: a timestamp that is not text
+    // counts as the oldest instead of stopping the pack.
+    if (newest === null || stamp(state) > stamp(newest.state))
       newest = { slug, state };
   }
   return newest;

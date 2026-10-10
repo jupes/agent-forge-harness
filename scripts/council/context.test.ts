@@ -2386,3 +2386,19 @@ describe("a bead source under attack, fourth pass", () => {
     expect(JSON.stringify(packed.source)).not.toContain("not-the-file-name");
   });
 });
+
+describe("a bead source under attack, fifth pass", () => {
+  test("a run state whose timestamp is not text does not stop the pack: the run with a real one is the newer", async () => {
+    const root = workspace(
+      Object.fromEntries([
+        runState("kiln-odd", { beadId: BEAD, updatedAt: { toString: 1 } }),
+        ["plans/drafts/kiln-odd.md", "ODD-PLAN"],
+        runState("kiln-temp", { beadId: BEAD }),
+        ["plans/drafts/kiln-temp.md", "REAL-PLAN"],
+      ]),
+    );
+    const packed = await pack(fakeRunner(), root);
+    expect(packed.source.metadata?.forgeRun).toBe("kiln-temp");
+    expect(JSON.stringify(packed.evidence)).toContain("REAL-PLAN");
+  });
+});
