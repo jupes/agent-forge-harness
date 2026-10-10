@@ -38,7 +38,7 @@ import {
 } from "./workflow";
 
 export type CouncilServiceInput = {
-  sourceType: "file" | "plan" | "pr" | "text";
+  sourceType: "file" | "plan" | "pr" | "text" | "bead";
   source: string;
   profile?: string | undefined;
   maxUsd?: number | undefined;
@@ -279,7 +279,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     if (closed) throw new Error("council service is closed");
     if (
       !input ||
-      !["file", "plan", "pr", "text"].includes(input.sourceType) ||
+      !["file", "plan", "pr", "text", "bead"].includes(input.sourceType) ||
       typeof input.source !== "string" ||
       !input.source.trim() ||
       Buffer.byteLength(input.source, "utf8") > 2_000_000

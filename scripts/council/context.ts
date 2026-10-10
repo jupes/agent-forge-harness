@@ -529,6 +529,22 @@ export function buildContextPackFromParts(
   };
 }
 
+/**
+ * What a pack holds and what it leaves out, one line each: the parts of a
+ * source made of several, else its evidence items. Shown to the operator
+ * before any provider is called; never rendered into a prompt.
+ */
+export function contextListing(
+  pack: Pick<ContextPack, "source" | "evidence">,
+): string[] {
+  const parts = pack.source.metadata?.parts;
+  if (Array.isArray(parts)) return [...parts];
+  return pack.evidence.map(
+    (item) =>
+      `${item.id} ${item.title}: ${item.byteLength} bytes${item.truncated ? ", cut to fit the evidence budget" : ""}`,
+  );
+}
+
 export function renderContextForPrompt(context: ContextPack): string {
   const evidence = context.evidence
     .map(

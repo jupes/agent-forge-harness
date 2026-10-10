@@ -3,13 +3,15 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "path";
+import { parseBeadsIssueId } from "../run-correlation";
 import {
   assertCouncilRunId,
   readCouncilRun,
   renderCouncilReport,
 } from "./artifacts";
-import { type SecretPolicy, sanitizeContent } from "./context";
+import { contextListing, type SecretPolicy, sanitizeContent } from "./context";
 import type { CouncilAppend, CouncilAttachResolver } from "./ledger-events";
+import type { CommandRunner } from "./pr-source";
 import { providerReadiness } from "./providers";
 import {
   type ContextSourceKind,
@@ -31,6 +33,7 @@ Usage:
   bun run council -- file <path> [options]
   bun run council -- plan <path> [options]
   bun run council -- pr <number-or-url> [options]
+  bun run council -- bead <beads-issue-id> [options]
   <command> | bun run council -- stdin [options]
   bun run council -- replay <run-id-or-manifest> [options]
 
@@ -40,11 +43,16 @@ Options:
   --max-usd <amount>     Hard estimated-cost budget
   --max-bytes <bytes>    Maximum source bytes (default: 200000)
   --run-id <id>          Stable run id for automation
-  --bead <id>            Beads issue the review is for (recorded in the ledger)
+  --bead <id>            Beads issue the review is for (recorded in the ledger;
+                         a bead source is always recorded as its own bead)
   --redact-secrets       Redact detected credentials instead of rejecting input
   --dry-run              Resolve context and estimate cost without model calls
   --json                 Emit the standard { ok, data, error } envelope
   --help                  Show this help
+
+A bead source sends the named bead's acceptance criteria, comments, description,
+linked plan/research/report and pull request to every provider in the profile.
+Run it with --dry-run first: the listing shows each part that would be sent.
 `;
 
 type RunCommand = {
@@ -127,11 +135,18 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
     command !== "file" &&
     command !== "plan" &&
     command !== "pr" &&
-    command !== "stdin"
+    command !== "stdin" &&
+    command !== "bead"
   ) {
     return { ok: false, error: `unknown command: ${command}`, json };
   }
-  const sourcePath = command === "stdin" ? undefined : args[1];
+  // A bead is named by its id, which can never be read as a flag or a path.
+  const sourceBead =
+    command === "bead" ? parseBeadsIssueId(args[1]) : undefined;
+  if (sourceBead === null) {
+    return { ok: false, error: "bead requires a Beads issue id", json };
+  }
+  const sourcePath = command === "stdin" ? undefined : (sourceBead ?? args[1]);
   if (command !== "stdin" && (!sourcePath || sourcePath.startsWith("--"))) {
     return { ok: false, error: `${command} requires a path`, json };
   }
@@ -199,6 +214,17 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
     }
     return { ok: false, error: `unknown option: ${arg}`, json };
   }
+  if (sourceBead !== undefined) {
+    // The run is recorded against the bead it reviews, and no other.
+    if (beadId !== undefined && beadId.trim() !== sourceBead)
+      return {
+        ok: false,
+        error:
+          "--bead must name the bead under review when the source is a bead",
+        json,
+      };
+    beadId = sourceBead;
+  }
   const value: RunCommand = {
     kind: "run",
     sourceKind: command,
@@ -229,6 +255,8 @@ export type CouncilCliIo = {
    */
   appendEvent?: CouncilAppend;
   resolveAttach?: CouncilAttachResolver;
+  /** Runs `bd`, `git` and `gh` for the bead and pr sources; the local one when absent. */
+  runCommand?: CommandRunner;
 };
 
 function defaultIo(): CouncilCliIo {
@@ -309,7 +337,9 @@ export async function runCouncilCli(
       workspaceRoot: io.cwd,
       secretPolicy: command.secretPolicy,
       maxBytes: command.maxBytes,
+      runner: io.runCommand,
     });
+    const listing = contextListing(context);
     const estimatedCostUsd = estimateCouncilCost(profile);
     const budget = command.maxUsd ?? profile.maxEstimatedUsd;
     const readiness = providerReadiness(profile);
@@ -337,6 +367,7 @@ export async function runCouncilCli(
           byteLength: context.byteLength,
           truncated: context.truncated,
           redactions: context.redactions,
+          listing,
         },
         estimatedCostUsd,
         budgetUsd: budget,
@@ -349,6 +380,8 @@ export async function runCouncilCli(
           [
             `Dry run: ${profile.title}`,
             `Source: ${context.source.displayName} (${context.byteLength} bytes${context.truncated ? ", truncated" : ""})`,
+            "Evidence:",
+            ...listing.map((line) => `  ${line}`),
             `Seats: ${profile.seats.map((seat) => `${seat.id}=${seat.provider}/${seat.model}`).join(", ")}`,
             `Providers: ${readiness.map((provider) => `${provider.provider}=${provider.configured ? "ready" : `missing ${provider.missing.join(",")}`}`).join(", ")}`,
             `Estimated cost: $${estimatedCostUsd.toFixed(4)} / budget $${budget.toFixed(4)}`,
@@ -360,6 +393,16 @@ export async function runCouncilCli(
       return estimatedCostUsd <= budget ? 0 : 1;
     }
 
+    // A bead is private: say what is about to leave before anything does.
+    // On stderr in every mode, so stdout stays the report or one envelope.
+    if (context.source.kind === "bead")
+      io.stderr(
+        [
+          "Evidence to be sent:",
+          ...listing.map((line) => `  ${line}`),
+          "",
+        ].join("\n"),
+      );
     const runId =
       command.runId ?? `council-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const engineOptions: CouncilReviewOptions = {

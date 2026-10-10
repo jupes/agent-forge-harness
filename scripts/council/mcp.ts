@@ -3,15 +3,22 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { parseBeadsIssueId } from "../run-correlation";
 import { assertCouncilRunId } from "./artifacts";
 import {
+  type CouncilServiceInput,
   type CouncilServiceJob,
   type CouncilServiceOptions,
   createCouncilService,
   safeCouncilError,
 } from "./service";
 
-export type CouncilMcpOptions = CouncilServiceOptions;
+type CouncilService = ReturnType<typeof createCouncilService>;
+
+export type CouncilMcpOptions = CouncilServiceOptions & {
+  /** A service to drive instead of building one from the options. */
+  service?: CouncilService | undefined;
+};
 
 const RUN_ID = z.string().refine((id) => {
   try {
@@ -21,13 +28,32 @@ const RUN_ID = z.string().refine((id) => {
     return false;
   }
 }, "Invalid council run ID");
+// One object, two shapes: `sourceType` + `source`, or `kind: "bead"` + `id`.
+// Which one was given is checked by `reviewServiceInput`, so the schema stays
+// a plain object for every client.
 const REVIEW_INPUT = z.object({
-  sourceType: z.enum(["file", "plan", "pr", "text"]),
+  sourceType: z
+    .enum(["file", "plan", "pr", "text"])
+    .optional()
+    .describe("With source: what the source is"),
   source: z
     .string()
     .min(1)
     .max(2_000_000)
+    .optional()
     .describe("Workspace file path, PR number/URL, or pasted text"),
+  kind: z
+    .literal("bead")
+    .optional()
+    .describe(
+      "With id, instead of sourceType and source: review a Beads issue",
+    ),
+  id: z
+    .string()
+    .min(1)
+    .max(121)
+    .optional()
+    .describe("The full id of the Beads issue to review"),
   profile: z
     .string()
     .optional()
@@ -39,6 +65,41 @@ const REVIEW_INPUT = z.object({
 });
 const PROFILE_INPUT = z.object({ profile: z.string().optional() });
 const ID_INPUT = z.object({ runId: RUN_ID });
+
+/**
+ * A review tool's input as the service takes it. A bead is reviewed only when
+ * the caller names it: `kind: "bead"` with its id, which also becomes the bead
+ * the run's ledger events are recorded against.
+ */
+export function reviewServiceInput(
+  input: z.infer<typeof REVIEW_INPUT>,
+): CouncilServiceInput {
+  const { sourceType, source, kind, id, ...options } = input;
+  const asSource = sourceType !== undefined && source !== undefined;
+  const asBead = kind !== undefined && id !== undefined;
+  const mixed =
+    (asSource && (kind !== undefined || id !== undefined)) ||
+    (asBead && (sourceType !== undefined || source !== undefined));
+  if (asSource === asBead || mixed)
+    throw new Error('give either sourceType and source, or kind "bead" and id');
+  if (asSource) return { sourceType, source, ...options };
+  const beadId = parseBeadsIssueId(id);
+  if (beadId === null) throw new Error("id must be a Beads issue id");
+  return { sourceType: "bead", source: beadId, beadId, ...options };
+}
+
+const MAX_LISTING_LINES = 60;
+
+/** What the run said it was about to send, from its first event. */
+function runListing(job: CouncilServiceJob): string[] {
+  const listing = job.events.find((event) => event.type === "run.started")
+    ?.payload.listing;
+  if (!Array.isArray(listing)) return [];
+  return listing
+    .filter((line): line is string => typeof line === "string")
+    .slice(0, MAX_LISTING_LINES)
+    .map((line) => line.slice(0, 300));
+}
 
 function toolResult(
   data: Record<string, unknown> | null,
@@ -94,6 +155,7 @@ function statusSummary(job: CouncilServiceJob): Record<string, unknown> {
           depth: job.profile.depth,
         }
       : null,
+    listing: runListing(job),
     progress: {
       eventCount: job.events.length,
       discussionRoundCount:
@@ -172,7 +234,8 @@ function fullResult(job: CouncilServiceJob): Record<string, unknown> {
 export function createCouncilMcpServer(
   options: CouncilMcpOptions = {},
 ): McpServer {
-  const service = createCouncilService(options);
+  const { service: provided, ...serviceOptions } = options;
+  const service = provided ?? createCouncilService(serviceOptions);
   const server = new McpServer({
     name: "agent-forge-council",
     version: "0.2.0",
@@ -210,13 +273,15 @@ export function createCouncilMcpServer(
     {
       title: "Start a council review",
       description:
-        "Start a persistent local review and immediately return its run ID. Poll council_status for progress and results; council_cancel stops it. Recommended for real providers: the review outlives this MCP request's timeout.",
+        "Start a persistent local review and immediately return its run ID. Poll council_status for progress and results; council_cancel stops it. Recommended for real providers: the review outlives this MCP request's timeout. Give sourceType and source, or { kind: \"bead\", id } to review a Beads issue: that sends the named bead's acceptance criteria, comments, description, linked plan/research/report and pull request to every provider in the profile, and council_status lists each part.",
       inputSchema: REVIEW_INPUT,
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async (input) => {
       try {
-        return toolResult(statusSummary(service.start(input)));
+        return toolResult(
+          statusSummary(service.start(reviewServiceInput(input))),
+        );
       } catch (error) {
         return toolResult(null, safeCouncilError(error));
       }
@@ -227,13 +292,13 @@ export function createCouncilMcpServer(
     {
       title: "Run and await a council review",
       description:
-        "Run a review synchronously. Use council_start for long reviews to avoid client request timeouts. Failed reviews retain their run ID, diagnostics, and artifact paths.",
+        "Run a review synchronously. Use council_start for long reviews to avoid client request timeouts. Failed reviews retain their run ID, diagnostics, and artifact paths. Takes the same input as council_start, including a Beads issue.",
       inputSchema: REVIEW_INPUT,
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async (input, context) => {
       try {
-        const job = service.start(input);
+        const job = service.start(reviewServiceInput(input));
         // Explicit synchronous cancellation stops this run. Async council_start
         // intentionally has no request-scoped cancellation signal.
         const onAbort = () => service.cancel(job.runId);
@@ -262,7 +327,7 @@ export function createCouncilMcpServer(
     {
       title: "Get compact council progress and result",
       description:
-        "Poll compact, bounded progress for a run. Returns round counts, verdict limitations, and abbreviated terminal findings without evidence, transcripts, or duplicated run data. Use council_replay once after completion for the full preserved review.",
+        "Poll compact, bounded progress for a run. Returns the listing of what the run sent (one line per part of its source, with sizes, cuts and anything left out), round counts, verdict limitations, and abbreviated terminal findings without evidence, transcripts, or duplicated run data. Use council_replay once after completion for the full preserved review.",
       inputSchema: ID_INPUT,
       annotations: { readOnlyHint: true },
     },
