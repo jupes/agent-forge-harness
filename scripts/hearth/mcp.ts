@@ -19,6 +19,7 @@ import { connect } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import {
+  type CallToolRequestParams,
   type CallToolResult,
   InMemoryTransport,
   ProtocolError,
@@ -659,22 +660,67 @@ export interface CouncilServer {
 }
 
 interface CouncilBridge {
+  /** The council's own `tools/list` entries, as it gave them. */
   tools: Tool[];
+  has(name: string): boolean;
+  /** Forward one call as it came; `signal` is the only thing that ends it early. */
+  call(
+    params: CallToolRequestParams,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
   close(): Promise<void>;
 }
 
+const COUNCIL_PREFIX = "council_";
+/**
+ * The largest delay a timer takes: no limit of the bridge's own. The SDK
+ * client inside it would otherwise give a call 60 s and then cancel it, and
+ * the council turns a cancelled review into a cancelled run.
+ */
+const NO_TIME_LIMIT = 2_147_483_647;
+
+/**
+ * The council's registry, re-exported and not copied: its server is built
+ * unchanged and reached by a client in this process, so whatever tools it has,
+ * with whatever descriptions and schemas, are the ones listed and called.
+ *
+ * Its tools keep the council's own authority. They need no operator token and
+ * never reach the hearth; a review one of them starts is the calling
+ * session's, as it is under `bun run council:mcp`. The one thing checked is
+ * their names, so that none can answer in a forge tool's place.
+ */
 async function bridgeCouncil(council: CouncilServer): Promise<CouncilBridge> {
   const client = new Client({ name: "agent-forge", version: SERVER_VERSION });
   const [near, far] = InMemoryTransport.createLinkedPair();
   await council.connect(far);
   await client.connect(near);
+  const close = async (): Promise<void> => {
+    await client.close();
+    await council.close();
+  };
   const { tools } = await client.listTools();
+  const names = new Set<string>();
+  for (const { name } of tools) {
+    const problem =
+      !name.startsWith(COUNCIL_PREFIX) || name === COUNCIL_PREFIX
+        ? `is not a ${COUNCIL_PREFIX} tool`
+        : names.has(name)
+          ? "is offered twice"
+          : null;
+    if (problem !== null) {
+      await close();
+      throw new Error(
+        `The council registry offers a tool named "${name}", which ${problem}; this server does not start with it.`,
+      );
+    }
+    names.add(name);
+  }
   return {
     tools,
-    async close() {
-      await client.close();
-      await council.close();
-    },
+    has: (name) => names.has(name),
+    call: (params, signal) =>
+      client.callTool(params, { signal, timeout: NO_TIME_LIMIT }),
+    close,
   };
 }
 
@@ -697,6 +743,8 @@ export interface HearthMcpOptions {
   readToken?: (file: string) => string | null;
   /** How long one request to the hearth may take. */
   requestTimeoutMs?: number;
+  /** Aborts when the client has gone. The stdio entry aborts it when input ends, which the transport does not notice. */
+  gone?: AbortSignal;
 }
 
 export async function createHearthMcpServer(
@@ -719,6 +767,12 @@ export async function createHearthMcpServer(
     refusal(
       `${name} needs an operator session: this server was started without --operator and holds no operator token.`,
     );
+
+  const lifetime = new AbortController();
+  if (options.gone?.aborted) lifetime.abort();
+  options.gone?.addEventListener("abort", () => lifetime.abort(), {
+    once: true,
+  });
 
   const forge = new Map(FORGE_TOOLS.map((tool) => [tool.name, tool]));
   const bridge = options.council
@@ -831,24 +885,33 @@ export async function createHearthMcpServer(
   server.setRequestHandler("tools/list", async () => ({ tools }));
   server.setRequestHandler("tools/call", async (request, ctx) => {
     const { name } = request.params;
+    // Ends with the caller's own cancellation, or when the client has gone.
+    const signal = AbortSignal.any([ctx.mcpReq.signal, lifetime.signal]);
     const tool = forge.get(name);
-    // What the SDK's own server answers for a name it does not know.
-    if (!tool)
+    if (!tool) {
+      if (bridge?.has(name)) return bridge.call(request.params, signal);
+      // What the SDK's own server answers for a name it does not know.
       throw new ProtocolError(
         ProtocolErrorCode.InvalidParams,
         `Tool ${name} not found`,
       );
+    }
     // First, before the arguments are looked at: an agent session gets this
     // and nothing else from a governed tool, whatever it sent.
     if (tool.authority === "operator" && !options.operator)
       return result(needsOperator(name));
     return result(
-      await callForge(tool, request.params.arguments ?? {}, ctx.mcpReq.signal),
+      await callForge(tool, request.params.arguments ?? {}, signal),
     );
   });
 
+  // A call still waiting when its client has gone is ended: nobody is left to
+  // answer. The council itself is not closed for that; a review it began on
+  // its own account runs to its end, as it does under `bun run council:mcp`.
+  server.onclose = () => lifetime.abort();
   const close = server.close.bind(server);
   server.close = async () => {
+    lifetime.abort();
     await bridge?.close();
     await close();
   };

@@ -9,9 +9,10 @@
  * test can say what was sent and that nothing was.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { spawn } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -32,13 +33,18 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
-import { InMemoryTransport, McpServer } from "@modelcontextprotocol/server";
+import {
+  InMemoryTransport,
+  McpServer,
+  Server,
+} from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type {
   EventsPage,
   LedgerEvent,
   OperatorEnvelope,
 } from "../../types/hearth";
+import { createCouncilMcpServer } from "../council/mcp";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -155,6 +161,7 @@ interface SessionOptions {
   operator?: boolean;
   council?: (() => CouncilServer) | null;
   requestTimeoutMs?: number;
+  gone?: AbortSignal;
 }
 
 async function session(
@@ -182,6 +189,7 @@ async function session(
     ...(options.requestTimeoutMs !== undefined
       ? { requestTimeoutMs: options.requestTimeoutMs }
       : {}),
+    ...(options.gone ? { gone: options.gone } : {}),
     readToken: (file) => {
       tokenReads.push(file);
       return readToken(file);
@@ -2167,6 +2175,288 @@ describe("a row's scope is what its route reads (two hearths: a main checkout an
     }
     expect(there.hearth.port).not.toBe(own.hearth.port);
   }, 30_000);
+});
+
+/** A council stand-in whose one tool waits until it is released, and notes when its caller gave up. */
+interface WaitingCouncil {
+  build(): McpServer;
+  /** Resolves once the tool has been entered. */
+  entered: Promise<void>;
+  release(): void;
+  /** One entry per abort the tool saw. */
+  aborted: string[];
+  /** One entry per close of the stand-in server. */
+  closed: string[];
+}
+
+function waitingCouncil(): WaitingCouncil {
+  let enter: () => void = () => {};
+  let release: () => void = () => {};
+  const released = new Promise<void>((done) => {
+    release = done;
+  });
+  const council: WaitingCouncil = {
+    entered: new Promise<void>((done) => {
+      enter = done;
+    }),
+    release: () => release(),
+    aborted: [],
+    closed: [],
+    build() {
+      const server = new McpServer({ name: "waiting-council", version: "0" });
+      server.registerTool(
+        "council_wait",
+        { description: "Waits.", inputSchema: z.object({}) },
+        async (_input, context) => {
+          const gaveUp = new Promise<void>((done) =>
+            context.mcpReq.signal.addEventListener("abort", () => {
+              council.aborted.push("aborted");
+              done();
+            }),
+          );
+          enter();
+          await Promise.race([released, gaveUp]);
+          return { content: [{ type: "text" as const, text: "released" }] };
+        },
+      );
+      const close = server.close.bind(server);
+      server.close = async () => {
+        council.closed.push("closed");
+        await close();
+      };
+      return server;
+    },
+  };
+  return council;
+}
+
+/** A registry that offers exactly these names: only a low-level server can offer one twice. */
+function councilOffering(names: string[]): () => Server {
+  return () => {
+    const server = new Server(
+      { name: "odd-council", version: "0" },
+      { capabilities: { tools: {} } },
+    );
+    server.setRequestHandler("tools/list", async () => ({
+      tools: names.map((name) => ({
+        name,
+        inputSchema: { type: "object" as const },
+      })),
+    }));
+    return server;
+  };
+}
+
+async function until(holds: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (holds()) return;
+    await new Promise((done) => setTimeout(done, 10));
+  }
+  throw new Error(`never happened: ${label}`);
+}
+
+/** The largest delay a timer takes: what a caller passes to wait as long as it likes. */
+const NO_LIMIT = 2_147_483_647;
+
+describe("the council's tools, re-exported", () => {
+  test("the real council: its listing arrives unchanged, a call answers what the council itself answers, and a review runs to its end", async () => {
+    const workspace = tempDir("af-mcp-council-");
+    const options = {
+      workspaceRoot: workspace,
+      harnessRoot: REPO,
+      environment: { COUNCIL_RUNS_DIR: join(workspace, "runs") },
+    };
+    const hearth = await stocked();
+    const through = await session(place(hearth), {
+      operator: true,
+      council: () => createCouncilMcpServer(options),
+    });
+
+    const own = createCouncilMcpServer(options);
+    const direct = new Client({ name: "direct", version: "0" });
+    const [near, far] = InMemoryTransport.createLinkedPair();
+    await own.connect(far);
+    await direct.connect(near);
+    cleanup.push(async () => {
+      await direct.close();
+      await own.close();
+    });
+
+    const listed = (await through.client.listTools()).tools;
+    const theirs = (await direct.listTools()).tools;
+    expect(theirs.length).toBeGreaterThan(0);
+    expect(listed.slice(FORGE_TOOLS.length)).toEqual(theirs);
+    expect(JSON.stringify(listed.slice(FORGE_TOOLS.length))).toBe(
+      JSON.stringify(theirs),
+    );
+
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["council_profiles", {}],
+      ["council_readiness", {}],
+      ["council_list", {}],
+      ["council_status", { runId: ".." }],
+      ["council_status", { runId: "no-such-run" }],
+      ["council_cancel", { runId: "no-such-run" }],
+    ];
+    for (const [name, args] of calls) {
+      const forwarded = await through.client.callTool({
+        name,
+        arguments: args,
+      });
+      outputs.push(JSON.stringify(forwarded));
+      expect({ name, forwarded }).toEqual({
+        name,
+        forwarded: await direct.callTool({ name, arguments: args }),
+      });
+    }
+
+    const review = await through.client.callTool({
+      name: "council_review",
+      arguments: {
+        sourceType: "text",
+        source: "Evaluate this plan.",
+        runId: "bridged",
+      },
+    });
+    outputs.push(JSON.stringify(review));
+    expect(review.isError).not.toBe(true);
+    expect(review.structuredContent).toMatchObject({
+      ok: true,
+      data: { runId: "bridged", status: "completed" },
+    });
+    expect(
+      existsSync(join(workspace, "runs", "bridged", "manifest.json")),
+    ).toBe(true);
+
+    // None of it went near the hearth, and no token file was read, in an operator session.
+    expect(through.sent).toEqual([]);
+    expect(through.tokenReads).toEqual([]);
+    expect(hearth.events(["operator.action"])).toEqual([]);
+  }, 30_000);
+
+  test("a bridged call has no time limit of the bridge's own: still waiting after a day, it then answers", async () => {
+    const council = waitingCouncil();
+    const s = await session(emptyPlace(), { council: council.build });
+    jest.useFakeTimers();
+    try {
+      const pending = s.client
+        .callTool(
+          { name: "council_wait", arguments: {} },
+          { timeout: NO_LIMIT },
+        )
+        .then(
+          (answer) => answer.content,
+          (error: unknown) => `rejected: ${String(error)}`,
+        );
+      await Promise.race([council.entered, pending]);
+      jest.advanceTimersByTime(24 * 60 * 60 * 1000);
+      council.release();
+      expect(await pending).toEqual([{ type: "text", text: "released" }]);
+      expect(council.aborted).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("the caller cancelling a bridged call cancels it in the council", async () => {
+    const council = waitingCouncil();
+    const s = await session(emptyPlace(), { council: council.build });
+    const caller = new AbortController();
+    const pending = s.client
+      .callTool(
+        { name: "council_wait", arguments: {} },
+        { signal: caller.signal },
+      )
+      .then(
+        () => "answered",
+        () => "rejected",
+      );
+    await Promise.race([council.entered, pending]);
+    caller.abort();
+    expect(await pending).toBe("rejected");
+    await until(
+      () => council.aborted.length === 1,
+      "the council saw the cancellation",
+    );
+  });
+
+  test("a client that has gone ends the calls still waiting, and the council itself is left running", async () => {
+    const council = waitingCouncil();
+    const gone = new AbortController();
+    const s = await session(emptyPlace(), {
+      council: council.build,
+      gone: gone.signal,
+    });
+    const pending = s.client
+      .callTool({ name: "council_wait", arguments: {} }, { timeout: NO_LIMIT })
+      .then(
+        () => "answered",
+        () => "rejected",
+      );
+    await Promise.race([council.entered, pending]);
+    gone.abort();
+    await until(
+      () => council.aborted.length === 1,
+      "the waiting call was ended",
+    );
+    // What the council began on its own account is not this server's to stop.
+    expect(council.closed).toEqual([]);
+    // The caller, still connected in this test, is told its call failed.
+    expect(await pending).toBe("rejected");
+  });
+
+  test("the connection closing ends the calls still waiting", async () => {
+    const council = waitingCouncil();
+    const s = await session(emptyPlace(), { council: council.build });
+    const pending = s.client
+      .callTool({ name: "council_wait", arguments: {} }, { timeout: NO_LIMIT })
+      .catch(() => "rejected");
+    await Promise.race([council.entered, pending]);
+    await s.client.close();
+    await until(
+      () => council.aborted.length === 1,
+      "the waiting call was ended",
+    );
+  });
+
+  test("a registry that offers a name twice, a forge name, or a name that is not a council one stops the server before it serves anything", async () => {
+    const offers: Array<[string, string[], RegExp]> = [
+      ["a name twice", ["council_a", "council_b", "council_a"], /council_a/],
+      [
+        "a governed forge name",
+        ["council_a", "forge_council_start"],
+        /forge_council_start/,
+      ],
+      [
+        "a forge name that no row has",
+        ["forge_queue_approve"],
+        /forge_queue_approve/,
+      ],
+      ["a name with no prefix", ["review"], /review/],
+      ["a near miss", ["Council_start"], /Council_start/],
+      ["an empty name", ["council_a", ""], /council_/],
+    ];
+    for (const [label, names, expected] of offers) {
+      const outcome = await session(emptyPlace(), {
+        council: councilOffering(names),
+      }).then(
+        () => "served",
+        (error: unknown) => (error as Error).message,
+      );
+      expect({ label, outcome }).toEqual({
+        label,
+        outcome: expect.stringMatching(expected),
+      });
+      expect(outcome).not.toBe("served");
+    }
+    // A registry of well-named tools is served.
+    const fine = await session(emptyPlace(), {
+      council: councilOffering(["council_a", "council_b"]),
+    });
+    expect(
+      (await fine.client.listTools()).tools.map((tool) => tool.name).slice(-2),
+    ).toEqual(["council_a", "council_b"]);
+  });
 });
 
 describe("the token", () => {
