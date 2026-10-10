@@ -5,7 +5,7 @@ import {
   sanitizeContent,
   truncateUtf8,
 } from "./context";
-import type { ContextSourceMetadata } from "./types";
+import type { ContextRedaction, ContextSourceMetadata } from "./types";
 
 const DEFAULT_DIFF_BYTES = 150_000;
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -27,6 +27,8 @@ export type CompiledPullRequest = {
   locator: string;
   text: string;
   metadata: ContextSourceMetadata;
+  /** What the redact policy replaced in the patch; empty under reject. */
+  redactions: ContextRedaction[];
 };
 
 type PullRequestFile = {
@@ -317,10 +319,16 @@ function filterPatch(
 export async function compilePullRequest(
   reference: string,
   options: {
-    cwd?: string;
-    maxDiffBytes?: number;
-    runner?: CommandRunner;
-    secretPolicy?: SecretPolicy;
+    cwd?: string | undefined;
+    maxDiffBytes?: number | undefined;
+    runner?: CommandRunner | undefined;
+    secretPolicy?: SecretPolicy | undefined;
+    /**
+     * False skips the lookup of the acceptance criteria of beads the PR body
+     * names. A bead source passes false: it packs the bead it was given and
+     * no other.
+     */
+    linkedCriteria?: boolean | undefined;
   } = {},
 ): Promise<CompiledPullRequest> {
   const cwd = options.cwd ?? process.cwd();
@@ -375,7 +383,10 @@ export async function compilePullRequest(
     options.secretPolicy ?? "reject",
   );
   const diff = truncateUtf8(safeDiff.text, maxDiffBytes);
-  const linkedIssues = linkedIssueIds(pullRequest.body);
+  const lookUp = options.linkedCriteria !== false;
+  const linkedIssues = lookUp
+    ? linkedIssueIds(pullRequest.body)
+    : { ids: [], omitted: 0 };
   const issueIds = linkedIssues.ids;
   const criteria = await loadAcceptanceCriteria(issueIds, cwd, runner);
   const omissions = [...filtered.omissions, ...criteria.omissions];
@@ -405,7 +416,11 @@ export async function compilePullRequest(
     ...fileLines,
     "",
     "Linked acceptance criteria:",
-    ...(criteria.lines.length > 0 ? criteria.lines : ["(none resolved)"]),
+    ...(!lookUp
+      ? ["(not looked up for this source)"]
+      : criteria.lines.length > 0
+        ? criteria.lines
+        : ["(none resolved)"]),
     "",
     "Known omissions:",
     ...(omissions.length > 0 ? omissions : ["(none)"]),
@@ -433,5 +448,6 @@ export async function compilePullRequest(
     locator: pullRequest.url,
     text,
     metadata,
+    redactions: safeDiff.redactions,
   };
 }

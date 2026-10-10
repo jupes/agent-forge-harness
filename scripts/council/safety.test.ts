@@ -307,6 +307,29 @@ describe("PR snapshot safety", () => {
     expect(compiled.text).toContain("Acceptance criteria unavailable");
     expect(compiled.text).toContain("Sensitive file excluded");
   });
+  test("with the linked-criteria lookup switched off no bead is read; by default the linked bead still is", async () => {
+    const commands = (calls: string[][]) => calls.map((call) => call[0]);
+    const recorded: string[][] = [];
+    const base = prRunner();
+    const runner: CommandRunner = async (command, cwd) => {
+      recorded.push(command);
+      return base(command, cwd);
+    };
+
+    const quiet = await compilePullRequest("42", {
+      runner,
+      linkedCriteria: false,
+    });
+    expect(commands(recorded)).not.toContain("bd");
+    expect(quiet.text).toContain("(not looked up for this source)");
+    expect(quiet.text).not.toContain("Safe review");
+    expect(quiet.metadata.linkedIssueIds).toEqual([]);
+
+    recorded.length = 0;
+    const usual = await compilePullRequest("42", { runner });
+    expect(commands(recorded)).toContain("bd");
+    expect(usual.text).toContain("Safe review");
+  });
   test("rejects a PR changing during capture", async () => {
     await expect(
       compilePullRequest("42", { runner: prRunner({ changed: true }) }),

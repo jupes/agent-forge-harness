@@ -16,18 +16,23 @@ import { type BeadsIssueId, parseBeadsIssueId } from "../run-correlation";
 import {
   type ContextPart,
   type ContextPartsInput,
+  ContextSecurityError,
   locateWorkspaceFile,
   readUtf8Text,
+  type SecretPolicy,
+  sanitizeContent,
 } from "./context";
 import {
   type CommandRunner,
+  compilePullRequest,
   runLocalCommand,
   safeCommandError,
 } from "./pr-source";
+import type { ContextRedaction } from "./types";
 
 export type CompiledBead = Pick<
   ContextPartsInput,
-  "displayName" | "locator" | "metadata" | "parts"
+  "displayName" | "locator" | "metadata" | "parts" | "incomplete" | "redactions"
 >;
 
 type Fields = Record<string, unknown>;
@@ -309,11 +314,242 @@ function linkedFileParts(
   return parts;
 }
 
+/** The workspace's own repository, as its origin remote names it. */
+type Origin = { host: string; owner: string; repo: string };
+
+/**
+ * An origin remote as host, owner and repository, or null when it is not one
+ * this file can match a pull request against. Credentials in the remote are
+ * dropped here and the remote's text goes nowhere else.
+ */
+export function parseOrigin(remote: string): Origin | null {
+  const value = remote.trim();
+  if (value.length === 0 || value.length > 500 || /\s/.test(value)) return null;
+  let host: string;
+  let path: string;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return null;
+    }
+    // An https remote on another port serves pull request pages there too,
+    // and those never match; an ssh port says nothing about the web host.
+    if (url.protocol === "https:" ? url.port !== "" : url.protocol !== "ssh:")
+      return null;
+    host = url.hostname;
+    path = url.pathname;
+  } else {
+    const scp = /^(?:[^@/:]+@)?([^@/:]+):(.+)$/.exec(value);
+    if (!scp?.[1]?.includes(".")) return null;
+    host = scp[1];
+    path = `/${scp[2]}`;
+  }
+  const match =
+    /^\/([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(
+      path,
+    );
+  const owner = match?.[1];
+  const repo = match?.[2];
+  if (!owner || !repo || repo === "." || repo === "..") return null;
+  if (!/^[A-Za-z0-9.-]+$/.test(host)) return null;
+  return { host: host.toLowerCase(), owner, repo };
+}
+
+/**
+ * The number of the origin repository's pull request `url` points at, or null.
+ * The test is on the parsed URL, so nothing a mention spells differently —
+ * userinfo, a port, dot segments, a look-alike host — passes as the origin.
+ */
+function ownPullRequest(url: URL, origin: Origin): number | null {
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "")
+    return null;
+  if (url.port !== "" || url.hostname.toLowerCase() !== origin.host)
+    return null;
+  const match = /^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]{0,9})(?:\/.*)?$/.exec(
+    url.pathname,
+  );
+  if (!match) return null;
+  if (
+    match[1]?.toLowerCase() !== origin.owner.toLowerCase() ||
+    match[2]?.toLowerCase() !== origin.repo.toLowerCase()
+  )
+    return null;
+  return Number(match[3]);
+}
+
+const URL_MENTION = /https?:\/\/[^\s<>"'`]+/gi;
+const PULL_REQUEST_PATH = /\/pull\/[0-9]+(?:\/|$)/;
+const MAX_REFERENCES = 10;
+
+/** A URL as it was meant: without the punctuation and brackets of the sentence around it. */
+function trimMention(token: string): string {
+  let value = token;
+  for (;;) {
+    const last = value.at(-1) ?? "";
+    const opener = { ")": "(", "]": "[", "}": "{" }[last];
+    if (".,;:!?*_~".includes(last) && last !== "") value = value.slice(0, -1);
+    else if (
+      opener !== undefined &&
+      value.split(last).length > value.split(opener).length
+    )
+      value = value.slice(0, -1);
+    else return value;
+  }
+}
+
+/** Every pull-request-shaped URL the texts mention, oldest mention first. */
+function pullRequestMentions(texts: string[]): URL[] {
+  const mentions: URL[] = [];
+  for (const body of texts)
+    for (const match of body.matchAll(URL_MENTION)) {
+      let url: URL;
+      try {
+        url = new URL(trimMention(match[0]));
+      } catch {
+        continue;
+      }
+      if (PULL_REQUEST_PATH.test(url.pathname)) mentions.push(url);
+    }
+  return mentions;
+}
+
+async function readOrigin(
+  cwd: string,
+  runner: CommandRunner,
+): Promise<Origin | null> {
+  try {
+    const result = await runner(["git", "remote", "get-url", "origin"], cwd);
+    return result.exitCode === 0 ? parseOrigin(result.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+
+type PullRequestParts = {
+  parts: ContextPart[];
+  /** The URL that was captured. */
+  url?: string;
+  incomplete: boolean;
+  redactions: ContextRedaction[];
+};
+
+/**
+ * The pull request part and the notes about every other pull request URL.
+ *
+ * Only a URL of the workspace's own origin repository is ever fetched, and
+ * what `gh` is handed is rebuilt from the origin and the number: never the
+ * mention as written, never a bare number.
+ */
+async function pullRequestParts(
+  texts: string[],
+  options: {
+    cwd: string;
+    runner: CommandRunner;
+    secretPolicy: SecretPolicy;
+    maxBytes: number | undefined;
+  },
+): Promise<PullRequestParts> {
+  const result: PullRequestParts = {
+    parts: [],
+    incomplete: false,
+    redactions: [],
+  };
+  const mentions = pullRequestMentions(texts);
+  if (mentions.length === 0) return result;
+  const origin = await readOrigin(options.cwd, options.runner);
+
+  let packed: number | null = null;
+  const named: number[] = [];
+  const references: string[] = [];
+  for (const url of mentions) {
+    const number = origin ? ownPullRequest(url, origin) : null;
+    if (number !== null) {
+      if (packed !== null && packed !== number) named.push(packed);
+      packed = number;
+      continue;
+    }
+    // Rebuilt from the parsed URL: no userinfo, no query, no fragment.
+    references.push(`${url.protocol}//${url.host}${url.pathname}`);
+  }
+
+  if (packed !== null && origin) {
+    const number = packed;
+    const label = `pull request #${number}`;
+    const url = `https://${origin.host}/${origin.owner}/${origin.repo}/pull/${number}`;
+    try {
+      const compiled = await compilePullRequest(url, {
+        cwd: options.cwd,
+        runner: options.runner,
+        secretPolicy: options.secretPolicy,
+        maxDiffBytes: options.maxBytes,
+        linkedCriteria: false,
+      });
+      result.parts.push({
+        label,
+        title: compiled.displayName,
+        chunks: [{ text: compiled.text }],
+      });
+      result.url = url;
+      result.redactions = compiled.redactions;
+      if (compiled.metadata.diffTruncated === true) result.incomplete = true;
+    } catch (error) {
+      if (error instanceof ContextSecurityError)
+        throw new ContextSecurityError(
+          error.message.replace(
+            "potential secrets detected;",
+            `potential secrets detected in ${label};`,
+          ),
+        );
+      const reason = sanitizeContent(
+        error instanceof Error ? error.message : String(error),
+        "redact",
+      )
+        .text.replace(/\s+/g, " ")
+        .slice(0, 160);
+      result.parts.push(note(label, `not packed, capture failed (${reason})`));
+      result.incomplete = true;
+    }
+  }
+
+  const notes: ContextPart[] = [
+    ...[...new Set(named)]
+      .filter((number) => number !== packed)
+      .map((number) =>
+        note(
+          `pull request #${number}`,
+          "named, not packed (a later mention was packed)",
+        ),
+      ),
+    ...[...new Set(references)].map((reference) =>
+      note(
+        `reference ${reference.slice(0, 200)}`,
+        origin
+          ? "not fetched, not this workspace's origin repository"
+          : "not fetched, the origin repository could not be read",
+      ),
+    ),
+  ];
+  result.parts.push(...notes.slice(0, MAX_REFERENCES));
+  const more = notes.length - MAX_REFERENCES;
+  if (more > 0)
+    result.parts.push(
+      note(
+        `${more} more pull request reference${more === 1 ? "" : "s"}`,
+        `not listed (limit ${MAX_REFERENCES})`,
+      ),
+    );
+  return result;
+}
+
 export async function compileBead(
   reference: string,
   options: {
     cwd?: string | undefined;
     runner?: CommandRunner | undefined;
+    secretPolicy?: SecretPolicy | undefined;
+    maxBytes?: number | undefined;
   } = {},
 ): Promise<CompiledBead> {
   const id = parseBeadsIssueId(reference);
@@ -345,6 +581,12 @@ export async function compileBead(
   const comments = commentsOf(id, rows);
   const texts = mentionTexts(issue, comments);
   const run = beadRun(id, cwd);
+  const pullRequest = await pullRequestParts(texts, {
+    cwd,
+    runner,
+    secretPolicy: options.secretPolicy ?? "reject",
+    maxBytes: options.maxBytes,
+  });
 
   return {
     displayName: `${id}: ${oneLine(issue.title) || "(untitled)"}`,
@@ -352,12 +594,16 @@ export async function compileBead(
     metadata: {
       beadId: id,
       ...(run ? { forgeRun: run.slug } : {}),
+      ...(pullRequest.url ? { pullRequest: pullRequest.url } : {}),
     },
     parts: [
       acceptancePart(id, issue),
       commentsPart(id, comments),
       descriptionPart(id, issue),
       ...linkedFileParts(cwd, run, texts),
+      ...pullRequest.parts,
     ],
+    incomplete: pullRequest.incomplete,
+    redactions: pullRequest.redactions,
   };
 }

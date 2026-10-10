@@ -58,6 +58,8 @@ export async function prepareCouncilContext(input: CouncilSourceInput) {
     const compiled = await compileBead(input.source, {
       cwd: input.workspaceRoot,
       runner: input.runner,
+      secretPolicy: input.secretPolicy,
+      maxBytes: input.maxBytes,
     });
     return buildContextPackFromParts({
       kind: "bead",

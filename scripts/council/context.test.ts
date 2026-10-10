@@ -929,3 +929,521 @@ describe("a pack made of parts", () => {
     expect(listingOf(packed)[0]?.length).toBeLessThanOrEqual(300);
   });
 });
+
+const ORIGIN = "https://github.com/demo-org/kiln-works.git";
+const prUrl = (number: number): string =>
+  `https://github.com/demo-org/kiln-works/pull/${number}`;
+
+const PATCH = [
+  "diff --git a/src/kiln.ts b/src/kiln.ts",
+  "--- a/src/kiln.ts",
+  "+++ b/src/kiln.ts",
+  "@@ -0,0 +1 @@",
+  "+export const celsius = true;",
+  "",
+].join("\n");
+
+/**
+ * Answers for the origin and for one pull request. `origin: null` makes the
+ * remote lookup fail; `view`/`diff` replace what `gh` prints.
+ */
+function withPullRequest(
+  options: {
+    origin?: string | null;
+    patch?: string;
+    view?: CommandResult;
+  } = {},
+): (command: string[]) => CommandResult | undefined {
+  return (command) => {
+    const line = command.join(" ");
+    if (line === "git remote get-url origin")
+      return options.origin === null
+        ? { exitCode: 2, stdout: "", stderr: "error: No such remote 'origin'" }
+        : ok(`${options.origin ?? ORIGIN}\n`);
+    if (command[0] !== "gh") return undefined;
+    const url = command[3] ?? "";
+    const number = Number(url.slice(url.lastIndexOf("/") + 1));
+    if (command[2] === "view")
+      return (
+        options.view ??
+        ok(
+          JSON.stringify({
+            number,
+            url,
+            title: "Report the kiln temperature",
+            // Names another bead: a bead source must not go and read it.
+            body: `Reads the sensor.\n\nRefs: ${BEAD}, demo-harness-zz9`,
+            baseRefName: "main",
+            baseRefOid: "base000",
+            headRefName: "kiln-temp",
+            headRefOid: "head111",
+            additions: 1,
+            deletions: 0,
+            changedFiles: 1,
+            files: [{ path: "src/kiln.ts", additions: 1, deletions: 0 }],
+          }),
+        )
+      );
+    if (command[2] === "diff") return ok(options.patch ?? PATCH);
+    return undefined;
+  };
+}
+
+const ghCalls = (fake: Fake): string[][] =>
+  fake.calls.filter((call) => call[0] === "gh");
+
+describe("a bead's pull request", () => {
+  test("a comment carrying this repository's pull request URL packs that PR last, through gh with a rebuilt URL, and reads no other bead", async () => {
+    const fake = fakeRunner({
+      comments: [
+        ...COMMENTS,
+        comment("2031-01-06T10:00:00Z", `worklog: opened ${prUrl(12)}`),
+      ],
+      extra: withPullRequest(),
+    });
+    const packed = await pack(fake, workspace());
+
+    const last = packed.evidence.at(-1);
+    expect(last?.id).toBe("E4");
+    expect(last?.title).toBe("PR #12: Report the kiln temperature");
+    expect(last?.content).toContain("Pull request #12");
+    expect(last?.content).toContain("+export const celsius = true;");
+    expect(last?.content).toContain("(not looked up for this source)");
+    expect(listingOf(packed).at(-1)).toBe(
+      `E4 pull request #12: ${last?.byteLength} bytes`,
+    );
+    expect(packed.source.metadata?.pullRequest).toBe(prUrl(12));
+    expect(packed.truncated).toBe(false);
+
+    expect(fake.calls.map((call) => call.slice(0, 4).join(" "))).toEqual([
+      `bd --readonly show ${BEAD}`,
+      `bd --readonly comments ${BEAD}`,
+      "git remote get-url origin",
+      `gh pr view ${prUrl(12)}`,
+      `gh pr diff ${prUrl(12)}`,
+      `gh pr view ${prUrl(12)}`,
+    ]);
+  });
+
+  test("with several pull request URLs the most recent mention is packed and the others are named; a comment counts as later than a field", async () => {
+    const fake = fakeRunner({
+      issue: issue({
+        description: `First try: ${prUrl(3)}.`,
+        // Notes are a field: mentioned "before" every comment, whatever they say.
+        notes: `Superseded by ${prUrl(20)}`,
+      }),
+      comments: [
+        comment(
+          "2031-01-03T10:00:00Z",
+          `worklog: reopened as ${prUrl(7)}, then`,
+        ),
+        comment(
+          "2031-01-06T10:00:00Z",
+          `review: see [the PR](${prUrl(9)}). Earlier: <${prUrl(7)}> (and ${prUrl(9)}/files).`,
+        ),
+      ],
+      extra: withPullRequest(),
+    });
+    const packed = await pack(fake, workspace());
+
+    expect(packed.evidence.at(-1)?.title).toContain("PR #9:");
+    expect(new Set(ghCalls(fake).map((call) => call[3]))).toEqual(
+      new Set([prUrl(9)]),
+    );
+    expect(listingOf(packed).slice(-4)).toEqual([
+      `E4 pull request #9: ${packed.evidence.at(-1)?.byteLength} bytes`,
+      "pull request #3: named, not packed (a later mention was packed)",
+      "pull request #20: named, not packed (a later mention was packed)",
+      "pull request #7: named, not packed (a later mention was packed)",
+    ]);
+  });
+
+  test("the same pull request written with a longer path, a query, another case or the default port is still that pull request", async () => {
+    const variants = [
+      `${prUrl(12)}/files`,
+      `${prUrl(12)}?diff=split#discussion_r1`,
+      "https://GitHub.com/Demo-Org/Kiln-Works/pull/12",
+      "https://github.com:443/demo-org/kiln-works/pull/12/commits/abc",
+    ];
+    for (const variant of variants) {
+      const fake = fakeRunner({
+        comments: [comment("2031-01-06T10:00:00Z", `see ${variant}`)],
+        extra: withPullRequest(),
+      });
+      const packed = await pack(fake, workspace());
+      expect({
+        variant,
+        fetched: ghCalls(fake).map((call) => call[3]),
+      }).toEqual({ variant, fetched: [prUrl(12), prUrl(12), prUrl(12)] });
+      expect(packed.evidence.at(-1)?.title).toContain("PR #12:");
+    }
+  });
+
+  test("a URL that is not this repository's pull request is never fetched: it is named as a reference, without credentials or query", async () => {
+    const foreign: Array<[string, string]> = [
+      [
+        "https://github.com/other-org/kiln-works/pull/1",
+        "https://github.com/other-org/kiln-works/pull/1",
+      ],
+      [
+        "https://github.com/demo-org/other-repo/pull/1",
+        "https://github.com/demo-org/other-repo/pull/1",
+      ],
+      [
+        "https://github.com.evil.example/demo-org/kiln-works/pull/1",
+        "https://github.com.evil.example/demo-org/kiln-works/pull/1",
+      ],
+      [
+        "https://evil.example/github.com/demo-org/kiln-works/pull/1",
+        "https://evil.example/github.com/demo-org/kiln-works/pull/1",
+      ],
+      [
+        "https://someone:PRIVATE-PASSWORD@github.com/demo-org/kiln-works/pull/1?token=PRIVATE-QUERY",
+        "https://github.com/demo-org/kiln-works/pull/1",
+      ],
+      [
+        "https://github.com:8443/demo-org/kiln-works/pull/1",
+        "https://github.com:8443/demo-org/kiln-works/pull/1",
+      ],
+      [
+        "http://github.com/demo-org/kiln-works/pull/1",
+        "http://github.com/demo-org/kiln-works/pull/1",
+      ],
+      [
+        "https://github.com/demo-org/kiln-works/pull/1/../../../../other-org/x/pull/2",
+        "https://github.com/other-org/x/pull/2",
+      ],
+      [
+        "https://github.com/demo-org/kiln-works.evil/pull/1",
+        "https://github.com/demo-org/kiln-works.evil/pull/1",
+      ],
+      [
+        "https://github.com/demo-org/kiln-works/pull/0",
+        "https://github.com/demo-org/kiln-works/pull/0",
+      ],
+    ];
+    for (const [mention, shown] of foreign) {
+      const fake = fakeRunner({
+        comments: [comment("2031-01-06T10:00:00Z", `see ${mention} please`)],
+        extra: withPullRequest(),
+      });
+      const packed = await pack(fake, workspace());
+      expect({ mention, gh: ghCalls(fake) }).toEqual({ mention, gh: [] });
+      expect({ mention, last: listingOf(packed).at(-1) }).toEqual({
+        mention,
+        last: `reference ${shown}: not fetched, not this workspace's origin repository`,
+      });
+      const listing = JSON.stringify(packed.source);
+      expect(listing).not.toContain("PRIVATE-PASSWORD");
+      expect(listing).not.toContain("PRIVATE-QUERY");
+      expect(packed.source.metadata?.pullRequest).toBeUndefined();
+    }
+  });
+
+  test("a bead that mentions no pull request never asks for the origin; one that mentions only something else PR-like does not either", async () => {
+    const fake = fakeRunner({
+      comments: [
+        comment(
+          "2031-01-06T10:00:00Z",
+          "see https://github.com/demo-org/kiln-works/pulls and https://github.com/demo-org/kiln-works/issues/4",
+        ),
+      ],
+      extra: withPullRequest(),
+    });
+    const packed = await pack(fake, workspace());
+    expect(fake.calls).toHaveLength(2);
+    expect(listingOf(packed)).toHaveLength(3);
+  });
+
+  test("the origin is understood in its https, scp-style and ssh forms, and its credentials never leave the parser", async () => {
+    const origins = [
+      "https://github.com/demo-org/kiln-works.git",
+      "https://github.com/demo-org/kiln-works",
+      "git@github.com:demo-org/kiln-works.git",
+      "ssh://git@github.com/demo-org/kiln-works.git",
+      "ssh://git@github.com:22/demo-org/kiln-works",
+      "https://oauth-user:PRIVATE-ORIGIN-TOKEN@github.com/demo-org/kiln-works.git",
+      "https://GitHub.com/Demo-Org/Kiln-Works.git",
+    ];
+    for (const origin of origins) {
+      const fake = fakeRunner({
+        comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+        extra: withPullRequest({ origin }),
+      });
+      const packed = await pack(fake, workspace());
+      const fetched = ghCalls(fake).map((call) => call[3]?.toLowerCase());
+      expect({ origin, fetched }).toEqual({
+        origin,
+        fetched: [prUrl(12), prUrl(12), prUrl(12)],
+      });
+      const everything = JSON.stringify(packed);
+      expect(everything).not.toContain("PRIVATE-ORIGIN-TOKEN");
+      expect(everything).not.toContain("oauth-user");
+    }
+  });
+
+  test("with no origin, or one that cannot be read as host/owner/repository, no pull request is fetched and the listing says why without echoing the origin", async () => {
+    const unreadable: Array<string | null> = [
+      null,
+      "",
+      "C:/repos/PRIVATE-ORIGIN-PATH",
+      "/srv/git/PRIVATE-ORIGIN-PATH.git",
+      "file:///repos/PRIVATE-ORIGIN-PATH",
+      "git://github.com/demo-org/kiln-works.git",
+      "https://PRIVATE-ORIGIN-TOKEN@github.com:8443/demo-org/kiln-works.git",
+      "https://github.com/demo-org/kiln-works/PRIVATE-ORIGIN-PATH",
+      "https://github.com/kiln-works.git",
+      "localhost:demo-org/kiln-works.git",
+    ];
+    for (const origin of unreadable) {
+      const fake = fakeRunner({
+        comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+        extra: withPullRequest({ origin }),
+      });
+      const packed = await pack(fake, workspace());
+      expect({ origin, gh: ghCalls(fake) }).toEqual({ origin, gh: [] });
+      expect({ origin, last: listingOf(packed).at(-1) }).toEqual({
+        origin,
+        last: `reference ${prUrl(12)}: not fetched, the origin repository could not be read`,
+      });
+      expect(JSON.stringify(packed)).not.toContain("PRIVATE-ORIGIN");
+      expect(packed.truncated).toBe(false);
+    }
+  });
+
+  test("a pull request that cannot be captured is a note and an incomplete pack, not an error, and nothing from gh's output leaks", async () => {
+    const fake = fakeRunner({
+      comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+      extra: withPullRequest({
+        view: {
+          exitCode: 1,
+          stdout: "",
+          stderr: `HTTP 401: bad credentials ${SECRET}`,
+        },
+      }),
+    });
+    const packed = await pack(fake, workspace());
+    const last = listingOf(packed).at(-1) ?? "";
+    expect(last).toStartWith(
+      "pull request #12: not packed, capture failed (gh pr view failed (1)",
+    );
+    expect(JSON.stringify(packed)).not.toContain(SECRET);
+    expect(packed.truncated).toBe(true);
+    expect(packed.evidence).toHaveLength(3);
+    expect(packed.source.metadata?.pullRequest).toBeUndefined();
+  });
+
+  test("a secret in the pull request's patch refuses the bead, naming the pull request; with the redact policy it is replaced and counted", async () => {
+    const leaky = `${PATCH}+const key = "${SECRET}";\n`;
+    const arrange = () =>
+      fakeRunner({
+        comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+        extra: withPullRequest({ patch: leaky }),
+      });
+
+    let message = "";
+    try {
+      await pack(arrange(), workspace());
+    } catch (error) {
+      expect(error).toBeInstanceOf(ContextSecurityError);
+      message = error instanceof Error ? error.message : "";
+    }
+    expect(message).toContain(
+      "potential secrets detected in pull request #12; context was not sent",
+    );
+    expect(message).not.toContain(SECRET);
+
+    const packed = await pack(arrange(), workspace(), {
+      secretPolicy: "redact",
+    });
+    expect(JSON.stringify(packed)).not.toContain(SECRET);
+    expect(packed.redactions).toEqual([
+      { kind: "anthropic-api-key", count: 1 },
+    ]);
+    expect(packed.evidence.at(-1)?.content).toContain(
+      "[REDACTED:anthropic-api-key]",
+    );
+  });
+
+  test("a secret that reaches only a listing line refuses the bead, naming the evidence listing", async () => {
+    const fake = fakeRunner({
+      // The external reference is not packed; its URL only becomes a reference line.
+      issue: issue({
+        external_ref: `https://tracker.example/team/repo/pull/8/${SECRET}`,
+      }),
+      extra: withPullRequest(),
+    });
+    await expect(pack(fake, workspace())).rejects.toThrow(
+      "potential secrets detected in the evidence listing",
+    );
+  });
+
+  test("at most ten pull request references are listed; the rest are counted", async () => {
+    const mentions = Array.from(
+      { length: 13 },
+      (_, index) => `https://github.com/other-org/repo-${index + 1}/pull/1`,
+    );
+    const fake = fakeRunner({
+      comments: [comment("2031-01-06T10:00:00Z", mentions.join(" "))],
+      extra: withPullRequest(),
+    });
+    const listing = listingOf(await pack(fake, workspace()));
+    expect(
+      listing.filter((line) => line.startsWith("reference ")),
+    ).toHaveLength(10);
+    expect(listing.at(-1)).toBe(
+      "3 more pull request references: not listed (limit 10)",
+    );
+  });
+});
+
+describe("a bead under the evidence budget", () => {
+  /** A bead with every part: criteria, five comments, description, a plan and a pull request. */
+  function fullBead(): { fake: Fake; root: string } {
+    const root = workspace(
+      Object.fromEntries([
+        runState("kiln-temp", { beadId: BEAD }),
+        ["plans/drafts/kiln-temp.md", `# Plan\n${"plan line\n".repeat(60)}`],
+      ]),
+    );
+    const fake = fakeRunner({
+      issue: issue({ description: "d".repeat(400) }),
+      comments: [1, 2, 3, 4, 5].map((day) =>
+        comment(
+          `2031-01-0${day}T10:00:00Z`,
+          `worklog day ${day}: ${"x".repeat(80)}`,
+        ),
+      ),
+      extra: withPullRequest(),
+    });
+    // The newest comment is the one that names the pull request.
+    fake.runner = ((inner) => async (command, cwd) => {
+      const result = await inner(command, cwd);
+      if (command.join(" ") !== `bd --readonly comments ${BEAD} --json`)
+        return result;
+      const rows = JSON.parse(result.stdout) as Json[];
+      rows.push(
+        comment("2031-01-06T10:00:00Z", `worklog: opened ${prUrl(12)}`),
+      );
+      return ok(JSON.stringify(rows));
+    })(fake.runner);
+    return { fake, root };
+  }
+
+  test("with room for everything, every part is packed whole in the ruled order", async () => {
+    const { fake, root } = fullBead();
+    const packed = await pack(fake, root);
+    expect(packed.truncated).toBe(false);
+    expect(packed.evidence.map((item) => item.title)).toEqual([
+      `bead ${BEAD}: acceptance criteria`,
+      `bead ${BEAD}: latest comments, newest first`,
+      `bead ${BEAD}: description`,
+      "linked plan plans/drafts/kiln-temp.md",
+      "PR #12: Report the kiln temperature",
+    ]);
+  });
+
+  test("when the budget is short, the acceptance criteria and the latest comments survive first: older comments, then the description, the plan and the pull request give way", async () => {
+    const { fake, root } = fullBead();
+    const whole = await pack(fake, root);
+    const criteria = whole.evidence[0]?.byteLength ?? 0;
+    const newestTwo =
+      Buffer.byteLength(
+        "[2031-01-06T10:00:00Z]\nworklog: opened https://github.com/demo-org/kiln-works/pull/12",
+        "utf8",
+      ) +
+      2 +
+      Buffer.byteLength(
+        `[2031-01-05T10:00:00Z]\nworklog day 5: ${"x".repeat(80)}`,
+        "utf8",
+      );
+
+    // Room for the criteria, the two newest comments and 20 bytes more.
+    const again = fullBead();
+    const packed = await pack(again.fake, again.root, {
+      maxBytes: criteria + newestTwo + 20,
+    });
+
+    expect(packed.truncated).toBe(true);
+    expect(sentBytes(packed)).toBeLessThanOrEqual(criteria + newestTwo + 20);
+    expect(packed.evidence[0]?.content).toBe(whole.evidence[0]?.content);
+    expect(packed.evidence[0]?.truncated).toBe(false);
+    expect(packed.evidence[1]?.content).toBe(
+      [
+        "[2031-01-06T10:00:00Z]\nworklog: opened https://github.com/demo-org/kiln-works/pull/12",
+        `[2031-01-05T10:00:00Z]\nworklog day 5: ${"x".repeat(80)}`,
+      ].join("\n\n"),
+    );
+    expect(packed.evidence[1]?.truncated).toBe(true);
+    const listing = listingOf(packed);
+    expect(listing[1]).toContain(
+      "2 of 6 comments, " +
+        `${newestTwo} bytes; 4 left out by the evidence budget`,
+    );
+    // The 20 spare bytes went to the next part in line, the description, cut.
+    expect(packed.evidence[2]?.title).toBe(`bead ${BEAD}: description`);
+    expect(packed.evidence[2]?.byteLength).toBeLessThanOrEqual(20);
+    expect(packed.evidence).toHaveLength(3);
+    expect(listing.slice(3)).toEqual([
+      "linked plan plans/drafts/kiln-temp.md: left out, the evidence budget is spent",
+      "linked research plans/research/kiln-temp.md: missing, not packed",
+      "linked report reports/kiln-temp-ship.md: missing, not packed",
+      "pull request #12: left out, the evidence budget is spent",
+    ]);
+  });
+
+  test("with room for the criteria alone, the criteria are whole and everything else is left out or cut", async () => {
+    const { fake, root } = fullBead();
+    const criteria = (await pack(fake, root)).evidence[0]?.byteLength ?? 0;
+    const again = fullBead();
+    const packed = await pack(again.fake, again.root, { maxBytes: criteria });
+    expect(packed.evidence).toHaveLength(1);
+    expect(packed.evidence[0]?.title).toBe(`bead ${BEAD}: acceptance criteria`);
+    expect(packed.evidence[0]?.content).toContain("Acceptance criteria:\n[ ]");
+    expect(packed.evidence[0]?.truncated).toBe(false);
+    expect(packed.truncated).toBe(true);
+    expect(sentBytes(packed)).toBe(criteria);
+  });
+
+  test("a pull request whose patch is larger than the budget marks the pack incomplete even though its part is cut anyway", async () => {
+    const fake = fakeRunner({
+      comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+      extra: withPullRequest({
+        patch: `${PATCH}${"+// filler line\n".repeat(400)}`,
+      }),
+    });
+    const packed = await pack(fake, workspace(), { maxBytes: 3000 });
+    expect(packed.truncated).toBe(true);
+    expect(sentBytes(packed)).toBeLessThanOrEqual(3000);
+    expect(packed.evidence.at(-1)?.title).toContain("PR #12:");
+    expect(packed.evidence.at(-1)?.truncated).toBe(true);
+  });
+
+  test("an oversized bead stays inside the budget with its acceptance criteria intact", async () => {
+    const fake = fakeRunner({
+      issue: issue({ description: "D".repeat(3_000_000) }),
+      comments: Array.from({ length: 2000 }, (_, index) =>
+        comment(
+          new Date(Date.UTC(2031, 0, 1, 0, index)).toISOString(),
+          `comment ${index} ${"y".repeat(500)}`,
+        ),
+      ),
+    });
+    const packed = await pack(fake, workspace(), { maxBytes: 50_000 });
+    expect(sentBytes(packed)).toBeLessThanOrEqual(50_000);
+    expect(packed.byteLength).toBe(sentBytes(packed));
+    expect(packed.evidence[0]?.truncated).toBe(false);
+    expect(packed.evidence[0]?.content).toContain("Acceptance criteria:");
+    // Comments come before the description: they took whole comments, newest
+    // first, and the description got only the slack after the last whole one.
+    expect(packed.evidence[1]?.content).toStartWith(
+      "[2031-01-02T09:19:00.000Z]\ncomment 1999 ",
+    );
+    expect(packed.evidence[1]?.byteLength).toBeGreaterThan(45_000);
+    expect(packed.evidence.map((item) => item.title).slice(2)).toEqual([
+      `bead ${BEAD}: description`,
+    ]);
+    expect(packed.evidence[2]?.byteLength).toBeLessThan(600);
+    expect(packed.truncated).toBe(true);
+  });
+});

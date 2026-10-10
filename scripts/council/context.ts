@@ -311,6 +311,13 @@ export type ContextPartsInput = {
   locator: string;
   metadata?: ContextSourceMetadata | undefined;
   parts: ContextPart[];
+  /**
+   * True when something that exists could not be captured. The pack is then
+   * marked truncated, so a run on it cannot read as a pass.
+   */
+  incomplete?: boolean | undefined;
+  /** Redactions already made while the parts were gathered. */
+  redactions?: ContextRedaction[] | undefined;
   maxBytes?: number | undefined;
   secretPolicy?: SecretPolicy | undefined;
 };
@@ -375,6 +382,11 @@ export function buildContextPackFromParts(
   const maxBytes = maxBytesFrom(input);
   const policy = input.secretPolicy ?? "reject";
   const found = new Map<string, number>();
+  for (const redaction of input.redactions ?? [])
+    found.set(
+      redaction.kind,
+      (found.get(redaction.kind) ?? 0) + redaction.count,
+    );
   // Everything below reaches a provider or the run record, so everything is
   // scanned, and scanned whole: a label before it is cut, a chunk before the
   // budget can drop or shorten it.
@@ -455,7 +467,7 @@ export function buildContextPackFromParts(
 
   const evidence: EvidenceItem[] = [];
   const listing: string[] = [];
-  let truncated = false;
+  let truncated = input.incomplete === true;
   for (const [index, { part, chunks }] of parts.entries()) {
     const fit = fits[index];
     if (!fit) {
