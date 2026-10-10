@@ -244,7 +244,10 @@ describe("GET /beads/options", () => {
   });
 });
 
+/** How bd times an issue in what it prints for a claim or a close: to the second. */
 const BD_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+/** How bd times a comment: to a fraction of a second. */
+const BD_TIME_FRACTION = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/;
 
 describe("POST /beads/:id/claim", () => {
   test("one bd update --claim, the id after the terminator; the status and assignee bd answered; bead.transitioned with no hash", async () => {
@@ -294,7 +297,8 @@ describe("POST /beads/:id/comment", () => {
       comment: {
         id: expect.any(String),
         author: "operator",
-        createdAt: expect.stringMatching(BD_TIME),
+        // A comment is timed to a fraction of a second; an issue to the second.
+        createdAt: expect.stringMatching(BD_TIME_FRACTION),
       },
       recorded: true,
     });

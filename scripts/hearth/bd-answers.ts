@@ -12,8 +12,11 @@
  * - a refusal exits 1, and says why on stderr (`create`, `update`) or as
  *   `{ "error": … }` on stdout with nothing on stderr (`close`, `comments`).
  *
- * Times are built when the answer is, at whole seconds, as bd prints them: a
- * canned `closed_at` would always be older than the call it answers.
+ * Times are built when the answer is: a canned `closed_at` would always be
+ * older than the call it answers. In what bd prints for a claim or a close an
+ * issue is timed to the second (`bdTime`); a comment is timed to a fraction
+ * of one. Checked against a tracker in server mode on 2026-10-10, through the
+ * routes: the same shapes as the embedded one these were captured from.
  */
 
 import type { BdResult } from "./routes/dev-api";

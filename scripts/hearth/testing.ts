@@ -84,7 +84,8 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
       issueId: write.id,
       author: "operator",
       text: write.text,
-      createdAt: now,
+      // bd times a comment to a fraction of a second, an issue to the second.
+      createdAt: new Date().toISOString(),
     });
   const known: BdIssue = bd.issues.get(write.id) ?? {
     id: write.id,
