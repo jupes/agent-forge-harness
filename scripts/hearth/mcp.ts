@@ -190,7 +190,7 @@ export const FORGE_TOOLS: readonly ForgeTool[] = [
     name: "forge_council_start",
     authority: "operator",
     scope: "checkout",
-    description: `${OPERATOR_ONLY} Start a council review on the hearth, recorded as an operator action. sourceType: file, plan, pr or text.`,
+    description: `${OPERATOR_ONLY} Start a council review on the hearth, recorded as an operator action. sourceType: file, plan, pr, text or bead.`,
     input: z.strictObject({
       sourceType: z.string(),
       source: z.string(),
@@ -251,6 +251,8 @@ export interface LoopbackRequest {
   signal?: AbortSignal;
   timeoutMs: number;
   maxBytes: number;
+  /** How long a body over 64 kB is held back after the head; `EARLY_ANSWER_MS` when not given. */
+  holdBodyMs?: number;
 }
 
 export interface LoopbackAnswer {
@@ -260,7 +262,12 @@ export interface LoopbackAnswer {
 
 export type Exchange = (request: LoopbackRequest) => Promise<LoopbackAnswer>;
 
-/** A body up to this size is written with the head; a larger one waits `EARLY_ANSWER_MS` for a refusal given on the head alone. */
+/**
+ * A body up to this size is written with the head; a larger one waits
+ * `EARLY_ANSWER_MS` for a refusal given on the head alone. A wait, not a
+ * guarantee: a peer slower than that to refuse has its refusal lost as before,
+ * and every large request that is accepted takes that much longer.
+ */
 const BODY_WITH_HEAD_BYTES = 65_536;
 const EARLY_ANSWER_MS = 100;
 const HEAD_END = Buffer.from("\r\n\r\n");
@@ -436,7 +443,10 @@ export const loopbackExchange: Exchange = (request) =>
       // written to a peer that has stopped reading, the body would have that
       // answer discarded on the way back.
       socket.write(head);
-      bodyTimer = setTimeout(() => socket.write(payload), EARLY_ANSWER_MS);
+      bodyTimer = setTimeout(
+        () => socket.write(payload),
+        request.holdBodyMs ?? EARLY_ANSWER_MS,
+      );
     });
     socket.on("data", (chunk: Buffer) => {
       size += chunk.byteLength;
@@ -982,6 +992,10 @@ export function serveHearthMcp(
   options: Omit<HearthMcpOptions, "gone" | "keepCouncilOpen">,
 ): StdioServerHandle {
   const gone = new AbortController();
+  // A client that has died reads this server's errors no more than its
+  // answers. A line that cannot be written must not end the process: the
+  // council's own work would end with it, unrecorded.
+  process.stderr.on("error", () => {});
   const build = (): Promise<Server> =>
     createHearthMcpServer({
       ...options,
@@ -1013,10 +1027,13 @@ export function serveHearthMcp(
     },
     {
       // What it says comes from the message that could not be handled, never
-      // from anything this server holds; one bounded line. A schema failure
-      // reports every way the message was wrong as JSON: its name is enough.
+      // from anything this server holds. One bounded line of printable ASCII:
+      // the text may be the client's own. A schema failure reports every way
+      // the message was wrong as JSON: its name is enough.
       onerror: (error) => {
-        const text = error.message.replace(/\s+/g, " ");
+        const text = error.message
+          .replace(/\s+/g, " ")
+          .replace(/[^\x20-\x7e]/g, "?");
         process.stderr.write(
           `hearth:mcp: ${error.name}: ${/^[[{]/.test(text) ? "a message that is not a valid request" : text.slice(0, 200)}\n`,
         );

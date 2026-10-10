@@ -167,6 +167,8 @@ interface SessionOptions {
   council?: (() => CouncilServer) | null;
   requestTimeoutMs?: number;
   gone?: AbortSignal;
+  /** Hold a large body back this long instead of the exchange's own 100 ms. */
+  holdBodyMs?: number;
 }
 
 async function session(
@@ -183,7 +185,11 @@ async function session(
       headers: { ...request.headers },
       ...(request.body !== undefined ? { body: request.body } : {}),
     });
-    return loopbackExchange(request);
+    return loopbackExchange(
+      options.holdBodyMs === undefined
+        ? request
+        : { ...request, holdBodyMs: options.holdBodyMs },
+    );
   };
   const server = await createHearthMcpServer({
     root: place.root,
@@ -2834,20 +2840,68 @@ describe("the server as a process, over stdio", () => {
       expect(server.stdout()).not.toContain(hearth.hearth.token);
       expect(server.stderr()).not.toContain(hearth.hearth.token);
     }
-    // The first line says which kind of session this is. The one that was sent
-    // lines it could not take says so, a line each, and repeats none of them.
+    // The first line says which kind of session this is. What it could not
+    // take is reported a line each: bounded, and nothing but printable ASCII,
+    // whatever the client put in the message.
     const [first, ...rest] = agent.stderr().trim().split("\n");
     expect(first).toMatch(/^hearth:mcp: serving .* as an agent session/);
     expect(rest.length).toBeGreaterThan(0);
     for (const line of rest) {
       expect(line).toMatch(/^hearth:mcp: \w+: /);
       expect(line.length).toBeLessThan(260);
-      expect(line).not.toContain("this is not json");
+      expect(line).toMatch(/^[\x20-\x7e]*$/);
     }
     expect(operator.stderr().trim().split("\n")).toEqual([
       expect.stringMatching(/^hearth:mcp: serving .* as an operator session/),
     ]);
   }, 60_000);
+
+  test("what it reports of a message it cannot take is one bounded line of printable ASCII, whatever the client put in the message", async () => {
+    const where = emptyPlace();
+    const server = spawnServer("bun", [ENTRY, "--root", where.root], {
+      env: serverEnv(where.home),
+    });
+    // A protocol revision 5,000 characters long that begins with a terminal
+    // escape and holds a line break: the entry names what it was asked for.
+    const esc = String.fromCharCode(27);
+    server.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": `${esc}[31mRED\nsecond line ${"v".repeat(5000)}`,
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    );
+    for (
+      let attempt = 0;
+      attempt < 800 &&
+      !server.stderr().includes("Unsupported protocol version");
+      attempt++
+    )
+      await new Promise((done) => setTimeout(done, 10));
+    const lines = server.stderr().trim().split("\n");
+    const reported = lines.filter((line) =>
+      line.includes("Unsupported protocol version"),
+    );
+    expect(reported.length).toBe(1);
+    for (const line of lines) {
+      expect(line).toMatch(/^hearth:mcp: /);
+      expect(line.length).toBeLessThan(400);
+      expect(line).toMatch(/^[\x20-\x7e]*$/);
+    }
+    expect(reported[0]?.length).toBeLessThan(260);
+    // It goes on serving.
+    await greeted(server);
+    expect(toolNames(await server.ask("tools/list")).length).toBeGreaterThan(
+      FORGE_TOOLS.length,
+    );
+    expect(await server.end()).toBe(0);
+  }, 30_000);
 
   test("an argument it does not know stops it with exit code 2 and nothing on stdout", async () => {
     const where = emptyPlace();
@@ -3144,7 +3198,13 @@ describe("a body the hearth will not read", () => {
 
   test("a refusal the hearth gives before it has read a large body comes back as the hearth's refusal", async () => {
     const hearth = await stocked();
-    const operator = await session(place(hearth), { operator: true });
+    // The hold-back is a wait, 100 ms by default. Here it is given three
+    // seconds, so that a slow machine tests the mechanism and not its own load:
+    // a refusal on the head ends the exchange at once, whatever the wait.
+    const operator = await session(place(hearth), {
+      operator: true,
+      holdBodyMs: 3000,
+    });
     const foreign = "d".repeat(64);
     tokens.add(foreign);
     writeFileSync(tokenPath(hearth.home, hearth.root), `${foreign}\n`);
@@ -3371,6 +3431,181 @@ describe("three processes: a hearth, an agent server and an operator server", ()
     expect(await agent.end()).toBe(0);
     expect(await operator.end()).toBe(0);
   }, 90_000);
+});
+
+describe("what the second review found", () => {
+  test("a body over 64 kB that the hearth accepts arrives whole, once, and its run starts", async () => {
+    const { hearth, effects } = await probed();
+    const operator = await session(place(hearth), { operator: true });
+    const source = `Evaluate this plan. ${"Grüße, 計画. ".repeat(9_000)}`;
+    expect(Buffer.byteLength(source)).toBeGreaterThan(100_000);
+
+    const answer = await operator.call("forge_council_start", {
+      sourceType: "text",
+      source,
+      runId: "large-accepted",
+    });
+    expect({ ok: answer.envelope.ok, error: answer.envelope.error }).toEqual({
+      ok: true,
+      error: null,
+    });
+    // One request, with the whole body; what the effect was handed is what was sent.
+    const posts = operator.sent.filter((request) => request.method === "POST");
+    expect(posts.length).toBe(1);
+    expect(
+      effects.map((call) => (call.input as { source: string }).source),
+    ).toEqual([source]);
+    expect(
+      hearth.events(["operator.action"]).map((event) => event.payload),
+    ).toEqual([
+      { action: "council.run.start", surface: "mcp", target: "large-accepted" },
+    ]);
+    await runFinished(hearth.hearth.url, "large-accepted");
+  }, 30_000);
+
+  test("a refusal on the head arrives when it comes within the time a large body is held back", async () => {
+    // A peer that refuses 150 ms after the head arrives and closes, whatever
+    // else it is sent; it counts what it received.
+    let received = 0;
+    const refusing = createTcpServer((socket) => {
+      socket.on("error", () => {});
+      socket.on("data", (chunk: Buffer) => {
+        received += chunk.byteLength;
+      });
+      socket.once("data", () =>
+        setTimeout(
+          () =>
+            socket.end(
+              'HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\n"refused"',
+            ),
+          150,
+        ),
+      );
+    });
+    await new Promise<void>((done) => refusing.listen(0, "127.0.0.1", done));
+    cleanup.push(
+      () => new Promise<void>((done) => refusing.close(() => done())),
+    );
+    const port = (refusing.address() as AddressInfo).port;
+    const body = "z".repeat(600_000);
+
+    // Held back for longer than the peer takes: the refusal is read, and the
+    // peer was sent the head and nothing of the body.
+    expect(
+      await outcome(
+        loopbackExchange(ask(port, { method: "POST", body, holdBodyMs: 1500 })),
+      ),
+    ).toEqual({ status: 403, body: '"refused"' });
+    expect(received).toBeLessThan(1000);
+  });
+});
+
+/** The real serve function with a council whose own work leaves a file behind when it ends. */
+const markerScript = `
+import { writeFileSync } from "node:fs";
+import { McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
+import { serveHearthMcp } from "./scripts/hearth/mcp";
+const mark = (text) => writeFileSync(process.env.MCP_TEST_MARKER ?? "", text, { flag: "a" });
+process.on("exit", (code) => mark("exit " + code + "\\n"));
+serveHearthMcp({
+  root: process.env.MCP_TEST_ROOT ?? "",
+  operator: false,
+  council: () => {
+    const server = new McpServer({ name: "stand-in", version: "0" });
+    let work;
+    server.registerTool("council_begin", { inputSchema: z.object({}) }, async () => {
+      work = setTimeout(() => mark("background work finished\\n"), 1500);
+      mark("background work begun\\n");
+      return { content: [] };
+    });
+    server.registerTool("council_hang", { inputSchema: z.object({}) }, async () => {
+      mark("entered council_hang\\n");
+      await new Promise(() => {});
+      return { content: [] };
+    });
+    const close = server.close.bind(server);
+    server.close = async () => {
+      clearTimeout(work);
+      mark("COUNCIL CLOSED\\n");
+      await close();
+    };
+    return server;
+  },
+});
+`;
+
+describe("a client that dies with all three of its pipes", () => {
+  test("with a call still waiting: the server does not crash on its own report of that, and what the council began runs to its end", async () => {
+    const where = emptyPlace();
+    const marker = join(where.home, "marker.txt");
+    const child = spawn("bun", ["-e", markerScript], {
+      cwd: REPO,
+      env: serverEnv(where.home, {
+        MCP_TEST_ROOT: where.root,
+        MCP_TEST_MARKER: marker,
+      }),
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    child.stdout?.on("data", () => {});
+    child.stderr?.on("data", () => {});
+    const exited = new Promise<number | string | null>((done) =>
+      child.once("exit", (code, signal) => done(code ?? signal)),
+    );
+    cleanup.push(async () => {
+      child.kill();
+      await exited;
+    });
+    const marks = (): string =>
+      existsSync(marker) ? readFileSync(marker, "utf8") : "";
+    const send = (message: unknown): void =>
+      void child.stdin?.write(`${JSON.stringify(message)}\n`);
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: HELLO });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "council_begin", arguments: {} },
+    });
+    send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "council_hang", arguments: {} },
+    });
+    await until(
+      () =>
+        marks().includes("background work begun") &&
+        marks().includes("entered council_hang"),
+      "both calls arrived",
+    );
+
+    // Nothing reads its output or its errors any more, and its input ends.
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.stdin?.end();
+
+    expect(
+      await Promise.race([
+        exited,
+        new Promise<string>((done) =>
+          setTimeout(() => done("still running"), 8000),
+        ),
+      ]),
+    ).toBe(0);
+    expect(
+      marks()
+        .split("\n")
+        .filter((line) => line.length > 0),
+    ).toEqual([
+      "background work begun",
+      "entered council_hang",
+      "background work finished",
+      "exit 0",
+    ]);
+  }, 30_000);
 });
 
 describe("the instruction files", () => {
