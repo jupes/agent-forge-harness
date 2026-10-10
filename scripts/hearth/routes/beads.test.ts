@@ -1328,3 +1328,30 @@ describe("no body text reaches the ledger", () => {
     ]);
   });
 });
+
+describe("the id bd prints for a create", () => {
+  test("is taken only when it is a Beads id the ledger would store: anything else is an unconfirmed create, with no event under that name", async () => {
+    const h = await start();
+    const printedIds: unknown[] = [
+      "--force",
+      "demo task",
+      "",
+      `ghp_${"a1B2c3D4e5".repeat(4)}`,
+      7,
+      null,
+    ];
+    for (const id of printedIds) {
+      h.bd.answer = () => ({
+        status: 0,
+        stdout: JSON.stringify({ id, status: "open" }),
+        stderr: "",
+      });
+      const answer = await post(h, "/beads", { title: "A bead" });
+      expect({ id, status: answer.status }).toEqual({ id, status: 504 });
+      expect(answer.body.error).toContain("exited 0 but did not confirm");
+      expect(answer.body.error).toContain("bd list");
+    }
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+    expect(h.events(["operator.action"])).toHaveLength(printedIds.length);
+  });
+});
