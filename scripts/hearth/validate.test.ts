@@ -585,4 +585,13 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     expect(awaitsApproval({ from: null, to: "proposed" })).toBe(true);
     expect(awaitsApproval({ action: "create" })).toBe(false);
   });
+  test("the form is decided by whether action is there at all, not by what it holds: a queue transition cannot carry one of any kind", () => {
+    for (const action of [7, null, false, "", {}, ["create"]]) {
+      const payload = { from: null, to: "proposed", action };
+      expect({ action, refusal: refusal(payload) }).toEqual({
+        action,
+        refusal: expect.stringContaining("payload."),
+      });
+    }
+  });
 });

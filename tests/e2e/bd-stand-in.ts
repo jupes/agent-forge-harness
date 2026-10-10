@@ -10,7 +10,8 @@
  * - answers the four writes the Beads routes make in the shapes bd prints
  *   (`scripts/hearth/bd-answers.ts`, the same module the unit tests use);
  * - refuses what bd refuses: a parent or an id it does not know, a claim of a
- *   closed issue; and leaves an already closed issue as it was, exiting 0;
+ *   closed issue; and leaves an issue that is already closed, or already
+ *   claimed, as it was, exiting 0;
  * - answers `list` with an empty list, and exits 2 for anything else.
  *
  * Both files live in the directory `BD_STAND_IN_STATE` names: the run's own
@@ -100,6 +101,8 @@ function answer(): Printed {
       return bdAnswers.refusedOnStderr(
         `claiming ${write.id}: issue not claimable: status closed`,
       );
+    // Claiming an issue this actor already holds changes nothing: bd prints it as it is.
+    if (issue.status === "in_progress") return bdAnswers.claimed(issue);
     return bdAnswers.claimed(
       save({
         ...issue,

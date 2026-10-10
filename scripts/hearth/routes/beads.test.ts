@@ -844,7 +844,8 @@ describe("the size of a request", () => {
   test("a create at its own limits in three-byte characters is accepted; a body over the row's cap is refused", async () => {
     const h = await start();
     const atLimits = {
-      title: THREE_BYTES.repeat(200),
+      // 498 bytes: a title is also held to the 500 bytes bd itself accepts.
+      title: THREE_BYTES.repeat(166),
       description: THREE_BYTES.repeat(4000),
       acceptance: THREE_BYTES.repeat(2000),
     };
@@ -1357,5 +1358,310 @@ describe("the id bd prints for a create", () => {
     }
     expect(h.events(["bead.transitioned"])).toEqual([]);
     expect(h.events(["operator.action"])).toHaveLength(printedIds.length);
+  });
+});
+
+describe("a call with no exit status", () => {
+  // Review round 1 of the implementation, measured with a real bd: bd prints
+  // warnings on stderr, and a warning can hold any word. Only the runtime's own
+  // message for a program that is not there means the call never started.
+  const killed = (stderr: string): BdResult => ({
+    status: null,
+    stdout: "",
+    stderr,
+  });
+
+  test("is an unknown outcome whenever its stderr is bd's own, whatever words that holds", async () => {
+    const h = await start();
+    const ownOutput = [
+      '⚠ Creating test issue in production database\n  Title: "Test ENOENT sweep 12" appears to be test data\n',
+      'warning: hook: Executable not found in $PATH: "git-lfs"\n',
+      'Executable not found in $PATH: "bd"\nand then something else',
+      "spawn bd ENOENT (printed by a hook, not by the runtime)",
+      "Error: ENOENT: no such file or directory, open '.beads/metadata.json'\n",
+    ];
+    for (const stderr of ownOutput) {
+      h.bd.answer = () => killed(stderr);
+      for (const attempt of ATTEMPTS) {
+        const answer = await post(h, attempt.path, attempt.body);
+        const where = `${attempt.verb}: ${stderr.slice(0, 30)}`;
+        expect({ where, status: answer.status }).toEqual({
+          where,
+          status: 504,
+        });
+        expect(answer.body.error).toContain("may still have been made");
+        expect(answer.body.error).not.toContain("Nothing was changed");
+      }
+    }
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+  });
+
+  test("is 'bd could not be started' only for the runtime's own message that there is no such program, and nothing else", async () => {
+    const h = await start();
+    for (const stderr of [
+      'Executable not found in $PATH: "bd"',
+      "spawn bd ENOENT",
+      "spawn bd ENOENT\n",
+    ]) {
+      h.bd.answer = () => killed(stderr);
+      const answer = await post(h, "/beads", { title: "A bead" });
+      expect({ stderr, status: answer.status }).toEqual({
+        stderr,
+        status: 502,
+      });
+      expect(answer.body.error).toContain("could not be started");
+      expect(answer.body.error).toContain("Nothing was changed");
+    }
+    // A program that printed something had started.
+    h.bd.answer = () => ({
+      status: null,
+      stdout: "{",
+      stderr: 'Executable not found in $PATH: "bd"',
+    });
+    expect((await post(h, "/beads", { title: "A bead" })).status).toBe(504);
+  });
+});
+
+describe("what a refusal says", () => {
+  test("is bd's error line, not everything bd printed: a warning that repeats the title is not passed on", async () => {
+    const h = await start();
+    h.bd.answer = () => ({
+      status: 1,
+      stdout: "",
+      stderr: `⚠ Creating test issue in production database\n  Title: "Test ${MARKER}" appears to be test data\n  Recommendation: Use isolated test database with --db\n    bd --db /tmp/test-beads create "Test ${MARKER}"\nError: parent issue demo-nope not found\n`,
+    });
+    const answer = await post(h, "/beads", {
+      title: `Test ${MARKER}`,
+      parent: "demo-nope",
+    });
+    expect(answer.status).toBe(502);
+    expect(answer.body.error).toBe(
+      "bd create failed: parent issue demo-nope not found",
+    );
+  });
+
+  test("with no line that begins Error:, is the last line bd printed", async () => {
+    const h = await start();
+    h.bd.answer = () => ({
+      status: 1,
+      stdout: "",
+      stderr: `a first line holding ${MARKER}\n\nissue not claimable: status closed\n\n`,
+    });
+    const answer = await post(h, "/beads/demo-task/claim", {});
+    expect(answer.body.error).toBe(
+      "bd update --claim failed: issue not claimable: status closed",
+    );
+  });
+
+  test("is made safe: a secret in bd's error is redacted and a long one is cut", async () => {
+    const h = await start();
+    const secret = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    h.bd.answer = () => bdAnswers.refusedOnStderr(`remote said ${secret}`);
+    const refused = await post(h, "/beads/demo-task/claim", {});
+    expect(refused.status).toBe(502);
+    expect(refused.body.error).not.toContain(secret);
+    expect(refused.body.error).toContain("remote said");
+
+    h.bd.answer = () => bdAnswers.refusedOnStderr("x".repeat(5000));
+    const long = await post(h, "/beads/demo-task/claim", {});
+    expect(long.body.error?.length).toBeLessThanOrEqual(500);
+  });
+
+  test("the reason the ledger gave for not recording is made safe too", async () => {
+    const secret = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    let ledger = "";
+    const h = await start({
+      api: {
+        appendEvent: (event) =>
+          event.kind === "bead.transitioned"
+            ? { ok: false, error: `refused for ${secret}` }
+            : appendEvent(event, { path: ledger }),
+      },
+    });
+    ledger = h.ledger;
+    const answer = await post(h, "/beads/demo-task/claim", {});
+    expect(answer.status).toBe(200);
+    expect(answer.body.data?.recorded).toBe(false);
+    expect(answer.body.data?.recordError).toContain("refused for");
+    expect(answer.body.data?.recordError).not.toContain(secret);
+  });
+});
+
+describe("what a confirmed write answers", () => {
+  test("the labels bd printed, for a create and for a claim: a child inherits its parent's", async () => {
+    const h = await start();
+    h.bd.answer = (args) =>
+      args[0] === "create"
+        ? bdAnswers.created(
+            anIssue({ id: "demo-epic.1", labels: ["area", "queue:approved"] }),
+          )
+        : bdAnswers.claimed(
+            anIssue({
+              id: "demo-epic.1",
+              status: "in_progress",
+              assignee: "operator",
+              labels: ["area", "queue:approved"],
+            }),
+          );
+    const created = await post(h, "/beads", {
+      title: "A child",
+      parent: "demo-epic",
+    });
+    expect(created.body.data?.labels).toEqual(["area", "queue:approved"]);
+    const claimed = await post(h, "/beads/demo-epic.1/claim", {});
+    expect(claimed.body.data?.labels).toEqual(["area", "queue:approved"]);
+    // The answer shows them; the ledger does not take them.
+    expect(JSON.stringify(h.events())).not.toContain("queue:approved");
+  });
+
+  test("the length on the outcome event counts the text as the limits do, in UTF-16 units", async () => {
+    const h = await start();
+    const text = `caf${String.fromCodePoint(0xe9)} ${THREE_BYTES}${THREE_BYTES} ${String.fromCodePoint(0x1f600)}`;
+    expect(text.length).not.toBe(Buffer.byteLength(text));
+    await post(h, "/beads/demo-task/comment", { text });
+    expect(h.events(["bead.transitioned"]).at(-1)?.payload).toEqual({
+      action: "comment",
+      hash: hashText(text),
+      length: text.length,
+    });
+  });
+});
+
+describe("a close, timed", () => {
+  const reason = "Verified today";
+
+  test("with no closing time printed is taken on its reason alone", async () => {
+    const h = await start();
+    h.bd.answer = () =>
+      bdAnswers.closed(anIssue({ status: "closed", close_reason: reason }));
+    const answer = await post(h, "/beads/demo-task/close", { reason });
+    expect(answer.status).toBe(200);
+    expect(h.events(["bead.transitioned"])).toHaveLength(1);
+  });
+
+  test("is timed against when the call began, not when bd answered: a slow bd does not turn a close into 'already closed'", async () => {
+    const h = await start();
+    h.bd.answer = async () => {
+      const closedAt = bdTime();
+      await new Promise((done) => setTimeout(done, 3100));
+      return bdAnswers.closed(
+        anIssue({
+          status: "closed",
+          close_reason: reason,
+          closed_at: closedAt,
+        }),
+      );
+    };
+    const answer = await post(h, "/beads/demo-task/close", { reason });
+    expect(answer.status).toBe(200);
+    expect(h.events(["bead.transitioned"])).toHaveLength(1);
+  }, 10_000);
+});
+
+describe("a claim of a bead that was already claimed", () => {
+  // bd's claim is idempotent for the same actor: it exits 0 and prints the
+  // issue as it was, with the time of its last change.
+  test("is told by a last change from before the call began: 409, and no claim is recorded", async () => {
+    const h = await start();
+    h.bd.answer = () =>
+      bdAnswers.claimed(
+        anIssue({
+          status: "in_progress",
+          assignee: "operator",
+          updated_at: bdTime(new Date(Date.now() - 10_000)),
+        }),
+      );
+    const answer = await post(h, "/beads/demo-task/claim", {});
+    expect(answer.status).toBe(409);
+    expect(answer.body.error).toContain("already claimed");
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+    expect(h.events(["operator.action"])).toHaveLength(1);
+    expect(h.bd.calls.length).toBe(1);
+  });
+
+  test("a claim bd timed within the second it rounds to, or did not time, is this call's", async () => {
+    const h = await start();
+    for (const updated of [bdTime(new Date(Date.now() - 999)), undefined]) {
+      const { updated_at: _dropped, ...untimed } = anIssue({
+        status: "in_progress",
+        assignee: "operator",
+      });
+      h.bd.answer = () =>
+        updated === undefined
+          ? { status: 0, stdout: JSON.stringify([untimed]), stderr: "" }
+          : bdAnswers.claimed({
+              ...untimed,
+              updated_at: bdTime(new Date(Date.now() - 999)),
+            });
+      expect((await post(h, "/beads/demo-task/claim", {})).status).toBe(200);
+    }
+    expect(h.events(["bead.transitioned"])).toHaveLength(2);
+  });
+});
+
+describe("a text must say something", () => {
+  const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
+  const WORD_JOINER = String.fromCodePoint(0x2060);
+  const NO_BREAK_SPACE = String.fromCodePoint(0xa0);
+  const nothing = [
+    ZERO_WIDTH_SPACE,
+    `${ZERO_WIDTH_SPACE}${ZERO_WIDTH_SPACE}`,
+    ` ${ZERO_WIDTH_SPACE}\n${WORD_JOINER}\t`,
+    NO_BREAK_SPACE,
+  ];
+
+  test("a reason, a comment or a title made only of spaces and characters nobody can see is refused", async () => {
+    const h = await start();
+    await refusedBeforeAnything(
+      h,
+      nothing.flatMap((text): Refusal[] => [
+        ["a close reason", "/beads/demo-task/close", { reason: text }],
+        ["a comment", "/beads/demo-task/comment", { text }],
+        ["a title", "/beads", { title: text }],
+      ]),
+    );
+  });
+
+  test("a description or an acceptance text made only of those is left out, as a blank one is", async () => {
+    const h = await start();
+    for (const text of nothing) {
+      const answer = await post(h, "/beads", {
+        title: "A bead",
+        description: text,
+        acceptance: text,
+      });
+      expect(answer.status).toBe(201);
+      expect(h.bd.calls.at(-1)).toEqual([
+        "create",
+        "--title=A bead",
+        "--type=task",
+        "--priority=2",
+        "--json",
+      ]);
+    }
+  });
+
+  test("a text that holds something to read is passed on with what surrounds it", async () => {
+    const h = await start();
+    const text = `${ZERO_WIDTH_SPACE}done${ZERO_WIDTH_SPACE}`;
+    expect(
+      (await post(h, "/beads/demo-task/close", { reason: text })).status,
+    ).toBe(200);
+    expect(h.bd.calls.at(-1)?.[1]).toBe(`--reason=${text}`);
+  });
+});
+
+describe("the title limit is bd's as well", () => {
+  test("a title of 200 characters that is more than 500 bytes is refused here, as bd would refuse it", async () => {
+    const h = await start();
+    const tooManyBytes = THREE_BYTES.repeat(167);
+    expect(tooManyBytes.length).toBeLessThan(200);
+    expect(Buffer.byteLength(tooManyBytes)).toBe(501);
+    await refusedBeforeAnything(h, [
+      ["501 bytes in 167 characters", "/beads", { title: tooManyBytes }],
+    ]);
+    const fits = THREE_BYTES.repeat(166);
+    expect((await post(h, "/beads", { title: fits })).status).toBe(201);
+    expect(h.bd.calls.at(-1)?.[1]).toBe(`--title=${fits}`);
   });
 });

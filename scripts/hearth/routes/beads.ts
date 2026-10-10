@@ -120,6 +120,17 @@ const CONTROL_IN_A_TEXT = /[^\P{Cc}\n\t]/u;
 /** What a one-line title may not hold: a control character, a line or paragraph separator, a bidirectional control. */
 const NOT_IN_A_TITLE = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/u;
 
+/** Whitespace, and the format characters nobody can see (a zero-width space, a word joiner). */
+const NOTHING_TO_READ = /[\s\p{Cf}]/gu;
+
+/** Whether a text holds anything a reader would see. */
+function saysSomething(text: string): boolean {
+  return text.replace(NOTHING_TO_READ, "").length > 0;
+}
+
+/** What bd itself accepts for a title: 500 bytes. */
+const BD_TITLE_BYTES = 500;
+
 /** The body, when it is an object that holds nothing but the fields its row takes. */
 function fields(
   request: RouteRequest,
@@ -141,7 +152,7 @@ function fields(
 
 /**
  * A text as it will be handed to `bd`: as given, once CR LF is LF. Absent, or
- * nothing but whitespace, is no text: `undefined`.
+ * one that says nothing, is no text: `undefined`.
  */
 function textOf(
   name: string,
@@ -157,7 +168,7 @@ function textOf(
     return fail(
       `${name}: control characters other than newline and tab are not accepted`,
     );
-  if (text.trim().length === 0) return { ok: true, value: undefined };
+  if (!saysSomething(text)) return { ok: true, value: undefined };
   return text.length > limit
     ? fail(`${name}: at most ${limit} characters`)
     : { ok: true, value: text };
@@ -167,13 +178,16 @@ function titleOf(value: unknown): ValidationResult<string> {
   if (typeof value !== "string" || LONE_SURROGATE.test(value))
     return fail("title: a bead needs a title, as text");
   const title = value.trim();
-  if (title.length === 0) return fail("title: a bead needs a title");
+  if (!saysSomething(title)) return fail("title: a bead needs a title");
   if (NOT_IN_A_TITLE.test(title))
     return fail(
       "title: one line, with no control or bidirectional-control characters",
     );
-  return title.length > BEAD_TEXT_LIMITS.title
-    ? fail(`title: at most ${BEAD_TEXT_LIMITS.title} characters`)
+  if (title.length > BEAD_TEXT_LIMITS.title)
+    return fail(`title: at most ${BEAD_TEXT_LIMITS.title} characters`);
+  // bd counts a title in bytes and refuses one over its own limit; so does this.
+  return Buffer.byteLength(title, "utf8") > BD_TITLE_BYTES
+    ? fail(`title: at most ${BD_TITLE_BYTES} bytes, which is bd's own limit`)
     : { ok: true, value: title };
 }
 
@@ -353,16 +367,38 @@ function described(issue: Record<string, unknown>, id: string): Confirmed {
   };
 }
 
-/** The issue `bd update --claim --json` printed, when it is now in progress. */
-function claimed(stdout: string): Confirmed | null {
-  const printed = oneIssue(stdout);
-  return printed !== null && printed.issue["status"] === "in_progress"
-    ? described(printed.issue, printed.id)
-    : null;
+/**
+ * bd times an issue to the second, on the clock this control plane shares with
+ * its tracker: a change timed up to this long before a call began is that
+ * call's.
+ */
+const BD_TIME_SLACK_MS = 2000;
+
+/** Whether the time bd printed under `key` is from before the call began. A time that is absent says nothing. */
+function fromBefore(
+  issue: Record<string, unknown>,
+  key: string,
+  began: number,
+): boolean {
+  const at = Date.parse(String(issue[key] ?? ""));
+  return !Number.isNaN(at) && at < began - BD_TIME_SLACK_MS;
 }
 
-/** bd prints whole seconds, so a close timed up to this long before the call began is this call's. */
-const CLOSE_TIME_SLACK_MS = 2000;
+/**
+ * The issue `bd update --claim --json` printed, when this call claimed it.
+ *
+ * A claim of an issue the same actor already holds exits 0 too: bd prints the
+ * issue as it was. Its last change is then from before the call began, and
+ * nothing was claimed by this call.
+ */
+function claimed(stdout: string, began: number): Confirmed | Conflict | null {
+  const printed = oneIssue(stdout);
+  if (printed === null || printed.issue["status"] !== "in_progress")
+    return null;
+  return fromBefore(printed.issue, "updated_at", began)
+    ? { conflict: `${printed.id} was already claimed; nothing was changed` }
+    : described(printed.issue, printed.id);
+}
 
 /**
  * The issue `bd close --json` printed, when this call closed it.
@@ -377,10 +413,9 @@ const closed =
   (stdout: string, began: number): Confirmed | Conflict | null => {
     const printed = oneIssue(stdout);
     if (printed === null || printed.issue["status"] !== "closed") return null;
-    const closedAt = Date.parse(String(printed.issue["closed_at"] ?? ""));
     const earlier =
       printed.issue["close_reason"] !== reason ||
-      (!Number.isNaN(closedAt) && closedAt < began - CLOSE_TIME_SLACK_MS);
+      fromBefore(printed.issue, "closed_at", began);
     return earlier
       ? {
           conflict: `${printed.id} was already closed; nothing was changed, and the reason it was closed with stands`,
@@ -423,6 +458,23 @@ interface Write {
 }
 
 /**
+ * bd's error line out of what it printed on stderr: the last line that begins
+ * `Error`, else the last line. Not the whole output: before it refuses, bd can
+ * print a warning that repeats the title it was given.
+ */
+function errorLine(output: string): string {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const error =
+    [...lines].reverse().find((line) => /^Error\b/.test(line)) ??
+    lines.at(-1) ??
+    "";
+  return error.replace(/^Error:\s*/, "");
+}
+
+/**
  * Why bd refused, in bd's own words. With `--json` some commands print the
  * error on stdout and nothing on stderr; the runner then fills stderr with its
  * own line, `Command failed: bd <every argument>`, which repeats the text that
@@ -433,16 +485,29 @@ function refusal(result: BdResult): string {
   if (isRecord(printed) && typeof printed["error"] === "string")
     return printed["error"].trim() || `exit ${result.status}`;
   const said = result.stderr.trim();
-  return said.length > 0 && !said.startsWith("Command failed:")
-    ? said.replace(/^Error:\s*/, "")
-    : `exit ${result.status}`;
+  return (
+    (said.startsWith("Command failed:") ? "" : errorLine(said)) ||
+    `exit ${result.status}`
+  );
 }
 
-/** Whether a call with no exit status never became a process at all. */
+/** What the runtime itself says, in full, when there is no program named bd to start. */
+const NO_SUCH_PROGRAM = [
+  /^Executable not found in \$PATH: "bd"$/,
+  /^spawn bd ENOENT$/,
+];
+
+/**
+ * Whether a call with no exit status never became a process at all. Only the
+ * runtime's own message, whole and alone, says so: a bd that started prints
+ * warnings of its own, and a warning can hold any word, the title it was given
+ * included. Anything else with no exit status is an outcome nobody knows.
+ */
 function neverStarted(result: BdResult): boolean {
+  const said = result.stderr.trim();
   return (
-    !result.stderr.startsWith("Command failed:") &&
-    /ENOENT|Executable not found/.test(result.stderr)
+    result.stdout === "" &&
+    NO_SUCH_PROGRAM.some((message) => message.test(said))
   );
 }
 
