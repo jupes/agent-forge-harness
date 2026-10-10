@@ -305,19 +305,22 @@ function sameFileKey(realPath: string): string {
 
 type LinkedFiles = { parts: ContextPart[]; incomplete: boolean };
 
+/** A run by the name of its state file, which is checked; the name inside the file is not. */
+type BeadRun = { slug: string; state: ForgeState };
+
 /**
  * The forge run that works this bead, newest first: a run that names the bead,
  * or one that names no bead and whose epic is the bead. A run that works
  * another bead is never this bead's, whatever its epic.
  */
-function beadRun(id: BeadsIssueId, cwd: string): ForgeState | null {
+function beadRun(id: BeadsIssueId, cwd: string): BeadRun | null {
   let names: string[];
   try {
     names = readdirSync(join(cwd, FORGE_RUNS_DIR));
   } catch {
     return null;
   }
-  let newest: ForgeState | null = null;
+  let newest: BeadRun | null = null;
   for (const name of names) {
     const slug = runSlugFromFilename(name);
     if (slug === null) continue;
@@ -329,9 +332,9 @@ function beadRun(id: BeadsIssueId, cwd: string): ForgeState | null {
     if (!owns) continue;
     if (
       newest === null ||
-      String(state.updatedAt).localeCompare(String(newest.updatedAt)) > 0
+      String(state.updatedAt).localeCompare(String(newest.state.updatedAt)) > 0
     )
-      newest = state;
+      newest = { slug, state };
   }
   return newest;
 }
@@ -345,13 +348,13 @@ const PATH_MENTION =
  */
 function linkedFileParts(
   cwd: string,
-  run: ForgeState | null,
+  run: BeadRun | null,
   texts: string[],
 ): LinkedFiles {
   const result: LinkedFiles = { parts: [], incomplete: false };
   const linked: Array<{ label: string; path: string }> = [];
   const named = new Set<string>();
-  const artifacts: unknown = run?.artifacts;
+  const artifacts: unknown = run?.state.artifacts;
   if (isRecord(artifacts))
     for (const [kind, key] of [
       ["plan", "plan"],

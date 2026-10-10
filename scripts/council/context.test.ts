@@ -2340,3 +2340,49 @@ describe("a bead source under attack, third pass", () => {
     expect(hasInvisible(title)).toBe(false);
   });
 });
+
+describe("a bead source under attack, fourth pass", () => {
+  test("a title or a label is also scanned as written: an assignment with an invisible character inside its value is not shown", async () => {
+    // As one line the invisible character becomes a space and cuts the value
+    // short of what the scanner takes for one; as written it is whole.
+    const assignment = ["OPENAI_API_KEY", "abc\u200BZq9Zq8Zq7Zq6Zq5Zq4"].join(
+      "=",
+    );
+    const cases: Array<[Json, string]> = [
+      [{ title: `Rotate ${assignment}` }, "the title"],
+      [{ labels: ["kiln", assignment] }, "the labels"],
+    ];
+    for (const [fields, where] of cases) {
+      const message = await refusalOf(
+        pack(fakeRunner({ issue: issue(fields) }), workspace()),
+      );
+      expect({ where, message }).toEqual({
+        where,
+        message: expect.stringContaining(
+          `potential secrets detected in ${where}`,
+        ),
+      });
+      const packed = await pack(
+        fakeRunner({ issue: issue(fields) }),
+        workspace(),
+        { secretPolicy: "redact" },
+      );
+      expect(JSON.stringify(packed)).not.toContain("Zq9Zq8Zq7");
+    }
+  });
+
+  test("the forge run is named by its file, not by what the file says its name is", async () => {
+    const root = workspace(
+      Object.fromEntries([
+        runState("kiln-temp", {
+          beadId: BEAD,
+          slug: `not-the-file-name \u001b[2K${"x".repeat(500)}`,
+        }),
+        ["plans/drafts/kiln-temp.md", "# Plan\nWire the sensor first."],
+      ]),
+    );
+    const packed = await pack(fakeRunner(), root);
+    expect(packed.source.metadata?.forgeRun).toBe("kiln-temp");
+    expect(JSON.stringify(packed.source)).not.toContain("not-the-file-name");
+  });
+});
