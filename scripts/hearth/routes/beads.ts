@@ -113,23 +113,95 @@ function beadId(value: unknown): value is string {
   );
 }
 
+/** Half of a surrogate pair: it cannot reach `bd` as it was sent. */
+const LONE_SURROGATE = /\p{Cs}/u;
+/** Any control character but newline and tab. */
+const CONTROL_IN_A_TEXT = /[^\P{Cc}\n\t]/u;
+/** What a one-line title may not hold: a control character, a line or paragraph separator, a bidirectional control. */
+const NOT_IN_A_TITLE = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/u;
+
+/** The body, when it is an object that holds nothing but the fields its row takes. */
+function fields(
+  request: RouteRequest,
+  allowed: readonly string[],
+): ValidationResult<Record<string, unknown>> {
+  const parameters = noParameters(request);
+  if (!parameters.ok) return parameters;
+  const body = request.body;
+  if (!isRecord(body)) return fail("Expected a JSON object");
+  // Nothing rides along: a field the row does not take is refused, not ignored.
+  return Object.keys(body).every((key) => allowed.includes(key))
+    ? { ok: true, value: body }
+    : fail(
+        allowed.length === 0
+          ? "Expected an empty object: this action takes no fields"
+          : `Unknown field: this action takes only ${allowed.join(", ")}`,
+      );
+}
+
+/**
+ * A text as it will be handed to `bd`: as given, once CR LF is LF. Absent, or
+ * nothing but whitespace, is no text: `undefined`.
+ */
+function textOf(
+  name: string,
+  value: unknown,
+  limit: number,
+): ValidationResult<string | undefined> {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (typeof value !== "string") return fail(`${name}: expected text`);
+  if (LONE_SURROGATE.test(value))
+    return fail(`${name}: holds half of a surrogate pair`);
+  const text = value.replace(/\r\n?/g, "\n");
+  if (CONTROL_IN_A_TEXT.test(text))
+    return fail(
+      `${name}: control characters other than newline and tab are not accepted`,
+    );
+  if (text.trim().length === 0) return { ok: true, value: undefined };
+  return text.length > limit
+    ? fail(`${name}: at most ${limit} characters`)
+    : { ok: true, value: text };
+}
+
+function titleOf(value: unknown): ValidationResult<string> {
+  if (typeof value !== "string" || LONE_SURROGATE.test(value))
+    return fail("title: a bead needs a title, as text");
+  const title = value.trim();
+  if (title.length === 0) return fail("title: a bead needs a title");
+  if (NOT_IN_A_TITLE.test(title))
+    return fail(
+      "title: one line, with no control or bidirectional-control characters",
+    );
+  return title.length > BEAD_TEXT_LIMITS.title
+    ? fail(`title: at most ${BEAD_TEXT_LIMITS.title} characters`)
+    : { ok: true, value: title };
+}
+
 interface CreateInput {
   title: string;
   type: string;
-  /** The digit bd takes: `0` … `4`. */
+  /** The digit bd takes: `0` \u2026 `4`. */
   priority: string;
   parent?: string;
   description?: string;
   acceptance?: string;
 }
 
+const CREATE_FIELDS = [
+  "title",
+  "type",
+  "priority",
+  "parent",
+  "description",
+  "acceptance",
+];
+
 function createInput(request: RouteRequest): ValidationResult<CreateInput> {
-  const parameters = noParameters(request);
-  if (!parameters.ok) return parameters;
-  const body = request.body;
-  if (!isRecord(body)) return fail("Expected a JSON object");
-  const title = typeof body["title"] === "string" ? body["title"].trim() : "";
-  if (title.length === 0) return fail("title: a bead needs a title");
+  const given = fields(request, CREATE_FIELDS);
+  if (!given.ok) return given;
+  const body = given.value;
+  const title = titleOf(body["title"]);
+  if (!title.ok) return title;
   // Absent means the default; a key that is present must be right, null included.
   const type = body["type"] === undefined ? "task" : body["type"];
   if (!BEAD_TYPES.some((known) => known === type))
@@ -143,34 +215,59 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
   const parent = body["parent"];
   if (parent !== undefined && !beadId(parent))
     return fail("parent: expected a Beads issue id");
-  const optional = (name: string): string | undefined => {
-    const value = body[name];
-    return typeof value === "string" && value.length > 0 ? value : undefined;
-  };
-  const description = optional("description");
-  const acceptance = optional("acceptance");
+  const description = textOf(
+    "description",
+    body["description"],
+    BEAD_TEXT_LIMITS.description,
+  );
+  if (!description.ok) return description;
+  // `bd create --description=-` means "read the description from standard
+  // input". The runner leaves stdin open, so that call would wait for the
+  // runner's limit and then create the issue without its description.
+  if (description.value === "-")
+    return fail(
+      'description: a description of exactly "-" is read by bd as "take it from standard input"; say more than that',
+    );
+  const acceptance = textOf(
+    "acceptance",
+    body["acceptance"],
+    BEAD_TEXT_LIMITS.acceptance,
+  );
+  if (!acceptance.ok) return acceptance;
   return {
     ok: true,
     value: {
-      title,
+      title: title.value,
       type: String(type),
       priority: String(priority).slice(1),
       ...(parent !== undefined ? { parent } : {}),
-      ...(description !== undefined ? { description } : {}),
-      ...(acceptance !== undefined ? { acceptance } : {}),
+      ...(description.value !== undefined
+        ? { description: description.value }
+        : {}),
+      ...(acceptance.value !== undefined
+        ? { acceptance: acceptance.value }
+        : {}),
     },
   };
 }
 
-/** The bead a path names, and nothing else in the request. */
-function namedBead(request: RouteRequest): ValidationResult<string> {
-  const parameters = noParameters(request);
-  if (!parameters.ok) return parameters;
+/** The bead a path names, when the body holds nothing but `allowed`. */
+function namedBead(
+  request: RouteRequest,
+  allowed: readonly string[],
+): ValidationResult<{ id: string; body: Record<string, unknown> }> {
+  const given = fields(request, allowed);
+  if (!given.ok) return given;
   const id = request.params["id"];
-  if (!beadId(id)) return fail("id: expected a Beads issue id");
-  return isRecord(request.body)
-    ? { ok: true, value: id }
-    : fail("Expected a JSON object");
+  return beadId(id)
+    ? { ok: true, value: { id, body: given.value } }
+    : fail("id: expected a Beads issue id");
+}
+
+/** A claim: the bead, and a body with nothing in it. */
+function claimInput(request: RouteRequest): ValidationResult<string> {
+  const named = namedBead(request, []);
+  return named.ok ? { ok: true, value: named.value.id } : named;
 }
 
 /** A bead and the one text a write to it carries. */
@@ -179,17 +276,17 @@ interface Worded {
   text: string;
 }
 
-/** The bead a path names and the text the body carries under `key`, which must not be empty. */
+/** The bead a path names and the text the body carries under `key`, which must say something. */
 const worded =
-  (key: string) =>
+  (key: "text" | "reason", limit: number) =>
   (request: RouteRequest): ValidationResult<Worded> => {
-    const id = namedBead(request);
-    if (!id.ok) return id;
-    // justification: `namedBead` returned ok only for a body that is a record.
-    const text = (request.body as Record<string, unknown>)[key];
-    return typeof text === "string" && text.trim().length > 0
-      ? { ok: true, value: { id: id.value, text } }
-      : fail(`${key}: must say something`);
+    const named = namedBead(request, [key]);
+    if (!named.ok) return named;
+    const text = textOf(key, named.value.body[key], limit);
+    if (!text.ok) return text;
+    return text.value === undefined
+      ? fail(`${key}: must say something`)
+      : { ok: true, value: { id: named.value.id, text: text.value } };
   };
 
 /** What `bd` printed, once it is known to describe the write that was asked for. */
@@ -264,13 +361,32 @@ function claimed(stdout: string): Confirmed | null {
     : null;
 }
 
-/** The issue `bd close --json` printed, when it is now closed. */
-function closed(stdout: string): Confirmed | null {
-  const printed = oneIssue(stdout);
-  return printed !== null && printed.issue["status"] === "closed"
-    ? described(printed.issue, printed.id)
-    : null;
-}
+/** bd prints whole seconds, so a close timed up to this long before the call began is this call's. */
+const CLOSE_TIME_SLACK_MS = 2000;
+
+/**
+ * The issue `bd close --json` printed, when this call closed it.
+ *
+ * Closing an issue that is already closed exits 0 too: bd prints the issue and
+ * keeps the first reason and the first closing time. So a close is this call's
+ * only when the reason printed is the one that was sent and the closing time
+ * is not from before the call began.
+ */
+const closed =
+  (reason: string) =>
+  (stdout: string, began: number): Confirmed | Conflict | null => {
+    const printed = oneIssue(stdout);
+    if (printed === null || printed.issue["status"] !== "closed") return null;
+    const closedAt = Date.parse(String(printed.issue["closed_at"] ?? ""));
+    const earlier =
+      printed.issue["close_reason"] !== reason ||
+      (!Number.isNaN(closedAt) && closedAt < began - CLOSE_TIME_SLACK_MS);
+    return earlier
+      ? {
+          conflict: `${printed.id} was already closed; nothing was changed, and the reason it was closed with stands`,
+        }
+      : described(printed.issue, printed.id);
+  };
 
 /** The comment `bd comments add --json` printed, on the issue it names. */
 function commented(stdout: string): Confirmed | null {
@@ -287,6 +403,11 @@ function commented(stdout: string): Confirmed | null {
   };
 }
 
+/** A write that was asked for but had already been done: nothing changed. */
+interface Conflict {
+  conflict: string;
+}
+
 /** What a write is, for the one helper that carries it out. */
 interface Write {
   action: BeadWrite;
@@ -296,54 +417,129 @@ interface Write {
   /** The one text the write carries; its hash and length go on the outcome event. */
   text?: string;
   status: 200 | 201;
-  confirm(stdout: string): Confirmed | null;
+  /** How to see whether the write happened, for an answer that cannot say. */
+  check: string;
+  confirm(stdout: string, began: number): Confirmed | Conflict | null;
 }
+
+/**
+ * Why bd refused, in bd's own words. With `--json` some commands print the
+ * error on stdout and nothing on stderr; the runner then fills stderr with its
+ * own line, `Command failed: bd <every argument>`, which repeats the text that
+ * was sent and is never passed on.
+ */
+function refusal(result: BdResult): string {
+  const printed = parsed(result.stdout);
+  if (isRecord(printed) && typeof printed["error"] === "string")
+    return printed["error"].trim() || `exit ${result.status}`;
+  const said = result.stderr.trim();
+  return said.length > 0 && !said.startsWith("Command failed:")
+    ? said.replace(/^Error:\s*/, "")
+    : `exit ${result.status}`;
+}
+
+/** Whether a call with no exit status never became a process at all. */
+function neverStarted(result: BdResult): boolean {
+  return (
+    !result.stderr.startsWith("Command failed:") &&
+    /ENOENT|Executable not found/.test(result.stderr)
+  );
+}
+
+/** A busy ledger is tried this many times, this far apart, before the answer says "not recorded". */
+const RECORD_ATTEMPTS = 3;
+const RECORD_RETRY_MS = 25;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((done) => setTimeout(done, ms));
 
 export function beadRoutes(deps: BeadDeps): ApiRoute[] {
   /** Append the outcome event. Null when the ledger stored it, else why not. */
-  function record(action: BeadWrite, id: string, text?: string): string | null {
-    let result: unknown;
-    try {
-      result = deps.appendEvent({
-        kind: "bead.transitioned",
-        workspace: deps.workspace,
-        beadId: id,
-        payload: {
-          action,
-          ...(text !== undefined
-            ? { hash: hashText(text), length: text.length }
-            : {}),
-        },
-      });
-    } catch (error) {
-      return safeMessage(error);
+  async function record(
+    action: BeadWrite,
+    id: string,
+    text?: string,
+  ): Promise<string | null> {
+    const event: LedgerEventInput = {
+      kind: "bead.transitioned",
+      workspace: deps.workspace,
+      beadId: id,
+      // Metadata only: what was done, and a hash and length of the one text it
+      // carried. The text itself goes to bd and nowhere else.
+      payload: {
+        action,
+        ...(text !== undefined
+          ? { hash: hashText(text), length: text.length }
+          : {}),
+      },
+    };
+    for (let attempt = 1; ; attempt++) {
+      let result: unknown;
+      try {
+        result = deps.appendEvent(event);
+      } catch (error) {
+        return safeMessage(error);
+      }
+      if (!isRecord(result)) return "the ledger did not answer";
+      if (result["ok"] === true)
+        return typeof result["id"] === "number" && result["id"] > 0
+          ? null
+          : "the ledger stored no row";
+      const reason =
+        typeof result["error"] === "string"
+          ? result["error"]
+          : "the ledger refused";
+      if (!/busy|locked/i.test(reason) || attempt >= RECORD_ATTEMPTS)
+        return safeMessage(reason);
+      await sleep(RECORD_RETRY_MS);
     }
-    if (!isRecord(result)) return "the ledger did not answer";
-    if (result["ok"] === true)
-      return typeof result["id"] === "number" && result["id"] > 0
-        ? null
-        : "the ledger stored no row";
-    return safeMessage(
-      typeof result["error"] === "string"
-        ? result["error"]
-        : "the ledger refused",
-    );
   }
 
+  /**
+   * One call to bd, never repeated, and one of five answers. None of them is a
+   * 403: the page posts an action again after a 403, which is safe only while a
+   * 403 always means "refused before anything was done".
+   */
   async function write(spec: Write): Promise<RouteReply> {
-    const result: BdResult = await deps.runBd(spec.args);
+    const began = Date.now();
+    // 504 is the one status that means "the outcome is not known".
+    const unknown = (what: string): RouteReply => ({
+      status: 504,
+      error: `bd ${spec.command} ${what} Check with \`${spec.check}\` before trying again.`,
+    });
+    let result: BdResult;
+    try {
+      result = await deps.runBd(spec.args);
+    } catch {
+      // The runner rejects for an argument it cannot pass on. Its message
+      // repeats that argument, so it is not passed on either.
+      return unknown(
+        "did not finish: it could not be run. The change may still have been made.",
+      );
+    }
+    if (result.status === null)
+      return neverStarted(result)
+        ? {
+            status: 502,
+            error:
+              "bd could not be started (is it installed, and on the PATH of this control plane?). Nothing was changed.",
+          }
+        : unknown(
+            "did not finish within its time limit. The change may still have been made.",
+          );
     if (result.status !== 0)
       return {
         status: 502,
-        error: safeMessage(`bd ${spec.command} failed: exit ${result.status}`),
+        error: safeMessage(`bd ${spec.command} failed: ${refusal(result)}`),
       };
-    const confirmed = spec.confirm(result.stdout);
+    const confirmed = spec.confirm(result.stdout, began);
     if (confirmed === null)
-      return {
-        status: 504,
-        error: `bd ${spec.command} exited 0 but did not confirm the write`,
-      };
-    const unrecorded = record(spec.action, confirmed.id, spec.text);
+      return unknown(
+        "exited 0 but did not confirm the change. It may have been made.",
+      );
+    if ("conflict" in confirmed)
+      return { status: 409, error: confirmed.conflict };
+    const unrecorded = await record(spec.action, confirmed.id, spec.text);
     const data: BeadWriteResult = {
       ...confirmed,
       action: spec.action,
@@ -358,6 +554,9 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     method: "POST",
     path: "/beads",
     action: "bead.create",
+    // A create at its limits is about 18,700 bytes in three-byte characters and
+    // 24,700 when made of CR LF pairs: over the table's default of 16,000.
+    maxBodyBytes: 32_000,
     validate: createInput,
     // The new id does not exist yet: the attempt is recorded against the parent.
     subject: (input) =>
@@ -384,6 +583,8 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         ],
         text: input.title,
         status: 201,
+        // A create that did not answer left no id to look up.
+        check: "bd list",
         confirm: created,
       }),
   };
@@ -395,7 +596,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     method: "POST",
     path: "/beads/:id/claim",
     action: "bead.claim",
-    validate: namedBead,
+    validate: claimInput,
     subject: subjectOf,
     effect: (id) =>
       write({
@@ -403,6 +604,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         command: "update --claim",
         args: ["update", "--claim", "--json", "--", id],
         status: 200,
+        check: `bd show ${id}`,
         confirm: claimed,
       }),
   };
@@ -412,7 +614,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     method: "POST",
     path: "/beads/:id/comment",
     action: "bead.comment",
-    validate: worded("text"),
+    validate: worded("text", BEAD_TEXT_LIMITS.comment),
     subject: (input) => subjectOf(input.id),
     effect: ({ id, text }) =>
       write({
@@ -422,6 +624,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         args: ["comments", "add", "--json", "--", id, text],
         text,
         status: 201,
+        check: `bd show ${id}`,
         confirm: commented,
       }),
   };
@@ -432,7 +635,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     path: "/beads/:id/close",
     action: "bead.close",
     // This project never closes an issue without saying why.
-    validate: worded("reason"),
+    validate: worded("reason", BEAD_TEXT_LIMITS.reason),
     subject: (input) => subjectOf(input.id),
     effect: ({ id, text }) =>
       write({
@@ -441,7 +644,8 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         args: ["close", `--reason=${text}`, "--json", "--", id],
         text,
         status: 200,
-        confirm: closed,
+        check: `bd show ${id}`,
+        confirm: closed(text),
       }),
   };
 
