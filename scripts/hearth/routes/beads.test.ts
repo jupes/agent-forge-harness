@@ -407,37 +407,42 @@ describe("bd acts on a partial id", () => {
     updated_at: bdTime(),
     ...extra,
   });
-  const cases: Array<[string, unknown, number, BdResult, string]> = [
+  // Each answer is built when bd is called, as bd times it: a write is told
+  // from an earlier one by its time, and a time stamped when this file was
+  // loaded is an earlier one by the time a slow run reaches the test.
+  const cases: Array<[string, unknown, number, () => BdResult, string]> = [
     [
       "claim",
       {},
       200,
-      bdAnswers.claimed(issue("in_progress", { assignee: "operator" })),
+      () => bdAnswers.claimed(issue("in_progress", { assignee: "operator" })),
       "bead.claim",
     ],
     [
       "comment",
       { text: "worklog: by a short id" },
       201,
-      bdAnswers.commented({
-        id: "comment-1",
-        issueId: FULL,
-        author: "operator",
-        text: "worklog: by a short id",
-        createdAt: bdTime(),
-      }),
+      () =>
+        bdAnswers.commented({
+          id: "comment-1",
+          issueId: FULL,
+          author: "operator",
+          text: "worklog: by a short id",
+          createdAt: bdTime(),
+        }),
       "bead.comment",
     ],
     [
       "close",
       { reason: "Verified by a short id" },
       200,
-      bdAnswers.closed(
-        issue("closed", {
-          close_reason: "Verified by a short id",
-          closed_at: bdTime(),
-        }),
-      ),
+      () =>
+        bdAnswers.closed(
+          issue("closed", {
+            close_reason: "Verified by a short id",
+            closed_at: bdTime(),
+          }),
+        ),
       "bead.close",
     ],
   ];
@@ -445,7 +450,7 @@ describe("bd acts on a partial id", () => {
   for (const [verb, body, status, printed, action] of cases)
     test(`${verb}: the answer and the outcome event name the bead bd printed; the audit row keeps the id as it was given`, async () => {
       const h = await start();
-      h.bd.answer = () => printed;
+      h.bd.answer = printed;
 
       const answer = await post(h, `/beads/o88/${verb}`, body);
 
@@ -1450,6 +1455,35 @@ describe("what a refusal says", () => {
     const answer = await post(h, "/beads/demo-task/claim", {});
     expect(answer.body.error).toBe(
       "bd update --claim failed: issue not claimable: status closed",
+    );
+  });
+
+  // bd 1.1.0 was not seen to print anything after its error line (seven
+  // refusals measured). The rule is kept so that a line it might print after
+  // one cannot carry the title into the answer.
+  test("when a line begins Error, that line is the refusal, whatever is printed after it", async () => {
+    const h = await start();
+    h.bd.answer = () => ({
+      status: 1,
+      stdout: "",
+      stderr: `Error: parent issue demo-nope not found\n  while creating "Test ${MARKER}"\n`,
+    });
+    const answer = await post(h, "/beads", {
+      title: `Test ${MARKER}`,
+      parent: "demo-nope",
+    });
+    expect(answer.body.error).toBe(
+      "bd create failed: parent issue demo-nope not found",
+    );
+    // An error line bd prints without the colon is passed on as it is.
+    h.bd.answer = () => ({
+      status: 1,
+      stdout: "",
+      stderr:
+        'Error resolving demo-nope: no issue found matching "demo-nope"\n',
+    });
+    expect((await post(h, "/beads/demo-nope/claim", {})).body.error).toBe(
+      'bd update --claim failed: Error resolving demo-nope: no issue found matching "demo-nope"',
     );
   });
 
