@@ -9,6 +9,8 @@
  * holds (`docs/js/forge-checkpoints.ts`), the same source as every other view.
  */
 
+import type { EvaluatorIdentity } from "../../types/hearth";
+import { parseEvaluatorIdentity } from "../eval-verdict";
 import {
   artifactPath,
   FORGE_PHASES,
@@ -65,6 +67,28 @@ export interface GateCheck {
 export type GateLink = "linked" | "unlinked" | "legacy";
 
 /**
+ * The evaluator verdict a gate entry's strict check rested on.
+ *
+ * - `schema-2`: the entry carries the reference the gate records when it
+ *   binds a schema 2 verdict: the file it read, the digest and size of those
+ *   bytes, and the evaluator they name, for this entry's own bead and run.
+ * - `legacy`: the check passed and the entry carries no such reference. That
+ *   is an entry written when the check read a task-scoped schema 1 verdict,
+ *   which named no run and no evaluator. It is shown; it is not evidence that
+ *   this run was evaluated.
+ */
+export type GateEvaluatorVerdict =
+  | {
+      evidence: "schema-2";
+      /** Relative to the checkout. */
+      path: string;
+      sha256: string;
+      bytes: number;
+      evaluator: EvaluatorIdentity;
+    }
+  | { evidence: "legacy" };
+
+/**
  * One quality-gate run, as `.claude/hooks/quality-gate.ts` logs it.
  *
  * The log is shared by every checkout on the machine, so each entry records
@@ -91,6 +115,8 @@ export interface GateRun {
   taskId: string | null;
   /** Legacy entries only: the run the entry recorded. */
   forgeSlug: string | null;
+  /** What the strict evaluator-verdict check rested on. Null when it did not run or bound nothing. */
+  evaluatorVerdict: GateEvaluatorVerdict | null;
 }
 
 /** The gate runs that belong on this page: this checkout's, for this run. */
@@ -263,6 +289,84 @@ function linkageFrom(raw: Record<string, unknown>): GateLinkage | null {
   };
 }
 
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** The shape of the path the gate reads a run's verdict from. */
+const DECLARED_VERDICT_PATH =
+  /^\.tmp\/work\/evaluations\/[0-9a-f]{64}\/verdict\.json$/;
+
+/** The most bytes the gate reads as a verdict. */
+const MAX_VERDICT_BYTES = 64 * 1024;
+
+/** True for an evaluator the gate binds: a human, or a model that was observed and not rejected. */
+function bindable(evaluator: EvaluatorIdentity): boolean {
+  return (
+    evaluator.kind === "human" ||
+    (evaluator.observedProvider !== undefined &&
+      evaluator.observedModel !== undefined &&
+      evaluator.rankPolicyDecision === "allowed")
+  );
+}
+
+/** The name of the gate's strict evaluator-verdict check. */
+const VERDICT_CHECK = "eval-verdict";
+
+/**
+ * What an entry's evaluator-verdict check rested on. The reference on the
+ * entry counts only when it is one the gate could have written: whole, for the
+ * entry's own bead and run, at a declared verdict path, no larger than a
+ * verdict, by an evaluator the gate binds. Anything less leaves a passed check
+ * as a legacy verdict. (The reader cannot hash a run id in the browser, so it
+ * checks the path's shape, not that it is this run's.)
+ */
+function evaluatorVerdictFrom(
+  raw: Record<string, unknown>,
+  linkage: GateLinkage,
+  checks: readonly GateCheck[],
+): GateEvaluatorVerdict | null {
+  const check = checks.find((entry) => entry.name === VERDICT_CHECK);
+  if (check === undefined || check.skipped) return null;
+  const artifact = raw["evaluatorArtifact"];
+  if (
+    linkage.link === "linked" &&
+    typeof artifact === "object" &&
+    artifact !== null &&
+    !Array.isArray(artifact)
+  ) {
+    // justification: a non-null, non-array object is a record of unknown fields.
+    const reference = artifact as Record<string, unknown>;
+    const path = text(reference["path"]);
+    const sha256 = reference["sha256"];
+    const bytes = reference["bytes"];
+    const evaluator = parseEvaluatorIdentity(reference["evaluator"]);
+    if (
+      reference["kind"] === "evaluator-verdict" &&
+      reference["verdictSchemaVersion"] === 2 &&
+      reference["executionRunId"] === linkage.executionRunId &&
+      reference["beadsIssueId"] === linkage.beadsIssueId &&
+      path !== null &&
+      DECLARED_VERDICT_PATH.test(path) &&
+      typeof sha256 === "string" &&
+      SHA256_HEX.test(sha256) &&
+      typeof bytes === "number" &&
+      Number.isInteger(bytes) &&
+      bytes >= 0 &&
+      bytes <= MAX_VERDICT_BYTES &&
+      evaluator.ok &&
+      bindable(evaluator.value)
+    ) {
+      return {
+        evidence: "schema-2",
+        path,
+        sha256,
+        bytes,
+        evaluator: evaluator.value,
+      };
+    }
+  }
+  return check.passed ? { evidence: "legacy" } : null;
+}
+
 function gateRunFrom(line: string): GateRun | null {
   try {
     const raw = JSON.parse(line) as Record<string, unknown>;
@@ -271,31 +375,33 @@ function gateRunFrom(line: string): GateRun | null {
     }
     const linkage = linkageFrom(raw);
     if (linkage === null) return null;
+    const checks = raw["checks"].flatMap((entry): GateCheck[] => {
+      const check = entry as {
+        name?: unknown;
+        passed?: unknown;
+        skipped?: unknown;
+        skipReason?: unknown;
+        output?: unknown;
+      };
+      if (typeof check.name !== "string") return [];
+      return [
+        {
+          name: check.name,
+          passed: check.passed === true,
+          skipped: check.skipped === true,
+          detail: detailFor(check),
+        },
+      ];
+    });
     return {
       event: text(raw["event"]) ?? "",
       timestamp: text(raw["timestamp"]) ?? "",
       passed: raw["passed"],
-      checks: raw["checks"].flatMap((entry): GateCheck[] => {
-        const check = entry as {
-          name?: unknown;
-          passed?: unknown;
-          skipped?: unknown;
-          skipReason?: unknown;
-          output?: unknown;
-        };
-        if (typeof check.name !== "string") return [];
-        return [
-          {
-            name: check.name,
-            passed: check.passed === true,
-            skipped: check.skipped === true,
-            detail: detailFor(check),
-          },
-        ];
-      }),
+      checks,
       checkout: text(raw["checkout"]),
       branch: text(raw["branch"]),
       ...linkage,
+      evaluatorVerdict: evaluatorVerdictFrom(raw, linkage, checks),
     };
   } catch {
     return null;

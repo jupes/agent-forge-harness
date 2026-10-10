@@ -47,6 +47,12 @@ export interface ReviewRound {
   findings: ReviewFindings;
   /** The model tier that graded, for the grader-≥-subject audit. */
   tier?: string;
+  /**
+   * The schema version of the verdict file the round was graded from. 1 is a
+   * legacy verdict, which names neither the run nor its evaluator. Absent on
+   * an unreadable round and on rounds recorded before this was stored.
+   */
+  verdictSchemaVersion?: number;
   summary?: string;
   /**
    * What `forge:review` decided after this round, and why. Stored because the

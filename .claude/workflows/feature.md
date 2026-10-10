@@ -208,7 +208,7 @@ Produce the structured verdict. Do not write, edit, or commit anything."
 )
 ```
 
-After the verdict, if **`AGENT_FORGE_EVAL_VERDICT=strict`** is in effect for this session, write **`.tmp/work/<TASK-ID>-verdict.json`** per **`.claude/protocols/evaluation-verdict.md`** (machine-readable counts + PASS/FAIL). Optional for default (non-strict) runs.
+After the verdict, if **`AGENT_FORGE_EVAL_VERDICT=strict`** is in effect for this session, file it with **`bun run forge:verdict --correlation <pointer> …`** per **`.claude/protocols/evaluation-verdict.md`** (machine-readable counts + PASS/FAIL, and who judged; written once, at the path the run's correlation declares). Optional for default (non-strict) runs.
 
 ### Acting on the verdict
 

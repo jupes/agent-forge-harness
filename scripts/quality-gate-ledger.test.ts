@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { EvalVerdictParsed } from "./eval-verdict";
+import { type EvalVerdict, parseEvalVerdictJson } from "./eval-verdict";
 import type { ForgeState } from "./forge/phases";
 import { validateLedgerEventInput } from "./hearth/validate";
 import { appendEvent } from "./ledger/append";
@@ -135,51 +135,201 @@ describe("gateRanEvent", () => {
   });
 });
 
-describe("strictVerdictEvent", () => {
-  const verdict: EvalVerdictParsed = {
-    schemaVersion: 1,
-    taskId: "bead-from-verdict",
-    verdict: "FAIL",
-    findings: { blocker: 0, high: 0, medium: 2, low: 0 },
-    summary: "two medium findings",
-  };
+/** A schema 2 verdict as the strict check hands it over: parsed from a file's bytes. */
+function boundVerdict(overrides: Record<string, unknown> = {}): EvalVerdict {
+  const parsed = parseEvalVerdictJson(
+    JSON.stringify({
+      schemaVersion: 2,
+      beadsIssueId: "b-correlated",
+      executionRunId: "x",
+      verdict: "FAIL",
+      findings: { blocker: 0, high: 0, medium: 2, low: 0 },
+      summary: "two medium findings",
+      evaluator: {
+        kind: "model",
+        requestedProvider: "claude",
+        requestedModel: "claude-opus-5-5",
+        requestedRank: "master",
+        observedProvider: "claude",
+        observedModel: "claude-sonnet-5-5",
+        providerEvidence: "selected-direct-transport",
+        modelEvidence: "response-field",
+        rankPolicyDecision: "allowed",
+        rankPolicyRule: "evaluator-at-or-above-builder",
+        sessionId: "s-eval",
+      },
+      ...overrides,
+    }),
+  );
+  if (!parsed.ok || parsed.value.schemaVersion !== 2) {
+    throw new Error("fixture is not a schema 2 verdict");
+  }
+  return parsed.value;
+}
 
-  test("a strict-gate verdict is bound to the bead named in the verdict and the run the gate was correlated to", () => {
+describe("strictVerdictEvent", () => {
+  test("a strict-gate verdict is bound to the bead and run it names, with the evaluator it declares", () => {
     const event = strictVerdictEvent({
-      verdict,
+      verdict: boundVerdict(),
       builder: { provider: "claude", model: "m-build" },
-      attach: attach({
-        beadId: "bead-from-verdict",
-        runId: "x",
-        sessionId: "s-1",
-      }),
+      // Whatever the attach says, the event is filed under the verdict's ids.
+      attach: attach({ beadId: "b-other", runId: "y", sessionId: "s-1" }),
     });
-    expect(event).toEqual({
+    expect<unknown>(event).toEqual({
       kind: "verdict.bound",
       workspace: "c:/work/repo",
-      beadId: "bead-from-verdict",
+      beadId: "b-correlated",
       runId: "x",
       sessionId: "s-1",
       payload: {
         verdict: "fail",
         builder: { provider: "claude", model: "m-build" },
+        // What was observed to run, never what was requested.
+        evaluator: {
+          provider: "claude",
+          model: "claude-sonnet-5-5",
+          sessionId: "s-eval",
+        },
+        evaluatorIdentity: boundVerdict().evaluator,
         summary: "two medium findings",
       },
     });
     expect(validateLedgerEventInput(event).ok).toBe(true);
   });
 
-  test("a verdict file names no evaluator, so the event carries none", () => {
+  test("a file reference handed to the builder goes on the event and into the ledger, digest intact", () => {
+    const box = sandbox();
+    const artifact = {
+      path: ".tmp/work/evaluations/abc/verdict.json",
+      sha256: "0f".repeat(32),
+      bytes: 312,
+      schemaVersion: 2,
+    };
     const event = strictVerdictEvent({
-      verdict: { ...verdict, verdict: "PASS" },
+      verdict: boundVerdict(),
+      artifact,
       attach: attach(),
     });
-    expect(event.payload).toEqual({
-      verdict: "pass",
-      summary: "two medium findings",
+    expect(event.payload.verdictArtifact).toEqual(artifact);
+    expect(validateLedgerEventInput(event).ok).toBe(true);
+    expect(appendEvent(event, { path: box.path }).ok).toBe(true);
+    const [stored] = queryEvents(
+      { kinds: ["verdict.bound"] },
+      { path: box.path },
+    );
+    // A digest is not a secret: it is stored whole.
+    expect(stored?.payload).toMatchObject({ verdictArtifact: artifact });
+  });
+
+  test("a human verdict is stored with its actor kind and no evaluator executor", () => {
+    const box = sandbox();
+    const event = strictVerdictEvent({
+      verdict: boundVerdict({
+        verdict: "PASS",
+        evaluator: { kind: "human", actorKind: "operator" },
+      }),
+      attach: attach({ beadId: "b-correlated", runId: "x" }),
     });
     expect("evaluator" in event.payload).toBe(false);
-    expect("runId" in event).toBe(false);
+    expect(appendEvent(event, { path: box.path }).ok).toBe(true);
+
+    const [stored] = queryEvents(
+      { kinds: ["verdict.bound"] },
+      { path: box.path },
+    );
+    expect(stored?.payload).toEqual({
+      verdict: "pass",
+      evaluatorIdentity: { kind: "human", actorKind: "operator" },
+      summary: "two medium findings",
+    });
+  });
+
+  test("the ledger keeps the typed evaluator of a model verdict, cut to the contract's fields", () => {
+    const box = sandbox();
+    const verdict = boundVerdict();
+    const event = strictVerdictEvent({
+      verdict,
+      attach: attach({ beadId: "b-correlated", runId: "x" }),
+    });
+    // The identity's own fields without its session id, on an object whose
+    // prototype has one: an inherited value must not be read as the verdict's.
+    const { sessionId: _own, ...ownFields } = verdict.evaluator as {
+      sessionId?: string;
+    };
+    const smuggled = {
+      ...event,
+      payload: {
+        ...event.payload,
+        evaluatorIdentity: Object.assign(
+          Object.create({ sessionId: "from-a-prototype" }),
+          ownFields,
+          { prompt: "a body that is not metadata" },
+        ),
+      },
+    };
+    // justification: the extra key is the point of the test; the ledger must drop it.
+    expect(appendEvent(smuggled as typeof event, { path: box.path }).ok).toBe(
+      true,
+    );
+
+    const [stored] = queryEvents(
+      { kinds: ["verdict.bound"] },
+      { path: box.path },
+    );
+    expect(stored?.beadId).toBe("b-correlated");
+    expect(stored?.runId).toBe("x");
+    const withoutSession = ownFields;
+    expect<unknown>(stored?.payload).toEqual({
+      verdict: "fail",
+      evaluator: {
+        provider: "claude",
+        model: "claude-sonnet-5-5",
+        sessionId: "s-eval",
+      },
+      // Neither the extra key nor the inherited one is stored.
+      evaluatorIdentity: withoutSession,
+      summary: "two medium findings",
+    });
+  });
+
+  test("an evaluator identity or a verdict artifact that is not the contract's shape is not stored at all", () => {
+    const event = strictVerdictEvent({
+      verdict: boundVerdict(),
+      attach: attach(),
+    });
+    const good = {
+      path: ".tmp/work/evaluations/x/verdict.json",
+      sha256: "0f".repeat(32),
+      bytes: 312,
+      schemaVersion: 2,
+    };
+    // One thing wrong at a time, so each rule is what drops the value.
+    const malformed: Array<Record<string, unknown>> = [
+      { evaluatorIdentity: { kind: "banana", actorKind: 42 } },
+      { evaluatorIdentity: { kind: "human" } },
+      { evaluatorIdentity: "claude-opus-5-5" },
+      { verdictArtifact: { ...good, sha256: "not-a-digest" } },
+      { verdictArtifact: { ...good, sha256: "0F".repeat(32) } },
+      { verdictArtifact: { ...good, bytes: "312" } },
+      { verdictArtifact: { ...good, bytes: -1 } },
+      { verdictArtifact: { ...good, path: "" } },
+      { verdictArtifact: { ...good, schemaVersion: "2" } },
+    ];
+    for (const extra of malformed) {
+      const box = sandbox();
+      const candidate = { ...event, payload: { verdict: "pass", ...extra } };
+      // justification: malformed on purpose; the ledger must not store it.
+      expect(
+        appendEvent(candidate as unknown as typeof event, { path: box.path })
+          .ok,
+      ).toBe(true);
+      const [stored] = queryEvents(
+        { kinds: ["verdict.bound"] },
+        { path: box.path },
+      );
+      expect(stored?.payload).toEqual({ verdict: "pass" });
+      closeLedger();
+    }
   });
 });
 

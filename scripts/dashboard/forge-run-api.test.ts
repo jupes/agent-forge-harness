@@ -613,3 +613,157 @@ describe("forgeRunSnapshot with unlinked gate runs", () => {
     expect(snapshot([v2Line()]).unattributedGate).toBeNull();
   });
 });
+
+const DIGEST = "0f".repeat(32);
+
+/** The artifact a strict gate run puts on its entry, for the ids `v2Line` uses. */
+function artifact(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: "evaluator-verdict",
+    path: `.tmp/work/evaluations/${"ab".repeat(32)}/verdict.json`,
+    sha256: DIGEST,
+    bytes: 312,
+    verdictSchemaVersion: 2,
+    executionRunId: "agent-forge-harness-dg40",
+    beadsIssueId: "agent-forge-harness-dg40.9",
+    evaluator: { kind: "human", actorKind: "reviewer" },
+    ...over,
+  };
+}
+
+const MODEL_UNOBSERVED = {
+  kind: "model",
+  requestedProvider: "claude",
+  requestedModel: "claude-opus-5-5",
+  requestedRank: "master",
+  rankPolicyDecision: "allowed",
+  rankPolicyRule: "evaluator-at-or-above-builder",
+};
+
+const MODEL_OBSERVED = {
+  ...MODEL_UNOBSERVED,
+  observedProvider: "claude",
+  observedModel: "claude-opus-5-5",
+  providerEvidence: "selected-direct-transport",
+  modelEvidence: "response-field",
+};
+
+const VERDICT_PASSED = [
+  { name: "typecheck", passed: true },
+  { name: "eval-verdict", passed: true, output: "PASS B=0 H=0" },
+];
+
+describe("the evaluator verdict a gate entry rests on", () => {
+  test("a linked entry carrying an artifact for its own bead and run is schema 2 evidence, with the file and the evaluator it names", () => {
+    const run = latestGateRun(
+      [v2Line({ checks: VERDICT_PASSED, evaluatorArtifact: artifact() })],
+      SCOPE,
+    );
+    expect(run?.evaluatorVerdict).toEqual({
+      evidence: "schema-2",
+      path: `.tmp/work/evaluations/${"ab".repeat(32)}/verdict.json`,
+      sha256: DIGEST,
+      bytes: 312,
+      evaluator: { kind: "human", actorKind: "reviewer" },
+    });
+  });
+
+  test("a blocking verdict is evidence too: the check failed on a verdict that was this run's", () => {
+    const run = latestGateRun(
+      [
+        v2Line({
+          passed: false,
+          checks: [{ name: "eval-verdict", passed: false, output: "FAIL" }],
+          evaluatorArtifact: artifact(),
+        }),
+      ],
+      SCOPE,
+    );
+    expect(run?.evaluatorVerdict).toMatchObject({ evidence: "schema-2" });
+  });
+
+  test("a passed check with no artifact rested on a legacy verdict: labelled, never schema 2 evidence", () => {
+    // A linked entry written before the gate recorded what it read.
+    expect(
+      latestGateRun([v2Line({ checks: VERDICT_PASSED })], SCOPE)
+        ?.evaluatorVerdict,
+    ).toEqual({ evidence: "legacy" });
+    // An entry from before entries were versioned.
+    expect(
+      latestGateRun([gateLine({ passed: true, checks: VERDICT_PASSED })], SCOPE)
+        ?.evaluatorVerdict,
+    ).toEqual({ evidence: "legacy" });
+  });
+
+  test("an artifact that is not this entry's, or not well formed, is not evidence", () => {
+    for (const over of [
+      { executionRunId: "another-run" },
+      { beadsIssueId: "agent-forge-harness-other" },
+      { sha256: "not-a-digest" },
+      { bytes: "312" },
+      { path: "" },
+      { verdictSchemaVersion: 1 },
+      { kind: "report" },
+      { evaluator: { kind: "robot" } },
+      { evaluator: undefined },
+      // Things the gate never binds, so never writes.
+      { path: ".tmp/work/a-task-scoped-file.json" },
+      { path: "../../elsewhere/verdict.json" },
+      { path: `.tmp/work/evaluations/${"ab".repeat(32)}/review-plan-1.json` },
+      { bytes: 1024 * 1024 },
+      { evaluator: MODEL_UNOBSERVED },
+      { evaluator: { ...MODEL_OBSERVED, rankPolicyDecision: "rejected" } },
+    ]) {
+      const run = latestGateRun(
+        [
+          v2Line({
+            checks: VERDICT_PASSED,
+            evaluatorArtifact: artifact(over),
+          }),
+        ],
+        SCOPE,
+      );
+      expect(run?.evaluatorVerdict).toEqual({ evidence: "legacy" });
+    }
+    // An unlinked entry names no run for an artifact to belong to, even
+    // when the artifact's ids are as empty as the entry's.
+    for (const ids of [{}, { executionRunId: null, beadsIssueId: null }]) {
+      const unlinked = latestGateRun(
+        [
+          v2Line({
+            ...UNLINKED,
+            checks: VERDICT_PASSED,
+            evaluatorArtifact: artifact(ids),
+          }),
+        ],
+        { checkout: CHECKOUT, slug: null },
+      );
+      expect(unlinked?.evaluatorVerdict).toEqual({ evidence: "legacy" });
+    }
+
+    // A model evaluator that was observed and allowed is evidence.
+    expect(
+      latestGateRun(
+        [
+          v2Line({
+            checks: VERDICT_PASSED,
+            evaluatorArtifact: artifact({ evaluator: MODEL_OBSERVED }),
+          }),
+        ],
+        SCOPE,
+      )?.evaluatorVerdict,
+    ).toMatchObject({ evidence: "schema-2", evaluator: MODEL_OBSERVED });
+  });
+
+  test("an entry whose verdict check was skipped, failed with nothing bound, or never ran says nothing about a verdict", () => {
+    for (const checks of [
+      [{ name: "typecheck", passed: true }],
+      [{ name: "eval-verdict", passed: true, skipped: true }],
+      [{ name: "eval-verdict", passed: false, output: "no evaluator verdict" }],
+    ]) {
+      expect(
+        latestGateRun([v2Line({ checks })], SCOPE)?.evaluatorVerdict,
+      ).toBeNull();
+    }
+  });
+});

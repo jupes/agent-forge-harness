@@ -72,12 +72,6 @@ export interface HookDeps {
   backupIfDue(): boolean;
 }
 
-/** What only the end of a session needs: the Beads push and the session log. */
-export interface SessionEndDeps {
-  push(): { ok: boolean; ms: number };
-  log(entry: Record<string, unknown>): void;
-}
-
 /** The real dependencies, bound to one ledger file. */
 export function hookDeps(opts: {
   env: Env;
@@ -380,35 +374,29 @@ export function handleStop(input: HookInput, deps: HookDeps): void {
 }
 
 /**
- * SessionEnd: end the session's open children, then the session, before
- * anything slow; drop the mirror if it is still this session's; then push
- * Beads once and log how that went. The push runs even when the payload
- * names no session.
+ * SessionEnd: end the session's open children, then the session, and drop
+ * the mirror if it is still this session's. A payload that names no session
+ * ends nothing. The tracker is not touched: the end of a session is handed
+ * nothing a push could be made through.
  */
-export function handleSessionEnd(
-  input: HookInput,
-  deps: HookDeps,
-  end: SessionEndDeps,
-): void {
+export function handleSessionEnd(input: HookInput, deps: HookDeps): void {
   const context = contextOf(input, deps);
-  if (context !== null) {
-    const { identity } = context;
-    const executor = executorOf(input, identity, deps);
-    for (const child of deps.openChildren(identity.sessionId))
-      deps.append({
-        kind: "session.ended",
-        ...envelope(context, executor, child),
-        payload: { reason: "parent-ended" },
-      });
-    const reason = text(input.reason);
+  if (context === null) return;
+  const { identity } = context;
+  const executor = executorOf(input, identity, deps);
+  for (const child of deps.openChildren(identity.sessionId))
     deps.append({
       kind: "session.ended",
-      ...envelope(context, executor),
-      payload: reason !== undefined ? { reason } : {},
+      ...envelope(context, executor, child),
+      payload: { reason: "parent-ended" },
     });
-    deps.removeMirror(context.worktree, identity.sessionId);
-  }
-  end.log({ event: "SessionEnd", push: end.push() });
+  const reason = text(input.reason);
+  deps.append({
+    kind: "session.ended",
+    ...envelope(context, executor),
+    payload: reason !== undefined ? { reason } : {},
+  });
+  deps.removeMirror(context.worktree, identity.sessionId);
 }
 
 export interface HookProbe {

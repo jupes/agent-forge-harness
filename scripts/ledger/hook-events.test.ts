@@ -517,16 +517,19 @@ describe("session start and end", () => {
     expect(stored[0]?.payload).toMatchObject({ source: "startup" });
   });
 
-  test("ending a session ends its open children first and pushes Beads exactly once", () => {
+  test("ending a session ends its open children first, then the session, then drops the mirror, and appends nothing else", () => {
     const box = sandbox();
     const { deps } = harness(box);
     const order: string[] = [];
-    const logged: Array<Record<string, unknown>> = [];
     const recording: HookDeps = {
       ...deps,
       append: (event: LedgerEventInput) => {
         order.push(`${event.kind} ${event.sessionId}`);
         return deps.append(event);
+      },
+      removeMirror: (worktree, ifHolds) => {
+        order.push(`mirror removed ${ifHolds}`);
+        return deps.removeMirror(worktree, ifHolds);
       },
     };
     handleSessionStart(start, recording);
@@ -542,20 +545,13 @@ describe("session start and end", () => {
     handleSessionEnd(
       { hook_event_name: "SessionEnd", session_id: "S", reason: "logout" },
       recording,
-      {
-        push: () => {
-          order.push("push");
-          return { ok: true, ms: 7 };
-        },
-        log: (entry) => logged.push(entry),
-      },
     );
 
     expect(order).toEqual([
       "session.ended S:A",
       "session.ended S:B",
       "session.ended S",
-      "push",
+      "mirror removed S",
     ]);
     const ended = events(box).filter((event) => event.kind === "session.ended");
     expect(ended.map((event) => event.payload)).toEqual([
@@ -564,15 +560,21 @@ describe("session start and end", () => {
       { reason: "logout" },
     ]);
     expect(ended[2]?.executor?.model).toBe("m-1");
-    expect(logged).toEqual([
-      { event: "SessionEnd", push: { ok: true, ms: 7 } },
-    ]);
   });
 
-  test("a child that already ended is not ended again, and a failed push is logged as failed", () => {
+  test("a session end whose payload names no session ends nothing and leaves the mirror alone", () => {
     const box = sandbox();
     const { deps } = harness(box);
-    const logged: Array<Record<string, unknown>> = [];
+    handleSessionStart(start, deps);
+    for (const input of [{}, { hook_event_name: "SessionEnd", reason: "x" }])
+      handleSessionEnd(input, deps);
+    expect(events(box).map((event) => event.kind)).toEqual(["session.started"]);
+    expect(readSessionMirror(box.cwd)).toBe("S");
+  });
+
+  test("a child that already ended is not ended again", () => {
+    const box = sandbox();
+    const { deps } = harness(box);
     handleSessionStart(start, deps);
     handleToolUse(
       {
@@ -588,35 +590,21 @@ describe("session start and end", () => {
       session_id: "S",
       reason: "other",
     };
-    let pushes = 0;
-    const closing = {
-      push: () => {
-        pushes += 1;
-        return { ok: false, ms: 3 };
-      },
-      log: (entry: Record<string, unknown>) => logged.push(entry),
-    };
-    handleSessionEnd(end, deps, closing);
+    handleSessionEnd(end, deps);
     const afterFirst = events(box).filter(
       (event) => event.kind === "session.ended" && event.sessionId === "S:A",
     );
     expect(afterFirst).toHaveLength(1);
-    handleSessionEnd(end, deps, closing);
+    handleSessionEnd(end, deps);
     const afterSecond = events(box).filter(
       (event) => event.kind === "session.ended" && event.sessionId === "S:A",
     );
     expect(afterSecond).toHaveLength(1);
-    expect(pushes).toBe(2);
-    expect(logged[0]).toEqual({
-      event: "SessionEnd",
-      push: { ok: false, ms: 3 },
-    });
   });
 
   test("the session mirror is written at start and removed at end only when it still holds this session", () => {
     const box = sandbox();
     const { deps } = harness(box);
-    const closing = { push: () => ({ ok: true, ms: 0 }), log: () => {} };
     handleSessionStart(start, deps);
     expect(readSessionMirror(box.cwd)).toBe("S");
     // A script launched from this checkout now attaches to the session.
@@ -627,20 +615,12 @@ describe("session start and end", () => {
       executor: { provider: "claude", model: "m-1" },
     });
 
-    handleSessionEnd(
-      { hook_event_name: "SessionEnd", session_id: "S" },
-      deps,
-      closing,
-    );
+    handleSessionEnd({ hook_event_name: "SessionEnd", session_id: "S" }, deps);
     expect(readSessionMirror(box.cwd)).toBeNull();
 
     handleSessionStart(start, deps);
     writeSessionMirror(box.cwd, "S-newer");
-    handleSessionEnd(
-      { hook_event_name: "SessionEnd", session_id: "S" },
-      deps,
-      closing,
-    );
+    handleSessionEnd({ hook_event_name: "SessionEnd", session_id: "S" }, deps);
     expect(readSessionMirror(box.cwd)).toBe("S-newer");
   });
 

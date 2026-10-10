@@ -3,9 +3,11 @@ import type { ForgeRunSnapshot } from "../../scripts/dashboard/forge-run-model";
 import {
   CHECKOUT,
   LEGACY_GATE,
+  LEGACY_VERDICT_GATE,
   stubForgeRun,
   stubRepos,
   UNLINKED_GATE,
+  VERDICT_BOUND_GATE,
 } from "./fixtures";
 import { collectErrors } from "./routes";
 
@@ -199,6 +201,8 @@ test.describe("Forge run", () => {
     // The bead comes from the gate's run correlation, and is named as a bead.
     await expect(scope).toContainText("for bead demo-primitives");
     await expect(page.locator(".af-gate-link")).toHaveCount(0);
+    // This gate ran no evaluator-verdict check: the card says nothing about one.
+    await expect(page.locator(".af-gate-verdict")).toHaveCount(0);
     await expect(
       page.getByRole("heading", { name: "Unattributed gate run" }),
     ).toHaveCount(0);
@@ -233,6 +237,36 @@ test.describe("Forge run", () => {
       "Not correlated to a Beads issue or a forge run: no run correlation was given",
     );
     await expect(stray.locator(".af-gate-check")).toHaveCount(1);
+  });
+
+  test("a gate run that bound the run's verdict names who judged and the file it read", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { gate: VERDICT_BOUND_GATE });
+    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+
+    const note = page.locator(".af-gate-verdict");
+    await expect(note).toContainText(
+      "Evaluator verdict by claude/claude-opus-5-5, observed (requested claude/claude-opus-5-5, rank master)",
+    );
+    await expect(note).toContainText(
+      `.tmp/work/evaluations/${"5f2c9a1e".repeat(8)}/verdict.json`,
+    );
+    await expect(note).toContainText("412 bytes, SHA-256 9b74c9897bac");
+    await expect(note).not.toContainText("legacy");
+  });
+
+  test("a gate run whose verdict check passed on a verdict naming no run says it is a legacy verdict and not evidence", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { gate: LEGACY_VERDICT_GATE });
+    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+
+    const note = page.locator(".af-gate-verdict");
+    await expect(note).toContainText("legacy verdict");
+    await expect(note).toContainText(
+      "It is not evidence that this run was evaluated.",
+    );
   });
 
   test("a gate run logged before entries were versioned is labelled legacy, and its task field is not called a bead", async ({
@@ -408,6 +442,8 @@ test.describe("Repos & knowledge", () => {
     await expect(conventions).toContainText(
       "<type>(<scope>): <short description>",
     );
-    await expect(page.getByRole("heading", { name: "Worktrees" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Worktrees" }),
+    ).toBeVisible();
   });
 });

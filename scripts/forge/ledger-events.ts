@@ -12,8 +12,13 @@ import type {
   Executor,
   LedgerEventInput,
   LedgerPayloads,
+  VerdictArtifact,
 } from "../../types/hearth";
-import type { EvalVerdictParsed } from "../eval-verdict";
+import {
+  EVAL_VERDICT_SCHEMA_VERSION,
+  type EvalVerdictParsed,
+  observedExecutor,
+} from "../eval-verdict";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { type Attach, resolveAttach } from "../ledger/identity";
 import { lastEvent } from "../ledger/query";
@@ -72,16 +77,26 @@ export function reviewRecorded(
 
 /**
  * A verdict file as the ledger binds it: the outcome, who built the work
- * under review when the run recorded that, and the file's own summary (an
- * opt-in body the ledger redacts and caps). Verdict schema 1 does not name
- * its evaluator, so none is recorded. `null` is a file that could not be read
- * or parsed.
+ * under review when the run recorded that, who judged it, and the file's own
+ * summary (an opt-in body the ledger redacts and caps).
+ *
+ * A schema 2 verdict gives the typed evaluator as declared, and an evaluator
+ * executor only from what it says was observed to run. A legacy (schema 1)
+ * verdict names no evaluator, so neither is recorded. `null` is a file that
+ * could not be read or parsed, or is not this run's. `artifact` is the file
+ * as the emitter read it, when it hashed the bytes it parsed.
  */
 export function verdictBound(input: {
-  verdict: Pick<EvalVerdictParsed, "verdict" | "summary"> | null;
+  verdict: EvalVerdictParsed | null;
   builder?: Executor;
+  artifact?: VerdictArtifact;
 }): RunEvent & { kind: "verdict.bound" } {
-  const { verdict, builder } = input;
+  const { verdict, builder, artifact } = input;
+  const identity =
+    verdict?.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION
+      ? verdict.evaluator
+      : undefined;
+  const evaluator = identity ? observedExecutor(identity) : undefined;
   return {
     kind: "verdict.bound",
     payload: {
@@ -92,6 +107,9 @@ export function verdictBound(input: {
             ? "pass"
             : "fail",
       ...(builder ? { builder } : {}),
+      ...(evaluator ? { evaluator } : {}),
+      ...(identity ? { evaluatorIdentity: identity } : {}),
+      ...(verdict !== null && artifact ? { verdictArtifact: artifact } : {}),
       ...(verdict?.summary ? { summary: verdict.summary } : {}),
     },
   };
