@@ -8,6 +8,7 @@
     "build-pages": "bun run scripts/build-pages.ts",
     "dashboard": "vite --config vite.dashboard.config.ts",
     "hearth": "bun run scripts/hearth/server.ts",
+    "hearth:mcp": "bun run scripts/hearth/mcp.ts",
     "worktree": "bun run scripts/worktree.ts",
     "council": "bun run scripts/council/cli.ts",
     "council:mcp": "bun run scripts/council/mcp.ts",
