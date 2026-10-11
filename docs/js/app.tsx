@@ -19,6 +19,7 @@ import { EpicsIsland } from "./islands/EpicsIsland";
 import { ForgeRunIsland } from "./islands/ForgeRunIsland";
 import { InsightsIsland } from "./islands/InsightsIsland";
 import { IssuesViewsIsland } from "./islands/IssuesViewsIsland";
+import { LiveBanner } from "./islands/LiveStatus";
 import { ReposIsland } from "./islands/ReposIsland";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland";
 import {
@@ -158,6 +159,7 @@ function DashboardApp() {
       snapshotLabel={label}
       snapshotIso={iso}
     >
+      <LiveBanner route={route} />
       {renderRoute()}
     </AppShell>
   );

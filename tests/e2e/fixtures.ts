@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 import type {
   ForgeRunSnapshot,
   ForgeRunView,
@@ -410,4 +410,76 @@ export async function stubRepos(
       json: { ...REPOS, data: { ...REPOS.data, ...overrides } },
     }),
   );
+}
+
+// ── Opening a page ──────────────────────────────────────────────────────────
+
+const STREAM_PATH = "/__agent-forge/stream";
+/** The quiet period the runner itself uses for "network idle". */
+const QUIET_MS = 500;
+const SETTLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Navigate, then wait until the page has stopped asking for things.
+ *
+ * This stands in for `waitUntil: "networkidle"`, which no longer ends on the
+ * dashboard: every page of the app holds one request to the event stream open
+ * for as long as it lives, and the runner counts it as in flight. Here the
+ * stream (and a browser event source, which the runner leaves out too) is not
+ * counted; everything else must have been finished for 500 ms.
+ *
+ * Requests of the document before a navigation are forgotten when the main
+ * frame navigates, as the runner forgets them: a test may reload while one is
+ * deliberately held unanswered.
+ */
+async function settled(
+  page: Page,
+  navigate: () => Promise<unknown>,
+): Promise<void> {
+  const inFlight = new Set<Request>();
+  let changedAt = Date.now();
+  const started = (request: Request): void => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      inFlight.clear();
+    if (
+      request.resourceType() !== "eventsource" &&
+      new URL(request.url()).pathname !== STREAM_PATH
+    )
+      inFlight.add(request);
+    changedAt = Date.now();
+  };
+  const finished = (request: Request): void => {
+    if (inFlight.delete(request)) changedAt = Date.now();
+  };
+  page.on("request", started);
+  page.on("requestfinished", finished);
+  page.on("requestfailed", finished);
+  try {
+    await navigate();
+    const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+    while (inFlight.size > 0 || Date.now() - changedAt < QUIET_MS) {
+      if (Date.now() > deadline)
+        throw new Error(
+          `The page did not settle within ${SETTLE_TIMEOUT_MS} ms. Still in flight: ${
+            [...inFlight].map((request) => request.url()).join(", ") ||
+            "nothing (requests kept starting)"
+          }`,
+        );
+      await page.waitForTimeout(50);
+    }
+  } finally {
+    page.off("request", started);
+    page.off("requestfinished", finished);
+    page.off("requestfailed", finished);
+  }
+}
+
+/** `page.goto` that waits for the page to settle. Works for a hash-only change as well. */
+export function openSettled(page: Page, url: string): Promise<void> {
+  return settled(page, () => page.goto(url, { waitUntil: "load" }));
+}
+
+/** `page.reload` that waits for the page to settle. */
+export function reloadSettled(page: Page): Promise<void> {
+  return settled(page, () => page.reload({ waitUntil: "load" }));
 }

@@ -1,7 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { stubForgeRun, stubRepos } from "./fixtures";
+import { expect, type Page, test } from "@playwright/test";
+import { openSettled, stubForgeRun, stubRepos } from "./fixtures";
 
 /**
  * Capture the principal surfaces.
@@ -49,7 +49,7 @@ test.describe("@screenshot", () => {
       mkdirSync(dir, { recursive: true });
 
       await surface.stub?.(page);
-      await page.goto(surface.url, { waitUntil: "networkidle" });
+      await openSettled(page, surface.url);
       // Charts and polling views need a beat to settle before capture.
       await page.waitForTimeout(1200);
 
