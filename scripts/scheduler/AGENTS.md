@@ -65,11 +65,17 @@ approval queue. Nothing here starts work: no process is spawned and no bead is c
   holder's process ends, so there is no stale lock and nothing to take over. It is one lock for all
   queue moves, and it serializes only the processes given the same file: a shift must be given the
   hearth's (`AGENT_FORGE_HOME`). A failed attempt costs about 30 ms of synchronous time, so callers
-  of one process wait in a line and only its head asks SQLite, 50 to 100 ms apart.
-- A writer that does not go through `queue.ts` (a hand edit, another machine) is not serialized.
-  It is found after the fact: the write is confirmed as exactly one queue label, the target, with
-  `queue_state` the target, and anything else is `conflict` or `unknown` with no event and no
-  compensating write.
+  of one process wait in a line and only its head asks SQLite, 50 to 100 ms apart. A caller whose
+  turn comes after its deadline answers busy without an attempt.
+- A writer that does not take this lock (a hand edit, a process given another lock file, another
+  machine) is not serialized, and it is found only when it leaves something other than the target:
+  the write is confirmed as exactly one queue label, the target, with `queue_state` the target, and
+  anything else is `conflict` or `unknown` with no event and no compensating write. One that makes
+  the same move at the same time leaves exactly the target, so it is not found; when both writers
+  are `queue.ts` (two lock files), the move is recorded twice.
+- `queue_state` and `queue_resume` are trusted as written: metadata set by hand is read as the
+  queue's own. A process that ends between the `bd update` and the append leaves the move made with
+  no `bead.transitioned` for it.
 - `reassign` records a smith as the bead's `smith` metadata, which is where smith resolution reads
   a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state and appends
   no transition. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label

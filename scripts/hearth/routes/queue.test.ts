@@ -562,7 +562,7 @@ describe("two requests at once", () => {
     expect(tracker.updates().length).toBe(moves.length);
   });
 
-  test("a hearth and a second process of the same home take the same lock: while it is held a move is 409 busy and bd is not called", async () => {
+  test("the hearth takes its home's lock file: while another connection holds it, as a second process of that home would, a move is 409 busy and bd is not called", async () => {
     const { h, tracker } = await start([backed("demo-1", "proposed")]);
     const { Database } = await import("bun:sqlite");
     const holder = new Database(join(h.home, "queue-lock.db"), {
@@ -663,6 +663,22 @@ describe("POST /queue/:id/reassign", () => {
       (await post(h, "/queue/demo-1/reassign", { smith: "claude-journeyman" }))
         .status,
     ).toBe(200);
+  });
+
+  test("the smiths are read without this process's environment: AGENT_FORGE_SMITH naming no smith changes nothing", async () => {
+    const { h } = await start([backed("demo-1", "queued")]);
+    const before = process.env["AGENT_FORGE_SMITH"];
+    // Read with the environment, this would fail the config: unknown default smith.
+    process.env["AGENT_FORGE_SMITH"] = "no-such-smith";
+    try {
+      const answer = await post(h, "/queue/demo-1/reassign", {
+        smith: "claude-master",
+      });
+      expect(answer.status).toBe(200);
+    } finally {
+      if (before === undefined) delete process.env["AGENT_FORGE_SMITH"];
+      else process.env["AGENT_FORGE_SMITH"] = before;
+    }
   });
 
   test("a config that cannot be read is 500 with nothing recorded and nothing done", async () => {

@@ -680,6 +680,14 @@ describe("a label the queue did not write", () => {
     expect(result.ok ? "" : result.error).toContain("closed");
     expect(tracker.updates()).toEqual([]);
     expect(events(bead.id)).toEqual([]);
+    // The refusal names the state the bead is in, not the one the scheduler starts from.
+    const approved = beadIn("approved", undefined, { status: "closed" });
+    const byHand = rig([approved]);
+    const refused = await byHand.queue.move(approved.id, "start", "operator");
+    expect(refused.ok ? "" : refused.error).toContain(
+      `${approved.id} is queue:approved and its Beads status is closed`,
+    );
+    expect(byHand.tracker.updates()).toEqual([]);
     // No call the queue makes names a status.
     const walked = beadIn(null);
     const all = rig([walked]);
@@ -960,6 +968,36 @@ describe("a write that does not happen, or cannot be confirmed", () => {
       expect(result.ok ? "ok" : result.kind).toBe(kind);
       expect(tracker.updates()).toEqual([]);
       expect(events(bead.id)).toEqual([]);
+    }
+  });
+
+  test("bd's text in an answer is made safe: a secret is redacted and a long one is cut, on the read and on the write", async () => {
+    const secret = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    for (const call of ["show", "update"]) {
+      for (const [said, check] of [
+        [
+          `remote said ${secret}`,
+          (error: string) => {
+            expect(error).not.toContain(secret);
+            expect(error).toContain("remote said");
+          },
+        ],
+        [
+          "x".repeat(5000),
+          (error: string) => expect(error.length).toBeLessThanOrEqual(500),
+        ],
+      ] as const) {
+        const bead = beadIn("proposed");
+        const { tracker, queue } = rig([bead]);
+        tracker.intercept = (args) =>
+          args[0] === call ? bdAnswers.refusedOnStderr(said) : undefined;
+        const result = await queue.move(bead.id, "approve", "operator");
+        expect({ call, kind: result.ok ? "ok" : result.kind }).toEqual({
+          call,
+          kind: "failed",
+        });
+        check(result.ok ? "" : result.error);
+      }
     }
   });
 

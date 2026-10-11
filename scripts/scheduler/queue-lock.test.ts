@@ -150,7 +150,37 @@ describe("withQueueLock", () => {
     expect((await withQueueLock(file, async () => "third")).ok).toBe(true);
   });
 
-  test("a lock held by another connection is waited for, not shared (two processes are two connections)", async () => {
+  test("a caller whose turn comes after its deadline is busy without an attempt, even with the lock free", async () => {
+    const file = join(scratch(), "queue-lock.db");
+    // The first holder blocks the event loop past the second caller's
+    // deadline, so the second caller's turn comes before its timer can fire.
+    const first = withQueueLock(file, async () => {
+      const end = Date.now() + 100;
+      while (Date.now() < end) {
+        // Hold the event loop.
+      }
+      return "first";
+    });
+    let called = false;
+    const second = withQueueLock(
+      file,
+      async () => {
+        called = true;
+      },
+      { waitMs: 20 },
+    );
+    expect(await first).toEqual({ ok: true, value: "first" });
+    const late = await second;
+    expect(late.ok ? "" : late.reason).toBe("busy");
+    expect(called).toBe(false);
+    // The lock was free all along: the next caller takes it at once.
+    expect(await withQueueLock(file, async () => "next")).toEqual({
+      ok: true,
+      value: "next",
+    });
+  });
+
+  test("a lock held by another connection of this process is waited for, not shared, as a second process's would be", async () => {
     const dir = scratch();
     const file = join(dir, "queue-lock.db");
     const { Database } = await import("bun:sqlite");
@@ -172,8 +202,9 @@ describe("withQueueLock", () => {
     expect(await waiting).toEqual({ ok: true, value: "after" });
   });
 
-  test("a lock file that is not a database is unusable: the work is not called and nothing throws", async () => {
-    const file = join(scratch(), "queue-lock.db");
+  test("a lock file that is not a database is unusable: the work is not called, nothing throws, and the answer names no path", async () => {
+    const dir = scratch();
+    const file = join(dir, "queue-lock.db");
     writeFileSync(
       file,
       "this is not a database, and it is long enough to be read as one",
@@ -184,8 +215,28 @@ describe("withQueueLock", () => {
     });
     expect(locked.ok).toBe(false);
     expect(locked.ok ? "" : locked.reason).toBe("unusable");
-    expect(locked.ok ? "" : locked.error).toContain("queue-lock.db");
+    expect(locked.ok ? "" : locked.error).toContain(
+      "the queue lock could not be taken",
+    );
+    expect(locked.ok ? "" : locked.error).not.toContain("queue-lock.db");
+    expect(locked.ok ? "" : locked.error).not.toContain(dir);
     expect(called).toBe(false);
+  });
+
+  test("a lock whose directory cannot be made is unusable, and the answer names no path", async () => {
+    const dir = scratch();
+    // A file where the directory should be.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "");
+    const locked = await withQueueLock(
+      join(blocker, "inside", "queue-lock.db"),
+      async () => "no",
+    );
+    expect(locked.ok ? "" : locked.reason).toBe("unusable");
+    expect(locked.ok ? "" : locked.error).toContain(
+      "its directory could not be made",
+    );
+    expect(locked.ok ? "" : locked.error).not.toContain(dir);
   });
 
   test("real processes: five contend around an exclusive marker, two exit while holding, and no two ever hold at once", async () => {

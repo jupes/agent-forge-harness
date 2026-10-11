@@ -124,16 +124,19 @@ export async function withQueueLock<T>(
       }),
     ]);
     clearTimeout(timer);
-    if (!myTurn) return busy;
+    // A turn that comes after the deadline makes no attempt: an attempt costs
+    // synchronous time, and the callers behind this one would wait for it.
+    if (!myTurn || Date.now() >= deadline) return busy;
 
     try {
       mkdirSync(dirname(path), { recursive: true });
-    } catch (error) {
-      return unusable(path, safeMessage(error));
+    } catch {
+      // The file system's message names the path; it is not passed on.
+      return unusable("its directory could not be made");
     }
     for (;;) {
       const tried = attempt(path);
-      if ("unusable" in tried) return unusable(path, tried.unusable);
+      if ("unusable" in tried) return unusable(tried.unusable);
       if ("db" in tried) {
         try {
           return { ok: true, value: await work() };
@@ -151,10 +154,11 @@ export async function withQueueLock<T>(
   }
 }
 
-function unusable<T>(path: string, why: string): Locked<T> {
+/** The answer names no path: it reaches the operator API, which does not show where the harness home is. */
+function unusable<T>(why: string): Locked<T> {
   return {
     ok: false,
     reason: "unusable",
-    error: `the queue lock at ${path} could not be taken (${why}); nothing was done`,
+    error: `the queue lock could not be taken (${why}); nothing was done`,
   };
 }

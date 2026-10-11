@@ -15,7 +15,18 @@
  * sets metadata `queue_state` to the same state, and `bd create --parent`
  * copies a parent's labels onto a child but not its metadata. A label with no
  * such backing was inherited or added by hand, and the only move it takes is
- * `propose`.
+ * `propose`. The backing is trusted as written: a `queue_state` or
+ * `queue_resume` set by hand with `bd update --set-metadata` is read as the
+ * queue's own.
+ *
+ * What is not covered:
+ * - A writer that does not take this lock (a hand edit with `bd`, a process
+ *   given another lock file, another machine) is found only when it leaves a
+ *   second queue label on the bead. One that makes the same move at the same
+ *   time leaves exactly the target, so neither writer can tell; when both
+ *   are this module (two lock files), the move is recorded twice.
+ * - A process that ends between the `bd update` and the append leaves the
+ *   move made on the bead with no `bead.transitioned` for it.
  */
 
 import {
@@ -572,7 +583,7 @@ export function createQueue(deps: QueueDeps): Queue {
     if (action === "start" && shown.value["status"] === "closed")
       return no(
         "refused",
-        `${id} is ${label("queued")} and its Beads status is closed: a closed bead is not started.`,
+        `${id} is ${from === null ? "not in the queue" : label(from)} and its Beads status is closed: a closed bead is not started.`,
       );
 
     // The label the bead carries now, which the write replaces. Never the one
