@@ -10,6 +10,7 @@ import {
   type RunHealth,
 } from "../../../scripts/dashboard/forge-run-model";
 import type { BeadsPayload } from "../../../types/beads";
+import type { LedgerEventKind } from "../../../types/hearth";
 import { Button } from "../ds/Button";
 import { Card } from "../ds/Card";
 import { EmptyState } from "../ds/EmptyState";
@@ -24,9 +25,21 @@ import {
 } from "../forge-checkpoints";
 import { statusLabel, statusTone } from "../issue-presentation";
 import { operatorPost } from "../operator";
-import { useDevApi } from "../use-dev-api";
+import { useLiveRead } from "../use-stream";
 
 const REVIEW_URL = "/__agent-forge/dev-api/forge-run/review";
+
+/**
+ * The ledger events after which what this page shows may have changed: a
+ * phase recorded, a review round decided, a quality gate run, a verdict bound
+ * to one. The page reads its route again when one arrives.
+ */
+const FORGE_RUN_KINDS: readonly LedgerEventKind[] = [
+  "run.phase.completed",
+  "review.recorded",
+  "gate.ran",
+  "verdict.bound",
+];
 
 const PHASE_LABEL: Record<string, string> = {
   research: "Research",
@@ -208,7 +221,10 @@ function RunsBoard({
  * one at a time — the newest still in flight, until you pick another.
  */
 export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
-  const { data, error, loading } = useDevApi<ForgeRunSnapshot>("/forge-run");
+  const { data, error, loading } = useLiveRead<ForgeRunSnapshot>(
+    "/forge-run",
+    FORGE_RUN_KINDS,
+  );
   const [picked, setPicked] = useState<string | null>(null);
 
   if (loading) return <EmptyState title="Reading forge state…" live />;

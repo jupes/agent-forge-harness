@@ -202,7 +202,7 @@ Builds on `ulpz.3`; if `ulpz.3` has not landed when this starts, land its schema
 
 <a id="f7-stream"></a>
 ### `use-stream`
-- One `EventSource` per app; merge into `docs/js/app-state.ts`. Static mode (GitHub Pages) detects no control plane and falls back to `docs/data/beads.json` with actions disabled and a banner.
+- One event-stream connection per app, read with `fetch` so a reconnect can send `Last-Event-ID` (the browser event-source class cannot set it on a connection the page opens); merge into `docs/js/app-state.ts`. Static mode (GitHub Pages) detects no control plane and falls back to `docs/data/beads.json` with actions disabled and a banner.
 
 <a id="f7-sessions"></a>
 ### Sessions board
