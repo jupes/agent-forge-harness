@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { stubSnapshot } from "./fixtures";
+import { openSettled, stubSnapshot } from "./fixtures";
 import { collectErrors, ROUTES } from "./routes";
 
 /**
@@ -13,7 +13,7 @@ import { collectErrors, ROUTES } from "./routes";
 test("keyboard focus produces a visible outline, not a suppressed one", async ({
   page,
 }) => {
-  await page.goto("/index.html#/dashboard", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/dashboard");
 
   await page.keyboard.press("Tab");
 
@@ -28,7 +28,10 @@ test("keyboard focus produces a visible outline, not a suppressed one", async ({
     };
   });
 
-  expect(focus, "something should receive focus on the first Tab").not.toBeNull();
+  expect(
+    focus,
+    "something should receive focus on the first Tab",
+  ).not.toBeNull();
   expect(focus?.outlineStyle).not.toBe("none");
   expect(focus?.outlineWidth ?? 0).toBeGreaterThan(0);
 });
@@ -38,7 +41,7 @@ test("the skip link moves focus to main without changing the route", async ({
 }) => {
   // Start somewhere other than the default route: a skip link that navigates
   // would land on Dashboard, which a test starting there could not notice.
-  await page.goto("/index.html#/issues", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/issues");
 
   await page.keyboard.press("Tab");
   const skip = page.locator(".af-skip-link");
@@ -55,7 +58,7 @@ test("the skip link moves focus to main without changing the route", async ({
 test("a bare in-page fragment does not reset the current route", async ({
   page,
 }) => {
-  await page.goto("/index.html#/epics", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/epics");
   await page.evaluate(() => {
     window.location.hash = "af-main";
   });
@@ -65,14 +68,16 @@ test("a bare in-page fragment does not reset the current route", async ({
 test("every nav destination is reachable by keyboard alone", async ({
   page,
 }) => {
-  await page.goto("/index.html#/dashboard", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/dashboard");
 
   const reached = new Set<string>();
   for (let i = 0; i < 40; i += 1) {
     await page.keyboard.press("Tab");
     const href = await page.evaluate(() => {
       const el = document.activeElement as HTMLAnchorElement | null;
-      return el?.classList.contains("af-nav-item") ? el.getAttribute("href") : null;
+      return el?.classList.contains("af-nav-item")
+        ? el.getAttribute("href")
+        : null;
     });
     if (href) reached.add(href);
     if (reached.size >= ROUTES.length) break;
@@ -83,7 +88,7 @@ test("every nav destination is reachable by keyboard alone", async ({
 
 /** Open the Bead builder's dialog from its submit button. */
 async function openBeadDialog(page: import("@playwright/test").Page) {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await page.fill("#bb-title", "Keyboard check");
   const submit = page.locator("button[type=submit]");
   await submit.focus();
@@ -155,7 +160,7 @@ test("issue rows are operable with the keyboard", async ({ page }) => {
   // The snapshot is generated data that a fresh checkout does not have, so the
   // rows come from the fixture: this used to skip wherever it was missing.
   await stubSnapshot(page);
-  await page.goto("/index.html#/issues", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/issues");
 
   const row = page.locator(".af-issue-row").first();
   await expect(row).toHaveAttribute("role", "button");
@@ -176,7 +181,7 @@ test.describe("mobile viewport", { tag: "@mobile" }, () => {
   test("the nav stays reachable instead of being display:none", async ({
     page,
   }) => {
-    await page.goto("/index.html#/dashboard", { waitUntil: "networkidle" });
+    await openSettled(page, "/index.html#/dashboard");
 
     const nav = page.locator("nav.af-nav");
     await expect(nav).toBeVisible();
@@ -191,13 +196,16 @@ test.describe("mobile viewport", { tag: "@mobile" }, () => {
   test("no page scrolls sideways at 375px", async ({ page }) => {
     for (const route of ROUTES) {
       const errors = collectErrors(page);
-      await page.goto(route.url, { waitUntil: "networkidle" });
+      await openSettled(page, route.url);
       const overflow = await page.evaluate(
         () =>
           document.documentElement.scrollWidth -
           document.documentElement.clientWidth,
       );
-      expect(overflow, `${route.url} overflows horizontally`).toBeLessThanOrEqual(1);
+      expect(
+        overflow,
+        `${route.url} overflows horizontally`,
+      ).toBeLessThanOrEqual(1);
       expect(errors, `errors on ${route.url}`).toEqual([]);
     }
   });

@@ -4,7 +4,7 @@ import {
   SURFACE_HEADER,
   TOKEN_ROUTE,
 } from "../../scripts/hearth/paths";
-import { stubForgeRun } from "./fixtures";
+import { openSettled, stubForgeRun } from "./fixtures";
 
 /**
  * The operator API, from a browser, through the dashboard's proxy.
@@ -72,7 +72,7 @@ const START = {
 test("a mutation from the page without the operator token is refused, and nothing is recorded", async ({
   page,
 }) => {
-  await page.goto("/council.html", { waitUntil: "networkidle" });
+  await openSettled(page, "/council.html");
   const before = await recorded(page, "operator.action");
 
   const bare = await fromPage(page, `${API}/council/runs`, {
@@ -102,7 +102,7 @@ test("a mutation from the page without the operator token is refused, and nothin
 test("the Council page starts a run with the operator token; the hearth records the action, then the run", async ({
   page,
 }) => {
-  await page.goto("/council.html", { waitUntil: "networkidle" });
+  await openSettled(page, "/council.html");
   const token = (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data
     ?.token;
   expect(token, "the token route answers the page").toMatch(/^[0-9a-f]{64}$/);
@@ -173,7 +173,7 @@ test("a checkpoint review is posted with the operator token", async ({
     )
       headers.push(request.headers());
   });
-  await page.goto("/index.html#/forge-run", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/forge-run");
   const token = (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data
     ?.token;
 
@@ -191,7 +191,7 @@ test("a checkpoint review is posted with the operator token", async ({
 test("the hearth stream reaches an EventSource through the dashboard: a snapshot, then a delta", async ({
   page,
 }) => {
-  await page.goto("/council.html", { waitUntil: "networkidle" });
+  await openSettled(page, "/council.html");
   const token = (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data
     ?.token;
 

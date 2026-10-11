@@ -1,12 +1,15 @@
 import { expect, test } from "@playwright/test";
+import { openSettled } from "./fixtures";
 import { collectErrors, NAV_DESTINATION_COUNT, ROUTES } from "./routes";
 
 test.describe("every route loads by direct navigation", () => {
   for (const route of ROUTES) {
-    test(`${route.url} renders "${route.heading}" cleanly`, async ({ page }) => {
+    test(`${route.url} renders "${route.heading}" cleanly`, async ({
+      page,
+    }) => {
       const errors = collectErrors(page);
 
-      await page.goto(route.url, { waitUntil: "networkidle" });
+      await openSettled(page, route.url);
 
       await expect(page.locator("h1")).toHaveText(route.heading);
 
@@ -36,7 +39,7 @@ test("the self-hosted typeface loads with no request to a font CDN", async ({
     }
   });
 
-  await page.goto("/index.html#/dashboard", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/dashboard");
 
   expect(external).toEqual([]);
   await expect(page.locator("body")).toHaveCSS(
@@ -48,12 +51,12 @@ test("the self-hosted typeface loads with no request to a font CDN", async ({
 test("the active nav item is the one matching the current route", async ({
   page,
 }) => {
-  await page.goto("/index.html#/issues", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/issues");
   await expect(page.locator("nav a[aria-current='page']")).toHaveText(
     /All issues/,
   );
 
-  await page.goto("/council.html", { waitUntil: "networkidle" });
+  await openSettled(page, "/council.html");
   await expect(page.locator("nav a[aria-current='page']")).toHaveText(
     /Council/,
   );
@@ -68,7 +71,7 @@ test("a data-independent route still paints when the snapshot fetch fails", asyn
     route.fulfill({ status: 404, body: "not found" }),
   );
 
-  await page.goto("/index.html#/commands", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/commands");
 
   await expect(page.locator("h1")).toHaveText("Commands");
   await expect(page.locator("table").first()).toBeVisible();
@@ -81,7 +84,7 @@ test("an issue view explains itself when the snapshot is unavailable", async ({
     route.fulfill({ status: 404, body: "not found" }),
   );
 
-  await page.goto("/index.html#/dashboard", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/dashboard");
 
   await expect(page.locator(".af-empty")).toContainText("No snapshot loaded");
   await expect(page.locator(".af-empty")).toContainText("bun run build-pages");
@@ -90,6 +93,6 @@ test("an issue view explains itself when the snapshot is unavailable", async ({
 test("an unknown route falls back to the dashboard rather than a blank page", async ({
   page,
 }) => {
-  await page.goto("/index.html#/does-not-exist", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/does-not-exist");
   await expect(page.locator("h1")).toHaveText("Dashboard");
 });

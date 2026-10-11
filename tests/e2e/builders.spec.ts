@@ -6,7 +6,7 @@ import {
   SURFACE_HEADER,
   TOKEN_ROUTE,
 } from "../../scripts/hearth/paths";
-import { BEADS, stubSnapshot } from "./fixtures";
+import { BEADS, openSettled, reloadSettled, stubSnapshot } from "./fixtures";
 import { BD_STAND_IN_STATE } from "./servers";
 
 /**
@@ -51,7 +51,7 @@ test("bead builder fallback is read-only, focused and fully selected", async ({
   page,
 }) => {
   await denyClipboard(page);
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await page.fill("#bb-title", "Fallback check");
   await page.click("button[type=submit]");
 
@@ -71,7 +71,7 @@ test("skill builder fallback is read-only, focused and fully selected", async ({
   page,
 }) => {
   await denyClipboard(page);
-  await page.goto("/index.html#/skill-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/skill-builder");
   await page.fill("#sb-skill-name", "deploy staging");
   await page.fill("#sb-description", "Deploy to staging");
   await page.click("button[type=submit]");
@@ -90,7 +90,7 @@ test("skill builder fallback is read-only, focused and fully selected", async ({
 
 test("the fallback text cannot be edited", async ({ page }) => {
   await denyClipboard(page);
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await page.fill("#bb-title", "Read-only check");
   await page.click("button[type=submit]");
 
@@ -109,7 +109,7 @@ for (const [route, card, fill] of [
   test(`${route} success flash lands on its card and clears`, async ({
     page,
   }) => {
-    await page.goto(`/index.html#/${route}`, { waitUntil: "networkidle" });
+    await openSettled(page, `/index.html#/${route}`);
     const target = page.locator(card);
     await expect(target).toHaveCount(1);
 
@@ -192,8 +192,8 @@ async function recorded(page: Page): Promise<Recorded[]> {
  * snapshot served from here on would not be the one on screen.
  */
 async function openIssues(page: Page): Promise<void> {
-  await page.goto("/index.html#/issues", { waitUntil: "networkidle" });
-  await page.reload({ waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/issues");
+  await reloadSettled(page);
 }
 
 /**
@@ -235,7 +235,7 @@ async function createFromBuilder(page: Page, title: string): Promise<string> {
 test("create, claim and comment from the bead builder go through the control plane to bd, and are recorded", async ({
   page,
 }) => {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await requireStandIn(page);
   const callsBefore = standInCalls().length;
   const lastEvent = (await recorded(page)).at(-1)?.id ?? 0;
@@ -411,7 +411,7 @@ test("create, claim and comment from the bead builder go through the control pla
 
   // A reload does not lose what was done: the dev server reloads the page
   // when the tracker changes, and a lost id would invite a second create.
-  await page.reload({ waitUntil: "networkidle" });
+  await reloadSettled(page);
   const again = page.locator("#bead-created-card");
   await expect(again.locator(".issue-id-copy code").first()).toHaveText(
     childId,
@@ -427,7 +427,7 @@ test("claim, comment and close from the issue detail panel; what was changed is 
   page,
 }) => {
   // A bead bd knows: created through the builder, so each run has its own.
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await requireStandIn(page);
   const id = await createFromBuilder(page, "Panel bead");
   const callsBefore = standInCalls().length;
@@ -493,7 +493,7 @@ test("claim, comment and close from the issue detail panel; what was changed is 
   await expect(panel).toContainText("This bead is already closed.");
 
   // After a reload too.
-  await page.reload({ waitUntil: "networkidle" });
+  await reloadSettled(page);
   await page.locator(`[data-issue-id="${id}"]`).click();
   const reloaded = page.locator(".af-detail");
   await expect(
@@ -526,7 +526,7 @@ test("with no control plane the actions are disabled and say why, and copying th
     route.fulfill({ status: 404, body: "Not Found" }),
   );
   const callsBefore = standInCalls().length;
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
 
   await expect(createButton(page)).toBeDisabled();
   await expect(page.locator("#bb-create-reason")).toContainText(
@@ -563,7 +563,7 @@ test("with no control plane the actions are disabled and say why, and copying th
 test("Create is not offered while Labels or another Repo is set, and is again once they are cleared", async ({
   page,
 }) => {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await page.fill("#bb-title", "Labelled");
   await expect(createButton(page)).toBeEnabled();
 
@@ -597,7 +597,7 @@ test("Create is not offered while Labels or another Repo is set, and is again on
 test("a refusal by bd is shown as the error, and nothing says a bead was created", async ({
   page,
 }) => {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await requireStandIn(page);
   await page.fill("#bb-title", "Orphan");
   await page.fill("#bb-parent", "e2e-no-such-parent");
@@ -663,7 +663,7 @@ async function pressTwiceAtOnce(button: Locator): Promise<void> {
 test("an outcome nobody knows is said as not known, is still said after the view is left and the page reloaded, and goes when it is dismissed", async ({
   page,
 }) => {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await requireStandIn(page);
   const id = await createFromBuilder(page, "Unknown outcome bead");
   const callsBefore = standInCalls().length;
@@ -714,13 +714,13 @@ test("an outcome nobody knows is said as not known, is still said after the view
     .getByRole("button", { name: "Dismiss the comment notice" })
     .click();
   await expect(kept).toHaveCount(0);
-  await page.reload({ waitUntil: "networkidle" });
+  await reloadSettled(page);
   await page.locator(`[data-issue-id="${id}"]`).click();
   await expect(panel).toBeVisible();
   await expect(kept).toHaveCount(0);
 
   // A create whose request never completed: no id came back to look up.
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await page.route(`**${API}/beads`, (route) =>
     route.request().method() === "POST"
       ? route.abort("connectionreset")
@@ -754,7 +754,7 @@ test("an outcome nobody knows is said as not known, is still said after the view
 test("while a write is out its controls are disabled, and a second press in the same instant sends nothing", async ({
   page,
 }) => {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await requireStandIn(page);
   const callsBefore = standInCalls().length;
 
@@ -818,7 +818,7 @@ test("while a write is out its controls are disabled, and a second press in the 
 test("a page reloaded while a write is out says afterwards that its outcome is not known", async ({
   page,
 }) => {
-  await page.goto("/index.html#/bead-builder", { waitUntil: "networkidle" });
+  await openSettled(page, "/index.html#/bead-builder");
   await requireStandIn(page);
   const id = await createFromBuilder(page, "Reloaded mid-write");
   const callsBefore = standInCalls().length;
@@ -838,7 +838,7 @@ test("a page reloaded while a write is out says afterwards that its outcome is n
   // While the answer is awaited nothing is said about its outcome.
   await expect(actions.locator("[data-outcome]")).toHaveCount(0);
 
-  await page.reload({ waitUntil: "networkidle" });
+  await reloadSettled(page);
   close.release();
   const notice = actions.locator('[data-outcome="unknown"]');
   await expect(notice).toContainText("Outcome not known (close).");
@@ -851,7 +851,7 @@ test("a page reloaded while a write is out says afterwards that its outcome is n
   await page.fill("#bb-title", "Created just before a reload");
   await createButton(page).click();
   await expect.poll(create.count).toBe(1);
-  await page.reload({ waitUntil: "networkidle" });
+  await reloadSettled(page);
   create.release();
   const lost = page.locator('#bb-create-unsettled [data-outcome="unknown"]');
   await expect(lost).toContainText(
