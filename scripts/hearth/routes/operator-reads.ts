@@ -95,6 +95,25 @@ export function noParameters(request: RouteRequest): ValidationResult<null> {
   return checked.ok ? { ok: true, value: null } : checked;
 }
 
+/** The body, when it is an object that holds nothing but the fields its row takes. */
+export function bodyFields(
+  request: RouteRequest,
+  allowed: readonly string[],
+): ValidationResult<Record<string, unknown>> {
+  const given = noParameters(request);
+  if (!given.ok) return given;
+  const body = request.body;
+  if (!isRecord(body)) return fail("Expected a JSON object");
+  // Nothing rides along: a field the row does not take is refused, not ignored.
+  return Object.keys(body).every((key) => allowed.includes(key))
+    ? { ok: true, value: body }
+    : fail(
+        allowed.length === 0
+          ? "Expected an empty object: this action takes no fields"
+          : `Unknown field: this action takes only ${allowed.join(", ")}`,
+      );
+}
+
 /** A whole number in a range, written in plain digits. */
 function integer(
   name: string,

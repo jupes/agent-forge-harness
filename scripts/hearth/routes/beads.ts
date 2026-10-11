@@ -24,7 +24,6 @@ import type {
 } from "../../../types/hearth";
 import { hashText } from "../../hash-text";
 import type { AppendResult } from "../../ledger/append";
-import { parseBeadsIssueId } from "../../run-correlation";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -33,12 +32,19 @@ import {
   type RouteRequest,
   safeMessage,
 } from "../api";
+import {
+  isBeadId as beadId,
+  neverStarted,
+  parsed,
+  refusal,
+  storeEvent,
+} from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import type { BdResult, BdRunner } from "./dev-api";
 import {
   fail,
+  bodyFields as fields,
   isRecord,
-  looksLikeSecret,
   noParameters,
 } from "./operator-reads";
 
@@ -104,15 +110,6 @@ export const BEAD_TEXT_LIMITS = {
   reason: 1000,
 } as const;
 
-/** A string that is a Beads id exactly as given, and that the ledger would store. */
-function beadId(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    parseBeadsIssueId(value) === value &&
-    !looksLikeSecret(value)
-  );
-}
-
 /** Half of a surrogate pair: it cannot reach `bd` as it was sent. */
 const LONE_SURROGATE = /\p{Cs}/u;
 /** Any control character but newline and tab. */
@@ -130,25 +127,6 @@ function saysSomething(text: string): boolean {
 
 /** What bd itself accepts for a title: 500 bytes. */
 const BD_TITLE_BYTES = 500;
-
-/** The body, when it is an object that holds nothing but the fields its row takes. */
-function fields(
-  request: RouteRequest,
-  allowed: readonly string[],
-): ValidationResult<Record<string, unknown>> {
-  const parameters = noParameters(request);
-  if (!parameters.ok) return parameters;
-  const body = request.body;
-  if (!isRecord(body)) return fail("Expected a JSON object");
-  // Nothing rides along: a field the row does not take is refused, not ignored.
-  return Object.keys(body).every((key) => allowed.includes(key))
-    ? { ok: true, value: body }
-    : fail(
-        allowed.length === 0
-          ? "Expected an empty object: this action takes no fields"
-          : `Unknown field: this action takes only ${allowed.join(", ")}`,
-      );
-}
 
 /**
  * A text as it will be handed to `bd`: as given, once CR LF is LF. Absent, or
@@ -306,14 +284,6 @@ const worded =
 /** What `bd` printed, once it is known to describe the write that was asked for. */
 type Confirmed = Omit<BeadWriteResult, "action" | "recorded" | "recordError">;
 
-function parsed(stdout: string): unknown {
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    return undefined;
-  }
-}
-
 function strings(value: unknown): string[] | undefined {
   return Array.isArray(value) &&
     value.length > 0 &&
@@ -457,67 +427,6 @@ interface Write {
   confirm(stdout: string, began: number): Confirmed | Conflict | null;
 }
 
-/**
- * bd's error line out of what it printed on stderr: the last line that begins
- * `Error`, else the last line. Not the whole output: before it refuses, bd can
- * print a warning that repeats the title it was given.
- */
-function errorLine(output: string): string {
-  const lines = output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const error =
-    [...lines].reverse().find((line) => /^Error\b/.test(line)) ??
-    lines.at(-1) ??
-    "";
-  return error.replace(/^Error:\s*/, "");
-}
-
-/**
- * Why bd refused, in bd's own words. With `--json` some commands print the
- * error on stdout and nothing on stderr; the runner then fills stderr with its
- * own line, `Command failed: bd <every argument>`, which repeats the text that
- * was sent and is never passed on.
- */
-function refusal(result: BdResult): string {
-  const printed = parsed(result.stdout);
-  if (isRecord(printed) && typeof printed["error"] === "string")
-    return printed["error"].trim() || `exit ${result.status}`;
-  const said = result.stderr.trim();
-  return (
-    (said.startsWith("Command failed:") ? "" : errorLine(said)) ||
-    `exit ${result.status}`
-  );
-}
-
-/** What the runtime itself says, in full, when there is no program named bd to start. */
-const NO_SUCH_PROGRAM = [
-  /^Executable not found in \$PATH: "bd"$/,
-  /^spawn bd ENOENT$/,
-];
-
-/**
- * Whether a call with no exit status never became a process at all. Only the
- * runtime's own message, whole and alone, says so: a bd that started prints
- * warnings of its own, and a warning can hold any word, the title it was given
- * included. Anything else with no exit status is an outcome nobody knows.
- */
-function neverStarted(result: BdResult): boolean {
-  const said = result.stderr.trim();
-  return (
-    result.stdout === "" &&
-    NO_SUCH_PROGRAM.some((message) => message.test(said))
-  );
-}
-
-/** A busy ledger is tried this many times, this far apart, before the answer says "not recorded". */
-const RECORD_ATTEMPTS = 3;
-const RECORD_RETRY_MS = 25;
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((done) => setTimeout(done, ms));
-
 export function beadRoutes(deps: BeadDeps): ApiRoute[] {
   /** Append the outcome event. Null when the ledger stored it, else why not. */
   async function record(
@@ -538,26 +447,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
           : {}),
       },
     };
-    for (let attempt = 1; ; attempt++) {
-      let result: unknown;
-      try {
-        result = deps.appendEvent(event);
-      } catch (error) {
-        return safeMessage(error);
-      }
-      if (!isRecord(result)) return "the ledger did not answer";
-      if (result["ok"] === true)
-        return typeof result["id"] === "number" && result["id"] > 0
-          ? null
-          : "the ledger stored no row";
-      const reason =
-        typeof result["error"] === "string"
-          ? result["error"]
-          : "the ledger refused";
-      if (!/busy|locked/i.test(reason) || attempt >= RECORD_ATTEMPTS)
-        return safeMessage(reason);
-      await sleep(RECORD_RETRY_MS);
-    }
+    return storeEvent(deps.appendEvent, event);
   }
 
   /**
