@@ -16,6 +16,19 @@ export interface DevApiState<T> {
   loading: boolean;
 }
 
+/** One read of a dev-only route. Rejects when it did not answer with its data. */
+export async function fetchDevApi<T>(route: string): Promise<T> {
+  const response = await fetch(`${DEV_API}${route}`);
+  const envelope = (await response.json()) as {
+    ok: boolean;
+    data: T;
+    error: string | null;
+  };
+  if (!response.ok || !envelope.ok)
+    throw new Error(envelope.error ?? `HTTP ${response.status}`);
+  return envelope.data;
+}
+
 export function useDevApi<T>(route: string): DevApiState<T> {
   const [state, setState] = useState<DevApiState<T>>({
     data: null,
@@ -27,17 +40,8 @@ export function useDevApi<T>(route: string): DevApiState<T> {
     let live = true;
     void (async () => {
       try {
-        const response = await fetch(`${DEV_API}${route}`);
-        const envelope = (await response.json()) as {
-          ok: boolean;
-          data: T;
-          error: string | null;
-        };
-        if (!live) return;
-        if (!response.ok || !envelope.ok) {
-          throw new Error(envelope.error ?? `HTTP ${response.status}`);
-        }
-        setState({ data: envelope.data, error: null, loading: false });
+        const data = await fetchDevApi<T>(route);
+        if (live) setState({ data, error: null, loading: false });
       } catch (cause) {
         if (!live) return;
         setState({

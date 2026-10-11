@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { sweepLiveRuns } from "./live-run";
 import { BD_STAND_IN_BIN, HEARTH_HOME, isRunHome } from "./servers";
 
 /**
@@ -17,6 +18,14 @@ import { BD_STAND_IN_BIN, HEARTH_HOME, isRunHome } from "./servers";
  * once the tests are over, and it must not be what a failed removal leaves.
  */
 export default function globalTeardown(): void {
+  // Whatever a killed test of live-stream.spec.ts left in the checkout: files
+  // of a generated name under gitignored paths. Before the home check, since
+  // they are in the checkout whatever home the run used.
+  try {
+    sweepLiveRuns();
+  } catch {
+    // Named in tests/e2e/AGENTS.md; safe to delete by hand.
+  }
   if (!isRunHome(HEARTH_HOME)) return;
   try {
     rmSync(BD_STAND_IN_BIN, {

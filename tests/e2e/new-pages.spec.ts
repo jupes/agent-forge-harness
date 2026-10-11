@@ -4,6 +4,7 @@ import {
   CHECKOUT,
   LEGACY_GATE,
   LEGACY_VERDICT_GATE,
+  openSettled,
   stubForgeRun,
   stubRepos,
   UNLINKED_GATE,
@@ -32,7 +33,7 @@ test.describe("Forge run", () => {
   }) => {
     const errors = collectErrors(page);
     await stubForgeRun(page);
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     // The fixture ids sort the other way round, so id order would fail this.
     await expect(page.locator(".af-checkpoint-title")).toHaveText([
@@ -63,7 +64,7 @@ test.describe("Forge run", () => {
     const posts = await stubForgeRun(page, {
       statuses: { "demo-primitives": "open" },
     });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const next = page.locator(".af-checkpoint.is-next");
     await expect(next).toHaveCount(1);
@@ -84,7 +85,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { statuses: { "demo-primitives": "blocked" } });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const state = page.locator('.af-checkpoint-state[data-state="waiting"]');
     await expect(state).toContainText(
@@ -103,7 +104,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     const posts = await stubForgeRun(page);
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     await page.getByRole("button", { name: "Approve checkpoint" }).click();
 
@@ -117,7 +118,7 @@ test.describe("Forge run", () => {
 
   test("requesting changes needs a note, then sends it", async ({ page }) => {
     const posts = await stubForgeRun(page);
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const requestChanges = page.getByRole("button", {
       name: "Request changes",
@@ -144,7 +145,7 @@ test.describe("Forge run", () => {
     const posts = await stubForgeRun(page, {
       statuses: { "demo-shell": "in_progress" },
     });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     await expect(page.locator(".af-checkpoint.is-active")).toHaveCount(2);
     const picker = page.locator("#forge-review-checkpoint");
@@ -173,7 +174,7 @@ test.describe("Forge run", () => {
         },
       }),
     );
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
     await page.getByRole("button", { name: "Approve checkpoint" }).click();
     await expect(page.locator(".af-review-result.is-error")).toContainText(
       "Only an in-progress checkpoint can be reviewed",
@@ -184,7 +185,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page);
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     await expect(page.locator(".af-gate-check")).toHaveCount(5);
     const failed = page.locator(".af-gate-check.is-failed");
@@ -212,7 +213,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { unattributedGate: UNLINKED_GATE });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     // The run's own card still shows the gate that was correlated to it.
     const own = page.locator(".af-card", {
@@ -243,7 +244,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { gate: VERDICT_BOUND_GATE });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const note = page.locator(".af-gate-verdict");
     await expect(note).toContainText(
@@ -260,7 +261,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { gate: LEGACY_VERDICT_GATE });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const note = page.locator(".af-gate-verdict");
     await expect(note).toContainText("legacy verdict");
@@ -273,7 +274,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { gate: LEGACY_GATE });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const card = page.locator(".af-card", {
       has: page.getByRole("heading", { name: "Quality gate", exact: true }),
@@ -290,7 +291,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { empty: true, unattributedGate: UNLINKED_GATE });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const card = page.locator(".af-card", {
       has: page.getByRole("heading", { name: "Quality gate", exact: true }),
@@ -309,7 +310,7 @@ test.describe("Forge run", () => {
     page,
   }) => {
     await stubForgeRun(page, { gate: null });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     const card = page.locator(".af-card", {
       has: page.getByRole("heading", { name: "Quality gate" }),
@@ -332,7 +333,7 @@ test.describe("Forge run", () => {
     // by every checkout, so its newest entry for this one still belongs here.
     const errors = collectErrors(page);
     await stubForgeRun(page, { empty: true });
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     await expect(page.getByText(NO_RUN_TITLE, { exact: true })).toBeVisible();
     await expect(page.locator(".af-phase")).toHaveCount(0);
@@ -359,7 +360,7 @@ test.describe("Forge run", () => {
     expect(reply.ok()).toBe(true);
     const { data } = (await reply.json()) as { data: ForgeRunSnapshot };
 
-    await page.goto(FORGE_RUN, { waitUntil: "networkidle" });
+    await openSettled(page, FORGE_RUN);
 
     if (data.selected === null) {
       await expect(page.getByText(NO_RUN_TITLE, { exact: true })).toBeVisible();
@@ -384,7 +385,7 @@ test.describe("Repos & knowledge", () => {
   test("renders repositories, conventions and worktrees", async ({ page }) => {
     const errors = collectErrors(page);
     await stubRepos(page);
-    await page.goto("/index.html#/repos", { waitUntil: "networkidle" });
+    await openSettled(page, "/index.html#/repos");
 
     const repos = page
       .getByRole("region", { name: "Registered repositories" })
@@ -425,7 +426,7 @@ test.describe("Repos & knowledge", () => {
     page,
   }) => {
     await stubRepos(page, { localStateFrom: "/home/dev/agent-forge-harness" });
-    await page.goto("/index.html#/repos", { waitUntil: "networkidle" });
+    await openSettled(page, "/index.html#/repos");
     await expect(page.locator(".af-notice")).toContainText(
       "main checkout at /home/dev/agent-forge-harness",
     );
@@ -434,7 +435,7 @@ test.describe("Repos & knowledge", () => {
   test("parses the real shared conventions from this checkout", async ({
     page,
   }) => {
-    await page.goto("/index.html#/repos", { waitUntil: "networkidle" });
+    await openSettled(page, "/index.html#/repos");
     const conventions = page.getByRole("region", {
       name: "Shared conventions",
     });

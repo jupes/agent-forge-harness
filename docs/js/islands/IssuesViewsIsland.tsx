@@ -29,6 +29,7 @@ import {
   filterListIssues,
   LIST_ROW_CAP,
 } from "./issues-views-model";
+import { LiveStats } from "./LiveStatus";
 
 export type IssuesViewsIslandProps = {
   variant: "dashboard" | "list";
@@ -330,6 +331,8 @@ export function IssuesViewsIsland({
           <StatCard label="Blocked" value={sections.stats.blocked} />
           <StatCard label="Closed" value={sections.stats.closed} tone="muted" />
         </div>
+
+        <LiveStats />
 
         <EpicFlowPanel initiativeFilter={initiativeFilter} payload={payload} />
 
