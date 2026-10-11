@@ -8,6 +8,8 @@ declare module "@docs/bead-builder" {
     description: string;
     acceptanceCriteria: string;
     labels: string;
+    /** The id of the parent bead, when the new one is its child. */
+    parent?: string | undefined;
   }
 
   export const BEAD_TYPES: readonly string[];

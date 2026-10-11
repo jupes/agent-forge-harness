@@ -214,6 +214,30 @@ export const LEDGER_EVENT_KINDS = [
 
 export type LedgerEventKind = (typeof LEDGER_EVENT_KINDS)[number];
 
+/** A write to the tracker made through the operator API (`POST /beads…`). */
+export const BEAD_WRITES = ["create", "claim", "comment", "close"] as const;
+
+export type BeadWrite = (typeof BEAD_WRITES)[number];
+
+/**
+ * What `bead.transitioned` records for a tracker write. It says nothing about
+ * the queue: `from`, `to` and `reason` are never present, and the validator
+ * refuses a payload that mixes this form with a queue transition.
+ */
+export interface BeadWriteRecord {
+  action: BeadWrite;
+  /**
+   * SHA-256 (hex) of the one text the write carried: the title of a create,
+   * the comment, the close reason. Never the text itself.
+   */
+  hash?: string;
+  /** The length of that text. */
+  length?: number;
+  from?: never;
+  to?: never;
+  reason?: never;
+}
+
 /** Which surface an `operator.action` came through. */
 export const OPERATOR_SURFACES = ["ui", "cli", "mcp", "api"] as const;
 
@@ -284,11 +308,18 @@ export interface LedgerPayloads {
     /** Opt-in body: redacted and capped by the ledger. */
     summary?: string;
   };
-  "bead.transitioned": {
-    from: QueueState | null;
-    to: QueueState;
-    reason?: string;
-  };
+  /**
+   * A queue transition (`from`, `to`), or a tracker write made through the
+   * operator API (`action`). A write has no `to`: read it only on a payload
+   * without `action`.
+   */
+  "bead.transitioned":
+    | {
+        from: QueueState | null;
+        to: QueueState;
+        reason?: string;
+      }
+    | BeadWriteRecord;
   "reservation.acquired": { worktree: string; globs: string[] };
   "reservation.released": { worktree: string; globs: string[] };
   "shift.started": {
@@ -370,7 +401,9 @@ export type OperatorEnvelope<T = unknown> =
 // ── Operator API responses ──────────────────────────────────────────────────
 //
 // What the read routes of the operator API answer as `data`, and what the
-// stream sends. Added with the API; every type above this line is unchanged.
+// stream sends. Added with the API. The types above this line are as they were
+// before it, with one later exception: `bead.transitioned` gained a second
+// payload form (`BeadWriteRecord`) with the Beads write path.
 
 /**
  * What the ledger knows about one session, folded from its events. Not a
@@ -456,4 +489,48 @@ export interface StreamSnapshot {
   reservations: OperatorEnvelope<Reservation[]>;
   smiths: OperatorEnvelope<SmithsView>;
   config: OperatorEnvelope<LoadedConfig>;
+}
+
+// ── Beads write path ────────────────────────────────────────────────────────
+
+/** One priority a bead can be created with, from the priority rubric. */
+export interface BeadPriorityOption {
+  /** What the route accepts and the page offers: `P0` … `P4`. */
+  value: string;
+  tier: "critical" | "high" | "medium" | "low";
+  /** The rubric's one line on what the tier is for. */
+  meaning: string;
+}
+
+/** What `GET /beads/options` answers: what a create may say, and how long each text may be. */
+export interface BeadOptions {
+  types: string[];
+  priorities: BeadPriorityOption[];
+  defaultPriority: string;
+  /** Longest text accepted, in UTF-16 units. */
+  limits: {
+    title: number;
+    description: number;
+    acceptance: number;
+    comment: number;
+    reason: number;
+  };
+}
+
+/** What a write to the tracker (`POST /beads…`) answers once `bd` confirmed it. */
+export interface BeadWriteResult {
+  /** The bead that was written, as `bd` printed it. */
+  id: string;
+  action: BeadWrite;
+  /** The bead's Beads status after the write. */
+  status?: string;
+  assignee?: string;
+  labels?: string[];
+  /** The comment a `comment` added; its text is the one that was sent. */
+  comment?: { id: string; author: string; createdAt: string };
+  /** When `bd` says the bead last changed, for a claim or a close. */
+  updatedAt?: string;
+  /** Whether the `bead.transitioned` event was stored. The write happened either way. */
+  recorded: boolean;
+  recordError?: string;
 }

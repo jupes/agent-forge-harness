@@ -305,6 +305,85 @@ describe("appendEvent", () => {
   }, 30_000);
 });
 
+describe("a tracker write recorded as bead.transitioned", () => {
+  const HASH =
+    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+  const write = (payload: Record<string, unknown>): LedgerEventInput =>
+    // justification: the payloads here include keys the contract type forbids.
+    ({
+      kind: "bead.transitioned",
+      workspace: "c:/work/harness",
+      beadId: "bead-1",
+      payload,
+    }) as unknown as LedgerEventInput;
+
+  test("is stored with its action, hash and length, and with nothing else it was handed", () => {
+    const path = tempLedger();
+    const result = appendEvent(
+      write({
+        action: "comment",
+        hash: HASH,
+        length: 26,
+        title: "TITLE-TEXT-MARKER",
+        text: "COMMENT-TEXT-MARKER",
+      }),
+      { path },
+    );
+    expect(result.ok).toBe(true);
+    const [row] = rawRows(path);
+    expect(row?.bead_id).toBe("bead-1");
+    expect(JSON.parse(String(row?.payload))).toEqual({
+      action: "comment",
+      hash: HASH,
+      length: 26,
+    });
+    expect(JSON.stringify(rawRows(path))).not.toContain("MARKER");
+  });
+
+  test("handed a reason, it is refused whole as a mixed form: no text is stored under the one free-text key of the kind", () => {
+    const path = tempLedger();
+    const result = appendEvent(
+      write({
+        action: "close",
+        hash: HASH,
+        length: 4,
+        reason: "REASON-MARKER",
+      }),
+      { path },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: expect.stringContaining(
+        "payload.reason: must be absent from a tracker write",
+      ),
+    });
+    openLedger(path);
+    expect(rawRows(path)).toEqual([]);
+  });
+
+  test("a queue transition keeps its three keys and cannot store a hash or a length", () => {
+    const path = tempLedger();
+    const queued: LedgerEventInput = {
+      kind: "bead.transitioned",
+      workspace: "c:/work/harness",
+      beadId: "bead-1",
+      payload: { from: null, to: "proposed", reason: "minted by auto-task" },
+    };
+    expect(appendEvent(queued, { path }).ok).toBe(true);
+    expect(JSON.parse(String(rawRows(path)[0]?.payload))).toEqual({
+      from: null,
+      to: "proposed",
+      reason: "minted by auto-task",
+    });
+    const mixed = appendEvent(
+      write({ from: null, to: "proposed", hash: "FREE-TEXT-MARKER" }),
+      { path },
+    );
+    expect(mixed.ok).toBe(false);
+    expect(rawRows(path)).toHaveLength(1);
+  });
+});
+
 const ANTHROPIC_KEY = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
 const GENERIC_KEY = "sk-AbCdEfGhIjKlMnOpQrStUvWxYz012345";
 

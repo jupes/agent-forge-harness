@@ -28,6 +28,7 @@ import {
   listSessions,
   queryEventPage,
 } from "../../ledger/query";
+import { redactSecrets } from "../../secret-patterns";
 import {
   type ReadRoute,
   type RouteReply,
@@ -77,6 +78,15 @@ function parameters(
     found.set(name, value);
   }
   return { ok: true, value: found };
+}
+
+/**
+ * An id is stored on a ledger row exactly as given, and the ledger refuses a
+ * row whose id its secret scanner would change. Refusing here turns that into
+ * a 400 for the caller instead of an action that could not be recorded.
+ */
+export function looksLikeSecret(value: string): boolean {
+  return redactSecrets(value).redactions.length > 0;
 }
 
 /** A row that takes no query parameter refuses any. */
