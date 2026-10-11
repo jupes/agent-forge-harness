@@ -266,7 +266,7 @@ describe("state: deltas", () => {
     expect(state.reservations).toBe(before.reservations);
   });
 
-  test("reservations fold as the route folds them", () => {
+  test("reservations fold: one claim per bead and worktree, oldest first, a claim taken again last", () => {
     const held: Reservation = {
       beadId: "b-0",
       worktree: "wt-0",
@@ -308,7 +308,7 @@ describe("state: deltas", () => {
     expect(state.reservations).toEqual({ data: null, error: "ledger busy" });
   });
 
-  test("sessions fold as the route folds them", () => {
+  test("sessions fold: newest first, with the start, the executor, the bead and the run each event brings", () => {
     const state = applyDeltas(
       live({ sessions: ok([session("old"), session("s-1")]) }),
       [
@@ -433,7 +433,7 @@ describe("state: status, refetched collections and the stat cards", () => {
     });
   });
 
-  test("the stat cards count what the routes would", () => {
+  test("the stat cards count runs as the runs listing does, and the rest by their own rule", () => {
     const runs = [
       run("in-flight"),
       run("shipped", { complete: true, next: null }),
@@ -961,19 +961,23 @@ describe("client: reconnect", () => {
     expect(clock.waits()).toEqual([]);
   });
 
-  test("a stream that delivers bytes starts the count again", () => {
-    const { wire, client, clock } = harness(() => 0);
+  test("a stream that sends its snapshot and ends, over and over, still runs out", () => {
+    const { wire, client, clock } = harness();
     client.subscribe(() => undefined);
-    for (let attempt = 1; attempt < MAX_FAILURES; attempt++) {
-      wire.current.end("failed");
+    for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
+      expect(client.getState().status).not.toBe("off");
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10 });
+      wire.current.keepalive();
+      wire.current.end("ended");
       clock.advance(60_000);
     }
-    // One more failure would turn it off. A stream opens and a keepalive arrives.
-    wire.current.open();
-    wire.current.keepalive();
-    wire.current.end("ended");
-    expect(client.getState().status).toBe("reconnecting");
-    expect(clock.waits()).toEqual([250]);
+    // Bytes alone do not show a stream that works: this one never stayed open.
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "lost",
+    });
+    expect(wire.connections).toHaveLength(MAX_FAILURES);
   });
 
   test("a quiet resumed stream that stays open resets the count before any byte arrives", () => {
@@ -1164,6 +1168,30 @@ describe("client: watchers and the routes read again", () => {
     wire.current.end("ended");
     clock.advance(250);
     expect(told).toEqual([]);
+    wire.current.open();
+    expect(told).toEqual(["resync"]);
+  });
+
+  test("a first open that follows failed attempts tells the watchers too", () => {
+    const { wire, client, clock } = harness(() => 0);
+    const told: WatchReason[] = [];
+    client.watch(["gate.ran"], (reason) => told.push(reason));
+    // The hearth was away when the page loaded: a view's own first read may have failed with it.
+    wire.current.end("failed");
+    clock.advance(250);
+    expect(told).toEqual([]);
+    wire.current.open();
+    expect(told).toEqual(["resync"]);
+  });
+
+  test("a subscriber that comes back after the connection was closed is a reopen as well", () => {
+    const { wire, client } = harness();
+    const leave = client.subscribe(() => undefined);
+    wire.current.open();
+    wire.current.snapshot({ cursor: 10 });
+    leave();
+    const told: WatchReason[] = [];
+    client.watch(["gate.ran"], (reason) => told.push(reason));
     wire.current.open();
     expect(told).toEqual(["resync"]);
   });
@@ -1625,6 +1653,101 @@ async function eventually(
 }
 
 describe("client against a real hearth", () => {
+  test("the sessions and reservations the client folds equal what the hearth's own routes answer", async () => {
+    const hearth = await startTestHearth({ api: { streamPollMs: 20 } });
+    const headers = { Origin: hearth.hearth.url };
+    const route = async (path: string): Promise<OperatorEnvelope<unknown>> =>
+      (await fetch(`${hearth.api}${path}`, { headers }).then((response) =>
+        response.json(),
+      )) as OperatorEnvelope<unknown>;
+    const claim = (
+      kind: "reservation.acquired" | "reservation.released",
+      beadId: string,
+      worktree: string,
+    ) =>
+      hearth.append({
+        kind,
+        beadId,
+        sessionId: "s-1",
+        payload: { worktree, globs: ["docs/**"] },
+      });
+
+    // Some of the story is in the ledger before the page connects, so it arrives in the snapshot.
+    hearth.append({
+      kind: "session.started",
+      sessionId: "s-1",
+      executor: { provider: "claude", model: "m-1" },
+      payload: { kind: "interactive", worktree: "wt-1" },
+    });
+    claim("reservation.acquired", "b-0", "wt-0");
+
+    const client = createStreamClient({
+      transport: fetchTransport(`${hearth.api}/stream`, { headers }),
+      read: route,
+    });
+    const leave = client.subscribe(() => undefined);
+    try {
+      await eventually(() => client.getState().status === "live");
+
+      // The rest arrives as deltas: every branch of both folds.
+      hearth.append({
+        kind: "session.started",
+        sessionId: "s-2",
+        executor: { provider: "codex", model: "m-2", effort: "high" },
+        payload: { kind: "headless", worktree: "wt-2", parentSessionId: "s-1" },
+      });
+      hearth.append({
+        kind: "tool.called",
+        sessionId: "s-1",
+        beadId: "b-1",
+        runId: "run-1",
+        payload: { tool: "Read", argsHash: "h" },
+      });
+      hearth.append({ kind: "session.ended", sessionId: "s-1", payload: {} });
+      hearth.append({
+        kind: "prompt.submitted",
+        sessionId: "s-3",
+        payload: { hash: "h", length: 1 },
+      });
+      claim("reservation.acquired", "b-1", "wt-1");
+      claim("reservation.acquired", "b-1", "wt-2");
+      claim("reservation.released", "b-0", "wt-0");
+      claim("reservation.acquired", "b-1", "wt-1");
+      hearth.append({ kind: "session.ended", sessionId: "s-2", payload: {} });
+      // s-2 carries on after its end; s-3 ends and stays ended.
+      hearth.append({
+        kind: "prompt.submitted",
+        sessionId: "s-2",
+        payload: { hash: "h", length: 1 },
+      });
+      const last = hearth.append({
+        kind: "session.ended",
+        sessionId: "s-3",
+        payload: {},
+      });
+      await eventually(() => client.getState().cursor === last);
+
+      const sessions = await route("/sessions");
+      const reservations = await route("/reservations");
+      expect(sessions.ok && reservations.ok).toBe(true);
+      expect(client.getState().sessions.data).toEqual(
+        sessions.data as SessionSummary[],
+      );
+      expect(client.getState().reservations.data).toEqual(
+        reservations.data as Reservation[],
+      );
+      // Not an empty comparison.
+      expect(client.getState().sessions.data).toHaveLength(3);
+      expect(client.getState().reservations.data).toHaveLength(2);
+      expect(
+        client.getState().sessions.data?.filter((s) => s.endedAt !== undefined),
+      ).toHaveLength(1);
+    } finally {
+      leave();
+      await hearth.close();
+    }
+  }, 20_000);
+
   test("a cut connection resumes with the last id and the server sends no second snapshot", async () => {
     const hearth = await startTestHearth({ api: { streamPollMs: 20 } });
     const cuts: AbortController[] = [];
@@ -1745,7 +1868,7 @@ describe("the notice and the live stat cards", () => {
       "data-testid": "live-banner",
     });
     expect(textOf(banner)).toContain("Live updates are off");
-    expect(textOf(banner)).toContain("the data it was built with");
+    expect(textOf(banner)).toContain("no control plane answers here");
   });
 
   test("off after a lost connection says so, and how to connect again", () => {

@@ -55,7 +55,7 @@ export const RETRY_MAX_MS = 15_000;
 export const MAX_FAILURES = 6;
 /** Three missed keepalives: the hearth sends one every 15 s. */
 export const SILENCE_MS = 45_000;
-/** An opened stream that has stayed open this long works, bytes or not: a quiet resume sends none until its first keepalive. */
+/** An opened stream that has stayed open this long works; only then do earlier failures stop counting. */
 export const STABLE_MS = 5_000;
 /**
  * The most text held while waiting for a message to end. Far above any real
@@ -387,8 +387,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   let connection: { close(): void } | null = null;
   /** Raised for every connection and on release, so a late call from an old one is ignored. */
   let generation = 0;
-  /** Whether a stream has opened on this page before. */
-  let openedBefore = false;
+  /** Whether a connection of this page has ended: the next one to open may follow a gap. */
+  let afterAGap = false;
   let failures = 0;
   let waiting: LedgerEvent[] = [];
   let batchTimer: unknown = null;
@@ -453,6 +453,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
 
   const drop = (): void => {
     generation += 1;
+    afterAGap = true;
     connection?.close();
     connection = null;
     stableTimer = stop(stableTimer);
@@ -494,26 +495,26 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       onOpen() {
         if (!current()) return;
         watchSilence();
+        // Staying open is what shows a stream that works. Neither the bare open
+        // nor a first message is: a stream that opens, sends its snapshot and
+        // ends, over and over, must still run out.
         stableTimer = timers.set(() => {
           stableTimer = null;
           failures = 0;
         }, STABLE_MS);
         // A resume shows what the page already has; a first open waits for its snapshot.
         if (state.cursor !== null) setState(withStatus(state, "live"));
-        if (openedBefore) tell(null);
-        openedBefore = true;
+        // Anything but the first connection of the page follows a gap, in which a
+        // view may have failed to read: every watcher reads again.
+        if (afterAGap) tell(null);
+        afterAGap = false;
       },
       onActivity() {
         if (!current()) return;
-        // Bytes, or staying open a while, show a stream that works. The bare
-        // open does not: one that opens and ends at once, over and over, must
-        // still run out.
-        failures = 0;
         watchSilence();
       },
       onMessage(message) {
         if (!current()) return;
-        failures = 0;
         watchSilence();
         receive(message);
       },
@@ -567,6 +568,9 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
         const envelope = await deps.read(`/${name}`);
         if (holders === 0 || state.cursor === null || state.status === "off")
           return;
+        // A read that did not answer (it rejected) keeps what was shown. One
+        // that answered "this cannot be read" is taken at its word: the
+        // collection is unknown until a later read says otherwise.
         // justification: the route named `name` answers the envelope of the collection named `name`.
         setState(withCollection(state, name, envelope as never));
       },

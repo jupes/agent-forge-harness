@@ -36,9 +36,8 @@ export function LiveBannerView({
     <p class="af-notice" role="status" data-testid="live-banner">
       {reason === "no-hearth" ? (
         <>
-          Live updates are off: no control plane answers here. This page shows
-          the data it was built with. Run <code>bun run dashboard</code> at the
-          harness root for a live view.
+          Live updates are off: no control plane answers here. Run{" "}
+          <code>bun run dashboard</code> at the harness root for a live view.
         </>
       ) : (
         <>
