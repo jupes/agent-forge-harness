@@ -14,4 +14,8 @@ Local agent guidance for this directory.
 
 ## Notes
 
-- Add directory-specific conventions here (build/test commands, ownership, constraints).
+- **One connection to the event stream per page** (`use-stream.ts`). A view never opens its own: it reads a slice of the live state with `useStream(select)`, or follows the ledger with `useLiveRead(route, kinds)`, which reads a dev-only route on mount and again when an event of one of `kinds` is applied. Pass `kinds` as a module constant. The app root holds one subscription for the life of the page (`LiveBanner` in `app.tsx`), so moving between routes does not close the connection.
+- The rules that turn a snapshot and its deltas into state are pure functions in `app-state.ts` (`applySnapshot`, `applyDeltas`, `liveStats`), and the session and reservation folds there mirror `listSessions` and `activeReservations` in `scripts/ledger/query.ts`: change both sides together. Runs and the queue are not folded from events; their read routes are fetched again on the event kinds named in `use-stream.ts`.
+- The stream is read with `fetch`, not the browser's event-source class: the hearth takes the resume id only as the `Last-Event-ID` request header, which a page cannot set on a connection that class opens. Reads send no operator token.
+- An answer that is not an event stream (a static host) turns live updates off after one request, for the life of the page; a failure is retried with a jittered, doubling wait and gives up after six in a row. Nothing polls on a timer, and nothing is logged per event. A page must keep working with live updates off: `useLiveRead` still does its first read, and anything drawn from the live state is absent, not broken.
+- A new component that reads the stream is a pure view plus a thin wrapper that calls the hook (`islands/LiveStatus.tsx`), so the view is testable as a plain function.
