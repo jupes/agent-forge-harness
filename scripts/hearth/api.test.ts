@@ -9,6 +9,7 @@ import type {
   LedgerEventOf,
   OperatorEnvelope,
   QueueEntry,
+  QueueState,
   Reservation,
   RunDetail,
   SessionSummary,
@@ -18,6 +19,7 @@ import { type LoadedConfig, loadConfig } from "../config/load";
 import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { queueTracker } from "../scheduler/queue-fixture";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
@@ -162,8 +164,128 @@ const REVIEW = { issueId: "demo-1", decision: "approve", note: "" };
 const COMMENT = "worklog: fixture comment";
 const CLOSE_REASON = "Verified by the fixture";
 
+/**
+ * Put one bead in a queue state the queue wrote, in the hearth's stand-in for
+ * bd. Only the queue's own two calls are answered by it; every other call
+ * still reaches the stand-in.
+ */
+function queued(
+  h: TestHearth,
+  id: string,
+  state: string,
+  resume?: string,
+): Promise<void> {
+  const tracker = queueTracker([
+    {
+      id,
+      labels: [`queue:${state}`],
+      metadata: {
+        queue_state: state,
+        ...(resume !== undefined ? { queue_resume: resume } : {}),
+      },
+    },
+  ]);
+  h.bd.answer = (args) => tracker.answer(args);
+  return Promise.resolve();
+}
+
+/** A queue move's fixture: the bead starts in `from`, and one read and one write take it to `to`. */
+function queueMove(
+  action: string,
+  from: QueueState,
+  to: QueueState,
+  change: string[],
+  resume?: QueueState,
+): ActionFixture {
+  const id = `demo-${action}`;
+  return {
+    valid: {
+      path: `/queue/${id}/${action}`,
+      body: {},
+      status: 200,
+      target: id,
+    },
+    // An id that would be read as an option if it ever reached bd.
+    invalid: { path: `/queue/-rf/${action}`, body: {} },
+    prepare: (h) => queued(h, id, from, resume),
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: { from, to, reason: `${action}:operator` },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toEqual({ id, action, from, to, recorded: true });
+      expect(h.bd.calls.slice(-2)).toEqual([
+        ["show", "--readonly", "--json", "--", id],
+        ["update", ...change, "--json", "--", id],
+      ]);
+    },
+  };
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /queue/:id/approve": queueMove("approve", "proposed", "approved", [
+    "--remove-label=queue:proposed",
+    "--add-label=queue:approved",
+    "--set-metadata=queue_state=approved",
+  ]),
+  "POST /queue/:id/queue": queueMove("queue", "approved", "queued", [
+    "--remove-label=queue:approved",
+    "--add-label=queue:queued",
+    "--set-metadata=queue_state=queued",
+  ]),
+  "POST /queue/:id/pause": queueMove("pause", "queued", "paused", [
+    "--remove-label=queue:queued",
+    "--add-label=queue:paused",
+    "--set-metadata=queue_state=paused",
+    "--set-metadata=queue_resume=queued",
+  ]),
+  "POST /queue/:id/resume": queueMove(
+    "resume",
+    "paused",
+    "queued",
+    [
+      "--remove-label=queue:paused",
+      "--add-label=queue:queued",
+      "--set-metadata=queue_state=queued",
+      "--unset-metadata=queue_resume",
+    ],
+    "queued",
+  ),
+  "POST /queue/:id/reassign": {
+    valid: {
+      path: "/queue/demo-reassign/reassign",
+      body: { smith: "claude-master" },
+      status: 200,
+      // The bead is the row's subject; what the action names is the smith.
+      target: "claude-master",
+    },
+    invalid: {
+      path: "/queue/demo-reassign/reassign",
+      body: { smith: "nobody" },
+    },
+    prepare: (h) => queued(h, "demo-reassign", "queued"),
+    // It moves no state, so it leaves no transition: the audit row is the record.
+    happened: async (h, data) => {
+      expect(data).toEqual({
+        id: "demo-reassign",
+        state: "queued",
+        smith: "claude-master",
+      });
+      expect(h.bd.calls.slice(-2)).toEqual([
+        ["show", "--readonly", "--json", "--", "demo-reassign"],
+        [
+          "update",
+          "--set-metadata=smith=claude-master",
+          "--json",
+          "--",
+          "demo-reassign",
+        ],
+      ]);
+    },
+  },
   "POST /beads": {
     valid: {
       path: "/beads",
@@ -912,7 +1034,7 @@ describe("the paths that existed before the table", () => {
     }
   }, 20_000);
 
-  test("a table path asked with a method no handler serves is 405 with Allow; the section 6 actions that are not mounted are not there", async () => {
+  test("a table path asked with a method no handler serves is 405 with Allow; the section 6 actions that are not mounted are not there, and neither is a queue action the operator API does not offer", async () => {
     const { h, probes } = await probed();
     const wrongMethod = await fetch(`${h.api}/council/runs`, {
       headers: h.headers(),
@@ -926,11 +1048,15 @@ describe("the paths that existed before the table", () => {
     expect(posted.headers.get("allow")).toBe("GET");
 
     const unmounted = [
-      "/queue/demo-1/approve",
-      "/queue/demo-1/queue",
-      "/queue/demo-1/pause",
-      "/queue/demo-1/resume",
-      "/queue/demo-1/reassign",
+      // The scheduler's moves, and proposing, are not the operator API's.
+      "/queue/demo-1/propose",
+      "/queue/demo-1/start",
+      "/queue/demo-1/submit",
+      "/queue/demo-1/complete",
+      "/queue/demo-1/rework",
+      "/queue/demo-1/release",
+      "/queue/demo-1/halt",
+      "/queue/demo-1",
       "/shifts",
       "/shifts/shift-1/stop",
       "/runs/demo/replan",
@@ -1389,6 +1515,8 @@ const BD_ISSUES = [
     priority: 2,
     issue_type: "task",
     labels: ["queue:approved", "command-center"],
+    // The queue wrote this label: the issue's own metadata names the same state.
+    metadata: { queue_state: "approved", smith: "claude-master" },
   },
   {
     id: "b-2",
@@ -1397,6 +1525,8 @@ const BD_ISSUES = [
     priority: 1,
     issue_type: "bug",
     labels: ["queue:done"],
+    // Metadata that names another state backs nothing.
+    metadata: { queue_state: "review" },
   },
   {
     id: "b-3",
@@ -1433,6 +1563,7 @@ describe("/queue", () => {
         title: "One",
         state: "approved",
         status: "open",
+        backed: true,
         priority: 2,
         type: "task",
       },
@@ -1441,11 +1572,24 @@ describe("/queue", () => {
         title: "Two",
         state: "done",
         status: "closed",
+        backed: false,
         priority: 1,
         type: "bug",
       },
-      { beadId: "b-3", title: "Both", state: "running", status: "in_progress" },
-      { beadId: "b-3", title: "Both", state: "paused", status: "in_progress" },
+      {
+        beadId: "b-3",
+        title: "Both",
+        state: "running",
+        status: "in_progress",
+        backed: false,
+      },
+      {
+        beadId: "b-3",
+        title: "Both",
+        state: "paused",
+        status: "in_progress",
+        backed: false,
+      },
     ]);
     expect(h.bd.calls).toEqual([QUEUE_ARGS]);
   });
