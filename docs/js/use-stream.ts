@@ -506,8 +506,9 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
         if (state.cursor !== null) setState(withStatus(state, "live"));
         // Anything but the first connection of the page follows a gap, in which a
         // view may have failed to read: every watcher reads again.
-        if (afterAGap) tell(null);
+        const gap = afterAGap;
         afterAGap = false;
+        if (gap) tell(null);
       },
       onActivity() {
         if (!current()) return;

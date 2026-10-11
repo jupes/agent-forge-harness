@@ -1720,6 +1720,12 @@ describe("client against a real hearth", () => {
         sessionId: "s-2",
         payload: { hash: "h", length: 1 },
       });
+      // The oldest session speaks again, so the newest-first order is not the order they were first seen in.
+      hearth.append({
+        kind: "prompt.submitted",
+        sessionId: "s-1",
+        payload: { hash: "h", length: 1 },
+      });
       const last = hearth.append({
         kind: "session.ended",
         sessionId: "s-3",
@@ -1737,7 +1743,11 @@ describe("client against a real hearth", () => {
         reservations.data as Reservation[],
       );
       // Not an empty comparison.
-      expect(client.getState().sessions.data).toHaveLength(3);
+      expect(client.getState().sessions.data?.map((s) => s.sessionId)).toEqual([
+        "s-3",
+        "s-1",
+        "s-2",
+      ]);
       expect(client.getState().reservations.data).toHaveLength(2);
       expect(
         client.getState().sessions.data?.filter((s) => s.endedAt !== undefined),
