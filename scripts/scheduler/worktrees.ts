@@ -140,7 +140,7 @@ export function comparablePath(path: string): string {
   } catch {
     // Keep the spelling given.
   }
-  return comparableCheckout([real, ...rest].join("/"));
+  return comparableCheckout(join(real, ...rest));
 }
 
 const inside = (outer: string, path: string): boolean =>
