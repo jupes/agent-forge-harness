@@ -14,7 +14,13 @@
  * is read as the directory too.
  */
 
+import type { LedgerEventInput, Reservation } from "../../types/hearth";
+import { isBeadId } from "../hearth/tracker-write";
+import { type AppendResult, appendEvent } from "../ledger/append";
+import { activeReservations } from "../ledger/query";
 import { parseFileMap } from "./filemap";
+import { withQueueLock } from "./queue-lock";
+import { comparablePath, isSessionId } from "./worktrees";
 
 // ── Overlap ─────────────────────────────────────────────────────────────────
 
@@ -137,4 +143,197 @@ export function reservationFor(bead: BeadText): BeadReservation {
     conservative: true,
     reason: `${why}; the whole repository is reserved`,
   };
+}
+
+// ── Reserving and releasing ─────────────────────────────────────────────────
+
+export interface ReservationDeps {
+  /** The workspace the events are recorded under: the main checkout, as `resolveCheckout` names it. */
+  workspace: string;
+  ledgerPath: string;
+  /** The ledger's `appendEvent`; defaults to the one bound to `ledgerPath`. */
+  appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
+  /** The queue lock's file: the same one queue moves take, so a move and a reservation never interleave. */
+  lockFile: string;
+  lockWaitMs?: number | undefined;
+}
+
+export type ReservationFailure =
+  | "invalid"
+  | "conflict"
+  | "not-held"
+  | "busy"
+  | "failed";
+
+export type ReservationOutcome<T> =
+  | { ok: true; value: T }
+  | { ok: false; kind: ReservationFailure; error: string };
+
+const refused = <T>(
+  kind: ReservationFailure,
+  error: string,
+): ReservationOutcome<T> => ({ ok: false, kind, error });
+
+const MAX_GLOBS = 200;
+
+/** Why `globs` is not a reservation's, or null: each one a glob the file-map parser accepts as written. */
+function badGlobs(globs: unknown): string | null {
+  if (!Array.isArray(globs) || globs.length === 0)
+    return "globs: expected at least one glob";
+  if (globs.length > MAX_GLOBS) return `globs: at most ${MAX_GLOBS} globs`;
+  for (const glob of globs) {
+    if (typeof glob !== "string") return "globs: expected strings";
+    const map = parseFileMap(`## Files\n${glob}\n`);
+    if (!map.ok || map.globs.length !== 1 || map.globs[0] !== glob)
+      return `globs: "${glob}" is not a glob of the file-map format (relative, forward slashes, no "..", and a directory written as dir/**)`;
+  }
+  return null;
+}
+
+const sameGlobs = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((glob) => b.includes(glob));
+
+async function locked<T>(
+  deps: ReservationDeps,
+  work: () => ReservationOutcome<T>,
+): Promise<ReservationOutcome<T>> {
+  const held = await withQueueLock(
+    deps.lockFile,
+    async () => work(),
+    deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {},
+  );
+  if (held.ok) return held.value;
+  return refused(held.reason === "busy" ? "busy" : "failed", held.error);
+}
+
+function append(deps: ReservationDeps, event: LedgerEventInput): string | null {
+  const result = (
+    deps.appendEvent ??
+    ((input: LedgerEventInput) => appendEvent(input, { path: deps.ledgerPath }))
+  )(event);
+  return result.ok ? null : result.error;
+}
+
+/**
+ * Reserve `globs` for a bead's work in `worktree`. Under the queue lock, the
+ * ledger's active reservations are read, and the reservation is refused when
+ * another bead's overlaps it; the same reservation again is already held, and
+ * the same bead and worktree with other globs must be released first. The
+ * worktree is stored in one spelling (`comparablePath`), so a release in any
+ * other finds it. A reservation of a closed bead still counts here: free it
+ * with `release` (`readEligibility` reports such reservations as stale).
+ */
+export async function reserve(
+  request: {
+    beadId: string;
+    worktree: string;
+    globs: readonly string[];
+    sessionId?: string | undefined;
+  },
+  deps: ReservationDeps,
+): Promise<ReservationOutcome<{ reservation: Reservation; already: boolean }>> {
+  if (!isBeadId(request.beadId))
+    return refused("invalid", "beadId: expected a Beads issue id");
+  if (request.sessionId !== undefined && !isSessionId(request.sessionId))
+    return refused("invalid", "sessionId: expected a session id");
+  if (typeof request.worktree !== "string" || request.worktree.trim() === "")
+    return refused("invalid", "worktree: expected a path");
+  const bad = badGlobs(request.globs);
+  if (bad !== null) return refused("invalid", bad);
+  const worktree = comparablePath(request.worktree);
+  const globs = [...request.globs];
+
+  return locked(deps, () => {
+    const active = activeReservations(
+      { workspace: deps.workspace },
+      { path: deps.ledgerPath },
+    );
+    const mine = active.find(
+      (r) =>
+        r.beadId === request.beadId && comparablePath(r.worktree) === worktree,
+    );
+    if (mine !== undefined)
+      return sameGlobs(mine.globs, globs)
+        ? { ok: true, value: { reservation: mine, already: true } }
+        : refused(
+            "conflict",
+            `${request.beadId} already holds other globs in ${mine.worktree} (${mine.globs.join(", ")}); release them first`,
+          );
+    for (const other of active) {
+      if (other.beadId === request.beadId) continue;
+      const pair = overlapOf(globs, other.globs);
+      if (pair !== null)
+        return refused(
+          "conflict",
+          `${pair[0]} overlaps ${pair[1]}, reserved by ${other.beadId} in ${other.worktree}; nothing was reserved`,
+        );
+    }
+    const failed = append(deps, {
+      kind: "reservation.acquired",
+      workspace: deps.workspace,
+      beadId: request.beadId,
+      ...(request.sessionId !== undefined
+        ? { sessionId: request.sessionId }
+        : {}),
+      payload: { worktree, globs },
+    });
+    if (failed !== null)
+      return refused(
+        "failed",
+        `the ledger did not store the reservation (${failed}); nothing is reserved`,
+      );
+    const reservation: Reservation = {
+      beadId: request.beadId,
+      worktree,
+      workspace: deps.workspace,
+      globs,
+      ...(request.sessionId !== undefined
+        ? { sessionId: request.sessionId }
+        : {}),
+      acquiredAt: new Date().toISOString(),
+    };
+    return { ok: true, value: { reservation, already: false } };
+  });
+}
+
+/**
+ * Release a bead's reservation in `worktree`, whatever its spelling. The
+ * `reservation.released` event repeats the held one's worktree and globs
+ * exactly, which is what the ledger folds on. Nothing held is `not-held`.
+ */
+export async function release(
+  request: { beadId: string; worktree: string },
+  deps: ReservationDeps,
+): Promise<ReservationOutcome<Reservation>> {
+  if (!isBeadId(request.beadId))
+    return refused("invalid", "beadId: expected a Beads issue id");
+  if (typeof request.worktree !== "string" || request.worktree.trim() === "")
+    return refused("invalid", "worktree: expected a path");
+  const worktree = comparablePath(request.worktree);
+  return locked(deps, () => {
+    const held = activeReservations(
+      { workspace: deps.workspace },
+      { path: deps.ledgerPath },
+    ).find(
+      (r) =>
+        r.beadId === request.beadId && comparablePath(r.worktree) === worktree,
+    );
+    if (held === undefined)
+      return refused(
+        "not-held",
+        `${request.beadId} holds no reservation in ${request.worktree}`,
+      );
+    const failed = append(deps, {
+      kind: "reservation.released",
+      workspace: deps.workspace,
+      beadId: held.beadId,
+      payload: { worktree: held.worktree, globs: [...held.globs] },
+    });
+    return failed === null
+      ? { ok: true, value: held }
+      : refused(
+          "failed",
+          `the ledger did not store the release (${failed}); the reservation is still held`,
+        );
+  });
 }
