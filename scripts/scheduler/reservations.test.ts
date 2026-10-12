@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations } from "../ledger/query";
 import {
@@ -33,6 +34,15 @@ if (childRole !== undefined) {
       workspace: "c:/race/workspace",
       ledgerPath: join(dir, "ledger.db"),
       lockFile: join(dir, "queue-lock.db"),
+      // Each child stays 300 ms between its check and its write, so that
+      // without the lock all three would check before any of them writes.
+      appendEvent: (event) => {
+        const until = Date.now() + 300;
+        while (Date.now() < until) {
+          // Hold the window open.
+        }
+        return appendEvent(event, { path: join(dir, "ledger.db") });
+      },
     },
   );
   console.log(JSON.stringify(outcome));
