@@ -95,7 +95,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `GET /runs`, `GET /runs/:slug` | mounted | The run registry of the checkout. `/runs/:slug` adds the stored state and the run's newest 200 ledger events. |
   | `GET /events` | mounted | `bead`, `beadExact`, `run`, `session`, `since`, `kind`, `after`, `limit` (1–1000, default 200), by the rules of `forge:audit`. Always this workspace. Answers `{ events, cursor, more }`. An unknown or repeated parameter is 400. |
   | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label), each with `backed`: whether the queue wrote that label (see Queue actions). |
-  | `GET /reservations` | mounted | Claims acquired and not released, from the ledger. Empty until `x1gs.5.3` emits them. |
+  | `GET /reservations` | mounted | Claims acquired and not released, from the ledger, written by `reserve` in `scripts/scheduler/reservations.ts` (`x1gs.5.3`). |
   | `GET /worktrees` | mounted | Every worktree of the repository (`x1gs.5.2`): `git worktree list` for the main checkout, joined to the cache in `trees/.state.json`, each with its kind, bead and session. `502` when git cannot list. Not a stream collection. |
   | `GET /smiths`, `GET /config` | mounted | Both read what `forge:config show` reads for the hearth's checkout (its `agent-forge.toml` and the machine file); the hearth's own environment is not read. `/config` answers the merged config with provenance and the files read; `/smiths` answers the smiths, the benches and the default smith, without provenance. |
   | `GET /stream` | mounted | See below. |
@@ -164,7 +164,7 @@ interface ExecutorHandle { sessionId; pid; events: AsyncIterable<LedgerEvent>; s
 
 ## 9. Scheduler
 
-- Eligibility = `bd ready` ∩ queue state `queued` ∩ no reservation overlap ∩ host below throttle. Reuses `scripts/beads/convoy-bundles.ts` ordering.
+- Eligibility = `bd ready` ∩ queue state `queued` ∩ no reservation overlap ∩ host below throttle. Reuses `scripts/beads/convoy-bundles.ts` ordering (`scripts/scheduler/eligibility.ts`, `bun run forge:eligible`). Overlapping beads are serialized strictly: each bead that can run or is running claims its file map in bundle order (layers, then priority, then natural id), and a bead holding a reservation goes first. A blocked bead claims nothing. A missing or malformed file map reserves `**`. Reservations (`reservation.acquired|released`) are written under the queue lock by `reserve` / `release`, and `forge:reservations release` frees one by hand.
 - Smith resolution precedence: explicit `--smith` → bead metadata `smith` → bench by bead complexity label → `workflow.default_crew` → `claude-journeyman`.
 - Shift: `bun run forge:shift --for 2h --concurrency 2 [--epic <id>]` (defaults decided: 2h, 2, throttle at 85%, 3 repairs then `queue:halted`); each picked bead runs through `/forgemaster-auto` semantics using the adapter, posts `worklog:`/`review:` comments, and ends at a PR. The shift never merges.
 - Auto-tasks: `.claude/auto-tasks/*.yaml` templates (`review`, `qa`, `security`) mint `proposed` beads on a schedule; a human approves.
