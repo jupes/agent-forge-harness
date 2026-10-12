@@ -14,6 +14,7 @@ import {
 } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { bdAnswers } from "../hearth/bd-answers";
+import { QUEUE_LIST_ARGS } from "../hearth/routes/operator-reads";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -32,6 +33,7 @@ import {
   smithFor,
 } from "./queue";
 import {
+  answerQueueList,
   type QueueTracker,
   queueTracker,
   type TrackedBead,
@@ -1276,6 +1278,120 @@ describe("reassign", () => {
     expect(unconfirmed.ok ? "" : unconfirmed.error).toContain(
       `bd show ${bead.id}`,
     );
+  });
+});
+
+describe("the in-memory tracker answers the lists the hearth and the scheduler ask for", () => {
+  const beads: TrackedBead[] = [
+    {
+      id: "l-1",
+      title: "queued, written by the queue",
+      labels: ["queue:queued", "command-center"],
+      metadata: { queue_state: "queued" },
+      description: "## Files\nsrc/**\n",
+      priority: 1,
+    },
+    {
+      id: "l-2",
+      title: "queued, blocked by l-1",
+      labels: ["queue:queued"],
+      metadata: { queue_state: "queued" },
+      blockedBy: ["l-1"],
+    },
+    {
+      id: "l-3",
+      title: "queued but inherited",
+      labels: ["queue:queued"],
+    },
+    {
+      id: "l-4",
+      title: "approved",
+      labels: ["queue:approved"],
+      metadata: { queue_state: "approved" },
+    },
+    {
+      id: "l-5",
+      title: "done and closed",
+      status: "closed",
+      labels: ["queue:done"],
+      metadata: { queue_state: "done" },
+    },
+    { id: "l-6", title: "not in the queue" },
+  ];
+  const ids = (answer: ReturnType<typeof answerQueueList>) =>
+    (JSON.parse(answer?.stdout ?? "null") as Array<{ id: string }>).map(
+      (row) => row.id,
+    );
+
+  test("GET /queue's list: every bead with any queue label, closed ones included", () => {
+    expect(ids(answerQueueList([...QUEUE_LIST_ARGS], beads))).toEqual([
+      "l-1",
+      "l-2",
+      "l-3",
+      "l-4",
+      "l-5",
+    ]);
+  });
+
+  test("the exact queued set, and with --ready only those whose blockers are closed", () => {
+    expect(ids(answerQueueList([...QUEUED_EXACT_ARGS], beads))).toEqual([
+      "l-1",
+      "l-2",
+    ]);
+    expect(
+      ids(answerQueueList([...QUEUED_EXACT_ARGS, "--ready"], beads)),
+    ).toEqual(["l-1"]);
+  });
+
+  test("list rows carry the bead's description, type, priority and blocking edges", () => {
+    const rows = JSON.parse(
+      answerQueueList([...QUEUED_EXACT_ARGS], beads)?.stdout ?? "[]",
+    ) as Array<Record<string, unknown>>;
+    expect(rows[0]).toMatchObject({
+      id: "l-1",
+      description: "## Files\nsrc/**\n",
+      priority: 1,
+      issue_type: "task",
+    });
+    expect(rows[1]?.["dependencies"]).toEqual([
+      { issue_id: "l-2", depends_on_id: "l-1", type: "blocks" },
+    ]);
+  });
+
+  test("a list it was not built for is not answered", () => {
+    expect(
+      answerQueueList(["list", "--json", "--status", "open"], beads),
+    ).toBeUndefined();
+    expect(answerQueueList(["show", "l-1"], beads)).toBeUndefined();
+  });
+
+  test("show of several ids answers the ones that exist; none existing is exit 1 with the error as JSON", async () => {
+    const tracker = queueTracker(beads);
+    const some = await tracker.run([
+      "show",
+      "--readonly",
+      "--json",
+      "--",
+      "l-1",
+      "nope",
+      "l-5",
+    ]);
+    expect(some.status).toBe(0);
+    expect(
+      (JSON.parse(some.stdout) as Array<{ id: string }>).map((row) => row.id),
+    ).toEqual(["l-1", "l-5"]);
+    const none = await tracker.run([
+      "show",
+      "--readonly",
+      "--json",
+      "--",
+      "nope",
+      "nada",
+    ]);
+    expect(none.status).toBe(1);
+    expect(JSON.parse(none.stdout)).toMatchObject({
+      error: "no issues found matching the provided IDs",
+    });
   });
 });
 

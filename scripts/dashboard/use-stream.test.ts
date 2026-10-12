@@ -23,6 +23,7 @@ import {
   fetchTransport,
   MAX_FAILURES,
   REFETCH_WINDOW_MS,
+  readOperatorRoute,
   SILENCE_MS,
   type SseMessage,
   STABLE_MS,
@@ -1909,5 +1910,65 @@ describe("the notice and the live stat cards", () => {
       ["Queued beads", "–"],
       ["File claims held", 1],
     ]);
+  });
+});
+
+describe("a view that reads an operator route, and reloads after its own change", () => {
+  test("reload during a read in flight reads again once that read ends, and the later answer is what is shown", async () => {
+    const { wire, client, clock } = harness();
+    let state: DevApiState<string> = { data: null, error: null, loading: true };
+    const answers: Array<(value: string) => void> = [];
+    const read = startLiveRead<string>({
+      client,
+      kinds: ["bead.transitioned"],
+      timers: clock.timers,
+      now: clock.now,
+      load: () => new Promise<string>((done) => answers.push(done)),
+      onChange: (update) => {
+        state = update(state);
+      },
+    });
+    wire.current.open();
+    wire.current.snapshot({ cursor: 1 });
+    await settle();
+    expect(answers.length).toBe(1);
+    read.reload();
+    await settle();
+    // Not a second read beside the first: it waits for it.
+    expect(answers.length).toBe(1);
+    answers[0]?.("before the change");
+    await settle();
+    clock.advance(REFETCH_WINDOW_MS);
+    await settle();
+    expect(answers.length).toBe(2);
+    answers[1]?.("after the change");
+    await settle();
+    expect(state.data).toBe("after the change");
+    read();
+  });
+
+  test("an operator route's data is read from its envelope; an envelope that is not ok is an error in the hearth's words", async () => {
+    const answering =
+      (body: unknown, status = 200) =>
+      async () =>
+        new Response(JSON.stringify(body), { status });
+    expect(
+      await readOperatorRoute<number[]>(
+        "/queue",
+        answering({ ok: true, data: [1, 2], error: null }),
+      ),
+    ).toEqual([1, 2]);
+    await expect(
+      readOperatorRoute(
+        "/eligibility",
+        answering(
+          { ok: false, data: null, error: "bd list failed: locked" },
+          502,
+        ),
+      ),
+    ).rejects.toThrow("bd list failed: locked");
+    await expect(
+      readOperatorRoute("/queue", answering("<html>", 404)),
+    ).rejects.toThrow("HTTP 404");
   });
 });

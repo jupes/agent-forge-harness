@@ -31,7 +31,7 @@ process spawned is git, by the registry.
 - A bead's queue state is one `queue:<state>` label on the bead. Beads is where it lives; the ledger
   records each move and is never read back to find a state. Beads `status` is read once (a closed
   bead is not started) and never written.
-- `QUEUE_TABLE` is the only place that says which moves are legal and who may make them. A move is
+- `QUEUE_TABLE` (`queue-table.ts`, pure and safe in a browser bundle; `queue.ts` re-exports it) is the only place that says which moves are legal and who may make them. `operatorMoves(entry)` is what the dashboard's Workbench offers from it: the operator's approve, queue, pause and resume, and reassign where a smith may change; nothing for an unbacked label or a bead with two queue labels. A move is
   an action (`propose`, `approve`, `queue`, `start`, `submit`, `complete`, `rework`, `release`,
   `pause`, `resume`, `halt`) taken by an actor (`operator`, a person through the hearth's rows;
   `scheduler`, a shift or an auto-task). It encodes decision 5: work enters as `proposed`, only an
@@ -85,8 +85,10 @@ process spawned is git, by the registry.
   refuses, both made outside the queue: an inherited or hand-added label, and a bead with a second
   queue label. `QUEUED_EXACT_ARGS` is the `bd list` that prints exactly the pickable set, and
   `pickable` is the same rule over the whole answer of `GET /queue`.
-- Tests are hermetic: `queue-fixture.ts` is an in-memory tracker that answers the queue's two `bd`
-  calls as bd 1.1.0 was measured to, and the ledger and the lock are in temp directories.
+- Tests are hermetic: `queue-fixture.ts` is an in-memory tracker that answers the queue's `bd` calls
+  (`show` of one id or several, label/metadata `update`, and the `list` shapes of `GET /queue` and
+  eligibility, via `answerQueueList`) as bd 1.1.0 was measured to; the browser suite's `bd` stand-in
+  answers through it too, and the ledger and the lock are in temp directories.
   `queue-bd.test.ts` compares that fixture with a real `bd` and walks the machine on it; it is
   skipped unless `AGENT_FORGE_SCRATCH_TRACKER` names a scratch tracker (its own git repository, no
   remote of either kind), and is run by hand after any change to the `bd` calls or the fixture.

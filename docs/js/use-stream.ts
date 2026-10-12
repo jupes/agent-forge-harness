@@ -609,12 +609,16 @@ export interface LiveReadOptions<T> {
   now?: () => number;
 }
 
+/** Stops a live read; `reload` asks for a read now, after the one in flight if there is one. */
+export type LiveRead = (() => void) & { reload(): void };
+
 /**
  * Read once, then again whenever an event of `kinds` is applied or the stream
  * reopens. A later read that fails keeps what is shown: the hearth being away
- * for a moment must not blank a page that has its data. Returns the stop.
+ * for a moment must not blank a page that has its data. Returns the stop,
+ * which also carries `reload` for a view that knows it changed something.
  */
-export function startLiveRead<T>(options: LiveReadOptions<T>): () => void {
+export function startLiveRead<T>(options: LiveReadOptions<T>): LiveRead {
   let live = true;
   const refetcher = createRefetcher({
     ...(options.timers ? { timers: options.timers } : {}),
@@ -639,22 +643,43 @@ export function startLiveRead<T>(options: LiveReadOptions<T>): () => void {
   const unwatch = options.client.watch(options.kinds, () =>
     refetcher.request(),
   );
-  return () => {
-    live = false;
-    unwatch();
-    refetcher.dispose();
-  };
+  return Object.assign(
+    () => {
+      live = false;
+      unwatch();
+      refetcher.dispose();
+    },
+    { reload: () => refetcher.request() },
+  );
 }
 
 // ── The page's client and its hooks ─────────────────────────────────────────
 
-async function readRoute(path: string): Promise<OperatorEnvelope<unknown>> {
-  const response = await fetch(`${API_PREFIX}${path}`);
+async function readRoute(
+  path: string,
+  fetchImpl: (input: string) => Promise<Response> = (input) => fetch(input),
+): Promise<OperatorEnvelope<unknown>> {
+  const response = await fetchImpl(`${API_PREFIX}${path}`);
   const envelope: unknown = await response.json();
   if (!isRecord(envelope) || typeof envelope["ok"] !== "boolean")
     throw new Error(`HTTP ${response.status}`);
   // justification: checked above to be an envelope; its data is read by the route's own type.
   return envelope as OperatorEnvelope<unknown>;
+}
+
+/**
+ * An operator API read route's data, or an error with the hearth's own words
+ * when it answered `ok: false`.
+ */
+export async function readOperatorRoute<T>(
+  path: string,
+  fetchImpl?: (input: string) => Promise<Response>,
+): Promise<T> {
+  const envelope = await readRoute(path, fetchImpl);
+  if (!envelope.ok)
+    throw new Error(envelope.error ?? "the control plane refused the read");
+  // justification: the route named `path` answers data of the caller's `T`.
+  return envelope.data as T;
 }
 
 let page: StreamClient | null = null;
@@ -724,4 +749,38 @@ export function useLiveRead<T>(
   );
 
   return state;
+}
+
+/**
+ * `useLiveRead` for an operator API read route (`/__agent-forge<path>`): read
+ * on mount and again when an event of `kinds` is applied or the stream
+ * reopens; `reload` reads again, for a view that just changed something. Pass
+ * `kinds` as a module constant.
+ */
+export function useOperatorRead<T>(
+  path: string,
+  kinds: readonly LedgerEventKind[],
+): DevApiState<T> & { reload(): void } {
+  const [state, setState] = useState<DevApiState<T>>({
+    data: null,
+    error: null,
+    loading: true,
+  });
+  const live = useRef<LiveRead | null>(null);
+
+  useEffect(() => {
+    const read = startLiveRead<T>({
+      load: () => readOperatorRoute<T>(path),
+      client: appStream(),
+      kinds,
+      onChange: setState,
+    });
+    live.current = read;
+    return () => {
+      read();
+      if (live.current === read) live.current = null;
+    };
+  }, [path, kinds]);
+
+  return { ...state, reload: () => live.current?.reload() };
 }

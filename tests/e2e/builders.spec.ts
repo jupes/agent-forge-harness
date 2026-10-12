@@ -8,6 +8,7 @@ import {
 } from "../../scripts/hearth/paths";
 import { BEADS, openSettled, reloadSettled, stubSnapshot } from "./fixtures";
 import { BD_STAND_IN_STATE } from "./servers";
+import { isList, requireStandIn, standInCalls } from "./stand-in";
 
 /**
  * The builders: the clipboard fallback and feedback of both, and, for the
@@ -137,37 +138,6 @@ for (const [route, card, fill] of [
  */
 
 const API = "/__agent-forge";
-
-/** Every argument array the stand-in has been called with in this run, oldest first. */
-function standInCalls(): string[][] {
-  const file = join(BD_STAND_IN_STATE, "calls.jsonl");
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as string[]);
-}
-
-const isList = (call: string[]): boolean => call[0] === "list";
-
-/**
- * Stop unless the hearth's `bd` is the stand-in: a read of the queue makes the
- * hearth run `bd list`, and that call must appear in the stand-in's own record.
- * Called before a test's first write, so a hearth that would run anything else
- * is found before it is asked to change something.
- */
-async function requireStandIn(page: Page): Promise<void> {
-  const before = standInCalls().filter(isList).length;
-  const status = await page.evaluate(
-    async (url) => (await fetch(url)).status,
-    `${API}/queue`,
-  );
-  expect(status, "the queue read answers").toBe(200);
-  expect(
-    standInCalls().filter(isList).length,
-    "the hearth's bd is the suite's stand-in",
-  ).toBeGreaterThan(before);
-}
 
 interface Recorded {
   id: number;

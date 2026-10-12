@@ -22,6 +22,7 @@ import { IssuesViewsIsland } from "./islands/IssuesViewsIsland";
 import { LiveBanner } from "./islands/LiveStatus";
 import { ReposIsland } from "./islands/ReposIsland";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland";
+import { WorkbenchIsland } from "./islands/WorkbenchIsland";
 import {
   DEFAULT_ROUTE,
   legacyRedirectFor,
@@ -216,6 +217,8 @@ function DashboardApp() {
         return <SkillBuilderIsland />;
       case "bead-builder":
         return <BeadBuilderIsland />;
+      case "workbench":
+        return <WorkbenchIsland />;
       case "forge-run":
         return <ForgeRunIsland payload={snapshot.payload} />;
       case "repos":

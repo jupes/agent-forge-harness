@@ -477,6 +477,7 @@ const READS: Record<string, string> = {
   "GET /queue": "/queue",
   "GET /reservations": "/reservations",
   "GET /worktrees": "/worktrees",
+  "GET /eligibility": "/eligibility",
   "GET /smiths": "/smiths",
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
@@ -1607,7 +1608,83 @@ const listed = (issues: unknown): BdResult => ({
   stderr: "",
 });
 
+describe("/eligibility", () => {
+  test("answers which queued beads may start and why the others wait, read from bd; not a stream collection", async () => {
+    const h = await start();
+    const queued = (id: string, files: string) => ({
+      id,
+      title: id,
+      status: "open",
+      priority: 2,
+      issue_type: "task",
+      labels: ["queue:queued"],
+      metadata: { queue_state: "queued" },
+      description: `## Files\n${files}\n`,
+    });
+    h.bd.list = listed([queued("q-1", "src/**"), queued("q-2", "src/a.ts")]);
+    const response = await get(h, "/eligibility");
+    expect(response.status).toBe(200);
+    const data = (
+      await envelope<{
+        eligible: Array<{ id: string }>;
+        waiting: Array<{ id: string; waitsOn?: string }>;
+      }>(response)
+    ).data;
+    expect(data?.eligible.map((e) => e.id)).toEqual(["q-1"]);
+    expect(data?.waiting).toEqual([
+      expect.objectContaining({ id: "q-2", waitsOn: "q-1" }),
+    ]);
+    const row = h.hearth.routes.find(
+      (route) => key(route) === "GET /eligibility",
+    );
+    expect(
+      row?.kind === "read" ? row.collection : "not a read",
+    ).toBeUndefined();
+  });
+
+  test("answers 502 when bd fails, not an empty queue", async () => {
+    const h = await start();
+    h.bd.list = { status: 1, stdout: "", stderr: "Error: database is locked" };
+    const response = await get(h, "/eligibility");
+    expect(response.status).toBe(502);
+    expect((await envelope(response)).error).toContain("database is locked");
+  });
+});
+
 describe("/queue", () => {
+  test("a paused entry says where it returns to, when its bead names a state it can return to", async () => {
+    const h = await start();
+    h.bd.list = listed([
+      {
+        id: "p-1",
+        title: "Paused from queued",
+        status: "open",
+        labels: ["queue:paused"],
+        metadata: { queue_state: "paused", queue_resume: "queued" },
+      },
+      {
+        id: "p-2",
+        title: "Paused from nowhere usable",
+        status: "open",
+        labels: ["queue:paused"],
+        metadata: { queue_state: "paused", queue_resume: "done" },
+      },
+      {
+        id: "p-3",
+        title: "Queued, with a stray resume",
+        status: "open",
+        labels: ["queue:queued"],
+        metadata: { queue_state: "queued", queue_resume: "approved" },
+      },
+    ]);
+    const entries = (await envelope<QueueEntry[]>(await get(h, "/queue"))).data;
+    expect(entries?.map((e) => [e.beadId, e.resume ?? null])).toEqual([
+      ["p-1", "queued"],
+      ["p-2", null],
+      ["p-3", null],
+    ]);
+  });
+
   test("asks bd with one fixed argument array, and returns one entry per queue label a bead carries", async () => {
     const h = await start();
     h.bd.list = listed(BD_ISSUES);
@@ -1620,6 +1697,8 @@ describe("/queue", () => {
         state: "approved",
         status: "open",
         backed: true,
+        // The bead's smith metadata, for the Workbench card.
+        smith: "claude-master",
         priority: 2,
         type: "task",
       },

@@ -483,6 +483,10 @@ export interface QueueEntry {
    * by hand, which no move but `propose` accepts.
    */
   backed?: boolean;
+  /** The smith recorded on the bead (`reassign` writes it as metadata `smith`). */
+  smith?: string;
+  /** For a paused bead, the state it returns to on `resume` (metadata `queue_resume`). */
+  resume?: QueueState;
 }
 
 /** A page of ledger events, oldest first. */

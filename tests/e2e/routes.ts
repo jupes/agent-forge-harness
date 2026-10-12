@@ -5,6 +5,7 @@ export const ROUTES = [
   { url: "/index.html#/dashboard", heading: "Dashboard" },
   { url: "/index.html#/issues", heading: "All issues" },
   { url: "/index.html#/epics", heading: "Epics" },
+  { url: "/index.html#/workbench", heading: "Workbench" },
   { url: "/index.html#/forge-run", heading: "Forge run" },
   { url: "/index.html#/commands", heading: "Commands" },
   { url: "/index.html#/skill-builder", heading: "Skill builder" },

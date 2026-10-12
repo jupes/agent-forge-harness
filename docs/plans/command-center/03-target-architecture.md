@@ -81,7 +81,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 - `X-Agent-Forge-Surface` (`ui` | `cli` | `mcp` | `api`; absent means `api`) is stored on the audit row. It is a label the client declares, not a credential.
 - Every `POST` writes `operator.action` first, then performs the effect through the same scripts the CLI uses (no second implementation). The effect runs only if the ledger stored the row; otherwise the answer is 503 and nothing was done. A request refused for its origin, its token or its content writes nothing. The row records an authorised, valid attempt: an effect that then refuses leaves the row, and the effect's own events or comment carry the outcome.
 - Routes (the contract):
-  - `GET /sessions`, `GET /runs`, `GET /runs/:slug`, `GET /events?…`, `GET /queue`, `GET /reservations`, `GET /worktrees`, `GET /smiths`, `GET /config` (with provenance), `GET /stream` (SSE: snapshot + deltas)
+  - `GET /sessions`, `GET /runs`, `GET /runs/:slug`, `GET /events?…`, `GET /queue`, `GET /reservations`, `GET /worktrees`, `GET /eligibility`, `GET /smiths`, `GET /config` (with provenance), `GET /stream` (SSE: snapshot + deltas)
   - `GET /beads/options`, `POST /beads` (create), `POST /beads/:id/claim|close|comment`
   - `POST /queue/:id/approve|queue|pause|resume|reassign` (`{ smith }`)
   - `POST /council/runs` (`{ source: { kind: "bead", id } , profile, budget }`), `POST /council/runs/:id/cancel`
@@ -96,6 +96,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `GET /events` | mounted | `bead`, `beadExact`, `run`, `session`, `since`, `kind`, `after`, `limit` (1–1000, default 200), by the rules of `forge:audit`. Always this workspace. Answers `{ events, cursor, more }`. An unknown or repeated parameter is 400. |
   | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label), each with `backed`: whether the queue wrote that label (see Queue actions). |
   | `GET /reservations` | mounted | Claims acquired and not released, from the ledger, written by `reserve` in `scripts/scheduler/reservations.ts` (`x1gs.5.3`). |
+  | `GET /eligibility` | mounted | Which queued beads may start now and why the others wait (`x1gs.8.2`): `readEligibility` for the hearth's root, `{ eligible, waiting: [{ id, why, waitsOn? }], stale }`. `502` when `bd` fails. Not a stream collection. The Workbench (`#/workbench`) shows it as conflict badges. |
   | `GET /worktrees` | mounted | Every worktree of the repository (`x1gs.5.2`): `git worktree list` for the main checkout, joined to the cache in `trees/.state.json`, each with its kind, bead and session. `502` when git cannot list. Not a stream collection. |
   | `GET /smiths`, `GET /config` | mounted | Both read what `forge:config show` reads for the hearth's checkout (its `agent-forge.toml` and the machine file); the hearth's own environment is not read. `/config` answers the merged config with provenance and the files read; `/smiths` answers the smiths, the benches and the default smith, without provenance. |
   | `GET /stream` | mounted | See below. |

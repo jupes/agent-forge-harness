@@ -36,6 +36,7 @@ export interface BdIssue {
   assignee?: string;
   labels?: string[];
   metadata?: Record<string, unknown>;
+  description?: string;
   /** On a `show` only: the issues this one depends on, its parent among them. */
   dependencies?: Array<Record<string, unknown>>;
   close_reason?: string;

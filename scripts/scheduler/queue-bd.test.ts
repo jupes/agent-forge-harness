@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { QueueAction, QueueActor } from "../../types/hearth";
 import { type BdResult, bdRunner } from "../hearth/routes/dev-api";
-import { queueEntries } from "../hearth/routes/operator-reads";
+import { QUEUE_LIST_ARGS, queueEntries } from "../hearth/routes/operator-reads";
 import { parsed, refusal } from "../hearth/tracker-write";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
@@ -29,7 +29,11 @@ import {
   QUEUED_EXACT_ARGS,
   queueStateOf,
 } from "./queue";
-import { queueTracker, type TrackedBead } from "./queue-fixture";
+import {
+  answerQueueList,
+  queueTracker,
+  type TrackedBead,
+} from "./queue-fixture";
 
 const scratch = process.env["AGENT_FORGE_SCRATCH_TRACKER"] ?? "";
 const REPO = resolve(import.meta.dir, "..", "..");
@@ -243,6 +247,114 @@ describe.skipIf(scratch === "")("the queue and a real bd", () => {
     expect((read(fake) as { issue: unknown }).issue).toEqual(
       (read(shown) as { issue: unknown }).issue,
     );
+  }, 120_000);
+
+  test("the lists the hearth and eligibility send, and a show of several ids, are answered alike by bd and by the in-memory tracker", async () => {
+    const files = "## Files\nsrc/**\n";
+    const a = await create("queue contract: list a");
+    const b = await create("queue contract: list b");
+    const c = await create("queue contract: list c");
+    await bd([
+      "update",
+      `--description=${files}`,
+      "--add-label=queue:queued",
+      "--set-metadata=queue_state=queued",
+      "--json",
+      "--",
+      a,
+    ]);
+    await bd([
+      "update",
+      "--add-label=queue:queued",
+      "--set-metadata=queue_state=queued",
+      "--json",
+      "--",
+      b,
+    ]);
+    // b waits on a.
+    await bd(["dep", "add", b, a]);
+    await bd([
+      "update",
+      "--add-label=queue:approved",
+      "--set-metadata=queue_state=approved",
+      "--json",
+      "--",
+      c,
+    ]);
+    const mine = new Set([a, b, c]);
+    const beads: TrackedBead[] = [
+      {
+        id: a,
+        labels: ["queue:queued"],
+        metadata: { queue_state: "queued" },
+        description: files,
+        priority: 3,
+      },
+      {
+        id: b,
+        labels: ["queue:queued"],
+        metadata: { queue_state: "queued" },
+        priority: 3,
+        blockedBy: [a],
+      },
+      {
+        id: c,
+        labels: ["queue:approved"],
+        metadata: { queue_state: "approved" },
+        priority: 3,
+      },
+    ];
+    /** What a reader takes from a list row: id, labels, metadata, description, and blocking edges. */
+    const rows = (result: BdResult | undefined) =>
+      ((parsed(result?.stdout ?? "") as Array<Record<string, unknown>>) ?? [])
+        .filter((row) => mine.has(row["id"] as string))
+        .map((row) => ({
+          id: row["id"],
+          labels: row["labels"] ?? [],
+          metadata: row["metadata"] ?? {},
+          description: row["description"] ?? "",
+          priority: row["priority"],
+          blocks: (
+            (row["dependencies"] as
+              | Array<Record<string, unknown>>
+              | undefined) ?? []
+          )
+            .filter((d) => d["type"] === "blocks")
+            .map((d) => [d["issue_id"], d["depends_on_id"]]),
+        }))
+        .sort((x, y) => String(x.id).localeCompare(String(y.id)));
+    for (const args of [
+      [...QUEUE_LIST_ARGS],
+      [...QUEUED_EXACT_ARGS],
+      [...QUEUED_EXACT_ARGS, "--ready"],
+    ]) {
+      const real = await bd(args);
+      expect({ args, rows: rows(answerQueueList(args, beads)) }).toEqual({
+        args,
+        rows: rows(real),
+      });
+    }
+
+    const tracker = queueTracker(beads);
+    for (const ids of [
+      [a, "probe-no-such-bead", c],
+      ["probe-no-such-bead", "probe-nor-this"],
+    ]) {
+      const args = ["show", "--readonly", "--json", "--", ...ids];
+      const real = await bd(args);
+      const fake = await tracker.run(args);
+      const shown = (result: BdResult) => {
+        const answer = parsed(result.stdout);
+        return Array.isArray(answer)
+          ? answer.map((row) => (row as { id: string }).id).sort()
+          : (answer as { error?: string } | undefined)?.error;
+      };
+      expect({ ids, status: fake.status, shown: shown(fake) }).toEqual({
+        ids,
+        status: real.status,
+        shown: shown(real),
+      });
+    }
   }, 120_000);
 
   test("the whole machine on a real bd, and what bd lists as queued", async () => {

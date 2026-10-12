@@ -1,7 +1,9 @@
 /**
- * An in-memory tracker for the queue's tests: it answers the two `bd` calls
- * the queue makes (`show --readonly --json -- <id>` and an `update` of labels
- * or metadata) the way bd 1.1.0 does, and nothing else.
+ * An in-memory tracker for the queue's tests and the browser suite's `bd`
+ * stand-in: it answers the calls the queue, its reads and eligibility make
+ * (`show --readonly --json -- <id…>`, an `update` of labels or metadata, and
+ * the `list` shapes of `GET /queue` and of what a shift may pick) the way bd
+ * 1.1.0 does, and nothing else.
  *
  * Test support, not a second `bd`. The answers are built by
  * `../hearth/bd-answers.ts`, and `queue-bd.test.ts` compares this fixture with
@@ -23,6 +25,13 @@ export interface TrackedBead {
   metadata?: Record<string, unknown>;
   /** When the bead is a child: its parent's id and metadata, as `show` prints them. */
   parent?: { id: string; metadata?: Record<string, unknown> };
+  description?: string;
+  /** Defaults to 2, as bd prints a bead created without one. */
+  priority?: number;
+  /** Defaults to `task`. */
+  issueType?: string;
+  /** The beads that block this one (`blocks` edges). */
+  blockedBy?: string[];
 }
 
 export interface QueueTracker {
@@ -84,20 +93,37 @@ function readUpdate(args: readonly string[]): Update | null {
   return update;
 }
 
-function printedIssue(bead: TrackedBead, shown: boolean): BdIssue {
+function printedIssue(
+  bead: TrackedBead,
+  shown: boolean,
+  listed = false,
+): BdIssue {
   const labels = [...(bead.labels ?? [])].sort();
   const metadata = bead.metadata ?? {};
   const now = bdTime();
   return {
     id: bead.id,
     title: bead.title ?? "",
-    issue_type: "task",
-    priority: 2,
+    issue_type: bead.issueType ?? "task",
+    priority: bead.priority ?? 2,
+    ...(bead.description !== undefined
+      ? { description: bead.description }
+      : {}),
     status: bead.status ?? "open",
     created_at: now,
     updated_at: now,
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     ...(labels.length > 0 ? { labels } : {}),
+    // A list row prints its blocking edges in bd's list form; `show` prints its parent.
+    ...(listed && (bead.blockedBy ?? []).length > 0
+      ? {
+          dependencies: (bead.blockedBy ?? []).map((blocker) => ({
+            issue_id: bead.id,
+            depends_on_id: blocker,
+            type: "blocks",
+          })),
+        }
+      : {}),
     ...(shown && bead.parent
       ? {
           dependencies: [
@@ -114,6 +140,92 @@ function printedIssue(bead: TrackedBead, shown: boolean): BdIssue {
   };
 }
 
+/** A list flag that takes a value, and the ones the answer does not depend on. */
+const LIST_VALUED = new Set([
+  "--label-any",
+  "--label",
+  "--metadata-field",
+  "--exclude-label",
+  "--limit",
+]);
+const LIST_IGNORED = new Set(["--readonly", "--flat", "--json"]);
+
+/**
+ * The answer to a `list` of the shapes the hearth and eligibility send
+ * (`QUEUE_LIST_ARGS`, `QUEUED_EXACT_ARGS`, the latter with `--ready`), or
+ * undefined for any other list. Labels are matched literally, as bd does;
+ * `--ready` keeps open beads whose blockers are all closed.
+ */
+export function answerQueueList(
+  args: readonly string[],
+  beads: readonly TrackedBead[],
+): BdResult | undefined {
+  if (args[0] !== "list") return undefined;
+  let all = false;
+  let ready = false;
+  let filtered = false;
+  const anyOf: string[] = [];
+  const allOf: string[] = [];
+  const none: string[] = [];
+  const fields: Array<[string, string]> = [];
+  for (let i = 1; i < args.length; i++) {
+    const flag = args[i] as string;
+    if (LIST_IGNORED.has(flag)) continue;
+    if (flag === "--all") {
+      all = true;
+      continue;
+    }
+    if (flag === "--ready") {
+      ready = true;
+      continue;
+    }
+    if (!LIST_VALUED.has(flag)) return undefined;
+    const value = args[++i];
+    if (value === undefined) return undefined;
+    if (flag === "--limit") continue;
+    filtered = true;
+    if (flag === "--label-any") anyOf.push(...value.split(","));
+    else if (flag === "--label") allOf.push(value);
+    else if (flag === "--exclude-label") none.push(...value.split(","));
+    else {
+      const mark = value.indexOf("=");
+      fields.push([value.slice(0, mark), value.slice(mark + 1)]);
+    }
+  }
+  // A list with no queue filter is not one of the queue's.
+  if (!filtered) return undefined;
+  const byId = new Map(beads.map((bead) => [bead.id, bead]));
+  const rows = beads.filter((bead) => {
+    const labels = bead.labels ?? [];
+    const status = bead.status ?? "open";
+    if (!all && status === "closed") return false;
+    if (anyOf.length > 0 && !anyOf.some((label) => labels.includes(label)))
+      return false;
+    if (!allOf.every((label) => labels.includes(label))) return false;
+    if (none.some((label) => labels.includes(label))) return false;
+    if (!fields.every(([key, value]) => bead.metadata?.[key] === value))
+      return false;
+    if (
+      ready &&
+      (status !== "open" ||
+        (bead.blockedBy ?? []).some(
+          (blocker) => (byId.get(blocker)?.status ?? "open") !== "closed",
+        ))
+    )
+      return false;
+    return true;
+  });
+  return {
+    status: 0,
+    stdout: `${JSON.stringify(
+      rows.map((bead) => printedIssue(bead, false, true)),
+      null,
+      2,
+    )}\n`,
+    stderr: "",
+  };
+}
+
 export function queueTracker(beads: TrackedBead[] = []): QueueTracker {
   const tracker: QueueTracker = {
     beads: new Map(beads.map((bead) => [bead.id, structuredClone(bead)])),
@@ -123,7 +235,7 @@ export function queueTracker(beads: TrackedBead[] = []): QueueTracker {
     beforeUpdate: null,
     answer(args) {
       const isShow =
-        args.length === 5 &&
+        args.length >= 5 &&
         args[0] === "show" &&
         args[1] === "--readonly" &&
         args[2] === "--json" &&
@@ -134,10 +246,27 @@ export function queueTracker(beads: TrackedBead[] = []): QueueTracker {
       const given = tracker.intercept?.(args);
       if (given !== undefined) return given;
       if (isShow) {
-        const bead = tracker.beads.get(args[4] ?? "");
-        return bead
-          ? bdAnswers.shown(printedIssue(bead, true))
-          : bdAnswers.notShown(args[4] ?? "");
+        const ids = args.slice(4);
+        if (ids.length === 1) {
+          const bead = tracker.beads.get(ids[0] ?? "");
+          return bead
+            ? bdAnswers.shown(printedIssue(bead, true))
+            : bdAnswers.notShown(ids[0] ?? "");
+        }
+        // Several ids: the ones that exist, or, when none does, the error.
+        const found = ids
+          .map((id) => tracker.beads.get(id))
+          .filter((bead): bead is TrackedBead => bead !== undefined);
+        if (found.length === 0) return bdAnswers.notShown(ids.join(", "));
+        return {
+          status: 0,
+          stdout: `${JSON.stringify(
+            found.map((bead) => printedIssue(bead, true)),
+            null,
+            2,
+          )}\n`,
+          stderr: "",
+        };
       }
       if (update === null) return undefined;
       const bead = tracker.beads.get(update.id);
