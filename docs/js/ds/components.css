@@ -1840,3 +1840,132 @@ form.is-submitting {
   flex-direction: column;
   gap: var(--space-1);
 }
+
+/* ── Timeline (ledger events of one bead or run) ────────────────────────── */
+
+.af-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.af-timeline-scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 32rem;
+}
+
+.af-timeline-scope-line,
+.af-timeline-notice {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.af-timeline-notice {
+  color: var(--color-neutral-300);
+}
+
+.af-timeline-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.af-timeline-chip {
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.af-timeline-chip[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-900);
+}
+
+.af-timeline-chip:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.af-timeline-count {
+  color: var(--color-neutral-400);
+}
+
+/* Only the rows in view are in the document; the list keeps the full height. */
+.af-timeline-list {
+  max-height: min(60vh, 32rem);
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  contain: strict;
+}
+
+.af-timeline-rows {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Fixed height: the window maths in timeline-model.ts depends on ROW_PX. */
+.af-timeline-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 10.5rem 11rem minmax(0, 1fr) minmax(0, 14rem);
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+  font-size: 13px;
+}
+
+.af-timeline-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.af-timeline-time,
+.af-timeline-where {
+  font-family: var(--font-mono);
+  color: var(--color-neutral-400);
+}
+
+.af-timeline-kind {
+  font-family: var(--font-mono);
+}
+
+/* At phone width a row keeps its height: time and kind on one line, the summary below. */
+@media (width <= 640px) {
+  .af-timeline-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    row-gap: 0;
+    align-content: center;
+  }
+
+  .af-timeline-line {
+    grid-column: 1 / -1;
+  }
+
+  .af-timeline-where {
+    display: none;
+  }
+}
+
+.af-timeline-link {
+  color: var(--color-accent);
+}

@@ -62,3 +62,29 @@ export function seedProposed(id: string): void {
   };
   writeState(BD_STAND_IN_STATE, issues);
 }
+
+export const createButton = (page: Page) =>
+  page.getByRole("button", { name: "Create bead" });
+
+/** The id shown on the card of the bead most recently created from this page. */
+export async function createdId(page: Page): Promise<string> {
+  return (
+    await page
+      .locator("#bead-created-card .issue-id-copy code")
+      .first()
+      .innerText()
+  ).trim();
+}
+
+/** Create a bead from the builder and return the id the page shows for it. */
+export async function createFromBuilder(
+  page: Page,
+  title: string,
+): Promise<string> {
+  await page.fill("#bb-title", title);
+  await expect(createButton(page)).toBeEnabled();
+  await createButton(page).click();
+  await expect(page.locator("#bb-create-result")).toContainText("Created ");
+  await expect(page.locator("#bead-created-card")).toContainText(title);
+  return createdId(page);
+}

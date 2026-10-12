@@ -19,9 +19,9 @@ describe("AppShell navigation", () => {
     const links = findAll(shell(), "a").filter((a) =>
       String(attrs(a)["class"] ?? "").includes("af-nav-item"),
     );
-    // 10 hash routes + council.html
+    // 11 hash routes + council.html
     expect(links).toHaveLength(ROUTES.length + 1);
-    expect(links).toHaveLength(11);
+    expect(links).toHaveLength(12);
   });
 
   test("links the standalone page by document, and SPA views by hash", () => {

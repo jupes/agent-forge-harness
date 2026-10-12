@@ -8,7 +8,14 @@ import {
 } from "../../scripts/hearth/paths";
 import { BEADS, openSettled, reloadSettled, stubSnapshot } from "./fixtures";
 import { BD_STAND_IN_STATE } from "./servers";
-import { isList, requireStandIn, standInCalls } from "./stand-in";
+import {
+  createButton,
+  createdId,
+  createFromBuilder,
+  isList,
+  requireStandIn,
+  standInCalls,
+} from "./stand-in";
 
 /**
  * The builders: the clipboard fallback and feedback of both, and, for the
@@ -177,29 +184,6 @@ async function closeDialog(page: Page): Promise<void> {
   await dialog.getByRole("button", { name: "Close" }).first().click();
   await expect(dialog).toBeHidden();
   await expect(page.locator("button[type=submit]")).toBeFocused();
-}
-
-const createButton = (page: Page) =>
-  page.getByRole("button", { name: "Create bead" });
-
-/** The id shown on the card of the bead most recently created from this page. */
-async function createdId(page: Page): Promise<string> {
-  return (
-    await page
-      .locator("#bead-created-card .issue-id-copy code")
-      .first()
-      .innerText()
-  ).trim();
-}
-
-/** Create a bead from the builder and return the id the page shows for it. */
-async function createFromBuilder(page: Page, title: string): Promise<string> {
-  await page.fill("#bb-title", title);
-  await expect(createButton(page)).toBeEnabled();
-  await createButton(page).click();
-  await expect(page.locator("#bb-create-result")).toContainText("Created ");
-  await expect(page.locator("#bead-created-card")).toContainText(title);
-  return createdId(page);
 }
 
 test("create, claim and comment from the bead builder go through the control plane to bd, and are recorded", async ({
