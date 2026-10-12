@@ -248,7 +248,8 @@ export interface OperatorTable {
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { sessions, runs, run, events, reservations } = ledgerReads(deps);
-  const { queue, smiths, config, worktrees } = workspaceReads(deps);
+  const { queue, smiths, config, worktrees, eligibility } =
+    workspaceReads(deps);
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -260,6 +261,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     smiths,
     config,
     worktrees,
+    eligibility,
   ];
 
   const ledger = { path: deps.ledgerPath };

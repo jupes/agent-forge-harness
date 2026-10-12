@@ -13,6 +13,7 @@
 import {
   type EventsPage,
   QUEUE_LABEL_PREFIX,
+  QUEUE_RESUME_KEY,
   QUEUE_STATE_KEY,
   QUEUE_STATES,
   type QueueEntry,
@@ -31,6 +32,8 @@ import {
   listSessions,
   queryEventPage,
 } from "../../ledger/query";
+import { type Eligibility, readEligibility } from "../../scheduler/eligibility";
+import { PAUSABLE } from "../../scheduler/queue-table";
 import { type GitRun, listWorktrees } from "../../scheduler/worktrees";
 import { redactSecrets } from "../../secret-patterns";
 import {
@@ -409,6 +412,13 @@ export type QueueRead =
  * label: the issue's own `queue_state` metadata names the same state. A label
  * a child inherited from its parent is not backed.
  */
+/** For a paused entry, the state it returns to, when the bead names one the table can return to. */
+function resumeOf(state: QueueState, value: unknown): { resume?: QueueState } {
+  if (state !== "paused") return {};
+  const resume = PAUSABLE.find((pausable) => pausable === value);
+  return resume !== undefined ? { resume } : {};
+}
+
 export function queueEntries(stdout: string): QueueRead {
   let parsed: unknown;
   try {
@@ -435,6 +445,10 @@ export function queueEntries(stdout: string): QueueRead {
         state,
         status: typeof issue["status"] === "string" ? issue["status"] : "",
         backed: metadata[QUEUE_STATE_KEY] === state,
+        ...(typeof metadata["smith"] === "string" && metadata["smith"] !== ""
+          ? { smith: metadata["smith"] }
+          : {}),
+        ...resumeOf(state, metadata[QUEUE_RESUME_KEY]),
         ...(typeof issue["priority"] === "number"
           ? { priority: issue["priority"] }
           : {}),
@@ -567,5 +581,36 @@ export function workspaceReads(deps: ReadDeps) {
         : { status: 502, error: listed.error };
     },
   };
-  return { queue, smiths, config: whole, worktrees };
+  /**
+   * Which queued beads may start now, and why the others wait
+   * (`scripts/scheduler/eligibility.ts`): the Workbench's conflict badges.
+   * Not a stream collection: it costs three bd calls, and is read when a page
+   * asks for it.
+   */
+  const readEligible = coalesced(() =>
+    readEligibility({
+      root: deps.root,
+      runBd: deps.runBd,
+      ledgerPath: deps.ledgerPath,
+      host: { busy: false },
+    }),
+  );
+  const eligibility: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/eligibility",
+    validate: noParameters,
+    read: async () => {
+      let read: { ok: true; value: Eligibility } | { ok: false; error: string };
+      try {
+        read = await readEligible();
+      } catch (error) {
+        read = { ok: false, error: safeMessage(error) };
+      }
+      return read.ok
+        ? { status: 200, data: read.value }
+        : { status: 502, error: safeMessage(read.error) };
+    },
+  };
+  return { queue, smiths, config: whole, worktrees, eligibility };
 }
