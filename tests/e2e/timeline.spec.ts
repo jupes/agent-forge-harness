@@ -80,11 +80,17 @@ test("a bead opened from its issue detail's Timeline link shows its events from 
   ]);
   await expect(rows(page).nth(0)).toContainText("create");
   await expect(rows(page).nth(2)).toContainText("comment");
-  // Every row is this bead's, in ledger order.
+  // Every row names this bead, and they are in ledger order. (The text is
+  // read from the DOM: at phone width that column is not displayed.)
   const shown = await rows(page).evaluateAll((elements) =>
-    elements.map((element) => Number(element.getAttribute("data-event-id"))),
+    elements.map((element) => ({
+      id: Number(element.getAttribute("data-event-id")),
+      where: element.querySelector(".af-timeline-where")?.textContent ?? "",
+    })),
   );
-  expect(shown).toEqual([...shown].sort((a, b) => a - b));
+  for (const row of shown) expect(row.where).toContain(`bead ${id}`);
+  const ids = shown.map((row) => row.id);
+  expect(ids).toEqual([...ids].sort((a, b) => a - b));
 });
 
 test("choosing a kind narrows the rows to that kind, puts it in the address, survives a reload, and reads nothing more", async ({
