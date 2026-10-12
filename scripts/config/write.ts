@@ -179,6 +179,7 @@ function scan(text: string): Scan {
     if (i < text.length) i++;
     return i;
   };
+  /** Past a one-line string; its text as written, quotes included (values are never decoded). */
   const quoted = (): string => {
     const quote = text[i];
     if (text.startsWith(quote === '"' ? '"""' : "'''", i))
@@ -192,11 +193,20 @@ function scan(text: string): Scan {
     }
     if (i >= text.length) refuse(start, "an unterminated string");
     i++;
-    const raw = text.slice(start, i);
-    return quote === '"' ? (JSON.parse(raw) as string) : raw.slice(1, -1);
+    return text.slice(start, i);
   };
   const keySegment = (): string => {
-    if (text[i] === '"' || text[i] === "'") return quoted();
+    if (text[i] === "'") return quoted().slice(1, -1);
+    if (text[i] === '"') {
+      const start = i;
+      const raw = quoted();
+      // A key's escapes are JSON's, except the few TOML adds; those are not read here.
+      try {
+        return JSON.parse(raw) as string;
+      } catch {
+        return refuse(start, "a key forge:config set does not read");
+      }
+    }
     const start = i;
     while (i < text.length && /[A-Za-z0-9_-]/.test(text[i] ?? "")) i++;
     if (i === start)
@@ -345,6 +355,11 @@ function edited(
   const path = [...shape.table, shape.field];
   const line = `${segment(shape.field)} = ${literal(value)}`;
 
+  const owned = headers.filter((header) => samePath(header.path, shape.table));
+  if (owned.length > 1)
+    throw new Refusal(
+      `[${shape.table.join(".")}] appears more than once; change it by hand`,
+    );
   const entry = entries.find(
     (candidate) =>
       samePath(candidate.table, shape.table) && candidate.key === shape.field,
@@ -360,11 +375,6 @@ function edited(
       `${path.join(".")} is set in a way forge:config set cannot find; change it by hand`,
     );
 
-  const owned = headers.filter((header) => samePath(header.path, shape.table));
-  if (owned.length > 1)
-    throw new Refusal(
-      `[${shape.table.join(".")}] appears more than once; change it by hand`,
-    );
   const tableValue = at(old, shape.table);
   if (tableValue !== undefined && !isTable(tableValue))
     throw new Refusal(

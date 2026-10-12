@@ -158,7 +158,7 @@ describe("loadConfig: what it reads", () => {
     expect(provenance["workflow.default_crew"]?.source).toBe(s.workspaceFile);
   });
 
-  test("content given for a layer stands in for its file, and counts as the file existing", () => {
+  test("content given for a layer stands in for the file on disk", () => {
     const s = sandbox();
     writeFileSync(s.userFile, '[execution.env]\npass = ["USER_SECRET"]\n');
     writeFileSync(s.workspaceFile, '[workflow]\ndefault_crew = "nobody"\n');
@@ -173,7 +173,7 @@ describe("loadConfig: what it reads", () => {
     expect(config.workflow.defaultCrew).toBe("claude-master");
     expect(provenance["workflow.default_crew"]?.source).toBe(s.workspaceFile);
     expect(files).toEqual([s.userFile, s.workspaceFile]);
-    // A workspace layer exists, so the user file's security key is not inherited.
+    // A workspace layer exists (here on disk too), so the user file's security key is not inherited.
     expect(config.execution.envPass).toEqual([]);
   });
 

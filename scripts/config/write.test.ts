@@ -249,15 +249,67 @@ describe("set: a layout the editor does not own is refused, and the file is left
     );
   });
 
-  test("a table that appears twice", () => {
+  test("a table that appears twice, whether the key is added or replaced", () => {
+    for (const key of [
+      "smiths.claude-master.tags",
+      "smiths.claude-master.model",
+    ]) {
+      const box = sandbox();
+      refused(
+        box,
+        box.workspaceFile,
+        '[smiths.claude-master]\nmodel = "a"\n[smiths.claude-master]\neffort = "b"\n',
+        key,
+        "x",
+        "more than once",
+      );
+    }
+  });
+
+  test("a key segment with an escape the editor does not decode", () => {
     const box = sandbox();
     refused(
       box,
       box.workspaceFile,
-      '[smiths.claude-master]\nmodel = "a"\n[smiths.claude-master]\neffort = "b"\n',
-      "smiths.claude-master.tags",
-      "x",
-      "more than once",
+      '[smiths."claude\\U0001F600"]\nmodel = "a"\n',
+      "workflow.default_crew",
+      "claude-master",
+      "a key forge:config set does not read",
+    );
+  });
+});
+
+describe("set: strings in values are read past, not decoded", () => {
+  test("a tab and a \\U escape in another value do not stop an edit", () => {
+    const box = sandbox();
+    const text =
+      '[smiths.claude-master]\nmodel = "a\tb \\U0001F600"\neffort = "low"\n';
+    writeFileSync(box.workspaceFile, text);
+    const outcome = set(box, "smiths.claude-master.effort", "high");
+    expect(outcome.ok).toBe(true);
+    expect(readFileSync(box.workspaceFile, "utf8")).toBe(
+      text.replace('effort = "low"', 'effort = "high"'),
+    );
+  });
+
+  test("a # and a [ inside the replaced value's old string; its trailing comment is kept", () => {
+    const box = sandbox();
+    writeFileSync(
+      box.workspaceFile,
+      '[smiths.claude-master]\nmodel = "a # [b]" # keep\n',
+    );
+    expect(set(box, "smiths.claude-master.model", "c").ok).toBe(true);
+    expect(readFileSync(box.workspaceFile, "utf8")).toBe(
+      '[smiths.claude-master]\nmodel = "c" # keep\n',
+    );
+  });
+
+  test("a key added after a last key line that has no line ending", () => {
+    const box = sandbox();
+    writeFileSync(box.workspaceFile, '[smiths.claude-master]\nmodel = "a"');
+    expect(set(box, "smiths.claude-master.effort", "high").ok).toBe(true);
+    expect(readFileSync(box.workspaceFile, "utf8")).toBe(
+      '[smiths.claude-master]\nmodel = "a"\neffort = "high"\n',
     );
   });
 });
