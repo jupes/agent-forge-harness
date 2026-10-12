@@ -63,6 +63,13 @@ function repo(ignoreTrees = true): string {
   return dir;
 }
 
+/**
+ * The path as Windows tools write it, with backslashes. Elsewhere a backslash
+ * is an ordinary character in a file name, so the path is left as it is.
+ */
+const windowsSpelling = (path: string): string =>
+  process.platform === "win32" ? path.replaceAll("/", "\\") : path;
+
 /** The repository's own path as git prints it: the key the registry uses. */
 const top = (dir: string): string => git(dir, "rev-parse", "--show-toplevel");
 
@@ -168,9 +175,7 @@ describe("comparablePath", () => {
     const dir = repo();
     // tmpdir() is the short form on this machine; git prints the long one.
     expect(comparablePath(dir)).toBe(comparablePath(top(dir)));
-    expect(comparablePath(dir.replaceAll("/", "\\"))).toBe(
-      comparablePath(top(dir)),
-    );
+    expect(comparablePath(windowsSpelling(dir))).toBe(comparablePath(top(dir)));
     const gone = join(dir, "not", "there");
     expect(comparablePath(gone)).toBe(comparablePath(`${gone}/`));
   });
@@ -416,7 +421,7 @@ describe("listWorktrees", () => {
         worktrees: [
           {
             id: "short1",
-            path: path.replaceAll("/", "\\"),
+            path: windowsSpelling(path),
             branch: "feat/short",
             createdAt: "2026-10-02T00:00:00.000Z",
           },
@@ -442,7 +447,7 @@ describe("listWorktrees", () => {
     // The documented flow: the run's state stays in main, its checkout names the worktree.
     runState(dir, "older", {
       beadId: "agent-forge-harness-old",
-      checkout: a.value.path.replaceAll("/", "\\"),
+      checkout: windowsSpelling(a.value.path),
       updatedAt: "2026-10-01T00:00:00.000Z",
     });
     runState(dir, "newer", {
