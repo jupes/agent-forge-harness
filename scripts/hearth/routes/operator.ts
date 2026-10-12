@@ -1,6 +1,7 @@
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
- * (`operator-reads.ts`), the stream, and the actions.
+ * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
+ * (`beads.ts`) and the queue actions (`queue.ts`) in files of their own.
  *
  * Each effect calls code that already exists — the ledger's queries, the run
  * store, the config loader, the council service, `bd` — so the API is a way in
@@ -43,6 +44,7 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { queueRoutes } from "./queue";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
 
@@ -50,6 +52,8 @@ export interface OperatorDeps extends ReadDeps {
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
   appendEvent(event: LedgerEventInput): AppendResult;
+  /** The queue lock's file: one for every process that moves beads of this tracker. */
+  queueLockFile: string;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
@@ -291,6 +295,14 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         workspace,
         runBd: deps.runBd,
         appendEvent: deps.appendEvent,
+      }),
+      ...queueRoutes({
+        root: deps.root,
+        workspace,
+        runBd: deps.runBd,
+        appendEvent: deps.appendEvent,
+        lockFile: deps.queueLockFile,
+        configHome: deps.configHome,
       }),
     ],
     close: () => live.close(),

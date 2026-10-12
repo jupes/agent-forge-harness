@@ -177,6 +177,41 @@ export const QUEUE_STATES = [
 
 export type QueueState = (typeof QUEUE_STATES)[number];
 
+/** A bead's queue state is the one label made of this prefix and a state. */
+export const QUEUE_LABEL_PREFIX = "queue:";
+
+/**
+ * Metadata the queue writes with the label, in the same `bd` call: the state
+ * again. A label counts as a state only when this agrees with it, because a
+ * child bead inherits its parent's labels and not its metadata.
+ */
+export const QUEUE_STATE_KEY = "queue_state";
+
+/** Metadata on a paused bead: the state it was paused from, and returns to. */
+export const QUEUE_RESUME_KEY = "queue_resume";
+
+/** What can be asked of a bead in the queue; the table in `scripts/scheduler/queue.ts` says when. */
+export const QUEUE_ACTIONS = [
+  "propose",
+  "approve",
+  "queue",
+  "start",
+  "submit",
+  "complete",
+  "rework",
+  "release",
+  "pause",
+  "resume",
+  "halt",
+] as const;
+
+export type QueueAction = (typeof QUEUE_ACTIONS)[number];
+
+/** Who asks: a person through the operator API, or the scheduler (a shift, an auto-task). */
+export const QUEUE_ACTORS = ["operator", "scheduler"] as const;
+
+export type QueueActor = (typeof QUEUE_ACTORS)[number];
+
 /** A running session's claim on a set of file globs, derived from the bead's file map. */
 export interface Reservation {
   beadId: string;
@@ -442,6 +477,12 @@ export interface QueueEntry {
   status: string;
   priority?: number;
   type?: string;
+  /**
+   * Whether the queue wrote this label: the bead's `queue_state` metadata
+   * names the same state. False for a label inherited from a parent or added
+   * by hand, which no move but `propose` accepts.
+   */
+  backed?: boolean;
 }
 
 /** A page of ledger events, oldest first. */
@@ -533,4 +574,25 @@ export interface BeadWriteResult {
   /** Whether the `bead.transitioned` event was stored. The write happened either way. */
   recorded: boolean;
   recordError?: string;
+}
+
+// ── Queue actions ───────────────────────────────────────────────────────────
+
+/** What a queue move (`POST /queue/:id/approve|queue|pause|resume`) answers once `bd` confirmed it. */
+export interface QueueMoveResult {
+  id: string;
+  action: QueueAction;
+  /** Null when the bead entered the queue with this move. */
+  from: QueueState | null;
+  to: QueueState;
+  /** Whether the `bead.transitioned` event was stored. The label was written either way. */
+  recorded: boolean;
+  recordError?: string;
+}
+
+/** What `POST /queue/:id/reassign` answers: the bead, its state, and the smith now recorded on it. */
+export interface QueueReassignResult {
+  id: string;
+  state: QueueState;
+  smith: string;
 }

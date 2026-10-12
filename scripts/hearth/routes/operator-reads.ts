@@ -11,6 +11,8 @@
 
 import {
   type EventsPage,
+  QUEUE_LABEL_PREFIX,
+  QUEUE_STATE_KEY,
   QUEUE_STATES,
   type QueueEntry,
   type QueueState,
@@ -93,6 +95,25 @@ export function looksLikeSecret(value: string): boolean {
 export function noParameters(request: RouteRequest): ValidationResult<null> {
   const checked = parameters(request, []);
   return checked.ok ? { ok: true, value: null } : checked;
+}
+
+/** The body, when it is an object that holds nothing but the fields its row takes. */
+export function bodyFields(
+  request: RouteRequest,
+  allowed: readonly string[],
+): ValidationResult<Record<string, unknown>> {
+  const given = noParameters(request);
+  if (!given.ok) return given;
+  const body = request.body;
+  if (!isRecord(body)) return fail("Expected a JSON object");
+  // Nothing rides along: a field the row does not take is refused, not ignored.
+  return Object.keys(body).every((key) => allowed.includes(key))
+    ? { ok: true, value: body }
+    : fail(
+        allowed.length === 0
+          ? "Expected an empty object: this action takes no fields"
+          : `Unknown field: this action takes only ${allowed.join(", ")}`,
+      );
 }
 
 /** A whole number in a range, written in plain digits. */
@@ -301,8 +322,6 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 /** How long a queue read may take before it is reported as failed. */
 export const BD_QUEUE_TIMEOUT_MS = 15_000;
 
-const QUEUE_LABEL = "queue:";
-
 /**
  * What `bd` is asked for the queue: always exactly this, whatever the request.
  *
@@ -320,7 +339,7 @@ export const QUEUE_LIST_ARGS: readonly string[] = [
   "--limit",
   "0",
   "--label-any",
-  QUEUE_STATES.map((state) => `${QUEUE_LABEL}${state}`).join(","),
+  QUEUE_STATES.map((state) => `${QUEUE_LABEL_PREFIX}${state}`).join(","),
 ];
 
 /**
@@ -373,7 +392,7 @@ function withTimeout<T>(
   });
 }
 
-type QueueRead =
+export type QueueRead =
   | { ok: true; entries: QueueEntry[] }
   | { ok: false; error: string };
 
@@ -381,9 +400,12 @@ type QueueRead =
  * The beads that carry a `queue:<state>` label, one entry per such label. The
  * result is filtered on each issue's own labels: whatever the CLI returned, an
  * issue with no queue label is not in the queue. A bead with two queue labels
- * appears twice — which one should win is the state machine's rule to make.
+ * appears twice: neither wins, and the queue makes no move on such a bead
+ * (`scripts/scheduler/queue.ts`). `backed` says whether the queue wrote the
+ * label: the issue's own `queue_state` metadata names the same state. A label
+ * a child inherited from its parent is not backed.
  */
-function queueEntries(stdout: string): QueueRead {
+export function queueEntries(stdout: string): QueueRead {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -400,13 +422,15 @@ function queueEntries(stdout: string): QueueRead {
         error: "bd list printed something that is not an issue",
       };
     const labels = Array.isArray(issue["labels"]) ? issue["labels"] : [];
+    const metadata = isRecord(issue["metadata"]) ? issue["metadata"] : {};
     for (const state of QUEUE_STATES) {
-      if (!labels.includes(`${QUEUE_LABEL}${state}`)) continue;
+      if (!labels.includes(`${QUEUE_LABEL_PREFIX}${state}`)) continue;
       entries.push({
         beadId: issue["id"],
         title: typeof issue["title"] === "string" ? issue["title"] : "",
         state,
         status: typeof issue["status"] === "string" ? issue["status"] : "",
+        backed: metadata[QUEUE_STATE_KEY] === state,
         ...(typeof issue["priority"] === "number"
           ? { priority: issue["priority"] }
           : {}),

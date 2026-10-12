@@ -47,6 +47,7 @@ import {
   localStateRoot,
 } from "./routes/dev-api";
 import { operatorRoutes } from "./routes/operator";
+import { QUEUE_LOCK_FILE } from "./routes/queue";
 import { createToken, readToken } from "./token";
 
 export interface HearthOptions {
@@ -183,6 +184,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // none unless it runs in the main checkout.
     runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
     appendEvent: append,
+    // Under the home, with the ledger: a shift given the same home takes the same lock.
+    queueLockFile: join(home, QUEUE_LOCK_FILE),
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
     streamPollMs: options.api?.streamPollMs,

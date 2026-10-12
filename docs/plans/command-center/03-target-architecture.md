@@ -56,7 +56,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 | **Hearth** | The always-on local control-plane server (`bun run hearth`), one per machine | lock file `~/.agent-forge/hearth.lock` |
 | **Workbench** | The board of approved and running work (dashboard route, Claude Code pane) | — |
 | **Event** | Append-only ledger row: `{ ts, kind, beadId?, runId?, sessionId?, executor?, workspace, payload(redacted) }` | autoincrement + ULID |
-| **Queue state** | Derived state of a bead for scheduling: `proposed → approved → queued → running → review → done` (plus `paused`, `halted`) stored as Beads label/metadata plus ledger transitions | bead |
+| **Queue state** | Derived state of a bead for scheduling: `proposed → approved → queued → running → review → done` (plus `paused`, `halted`) stored as one Beads label `queue:<state>`, backed by metadata `queue_state`, plus ledger transitions (§6, Queue actions) | bead |
 | **Reservation** | Claim on a set of file globs by a running session in a worktree, derived from the bead's file map | bead + worktree |
 | **Shift** | Bounded unattended loop: pick eligible queued beads, assign smiths, spawn executors, respect concurrency and time caps | shift id |
 | **Friction** | A Beads chore labelled `friction` linked to the event that caused it; resolved by the bead that fixes it | bead |
@@ -75,7 +75,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 ## 6. Control-plane server
 
 - `scripts/hearth/server.ts` (`bun run hearth`), a `node:http` server on `127.0.0.1:<port>`; the Vite dashboard proxies `/__agent-forge/*` to it in dev; the Tauri sidecar supervises it in desktop mode.
-- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts`, `operator-reads.ts` and `beads.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
+- One route table (`scripts/hearth/api.ts`; rows in `scripts/hearth/routes/operator.ts`, `operator-reads.ts`, `beads.ts` and `queue.ts`), served under `/__agent-forge`. A row is method, path, validator and effect; the runner applies everything else, so a row added later gets it by being in the table.
 - Every row answers JSON `{ ok, data, error }` and requires a **declared same-origin** request: an `Origin` equal to the control plane's own, or `Sec-Fetch-Site: same-origin`. A script declares `Origin: http://127.0.0.1:<port>`. A request that repeats `Origin`, `Sec-Fetch-Site`, `Host` or either header below is refused.
 - A mutation also needs the operator token in `X-Agent-Forge-Operator`. The token is per hearth and per start: the one this hearth minted, honoured only while the file its lock names (`tokenFile`, `<home>/tokens/<hash(root)>.token`) still holds it. Missing or wrong is 403 and nothing is written. `GET /token` serves it to a same-origin page and answers 503 whenever no token could be honoured.
 - `X-Agent-Forge-Surface` (`ui` | `cli` | `mcp` | `api`; absent means `api`) is stored on the audit row. It is a label the client declares, not a credential.
@@ -87,14 +87,14 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   - `POST /council/runs` (`{ source: { kind: "bead", id } , profile, budget }`), `POST /council/runs/:id/cancel`
   - `POST /shifts` (`{ for, concurrency, filter }`), `POST /shifts/:id/stop`
   - `POST /runs/:slug/replan` (hands a run back to forgemaster with a reason)
-- What is mounted (`x1gs.3.2`, `x1gs.3.3`). A route is mounted only once its effect exists; nothing accepts a mutation and does nothing.
+- What is mounted (`x1gs.3.2`, `x1gs.3.3`, `x1gs.5.1`). A route is mounted only once its effect exists; nothing accepts a mutation and does nothing.
 
   | Route | State | Notes |
   |---|---|---|
   | `GET /sessions` | mounted | `?open=1`, `?limit=` (1–500, default 100). Folded from the newest 50,000 ledger events of the workspace. Reports `lastEventAt` and `endedAt`; asserts nothing about a session being alive. |
   | `GET /runs`, `GET /runs/:slug` | mounted | The run registry of the checkout. `/runs/:slug` adds the stored state and the run's newest 200 ledger events. |
   | `GET /events` | mounted | `bead`, `beadExact`, `run`, `session`, `since`, `kind`, `after`, `limit` (1–1000, default 200), by the rules of `forge:audit`. Always this workspace. Answers `{ events, cursor, more }`. An unknown or repeated parameter is 400. |
-  | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label). Empty until `x1gs.5.1` writes those labels. |
+  | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label), each with `backed`: whether the queue wrote that label (see Queue actions). |
   | `GET /reservations` | mounted | Claims acquired and not released, from the ledger. Empty until `x1gs.5.3` emits them. |
   | `GET /smiths`, `GET /config` | mounted | Both read what `forge:config show` reads for the hearth's checkout (its `agent-forge.toml` and the machine file); the hearth's own environment is not read. `/config` answers the merged config with provenance and the files read; `/smiths` answers the smiths, the benches and the default smith, without provenance. |
   | `GET /stream` | mounted | See below. |
@@ -102,7 +102,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path, and the same answers once a request is accepted; now an audited action, so it refuses what every action refuses (no token, no declared origin, a query string, a body over the cap). |
   | `GET /beads/options` | mounted | What a create may say: the issue types, the priority rubric (`P0`–`P4`, each with its tier and meaning, the table of the `beads-priority-assignment` skill) and the longest text each field takes. A page that gets no answer has no control plane. |
   | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | mounted | Writes to the tracker; see below. |
-  | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | not mounted | `x1gs.5.1` |
+  | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | mounted | The operator's queue actions; see below. |
   | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.4` |
   | `POST /runs/:slug/replan` | not mounted | `x1gs.6`, the forgemaster expansion (its caller is `x1gs.6.2`) |
 
@@ -113,6 +113,29 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   - Answers: `400` before the audit row. `409`: the issue was already closed, or already claimed; nothing changed. `bd` exits 0 for both (it keeps the first close reason, and prints an issue the same actor already holds as it was), so they are told by the time it prints being from before the call began, with two seconds allowed for the second it rounds to: a close repeated with the same reason inside those two seconds is answered, and recorded, as a close. So is a claim repeated inside them, or made within two seconds of any other change to the issue: the time read for a claim is `updated_at`, which any change moves (`x1gs.3.23`). `502`: `bd` refused, nothing changed; the message is `bd`'s error line, not everything it printed. Also `502` when `bd` could not be started at all, which only the runtime's own message for a missing program says. `504`: the outcome is not known, because the call did not finish or exited 0 without confirming; the change may have been made, and the message says how to check (a killed `bd create` still creates the issue). Never `403`, which a page takes for a stale token and posts again.
   - The page posts each write once and notes it, in the tab's own storage, when it is sent. An answer that leaves the outcome unknown (a `504`, an answer that did not come from the control plane, a request that did not complete) and a write that was out when the page was reloaded are kept until the operator dismisses them, and shown as "Outcome not known", with how to check, by the actions of the bead they are for (a create: under the builder's form). One for a bead whose actions are not on screen is kept and not drawn, a view opened afresh does not know that a write is still out, and the twenty-first note pushes out the oldest (`x1gs.3.21`, `x1gs.3.24`). Nothing is retried.
   - Not done here: queue labels (a create writes none; a child inherits its parent's labels as with the CLI), labels or another repo on create, closing a friction bead when the bead that resolves it is closed (`x1gs.2.5`).
+- Queue actions (`scripts/hearth/routes/queue.ts`, over `scripts/scheduler/queue.ts`). A bead's queue state is one `queue:<state>` label on the bead; Beads `status` is not touched. One table says which moves are legal and who may make them, and one function makes a move: it validates the id, takes the queue lock, reads the bead (`bd show`), checks the table, writes the label with one `bd update`, confirms the write from what `bd` printed, and appends `bead.transitioned` `{ from, to, reason }`, where `reason` is `<action>:<actor>` (for example `approve:operator`). The rows are that function called as the operator.
+
+  | From | To | Action | Who |
+  |---|---|---|---|
+  | not in the queue | proposed | propose | operator, scheduler |
+  | proposed | approved | approve | operator |
+  | approved, halted | queued | queue | operator |
+  | approved | running | start | operator |
+  | queued | running | start | operator, scheduler |
+  | running | review | submit | operator, scheduler |
+  | running | queued | release | operator, scheduler |
+  | review | done | complete | operator, scheduler |
+  | review | queued | rework | operator, scheduler |
+  | proposed, approved, queued, running, review | paused | pause | operator |
+  | paused | the state it was paused from | resume | operator |
+  | approved, queued, running, review | halted | halt | operator, scheduler |
+
+  - Everything else is refused with the bead's current state and the moves allowed from it, and nothing is written. `done` is final. This is decision 5: work enters as `proposed`, only an operator's `approve` moves it on, and only approved or queued work becomes `running`; the scheduler starts only what is `queued`.
+  - `approve`, `queue`, `pause` and `resume` have rows and take `{}`. `propose` and the scheduler's moves have no row. `reassign` takes `{ smith }`, a configured and enabled smith, and records it as the bead's `smith` metadata (§9) for a bead that is proposed, approved, queued, paused or halted; it moves no state and appends no `bead.transitioned`: its audit row carries the bead and, as `target`, the smith.
+  - A label counts as a state only when the queue wrote it: each write also sets metadata `queue_state` to the same state, and `pause` sets `queue_resume` to where the bead was. `bd create --parent` copies a parent's labels onto a child and not its metadata, so an inherited label is not a state: the only move it takes is `propose`. Queue state is not inherited. A bead with two queue labels is in no state and every move is refused.
+  - Moves run one at a time under a lock (a write transaction on `queue-lock.db` in the hearth's home), because `bd` has no compare-and-set for labels: a second caller reads the first one's result and is refused by the table. The lock covers the processes that share that home. A change made outside the lock (a hand edit, another home, another machine) is not serialized. When it leaves a second queue label it is found as the write is confirmed and answered as a conflict with no event; when it makes the same move at the same time it leaves exactly the target and is not found. The `queue_state` and `queue_resume` metadata are trusted as written, and a process that ends between the label write and the append leaves a move with no event.
+  - Answers: `400` before the audit row (an id that is not a bead's, a body field the row does not take, an unknown or disabled smith). `404`: no bead has exactly that id. `409`: the table refused, the bead is in no state, the lock was busy, or another writer's label was found. `502`: `bd` refused. `504`: the outcome is not known, with how to check. Never `403`. `recorded: false` in the answer means the label was written and the event could not be stored.
+  - What a shift may pick is a bead in `queued` that is not closed. `bd list --label queue:queued` prints those, and also two kinds that `start` refuses, both made outside the queue: a bead whose label was inherited or added by hand, and a bead carrying a second queue label. The `bd list` that prints exactly the pickable set adds `--metadata-field queue_state=queued` and `--exclude-label` for the other seven queue labels.
 - Stream (`scripts/hearth/stream.ts`). A new connection gets one `snapshot` event: `{ cursor, sessions, runs, queue, reservations, smiths, config }`, where `cursor` is the ledger's newest id and each collection is the envelope its own `GET` route answers, so one that could not be read carries its own error. Then one `delta` event per ledger event, in `id` order, each with its `id` as the SSE id. A reconnect that sends `Last-Event-ID` gets the deltas after it and no snapshot, unless that id is ahead of the ledger: then the client is out of step and gets a snapshot. A keepalive comment every 15 s; at most 32 streams.
   - The ledger is the only change feed, and other processes write it, so each connection polls for ids above its cursor (250 ms). The cursor is read before the collections: an event appended meanwhile follows the snapshot as a delta, so a delta may repeat what the snapshot shows and never miss it.
   - A client that falls behind on reading is not buffered for: a connection with more than 1 MB waiting is given nothing new until it drains (its cursor does not move, so it misses nothing), and has its socket closed if it stays that way for 30 s; it resumes with `Last-Event-ID`.

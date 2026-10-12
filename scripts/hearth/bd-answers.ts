@@ -9,6 +9,11 @@
  * - `create` prints the issue as an object;
  * - `update --claim` and `close` print a one-element array;
  * - `comments add` prints the comment;
+ * - `show` and an `update` of labels or metadata print a one-element array;
+ *   `labels` and `metadata` are absent when empty, labels are sorted, and
+ *   the `show` of a child prints its parent, metadata included, under
+ *   `dependencies`;
+ * - `show` of an id no issue has exits 1 with the error on both streams;
  * - a refusal exits 1, and says why on stderr (`create`, `update`) or as
  *   `{ "error": … }` on stdout with nothing on stderr (`close`, `comments`).
  *
@@ -30,6 +35,9 @@ export interface BdIssue {
   status: string;
   assignee?: string;
   labels?: string[];
+  metadata?: Record<string, unknown>;
+  /** On a `show` only: the issues this one depends on, its parent among them. */
+  dependencies?: Array<Record<string, unknown>>;
   close_reason?: string;
   closed_at?: string;
   created_at: string;
@@ -127,6 +135,23 @@ export const bdAnswers = {
   created: (issue: BdIssue): BdResult => printed(issue),
   claimed: (issue: BdIssue): BdResult => printed([issue]),
   closed: (issue: BdIssue): BdResult => printed([issue]),
+  shown: (issue: BdIssue): BdResult => printed([issue]),
+  updated: (issue: BdIssue): BdResult => printed([issue]),
+  /** How `show` answers an id no issue has: exit 1, the reason on stderr and as JSON on stdout. */
+  notShown: (id: string): BdResult => ({
+    status: 1,
+    stdout: `${JSON.stringify({ error: "no issues found matching the provided IDs", schema_version: 1 }, null, 2)}
+`,
+    stderr: `Error fetching ${id}: no issue found matching "${id}"
+`,
+  }),
+  /** How `update` answers an id no issue has. */
+  notResolved: (id: string): BdResult => ({
+    status: 1,
+    stdout: "",
+    stderr: `Error resolving ${id}: no issue found matching "${id}"
+`,
+  }),
   commented: (comment: {
     id: string;
     issueId: string;
