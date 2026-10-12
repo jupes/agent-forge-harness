@@ -30,6 +30,8 @@
     "beads:import-command-center-plan": "bun run scripts/beads/import-command-center-plan.ts",
     "tmp:cleanup": "bun run scripts/tmp-work-cleanup.ts",
     "beads:bundles": "bun run scripts/beads/convoy-bundles.ts",
+    "forge:eligible": "bun run scripts/scheduler/reservations-cli.ts eligible",
+    "forge:reservations": "bun run scripts/scheduler/reservations-cli.ts",
     "agents-md": "bun run scripts/agents-md.ts",
     "codex:sync": "bun run scripts/sync-codex.ts",
     "molecules:check": "bun run scripts/molecules/check.ts",

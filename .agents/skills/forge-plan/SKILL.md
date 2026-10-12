@@ -66,9 +66,14 @@ Each checkpoint becomes one Beads task, so give each one two more things:
   bench of smiths a task is routed to when its value is handed to `forge:exec --complexity`
   (`.claude/protocols/model-tier-policy.md`). Nothing reads the label from Beads yet.
 - **A file map**: the globs the task may touch, one per line under a `Files` heading, relative to
-  the repository root. The implement phase holds the worker to it. Nothing reserves files from it
-  yet: it is written now so that tasks whose maps do not overlap can later be built at the same
-  time. Keep it as narrow as the work allows.
+  the repository root. The implement phase holds the worker to it, and the scheduler reserves it:
+  a queued task whose map overlaps a reservation, or the map of a task ahead of it (tasks in
+  progress and tasks holding a reservation come first, then bundle order), waits
+  (`bun run forge:eligible` shows which and why). Keep it as narrow as the work allows. The
+  scheduler reads the map from the task's description, else from its acceptance criteria. A task
+  whose map is missing, empty or malformed reserves the whole repository (`**`), so it runs alone.
+  An entry whose last segment has no wildcard (`scripts/scheduler`) also reserves everything under
+  it.
 
 The file map has one format, read by `parseFileMap` in `scripts/scheduler/filemap.ts`:
 
