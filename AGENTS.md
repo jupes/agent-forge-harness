@@ -137,22 +137,30 @@ Refs: T-42
 
 ## Worktree Management
 
-Parallel workers use isolated git worktrees. Managed via `scripts/worktree.ts`:
+Parallel workers use isolated git worktrees. Managed via `scripts/worktree.ts`, over the registry in
+`scripts/scheduler/worktrees.ts`:
 
 ```bash
-# Create a worktree for a worker
-bun run worktree create feat/EPIC-1-worker-1
-# → { "ok": true, "worktree": { "id": "a1b2c3", "path": "trees/a1b2c3", "branch": "..." } }
+# Create a worktree for a worker (under the main checkout's trees/, branched from this checkout's HEAD)
+bun run worktree create feat/EPIC-1-worker-1 --bead <TASK-ID>
+# → { "ok": true, "worktree": { "id": "a1b2c3", "path": "<main>/trees/a1b2c3", "branch": "...", "beadId": "..." }, "warnings": [...] }
 
-# List active worktrees
+# List every worktree of the repository (trees/, the desktop app's, any other), with its bead and session
 bun run worktree list
 
-# Clean up after worker completes
+# Clean up after the worker completes (keeps a worktree with changes unless --force)
 bun run worktree cleanup a1b2c3
 ```
 
 Workers must clean up their worktree after merging. The lead agent is responsible for
-calling `cleanup` on any orphaned worktrees.
+calling `cleanup` on any orphaned worktrees. `cleanup` and `cleanup-all` remove only the
+worktrees `create` made; the others are listed, never removed. `GET /worktrees` and the
+dashboard's Repos page show the same list.
+
+**The stash is shared.** Every worktree of a repository uses one `refs/stash`, so another session
+can pop your entry, or you theirs. Prefer a WIP commit. If you must stash, use
+`git stash push -u -m <unique-tag>`, restore with `git stash apply <sha>`, and drop only your own
+entry, found by its tag. Never run a bare `git stash pop`, `git stash drop` or `git stash clear`.
 
 ---
 
@@ -205,7 +213,7 @@ bd close <id>         # Complete work
    git push
    git status  # MUST show "up to date with origin"
    ```
-5. **Clean up** - Clear stashes, prune remote branches
+5. **Clean up** - Drop your own stash entries (the stash is one stack shared by every worktree: drop only the entries this session made, found by their tag, and never run `git stash clear`, a bare `git stash pop` or `git stash drop` without a sha), prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
 

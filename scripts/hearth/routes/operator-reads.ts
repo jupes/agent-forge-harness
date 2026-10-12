@@ -6,7 +6,8 @@
  * Two kinds. The ledger reads (sessions, runs, events, reservations) are
  * scoped to the hearth's own workspace and take the audit CLI's filters by
  * the audit CLI's rules. The workspace reads come from outside the ledger:
- * the queue from Beads, smiths and config from the config files.
+ * the queue from Beads, smiths and config from the config files, the
+ * worktrees from git.
  */
 
 import {
@@ -30,6 +31,7 @@ import {
   listSessions,
   queryEventPage,
 } from "../../ledger/query";
+import { type GitRun, listWorktrees } from "../../scheduler/worktrees";
 import { redactSecrets } from "../../secret-patterns";
 import {
   type ReadRoute,
@@ -38,7 +40,7 @@ import {
   safeMessage,
 } from "../api";
 import { isQueueState, type ValidationResult } from "../validate";
-import type { BdRunner } from "./dev-api";
+import { type BdRunner, localStateRoot } from "./dev-api";
 
 /** What the read rows are built from. */
 export interface ReadDeps {
@@ -53,6 +55,8 @@ export interface ReadDeps {
   bdTimeoutMs?: number | undefined;
   /** The OS home the machine config file is read from; defaults to the real one. */
   configHome?: string | undefined;
+  /** Runs git for the worktree registry; defaults to the real one. */
+  git?: GitRun | undefined;
 }
 
 export const fail = <T>(error: string): ValidationResult<T> => ({
@@ -543,5 +547,25 @@ export function workspaceReads(deps: ReadDeps) {
     validate: noParameters,
     read: configured((loaded) => loaded),
   };
-  return { queue, smiths, config: whole };
+  /**
+   * Every worktree of the repository with its bead and session
+   * (`scripts/scheduler/worktrees.ts`). Not a stream collection: it is read
+   * from git, not the ledger, and every new stream builds a snapshot.
+   */
+  const worktrees: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/worktrees",
+    validate: noParameters,
+    read: () => {
+      const listed = listWorktrees(
+        localStateRoot(deps.root),
+        deps.git !== undefined ? { git: deps.git } : {},
+      );
+      return listed.ok
+        ? { status: 200, data: listed.entries }
+        : { status: 502, error: listed.error };
+    },
+  };
+  return { queue, smiths, config: whole, worktrees };
 }

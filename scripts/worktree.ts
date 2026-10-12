@@ -1,155 +1,135 @@
 #!/usr/bin/env bun
 /**
- * worktree.ts — Git worktree management for parallel epic workers
+ * worktree.ts — Git worktrees for parallel work, over the registry in
+ * scripts/scheduler/worktrees.ts.
  *
  * Usage:
- *   bun run worktree create <branch-name>
- *   bun run worktree cleanup <worktree-id>
+ *   bun run worktree create <branch> [--bead <id>] [--session <id>]
  *   bun run worktree list
+ *   bun run worktree cleanup <id> [--force]
  *   bun run worktree cleanup-all
  *
- * All commands emit JSON output.
+ * Every command prints one JSON object and exits 1 when it is `ok: false`.
+ * The registry is the main checkout's, wherever this is run from. `list`
+ * shows every worktree of the repository; `cleanup` removes only the ones
+ * `create` made, and keeps one with changes unless `--force` is given.
  */
 
-import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import type { WorktreeResult } from "../types/beads";
+import {
+  createWorktree,
+  gitRun,
+  listWorktrees,
+  mainCheckoutOf,
+  removeWorktree,
+  STASH_WARNING,
+} from "./scheduler/worktrees";
 
-const TREES_DIR = join(process.cwd(), "trees");
-const STATE_FILE = join(TREES_DIR, ".state.json");
+const USAGE =
+  "worktree create <branch> [--bead <id>] [--session <id>] | list | cleanup <id> [--force] | cleanup-all";
 
-interface WorktreeRecord {
-  id: string;
-  path: string;
-  branch: string;
-  createdAt: string;
+type Printed = WorktreeResult & Record<string, unknown>;
+
+function print(result: Printed): never {
+  console.log(JSON.stringify(result));
+  process.exit(result.ok ? 0 : 1);
 }
 
-interface WorktreeState {
-  worktrees: WorktreeRecord[];
-}
-
-function run(cmd: string, cwd?: string): { ok: boolean; output: string } {
-  try {
-    const out = execSync(cmd, {
-      cwd: cwd ?? process.cwd(),
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 60_000,
-    });
-    return { ok: true, output: out.trim() };
-  } catch (e: unknown) {
-    const err = e as { stdout?: string; stderr?: string };
-    return {
-      ok: false,
-      output: ((err.stdout ?? "") + (err.stderr ?? "")).trim(),
-    };
+/** The positional arguments and the `--name value` options; a flag with no value is an error. */
+function parseArgs(
+  args: readonly string[],
+  valued: readonly string[],
+  flags: readonly string[],
+):
+  | {
+      ok: true;
+      positional: string[];
+      options: Record<string, string>;
+      set: Set<string>;
+    }
+  | { ok: false; error: string } {
+  const positional: string[] = [];
+  const options: Record<string, string> = {};
+  const set = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    const name = arg.slice(2);
+    if (arg.startsWith("--") && valued.includes(name)) {
+      const value = args[i + 1];
+      if (value === undefined || value.startsWith("--"))
+        return { ok: false, error: `${arg} needs a value` };
+      options[name] = value;
+      i++;
+    } else if (arg.startsWith("--") && flags.includes(name)) set.add(name);
+    else if (arg.startsWith("--"))
+      return { ok: false, error: `unknown option ${arg}` };
+    else positional.push(arg);
   }
-}
-
-function loadState(): WorktreeState {
-  mkdirSync(TREES_DIR, { recursive: true });
-  if (!existsSync(STATE_FILE)) return { worktrees: [] };
-  try {
-    return JSON.parse(readFileSync(STATE_FILE, "utf8")) as WorktreeState;
-  } catch {
-    return { worktrees: [] };
-  }
-}
-
-function saveState(state: WorktreeState): void {
-  mkdirSync(TREES_DIR, { recursive: true });
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
-
-function randomId(): string {
-  return Math.random().toString(16).slice(2, 8);
+  return { ok: true, positional, options, set };
 }
 
 const [, , command, ...rest] = process.argv;
+const cwd = process.cwd();
+const main = mainCheckoutOf(cwd, gitRun);
+if (main === null)
+  print({ ok: false, error: `${cwd} is not inside a git repository` });
 
 if (command === "create") {
-  const branch = rest[0];
-  if (!branch) {
-    console.log(
-      JSON.stringify({
-        ok: false,
-        error: "Usage: worktree create <branch-name>",
-      }),
-    );
-    process.exit(1);
-  }
-
-  const id = randomId();
-  const worktreePath = join(TREES_DIR, id);
-
-  // Create the branch and worktree
-  const r = run(`git worktree add -b ${branch} ${worktreePath}`);
-  if (!r.ok) {
-    console.log(JSON.stringify({ ok: false, error: r.output }));
-    process.exit(1);
-  }
-
-  const record: WorktreeRecord = {
-    id,
-    path: worktreePath,
+  const parsed = parseArgs(rest, ["bead", "session"], []);
+  if (!parsed.ok) print({ ok: false, error: parsed.error, usage: USAGE });
+  const [branch, extra] = parsed.positional;
+  if (branch === undefined || extra !== undefined)
+    print({ ok: false, error: `Usage: ${USAGE}` });
+  const created = createWorktree(main, cwd, {
     branch,
-    createdAt: new Date().toISOString(),
-  };
-
-  const state = loadState();
-  state.worktrees.push(record);
-  saveState(state);
-
-  console.log(JSON.stringify({ ok: true, worktree: record }));
-} else if (command === "cleanup") {
-  const id = rest[0];
-  if (!id) {
-    console.log(
-      JSON.stringify({ ok: false, error: "Usage: worktree cleanup <id>" }),
-    );
-    process.exit(1);
-  }
-
-  const state = loadState();
-  const record = state.worktrees.find((w) => w.id === id);
-  if (!record) {
-    console.log(
-      JSON.stringify({ ok: false, error: `Worktree ${id} not found in state` }),
-    );
-    process.exit(1);
-  }
-
-  const r = run(`git worktree remove --force ${record.path}`);
-  state.worktrees = state.worktrees.filter((w) => w.id !== id);
-  saveState(state);
-
-  console.log(
-    JSON.stringify({
-      ok: r.ok,
-      removed: record,
-      error: r.ok ? null : r.output,
-    }),
+    beadId: parsed.options["bead"],
+    sessionId: parsed.options["session"],
+  });
+  print(
+    created.ok
+      ? { ok: true, worktree: created.value, warnings: [STASH_WARNING] }
+      : { ok: false, error: created.error },
   );
 } else if (command === "list") {
-  const state = loadState();
-  console.log(JSON.stringify({ ok: true, worktrees: state.worktrees }));
-} else if (command === "cleanup-all") {
-  const state = loadState();
-  const results = [];
-  for (const record of state.worktrees) {
-    const r = run(`git worktree remove --force ${record.path}`);
-    results.push({ id: record.id, ok: r.ok });
-  }
-  saveState({ worktrees: [] });
-  console.log(JSON.stringify({ ok: true, removed: results }));
-} else {
-  console.log(
-    JSON.stringify({
-      ok: false,
-      error: `Unknown command: ${command ?? "(none)"}`,
-      usage: "worktree <create|cleanup|list|cleanup-all> [args]",
-    }),
+  const listed = listWorktrees(main);
+  print(
+    listed.ok
+      ? { ok: true, worktrees: listed.entries, warnings: [STASH_WARNING] }
+      : { ok: false, error: listed.error },
   );
-  process.exit(1);
+} else if (command === "cleanup") {
+  const parsed = parseArgs(rest, [], ["force"]);
+  if (!parsed.ok) print({ ok: false, error: parsed.error, usage: USAGE });
+  const [id, extra] = parsed.positional;
+  if (id === undefined || extra !== undefined)
+    print({ ok: false, error: `Usage: ${USAGE}` });
+  const removed = removeWorktree(main, id, { force: parsed.set.has("force") });
+  print(
+    removed.ok
+      ? { ok: true, removed: removed.value }
+      : { ok: false, error: removed.error },
+  );
+} else if (command === "cleanup-all") {
+  const listed = listWorktrees(main);
+  if (!listed.ok) print({ ok: false, error: listed.error });
+  const results = listed.entries
+    .filter((entry) => entry.id !== undefined)
+    .map((entry) => {
+      const removed = removeWorktree(main, entry.id as string, {
+        force: false,
+      });
+      return removed.ok
+        ? { id: entry.id, ok: true }
+        : { id: entry.id, ok: false, error: removed.error };
+    });
+  print({
+    ok: results.every((result) => result.ok),
+    removed: results,
+  });
+} else {
+  print({
+    ok: false,
+    error: `Unknown command: ${command ?? "(none)"}`,
+    usage: USAGE,
+  });
 }

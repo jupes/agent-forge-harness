@@ -410,13 +410,19 @@ test.describe("Repos & knowledge", () => {
     const worktrees = page
       .getByRole("region", { name: "Worktrees" })
       .locator("tbody tr");
-    await expect(worktrees).toHaveCount(2);
-    await expect(
-      worktrees.filter({ hasText: "feat/design-system" }),
-    ).toContainText("present");
+    // Every worktree: the main checkout, the ones bun run worktree made, the desktop app's.
+    await expect(worktrees).toHaveCount(4);
+    await expect(worktrees.first()).toContainText("main checkout");
+    const made = worktrees.filter({ hasText: "feat/design-system" });
+    await expect(made).toContainText("present");
+    await expect(made).toContainText("agent-forge-harness-dg40");
+    await expect(made).toContainText("session-design");
     await expect(
       worktrees.filter({ hasText: "fix/stale-login-redirect" }),
-    ).toContainText("path missing");
+    ).toContainText("missing");
+    const app = worktrees.filter({ hasText: "claude/queue-work" });
+    await expect(app).toContainText("desktop app");
+    await expect(app).toContainText("agent-forge-harness-x1gs.5.1");
 
     await expect(page.locator(".af-notice")).toHaveCount(0);
     expect(errors).toEqual([]);

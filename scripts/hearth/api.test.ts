@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
+import type { WorktreeEntry } from "../../types/beads";
 import type {
   EventsPage,
   LedgerEvent,
@@ -20,6 +21,7 @@ import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { queueTracker } from "../scheduler/queue-fixture";
+import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
@@ -474,6 +476,7 @@ const READS: Record<string, string> = {
   "GET /events": "/events",
   "GET /queue": "/queue",
   "GET /reservations": "/reservations",
+  "GET /worktrees": "/worktrees",
   "GET /smiths": "/smiths",
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
@@ -539,6 +542,59 @@ describe("the operator API on a hearth", () => {
     const body = await envelope<Array<{ slug: string }>>(response);
     expect(body.ok).toBe(true);
     expect(body.data?.map((run) => run.slug)).toEqual(["demo"]);
+  });
+
+  test("GET /worktrees answers every worktree git lists for the hearth's root, and is not a stream collection", async () => {
+    let root = "";
+    const git: GitRun = (args) => {
+      const top = root.replaceAll("\\", "/");
+      if (args[0] === "rev-parse")
+        return { status: 0, stdout: `${top}\n`, stderr: "" };
+      if (args[0] === "worktree")
+        return {
+          status: 0,
+          stdout: [
+            `worktree ${top}`,
+            "HEAD aaa",
+            "branch refs/heads/master",
+            "",
+            `worktree ${top}/.claude/worktrees/app`,
+            "HEAD bbb",
+            "branch refs/heads/claude/app",
+            "",
+            "",
+          ].join("\0"),
+          stderr: "",
+        };
+      return { status: 1, stdout: "", stderr: "" };
+    };
+    const h = await start({ api: { git } });
+    root = h.root;
+    const response = await fetch(`${h.api}/worktrees`, {
+      headers: h.headers(),
+    });
+    expect(response.status).toBe(200);
+    const body = await envelope<WorktreeEntry[]>(response);
+    expect(body.data?.map((entry) => [entry.kind, entry.branch])).toEqual([
+      ["main", "master"],
+      ["claude", "claude/app"],
+    ]);
+    const row = h.hearth.routes.find(
+      (route) => key(route) === "GET /worktrees",
+    );
+    expect(
+      row?.kind === "read" ? row.collection : "not a read",
+    ).toBeUndefined();
+  });
+
+  test("GET /worktrees answers 502 when git cannot list them", async () => {
+    const hung: GitRun = () => ({ status: null, stdout: "", stderr: "" });
+    const h = await start({ api: { git: hung } });
+    const response = await fetch(`${h.api}/worktrees`, {
+      headers: h.headers(),
+    });
+    expect(response.status).toBe(502);
+    expect((await envelope(response)).ok).toBe(false);
   });
 });
 

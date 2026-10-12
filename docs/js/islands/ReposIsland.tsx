@@ -3,6 +3,7 @@ import type {
   RepoEntry,
   ReposKnowledge,
   SharedConventions,
+  WorktreeView,
 } from "../../../scripts/dashboard/repos-knowledge-model";
 import { Card } from "../ds/Card";
 import { EmptyState } from "../ds/EmptyState";
@@ -28,8 +29,9 @@ function freshnessLabel(repo: RepoEntry): string {
  * Registered sub-repositories, knowledge freshness, shared conventions and
  * worktrees.
  *
- * Reads `repos/repos.json`, `repos/`, `knowledge/` and `trees/.state.json`
- * through the dev-only API — all of it local, none of it committed.
+ * Reads `repos/repos.json`, `repos/`, `knowledge/` and the worktree registry
+ * (`git worktree list` and `trees/.state.json`) through the dev-only API — all
+ * of it local, none of it committed.
  */
 export function ReposIsland(): JSX.Element {
   const { data, error, loading } =
@@ -128,55 +130,7 @@ export function ReposIsland(): JSX.Element {
 
       <ConventionsCard conventions={data.conventions} />
 
-      <Card title="Worktrees" headingLevel={2} kicker="trees/.state.json">
-        <Table
-          label="Worktrees"
-          rows={data.worktrees}
-          rowKey={(worktree) => worktree.id}
-          empty="No worktrees registered. bun run worktree create <branch> adds one."
-          columns={[
-            {
-              key: "branch",
-              header: "Branch",
-              cell: (worktree) => (
-                <span class="af-type">
-                  <Icon name="git-branch" size={13} />
-                  <code>{worktree.branch}</code>
-                </span>
-              ),
-            },
-            { key: "id", header: "Id", class: "af-col-id" },
-            {
-              key: "path",
-              header: "Path",
-              cell: (worktree) => <span class="af-muted">{worktree.path}</span>,
-            },
-            {
-              key: "createdAt",
-              header: "Created",
-              class: "af-col-date",
-              cell: (worktree) => new Date(worktree.createdAt).toLocaleString(),
-            },
-            {
-              key: "pathExists",
-              header: "State",
-              cell: (worktree) =>
-                worktree.pathExists ? (
-                  <Tag tone="neutral">present</Tag>
-                ) : (
-                  <Tag tone="outline">
-                    <Icon name="warning-circle" size={12} />
-                    path missing
-                  </Tag>
-                ),
-            },
-          ]}
-        />
-        <p class="af-muted af-prose">
-          A record whose directory is gone can be removed with{" "}
-          <code>bun run worktree cleanup &lt;id&gt;</code>.
-        </p>
-      </Card>
+      <WorktreesCard worktrees={data.worktrees} error={data.worktreesError} />
     </>
   );
 }
@@ -232,6 +186,119 @@ function ConventionsCard({
       <p class="af-muted af-prose">
         Agents load these alongside each repo's own YAML. Query them with{" "}
         <code>/ask</code>.
+      </p>
+    </Card>
+  );
+}
+
+const KIND_LABEL = {
+  main: "main checkout",
+  trees: "trees/",
+  claude: "desktop app",
+  other: "elsewhere",
+} as const;
+
+function worktreeState(worktree: WorktreeView): JSX.Element {
+  if (worktree.missing || !worktree.pathExists)
+    return (
+      <Tag tone="outline">
+        <Icon name="warning-circle" size={12} />
+        missing
+      </Tag>
+    );
+  if (worktree.locked) return <Tag tone="accent">locked</Tag>;
+  if (worktree.prunable) return <Tag tone="outline">prunable</Tag>;
+  return <Tag tone="neutral">present</Tag>;
+}
+
+const none = <span class="af-muted">—</span>;
+
+/** Every worktree of the repository, with the bead it serves and the session in it. */
+function WorktreesCard({
+  worktrees,
+  error,
+}: {
+  worktrees: WorktreeView[];
+  error: string | null;
+}): JSX.Element {
+  return (
+    <Card title="Worktrees" headingLevel={2} kicker="git worktree list">
+      {error ? (
+        <p class="af-notice">The worktrees could not be listed: {error}</p>
+      ) : null}
+      <Table
+        label="Worktrees"
+        rows={worktrees}
+        rowKey={(worktree) => worktree.path}
+        empty="No worktrees. bun run worktree create <branch> adds one."
+        columns={[
+          {
+            key: "branch",
+            header: "Branch",
+            cell: (worktree) => (
+              <span class="af-type">
+                <Icon name="git-branch" size={13} />
+                <code>
+                  {worktree.branch ??
+                    `detached ${(worktree.head ?? "").slice(0, 7)}`}
+                </code>
+              </span>
+            ),
+          },
+          {
+            key: "kind",
+            header: "Kind",
+            cell: (worktree) => KIND_LABEL[worktree.kind],
+          },
+          {
+            key: "beadId",
+            header: "Bead",
+            cell: (worktree) =>
+              worktree.beadId ? <code>{worktree.beadId}</code> : none,
+          },
+          {
+            key: "sessionId",
+            header: "Session",
+            cell: (worktree) =>
+              worktree.sessionId ? <code>{worktree.sessionId}</code> : none,
+          },
+          {
+            key: "path",
+            header: "Path",
+            cell: (worktree) => (
+              <span class="af-muted">
+                {worktree.path}
+                {worktree.id ? (
+                  <>
+                    {" "}
+                    · id <code>{worktree.id}</code>
+                  </>
+                ) : null}
+              </span>
+            ),
+          },
+          {
+            key: "createdAt",
+            header: "Created",
+            class: "af-col-date",
+            cell: (worktree) =>
+              worktree.createdAt
+                ? new Date(worktree.createdAt).toLocaleString()
+                : none,
+          },
+          {
+            key: "state",
+            header: "State",
+            cell: worktreeState,
+          },
+        ]}
+      />
+      <p class="af-muted af-prose">
+        A worktree with an id was made by <code>bun run worktree create</code>;{" "}
+        <code>bun run worktree cleanup &lt;id&gt;</code> removes it, and keeps
+        one with changes unless given <code>--force</code>. The others (the main
+        checkout, the desktop app's) are listed only. The stash is one stack
+        shared by every worktree: never a bare <code>git stash pop</code>.
       </p>
     </Card>
   );

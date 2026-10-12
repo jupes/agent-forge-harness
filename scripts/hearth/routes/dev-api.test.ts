@@ -10,6 +10,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { GitRun } from "../../scheduler/worktrees";
 import {
   applyReview,
   type BdResult,
@@ -28,6 +29,35 @@ function tempRoot(): string {
 afterAll(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * A stand-in for git that knows one repository: `main` is its top level and
+ * `paths` its worktrees. A temp directory is no repository of its own, and
+ * real git would answer for whatever repository holds it.
+ */
+function fakeGit(main: string, paths: string[]): GitRun {
+  const slashed = (path: string) => path.replaceAll("\\", "/");
+  return (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel")
+      return {
+        status: 0,
+        stdout: `${slashed(main)}\n`,
+        stderr: "",
+      };
+    if (args[0] === "worktree" && args[1] === "list")
+      return {
+        status: 0,
+        stdout: paths
+          .map(
+            (path) =>
+              `worktree ${slashed(path)}\0HEAD abc\0branch refs/heads/b\0\0`,
+          )
+          .join(""),
+        stderr: "",
+      };
+    return { status: 1, stdout: "", stderr: "not asked of this fake" };
+  };
+}
 
 function write(root: string, relative: string, content: string): string {
   const path = join(root, relative);
@@ -301,7 +331,9 @@ describe("readReposKnowledge", () => {
       }),
     );
 
-    const data = readReposKnowledge(root);
+    const data = readReposKnowledge(root, Date.now(), {
+      git: fakeGit(root, [root, present]),
+    });
 
     expect(data.repos).toHaveLength(1);
     expect(data.repos[0]).toMatchObject({
@@ -310,10 +342,20 @@ describe("readReposKnowledge", () => {
       cloned: true,
       freshness: "current",
     });
-    expect(data.worktrees.map((w) => [w.id, w.pathExists])).toEqual([
-      ["live", true],
-      ["gone", false],
+    // Every worktree git lists, and the cached one it does not.
+    expect(
+      data.worktrees.map((w) => [
+        w.kind,
+        w.id ?? null,
+        w.pathExists,
+        w.missing,
+      ]),
+    ).toEqual([
+      ["main", null, true, false],
+      ["trees", "live", true, false],
+      ["trees", "gone", false, true],
     ]);
+    expect(data.worktreesError).toBeNull();
     expect(data.conventions?.entries).toEqual([
       { key: "commit_format.pattern", value: "<type>: <what>" },
     ]);
@@ -323,6 +365,7 @@ describe("readReposKnowledge", () => {
     const data = readReposKnowledge(tempRoot());
     expect(data.repos).toEqual([]);
     expect(data.worktrees).toEqual([]);
+    expect(data.worktreesError).toBeNull();
     expect(data.conventions).toBeNull();
     expect(data.localStateFrom).toBeNull();
   });
@@ -377,19 +420,32 @@ describe("readReposKnowledge", () => {
       (root) => `${root.replaceAll("\\", "/")}/.git/worktrees/wt`,
     );
 
-    const data = readReposKnowledge(worktree);
+    const data = readReposKnowledge(worktree, Date.now(), {
+      git: fakeGit(main, [main, worktree]),
+    });
 
     expect(data.localStateFrom).toBe(main);
     expect(data.repos.map((r) => [r.name, r.cloned, r.freshness])).toEqual([
       ["clone-a", true, "current"],
     ]);
-    expect(data.worktrees.map((w) => [w.id, w.pathExists])).toEqual([
+    expect(data.worktrees.map((w) => [w.id ?? null, w.pathExists])).toEqual([
+      [null, true],
       ["wt", true],
     ]);
     // Committed files still come from the branch being viewed.
     expect(data.conventions?.entries).toEqual([
       { key: "from", value: "branch" },
     ]);
+  });
+
+  test("git failing is said on the worktrees, and the rest of the page is still read", () => {
+    const root = tempRoot();
+    write(root, "knowledge/_shared.yaml", "shared_conventions:\n  a: b\n");
+    const hung: GitRun = () => ({ status: null, stdout: "", stderr: "" });
+    const data = readReposKnowledge(root, Date.now(), { git: hung });
+    expect(data.worktrees).toEqual([]);
+    expect(data.worktreesError).toContain("git");
+    expect(data.conventions?.entries).toEqual([{ key: "a", value: "b" }]);
   });
 
   test("follows a relative gitdir pointer too", () => {

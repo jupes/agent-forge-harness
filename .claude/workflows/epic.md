@@ -85,8 +85,9 @@ For each batch (up to 3 tasks in parallel):
 ### 3a. Create worktrees
 ```bash
 # For each worker in this batch
-bun run worktree create feat/<EPIC-ID>-worker-<n>
-# Returns: { "ok": true, "worktree": { "id": "a1b2c3", "path": "trees/a1b2c3", "branch": "..." } }
+bun run worktree create feat/<EPIC-ID>-worker-<n> --bead <TASK-ID>
+# Returns: { "ok": true, "worktree": { "id": "a1b2c3", "path": "<main>/trees/a1b2c3", "branch": "...", "beadId": "..." }, "warnings": [...] }
+# The stash is one stack shared by every worktree: never a bare git stash pop (see AGENTS.md, Worktree Management).
 ```
 
 ### 3b. Spawn workers
@@ -255,8 +256,8 @@ Never have more than 3 active worktrees at once. Wait for a worker to complete b
 
 ### Cleanup orphaned worktrees
 ```bash
-bun run worktree list
-bun run worktree cleanup-all   # Use only if session is fresh and no workers are running
+bun run worktree list          # every worktree, with its bead and session
+bun run worktree cleanup-all   # Use only if session is fresh and no workers are running; keeps any worktree with changes
 ```
 
 ---

@@ -146,12 +146,42 @@ export interface WorktreeRecord {
   branch: string;
   /** ISO 8601 creation timestamp */
   createdAt: string;
+  /** The bead the worktree was made for, when `create --bead` named one. */
+  beadId?: string;
+  /** The session that made it, from `create --session` or that session's mirror. */
+  ownerSessionId?: string;
+}
+
+/** Where a worktree comes from, by its location. */
+export type WorktreeKind = "main" | "trees" | "claude" | "other";
+
+/** One worktree of the repository, as the registry reports it. */
+export interface WorktreeEntry {
+  /** As git prints it; for a cached worktree git no longer lists, as cached. */
+  path: string;
+  kind: WorktreeKind;
+  /** The branch without `refs/heads/`, or null when detached or unknown. */
+  branch: string | null;
+  head: string | null;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  /** A cached worktree git does not list: safe to clean up. */
+  missing: boolean;
+  /** Set for a worktree `scripts/worktree.ts` made, the id `cleanup` takes. */
+  id?: string;
+  createdAt?: string;
+  /** From the cache, else the newest forge run built there that names one. */
+  beadId?: string;
+  /** The live session mirrored into the worktree, else the one that made it. */
+  sessionId?: string;
 }
 
 /** Output shape for scripts/worktree.ts commands */
 export interface WorktreeResult {
   ok: boolean;
   worktree?: WorktreeRecord;
-  worktrees?: WorktreeRecord[];
+  worktrees?: WorktreeEntry[];
   error?: string;
+  warnings?: string[];
 }

@@ -1,7 +1,8 @@
 # AGENTS.md — scripts/scheduler
 
-What decides which work may run, and beside what. Today it holds two things: the file map and the
-approval queue. Nothing here starts work: no process is spawned and no bead is claimed.
+What decides which work may run, and beside what. Today it holds three things: the file map, the
+approval queue and the worktree registry. Nothing here starts work: no bead is claimed, and the only
+process spawned is git, by the registry.
 
 ## The file map
 
@@ -90,3 +91,43 @@ approval queue. Nothing here starts work: no process is spawned and no bead is c
   skipped unless `AGENT_FORGE_SCRATCH_TRACKER` names a scratch tracker (its own git repository, no
   remote of either kind), and is run by hand after any change to the `bd` calls or the fixture.
   `queue-lock.test.ts` starts real `bun` processes: the file is its own child.
+
+## The worktree registry (`worktrees.ts`)
+
+- `git worktree list --porcelain -z`, run in the main checkout, is the source of truth. `-z` is used
+  because lock and prune reasons are free text. `<main>/trees/.state.json` is a cache of what git
+  does not know about a worktree `create` made: its id, when it was made, its bead and the session
+  that made it. A cached worktree git does not list is reported `missing`, not hidden.
+- The cache is trusted only for what `create` could have written. A record is kept only when its id is a
+  plain name and its path is `<main>/trees/<id>`, so a record that names any other path can never
+  make `remove` reach a worktree this module did not make.
+- A cache larger than 1 MB, or one that does not parse, is not read for a listing and not written
+  over. `create` is refused before git makes anything.
+- A write reads the cache again just before writing and replaces it whole through a temporary file.
+  There is no lock: two writers in the same instant can still lose one record. That record's worktree
+  is then listed without an id, and `git worktree remove` removes it by hand.
+- Paths are compared through `comparablePath` only (`realpathSync.native` and
+  `comparableCheckout`). git prints `C:/Users/...`, Node prints backslashes or the 8.3 short form,
+  and drive letters compare without case.
+- git is run with argument arrays (`gitRun`), never a shell, and a path goes after `--`. Reads use a
+  5 s limit, because the hearth answers other routes on the same thread. A git failure is an error,
+  never an empty list. A directory that is not the top of a repository has no worktrees: git asked
+  from such a directory answers for a repository further up, such as the OS home's.
+- A read writes nothing. A worktree's bead is the cache's, else the newest forge run whose
+  `checkout` is that worktree. Run states are read from the main checkout and every worktree with
+  `parseState`, never through `listRuns`, which migrates legacy state.
+- `create`:
+  - Refuses before anything is made: a name that is not a new branch (`check-ref-format --branch`
+    must print the name back, and `@` and a leading `-` are refused), a bead or session id that is
+    not one, a repository whose own ignore rules do not cover `trees/<id>`, and the OS home.
+  - Branches from the HEAD of the checkout it runs in.
+  - If git made the branch and then failed, the branch is deleted. No `git worktree prune`: it would
+    touch other sessions' worktrees.
+- `remove`:
+  - Takes only an id from the cache, so the desktop app's and hand-made worktrees are never removed.
+  - Without `force`, git refuses a worktree with changes, and the record stays.
+- No ledger event is emitted (`reservation.*` belongs to `x1gs.5.3`). The stash warning
+  (`STASH_WARNING`) is printed by `create` and `list`.
+- `worktrees.test.ts` and `scripts/worktree.test.ts` use real git in scratch repositories whose
+  paths have spaces. Each gets its own `git init`, a local user and a `.gitignore` listing `trees/`.
+  Roots stay short (`mkdtemp(tmpdir(), "wt ")`), because git fails on very long paths.
