@@ -44,6 +44,11 @@ export interface LoadOptions {
   harnessRoot: string;
   home?: string | undefined;
   env?: Record<string, string | undefined> | undefined;
+  /**
+   * Text that stands in for a layer's file, as if the file held it (and so
+   * existed). `forge:config set` checks an edit this way before writing it.
+   */
+  contents?: { user?: string; workspace?: string } | undefined;
 }
 
 type Table = Record<string, unknown>;
@@ -56,9 +61,15 @@ function fail(file: string, key: string, message: string): never {
   throw new Error(`${file}: ${key}: ${message}`);
 }
 
-function readToml(file: string): Table {
+/** A leading byte-order mark, which `Bun.TOML` reads as an empty document. */
+const BOM = "\uFEFF";
+
+function readToml(file: string, content?: string): Table {
+  const text = content ?? readFileSync(file, "utf8");
   try {
-    const parsed = Bun.TOML.parse(readFileSync(file, "utf8"));
+    const parsed = Bun.TOML.parse(
+      text.startsWith(BOM) ? text.slice(BOM.length) : text,
+    );
     return isTable(parsed) ? parsed : {};
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -93,7 +104,9 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
     "config.toml",
   );
   const workspaceFile = join(options.harnessRoot, "agent-forge.toml");
-  const hasWorkspace = existsSync(workspaceFile);
+  const given = options.contents ?? {};
+  const hasWorkspace =
+    given.workspace !== undefined || existsSync(workspaceFile);
 
   const smiths: Record<string, Smith> = {};
   const provenance: Record<string, Provenance> = {};
@@ -119,14 +132,18 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   }
   set("execution.env.pass", envPass, "builtin");
 
-  const layers: Array<{ file: string; secure: boolean }> = [
-    { file: userFile, secure: !hasWorkspace },
-    { file: workspaceFile, secure: true },
+  const layers: Array<{
+    file: string;
+    secure: boolean;
+    content: string | undefined;
+  }> = [
+    { file: userFile, secure: !hasWorkspace, content: given.user },
+    { file: workspaceFile, secure: true, content: given.workspace },
   ];
-  for (const { file, secure } of layers) {
-    if (!existsSync(file)) continue;
+  for (const { file, secure, content } of layers) {
+    if (content === undefined && !existsSync(file)) continue;
     files.push(file);
-    const doc = readToml(file);
+    const doc = readToml(file, content);
 
     const workflow = doc.workflow;
     if (isTable(workflow) && typeof workflow.default_crew === "string") {

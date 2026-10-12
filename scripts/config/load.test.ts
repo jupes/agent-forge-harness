@@ -141,3 +141,51 @@ describe("loadConfig", () => {
     ).toThrow(/default_crew.*nobody/);
   });
 });
+
+describe("loadConfig: what it reads", () => {
+  test("a workspace file that starts with a byte-order mark is read for its values", () => {
+    const s = sandbox();
+    writeFileSync(
+      s.workspaceFile,
+      '\uFEFF[workflow]\ndefault_crew = "claude-master"\n',
+    );
+    const { config, provenance } = loadConfig({
+      harnessRoot: s.harness,
+      home: s.home,
+      env: {},
+    });
+    expect(config.workflow.defaultCrew).toBe("claude-master");
+    expect(provenance["workflow.default_crew"]?.source).toBe(s.workspaceFile);
+  });
+
+  test("content given for a layer stands in for its file, and counts as the file existing", () => {
+    const s = sandbox();
+    writeFileSync(s.userFile, '[execution.env]\npass = ["USER_SECRET"]\n');
+    writeFileSync(s.workspaceFile, '[workflow]\ndefault_crew = "nobody"\n');
+    const { config, provenance, files } = loadConfig({
+      harnessRoot: s.harness,
+      home: s.home,
+      env: {},
+      contents: {
+        workspace: '[workflow]\ndefault_crew = "claude-master"\n',
+      },
+    });
+    expect(config.workflow.defaultCrew).toBe("claude-master");
+    expect(provenance["workflow.default_crew"]?.source).toBe(s.workspaceFile);
+    expect(files).toEqual([s.userFile, s.workspaceFile]);
+    // A workspace layer exists, so the user file's security key is not inherited.
+    expect(config.execution.envPass).toEqual([]);
+  });
+
+  test("content for a layer whose file is absent makes that layer exist", () => {
+    const s = sandbox();
+    writeFileSync(s.userFile, '[execution.env]\npass = ["USER_SECRET"]\n');
+    const { config } = loadConfig({
+      harnessRoot: s.harness,
+      home: s.home,
+      env: {},
+      contents: { workspace: "" },
+    });
+    expect(config.execution.envPass).toEqual([]);
+  });
+});
