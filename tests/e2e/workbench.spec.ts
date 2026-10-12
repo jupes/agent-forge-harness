@@ -149,7 +149,7 @@ test("a move the hearth refuses says why on the card, and nothing moves", async 
   ).toEqual([]);
 });
 
-test("with no event stream, each move still shows: the page reads the queue again after its own answer", async ({
+test("with no event stream, an approve and a reassign still show: the page reads the queue again after its own answer", async ({
   page,
 }) => {
   const id = await createBead(page, `Workbench no stream ${Date.now()}`);
