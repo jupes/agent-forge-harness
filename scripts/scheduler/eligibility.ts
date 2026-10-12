@@ -3,13 +3,17 @@
  * another bead has reserved or a bead before it in bundle order claims, and
  * the host not too busy.
  *
- * `eligibility` is pure. Candidates are walked in bundle order: the layers of
- * `planBundles` over their `blocks`/`requires` edges, and within a layer by
- * priority, then by id in natural order (`x.2` before `x.10`). Each bead that
- * could run or is running claims its file map as it is passed, eligible or
- * waiting, so a later bead that overlaps it waits behind it: the order is
- * strict and nothing jumps it. A blocked bead (not ready and not in progress)
- * claims nothing, so it never holds back the bead that unblocks it.
+ * `eligibility` is pure. Candidates are walked in three groups: beads in
+ * progress (running: they claim their current map before any other check),
+ * then beads that hold a reservation (they have, in effect, started), then
+ * the rest. Within each group the order is the bundle order: the layers of
+ * `planBundles` over `blocks`/`requires` edges, then priority, then id in
+ * natural order (`x.2` before `x.10`). Each bead that could run or is running
+ * claims its file map as it is passed, eligible or waiting, so a later bead
+ * that overlaps it waits behind it, and since a bead is checked only against
+ * claims made before it, no two beads wait on each other. What a bead holds
+ * always claims. A blocked bead (not ready and not in progress) claims
+ * nothing more, so it never holds back the bead that unblocks it.
  *
  * `readEligibility` fills the input from `bd` and the ledger, and writes
  * nothing.
