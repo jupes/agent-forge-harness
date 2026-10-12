@@ -1,4 +1,4 @@
-import type { Page, Request } from "@playwright/test";
+import type { Frame, Page, Request } from "@playwright/test";
 import type {
   ForgeRunSnapshot,
   ForgeRunView,
@@ -468,7 +468,9 @@ const SETTLE_TIMEOUT_MS = 30_000;
  *
  * Requests of the document before a navigation are forgotten when the main
  * frame navigates, as the runner forgets them: a test may reload while one is
- * deliberately held unanswered.
+ * deliberately held unanswered. They are forgotten again when the new document
+ * commits, because the old one runs until then and may start more; once it is
+ * gone the runner reports neither an end nor a failure for those.
  */
 async function settled(
   page: Page,
@@ -476,9 +478,14 @@ async function settled(
 ): Promise<void> {
   const inFlight = new Set<Request>();
   let changedAt = Date.now();
+  // A navigation request was sent and its document has not committed yet. A
+  // change of hash commits no new document, so it forgets nothing.
+  let replacing = false;
   const started = (request: Request): void => {
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
       inFlight.clear();
+      replacing = true;
+    }
     if (
       request.resourceType() !== "eventsource" &&
       new URL(request.url()).pathname !== STREAM_PATH
@@ -489,9 +496,16 @@ async function settled(
   const finished = (request: Request): void => {
     if (inFlight.delete(request)) changedAt = Date.now();
   };
+  const committed = (frame: Frame): void => {
+    if (frame !== page.mainFrame() || !replacing) return;
+    replacing = false;
+    inFlight.clear();
+    changedAt = Date.now();
+  };
   page.on("request", started);
   page.on("requestfinished", finished);
   page.on("requestfailed", finished);
+  page.on("framenavigated", committed);
   try {
     await navigate();
     const deadline = Date.now() + SETTLE_TIMEOUT_MS;
@@ -509,6 +523,7 @@ async function settled(
     page.off("request", started);
     page.off("requestfinished", finished);
     page.off("requestfailed", finished);
+    page.off("framenavigated", committed);
   }
 }
 
