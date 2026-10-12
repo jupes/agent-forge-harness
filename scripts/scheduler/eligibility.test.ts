@@ -159,6 +159,23 @@ describe("eligibility: serialized in bundle order", () => {
 });
 
 describe("eligibility: what holds a bead back", () => {
+  test("a queued bead that already holds its reservation goes first: a bead ordered before it that overlaps waits on it, and nothing waits in a circle", () => {
+    // probe-ve9 comes before probe-y0c in id order; y0c already holds src/**.
+    const answer = eligibility(
+      input(
+        [
+          bead("probe-y0c", { description: files("src/**") }),
+          bead("probe-ve9", { description: files("src/a.ts") }),
+        ],
+        { active: [reservation("probe-y0c", ["src/**"])] },
+      ),
+    );
+    expect(ids(answer.eligible)).toEqual(["probe-y0c"]);
+    expect(answer.waiting).toEqual([
+      expect.objectContaining({ id: "probe-ve9", waitsOn: "probe-y0c" }),
+    ]);
+  });
+
   test("its own reservation does not; another bead's does, naming it and the globs", () => {
     const own = eligibility(
       input([bead("t-1", { description: files("src/**") })], {

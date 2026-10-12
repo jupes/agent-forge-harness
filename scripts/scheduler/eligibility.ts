@@ -129,9 +129,19 @@ export function eligibility(input: EligibilityInput): Eligibility {
     else claims.push({ id: reservation.beadId, globs: reservation.globs });
   }
 
+  // A bead that already holds a reservation has, in effect, started: it is
+  // walked first, so a bead ordered before it waits on it and never the other
+  // way round (which would leave both waiting on each other).
+  const holders = new Set(claims.map((claim) => claim.id));
+  const ordered = inBundleOrder(input.candidates);
+  const walk = [
+    ...ordered.filter((bead) => holders.has(bead.id)),
+    ...ordered.filter((bead) => !holders.has(bead.id)),
+  ];
+
   const eligible: Eligible[] = [];
   const waiting: Waiting[] = [];
-  for (const bead of inBundleOrder(input.candidates)) {
+  for (const bead of walk) {
     if (bead.issue_type === "epic") {
       waiting.push({
         id: bead.id,
