@@ -65,7 +65,10 @@ function folded(character: string): string {
  * case-folded one character at a time, without `.` segments, and with the
  * covering rule applied. `**` stays a segment of its own.
  */
-function segmentsOf(glob: string, form: "NFC" | "NFD" | "as written"): string[][] {
+function segmentsOf(
+  glob: string,
+  form: "NFC" | "NFD" | "as written",
+): string[][] {
   const segments = (form === "as written" ? glob : glob.normalize(form))
     .split("/")
     .filter((segment) => segment !== "" && segment !== ".");
