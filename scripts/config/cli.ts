@@ -5,7 +5,10 @@
  * CLI:
  *   bun run forge:config show            # smiths, benches, env allowlist + where each came from
  *   bun run forge:config get <key>       # one effective value, e.g. workflow.default_crew
- *   bun run forge:config keys            # every key `show` knows about
+ *   bun run forge:config keys            # every key `set` writes
+ *   bun run forge:config set <key> <value> --user|--workspace
+ *                                        # one value into ~/.agent-forge/config.toml or
+ *                                        # <harness>/agent-forge.toml; lists are comma-separated
  *   bun run forge:config show --json     # { ok, data, error }
  *
  * Exit code 0 when ok, 2 when not.
@@ -13,6 +16,7 @@
 
 import { join } from "path";
 import { type LoadOptions, loadConfig } from "./load";
+import { setConfigValue, settableKeys } from "./write";
 
 export interface CliOutcome {
   code: 0 | 2;
@@ -40,6 +44,38 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
     stderr: json ? "" : message,
   });
 
+  // Before the current config is loaded: a file that does not load can be repaired.
+  if (command === "set") {
+    const [, key, raw] = positional;
+    const user = argv.includes("--user");
+    const workspace = argv.includes("--workspace");
+    if (key === undefined || raw === undefined || positional.length > 3)
+      return fail("usage: forge:config set <key> <value> --user|--workspace");
+    if (user === workspace)
+      return fail(
+        "say which file to write: --user (~/.agent-forge/config.toml) or --workspace (<harness>/agent-forge.toml)",
+      );
+    const outcome = setConfigValue({
+      key,
+      raw,
+      target: user ? "user" : "workspace",
+      options,
+    });
+    if (!outcome.ok) return fail(outcome.error);
+    const replaced = outcome.replacedUserPass;
+    const notice =
+      replaced !== undefined
+        ? `execution.env.pass from the user file (${replaced.join(", ")}) no longer applies here: this workspace file replaces it`
+        : "";
+    return {
+      ...done(
+        outcome,
+        `${key} = ${JSON.stringify(outcome.value)}  (written to ${outcome.file})`,
+      ),
+      stderr: notice,
+    };
+  }
+
   let loaded: ReturnType<typeof loadConfig>;
   try {
     loaded = loadConfig(options);
@@ -47,7 +83,7 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
     return fail(error instanceof Error ? error.message : String(error));
   }
   const { config, provenance, files } = loaded;
-  const keys = Object.keys(provenance).sort();
+  const keys = settableKeys(config);
 
   if (command === "keys") return done({ keys }, keys.join("\n"));
 
@@ -72,7 +108,7 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
     return done({ config, provenance, files }, lines.join("\n"));
   }
 
-  return fail(`unknown command "${command}" (show | get | keys)`);
+  return fail(`unknown command "${command}" (show | get | keys | set)`);
 }
 
 if (import.meta.main) {
