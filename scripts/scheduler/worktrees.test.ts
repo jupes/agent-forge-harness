@@ -750,3 +750,46 @@ test("a branch name given as a ref is refused", () => {
     "refs/heads/master",
   );
 });
+
+test("an entry the registry does not recognise is ignored, never removed, and written back as it was", () => {
+  const dir = repo();
+  const legacy = {
+    id: "old001",
+    path: "C:/somewhere/else/trees/old001",
+    branch: "feat/old",
+    createdAt: "2026-09-01T00:00:00.000Z",
+  };
+  mkdirSync(join(dir, "trees"), { recursive: true });
+  writeFileSync(
+    join(dir, "trees", ".state.json"),
+    JSON.stringify({ worktrees: [legacy] }),
+  );
+  const made = createWorktree(dir, dir, { branch: "feat/new" }, deps());
+  if (!made.ok) throw new Error(made.error);
+  const cache = JSON.parse(
+    readFileSync(join(dir, "trees", ".state.json"), "utf8"),
+  ) as { worktrees: unknown[] };
+  expect(cache.worktrees).toEqual([made.value, legacy]);
+  expect(removeWorktree(dir, "old001", { force: true }, deps()).ok).toBe(false);
+});
+
+test("a desktop-app worktree, which the registry did not make, gets its bead from its run and its session from its mirror", () => {
+  const dir = repo();
+  const app = join(dir, ".claude", "worktrees", "app one");
+  git(dir, "worktree", "add", "-q", "-b", "claude/app-one", "--", app);
+  writeFileSync(join(app, ".agent-forge-session"), "app-session-7\n");
+  // The run's state is kept in the app worktree itself, with its checkout.
+  runState(app, "apprun", {
+    beadId: "agent-forge-harness-app",
+    checkout: app,
+    updatedAt: "2026-10-12T09:00:00.000Z",
+  });
+  const entry = byPath(listed(dir), app);
+  expect(entry).toMatchObject({
+    kind: "claude",
+    branch: "claude/app-one",
+    beadId: "agent-forge-harness-app",
+    sessionId: "app-session-7",
+  });
+  expect(entry?.id).toBeUndefined();
+});

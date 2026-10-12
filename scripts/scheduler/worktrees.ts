@@ -283,15 +283,22 @@ const WORKTREE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 const MAX_CACHE_BYTES = 1_000_000;
 
 type CacheRead =
-  | { ok: true; records: WorktreeRecord[] }
+  | {
+      ok: true;
+      records: WorktreeRecord[];
+      /** Entries kept as they were written and otherwise ignored: never listed, never removed. */
+      others: unknown[];
+    }
   | { ok: false; error: string };
 
 /**
  * The records this module wrote. A missing file is none; one too large or
  * that does not parse is an error, so that nothing writes over it. A record
  * is kept only when it is one `create` could have written: a plain id, and
- * the path `<main>/trees/<id>`. A record that names any other path is
- * dropped, so that `remove` never reaches a worktree this module did not make.
+ * the path `<main>/trees/<id>`. Any other entry (one an older version wrote
+ * from a linked worktree, or one written by hand) is ignored, so that
+ * `remove` never reaches a worktree this module did not make, and is written
+ * back as it was.
  */
 function loadCache(main: string): CacheRead {
   const file = cacheFile(main);
@@ -305,7 +312,7 @@ function loadCache(main: string): CacheRead {
     text = readFileSync(file, "utf8");
   } catch (error) {
     if ((error as { code?: unknown } | null)?.code === "ENOENT")
-      return { ok: true, records: [] };
+      return { ok: true, records: [], others: [] };
     return { ok: false, error: `${file} cannot be read` };
   }
   let parsed: unknown;
@@ -318,8 +325,9 @@ function loadCache(main: string): CacheRead {
     };
   }
   const list = (parsed as { worktrees?: unknown } | null)?.worktrees;
-  if (!Array.isArray(list)) return { ok: true, records: [] };
+  if (!Array.isArray(list)) return { ok: true, records: [], others: [] };
   const records: WorktreeRecord[] = [];
+  const others: unknown[] = [];
   for (const item of list) {
     const r = item as Partial<WorktreeRecord> | null;
     if (
@@ -329,8 +337,10 @@ function loadCache(main: string): CacheRead {
       typeof r.branch !== "string" ||
       typeof r.createdAt !== "string" ||
       comparablePath(r.path) !== comparablePath(join(main, "trees", r.id))
-    )
+    ) {
+      others.push(item);
       continue;
+    }
     records.push({
       id: r.id,
       path: r.path,
@@ -342,7 +352,7 @@ function loadCache(main: string): CacheRead {
         : {}),
     });
   }
-  return { ok: true, records };
+  return { ok: true, records, others };
 }
 
 /** The records this module wrote; a cache that cannot be read is read as none. */
@@ -369,7 +379,7 @@ function updateCache(
     mkdirSync(join(main, "trees"), { recursive: true });
     writeFileSync(
       temporary,
-      `${JSON.stringify({ worktrees: change(read.records) }, null, 2)}\n`,
+      `${JSON.stringify({ worktrees: [...change(read.records), ...read.others] }, null, 2)}\n`,
     );
     renameSync(temporary, file);
   } catch (error) {
