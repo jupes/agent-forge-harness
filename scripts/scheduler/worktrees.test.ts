@@ -181,6 +181,14 @@ describe("comparablePath", () => {
   });
 });
 
+test.skipIf(process.platform !== "win32")(
+  "a gone path whose only existing parent is a drive root is spelled with single slashes",
+  () => {
+    expect(comparablePath("Z:\\No\\Such\\Dir")).toMatch(/^z:\/no\/such\/dir$/);
+    expect(comparablePath("C:\\AF-no-such-dir\\x")).toBe("c:/af-no-such-dir/x");
+  },
+);
+
 describe("mainCheckoutOf", () => {
   test("is the main checkout from the main checkout and from a linked worktree", () => {
     const dir = repo();
