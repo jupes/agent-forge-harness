@@ -145,6 +145,34 @@ describe("reservationFor: what a bead reserves", () => {
   });
 });
 
+describe("globsOverlap beyond ASCII and plain spellings", () => {
+  test("? is one character, a character outside the BMP and a letter whose lower case is longer included", () => {
+    expect(globsOverlap("src/?.ts", "src/\u{1F600}.ts")).toBe(true);
+    expect(globsOverlap("src/?.ts", "src/İ.ts")).toBe(true);
+    expect(globsOverlap("src/??.ts", "src/\u{1F600}.ts")).toBe(false);
+  });
+
+  test("one path written two ways meets itself: a . segment, and NFC against NFD", () => {
+    expect(globsOverlap("a/./b.ts", "a/b.ts")).toBe(true);
+    expect(globsOverlap("docs/café.md", "docs/café.md")).toBe(true);
+  });
+
+  test("a glob too long to compare is taken to overlap everything, and never throws", () => {
+    const long = `src/${"*a".repeat(30_000)}.ts`;
+    expect(globsOverlap(long, "docs/x.md")).toBe(true);
+    expect(globsOverlap("src/x.ts", `src/${"x".repeat(60_000)}`)).toBe(true);
+  });
+
+  test("a map with a glob that long reserves the whole repository", () => {
+    const reserved = reservationFor({
+      id: "x-1",
+      description: `## Files\nsrc/${"x".repeat(2_000)}.ts\n`,
+    });
+    expect(reserved).toMatchObject({ globs: ["**"], conservative: true });
+    expect(reserved.reason).toContain("long");
+  });
+});
+
 describe("globsOverlap against brute force", () => {
   /** A path matches a glob, by the dialect and the covering rule, as a regular expression would say. */
   function matches(glob: string, path: string): boolean {

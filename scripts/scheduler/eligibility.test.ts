@@ -158,7 +158,87 @@ describe("eligibility: serialized in bundle order", () => {
   });
 });
 
+/** Pairs of beads that each wait on the other. */
+function circles(waiting: Array<{ id: string; waitsOn?: string }>): string[] {
+  const on = new Map(waiting.map((w) => [w.id, w.waitsOn]));
+  return waiting
+    .filter((w) => w.waitsOn !== undefined && on.get(w.waitsOn) === w.id)
+    .map((w) => `${w.id} <-> ${w.waitsOn}`);
+}
+
 describe("eligibility: what holds a bead back", () => {
+  test("two queued beads holding overlapping reservations are both held back, and neither is named as waited on", () => {
+    const answer = eligibility(
+      input(
+        [
+          bead("t-1", { description: files("src/**") }),
+          bead("t-2", { description: files("src/a.ts") }),
+          bead("t-3", { description: files("docs/x.md") }),
+        ],
+        {
+          active: [
+            reservation("t-1", ["src/**"]),
+            reservation("t-2", ["src/a.ts"]),
+          ],
+        },
+      ),
+    );
+    expect(ids(answer.eligible)).toEqual(["t-3"]);
+    expect(answer.waiting.map((w) => [w.id, w.waitsOn ?? null])).toEqual([
+      ["t-1", null],
+      ["t-2", null],
+    ]);
+    expect(answer.waiting[0]?.why).toContain("release one");
+  });
+
+  test("a holder whose map changed since it reserved waits to reserve again, and no two holders wait on each other", () => {
+    const answer = eligibility(
+      input(
+        [
+          bead("t-1", { description: files("src/**") }),
+          bead("t-2", { description: files("lib/x.ts", "src/a.ts") }),
+        ],
+        {
+          active: [
+            reservation("t-1", ["docs/**"]),
+            reservation("t-2", ["lib/x.ts", "src/a.ts"]),
+          ],
+        },
+      ),
+    );
+    expect(ids(answer.eligible)).toEqual(["t-2"]);
+    expect(answer.waiting[0]).toMatchObject({ id: "t-1" });
+    expect(answer.waiting[0]?.why).toContain("changed since it was reserved");
+    expect(circles(answer.waiting)).toEqual([]);
+  });
+
+  test("an in-progress bead holds back an overlapping bead whichever comes first in the order", () => {
+    for (const [running, other] of [
+      ["probe-7vh", "probe-4kl"],
+      ["probe-4kl", "probe-7vh"],
+    ] as const) {
+      const answer = eligibility(
+        input(
+          [
+            bead(running, {
+              status: "in_progress",
+              description: files("docs/**"),
+            }),
+            bead(other, { description: files("docs/x.md") }),
+          ],
+          { readyIds: new Set([other]) },
+        ),
+      );
+      expect({ running, eligible: ids(answer.eligible) }).toEqual({
+        running,
+        eligible: [],
+      });
+      expect(answer.waiting.find((w) => w.id === other)).toMatchObject({
+        waitsOn: running,
+      });
+    }
+  });
+
   test("a queued bead that already holds its reservation goes first: a bead ordered before it that overlaps waits on it, and nothing waits in a circle", () => {
     // probe-ve9 comes before probe-y0c in id order; y0c already holds src/**.
     const answer = eligibility(
@@ -380,9 +460,10 @@ describe("readEligibility: from bd and the ledger", () => {
     });
     if (!answer.ok) throw new Error(answer.error);
     expect(ids(answer.value.eligible)).toEqual(["t-2"]);
+    // The bead in progress is walked before the others.
     expect(answer.value.waiting.map((w) => [w.id, w.waitsOn ?? null])).toEqual([
-      ["t-1", "t-held"],
       ["t-3", null],
+      ["t-1", "t-held"],
     ]);
     expect(
       answer.value.stale.map((s) => [s.reservation.beadId, s.why]),

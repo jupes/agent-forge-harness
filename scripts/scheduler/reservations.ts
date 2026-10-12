@@ -26,20 +26,50 @@ import { comparablePath, isSessionId } from "./worktrees";
 
 const WILDCARD = /[*?]/;
 
-/** A glob as segments, lowercased, with the covering rule applied. */
-function segmentsOf(glob: string): string[] {
+/** Longer than this, a glob is not compared: it is taken to overlap everything. */
+export const MAX_GLOB_LENGTH = 1024;
+/** Longer than this (in characters), a segment is not compared either. */
+export const MAX_SEGMENT_LENGTH = 255;
+
+/** Why a glob is too long to compare, or null. */
+export function tooLong(glob: string): string | null {
+  if (glob.length > MAX_GLOB_LENGTH)
+    return `a glob is longer than ${MAX_GLOB_LENGTH} characters`;
+  for (const segment of glob.split("/"))
+    if ([...segment].length > MAX_SEGMENT_LENGTH)
+      return `a glob has a segment longer than ${MAX_SEGMENT_LENGTH} characters`;
+  return null;
+}
+
+/** One character in the case it is compared in: lowered, unless lowering makes it more than one. */
+function folded(character: string): string {
+  const lower = character.toLowerCase();
+  return [...lower].length === 1 ? lower : character;
+}
+
+/**
+ * A glob as segments of characters (code points, not UTF-16 units), in NFC,
+ * case-folded one character at a time, without `.` segments, and with the
+ * covering rule applied. `**` stays a segment of its own.
+ */
+function segmentsOf(glob: string): string[][] {
   const segments = glob
-    .toLowerCase()
+    .normalize("NFC")
     .split("/")
-    .filter((segment) => segment !== "");
+    .filter((segment) => segment !== "" && segment !== ".");
   const last = segments.at(-1);
   if (last !== undefined && last !== "**" && !WILDCARD.test(last))
     segments.push("**");
-  return segments;
+  return segments.map((segment) =>
+    segment === "**" ? ["**"] : [...segment].map(folded),
+  );
 }
 
+const isAnySegments = (segment: readonly string[] | undefined): boolean =>
+  segment?.length === 1 && segment[0] === "**";
+
 /** Whether some string matches both segment patterns (`*` any run, `?` one character). */
-function segmentsMeet(p: string, q: string): boolean {
+function segmentsMeet(p: readonly string[], q: readonly string[]): boolean {
   const memo = new Map<number, boolean>();
   const meet = (i: number, j: number): boolean => {
     const key = i * (q.length + 1) + j;
@@ -61,8 +91,12 @@ function segmentsMeet(p: string, q: string): boolean {
   return meet(0, 0);
 }
 
-/** Whether some path matches both globs. */
+/**
+ * Whether some path matches both globs. A glob too long to compare is taken
+ * to overlap everything: the unsafe answer is the other one.
+ */
 export function globsOverlap(a: string, b: string): boolean {
+  if (tooLong(a) !== null || tooLong(b) !== null) return true;
   const as = segmentsOf(a);
   const bs = segmentsOf(b);
   const memo = new Map<number, boolean>();
@@ -72,15 +106,16 @@ export function globsOverlap(a: string, b: string): boolean {
     if (known !== undefined) return known;
     let result: boolean;
     if (i === as.length && j === bs.length) result = true;
-    else if (as[i] === "**")
+    else if (isAnySegments(as[i]))
       // `**` matches no segment, or one more of the other side's.
       result = meet(i + 1, j) || (j < bs.length && meet(i, j + 1));
-    else if (bs[j] === "**")
+    else if (isAnySegments(bs[j]))
       result = meet(i, j + 1) || (i < as.length && meet(i + 1, j));
     else if (i === as.length || j === bs.length) result = false;
     else
       result =
-        segmentsMeet(as[i] as string, bs[j] as string) && meet(i + 1, j + 1);
+        segmentsMeet(as[i] as string[], bs[j] as string[]) &&
+        meet(i + 1, j + 1);
     memo.set(key, result);
     return result;
   };
@@ -133,7 +168,12 @@ export function reservationFor(bead: BeadText): BeadReservation {
   for (const text of [bead.description, bead.acceptance_criteria]) {
     if (typeof text !== "string") continue;
     const map = parseFileMap(text);
-    if (map.ok) return { globs: map.globs, conservative: false };
+    if (map.ok) {
+      const long = map.globs.map(tooLong).find((why) => why !== null);
+      if (long === undefined) return { globs: map.globs, conservative: false };
+      why = long;
+      break;
+    }
     if (map.reason === "missing") continue;
     why = map.error;
     break;
@@ -183,6 +223,8 @@ function badGlobs(globs: unknown): string | null {
   if (globs.length > MAX_GLOBS) return `globs: at most ${MAX_GLOBS} globs`;
   for (const glob of globs) {
     if (typeof glob !== "string") return "globs: expected strings";
+    const long = tooLong(glob);
+    if (long !== null) return `globs: ${long}`;
     const map = parseFileMap(`## Files\n${glob}\n`);
     if (!map.ok || map.globs.length !== 1 || map.globs[0] !== glob)
       return `globs: "${glob}" is not a glob of the file-map format (relative, forward slashes, no "..", and a directory written as dir/**)`;

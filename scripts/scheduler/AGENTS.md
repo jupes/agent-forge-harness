@@ -136,8 +136,12 @@ process spawned is git, by the registry.
 
 - A bead reserves the file map of its description, else of its acceptance criteria. A map that is
   missing, empty or malformed reserves `**`, and the reason travels with it (`conservative`).
-- `globsOverlap` is exact for the file-map dialect and ignores case. A glob whose last segment has
-  no wildcard covers what is under it. The brute-force test in `reservations.test.ts` checks that no
+- `globsOverlap` is exact for the file-map dialect:
+  - It compares code points (so `?` is one character, also outside the BMP), folds case one
+    character at a time, normalizes to NFC, and drops `.` segments.
+  - A glob whose last segment has no wildcard covers what is under it.
+  - A glob longer than 1024 characters, or with a segment longer than 255, is not compared: it
+    overlaps everything, and a map holding one reserves `**`. The brute-force test in `reservations.test.ts` checks that no
   overlap is missed; keep it when changing the matcher.
 - `reserve` / `release` take the queue lock (the same file as queue moves, `queue-lock.db` in the
   harness home), read `activeReservations` and append `reservation.acquired|released`. The worktree
@@ -146,7 +150,16 @@ process spawned is git, by the registry.
   only through `comparablePath`.
 - `eligibility` is pure:
   - **Order:** `planBundles` layers over `blocks`/`requires` edges, then priority, then natural
-    id. A bead that already holds a reservation is walked first: it has in effect started.
+    id. Beads that already hold a reservation are walked first (they have in effect started), then
+    beads in progress, then the rest.
+  - **No circles:** a bead is checked only against claims made before it in the walk, plus the
+    reservations of beads outside the queue, so no two beads wait on each other. What a bead holds
+    always claims.
+  - **A holder whose map changed** since it reserved waits ("release and reserve again"). Two
+    holders whose reservations overlap, which only a write past the lock can make, both wait and
+    name no one.
+  - `eligibility-invariants.test.ts` checks these over 3000 random queues from a fixed seed; keep
+    it when changing the walk.
   - **Claims:** every bead that can run or is running (eligible, waiting on an overlap, or
     `in_progress`) claims its globs as it is passed, so nothing jumps an earlier bead.
   - **What claims nothing:** a blocked bead (not ready, not in progress), a bead held back only by a
@@ -158,6 +171,11 @@ process spawned is git, by the registry.
 - **Not covered:**
   - A reservation outlives a shift that dies holding it. `forge:reservations list` shows it and
     `release` frees it.
+  - **A deadlock that is not resolved:** a queued bead that holds a reservation but is blocked by
+    another queued bead whose map overlaps it. The blocker waits on the holder (`waitsOn` names
+    it) and the holder waits on its blocker in Beads. Release the holder's reservation by hand.
+  - `forge:reservations reserve` exists for by-hand use and demos. `forge:shift` (x1gs.5.4) will
+    reserve through the module function.
   - `reserve` does not ask bd whether the bead holding a conflicting reservation is closed. Read
     `forge:eligible` first, or release the stale one.
   - Host sampling (CPU and memory against the 85% default) belongs to `forge:shift` (x1gs.5.4);

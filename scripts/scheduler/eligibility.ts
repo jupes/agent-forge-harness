@@ -122,26 +122,41 @@ function inBundleOrder(candidates: readonly QueuedBead[]): QueuedBead[] {
 
 export function eligibility(input: EligibilityInput): Eligibility {
   const stale: Stale[] = [];
+  const candidateIds = new Set(input.candidates.map((bead) => bead.id));
+  /** What each queued bead already holds, over all its worktrees. */
+  const holds = new Map<string, string[]>();
+  /** Claims a bead is checked against: reservations of beads outside the queue, then what the walk has claimed. */
   const claims: Array<{ id: string; globs: readonly string[] }> = [];
   for (const reservation of input.active) {
     const why = input.staleIds.get(reservation.beadId);
     if (why !== undefined) stale.push({ reservation, why });
+    else if (candidateIds.has(reservation.beadId))
+      holds.set(reservation.beadId, [
+        ...(holds.get(reservation.beadId) ?? []),
+        ...reservation.globs,
+      ]);
     else claims.push({ id: reservation.beadId, globs: reservation.globs });
   }
 
-  // A bead that already holds a reservation has, in effect, started: it is
-  // walked first, so a bead ordered before it waits on it and never the other
-  // way round (which would leave both waiting on each other).
-  const holders = new Set(claims.map((claim) => claim.id));
+  // The walk: beads that already hold a reservation (they have, in effect,
+  // started), then beads in progress, then the rest, each group in bundle
+  // order. A bead is checked only against claims made before it, so no two
+  // beads ever wait on each other.
   const ordered = inBundleOrder(input.candidates);
+  const inProgress = (bead: QueuedBead) => bead.status === "in_progress";
   const walk = [
-    ...ordered.filter((bead) => holders.has(bead.id)),
-    ...ordered.filter((bead) => !holders.has(bead.id)),
+    ...ordered.filter((bead) => holds.has(bead.id)),
+    ...ordered.filter((bead) => !holds.has(bead.id) && inProgress(bead)),
+    ...ordered.filter((bead) => !holds.has(bead.id) && !inProgress(bead)),
   ];
 
   const eligible: Eligible[] = [];
   const waiting: Waiting[] = [];
   for (const bead of walk) {
+    const held = holds.get(bead.id);
+    // What a bead holds claims, whatever else happens to it.
+    if (held !== undefined) claims.push({ id: bead.id, globs: held });
+
     if (bead.issue_type === "epic") {
       waiting.push({
         id: bead.id,
@@ -156,8 +171,7 @@ export function eligibility(input: EligibilityInput): Eligibility {
       });
       continue;
     }
-    const inProgress = bead.status === "in_progress";
-    if (!input.readyIds.has(bead.id) && !inProgress) {
+    if (!input.readyIds.has(bead.id) && !inProgress(bead)) {
       waiting.push({
         id: bead.id,
         why: "it is blocked: it has an open blocker, so it is not ready",
@@ -166,13 +180,40 @@ export function eligibility(input: EligibilityInput): Eligibility {
     }
 
     const reserved = reservationFor(bead);
+    if (
+      held !== undefined &&
+      !reserved.globs.every((glob) => held.includes(glob))
+    ) {
+      waiting.push({
+        id: bead.id,
+        why: `its file map changed since it was reserved (reserved ${held.join(", ")}; the map says ${reserved.globs.join(", ")}): release and reserve again`,
+        ...reserved,
+      });
+      continue;
+    }
+    if (held !== undefined) {
+      // Two beads that both hold overlapping reservations (written past the
+      // lock, or by hand) are both held back, naming neither: release one.
+      const clash = [...holds].find(
+        ([other, globs]) =>
+          other !== bead.id && overlapOf(held, globs) !== null,
+      );
+      if (clash !== undefined) {
+        waiting.push({
+          id: bead.id,
+          why: `its reservation overlaps the one ${clash[0]} holds: release one of them (forge:reservations release)`,
+          ...reserved,
+        });
+        continue;
+      }
+    }
     const before = claims.find(
       (claim) =>
         claim.id !== bead.id && overlapOf(reserved.globs, claim.globs) !== null,
     );
     // Claimed as it is passed, whatever it gets: nothing after it jumps it.
-    claims.push({ id: bead.id, globs: reserved.globs });
-    if (inProgress) {
+    if (held === undefined) claims.push({ id: bead.id, globs: reserved.globs });
+    if (inProgress(bead)) {
       waiting.push({ id: bead.id, why: "it is in progress", ...reserved });
       continue;
     }
