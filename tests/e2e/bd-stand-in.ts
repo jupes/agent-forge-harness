@@ -12,19 +12,19 @@
  * - refuses what bd refuses: a parent or an id it does not know, a claim of a
  *   closed issue; and leaves an issue that is already closed, or already
  *   claimed, as it was, exiting 0;
- * - answers `list` with an empty list, and exits 2 for anything else.
+ * - answers the queue's calls as `scripts/scheduler/queue-fixture.ts` does
+ *   (which `queue-bd.test.ts` compares with a real bd): `show` of one id or
+ *   several, an `update` of labels or metadata, and the `list` shapes of
+ *   `GET /queue` and of eligibility;
+ * - answers any other `list` with an empty list, and exits 2 for anything
+ *   else.
  *
  * Both files live in the directory `BD_STAND_IN_STATE` names: the run's own
- * home. Nothing here reads or writes a tracker.
+ * home. The issues are read and replaced through `bd-stand-in-state.ts`, which
+ * the suite's helpers use too. Nothing here reads or writes a tracker.
  */
 
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   type BdIssue,
@@ -32,6 +32,12 @@ import {
   bdTime,
   readWrite,
 } from "../../scripts/hearth/bd-answers";
+import {
+  answerQueueList,
+  queueTracker,
+  type TrackedBead,
+} from "../../scripts/scheduler/queue-fixture";
+import { readState, type StandInIssue, writeState } from "./bd-stand-in-state";
 
 interface Printed {
   status: number | null;
@@ -48,19 +54,67 @@ if (!state) {
 mkdirSync(state, { recursive: true });
 appendFileSync(join(state, "calls.jsonl"), `${JSON.stringify(args)}\n`);
 
-const issuesFile = join(state, "issues.json");
-const issues: Record<string, BdIssue> = existsSync(issuesFile)
-  ? (JSON.parse(readFileSync(issuesFile, "utf8")) as Record<string, BdIssue>)
-  : {};
+const issues = readState(state);
 const save = (issue: BdIssue): BdIssue => {
   issues[issue.id] = issue;
-  writeFileSync(issuesFile, JSON.stringify(issues, null, 2));
+  writeState(state, issues);
   return issue;
 };
 const unknown = (id: string): string =>
   `resolving ${id}: no issue found matching "${id}"`;
 
+/** An issue of the stand-in as the queue fixture keeps beads. */
+function asTracked(issue: StandInIssue): TrackedBead {
+  return {
+    id: issue.id,
+    title: issue.title,
+    status: issue.status,
+    priority: issue.priority,
+    issueType: issue.issue_type,
+    ...(issue.labels !== undefined ? { labels: [...issue.labels] } : {}),
+    ...(issue.metadata !== undefined
+      ? { metadata: { ...issue.metadata } }
+      : {}),
+    ...(issue.description !== undefined
+      ? { description: issue.description }
+      : {}),
+    ...(issue.blockedBy !== undefined
+      ? { blockedBy: [...issue.blockedBy] }
+      : {}),
+  };
+}
+
+/** The queue's calls, answered by the fixture over the stand-in's issues; undefined for any other call. */
+function answerQueue(): Printed | undefined {
+  const beads = Object.values(issues).map(asTracked);
+  const listed = answerQueueList(args, beads);
+  if (listed !== undefined) return listed;
+  const tracker = queueTracker(beads);
+  const answered = tracker.answer(args);
+  if (answered === undefined) return undefined;
+  if (args[0] === "update" && answered.status === 0) {
+    const changed = tracker.beads.get(args.at(-1) ?? "");
+    const issue = changed ? issues[changed.id] : undefined;
+    if (changed && issue) {
+      const { labels: _labels, metadata: _metadata, ...rest } = issue;
+      save({
+        ...rest,
+        ...(changed.labels && changed.labels.length > 0
+          ? { labels: changed.labels }
+          : {}),
+        ...(changed.metadata && Object.keys(changed.metadata).length > 0
+          ? { metadata: changed.metadata }
+          : {}),
+        updated_at: bdTime(),
+      });
+    }
+  }
+  return answered;
+}
+
 function answer(): Printed {
+  const queued = answerQueue();
+  if (queued !== undefined) return queued;
   if (args[0] === "list") return { status: 0, stdout: "[]\n", stderr: "" };
   const write = readWrite(args);
   if (write === null)
