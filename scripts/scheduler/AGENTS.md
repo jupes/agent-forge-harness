@@ -136,14 +136,17 @@ process spawned is git, by the registry.
 
 - A bead reserves the file map of its description, else of its acceptance criteria. A map that is
   missing, empty or malformed reserves `**`, and the reason travels with it (`conservative`).
-- `globsOverlap` is exact for the file-map dialect:
+- `globsOverlap` never misses an overlap in the file-map dialect, and may report one that only a
+  different case or normalization form of a name gives:
   - It compares code points (so `?` is one character, also outside the BMP), folds case one
     character at a time as the lower case of the upper case (σ ς Σ meet), drops `.` segments, and
-    compares in NFC and NFD and across them: a file name on disk may be in either form.
+    compares the globs in NFC, in NFD and as written, each against each: a file name on disk may
+    be in any of them.
   - A glob whose last segment has no wildcard covers what is under it.
   - A glob longer than 1024 characters, or with a segment longer than 255, is not compared: it
-    overlaps everything, and a map holding one reserves `**`. The brute-force test in `reservations.test.ts` checks that no
-  overlap is missed; keep it when changing the matcher.
+    overlaps everything, and a map holding one reserves `**`. The brute-force test in `reservations.test.ts`
+    checks that no overlap is missed over ASCII paths; beyond ASCII, point tests cover it. Keep
+    both when changing the matcher.
 - `reserve` / `release` take the queue lock (the same file as queue moves, `queue-lock.db` in the
   harness home), read `activeReservations` and append `reservation.acquired|released`. The worktree
   is stored as `comparablePath` (lowercased on Windows). A release repeats the held event's worktree

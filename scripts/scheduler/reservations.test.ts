@@ -164,6 +164,8 @@ describe("globsOverlap beyond ASCII and plain spellings", () => {
     expect(globsOverlap("e?.ts", "\u00e9.ts")).toBe(true);
     expect(globsOverlap("e?.ts", "e\u0301.ts")).toBe(true);
     expect(globsOverlap("???.ts", "\u00e9.ts")).toBe(false);
+    // A glob that mixes the two forms meets the name spelled that same mixed way.
+    expect(globsOverlap("\u00e9e\u0301", "???")).toBe(true);
   });
 
   test("one path written two ways meets itself: a . segment, and NFC against NFD", () => {

@@ -8,8 +8,11 @@
  * number of segments, every other character literal. A map that is missing,
  * empty or malformed claims everything (`**`): a narrower guess is unsafe.
  *
- * Two globs overlap when some path matches both, decided exactly for that
- * dialect and without regard to case (Windows paths ignore it). A glob whose
+ * Two globs overlap when some path matches both, with no case and no
+ * normalization form telling two names apart (Windows ignores case, and a file
+ * name may be stored composed or decomposed). The answer errs one way only: it
+ * may call two globs overlapping that no single spelling of a path matches
+ * both of, and never misses a pair that one does. A glob whose
  * last segment is literal also covers everything under it: `scripts/scheduler`
  * is read as the directory too.
  */
@@ -62,9 +65,8 @@ function folded(character: string): string {
  * case-folded one character at a time, without `.` segments, and with the
  * covering rule applied. `**` stays a segment of its own.
  */
-function segmentsOf(glob: string, form: "NFC" | "NFD"): string[][] {
-  const segments = glob
-    .normalize(form)
+function segmentsOf(glob: string, form: "NFC" | "NFD" | "as written"): string[][] {
+  const segments = (form === "as written" ? glob : glob.normalize(form))
     .split("/")
     .filter((segment) => segment !== "" && segment !== ".");
   const last = segments.at(-1);
@@ -110,7 +112,9 @@ function segmentsMeet(p: readonly string[], q: readonly string[]): boolean {
  */
 export function globsOverlap(a: string, b: string): boolean {
   if (tooLong(a) !== null || tooLong(b) !== null) return true;
-  const forms = ["NFC", "NFD"] as const;
+  // As written too: a glob that mixes composed and decomposed letters
+  // matches a name spelled the same mixed way, which neither form has.
+  const forms = ["NFC", "NFD", "as written"] as const;
   return forms.some((fa) =>
     forms.some((fb) => segmentListsMeet(segmentsOf(a, fa), segmentsOf(b, fb))),
   );

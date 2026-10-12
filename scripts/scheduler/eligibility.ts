@@ -124,7 +124,13 @@ function inBundleOrder(candidates: readonly QueuedBead[]): QueuedBead[] {
 function named(globs: readonly string[]): string {
   const shown = globs
     .slice(0, 5)
-    .map((glob) => (glob.length > 120 ? `${glob.slice(0, 119)}…` : glob));
+    .map((glob) => {
+      // By character, so a cut never splits one.
+      const characters = [...glob];
+      return characters.length > 120
+        ? `${characters.slice(0, 119).join("")}…`
+        : glob;
+    });
   return `${shown.join(", ")}${globs.length > 5 ? `, and ${globs.length - 5} more` : ""}`;
 }
 

@@ -242,6 +242,23 @@ describe("eligibility: what holds a bead back", () => {
     );
     expect(answer.waiting[0]?.why.length).toBeLessThan(400);
     expect(answer.waiting[0]?.why).toContain("…");
+    // The cut falls between characters, never inside one.
+    const astral = eligibility(
+      input([
+        bead("t-1", {
+          description: files(`src/${"x".repeat(114)}\u{1F600}x/**`),
+        }),
+        bead("t-2", { description: files("src/**") }),
+      ]),
+    );
+    // A lone surrogate is a one-unit character in the surrogate range.
+    const lone = Array.from(astral.waiting[0]?.why ?? "").filter(
+      (c) =>
+        c.length === 1 &&
+        c.charCodeAt(0) >= 0xd800 &&
+        c.charCodeAt(0) <= 0xdfff,
+    );
+    expect(lone).toEqual([]);
   });
 
   test("an in-progress bead holds back an overlapping bead whichever comes first in the order", () => {
