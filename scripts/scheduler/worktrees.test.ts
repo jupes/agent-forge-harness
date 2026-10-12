@@ -271,6 +271,11 @@ describe("createWorktree", () => {
   test("a name that is not a new branch is refused before anything is made", () => {
     const dir = repo();
     git(dir, "branch", "already");
+    // So that @{-1} resolves, to a branch since deleted: check-ref-format
+    // --branch expands it, and git would make that branch again under its name.
+    git(dir, "checkout", "-q", "-b", "gone-before");
+    git(dir, "checkout", "-q", "master");
+    git(dir, "branch", "-q", "-D", "gone-before");
     for (const branch of [
       "@",
       "@{-1}",
@@ -450,7 +455,8 @@ describe("listWorktrees", () => {
       checkout: a.value.path,
       updatedAt: "2026-10-05T00:00:00.000Z",
     });
-    runState(dir, "notime", {
+    // Named to be read first: a run with no time must not win by being first.
+    runState(dir, "a-notime", {
       beadId: "agent-forge-harness-notime",
       checkout: a.value.path,
     });

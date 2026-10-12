@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { WorktreeEntry } from "../../types/beads";
 import {
   ageInDays,
   buildRepoEntries,
@@ -10,6 +9,7 @@ import {
   sharedConventionsFrom,
   worktreeViews,
 } from "../../scripts/dashboard/repos-knowledge-model";
+import type { WorktreeEntry } from "../../types/beads";
 
 const NOW = Date.parse("2026-09-10T12:00:00.000Z");
 const DAY = 86_400_000;

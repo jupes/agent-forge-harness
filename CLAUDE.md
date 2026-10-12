@@ -195,7 +195,7 @@ Every session must end with ALL of the following:
 2. Run quality gates: `bun run typecheck && bun run lint && bun test`
 3. Update issue statuses (close finished, update in-progress)
 4. **Push to remote**: `git pull --rebase` then `git push`. Do not run `bd dolt push` — the tracker is local-only (see "Tracker is local-only")
-5. Clean up stashes; prune merged branches
+5. Clean up your own stash entries (the stash is one stack shared by every worktree: drop only the entries this session made, found by their tag, and never run `git stash clear`, a bare `git stash pop` or `git stash drop` without a sha); prune merged branches
 6. Verify `git status` shows "up to date with origin"
 7. Write a brief handoff comment on the active Beads epic
 
@@ -263,7 +263,7 @@ bd close <id>         # Complete work
    git push
    git status  # MUST show "up to date with origin"
    ```
-5. **Clean up** - Clear stashes, prune remote branches
+5. **Clean up** - Drop your own stash entries (the stash is one stack shared by every worktree: drop only the entries this session made, found by their tag, and never run `git stash clear`, a bare `git stash pop` or `git stash drop` without a sha), prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
 

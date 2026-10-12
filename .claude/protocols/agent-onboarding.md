@@ -301,6 +301,23 @@ detect `AGENT_FORGE_ADAPTER=1` in the environment and return without appending.
 
 ---
 
+## Worktrees
+
+A session that builds code works in its own git worktree. `bun run worktree create <branch> --bead <id>`
+makes one under the main checkout's `trees/`. The desktop app makes its own under `.claude/worktrees/`.
+The registry (`scripts/scheduler/worktrees.ts`; `bun run worktree list`, `GET /worktrees`, the Repos
+page) lists every worktree of the repository. Each entry carries the bead it serves and the session in
+it. The bead is the one `create --bead` named, else the newest forge run whose `--checkout` is that
+worktree. The session is the mirror above (`<worktree>/.agent-forge-session`), else the one that made it.
+
+**The stash is not per worktree.** Every worktree of a repository shares one `refs/stash`, so another
+session can pop your entry, or you theirs (`aenb`). Prefer a WIP commit. If you must stash, use
+`git stash push -u -m <unique-tag>`, restore with `git stash apply <sha>`, and drop only your own entry,
+found by its tag. Never run a bare `git stash pop`, `git stash drop` or `git stash clear`. The end-of-
+session steps in `CLAUDE.md` and `AGENTS.md` say the same.
+
+---
+
 ## Failure behaviour
 
 | Situation | Behaviour |
