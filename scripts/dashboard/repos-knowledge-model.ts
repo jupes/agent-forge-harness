@@ -7,7 +7,7 @@
  */
 
 import { parse } from "yaml";
-import type { WorktreeRecord } from "../../types/beads";
+import type { WorktreeEntry } from "../../types/beads";
 
 export interface RepoEntry {
   name: string;
@@ -111,39 +111,25 @@ export function buildRepoEntries(input: BuildReposInput): RepoEntry[] {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Worktree records written by `scripts/worktree.ts` to `trees/.state.json`. */
-export function parseWorktreeState(json: string | null): WorktreeRecord[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json) as { worktrees?: unknown };
-    if (!Array.isArray(parsed.worktrees)) return [];
-    return parsed.worktrees.filter((entry): entry is WorktreeRecord => {
-      const record = entry as Partial<WorktreeRecord>;
-      return (
-        typeof record.id === "string" &&
-        typeof record.path === "string" &&
-        typeof record.branch === "string" &&
-        typeof record.createdAt === "string"
-      );
-    });
-  } catch {
-    return [];
-  }
-}
-
-export interface WorktreeView extends WorktreeRecord {
-  /** False when the record outlived its directory — safe to clean up. */
+/** A worktree as the Repos page shows it: the registry's entry, and whether its directory is there. */
+export interface WorktreeView extends WorktreeEntry {
+  /** False when the directory is gone. */
   pathExists: boolean;
 }
 
-/** Worktrees newest first, each checked against the filesystem. */
+/**
+ * The registry's entries in the order it gives them (the main checkout, then
+ * the worktrees `bun run worktree` made, newest first, then the rest), each
+ * checked against the filesystem.
+ */
 export function worktreeViews(
-  records: WorktreeRecord[],
+  entries: readonly WorktreeEntry[],
   pathExists: (path: string) => boolean,
 ): WorktreeView[] {
-  return records
-    .map((record) => ({ ...record, pathExists: pathExists(record.path) }))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return entries.map((entry) => ({
+    ...entry,
+    pathExists: pathExists(entry.path),
+  }));
 }
 
 export interface ConventionEntry {
@@ -162,7 +148,10 @@ export interface SharedConventions {
 /** The Repos & knowledge API response. */
 export interface ReposKnowledge {
   repos: RepoEntry[];
+  /** Every worktree of the repository, from `git worktree list` and the registry's cache. */
   worktrees: WorktreeView[];
+  /** Set when git could not list them; `worktrees` is then empty. */
+  worktreesError: string | null;
   conventions: SharedConventions | null;
   /**
    * The main checkout, when the dashboard runs in a linked worktree and the

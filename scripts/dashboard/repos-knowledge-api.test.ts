@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { WorktreeEntry } from "../../types/beads";
 import {
   ageInDays,
   buildRepoEntries,
   freshnessFor,
   parseReposConfig,
-  parseWorktreeState,
   sharedConventionsFrom,
   worktreeViews,
 } from "../../scripts/dashboard/repos-knowledge-model";
@@ -127,43 +127,37 @@ describe("buildRepoEntries", () => {
 });
 
 describe("worktrees", () => {
-  const STATE = JSON.stringify({
-    worktrees: [
-      {
+  const entry = (path: string, more: Partial<WorktreeEntry> = {}) => ({
+    path,
+    kind: "trees" as const,
+    branch: "feat/x",
+    head: "abc",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+    ...more,
+  });
+
+  test("keeps the registry's order and flags entries whose directory is gone", () => {
+    const entries: WorktreeEntry[] = [
+      entry("C:/repo", { kind: "main", branch: "master" }),
+      entry("C:/repo/trees/new1", { id: "new1", createdAt: "2026-09-09" }),
+      entry("C:/repo/trees/old1", {
         id: "old1",
-        path: "C:/repo/trees/old1",
-        branch: "fix/stale",
-        createdAt: "2026-08-01T00:00:00.000Z",
-      },
-      {
-        id: "dg40",
-        path: "C:/repo/trees/dg40",
-        branch: "feat/nocturne",
-        createdAt: "2026-09-09T22:00:00.000Z",
-      },
-      { id: "broken" },
-    ],
-  });
-
-  test("reads trees/.state.json records, skipping malformed ones", () => {
-    expect(parseWorktreeState(STATE).map((record) => record.id)).toEqual([
-      "old1",
-      "dg40",
+        createdAt: "2026-08-01",
+        missing: true,
+      }),
+      entry("C:/repo/.claude/worktrees/app", { kind: "claude" }),
+    ];
+    const views = worktreeViews(entries, (path) => !path.endsWith("old1"));
+    expect(views.map((view) => [view.path, view.pathExists])).toEqual([
+      ["C:/repo", true],
+      ["C:/repo/trees/new1", true],
+      ["C:/repo/trees/old1", false],
+      ["C:/repo/.claude/worktrees/app", true],
     ]);
-    expect(parseWorktreeState("")).toEqual([]);
-    expect(parseWorktreeState("not json")).toEqual([]);
-    expect(parseWorktreeState(JSON.stringify({ worktrees: "no" }))).toEqual([]);
-  });
-
-  test("lists newest first and flags records whose directory is gone", () => {
-    const views = worktreeViews(
-      parseWorktreeState(STATE),
-      (path) => !path.endsWith("old1"),
-    );
-    expect(views.map((view) => [view.id, view.pathExists])).toEqual([
-      ["dg40", true],
-      ["old1", false],
-    ]);
+    expect(views[1]).toMatchObject({ id: "new1", kind: "trees" });
   });
 });
 

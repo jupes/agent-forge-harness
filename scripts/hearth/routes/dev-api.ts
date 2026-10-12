@@ -2,7 +2,7 @@
  * Dev-only APIs for the Forge run and Repos & knowledge views.
  *
  * Both pages surface state that only exists on the machine running the
- * harness — `.tmp/work/forge-state.json`, the quality-gate log, `trees/`,
+ * harness — `.tmp/work/forge-state.json`, the quality-gate log, the worktrees,
  * `repos/`, `knowledge/repos/` — none of which is committed. Like the plans
  * and council plugins they are loopback-only and absent from any static build,
  * where the pages show a "needs the dev server" state instead.
@@ -28,13 +28,13 @@ import {
 import {
   ageInDays,
   buildRepoEntries,
-  parseWorktreeState,
   type ReposKnowledge,
   sharedConventionsFrom,
   worktreeViews,
 } from "../../dashboard/repos-knowledge-model";
 import { runStatePath } from "../../forge/runs";
 import { listRuns } from "../../forge/runs-store";
+import { type GitRun, listWorktrees } from "../../scheduler/worktrees";
 
 export const DEV_API = "/__agent-forge/dev-api";
 
@@ -173,11 +173,22 @@ export function readForgeRun(
   });
 }
 
+/** What the dev API reads through, when a test stands in for it. */
+export interface DevApiDeps {
+  /** Runs git; defaults to the real one. */
+  git?: GitRun | undefined;
+}
+
 export function readReposKnowledge(
   root: string,
   now: number = Date.now(),
+  deps: DevApiDeps = {},
 ): ReposKnowledge {
   const local = localStateRoot(root);
+  const listed = listWorktrees(
+    local,
+    deps.git !== undefined ? { git: deps.git } : {},
+  );
   // _shared.yaml is committed, so the branch's own copy is the one to show.
   const shared = readIfPresent(join(root, "knowledge", "_shared.yaml"));
   return {
@@ -187,10 +198,10 @@ export function readReposKnowledge(
       knowledge: knowledgeAges(join(local, "knowledge", "repos"), now),
       now,
     }),
-    worktrees: worktreeViews(
-      parseWorktreeState(readIfPresent(join(local, "trees", ".state.json"))),
-      (path) => existsSync(path),
-    ),
+    worktrees: listed.ok
+      ? worktreeViews(listed.entries, (path) => existsSync(path))
+      : [],
+    worktreesError: listed.ok ? null : listed.error,
     conventions:
       shared === null
         ? null
@@ -318,6 +329,7 @@ export async function devApiHttpHandler(
   req: IncomingMessage,
   res: ServerResponse,
   next: () => void,
+  deps: DevApiDeps = {},
 ): Promise<void> {
   const pathname = (req.url ?? "").split("?")[0] ?? "";
   if (!pathname.startsWith(`${DEV_API}/`)) {
@@ -355,7 +367,11 @@ export async function devApiHttpHandler(
   if (route === "/repos-knowledge") {
     sendJson(res, {
       status: 200,
-      body: { ok: true, data: readReposKnowledge(root), error: null },
+      body: {
+        ok: true,
+        data: readReposKnowledge(root, Date.now(), deps),
+        error: null,
+      },
     });
     return;
   }

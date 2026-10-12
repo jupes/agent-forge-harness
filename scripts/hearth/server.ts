@@ -24,6 +24,7 @@ import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import type { GitRun } from "../scheduler/worktrees";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -87,6 +88,8 @@ export interface OperatorApiOverrides {
   streamKeepaliveMs?: number;
   /** The append of audit rows and of the outcome a row records; defaults to the ledger's. */
   appendEvent?: (event: LedgerEventInput) => AppendResult;
+  /** Runs git for the worktree registry (`GET /worktrees`, the Repos page); defaults to the real one. */
+  git?: GitRun;
   /** Wrap the table before it is mounted (a test observing an effect). */
   decorate?: (routes: readonly ApiRoute[]) => readonly ApiRoute[];
 }
@@ -188,6 +191,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     queueLockFile: join(home, QUEUE_LOCK_FILE),
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
+    git: options.api?.git,
     streamPollMs: options.api?.streamPollMs,
     streamKeepaliveMs: options.api?.streamKeepaliveMs,
   });
@@ -254,9 +258,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       reply(res, 405, null, "Method not allowed");
     };
     void api.handle(req, res, () => {
-      void devApiHttpHandler(root, req, res, () => {
-        void council(req, res, notFound);
-      });
+      void devApiHttpHandler(
+        root,
+        req,
+        res,
+        () => {
+          void council(req, res, notFound);
+        },
+        { git: options.api?.git },
+      );
     });
   });
 
