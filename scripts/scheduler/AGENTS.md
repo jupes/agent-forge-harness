@@ -1,7 +1,7 @@
 # AGENTS.md — scripts/scheduler
 
-What decides which work may run, and beside what. Today it holds three things: the file map, the
-approval queue and the worktree registry. Nothing here starts work: no bead is claimed, and the only
+What decides which work may run, and beside what. Today it holds: the file map, the approval queue,
+the worktree registry, and reservations with eligibility. Nothing here starts work: no bead is claimed, and the only
 process spawned is git, by the registry.
 
 ## The file map
@@ -24,7 +24,7 @@ process spawned is git, by the registry.
   `description` (`filemap-cli.ts - --bd-json` takes that output as it is). Plain `bd show` renders
   Markdown and garbles a glob that holds `*`; the garbled form is refused, because it puts `**`
   inside a segment.
-- Nothing consumes a file map yet. Reservations and eligibility are not in this directory.
+- `reservations.ts` and `eligibility.ts` consume file maps (below).
 
 ## The queue (`queue.ts`, `queue-lock.ts`)
 
@@ -131,3 +131,34 @@ process spawned is git, by the registry.
 - `worktrees.test.ts` and `scripts/worktree.test.ts` use real git in scratch repositories whose
   paths have spaces. Each gets its own `git init`, a local user and a `.gitignore` listing `trees/`.
   Roots stay short (`mkdtemp(tmpdir(), "wt ")`), because git fails on very long paths.
+
+## Reservations and eligibility (`reservations.ts`, `eligibility.ts`, `reservations-cli.ts`)
+
+- A bead reserves the file map of its description, else of its acceptance criteria. A map that is
+  missing, empty or malformed reserves `**`, and the reason travels with it (`conservative`).
+- `globsOverlap` is exact for the file-map dialect and ignores case. A glob whose last segment has
+  no wildcard covers what is under it. The brute-force test in `reservations.test.ts` checks that no
+  overlap is missed; keep it when changing the matcher.
+- `reserve` / `release` take the queue lock (the same file as queue moves, `queue-lock.db` in the
+  harness home), read `activeReservations` and append `reservation.acquired|released`. The worktree
+  is stored as `comparablePath` (lowercased on Windows). A release repeats the held event's worktree
+  and globs exactly, because the ledger folds on those strings. Join stored worktrees to the registry
+  only through `comparablePath`.
+- `eligibility` is pure:
+  - **Order:** `planBundles` layers over `blocks`/`requires` edges, then priority, then natural
+    id. A bead that already holds a reservation is walked first: it has in effect started.
+  - **Claims:** every bead that can run or is running (eligible, waiting on an overlap, or
+    `in_progress`) claims its globs as it is passed, so nothing jumps an earlier bead.
+  - **What claims nothing:** a blocked bead (not ready, not in progress), a bead held back only by a
+    busy host, and a queued epic. A blocked bead therefore never holds back its own blocker.
+  - **Stale:** reservations of closed or deleted beads, ignored and reported.
+- `readEligibility` and the CLI run bd in the main checkout (`localStateRoot`). A bd failure is an
+  error, never an empty queue. `bd show` answers for partial ids, so only rows with exactly the asked
+  id count. Exit 1 with "no issues found" means all the asked ids are gone.
+- **Not covered:**
+  - A reservation outlives a shift that dies holding it. `forge:reservations list` shows it and
+    `release` frees it.
+  - `reserve` does not ask bd whether the bead holding a conflicting reservation is closed. Read
+    `forge:eligible` first, or release the stale one.
+  - Host sampling (CPU and memory against the 85% default) belongs to `forge:shift` (x1gs.5.4);
+    eligibility only takes "busy".
