@@ -170,7 +170,7 @@ function sessionsQuery(request: RouteRequest): ValidationResult<SessionsQuery> {
 
 /** How many events `/events` returns when the request does not say, and at most. */
 const EVENTS_DEFAULT_LIMIT = 200;
-const EVENTS_MAX_LIMIT = 1000;
+export const EVENTS_MAX_LIMIT = 1000;
 /** How many of a run's newest events `/runs/:slug` carries; the rest are paged through `/events?run=`. */
 const RUN_EVENTS = 200;
 const MAX_ID_LENGTH = 200;

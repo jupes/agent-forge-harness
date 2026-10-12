@@ -426,3 +426,42 @@ describe("a read that fails", () => {
     expect(ids(timeline.last())).toEqual([1]);
   });
 });
+
+describe("a session probe that fails", () => {
+  test("is tried again on the next read, so the session's older events still come in", async () => {
+    const ledger = fakeLedger();
+    ledger.add({ sessionId: "s" });
+    ledger.add({ beadId: "b", sessionId: "t" });
+    const timeline = start(BEAD, ledger);
+    await settle();
+    ledger.add({ beadId: "b", sessionId: "s" });
+    // The follow read answers; the probe after it does not.
+    ledger.onRead((count) => {
+      ledger.failWith(count === 3 ? "away" : null);
+    });
+    timeline.client.tell("events");
+    await settle();
+    expect(timeline.last().error).toBe("away");
+    ledger.add({ beadId: "b" });
+    timeline.client.tell("events");
+    await settle();
+    expect(timeline.last().error).toBeNull();
+    expect(ids(timeline.last())).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("a read from the start after a reopen", () => {
+  test("says it is still reading while its pages arrive", async () => {
+    const ledger = fakeLedger();
+    for (let index = 0; index < 1500; index++) ledger.add({ runId: "r" });
+    const timeline = start(RUN, ledger);
+    await settle();
+    const before = timeline.views.length;
+    timeline.client.tell("resync");
+    await settle();
+    expect(timeline.views.slice(before).map((view) => view.loading)).toEqual([
+      true,
+      false,
+    ]);
+  });
+});

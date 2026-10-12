@@ -13,6 +13,7 @@ import {
   visibleWindow,
 } from "../../docs/js/timeline-model";
 import { LEDGER_EVENT_KINDS, type LedgerEvent } from "../../types/hearth";
+import { EVENTS_MAX_LIMIT } from "../hearth/routes/operator-reads";
 
 describe("the #/timeline hash", () => {
   test("a bead scope and kinds are read from the query", () => {
@@ -89,7 +90,7 @@ describe("the paths the timeline reads", () => {
   });
 
   test("a page is the most the hearth answers", () => {
-    expect(PAGE_LIMIT).toBe(1000);
+    expect(PAGE_LIMIT).toBe(EVENTS_MAX_LIMIT);
   });
 });
 

@@ -58,6 +58,28 @@ test.describe("Forge run", () => {
     expect(errors).toEqual([]);
   });
 
+  test("the run and each of its checkpoints link to their Timeline", async ({
+    page,
+  }) => {
+    await stubForgeRun(page);
+    await openSettled(page, FORGE_RUN);
+    // The run's own link; the nav has one named Timeline too.
+    await expect(
+      page.locator("a.af-timeline-link", { hasText: /^Timeline$/ }),
+    ).toHaveAttribute("href", "#/timeline?run=design-system");
+    const ids = await page
+      .locator(".af-checkpoint .af-checkpoint-meta code")
+      .allInnerTexts();
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids)
+      await expect(
+        page.getByRole("link", { name: `Timeline of ${id}` }),
+      ).toHaveAttribute(
+        "href",
+        `#/timeline?${new URLSearchParams({ bead: id }).toString()}`,
+      );
+  });
+
   test("an unstarted run offers no approval, only the next checkpoint to claim", async ({
     page,
   }) => {

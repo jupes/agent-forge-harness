@@ -59,6 +59,12 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
   let error: string | null = null;
   /** Sessions with an event in the list. */
   let seen = new Set<string>();
+  /**
+   * Sessions still to be asked about, each with the cursor the page that
+   * first showed it was read after. One stays until its backfill has worked,
+   * so a probe that fails is tried again on the next read.
+   */
+  let unprobed = new Map<string, number>();
   /** The next read starts from the beginning and replaces the list when its first page arrives. */
   let restart = false;
   /** The stream reopened: whatever read comes next reads from the start. */
@@ -106,6 +112,14 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
     }
   };
 
+  /** Backfill every session still waiting; one that fails stays for the next read. */
+  const probeWaiting = async (): Promise<void> => {
+    for (const [session, bound] of unprobed) {
+      await backfill(session, bound);
+      unprobed.delete(session);
+    }
+  };
+
   /**
    * Read forward from `after` until the ledger has no more or the list is
    * full. On the first page of a read from the start, every session shown
@@ -121,13 +135,15 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
         restart = false;
         events = [];
         seen = new Set();
+        unprobed = new Map();
         cut = false;
       }
       const joined = newSessions(page);
       merge(page.events);
       cursor = page.cursor;
       if (scope.by === "bead" && from > 0)
-        for (const session of joined) await backfill(session, from);
+        for (const session of joined) unprobed.set(session, from);
+      await probeWaiting();
       if (!live) return;
       const more = !cut && page.more;
       loading = !loaded && more;
@@ -139,6 +155,7 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
 
   const fullRead = async (): Promise<void> => {
     restart = true;
+    loaded = false;
     loading = true;
     await readForward(0);
     loaded = true;
@@ -155,7 +172,10 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
         if (!loaded || pendingResync) {
           pendingResync = false;
           await fullRead();
-        } else if (!cut) await readForward(cursor);
+        } else if (!cut) {
+          await probeWaiting();
+          await readForward(cursor);
+        }
       } catch (cause) {
         // What is shown stays: the hearth being away must not blank the page.
         error = cause instanceof Error ? cause.message : String(cause);
