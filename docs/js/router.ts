@@ -49,6 +49,15 @@ export const ROUTES = [
     blurb: "Initiatives and how far through their child issues they are.",
   },
   {
+    id: "workbench",
+    label: "Workbench",
+    icon: "hammer",
+    group: "work",
+    blurb:
+      "The approval queue: approve, queue, pause, resume and reassign beads, and see why a queued bead waits.",
+    devOnly: true,
+  },
+  {
     id: "forge-run",
     label: "Forge run",
     icon: "flow-arrow",
