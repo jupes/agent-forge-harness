@@ -638,3 +638,115 @@ test("the stash warning says the stack is shared and how to use it safely", () =
   expect(STASH_WARNING).toContain("shared by every worktree");
   expect(STASH_WARNING).toContain("git stash apply <sha>");
 });
+
+describe("the cache, written by something else", () => {
+  const writeRecords = (dir: string, records: unknown[], extra = {}) => {
+    mkdirSync(join(dir, "trees"), { recursive: true });
+    writeFileSync(
+      join(dir, "trees", ".state.json"),
+      JSON.stringify({ worktrees: records, ...extra }),
+    );
+  };
+
+  test("a record that names a path other than trees/<id> is not one: cleanup never reaches that worktree", () => {
+    const dir = repo();
+    const elsewhere = join(dir, "..", "hand made");
+    git(dir, "worktree", "add", "-q", "-b", "hand", "--", elsewhere);
+    git(
+      dir,
+      "worktree",
+      "add",
+      "-q",
+      "-b",
+      "claude/app",
+      "--",
+      ".claude/worktrees/app",
+    );
+    writeRecords(dir, [
+      { id: "evil", path: elsewhere, branch: "hand", createdAt: "2026-10-01" },
+      {
+        id: "app",
+        path: join(dir, ".claude", "worktrees", "app"),
+        branch: "claude/app",
+        createdAt: "2026-10-01",
+      },
+      {
+        id: "../x",
+        path: join(dir, "trees", "..", "x"),
+        branch: "x",
+        createdAt: "2026-10-01",
+      },
+    ]);
+    for (const id of ["evil", "app", "../x"]) {
+      const refused = removeWorktree(dir, id, { force: true }, deps());
+      expect({ id, ok: refused.ok }).toEqual({ id, ok: false });
+    }
+    expect(existsSync(elsewhere)).toBe(true);
+    expect(existsSync(join(dir, ".claude", "worktrees", "app"))).toBe(true);
+    expect(listed(dir).filter((entry) => entry.id !== undefined)).toEqual([]);
+  });
+
+  test("remove keeps a record another process wrote while git was removing", () => {
+    const dir = repo();
+    const a = createWorktree(dir, dir, { branch: "feat/r1" }, deps());
+    if (!a.ok) throw new Error(a.error);
+    const late = {
+      id: "late01",
+      path: `${top(dir)}/trees/late01`,
+      branch: "feat/late",
+      createdAt: "2026-10-12T11:00:00.000Z",
+    };
+    // A create in another process finishes during the git call.
+    const racing: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") {
+        const file = join(dir, "trees", ".state.json");
+        const cache = JSON.parse(readFileSync(file, "utf8")) as {
+          worktrees: unknown[];
+        };
+        cache.worktrees.push(late);
+        writeFileSync(file, JSON.stringify(cache));
+      }
+      return gitRun(args, cwd, timeoutMs);
+    };
+    expect(
+      removeWorktree(dir, a.value.id, { force: false }, deps({ git: racing }))
+        .ok,
+    ).toBe(true);
+    const cache = JSON.parse(
+      readFileSync(join(dir, "trees", ".state.json"), "utf8"),
+    ) as { worktrees: Array<{ id: string }> };
+    expect(cache.worktrees.map((record) => record.id)).toEqual(["late01"]);
+    // Written whole, through a temporary file: none is left behind.
+    expect(
+      readdirSync(join(dir, "trees")).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+  });
+
+  test("a cache that does not parse, or is too large, is not written over: create is refused before git makes anything", () => {
+    const dir = repo();
+    mkdirSync(join(dir, "trees"), { recursive: true });
+    writeFileSync(join(dir, "trees", ".state.json"), "{ not json");
+    const refused = createWorktree(dir, dir, { branch: "feat/c1" }, deps());
+    expect(refused.ok ? "" : refused.error).toContain("not JSON");
+    expect(readFileSync(join(dir, "trees", ".state.json"), "utf8")).toBe(
+      "{ not json",
+    );
+    expect(git(dir, "branch", "--list", "feat/c1")).toBe("");
+
+    writeRecords(dir, [], { pad: "x".repeat(1_100_000) });
+    const big = createWorktree(dir, dir, { branch: "feat/c2" }, deps());
+    expect(big.ok ? "" : big.error).toContain("larger than");
+    expect(git(dir, "branch", "--list", "feat/c2")).toBe("");
+    // The listing still answers, without what the cache would have added.
+    expect(listed(dir).map((entry) => entry.kind)).toEqual(["main"]);
+  });
+});
+
+test("a branch name given as a ref is refused", () => {
+  const dir = repo();
+  const refused = createWorktree(dir, dir, { branch: "refs/heads/x" }, deps());
+  expect(refused.ok).toBe(false);
+  expect(git(dir, "for-each-ref", "--format=%(refname)", "refs/heads")).toBe(
+    "refs/heads/master",
+  );
+});

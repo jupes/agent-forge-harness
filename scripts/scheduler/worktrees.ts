@@ -22,6 +22,9 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -273,24 +276,59 @@ function isBead(value: unknown): value is string {
 
 const cacheFile = (main: string): string => join(main, "trees", ".state.json");
 
-/** The records this module wrote; missing or unreadable is none. */
-export function readCache(main: string): WorktreeRecord[] {
+/** What `create` names a worktree: its directory under `trees/`. */
+const WORKTREE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+
+/** A cache larger than this is not read: reading it would hold up the hearth. */
+const MAX_CACHE_BYTES = 1_000_000;
+
+type CacheRead =
+  | { ok: true; records: WorktreeRecord[] }
+  | { ok: false; error: string };
+
+/**
+ * The records this module wrote. A missing file is none; one too large or
+ * that does not parse is an error, so that nothing writes over it. A record
+ * is kept only when it is one `create` could have written: a plain id, and
+ * the path `<main>/trees/<id>`. A record that names any other path is
+ * dropped, so that `remove` never reaches a worktree this module did not make.
+ */
+function loadCache(main: string): CacheRead {
+  const file = cacheFile(main);
+  let text: string;
+  try {
+    if (statSync(file).size > MAX_CACHE_BYTES)
+      return {
+        ok: false,
+        error: `${file} is larger than ${MAX_CACHE_BYTES} bytes; it is not read or written`,
+      };
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "ENOENT")
+      return { ok: true, records: [] };
+    return { ok: false, error: `${file} cannot be read` };
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(cacheFile(main), "utf8"));
+    parsed = JSON.parse(text);
   } catch {
-    return [];
+    return {
+      ok: false,
+      error: `${file} is not JSON; fix or remove it by hand, it is not written over`,
+    };
   }
   const list = (parsed as { worktrees?: unknown } | null)?.worktrees;
-  if (!Array.isArray(list)) return [];
+  if (!Array.isArray(list)) return { ok: true, records: [] };
   const records: WorktreeRecord[] = [];
   for (const item of list) {
     const r = item as Partial<WorktreeRecord> | null;
     if (
       typeof r?.id !== "string" ||
+      !WORKTREE_ID.test(r.id) ||
       typeof r.path !== "string" ||
       typeof r.branch !== "string" ||
-      typeof r.createdAt !== "string"
+      typeof r.createdAt !== "string" ||
+      comparablePath(r.path) !== comparablePath(join(main, "trees", r.id))
     )
       continue;
     records.push({
@@ -304,15 +342,47 @@ export function readCache(main: string): WorktreeRecord[] {
         : {}),
     });
   }
-  return records;
+  return { ok: true, records };
 }
 
-function writeCache(main: string, records: WorktreeRecord[]): void {
-  mkdirSync(join(main, "trees"), { recursive: true });
-  writeFileSync(
-    cacheFile(main),
-    `${JSON.stringify({ worktrees: records }, null, 2)}\n`,
-  );
+/** The records this module wrote; a cache that cannot be read is read as none. */
+export function readCache(main: string): WorktreeRecord[] {
+  const read = loadCache(main);
+  return read.ok ? read.records : [];
+}
+
+/**
+ * Change the cache: read it again right before the write, so a record
+ * another process wrote meanwhile is kept, and replace the file whole
+ * through a temporary one. Two writers in the same millisecond can still
+ * lose one record; there is no lock.
+ */
+function updateCache(
+  main: string,
+  change: (records: WorktreeRecord[]) => WorktreeRecord[],
+): Outcome<void> {
+  const read = loadCache(main);
+  if (!read.ok) return no(read.error);
+  const file = cacheFile(main);
+  const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    mkdirSync(join(main, "trees"), { recursive: true });
+    writeFileSync(
+      temporary,
+      `${JSON.stringify({ worktrees: change(read.records) }, null, 2)}\n`,
+    );
+    renameSync(temporary, file);
+  } catch (error) {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      // Nothing more to take back.
+    }
+    return no(
+      `${file} could not be written: ${(error as { code?: unknown } | null)?.code ?? "unknown error"}`,
+    );
+  }
+  return { ok: true, value: undefined };
 }
 
 // ── Beads from forge runs ───────────────────────────────────────────────────
@@ -485,6 +555,9 @@ function refuseBranch(
   if (branch === "" || /[\r\n\0]/.test(branch) || branch === "@")
     return `"${branch}" is not a branch name`;
   if (branch.startsWith("-")) return `a branch name cannot start with "-"`;
+  // git takes refs/heads/x as the branch "refs/heads/x", under refs/heads/.
+  if (branch.startsWith("refs/"))
+    return `give the branch name without "refs/": "${branch}"`;
   const format = git(["check-ref-format", "--branch", branch], main, READ_MS);
   // `--branch` expands shorthands such as @{-1}: the name must come back as given.
   if (format.status !== 0 || format.stdout.trim() !== branch)
@@ -553,9 +626,11 @@ export function createWorktree(
   const branch = refuseBranch(request.branch, root, deps.git);
   if (branch !== null) return no(branch);
 
+  // A cache that cannot be written is found before git makes anything.
+  const cache = loadCache(root);
+  if (!cache.ok) return no(cache.error);
   const id = deps.newId();
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(id))
-    return no("a worktree id must be a plain name");
+  if (!WORKTREE_ID.test(id)) return no("a worktree id must be a plain name");
   if (!ignoredHere(root, `trees/${id}`, deps.git))
     return no(
       "trees/ is not ignored by this repository's own .gitignore: add `trees/` there before making worktrees in it",
@@ -598,7 +673,11 @@ export function createWorktree(
     ...(request.beadId !== undefined ? { beadId: request.beadId } : {}),
     ...(sessionId !== undefined ? { ownerSessionId: sessionId } : {}),
   };
-  writeCache(root, [...readCache(root), record]);
+  const recorded = updateCache(root, (records) => [...records, record]);
+  if (!recorded.ok)
+    return no(
+      `the worktree ${path} was made, but not recorded: ${recorded.error}`,
+    );
   return { ok: true, value: record };
 }
 
@@ -622,18 +701,16 @@ export function removeWorktree(
   if (!top.ok) return top;
   if (top.top === null) return no(`${main} is not the top of a git repository`);
   const root = top.top;
-  const cache = readCache(root);
-  const record = cache.find((r) => r.id === id);
+  const record = readCache(root).find((r) => r.id === id);
   if (!record)
     return no(
       `no worktree with the id "${id}" was made by bun run worktree; only those are removed`,
     );
   const drop = (): Outcome<WorktreeRecord> => {
-    writeCache(
-      root,
-      cache.filter((r) => r.id !== id),
+    const dropped = updateCache(root, (records) =>
+      records.filter((r) => r.id !== id),
     );
-    return { ok: true, value: record };
+    return dropped.ok ? { ok: true, value: record } : dropped;
   };
   const listedNow = (): Outcome<boolean> => {
     const listed = gitWorktrees(root, deps.git);

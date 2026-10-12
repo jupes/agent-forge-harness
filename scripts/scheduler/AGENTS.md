@@ -98,6 +98,14 @@ process spawned is git, by the registry.
   because lock and prune reasons are free text. `<main>/trees/.state.json` is a cache of what git
   does not know about a worktree `create` made: its id, when it was made, its bead and the session
   that made it. A cached worktree git does not list is reported `missing`, not hidden.
+- The cache is trusted only for what `create` could have written. A record is kept only when its id is a
+  plain name and its path is `<main>/trees/<id>`, so a record that names any other path can never
+  make `remove` reach a worktree this module did not make.
+- A cache larger than 1 MB, or one that does not parse, is not read for a listing and not written
+  over. `create` is refused before git makes anything.
+- A write reads the cache again just before writing and replaces it whole through a temporary file.
+  There is no lock: two writers in the same instant can still lose one record. That record's worktree
+  is then listed without an id, and `git worktree remove` removes it by hand.
 - Paths are compared through `comparablePath` only (`realpathSync.native` and
   `comparableCheckout`). git prints `C:/Users/...`, Node prints backslashes or the 8.3 short form,
   and drive letters compare without case.
