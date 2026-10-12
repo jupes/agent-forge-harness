@@ -222,7 +222,7 @@ async function listed(
 }
 
 /** Which of `ids` are closed or no longer exist. A row bd returns for another id (a partial match) counts for nothing. */
-async function staleOf(
+export async function staleOf(
   runBd: BdRunner,
   ids: readonly string[],
 ): Promise<Read<Map<string, StaleWhy>>> {
