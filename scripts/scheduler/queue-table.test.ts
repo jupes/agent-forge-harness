@@ -46,7 +46,7 @@ describe("operatorMoves: what the page may offer an operator", () => {
     expect(operatorMoves(entry("approved"), { twoLabels: true })).toEqual([]);
   });
 
-  test("start, submit, complete, rework, release and halt are never offered: they are the scheduler's", () => {
+  test("start, submit, complete, rework, release, halt and propose are never offered: the operator API has no route for them", () => {
     const all = (
       [
         "proposed",

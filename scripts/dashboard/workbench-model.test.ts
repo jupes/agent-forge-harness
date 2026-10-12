@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   COLUMN_ORDER,
   DONE_SHOWN,
+  moveOutcome,
   workbenchColumns,
 } from "../../docs/js/workbench-model";
 import type { QueueEntry } from "../../types/hearth";
@@ -133,4 +134,59 @@ describe("workbenchColumns", () => {
     const [, , queued] = workbenchColumns([entry("t-1", "queued")], null, null);
     expect(queued?.cards[0]?.start).toBeUndefined();
   });
+});
+
+describe("moveOutcome", () => {
+  const answering =
+    (status: number, body: string) => async (): Promise<Response> =>
+      new Response(body, { status });
+  const envelope = (ok: boolean, error: string | null = null) =>
+    JSON.stringify({ ok, data: ok ? {} : null, error });
+
+  test("an ok envelope is done", async () => {
+    expect(
+      await moveOutcome("t-1", "approve", answering(200, envelope(true))),
+    ).toEqual({ tone: "done", message: "Approved t-1." });
+  });
+
+  test("a refusal is said in the hearth's words; without them, by its status", async () => {
+    for (const status of [400, 404, 409, 500, 502, 503])
+      expect(
+        await moveOutcome(
+          "t-1",
+          "queue",
+          answering(status, envelope(false, `refused with ${status}`)),
+        ),
+      ).toEqual({ tone: "failed", message: `refused with ${status}` });
+    expect(
+      await moveOutcome("t-1", "queue", answering(503, "<html>busy</html>")),
+    ).toEqual({ tone: "failed", message: "The control plane answered 503." });
+  });
+
+  test("a 504, no answer, or a success that is not the envelope: the outcome is not known", async () => {
+    const unknown = {
+      tone: "unknown" as const,
+      message:
+        "Outcome not known (pause). Check with `bd show t-1` before trying again.",
+    };
+    expect(
+      await moveOutcome("t-1", "pause", answering(504, envelope(false, "x"))),
+    ).toEqual(unknown);
+    expect(
+      await moveOutcome("t-1", "pause", async () => {
+        throw new Error("network down");
+      }),
+    ).toEqual(unknown);
+    expect(
+      await moveOutcome("t-1", "pause", answering(200, "<html>proxy</html>")),
+    ).toEqual(unknown);
+  });
+});
+
+test("a paused card that cannot be resumed says why", () => {
+  const paused = workbenchColumns([entry("t-1", "paused")], none, null).find(
+    (column) => column.state === "paused",
+  );
+  expect(paused?.cards[0]?.moves).toEqual(["reassign"]);
+  expect(paused?.cards[0]?.note).toContain("queue_resume");
 });

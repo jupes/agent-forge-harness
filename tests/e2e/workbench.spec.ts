@@ -179,3 +179,24 @@ test("with no event stream, each move still shows: the page reads the queue agai
     cardIn(page, "approved", id).locator(".af-workbench-smith"),
   ).toHaveText(`smith ${smith}`);
 });
+
+test("when the eligibility read fails, the board says so instead of showing no reasons", async ({
+  page,
+}) => {
+  await page.route(`**${API}/eligibility`, (route) =>
+    route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "bd list failed: database is locked",
+      }),
+    }),
+  );
+  await openSettled(page, "/index.html#/workbench");
+  await reloadSettled(page);
+  await expect(page.locator(".af-notice[role=status]")).toContainText(
+    "the eligibility read failed (bd list failed: database is locked)",
+  );
+});

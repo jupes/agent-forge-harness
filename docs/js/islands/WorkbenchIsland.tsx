@@ -14,6 +14,8 @@ import { Tag } from "../ds/Tag";
 import { operatorPost } from "../operator";
 import { useOperatorRead } from "../use-stream";
 import {
+  type MoveOutcome,
+  moveOutcome,
   type WorkbenchCard,
   type WorkbenchColumn,
   workbenchColumns,
@@ -36,20 +38,6 @@ const MOVE_LABEL: Record<OperatorMove, string> = {
   resume: "Resume",
   reassign: "Reassign",
 };
-const MOVE_DONE: Record<OperatorMove, string> = {
-  approve: "Approved",
-  queue: "Queued",
-  pause: "Paused",
-  resume: "Resumed",
-  reassign: "Reassigned",
-};
-
-/** What the last move on a card came to. */
-export interface MoveOutcome {
-  tone: "done" | "failed" | "unknown";
-  message: string;
-}
-
 export interface WorkbenchViewProps {
   columns: WorkbenchColumn[];
   /** Enabled smiths, by name. */
@@ -59,6 +47,8 @@ export interface WorkbenchViewProps {
   outcomes: Record<string, MoveOutcome>;
   /** Stale reservations (their bead is closed or gone), to mention once. */
   staleCount: number;
+  /** Reads that failed, in the hearth's words: what the board cannot show. */
+  notices: string[];
   onMove(id: string, move: OperatorMove, smith?: string): void;
 }
 
@@ -66,6 +56,11 @@ export interface WorkbenchViewProps {
 export function WorkbenchView(props: WorkbenchViewProps): JSX.Element {
   return (
     <>
+      {props.notices.map((notice) => (
+        <p class="af-notice" role="status" key={notice}>
+          {notice}
+        </p>
+      ))}
       {props.staleCount > 0 ? (
         <p class="af-notice">
           {props.staleCount} reservation
@@ -203,36 +198,25 @@ function CardView({
   );
 }
 
-/** What one move's answer means for the card. */
-export async function moveOutcome(
-  id: string,
-  move: OperatorMove,
-  send: () => Promise<Response>,
-): Promise<MoveOutcome> {
-  const unknown: MoveOutcome = {
-    tone: "unknown",
-    message: `Outcome not known (${move}). Check with \`bd show ${id}\` before trying again.`,
-  };
-  let response: Response;
-  try {
-    response = await send();
-  } catch {
-    return unknown;
-  }
-  if (response.status === 504) return unknown;
-  let error: string | null = null;
-  try {
-    const envelope = (await response.json()) as { error?: unknown };
-    if (typeof envelope.error === "string") error = envelope.error;
-  } catch {
-    // An answer that is not an envelope: say the status.
-  }
-  if (response.ok)
-    return { tone: "done", message: `${MOVE_DONE[move]} ${id}.` };
-  return {
-    tone: "failed",
-    message: error ?? `The control plane answered ${response.status}.`,
-  };
+/** What the board cannot show because a read failed, in the hearth's words. */
+function readFailures(
+  eligibility: { data: unknown; error: string | null },
+  smiths: { data: unknown; error: string | null },
+): string[] {
+  const notices: string[] = [];
+  if (eligibility.data === null && eligibility.error)
+    notices.push(
+      "Why a queued bead waits cannot be shown: the eligibility read failed (" +
+        eligibility.error +
+        ").",
+    );
+  if (smiths.data === null && smiths.error)
+    notices.push(
+      "Smiths cannot be shown or reassigned: the smiths read failed (" +
+        smiths.error +
+        ").",
+    );
+  return notices;
 }
 
 /**
@@ -300,6 +284,7 @@ export function WorkbenchIsland(): JSX.Element {
       pending={pending}
       outcomes={outcomes}
       staleCount={eligibility.data?.stale.length ?? 0}
+      notices={readFailures(eligibility, smiths)}
       onMove={onMove}
     />
   );

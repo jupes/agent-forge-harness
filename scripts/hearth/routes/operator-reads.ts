@@ -399,6 +399,13 @@ function withTimeout<T>(
   });
 }
 
+/** For a paused entry, the state it returns to, when the bead names one the table can return to. */
+function resumeOf(state: QueueState, value: unknown): { resume?: QueueState } {
+  if (state !== "paused") return {};
+  const resume = PAUSABLE.find((pausable) => pausable === value);
+  return resume !== undefined ? { resume } : {};
+}
+
 export type QueueRead =
   | { ok: true; entries: QueueEntry[] }
   | { ok: false; error: string };
@@ -412,13 +419,6 @@ export type QueueRead =
  * label: the issue's own `queue_state` metadata names the same state. A label
  * a child inherited from its parent is not backed.
  */
-/** For a paused entry, the state it returns to, when the bead names one the table can return to. */
-function resumeOf(state: QueueState, value: unknown): { resume?: QueueState } {
-  if (state !== "paused") return {};
-  const resume = PAUSABLE.find((pausable) => pausable === value);
-  return resume !== undefined ? { resume } : {};
-}
-
 export function queueEntries(stdout: string): QueueRead {
   let parsed: unknown;
   try {

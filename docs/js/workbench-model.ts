@@ -88,7 +88,9 @@ export function workbenchColumns(
       ? "Carries two queue labels: no move is made until one is taken out by hand."
       : entry.backed !== true
         ? "The queue did not write this label (inherited or added by hand): propose it again."
-        : undefined;
+        : entry.state === "paused" && entry.resume === undefined
+          ? "Its queue_resume metadata names no state it can return to, so it cannot be resumed: set it by hand (bd update <id> --set-metadata=queue_resume=<state>)."
+          : undefined;
     const wait = waiting.get(entry.beadId);
     const start: WorkbenchCard["start"] =
       entry.state !== "queued" || eligibility === null
@@ -130,4 +132,61 @@ export function workbenchColumns(
       hidden: cards.length - shown.length,
     };
   });
+}
+
+// ── What a move's answer means ──────────────────────────────────────────────
+
+const MOVE_DONE: Record<OperatorMove, string> = {
+  approve: "Approved",
+  queue: "Queued",
+  pause: "Paused",
+  resume: "Resumed",
+  reassign: "Reassigned",
+};
+
+/** What the last move on a card came to. */
+export interface MoveOutcome {
+  tone: "done" | "failed" | "unknown";
+  message: string;
+}
+
+/**
+ * What one move's answer means for the card, by the write path's rules: no
+ * answer, a 504, or a success that is not the control plane's envelope means
+ * the outcome is not known; a refusal is said in the hearth's own words; only
+ * an `ok: true` envelope is done.
+ */
+export async function moveOutcome(
+  id: string,
+  move: OperatorMove,
+  send: () => Promise<Response>,
+): Promise<MoveOutcome> {
+  const unknown: MoveOutcome = {
+    tone: "unknown",
+    message: `Outcome not known (${move}). Check with \`bd show ${id}\` before trying again.`,
+  };
+  let response: Response;
+  try {
+    response = await send();
+  } catch {
+    return unknown;
+  }
+  if (response.status === 504) return unknown;
+  let envelope: { ok?: unknown; error?: unknown } | null = null;
+  try {
+    envelope = (await response.json()) as { ok?: unknown; error?: unknown };
+  } catch {
+    envelope = null;
+  }
+  if (response.ok)
+    return envelope?.ok === true
+      ? { tone: "done", message: `${MOVE_DONE[move]} ${id}.` }
+      : unknown;
+  return {
+    tone: "failed",
+    message:
+      typeof envelope?.error === "string"
+        ? envelope.error
+        : `The control plane answered ${response.status}.`,
+  };
 }
