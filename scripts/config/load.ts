@@ -64,8 +64,24 @@ function fail(file: string, key: string, message: string): never {
 /** A leading byte-order mark, which `Bun.TOML` reads as an empty document. */
 const BOM = "\uFEFF";
 
+/**
+ * A config file's text. UTF-16 (what Windows PowerShell 5.1 writes by default)
+ * is refused with a message: read as UTF-8 it is not TOML, and a lenient
+ * parse could take it for an empty file that still counts as present.
+ */
+export function readConfigText(file: string): string {
+  const bytes = readFileSync(file);
+  const [first, second] = bytes;
+  if (
+    (first === 0xff && second === 0xfe) ||
+    (first === 0xfe && second === 0xff)
+  )
+    throw new Error(`${file}: is saved as UTF-16; save it as UTF-8`);
+  return bytes.toString("utf8");
+}
+
 function readToml(file: string, content?: string): Table {
-  const text = content ?? readFileSync(file, "utf8");
+  const text = content ?? readConfigText(file);
   try {
     const parsed = Bun.TOML.parse(
       text.startsWith(BOM) ? text.slice(BOM.length) : text,

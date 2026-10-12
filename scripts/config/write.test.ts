@@ -412,3 +412,20 @@ describe("set: a workspace file never inherits execution.env.pass", () => {
     );
   });
 });
+
+describe("set: a file saved as UTF-16", () => {
+  test("is refused, and left alone", () => {
+    const box = sandbox();
+    const bytes = Buffer.from(
+      `${BOM}[workflow]
+default_crew = "claude-journeyman"
+`,
+      "utf16le",
+    );
+    writeFileSync(box.workspaceFile, bytes);
+    const outcome = set(box, "workflow.default_crew", "claude-master");
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toContain("is saved as UTF-16");
+    expect(readFileSync(box.workspaceFile).equals(bytes)).toBe(true);
+  });
+});

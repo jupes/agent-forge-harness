@@ -24,7 +24,12 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { BENCH_NAMES } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "./defaults";
-import { type ForgeConfig, type LoadOptions, loadConfig } from "./load";
+import {
+  type ForgeConfig,
+  type LoadOptions,
+  loadConfig,
+  readConfigText,
+} from "./load";
 
 export type ConfigTarget = "user" | "workspace";
 
@@ -306,7 +311,7 @@ function parse(text: string): Table {
 function parsedFile(file: string): Table {
   if (!existsSync(file)) return {};
   try {
-    return parse(readFileSync(file, "utf8"));
+    return parse(readConfigText(file));
   } catch {
     return {};
   }
@@ -453,7 +458,12 @@ export function setConfigValue(request: {
   }
 
   const existed = existsSync(file);
-  const original = existed ? readFileSync(file, "utf8") : "";
+  let original = "";
+  try {
+    if (existed) original = readConfigText(file);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
   const bom = original.startsWith(BOM);
   const body = bom ? original.slice(1) : original;
 

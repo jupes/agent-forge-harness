@@ -188,4 +188,20 @@ describe("loadConfig: what it reads", () => {
     });
     expect(config.execution.envPass).toEqual([]);
   });
+
+  test("a UTF-16 file is refused with a message naming it, not read as empty", () => {
+    const s = sandbox();
+    writeFileSync(
+      s.workspaceFile,
+      Buffer.from(
+        `${String.fromCharCode(0xfeff)}[workflow]
+default_crew = "claude-master"
+`,
+        "utf16le",
+      ),
+    );
+    expect(() =>
+      loadConfig({ harnessRoot: s.harness, home: s.home, env: {} }),
+    ).toThrow(`${s.workspaceFile}: is saved as UTF-16`);
+  });
 });
