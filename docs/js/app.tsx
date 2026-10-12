@@ -22,6 +22,7 @@ import { IssuesViewsIsland } from "./islands/IssuesViewsIsland";
 import { LiveBanner } from "./islands/LiveStatus";
 import { ReposIsland } from "./islands/ReposIsland";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland";
+import { TimelineIsland } from "./islands/TimelineIsland";
 import { WorkbenchIsland } from "./islands/WorkbenchIsland";
 import {
   DEFAULT_ROUTE,
@@ -219,6 +220,8 @@ function DashboardApp() {
         return <BeadBuilderIsland />;
       case "workbench":
         return <WorkbenchIsland />;
+      case "timeline":
+        return <TimelineIsland />;
       case "forge-run":
         return <ForgeRunIsland payload={snapshot.payload} />;
       case "repos":

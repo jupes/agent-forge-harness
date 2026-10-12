@@ -13,6 +13,7 @@ import {
   workBranchesFromCommentBodies,
 } from "../issue-detail.mjs";
 import { priorityTone, statusLabel, statusTone } from "../issue-presentation";
+import { timelineHash } from "../timeline-model";
 import { BeadActions } from "./BeadActions";
 import { applied, useApplied } from "./bead-writes";
 import { CopyIdButton } from "./CopyIdButton";
@@ -99,6 +100,17 @@ export function IssueDetailPanel({
         <dl class="af-detail-facts">
           <Row label="ID">
             <CopyIdButton issueId={issue.id} />
+          </Row>
+          <Row label="Ledger">
+            <a
+              class="af-timeline-link"
+              href={timelineHash({
+                scope: { by: "bead", id: issue.id },
+                kinds: [],
+              })}
+            >
+              Timeline
+            </a>
           </Row>
           {issue.type ? <Row label="Type">{issue.type}</Row> : null}
           <Row label="Title">{issue.title}</Row>

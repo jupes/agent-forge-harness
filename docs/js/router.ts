@@ -67,6 +67,14 @@ export const ROUTES = [
     devOnly: true,
   },
   {
+    id: "timeline",
+    label: "Timeline",
+    icon: "list-bullets",
+    group: "work",
+    blurb: "Ledger events for one bead or run, in order, filtered by kind.",
+    devOnly: true,
+  },
+  {
     id: "commands",
     label: "Commands",
     icon: "terminal-window",

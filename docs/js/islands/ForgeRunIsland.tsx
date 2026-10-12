@@ -25,6 +25,7 @@ import {
 } from "../forge-checkpoints";
 import { statusLabel, statusTone } from "../issue-presentation";
 import { operatorPost } from "../operator";
+import { timelineHash } from "../timeline-model";
 import { useLiveRead } from "../use-stream";
 
 const REVIEW_URL = "/__agent-forge/dev-api/forge-run/review";
@@ -281,7 +282,20 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
         kicker={run.complete ? "shipped run" : `active run · ${run.mode}`}
         title={run.slug}
         headingLevel={2}
-        actions={run.epic ? <Tag tone="accent">{run.epic}</Tag> : undefined}
+        actions={
+          <>
+            {run.epic ? <Tag tone="accent">{run.epic}</Tag> : null}
+            <a
+              class="af-timeline-link"
+              href={timelineHash({
+                scope: { by: "run", id: run.slug },
+                kinds: [],
+              })}
+            >
+              Timeline
+            </a>
+          </>
+        }
       >
         {run.feature ? <p class="af-prose">{run.feature}</p> : null}
         {run.updatedAt ? (
@@ -428,6 +442,17 @@ function CheckpointsCard({
                 <p class="af-checkpoint-meta">
                   <code>{checkpoint.id}</code>
                   {checkpoint.groupTitle ? ` · ${checkpoint.groupTitle}` : ""}
+                  {" · "}
+                  <a
+                    class="af-timeline-link"
+                    href={timelineHash({
+                      scope: { by: "bead", id: checkpoint.id },
+                      kinds: [],
+                    })}
+                    aria-label={`Timeline of ${checkpoint.id}`}
+                  >
+                    timeline
+                  </a>
                   {checkpoint.blockedBy.length > 0 ? (
                     <span class="af-checkpoint-waiting">
                       {" "}

@@ -19,6 +19,7 @@ describe("route table", () => {
       "epics",
       "workbench",
       "forge-run",
+      "timeline",
       "commands",
       "skill-builder",
       "bead-builder",
