@@ -120,6 +120,14 @@ function inBundleOrder(candidates: readonly QueuedBead[]): QueuedBead[] {
   return [...plan.batches.flatMap(layer), ...layer(plan.unbatched)];
 }
 
+/** Globs as a message names them: each one at most 120 characters, and at most five. */
+function named(globs: readonly string[]): string {
+  const shown = globs
+    .slice(0, 5)
+    .map((glob) => (glob.length > 120 ? `${glob.slice(0, 119)}…` : glob));
+  return `${shown.join(", ")}${globs.length > 5 ? `, and ${globs.length - 5} more` : ""}`;
+}
+
 export function eligibility(input: EligibilityInput): Eligibility {
   const stale: Stale[] = [];
   const candidateIds = new Set(input.candidates.map((bead) => bead.id));
@@ -138,16 +146,17 @@ export function eligibility(input: EligibilityInput): Eligibility {
     else claims.push({ id: reservation.beadId, globs: reservation.globs });
   }
 
-  // The walk: beads that already hold a reservation (they have, in effect,
-  // started), then beads in progress, then the rest, each group in bundle
-  // order. A bead is checked only against claims made before it, so no two
-  // beads ever wait on each other.
+  // The walk: beads in progress (running, reserved or not), then beads that
+  // hold a reservation (they have, in effect, started), then the rest, each
+  // group in bundle order. A bead is checked only against claims made before
+  // it, and a bead in progress names no bead it waits on, so no two beads
+  // ever wait on each other.
   const ordered = inBundleOrder(input.candidates);
   const inProgress = (bead: QueuedBead) => bead.status === "in_progress";
   const walk = [
-    ...ordered.filter((bead) => holds.has(bead.id)),
-    ...ordered.filter((bead) => !holds.has(bead.id) && inProgress(bead)),
-    ...ordered.filter((bead) => !holds.has(bead.id) && !inProgress(bead)),
+    ...ordered.filter((bead) => inProgress(bead)),
+    ...ordered.filter((bead) => !inProgress(bead) && holds.has(bead.id)),
+    ...ordered.filter((bead) => !inProgress(bead) && !holds.has(bead.id)),
   ];
 
   const eligible: Eligible[] = [];
@@ -180,13 +189,16 @@ export function eligibility(input: EligibilityInput): Eligibility {
     }
 
     const reserved = reservationFor(bead);
+    // A bead in progress may be editing anything its map names now: that
+    // claims before any other check, beside what it holds.
+    if (inProgress(bead)) claims.push({ id: bead.id, globs: reserved.globs });
     if (
       held !== undefined &&
       !reserved.globs.every((glob) => held.includes(glob))
     ) {
       waiting.push({
         id: bead.id,
-        why: `its file map changed since it was reserved (reserved ${held.join(", ")}; the map says ${reserved.globs.join(", ")}): release and reserve again`,
+        why: `its file map changed since it was reserved (reserved ${named(held)}; the map says ${named(reserved.globs)}): release and reserve again`,
         ...reserved,
       });
       continue;
@@ -212,7 +224,8 @@ export function eligibility(input: EligibilityInput): Eligibility {
         claim.id !== bead.id && overlapOf(reserved.globs, claim.globs) !== null,
     );
     // Claimed as it is passed, whatever it gets: nothing after it jumps it.
-    if (held === undefined) claims.push({ id: bead.id, globs: reserved.globs });
+    if (held === undefined && !inProgress(bead))
+      claims.push({ id: bead.id, globs: reserved.globs });
     if (inProgress(bead)) {
       waiting.push({ id: bead.id, why: "it is in progress", ...reserved });
       continue;
@@ -224,7 +237,7 @@ export function eligibility(input: EligibilityInput): Eligibility {
       ];
       waiting.push({
         id: bead.id,
-        why: `its ${mine} overlaps ${theirs}, claimed by ${before.id}`,
+        why: `its ${named([mine])} overlaps ${named([theirs])}, claimed by ${before.id}`,
         waitsOn: before.id,
         ...reserved,
       });

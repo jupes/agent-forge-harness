@@ -138,7 +138,8 @@ process spawned is git, by the registry.
   missing, empty or malformed reserves `**`, and the reason travels with it (`conservative`).
 - `globsOverlap` is exact for the file-map dialect:
   - It compares code points (so `?` is one character, also outside the BMP), folds case one
-    character at a time, normalizes to NFC, and drops `.` segments.
+    character at a time as the lower case of the upper case (σ ς Σ meet), drops `.` segments, and
+    compares in NFC and NFD and across them: a file name on disk may be in either form.
   - A glob whose last segment has no wildcard covers what is under it.
   - A glob longer than 1024 characters, or with a segment longer than 255, is not compared: it
     overlaps everything, and a map holding one reserves `**`. The brute-force test in `reservations.test.ts` checks that no
@@ -150,8 +151,9 @@ process spawned is git, by the registry.
   only through `comparablePath`.
 - `eligibility` is pure:
   - **Order:** `planBundles` layers over `blocks`/`requires` edges, then priority, then natural
-    id. Beads that already hold a reservation are walked first (they have in effect started), then
-    beads in progress, then the rest.
+    id. Beads in progress are walked first (they are running, and claim their current map before
+    any other check), then beads that hold a reservation (they have in effect started), then the
+    rest. A bead in progress never names a bead it waits on.
   - **No circles:** a bead is checked only against claims made before it in the walk, plus the
     reservations of beads outside the queue, so no two beads wait on each other. What a bead holds
     always claims.
@@ -163,7 +165,8 @@ process spawned is git, by the registry.
   - **Claims:** every bead that can run or is running (eligible, waiting on an overlap, or
     `in_progress`) claims its globs as it is passed, so nothing jumps an earlier bead.
   - **What claims nothing:** a blocked bead (not ready, not in progress), a bead held back only by a
-    busy host, and a queued epic. A blocked bead therefore never holds back its own blocker.
+    busy host, and a queued epic, except for what any of them already holds: a reservation always
+    claims. A blocked bead with no reservation therefore never holds back its own blocker.
   - **Stale:** reservations of closed or deleted beads, ignored and reported.
 - `readEligibility` and the CLI run bd in the main checkout (`localStateRoot`). A bd failure is an
   error, never an empty queue. `bd show` answers for partial ids, so only rows with exactly the asked

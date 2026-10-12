@@ -122,6 +122,18 @@ test("3000 random queues keep every invariant", () => {
         if (r.beadId !== e.id && mapsOverlap(e.globs, r.globs))
           problems.push(`${where}: ${e.id} overlaps ${r.beadId}'s reservation`);
     }
+    // A bead in progress is running: nothing eligible may overlap it.
+    for (const running of candidates.filter(
+      (c) => c.status === "in_progress" && c.issue_type !== "epic",
+    )) {
+      const runningGlobs =
+        answer.waiting.find((w) => w.id === running.id)?.globs ?? [];
+      for (const e of answer.eligible)
+        if (mapsOverlap(e.globs, runningGlobs))
+          problems.push(
+            `${where}: ${e.id} eligible beside ${running.id} in progress`,
+          );
+    }
     const on = new Map(answer.waiting.map((w) => [w.id, w.waitsOn]));
     for (const w of answer.waiting)
       if (w.waitsOn !== undefined && on.get(w.waitsOn) === w.id)

@@ -212,6 +212,38 @@ describe("eligibility: what holds a bead back", () => {
     expect(circles(answer.waiting)).toEqual([]);
   });
 
+  test("an in-progress bead with no reservation holds back an overlapping bead that holds one", () => {
+    const answer = eligibility(
+      input(
+        [
+          bead("t-1", { status: "in_progress", description: files("src/**") }),
+          bead("t-2", { description: files("src/a.ts") }),
+        ],
+        {
+          readyIds: new Set(["t-2"]),
+          active: [reservation("t-2", ["src/a.ts"])],
+        },
+      ),
+    );
+    expect(answer.eligible).toEqual([]);
+    expect(answer.waiting.map((w) => [w.id, w.waitsOn ?? null])).toEqual([
+      ["t-1", null],
+      ["t-2", "t-1"],
+    ]);
+  });
+
+  test("a why names a glob in at most 120 characters", () => {
+    const long = `src/${"x".repeat(200)}`;
+    const answer = eligibility(
+      input([
+        bead("t-1", { description: files(`${long}/**`) }),
+        bead("t-2", { description: files("src/**") }),
+      ]),
+    );
+    expect(answer.waiting[0]?.why.length).toBeLessThan(400);
+    expect(answer.waiting[0]?.why).toContain("…");
+  });
+
   test("an in-progress bead holds back an overlapping bead whichever comes first in the order", () => {
     for (const [running, other] of [
       ["probe-7vh", "probe-4kl"],

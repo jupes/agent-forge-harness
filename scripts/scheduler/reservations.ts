@@ -41,20 +41,30 @@ export function tooLong(glob: string): string | null {
   return null;
 }
 
-/** One character in the case it is compared in: lowered, unless lowering makes it more than one. */
+/**
+ * One character in the case it is compared in: the lower case of its upper
+ * case (so σ, ς and Σ meet, and µ and μ, and ſ and s), unless that is more
+ * than one character; then its lower case, under the same condition; else
+ * the character itself.
+ */
 function folded(character: string): string {
-  const lower = character.toLowerCase();
-  return [...lower].length === 1 ? lower : character;
+  for (const candidate of [
+    character.toUpperCase().toLowerCase(),
+    character.toLowerCase(),
+  ])
+    if ([...candidate].length === 1) return candidate;
+  return character;
 }
 
 /**
- * A glob as segments of characters (code points, not UTF-16 units), in NFC,
+ * A glob as segments of characters (code points, not UTF-16 units), in one
+ * Unicode normalization form,
  * case-folded one character at a time, without `.` segments, and with the
  * covering rule applied. `**` stays a segment of its own.
  */
-function segmentsOf(glob: string): string[][] {
+function segmentsOf(glob: string, form: "NFC" | "NFD"): string[][] {
   const segments = glob
-    .normalize("NFC")
+    .normalize(form)
     .split("/")
     .filter((segment) => segment !== "" && segment !== ".");
   const last = segments.at(-1);
@@ -92,13 +102,24 @@ function segmentsMeet(p: readonly string[], q: readonly string[]): boolean {
 }
 
 /**
- * Whether some path matches both globs. A glob too long to compare is taken
- * to overlap everything: the unsafe answer is the other one.
+ * Whether some path matches both globs. A file name on disk can be in either
+ * normalization form (`é` as one character or as `e` and an accent, which
+ * `?` sees as two), so the globs are compared in each form, and in each form
+ * against the other: any meeting is an overlap. A glob too long to compare is
+ * taken to overlap everything. The unsafe answer is always the other one.
  */
 export function globsOverlap(a: string, b: string): boolean {
   if (tooLong(a) !== null || tooLong(b) !== null) return true;
-  const as = segmentsOf(a);
-  const bs = segmentsOf(b);
+  const forms = ["NFC", "NFD"] as const;
+  return forms.some((fa) =>
+    forms.some((fb) => segmentListsMeet(segmentsOf(a, fa), segmentsOf(b, fb))),
+  );
+}
+
+function segmentListsMeet(
+  as: readonly string[][],
+  bs: readonly string[][],
+): boolean {
   const memo = new Map<number, boolean>();
   const meet = (i: number, j: number): boolean => {
     const key = i * (bs.length + 1) + j;

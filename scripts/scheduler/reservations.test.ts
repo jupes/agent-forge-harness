@@ -148,13 +148,27 @@ describe("reservationFor: what a bead reserves", () => {
 describe("globsOverlap beyond ASCII and plain spellings", () => {
   test("? is one character, a character outside the BMP and a letter whose lower case is longer included", () => {
     expect(globsOverlap("src/?.ts", "src/\u{1F600}.ts")).toBe(true);
-    expect(globsOverlap("src/?.ts", "src/İ.ts")).toBe(true);
+    expect(globsOverlap("src/?.ts", "src/\u0130.ts")).toBe(true);
     expect(globsOverlap("src/??.ts", "src/\u{1F600}.ts")).toBe(false);
+  });
+
+  test("letters that are one letter in another case meet: \u03c3 \u03c2 \u03a3, \u00b5 \u03bc, \u017f s", () => {
+    expect(globsOverlap("\u03c3.ts", "\u03c2.ts")).toBe(true);
+    expect(globsOverlap("\u03a3.ts", "\u03c2.ts")).toBe(true);
+    expect(globsOverlap("\u00b5.ts", "\u03bc.ts")).toBe(true);
+    expect(globsOverlap("\u017f.ts", "s.ts")).toBe(true);
+    expect(globsOverlap("\u03c3.ts", "s.ts")).toBe(false);
+  });
+
+  test("a decomposed letter is two characters to ?, whichever way the other glob spells it", () => {
+    expect(globsOverlap("e?.ts", "\u00e9.ts")).toBe(true);
+    expect(globsOverlap("e?.ts", "e\u0301.ts")).toBe(true);
+    expect(globsOverlap("???.ts", "\u00e9.ts")).toBe(false);
   });
 
   test("one path written two ways meets itself: a . segment, and NFC against NFD", () => {
     expect(globsOverlap("a/./b.ts", "a/b.ts")).toBe(true);
-    expect(globsOverlap("docs/café.md", "docs/café.md")).toBe(true);
+    expect(globsOverlap("docs/caf\u00e9.md", "docs/cafe\u0301.md")).toBe(true);
   });
 
   test("a glob too long to compare is taken to overlap everything, and never throws", () => {
