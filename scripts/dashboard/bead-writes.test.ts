@@ -960,7 +960,7 @@ describe("what the store reads back about writes", () => {
     message,
   });
 
-  test("an attempt whose at is not a whole number from 1 up, or whose key is not w and its at, is left out", () => {
+  test("an attempt whose at is not a whole number from 1 to 1,000,000,000, or whose key is not w and its at, is left out", () => {
     const text = JSON.stringify({
       beads: [],
       attempts: [
@@ -970,6 +970,7 @@ describe("what the store reads back about writes", () => {
         claim("3", "at as a text", "w3"),
         claim(4, "key and at disagree", "w9"),
         { key: "w5", action: "claim", id: "demo-task", message: "no at" },
+        claim(1_000_000_001, "past the last order"),
         claim(6, "kept"),
       ],
     });
@@ -982,6 +983,22 @@ describe("what the store reads back about writes", () => {
       }),
     );
     expect(store.notices().map((notice) => notice.message)).toEqual(["kept"]);
+  });
+
+  test("a bead entry stored with an at that is not a whole number up to 1,000,000,000 is read with at 0, and two writes sent next keep a notice each", () => {
+    // 1e999 reads as Infinity; 2^53 - 1 is the largest exact integer, so two
+    // steps past it land on the same number.
+    for (const at of ["1e999", String(Number.MAX_SAFE_INTEGER)]) {
+      const text = `{"beads":[{"id":"demo-task","status":"open","comments":[],"at":${at}}],"attempts":[]}`;
+      const store = createAppliedStore(memory({ [STORE_KEY]: text }));
+      store.unknown(begun(store, { action: "claim", id: "demo-task" }), "one");
+      store.unknown(begun(store, { action: "close", id: "demo-task" }), "two");
+      expect({ at, listed: store.notices().map((n) => n.message) }).toEqual({
+        at,
+        listed: ["one", "two"],
+      });
+      expect(store.get("demo-task")?.at).toBe(0);
+    }
   });
 
   test("of more than twenty stored attempts only the twenty sent last are read", () => {

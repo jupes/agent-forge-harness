@@ -432,6 +432,18 @@ const checkFor = (attempt: { id?: string }): string =>
 const text = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
 
+/** The largest order read back: more writes than a tab makes, and far below where whole numbers stop being exact. */
+const LAST_ORDER = 1_000_000_000;
+
+/** A stored order (`at`) as the page writes them, a whole number from 1 to LAST_ORDER, or null. */
+const orderOf = (value: unknown): number | null =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 1 &&
+  value <= LAST_ORDER
+    ? value
+    : null;
+
 /** One entry as it was stored, or null: what storage holds is not trusted. */
 function entryOf(value: unknown): Applied | null {
   if (!isRecord(value)) return null;
@@ -481,24 +493,24 @@ function entryOf(value: unknown): Applied | null {
           },
         }
       : {}),
-    at: typeof value["at"] === "number" ? value["at"] : 0,
+    // Any other order would move the clock that every later write's key is made from.
+    at: orderOf(value["at"]) ?? 0,
   };
 }
 
 /**
  * One sent write as it was stored, or null. One stored without a message was
- * still awaited. Its `at` is a whole number from 1 and its key is `w` and that
- * number, as `begin` makes them: a key read back is one no later write is given.
+ * still awaited. Its `at` is an order as `orderOf` reads it and its key is `w`
+ * and that number, as `begin` makes them: a key read back is one no later
+ * write is given.
  */
 function attemptOf(value: unknown): Attempt | null {
   if (!isRecord(value)) return null;
   const key = value["key"];
   const action = value["action"];
   const message = value["message"];
-  const at = value["at"];
-  if (typeof at !== "number" || !Number.isSafeInteger(at) || at < 1)
-    return null;
-  if (key !== `w${at}`) return null;
+  const at = orderOf(value["at"]);
+  if (at === null || key !== `w${at}`) return null;
   if (!BEAD_WRITES.some((known) => known === action)) return null;
   if (message !== undefined && typeof message !== "string") return null;
   // An older page kept no outcome: what it kept was an unknown one.
