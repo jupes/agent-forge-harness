@@ -11,6 +11,7 @@
  */
 
 import {
+  type BeadCounts,
   type EventsPage,
   QUEUE_LABEL_PREFIX,
   QUEUE_RESUME_KEY,
@@ -21,6 +22,11 @@ import {
   type RunDetail,
   type SmithsView,
 } from "../../../types/hearth";
+import {
+  buildDerivedFromIssuesAndDeps,
+  issuesAndDepsFromExportRows,
+  parseBdExportStdout,
+} from "../../beads-dashboard";
 import { type LoadedConfig, loadConfig } from "../../config/load";
 import { isValidSlug, summarizeRun } from "../../forge/runs";
 import { listRuns, readRunState } from "../../forge/runs-store";
@@ -613,4 +619,63 @@ export function workspaceReads(deps: ReadDeps) {
     },
   };
   return { queue, smiths, config: whole, worktrees, eligibility };
+}
+
+/**
+ * What `bd` is asked for the Beads counts: always exactly this. The call the
+ * snapshot builder makes to the tracker (`build-pages.ts`), memories left out
+ * as there, with `--readonly` because this route only reads. Not the
+ * builder's one `bd comments` call per issue, which is what makes it slow.
+ */
+export const BEAD_COUNT_ARGS: readonly string[] = [
+  "export",
+  "--readonly",
+  "--no-memories",
+];
+
+/** The dashboard's four Beads cards for what `bd export` printed, by the snapshot builder's rules. */
+export function beadCounts(stdout: string): BeadCounts {
+  const { issues, deps } = issuesAndDepsFromExportRows(
+    parseBdExportStdout(stdout),
+  );
+  const { byStatus, blocked } = buildDerivedFromIssuesAndDeps(issues, deps);
+  return {
+    open: byStatus.open?.length ?? 0,
+    inProgress: byStatus.in_progress?.length ?? 0,
+    blocked: blocked.length,
+    closed: byStatus.closed?.length ?? 0,
+  };
+}
+
+/**
+ * The reads of the tracker itself. `GET /beads/counts` is the dashboard's
+ * Beads cards, read again by the page when a `bead.transitioned` event
+ * arrives. One `bd` call a read, coalesced like the queue read, with the
+ * runner's own limit. Not a stream collection: every new stream builds a
+ * snapshot, and this call prints the whole tracker.
+ */
+export function beadsReads(deps: ReadDeps) {
+  const readCounts = coalesced(async () => deps.runBd([...BEAD_COUNT_ARGS]));
+  const counts: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/beads/counts",
+    validate: noParameters,
+    read: async () => {
+      try {
+        const result = await readCounts();
+        if (result.status !== 0)
+          return {
+            status: 502,
+            error: safeMessage(
+              `bd export failed: ${result.stderr.trim().slice(0, 500) || `exit ${result.status}`}`,
+            ),
+          };
+        return { status: 200, data: beadCounts(result.stdout) };
+      } catch (error) {
+        return { status: 502, error: safeMessage(error) };
+      }
+    },
+  };
+  return { counts };
 }

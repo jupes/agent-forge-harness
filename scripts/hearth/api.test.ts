@@ -481,6 +481,7 @@ const READS: Record<string, string> = {
   "GET /smiths": "/smiths",
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
+  "GET /beads/counts": "/beads/counts",
 };
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -1260,7 +1261,10 @@ describe("every read row (iterating the table)", () => {
       });
     }
     expect(h.events()).toEqual([]);
-    expect(h.bd.calls.every((args) => args[0] === "list")).toBe(true);
+    // The read rows run `bd list` (the queue, eligibility) and `bd export` (the Beads counts), and nothing that writes.
+    expect(
+      h.bd.calls.every((args) => args[0] === "list" || args[0] === "export"),
+    ).toBe(true);
   });
 });
 
