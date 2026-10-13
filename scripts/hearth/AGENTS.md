@@ -9,7 +9,7 @@ The hearth: the standalone loopback control-plane server (`bun run hearth`), its
 
 ## Local Rules
 
-- Every request passes `gate.ts` (`frontDoorOrigin`) before routing: loopback peer, loopback `Host`, `Origin` equal to the host origin, no cross-site fetch metadata. Do not add a route that skips it.
+- Every request passes `gate.ts` (`frontDoorOrigin`) before routing: loopback peer; `Host`, `Origin` and `Sec-Fetch-Site` each sent at most once (counted in `rawHeaders`); loopback `Host`; `Origin`, when sent, equal to the host origin; `Sec-Fetch-Site`, when sent, `same-origin` or `none`. Do not add a route that skips it.
 - The operator API is one table: `api.ts` is the runner; `routes/operator.ts` assembles the table and holds the actions and the stream row; `routes/operator-reads.ts` holds the read rows; `routes/beads.ts` holds the tracker writes and the options row; `routes/queue.ts` holds the queue actions. A new route is a new row. Never check the origin, the token or the audit row inside a row, and never answer JSON from one: the runner does all of it, for every row, in one order (same-origin, token, body, validation, `operator.action`, effect).
 - Every mutation is an action row. `routes/council.ts` and `routes/dev-api.ts` only read; do not add a POST branch to either. Their tests mount them on their own `node:http` server; an action row is tested through a hearth (`testing.ts` gives a hermetic one), and `api.test.ts` iterates the table: a row with no fixture there fails the suite.
 - Handlers in `routes/` keep the `(req, res, next)` shape and the `{ ok, data, error }` envelope.
