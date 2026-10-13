@@ -170,7 +170,7 @@ When working inside `repos/<repo-name>/`:
 - Read `repos/<repo-name>/AGENTS.md` first — it overrides these defaults
 - Read `repos/<repo-name>/CONTRIBUTING.md` if it exists
 - Follow the sub-repo's own commit format, branch naming, and test commands
-- Create Beads issues with `bd create --repo ./repos/<repo-name> --priority <value>` (choose **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md`)
+- Create Beads issues in the harness tracker with `bd create --title "[<repo-name>] <summary>" --priority <value>` (choose **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md`). Name the sub-repo at the start of the title (`[<repo-name>] <summary>`) and pass no `--repo` other than `--repo .`: `bd repo list` shows `.` as the only registered repository, and given any other `--repo`, `bd create` still prints an id but files the issue in a tracker under that path (making one if there is none), where no `bd show`, `bd list` or `bd export` run here finds it. `/add-repo` registers a sub-repo with the harness, not with `bd`.
 
 ---
 

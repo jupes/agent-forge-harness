@@ -13,7 +13,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync, statSync } from "fs";
-import { join } from "path";
+import { join, posix } from "path";
+import { parse as parseYaml } from "yaml";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -30,8 +31,8 @@ const BEADS_TASKS_TEMPLATE = ".beads/templates/tasks.prompt.md";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
-/** The Markdown instructions git knows about. `docs/plans/` is history and is not among them. */
-function instructionFiles(): string[] {
+/** Every file git knows about: tracked, plus new files not ignored. */
+function knownFiles(): string[] {
   const listed = Bun.spawnSync(
     ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
@@ -39,13 +40,15 @@ function instructionFiles(): string[] {
   if (listed.exitCode !== 0) {
     throw new Error(`git ls-files failed: ${listed.stderr.toString()}`);
   }
-  return listed.stdout
-    .toString()
-    .split("\0")
-    .filter(
-      (path) =>
-        /^\.(claude|agents)\/.*\.md$/.test(path) || ALSO_SCANNED.includes(path),
-    );
+  return listed.stdout.toString().split("\0");
+}
+
+/** The Markdown instructions git knows about. `docs/plans/` is history and is not among them. */
+function instructionFiles(): string[] {
+  return knownFiles().filter(
+    (path) =>
+      /^\.(claude|agents)\/.*\.md$/.test(path) || ALSO_SCANNED.includes(path),
+  );
 }
 
 /** The instruction files, and the one prompt template a run is asked to paste. */
@@ -75,6 +78,29 @@ interface Documented {
 const FENCE = /^\s*(?:(?:[-*+]|\d+[.)])\s+)?```/;
 
 /**
+ * A shell command without its trailing `# comment`. As in the shell, a `#`
+ * starts a comment only at the start of a word and outside quotes, so the
+ * `#` in `--title "CI failing on PR #<n>"` is part of the title.
+ */
+function withoutComment(command: string): string {
+  let quote: string | null = null;
+  for (let at = 0; at < command.length; at++) {
+    const char = command[at];
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else if (char === "\\" && quote === '"') at++;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "\\") {
+      at++;
+    } else if (char === "#" && (at === 0 || /\s/.test(command[at - 1] ?? ""))) {
+      return command.slice(0, at).trimEnd();
+    }
+  }
+  return command;
+}
+
+/**
  * Every documented use of a command in one file: from its name to the end of
  * its inline code span (which may wrap onto the next lines), or, inside a
  * fenced block, to the end of its line (a trailing backslash joins the next)
@@ -97,7 +123,7 @@ function commandsIn(path: string, text: string, name: RegExp): Documented[] {
           command = `${command.trimEnd().slice(0, -1)} ${(lines[next] ?? "").trim()}`;
           if (next >= lines.length) break;
         }
-        command = command.replace(/\s+#.*$/, "");
+        command = withoutComment(command);
       } else {
         // An inline span: read on to its closing backtick, within the paragraph.
         for (
@@ -786,6 +812,161 @@ describe("the generated mirror carries what its source says", () => {
         name,
         carried: (read(copy) ?? "").endsWith(body),
       }).toEqual({ name, carried: true });
+    }
+  });
+});
+
+const BD_CREATE = /bd create\b/;
+
+/** The instruction files, and every Beads template a run may paste from. */
+const withBeadsTemplates = (): string[] => [
+  ...instructionFiles(),
+  ...knownFiles().filter((path) => /^\.beads\/templates\/.*\.md$/.test(path)),
+];
+
+/** One key of a parsed YAML mapping, or `undefined` when there is no such key. */
+const field = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null && key in value
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+
+/** A repository path compared as a path: `./` is `.`, and `./repos/x/` is `repos/x`. */
+const repositoryKey = (path: string): string =>
+  posix.normalize(path.replace(/\\/g, "/")).replace(/(.)\/$/, "$1");
+
+/** The repositories bd knows here: the primary and any additional ones the tracker's config lists. */
+function registeredRepositories(): Set<string> {
+  const repos = field(parseYaml(read(".beads/config.yaml") ?? ""), "repos");
+  const additional = field(repos, "additional");
+  return new Set(
+    [field(repos, "primary"), ...(Array.isArray(additional) ? additional : [])]
+      .filter((path): path is string => typeof path === "string")
+      .map(repositoryKey),
+  );
+}
+
+/** Each `--repo` value a documented command passes, its quotes taken off. */
+const repoValues = (command: string): string[] =>
+  [
+    ...command.matchAll(/(?:^|\s)--repo(?:=|\s+)("[^"]*"|'[^']*'|[^\s"']+)/g),
+  ].map((match) => (match[1] ?? "").replace(/^(["'])(.*)\1$/, "$2"));
+
+describe("the documents: no `bd create` names a repository bd does not know", () => {
+  const registered = registeredRepositories();
+  const files = withBeadsTemplates();
+  const creates = files.flatMap((path) =>
+    commandsIn(path, read(path) ?? "", BD_CREATE),
+  );
+
+  test("the registered repositories are read from the tracker's config, the primary `.` among them, and the scan covers the instruction files and the Beads templates", () => {
+    expect(registered.has(".")).toBe(true);
+    for (const path of ["CLAUDE.md", "AGENTS.md", BEADS_TASKS_TEMPLATE]) {
+      expect(files).toContain(path);
+    }
+  });
+
+  test("the scan reads a `--repo` on a continuation line of a multi-line `bd create`, after a quoted `#`, and in an inline code span", () => {
+    const fenced = [
+      "```bash",
+      "bd create \\",
+      "  --type task \\",
+      "  --repo <repo> \\",
+      "  --priority 2",
+      "",
+      "bd create \\",
+      '  --title "CI failing on PR #<n>: <pr title>" \\',
+      "  --repo <other> \\",
+      "  --priority 1   # a comment, which is not read",
+      "```",
+    ].join("\n");
+    const found = commandsIn("fenced.md", fenced, BD_CREATE);
+    expect(found.map((documented) => repoValues(documented.command))).toEqual([
+      ["<repo>"],
+      ["<other>"],
+    ]);
+    expect(found[1]?.command).toEndWith("--priority 1");
+    expect(
+      commandsIn(
+        "inline.md",
+        'Create it with `bd create --repo "./repos/<repo>" --priority 2`.',
+        BD_CREATE,
+      ).map((documented) => repoValues(documented.command)),
+    ).toEqual([["./repos/<repo>"]]);
+  });
+
+  test("every documented `bd create` passes no `--repo`, or one registered with bd: any other value prints an id and files the issue in a tracker under that path", () => {
+    const unknown = creates
+      .filter((documented) =>
+        repoValues(documented.command).some(
+          (value) => !registered.has(repositoryKey(value)),
+        ),
+      )
+      .map(show);
+    expect(unknown).toEqual([]);
+  });
+
+  test("each document whose `bd create` passed a placeholder repository names the repository at the start of the title instead", () => {
+    const documents = [
+      ...skill("forge-plan"),
+      ...command("forgemaster"),
+      ".claude/workflows/forge-mini.md",
+      ...command("go"),
+      ...command("plan"),
+      ...command("triage"),
+      BEADS_TASKS_TEMPLATE,
+      ".claude/workflows/fix.md",
+      ...skill("beads-priority-assignment"),
+      ...skill("qa"),
+      "CLAUDE.md",
+      "AGENTS.md",
+    ];
+    for (const path of documents) {
+      const titled = creates.filter(
+        (documented) =>
+          documented.path === path &&
+          documented.command.includes('--title "[<repo'),
+      );
+      expect({ path, titled: titled.length > 0 }).toEqual({
+        path,
+        titled: true,
+      });
+    }
+  });
+
+  test("CLAUDE.md and AGENTS.md give the same rule: the sub-repo is named in the title, no `--repo` but `.`, and why", () => {
+    for (const path of ["CLAUDE.md", "AGENTS.md"]) {
+      expect(
+        missing(path, [
+          "Name the sub-repo at the start of the title",
+          "pass no `--repo` other than `--repo .`",
+          "`bd repo list` shows `.` as the only registered repository",
+          "still prints an id but files the issue in a tracker under that path (making one if there is none)",
+          "`/add-repo` registers a sub-repo with the harness, not with `bd`",
+        ]),
+      ).toEqual([]);
+    }
+  });
+
+  test("the add-bead command names the sub-repo in the title, and no document still says to pass a sub-repo path as `--repo`", () => {
+    for (const path of command("add-bead")) {
+      expect(missing(path, ["start the title with **`[<name>]`**"])).toEqual(
+        [],
+      );
+    }
+    const stale: ReadonlyArray<[readonly string[], string]> = [
+      [command("add-bead"), "pass **`--repo ./repos/<name>`**"],
+      [
+        skill("request-refactor-plan"),
+        "Use `--repo ./repos/<repo-name>` for a registered sub-repo",
+      ],
+      [skill("authoring-agent-skills"), "e.g. `--repo ./repos/<name>`"],
+    ];
+    for (const [paths, phrase] of stale) {
+      for (const path of paths) {
+        expect({ path, says: (read(path) ?? phrase).includes(phrase) }).toEqual(
+          { path, says: false },
+        );
+      }
     }
   });
 });

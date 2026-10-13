@@ -194,8 +194,7 @@ For each implementation step in the plan:
 ```bash
 bd create \
   --type task \
-  --title "<step description>" \
-  --repo <repo> \
+  --title "[<repo>] <step description>" \
   --priority <value> \
   --acceptance "<acceptance criterion from the step>"
 ```

@@ -59,7 +59,7 @@ order (the first match wins):
      acceptance criteria** — do not invent them.
    - **Mirror it into Beads** (Beads stays the source of truth), linking back to JIRA:
      ```bash
-     bd create --repo <repo> --type <feature|bug|task> --title "<summary>" \
+     bd create --type <feature|bug|task> --title "[<repo>] <summary>" \
        --priority <p> --external-ref "jira-<KEY>" --acceptance "<AC>" --description "<body + JIRA link>"
      ```
      Priority via `.claude/skills/beads-priority-assignment/SKILL.md`. Derive `<slug>` from the

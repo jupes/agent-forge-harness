@@ -48,7 +48,7 @@ Keep it to a few minutes of reading, not a research project.
    verified. No `plans/` doc unless the user asks for one.
 4. Beads: create or reuse one task, set it in progress, and claim it:
    ```bash
-   bd create --repo <repo> --type <bug|chore|task> --title "<title>" --priority <p> \
+   bd create --type <bug|chore|task> --title "[<repo>] <title>" --priority <p> \
      --acceptance "<observable done condition>"   # skip if a task already exists
    bd update <id> --claim                          # sets assignee + status=in_progress
    ```
