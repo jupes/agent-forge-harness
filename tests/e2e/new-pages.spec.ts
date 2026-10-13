@@ -1,10 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { ForgeRunSnapshot } from "../../scripts/dashboard/forge-run-model";
 import {
+  AWAITING_REVIEW_RUN,
   CHECKOUT,
+  HALT_REASON,
+  HALTED_RUN,
   LEGACY_GATE,
   LEGACY_VERDICT_GATE,
   openSettled,
+  REVISING_RUN,
+  SHIP_HALTED_RUN,
   stubForgeRun,
   stubRepos,
   UNLINKED_GATE,
@@ -26,6 +31,13 @@ const FORGE_RUN = "/index.html#/forge-run";
 const FORGE_RUN_API = "/__agent-forge/dev-api/forge-run";
 // Matched exactly: the gate card's scope line says the same words in passing.
 const NO_RUN_TITLE = "No forge run in flight";
+
+/** The runs board's row for `slug`. */
+function boardRow(page: Page, slug: string): Locator {
+  return page.locator(".af-run-row", {
+    has: page.locator(".af-run-slug", { hasText: slug }),
+  });
+}
 
 test.describe("Forge run", () => {
   test("lists checkpoints in dependency order and marks the one in progress", async ({
@@ -368,6 +380,54 @@ test.describe("Forge run", () => {
     await expect(scope).toContainText("with no forge run in flight");
     await expect(page.locator(".af-gate-check")).toHaveCount(5);
     expect(errors).toEqual([]);
+  });
+
+  test("the board names each run its reviews hold by the hold, says why a halted run stopped, and draws the phase after a halt locked", async ({
+    page,
+  }) => {
+    const errors = collectErrors(page);
+    await stubForgeRun(page, {
+      extraRuns: [HALTED_RUN, REVISING_RUN, AWAITING_REVIEW_RUN],
+    });
+    await openSettled(page, FORGE_RUN);
+
+    const halted = boardRow(page, "search-index");
+    await expect(halted.locator(".af-run-phase")).toHaveText(
+      "Halted in Plan · 2/4",
+    );
+    await expect(halted.locator(".af-run-reason")).toHaveText(HALT_REASON);
+    await expect(halted.locator(".af-run-seg").nth(2)).toHaveClass(
+      /af-run-seg-locked/,
+    );
+    await expect(
+      boardRow(page, "billing-export").locator(".af-run-phase"),
+    ).toHaveText("Revising Research · 1/4");
+    await expect(
+      boardRow(page, "audit-log").locator(".af-run-phase"),
+    ).toHaveText("Implement awaiting review · 3/4");
+    // Only a halt carries a reason, and a run nothing holds reads as before.
+    await expect(page.locator(".af-run-reason")).toHaveCount(1);
+    await expect(
+      boardRow(page, "design-system").locator(".af-run-phase"),
+    ).toHaveText("Implement · 2/4");
+    expect(errors).toEqual([]);
+  });
+
+  test("a run that recorded ship but whose ship review halted is counted in flight and needs attention, not shipped", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { extraRuns: [SHIP_HALTED_RUN] });
+    await openSettled(page, FORGE_RUN);
+
+    await expect(
+      page.getByRole("heading", { name: "2 runs · 2 in flight", exact: true }),
+    ).toBeVisible();
+    const row = boardRow(page, "release-notes");
+    await expect(row).toHaveClass(/af-run-row-attention/);
+    await expect(row.locator(".af-sr-only")).toHaveText("Needs attention");
+    await expect(row.locator(".af-run-phase")).toHaveText(
+      "Halted in Ship · 4/4",
+    );
   });
 
   test("renders the real forge state from this checkout without errors", async ({

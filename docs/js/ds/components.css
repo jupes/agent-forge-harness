@@ -1529,6 +1529,11 @@ form.is-submitting {
   white-space: nowrap;
 }
 
+/* Why a halted run stopped: a line of its own, under the whole row. */
+.af-run-reason {
+  grid-column: 1 / -1;
+}
+
 @media (width <= 720px) {
   .af-run-row {
     grid-template-columns: minmax(0, 1fr);

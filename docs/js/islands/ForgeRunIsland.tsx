@@ -8,6 +8,7 @@ import {
   type GateScope,
   type RunBoardRow,
   type RunHealth,
+  type RunStatus,
 } from "../../../scripts/dashboard/forge-run-model";
 import type { BeadsPayload } from "../../../types/beads";
 import type { LedgerEventKind } from "../../../types/hearth";
@@ -101,6 +102,24 @@ function shortTime(iso: string | null): string {
       });
 }
 
+const phaseLabel = (phase: string): string => PHASE_LABEL[phase] ?? phase;
+
+/** What a run is doing now, in the words the board shows. */
+function statusText(status: RunStatus): string {
+  switch (status.kind) {
+    case "halted":
+      return `Halted in ${phaseLabel(status.phase)}`;
+    case "revising":
+      return `Revising ${phaseLabel(status.phase)}`;
+    case "awaiting-review":
+      return `${phaseLabel(status.phase)} awaiting review`;
+    case "shipped":
+      return "Shipped";
+    case "phase":
+      return phaseLabel(status.phase);
+  }
+}
+
 /** One run on the board: identity, phase progress, and how it is doing. */
 function RunBoardEntry({
   row,
@@ -111,10 +130,7 @@ function RunBoardEntry({
   current: boolean;
   onSelect: (slug: string) => void;
 }): JSX.Element {
-  const phaseSummary =
-    row.status === "shipped"
-      ? "Shipped"
-      : (PHASE_LABEL[row.status] ?? row.status);
+  const phaseSummary = statusText(row.status);
 
   return (
     <li>
@@ -165,6 +181,10 @@ function RunBoardEntry({
             {shortTime(row.updatedAt)}
           </span>
         </span>
+
+        {row.status.kind === "halted" ? (
+          <span class="af-run-reason af-muted">{row.status.reason}</span>
+        ) : null}
       </button>
     </li>
   );
