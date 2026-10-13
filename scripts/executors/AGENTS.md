@@ -88,4 +88,12 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   Both are tested on the fake binary only; no `--task` run against a real CLI has been made. Before either, `found`:
   the binary is on PATH, or a command override's program is where `Bun.which` finds it. An override whose program is
   not there is `found: false`; one that is there but fails `--version` is `found: true, ok: false` with the reason.
+- `supervisor.ts` kills each supervised child's process tree when the harness process exits: on `exit` (which an
+  uncaught error also fires), SIGINT and SIGTERM. `supervisor.test.ts` checks it in a process of its own: a stand-in
+  harness (`fixtures/supervising-parent.ts`) supervises the fake in `hang-tree` mode, and after it calls
+  `process.exit` or dies of an uncaught error, neither the provider nor the child the provider started is running.
+  SIGTERM is checked on Linux and macOS only — on Windows a signal from another process ends it outright — so it has
+  not been run on the Windows machine this was written on. Observed there (Bun 1.3.10): the provider itself did not
+  outlive the harness even with the hook removed, but a child it started detached did, unless the hook ran. A harness
+  killed outright (SIGKILL, TerminateProcess) runs no hook: that child outlives it (`agent-forge-harness-u98i`).
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.
