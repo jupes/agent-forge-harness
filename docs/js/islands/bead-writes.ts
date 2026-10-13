@@ -389,12 +389,6 @@ export interface AppliedStore {
   awaiting(id?: string): Awaited[];
   /** Every write kept as a notice, unknown or refused, for any bead, oldest first. */
   notices(): Unsettled[];
-  /**
-   * The writes whose outcome is not known, oldest first: those to `id`, or
-   * the creates when no id is given. One still awaited on this page is not
-   * among them.
-   */
-  unsettled(id?: string): Unsettled[];
   /** The operator has checked: forget it. */
   dismiss(key: string): void;
   subscribe(listener: () => void): () => void;
@@ -693,13 +687,6 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
           (attempt): attempt is Unsettled => attempt.message !== undefined,
         )
         .sort((a, b) => a.at - b.at),
-    unsettled: (id) =>
-      [...attempts.values()]
-        .filter(
-          (attempt): attempt is Unsettled =>
-            attempt.message !== undefined && attempt.id === id,
-        )
-        .sort((a, b) => a.at - b.at),
     dismiss(key) {
       if (attempts.delete(key)) changed();
     },
@@ -759,8 +746,14 @@ export function useCreated(): Applied[] {
   return applied.created();
 }
 
-/** The writes to `id` (or the creates) whose outcome is not known, kept current. */
-export function useUnsettled(id?: string): Unsettled[] {
+/** Every write kept as a notice, for any bead, kept current. */
+export function useNotices(): Unsettled[] {
   useStore();
-  return applied.unsettled(id);
+  return applied.notices();
+}
+
+/** The writes this page sent for `id` (the creates, with no id) and has no answer for yet, kept current. */
+export function useAwaiting(id?: string): Awaited[] {
+  useStore();
+  return applied.awaiting(id);
 }

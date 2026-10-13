@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { BeadWriteResult } from "../../../types/hearth";
 import { Button } from "../ds/Button";
 import { Field, Textarea } from "../ds/Field";
@@ -7,11 +7,11 @@ import {
   actionState,
   applied,
   beadWrites,
-  type Unsettled,
+  useAwaiting,
   useBeadWrites,
-  useUnsettled,
   type WriteOutcome,
 } from "./bead-writes";
+import { NoticePointer } from "./PendingWrites";
 
 export interface BeadActionsProps {
   /** The bead these actions are for. */
@@ -22,47 +22,10 @@ export interface BeadActionsProps {
 
 type Action = "claim" | "comment" | "close";
 
-/** What the last action here came to. An outcome nobody knows is not one of these: the store keeps it. */
+/** What the last action here came to. An outcome nobody knows is not one of these: the page's list keeps it. */
 interface Result {
   tone: "done" | "failed";
   message: string;
-}
-
-/**
- * One write whose outcome is not known: the change may have been made, and the
- * page cannot tell. It comes from the page's store, not from the component
- * that sent it, so it is still said after the panel was closed or the page
- * reloaded, until the operator has checked and dismisses it.
- */
-export function UnsettledNotice({
-  attempt,
-}: {
-  attempt: Unsettled;
-}): JSX.Element {
-  const what =
-    attempt.action === "create"
-      ? `create "${attempt.title ?? ""}"`
-      : attempt.action;
-  return (
-    <div class="af-bead-unsettled">
-      <p
-        role="status"
-        class="af-review-result af-bead-result is-error"
-        data-outcome="unknown"
-      >
-        Outcome not known ({what}). {attempt.message}
-      </p>
-      <div class="af-button-row">
-        <Button
-          variant="ghost"
-          aria-label={`Dismiss the ${attempt.action} notice`}
-          onClick={() => applied.dismiss(attempt.key)}
-        >
-          Dismiss
-        </Button>
-      </div>
-    </div>
-  );
 }
 
 /** What the page says once `bd` confirmed a write. */
@@ -84,11 +47,14 @@ function said(action: Action, data: BeadWriteResult): string {
  * Claim, comment on and close one bead, through the control plane.
  *
  * Each action is posted once: while one is out, every control here is
- * disabled and a second press does nothing. Its result comes from the answer:
+ * disabled and a second press does nothing. A write is out as long as the
+ * page's store says so, so a block mounted again while one is out (the panel
+ * reopened, the view left and come back to) does not offer it again. Its result comes from the answer:
  * what `bd` said is shown here and kept in the page's store, so the views
  * that show this bead can show it too. An answer that leaves the outcome
- * unknown is kept there as well. With no control plane every control is
- * disabled and one line says why.
+ * unknown is kept there as well, and listed under Writes to check, as is a
+ * refusal that comes back after this block is gone. With no control plane
+ * every control is disabled and one line says why.
  */
 export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
   const plane = useBeadWrites();
@@ -96,10 +62,20 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
   const [result, setResult] = useState<Result | null>(null);
   const [comment, setComment] = useState("");
   const [reason, setReason] = useState("");
-  const unsettled = useUnsettled(id);
+  const awaited = useAwaiting(id);
   // Set before the first await and read before anything else: two presses in
   // one turn of the event loop arrive before the disabled state is drawn.
   const sending = useRef(false);
+  // An answer that comes back after this block is gone has nobody to tell.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  // The writes sent from here: the pointer to the list is for these.
+  const [sentKeys] = useState(() => new Set<string>());
 
   const offers = actionState(
     plane === null
@@ -113,7 +89,8 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
         : { available: false, reason: plane.reason, status },
   );
   const live = plane?.available === true;
-  const busy = pending !== null;
+  const busy = pending !== null || awaited.length > 0;
+  const outFromBefore = pending === null ? awaited[0] : undefined;
 
   async function run(
     action: Action,
@@ -125,6 +102,7 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
     setPending(action);
     setResult(null);
     const key = applied.begin({ action, id });
+    sentKeys.add(key);
     try {
       const outcome = await send();
       if (outcome.ok) {
@@ -134,6 +112,7 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
         if (action === "comment") setComment("");
         if (action === "close") setReason("");
       } else if (outcome.unknown) applied.unknown(key, outcome.error);
+      else if (!mounted.current) applied.refused(key, outcome.error);
       else {
         applied.settle(key);
         setResult({ tone: "failed", message: outcome.error });
@@ -237,9 +216,13 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
           {result.message}
         </p>
       ) : null}
-      {unsettled.map((attempt) => (
-        <UnsettledNotice key={attempt.key} attempt={attempt} />
-      ))}
+      {outFromBefore !== undefined ? (
+        <p class="af-muted af-bead-out">
+          A {outFromBefore.action} sent from this page is still out: nothing
+          here is offered until it is answered.
+        </p>
+      ) : null}
+      <NoticePointer sent={sentKeys} />
     </section>
   );
 }
