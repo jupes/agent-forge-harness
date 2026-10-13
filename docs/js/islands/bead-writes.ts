@@ -413,7 +413,7 @@ const KEPT = 50;
 const KEPT_ATTEMPTS = 20;
 /** As much of a create's title as a notice shows. */
 const TITLE_SHOWN = 200;
-/** As much of a notice's message as is kept: the control plane's own are at most 500. */
+/** As much of a notice's message as is kept: the control plane cuts what `bd` said to 500. */
 const MESSAGE_SHOWN = 1000;
 
 /** What a view says when `begin` had no room for a write: it was not sent. */
