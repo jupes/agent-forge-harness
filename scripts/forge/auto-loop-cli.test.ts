@@ -1,11 +1,13 @@
 /**
- * `forge:review` as a command: what a command line it cannot read whole
- * leaves behind. Spawned scripts, in a scratch checkout with a scratch ledger
- * and a scratch user home.
+ * `forge:review` as a command: what a command line it cannot read whole, and
+ * a verdict file it has already taken, leave behind. Spawned scripts, in a
+ * scratch checkout with a scratch ledger and a scratch user home.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -129,6 +131,10 @@ function verdictFile(box: Box, name: string, summary: string): string {
   return path;
 }
 
+function digestOf(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
 function runState(box: Box): ForgeState | null {
   return parseState(
     readFileSync(join(box.cwd, ".tmp", "work", "forge-runs", "x.json"), "utf8"),
@@ -240,5 +246,90 @@ describe("forge:review refuses a command line it cannot read whole, before any r
     }
     expect(runState(box)?.reviews).toBeUndefined();
     expect(reviewRows(box)).toEqual([]);
+  }, 120_000);
+});
+
+describe("a verdict file grades one round of a run", () => {
+  test("a verdict file forge:review already took for the run is refused for the same phase, for another phase and as a copy; a new verdict is taken", async () => {
+    const box = sandbox();
+    await correlatedRun(box);
+    const research = verdictFile(
+      box,
+      "review-research-1.json",
+      "research read",
+    );
+    const taken = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      research,
+    ]);
+    expect(taken.exitCode).toBe(0);
+
+    const copy = join(box.cwd, "review-plan-1.json");
+    copyFileSync(research, copy);
+    for (const [phase, file] of [
+      ["research", research],
+      ["plan", research],
+      ["plan", copy],
+    ] as const) {
+      const again = await run(box, REVIEW, [
+        "--slug",
+        "x",
+        "--phase",
+        phase,
+        "--verdict",
+        file,
+      ]);
+      expect({ phase, file, exitCode: again.exitCode }).toEqual({
+        phase,
+        file,
+        exitCode: 2,
+      });
+      expect(again.printed.ok).toBe(false);
+      expect(again.printed.error).toContain(
+        'was already recorded for run "x" as research round 1',
+      );
+    }
+
+    const plan = verdictFile(box, "review-plan-1-new.json", "plan read");
+    const next = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "plan",
+      "--verdict",
+      plan,
+    ]);
+    expect(next.exitCode).toBe(0);
+
+    // Two rounds, each with the digest of the file it was graded from, and
+    // nothing in the run's state or the ledger from the three refusals.
+    expect(
+      runState(box)?.reviews?.map((round) => [
+        round.phase,
+        round.round,
+        round.verdictSha256,
+      ]),
+    ).toEqual([
+      ["research", 1, digestOf(research)],
+      ["plan", 1, digestOf(plan)],
+    ]);
+    const rows = reviewRows(box);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "verdict.bound",
+      "review.recorded",
+      "verdict.bound",
+      "review.recorded",
+    ]);
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "verdict.bound"
+          ? [row.payload.verdictArtifact?.sha256]
+          : [],
+      ),
+    ).toEqual([digestOf(research), digestOf(plan)]);
   }, 120_000);
 });

@@ -13,8 +13,9 @@
  * is also appended to the event ledger as `verdict.bound` (the verdict file
  * as read) and `review.recorded` (the decision).
  *
- * A command line that cannot be read whole (`parseReviewArgs`) is refused
- * before a round is recorded.
+ * Two things are refused before a round is recorded: a command line that
+ * cannot be read whole (`parseReviewArgs`), and a verdict file whose digest a
+ * round of the run was already graded from, since a verdict grades one round.
  *
  * CLI:
  *   bun run forge:review --slug <slug> --phase <phase> --verdict <path>
@@ -54,6 +55,7 @@ import {
   recordRound,
   reviewComment,
   roundFromVerdict,
+  roundRecordedFrom,
 } from "./auto-loop";
 import { type ForgeState, isForgePhase, type ReviewRound } from "./phases";
 import { comparableCheckout, isValidSlug } from "./runs";
@@ -302,6 +304,18 @@ if (import.meta.main) {
   let verdict: EvalVerdictParsed | null = null;
   let verdictError: string | null = null;
   const read = readVerdictFileAt(verdictPath);
+  // A verdict grades one round. The same bytes again, for a later round or
+  // another phase, are that round's verdict replayed: refused, and nothing
+  // is recorded, rather than graded a second time.
+  const replayed = read.ok
+    ? roundRecordedFrom(history, read.sha256)
+    : undefined;
+  if (read.ok && replayed !== undefined) {
+    const next = history.filter((r) => r.phase === phase).length + 1;
+    fail(
+      `the verdict file ${verdictPath} (sha256 ${read.sha256.slice(0, 12)}) was already recorded for run "${slug}" as ${replayed.phase} round ${replayed.round}, and a verdict grades one round, so nothing was recorded. File this round's own verdict (bun run forge:verdict ... --review ${phase}-${next}); one that would match an earlier verdict byte for byte, such as a clean PASS with no summary, needs a --summary saying what this round reviewed.`,
+    );
+  }
   if (!read.ok) {
     verdictError = read.error;
   } else {
@@ -351,6 +365,7 @@ if (import.meta.main) {
     phase,
     history,
     verdict,
+    ...(artifact ? { verdictSha256: artifact.sha256 } : {}),
     at: new Date().toISOString(),
     ...(args.values.tier !== undefined ? { tier: args.values.tier } : {}),
   });

@@ -7,6 +7,7 @@ import {
   recordRound,
   reviewComment,
   roundFromVerdict,
+  roundRecordedFrom,
 } from "./auto-loop";
 import { exitCodeFor, parseReviewArgs } from "./auto-loop-cli";
 import type { ForgeState } from "./phases";
@@ -188,6 +189,53 @@ describe("roundFromVerdict", () => {
     expect(second.round).toBe(2);
     expect(second.verdict).toBe("UNREADABLE");
     expect(second.tier).toBe("opus");
+  });
+
+  test("a round graded from a verdict file carries the file's digest; a round with no verdict carries none", () => {
+    const taken = roundFromVerdict({
+      phase: "plan",
+      history: [],
+      verdict: {
+        schemaVersion: 1,
+        taskId: "t-1",
+        verdict: "PASS",
+        findings: clean,
+      },
+      verdictSha256: "a".repeat(64),
+      at: AT,
+    });
+    expect(taken.verdictSha256).toBe("a".repeat(64));
+    const unreadable = roundFromVerdict({
+      phase: "plan",
+      history: [],
+      verdict: null,
+      verdictSha256: "b".repeat(64),
+      at: AT,
+    });
+    expect("verdictSha256" in unreadable).toBe(false);
+  });
+});
+
+describe("roundRecordedFrom", () => {
+  const history = [
+    round({ phase: "research", round: 1, verdictSha256: "d-research-1" }),
+    round({ phase: "plan", round: 1, verdict: "UNREADABLE" }),
+    round({ phase: "plan", round: 2, verdictSha256: "d-plan-2" }),
+  ];
+
+  test("finds the round, in any phase, that was graded from a file with this digest", () => {
+    expect(roundRecordedFrom(history, "d-research-1")).toMatchObject({
+      phase: "research",
+      round: 1,
+    });
+    expect(roundRecordedFrom(history, "d-plan-2")).toMatchObject({
+      phase: "plan",
+      round: 2,
+    });
+  });
+
+  test("a digest no round recorded finds nothing", () => {
+    expect(roundRecordedFrom(history, "d-new")).toBeUndefined();
   });
 });
 

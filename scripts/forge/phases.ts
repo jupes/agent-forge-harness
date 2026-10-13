@@ -53,6 +53,13 @@ export interface ReviewRound {
    * an unreadable round and on rounds recorded before this was stored.
    */
   verdictSchemaVersion?: number;
+  /**
+   * The SHA-256 of the verdict file the round was graded from, as
+   * `forge:review` read it: a verdict grades one round, so the run takes a
+   * file with this digest for no other. Absent on an unreadable round and on
+   * rounds recorded before this was stored.
+   */
+  verdictSha256?: string;
   summary?: string;
   /**
    * What `forge:review` decided after this round, and why. Stored because the
