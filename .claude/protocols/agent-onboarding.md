@@ -106,10 +106,12 @@ different owners — never conflate them:
 
 1. **Provider-issued id**, verbatim.
    - Claude Code hooks: `session_id` from the JSON on **stdin**.
-   - Headless `claude -p --output-format stream-json`: `session_id` on the stream's init message.
-   - `codex exec`: the thread/session id its JSON stream reports (see *Verify at build time*).
+   - Headless `claude -p --output-format stream-json`: `session_id` on the stream's lines, the
+     `system` / `init` line first.
+   - `codex exec --json`: `thread_id` on the stream's first line, `thread.started`.
 2. **Adapter-chosen id**, when the CLI lets the harness pick one at spawn (so the id exists before the
-   first byte of output).
+   first byte of output). Not used: the adapters take the provider's id from the stream (see *Attach
+   sequence*, 3).
 3. **Minted ULID** persisted at `<worktree>/.agent-forge-session` — the fallback when the provider gives
    none (see below). The same file also **mirrors** a provider-issued id, so that scripts launched from
    the session can attach to it.
@@ -157,6 +159,13 @@ otherwise tag their events with the session that ran them.
   and take the model from the ledger's per-session model cache.
 - **Removal of a mirror.** The SessionEnd hook removes the file only if it still holds its own session
   id; a newer session's mirror is left in place.
+- **Mirror of a headless session.** An adapter writes its child's session id into the file of the
+  checkout the child runs in when it appends `session.started`, overwriting what is there. When the
+  child ends and the file still holds that id, the adapter puts back the mirror it replaced when that
+  one was fresh (younger than 24 hours; the case of `forge:exec` run in the launching session's own
+  checkout), else removes the file. A mirror written over it during the run is left in place. Only
+  hooks fill the per-session model cache, so a script that attaches to a headless session this way
+  gets its session id but takes the executor from its own flags or the run state, when they have one.
 - **Explicit correlation beats the mirror.** `FORGE_SLUG` and the `AGENT_FORGE_*` variables (see
   *Correlation*) and command-line flags win over anything derived through the file. The mirror supplies
   `sessionId` and, through the model cache, the executor — never the bead or the run.
@@ -278,13 +287,35 @@ not relied on.
    `forge:exec --run <slug>` writes the run's correlation in the worktree first and adds
    `AGENT_FORGE_RUN_CORRELATION` to that env; a pointer inherited from the launcher's own environment
    is never passed on.
-2. The adapter appends `session.started` as soon as it has a `sessionId` (adapter-chosen at spawn, else
-   from the first stream message), `kind: "headless"`, with `smith`, `beadId`, `runId`, `parentSessionId`
-   from the request.
-3. It parses the stream and appends `tool.called` (and `prompt.submitted` for the initial prompt) with the
-   same metadata-only rules; it exposes the same events on `ExecutorHandle.events` for the hearth's SSE.
-4. On exit, timeout or `stop(reason)` it appends `session.ended` (`payload.reason`, `exit`, usage when
-   the provider reports it) and removes the minted-id file if it created one.
+2. The adapter appends `session.started` as soon as it has a `sessionId`, `kind: "headless"`, with
+   `smith`, `beadId`, `runId`, `parentSessionId` from the request. The id is the provider's, from the
+   first stream line that reports one (Claude: `session_id`; Codex: `thread_id` on `thread.started`).
+   When an event has to be written before any line has reported an id (a tool call, or the child
+   exiting), the adapter mints a ULID and the whole run keeps it. No id is chosen at spawn: `claude
+   --session-id` has not been run against a real CLI. With `session.started` the adapter writes the
+   session mirror in the checkout the child runs in (see *Minted and mirrored identity*), so a script
+   the child launches attaches to the session. Right after `session.started` it appends
+   `prompt.submitted` for the initial prompt: the hash (`scripts/hash-text.ts`, as the prompt hook
+   uses) and the length of the prompt it sent on stdin, under the same session id.
+3. It parses the stream and appends `tool.called` with the same metadata-only rules; it exposes the
+   same events on `ExecutorHandle.events` for the hearth's SSE. What it maps is limited to what a real
+   CLI has been recorded printing:
+   - Codex: a completed `command_execution` item is one `tool.called` (`tool: "shell"`, its exit code).
+     The other items recorded (`agent_message`, `error`) are not tools. Items for a file edit made
+     through the CLI's patch tool, an MCP call or a web search have **not** been recorded and are
+     **not mapped**: an item kind is mapped only once a recorded stream shows it.
+   - Claude: each `tool_use` block of an `assistant` message is one `tool.called`. That is the
+     documented stream-json format; no real `tool_use` block has been recorded yet, because the only
+     recorded run stopped at sign-in (the owner's sign-in bead, `x1gs.4.8`).
+4. On exit, timeout or `stop(reason)` it appends `session.ended` with `payload.reason`, `durationMs`
+   and, when the stream reported it, `payload.usage`. The reason is fixed wording: an exit code other
+   than 0 is `failed: exit <n>`, and an exit 0 after the stream reported an error is `failed: exit 0,
+   provider reported an error`; the provider's own words go to the command's output, never the
+   ledger. The usage is the token counts of Claude's `result` line (and its `total_cost_usd` as
+   `costUsd`) or of Codex's `turn.completed`, each under the provider's own field name in camelCase
+   (`ProviderUsage` in `types/hearth.ts`). Providers define their counts differently, so usage is
+   compared per provider. A stream that reports usage more than once has its last report kept; a run
+   of more than one turn has not been recorded. Then the adapter undoes its mirror.
 
 Hooks that fire inside a headless Claude child (same project settings) **must not double-emit**: they
 detect `AGENT_FORGE_ADAPTER=1` in the environment and return without appending.
@@ -341,6 +372,19 @@ Facts this file leans on that the adapter and hook beads must confirm and, if wr
    hook call to `<ledger home>/hook-probe.jsonl`) but could not run it in a live session. Until it is
    run, a payload with `agent_id` and no `teammate_name` is recorded as a subagent (rule 2.1) and a
    teammate with its own `session_id` follows rule 2.4.
-2. `codex exec --json` session/thread id on its stream, and whether `claude --session-id` can pre-assign
-   an id. Beads `x1gs.4.2` and the Codex adapter bead.
+2. Headless session ids. **Recorded** (direct runs on Windows, 2026-10-08): `codex` 0.159.0 and
+   0.160.0 opened every stream with `thread.started` carrying `thread_id`; `claude` 2.1.293 put one
+   `session_id` on each of its lines, `system` / `init` first, in a run that stopped at sign-in. The
+   adapters take those ids (`x1gs.4.11`). **Not run:** `claude --session-id`, which would pre-assign
+   an id; the adapters do not pass it. No `forge:exec` run against a real CLI has been made since the
+   adapters began taking these ids, writing the mirror, recording usage and appending
+   `prompt.submitted`.
 3. Whether SessionEnd fires for a headless child (assumed not relied on, hence the adapter emits).
+4. Headless usage. **Recorded:** `codex` 0.159.0 and 0.160.0 ended a finished turn with
+   `turn.completed` and a `usage` of `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`,
+   `output_tokens` and `reasoning_output_tokens`; the `claude` 2.1.293 run's `result` line carried a
+   `usage` (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`,
+   all zero) and `total_cost_usd`. **Not recorded:** a successful Claude `result`, and a run of more than
+   one turn of either CLI.
+5. Tool calls other than a Codex shell command, and any real Claude `tool_use` block: not recorded, so
+   not mapped (Codex) or mapped from the documented format only (Claude); see *Attach sequence*, 3.

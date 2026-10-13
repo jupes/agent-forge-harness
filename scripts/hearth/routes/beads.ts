@@ -214,8 +214,8 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
   );
   if (!description.ok) return description;
   // `bd create --description=-` means "read the description from standard
-  // input". The runner leaves stdin open, so that call would wait for the
-  // runner's limit and then create the issue without its description.
+  // input". The runner ends stdin at once, so that call would create the
+  // issue without its description.
   if (description.value === "-")
     return fail(
       'description: a description of exactly "-" is read by bd as "take it from standard input"; say more than that',
@@ -292,17 +292,32 @@ function strings(value: unknown): string[] | undefined {
     : undefined;
 }
 
-/** The issue `bd create --json` printed, when it printed one with a usable id. */
-function created(stdout: string): Confirmed | null {
-  const issue = parsed(stdout);
-  if (!isRecord(issue) || !beadId(issue["id"])) return null;
-  const labels = strings(issue["labels"]);
-  return {
-    id: issue["id"],
-    ...(typeof issue["status"] === "string" ? { status: issue["status"] } : {}),
-    ...(labels !== undefined ? { labels } : {}),
+/**
+ * The issue `bd create --json` printed, when it printed one with a usable id
+ * and the description that was sent (none, when none was: bd prints none).
+ *
+ * bd can make the issue without it and exit 0: `--description=-` reads the
+ * description from standard input, which the runner ends at once. That issue
+ * exists, so it is named, and the create is not confirmed.
+ */
+const created =
+  (description: string | undefined) =>
+  (stdout: string): Confirmed | Unconfirmed | null => {
+    const issue = parsed(stdout);
+    if (!isRecord(issue) || !beadId(issue["id"])) return null;
+    if (issue["description"] !== description)
+      return {
+        unconfirmed: `made ${issue["id"]}, but the description it printed is not the one that was sent. Check with \`bd show ${issue["id"]}\` before trying again.`,
+      };
+    const labels = strings(issue["labels"]);
+    return {
+      id: issue["id"],
+      ...(typeof issue["status"] === "string"
+        ? { status: issue["status"] }
+        : {}),
+      ...(labels !== undefined ? { labels } : {}),
+    };
   };
-}
 
 /**
  * The one issue `bd update --json` or `bd close --json` printed, with the id
@@ -360,6 +375,13 @@ function fromBefore(
  * A claim of an issue the same actor already holds exits 0 too: bd prints the
  * issue as it was. Its last change is then from before the call began, and
  * nothing was claimed by this call.
+ *
+ * The last change is `updated_at`, which any change moves: a claim made within
+ * two seconds of the issue's last change (the claim before it, or an edit) is
+ * answered and recorded as this call's. `started_at` cannot be read instead:
+ * bd writes it only while it is empty, so a bead released and claimed again
+ * prints the time of its first claim, and that claim, which did change the
+ * bead, would be answered 409.
  */
 function claimed(stdout: string, began: number): Confirmed | Conflict | null {
   const printed = oneIssue(stdout);
@@ -413,6 +435,11 @@ interface Conflict {
   conflict: string;
 }
 
+/** A write bd made, but not as it was asked for: what it made, and how to check it. */
+interface Unconfirmed {
+  unconfirmed: string;
+}
+
 /** What a write is, for the one helper that carries it out. */
 interface Write {
   action: BeadWrite;
@@ -424,7 +451,10 @@ interface Write {
   status: 200 | 201;
   /** How to see whether the write happened, for an answer that cannot say. */
   check: string;
-  confirm(stdout: string, began: number): Confirmed | Conflict | null;
+  confirm(
+    stdout: string,
+    began: number,
+  ): Confirmed | Conflict | Unconfirmed | null;
 }
 
 export function beadRoutes(deps: BeadDeps): ApiRoute[] {
@@ -472,6 +502,9 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         "did not finish: it could not be run. The change may still have been made.",
       );
     }
+    // No exit status: a call killed at the runner's limit, and one the runtime
+    // could not spawn for a reason other than a missing program (its working
+    // directory gone), look alike here, so the answer gives both.
     if (result.status === null)
       return neverStarted(result)
         ? {
@@ -480,7 +513,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
               "bd could not be started (is it installed, and on the PATH of this control plane?). Nothing was changed.",
           }
         : unknown(
-            "did not finish within its time limit. The change may still have been made.",
+            "did not finish: it was stopped before it answered, or it never started. The change may still have been made.",
           );
     if (result.status !== 0)
       return {
@@ -494,6 +527,11 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
       );
     if ("conflict" in confirmed)
       return { status: 409, error: confirmed.conflict };
+    if ("unconfirmed" in confirmed)
+      return {
+        status: 504,
+        error: `bd ${spec.command} ${confirmed.unconfirmed}`,
+      };
     const unrecorded = await record(spec.action, confirmed.id, spec.text);
     const data: BeadWriteResult = {
       ...confirmed,
@@ -540,7 +578,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         status: 201,
         // A create that did not answer left no id to look up.
         check: "bd list",
-        confirm: created,
+        confirm: created(input.description),
       }),
   };
 

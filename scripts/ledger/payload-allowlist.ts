@@ -4,13 +4,16 @@
  * other key never reaches the file.
  */
 
-import type { LedgerEventKind } from "../../types/hearth";
+import {
+  type LedgerEventKind,
+  PROVIDER_USAGE_COUNTS,
+} from "../../types/hearth";
 import { parseEvaluatorIdentity } from "../eval-verdict";
 
 /** One entry per kind: adding a kind to `LEDGER_EVENT_KINDS` fails typecheck until it has a list. */
 export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
   "session.started": ["source", "kind", "worktree", "parentSessionId"],
-  "session.ended": ["reason", "durationMs"],
+  "session.ended": ["reason", "durationMs", "usage"],
   "tool.called": ["tool", "argsHash", "durationMs", "exitCode"],
   "prompt.submitted": ["hash", "length"],
   "run.phase.entered": ["phase"],
@@ -70,8 +73,21 @@ function verdictArtifact(value: unknown): unknown {
     : DROP;
 }
 
+const USAGE_KEYS = [...PROVIDER_USAGE_COUNTS, "costUsd"];
+
+/** A provider's usage cut to the counts and cost it names, numbers only; nothing when none is left. */
+function usage(value: unknown): unknown {
+  const cut = Object.fromEntries(
+    Object.entries(pick(value, USAGE_KEYS)).filter(
+      ([, count]) => typeof count === "number",
+    ),
+  );
+  return Object.keys(cut).length > 0 ? cut : DROP;
+}
+
 /** Payload keys whose value is an object or array, and the shape each is cut to. */
 const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
+  usage,
   builder: (value) => pick(value, EXECUTOR_KEYS),
   evaluator: (value) => pick(value, EXECUTOR_KEYS),
   evaluatorIdentity,

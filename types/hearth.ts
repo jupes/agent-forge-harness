@@ -255,12 +255,21 @@ export const BEAD_WRITES = ["create", "claim", "comment", "close"] as const;
 export type BeadWrite = (typeof BEAD_WRITES)[number];
 
 /**
- * What `bead.transitioned` records for a tracker write. It says nothing about
- * the queue: `from`, `to` and `reason` are never present, and the validator
+ * Every write `bead.transitioned` records as a tracker write: the bead writes
+ * (`POST /beads…`), and `reassign`, the queue's write of a bead's `smith`
+ * metadata (`POST /queue/:id/reassign`), which moves no state.
+ */
+export const TRACKER_WRITES = [...BEAD_WRITES, "reassign"] as const;
+
+export type TrackerWrite = (typeof TRACKER_WRITES)[number];
+
+/**
+ * What `bead.transitioned` records for a tracker write. It moves no queue
+ * state: `from`, `to` and `reason` are never present, and the validator
  * refuses a payload that mixes this form with a queue transition.
  */
 export interface BeadWriteRecord {
-  action: BeadWrite;
+  action: TrackerWrite;
   /**
    * SHA-256 (hex) of the one text the write carried: the title of a create,
    * the comment, the close reason. Never the text itself.
@@ -291,6 +300,32 @@ export type ShiftStopReason = (typeof SHIFT_STOP_REASONS)[number];
 /** Verdict an evaluator or the council returned for a run. */
 export type VerdictOutcome = "pass" | "fail" | "unreadable";
 
+/**
+ * The token counts a provider CLI reports for a headless run, each the
+ * provider's own field in camelCase: Claude's `result` line (`input_tokens`,
+ * `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`)
+ * and Codex's `turn.completed` (`input_tokens`, `output_tokens`,
+ * `cached_input_tokens`, `cache_write_input_tokens`,
+ * `reasoning_output_tokens`). Each provider defines its own counts, so they
+ * are compared per provider, not added across providers.
+ */
+export const PROVIDER_USAGE_COUNTS = [
+  "inputTokens",
+  "outputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "reasoningOutputTokens",
+  "cacheReadInputTokens",
+  "cacheCreationInputTokens",
+] as const;
+
+export type ProviderUsageCount = (typeof PROVIDER_USAGE_COUNTS)[number];
+
+/** What a provider reported a headless run used: token counts, and Claude's `total_cost_usd` as `costUsd`. */
+export type ProviderUsage = { [K in ProviderUsageCount]?: number } & {
+  costUsd?: number;
+};
+
 /** Payload per event kind. Metadata only: hashes, sizes, names, durations. */
 export interface LedgerPayloads {
   "session.started": {
@@ -299,7 +334,12 @@ export interface LedgerPayloads {
     worktree?: string;
     parentSessionId?: string;
   };
-  "session.ended": { reason?: string; durationMs?: number };
+  "session.ended": {
+    reason?: string;
+    durationMs?: number;
+    /** A headless session's usage, when its provider reported any. */
+    usage?: ProviderUsage;
+  };
   "tool.called": {
     tool: string;
     /** Hash of the tool input — never the input itself. */
@@ -344,9 +384,9 @@ export interface LedgerPayloads {
     summary?: string;
   };
   /**
-   * A queue transition (`from`, `to`), or a tracker write made through the
-   * operator API (`action`). A write has no `to`: read it only on a payload
-   * without `action`.
+   * A queue transition (`from`, `to`), or a tracker write (`action`): one
+   * made through the operator API, or a reassign. A write has no `to`: read
+   * it only on a payload without `action`.
    */
   "bead.transitioned":
     | {
@@ -438,7 +478,8 @@ export type OperatorEnvelope<T = unknown> =
 // What the read routes of the operator API answer as `data`, and what the
 // stream sends. Added with the API. The types above this line are as they were
 // before it, with one later exception: `bead.transitioned` gained a second
-// payload form (`BeadWriteRecord`) with the Beads write path.
+// payload form (`BeadWriteRecord`) with the Beads write path, whose `action`
+// later also took `reassign` (`TRACKER_WRITES`).
 
 /**
  * What the ledger knows about one session, folded from its events. Not a
@@ -615,4 +656,7 @@ export interface QueueReassignResult {
   id: string;
   state: QueueState;
   smith: string;
+  /** Whether the `bead.transitioned` event was stored. The smith was written either way. */
+  recorded: boolean;
+  recordError?: string;
 }

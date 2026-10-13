@@ -318,7 +318,7 @@ export function bdRunner(root: string, program = "bd"): BdRunner {
   return (args, options) =>
     new Promise<BdResult>((done) => {
       try {
-        execFile(
+        const child = execFile(
           program,
           args,
           {
@@ -338,6 +338,10 @@ export function bdRunner(root: string, program = "bd"): BdRunner {
             });
           },
         );
+        // Nothing is ever sent on standard input. Ending it at once makes a
+        // `bd` that reads it (`create --description=-`) read nothing, instead
+        // of waiting for this runner's limit.
+        child.stdin?.end();
       } catch (error) {
         done({ status: null, stdout: "", stderr: refusedBeforeStart(error) });
       }

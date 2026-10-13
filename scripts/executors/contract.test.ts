@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -18,7 +19,9 @@ import { isAdapterChild } from "../../.claude/hooks/utils/hook-input";
 import type { LedgerEventInput } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
+import { hashText } from "../hash-text";
 import { validateLedgerEventInput } from "../hearth/validate";
+import { type Attach, SESSION_MIRROR_FILE } from "../ledger/identity";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { buildChildEnv } from "./env";
@@ -30,14 +33,46 @@ const adapters: Array<{
   name: string;
   adapter: ExecutorAdapter;
   smith: string;
+  /** The usage the stand-in CLI's last line reports for this provider. */
+  usage: Record<string, number>;
 }> = [
-  { name: "claude", adapter: claudeAdapter, smith: "claude-journeyman" },
+  {
+    name: "claude",
+    adapter: claudeAdapter,
+    smith: "claude-journeyman",
+    usage: {
+      inputTokens: 12,
+      cacheCreationInputTokens: 300,
+      cacheReadInputTokens: 4000,
+      outputTokens: 56,
+      costUsd: 0.0125,
+    },
+  },
   {
     name: "codex",
     adapter: createCodexAdapter({ prepare: () => undefined }),
     smith: "codex-journeyman",
+    usage: {
+      inputTokens: 2400,
+      cachedInputTokens: 1800,
+      cacheWriteInputTokens: 5,
+      outputTokens: 90,
+      reasoningOutputTokens: 40,
+    },
   },
 ];
+
+type SessionEnded = Extract<LedgerEventInput, { kind: "session.ended" }>;
+
+/** A ULID: 26 characters of Crockford base 32. */
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+interface RunOptions {
+  /** More `--fake-*` flags for the stand-in CLI, given the run's temp root. */
+  fakeFlags?: (root: string) => string[];
+  /** Runs on the worktree before the child is spawned. */
+  seed?: (worktree: string) => void;
+}
 
 async function run(
   adapter: ExecutorAdapter,
@@ -45,6 +80,7 @@ async function run(
   smithName: string,
   mode: string,
   extra: Partial<SpawnRequest> = {},
+  options: RunOptions = {},
 ) {
   // Each directory is its own checkout: a bare temp directory would resolve to
   // whatever checkout the temp directory happens to sit in.
@@ -54,7 +90,9 @@ async function run(
   mkdirSync(join(root, ".git"));
   const worktree = join(root, "work tree with spaces");
   mkdirSync(join(worktree, ".git"), { recursive: true });
+  options.seed?.(worktree);
   const dumpFile = join(root, "dump.json");
+  const attachFile = join(root, "attach.json");
   const handle = await adapter.spawn({
     beadId: "bead-1",
     worktree,
@@ -75,6 +113,7 @@ async function run(
       mode,
       "--fake-dump",
       dumpFile,
+      ...(options.fakeFlags?.(root) ?? []),
     ],
     ...extra,
   });
@@ -87,15 +126,28 @@ async function run(
   const dump = existsSync(dumpFile)
     ? JSON.parse(readFileSync(dumpFile, "utf8"))
     : undefined;
-  return { events, result, dump, worktree, root, handle };
+  // What a script run inside the child attached to (`--fake-attach`).
+  const attached: Attach | undefined = existsSync(attachFile)
+    ? JSON.parse(readFileSync(attachFile, "utf8"))
+    : undefined;
+  return { events, result, dump, attached, worktree, root, handle };
 }
 
-for (const { name, adapter, smith } of adapters) {
+/** The flags that make the stand-in CLI report `id` and record what a script inside it attaches to. */
+const attachAs = (id: string) => (root: string) => [
+  "--fake-session-id",
+  id,
+  "--fake-attach",
+  join(root, "attach.json"),
+];
+
+for (const { name, adapter, smith, usage } of adapters) {
   describe(`${name} adapter contract`, () => {
-    test("streams session.started, tool.called per tool, session.ended — all valid", async () => {
+    test("streams session.started, prompt.submitted, tool.called per tool, session.ended — all valid", async () => {
       const { events, result } = await run(adapter, name, smith, "ok");
       expect(events.map((e) => e.kind)).toEqual([
         "session.started",
+        "prompt.submitted",
         "tool.called",
         "tool.called",
         "session.ended",
@@ -109,7 +161,7 @@ for (const { name, adapter, smith } of adapters) {
         expect(event.runId).toBe("run-1");
         expect(event.executor?.smith).toBe(smith);
       }
-      const ended = events[3] as Extract<
+      const ended = events[4] as Extract<
         LedgerEventInput,
         { kind: "session.ended" }
       >;
@@ -131,10 +183,111 @@ for (const { name, adapter, smith } of adapters) {
         expect(event.workspace).toBe(comparableCheckout(root));
     });
 
+    test("right after session.started comes prompt.submitted: the hash and length of the prompt sent on stdin, under the same session, never the text", async () => {
+      const { events } = await run(adapter, name, smith, "ok");
+      const [started, submitted] = events;
+      expect(started?.kind).toBe("session.started");
+      expect(submitted).toMatchObject({
+        kind: "prompt.submitted",
+        sessionId: started?.sessionId,
+        payload: {
+          hash: hashText("do the thing & echo %PATH%"),
+          length: "do the thing & echo %PATH%".length,
+        },
+      });
+      expect(validateLedgerEventInput(submitted).ok).toBe(true);
+      expect(JSON.stringify(events)).not.toContain("do the thing");
+    });
+
+    test("every event, and the handle, carry the session id the provider's stream reports", async () => {
+      const { events, handle } = await run(
+        adapter,
+        name,
+        smith,
+        "ok",
+        {},
+        {
+          fakeFlags: () => ["--fake-session-id", "provider-session-7"],
+        },
+      );
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(event.sessionId).toBe("provider-session-7");
+        expect(event.executor?.sessionId).toBe("provider-session-7");
+      }
+      expect(handle.sessionId).toBe("provider-session-7");
+    });
+
+    test("a stream that reports no session id: every event, and the handle, carry one ULID the adapter minted", async () => {
+      const { events, handle } = await run(
+        adapter,
+        name,
+        smith,
+        "ok",
+        {},
+        {
+          fakeFlags: () => ["--fake-no-id"],
+        },
+      );
+      expect(events.map((e) => e.kind)).toEqual([
+        "session.started",
+        "prompt.submitted",
+        "tool.called",
+        "tool.called",
+        "session.ended",
+      ]);
+      expect(handle.sessionId).toMatch(ULID);
+      for (const event of events) {
+        expect(event.sessionId).toBe(handle.sessionId);
+        expect(event.executor?.sessionId).toBe(handle.sessionId);
+      }
+    });
+
+    test("while the child runs, a script inside it attaches through the mirror to the child's session, with the request's bead and run; when the child ends the mirror is gone", async () => {
+      const { attached, worktree } = await run(
+        adapter,
+        name,
+        smith,
+        "ok",
+        {},
+        {
+          fakeFlags: attachAs("provider-session-8"),
+        },
+      );
+      expect(attached).toMatchObject({
+        sessionId: "provider-session-8",
+        beadId: "bead-1",
+        runId: "run-1",
+      });
+      expect(existsSync(join(worktree, SESSION_MIRROR_FILE))).toBe(false);
+    });
+
+    test("a mirror the checkout held before the run is in place again when the child ends; during the run a script attaches to the child's session", async () => {
+      const { attached, worktree } = await run(
+        adapter,
+        name,
+        smith,
+        "ok",
+        {},
+        {
+          seed: (worktree) =>
+            writeFileSync(
+              join(worktree, SESSION_MIRROR_FILE),
+              "launching-session\n",
+            ),
+          fakeFlags: attachAs("provider-session-9"),
+        },
+      );
+      expect(attached?.sessionId).toBe("provider-session-9");
+      expect(readFileSync(join(worktree, SESSION_MIRROR_FILE), "utf8")).toBe(
+        "launching-session\n",
+      );
+    });
+
     test("tool events carry a hash, never the tool input", async () => {
       const { events } = await run(adapter, name, smith, "ok");
       expect(JSON.stringify(events)).not.toContain("SECRET_BODY_MUST_NOT_LEAK");
-      const tool = events[1] as Extract<
+      const tool = events.find((e) => e.kind === "tool.called") as Extract<
         LedgerEventInput,
         { kind: "tool.called" }
       >;
@@ -189,9 +342,25 @@ for (const { name, adapter, smith } of adapters) {
       const { events } = await run(adapter, name, smith, "garbage");
       expect(events.map((e) => e.kind)).toEqual([
         "session.started",
+        "prompt.submitted",
         "tool.called",
         "session.ended",
       ]);
+    });
+
+    test("session.ended carries the usage the provider's stream reported, and is still a valid event", async () => {
+      const { events } = await run(adapter, name, smith, "ok");
+      const ended = events[events.length - 1] as SessionEnded;
+      expect(ended.kind).toBe("session.ended");
+      expect(ended.payload.usage).toEqual(usage);
+      expect(validateLedgerEventInput(ended).ok).toBe(true);
+    });
+
+    test("a child that exits before its stream reported usage: session.ended carries none", async () => {
+      const { events } = await run(adapter, name, smith, "crash");
+      const ended = events[events.length - 1] as SessionEnded;
+      expect(ended.kind).toBe("session.ended");
+      expect(ended.payload).not.toHaveProperty("usage");
     });
 
     test("a crashing child ends the session with a failure reason", async () => {
