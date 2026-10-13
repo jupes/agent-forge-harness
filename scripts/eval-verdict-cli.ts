@@ -118,8 +118,12 @@ type Flag = (typeof FLAGS)[number];
 
 const REPEATABLE: ReadonlySet<Flag> = new Set<Flag>(["attest"]);
 
-/** `--word` or `--word=anything`, with no space before the `=`: how a flag is written. */
-const FLAG_SHAPED = /^--[A-Za-z][A-Za-z0-9-]*(=.*)?$/s;
+/**
+ * How a flag is written, mistyped or not: two dashes, then a name of anything
+ * but whitespace and `=`, then optionally `=` and the rest. A name with an
+ * underscore, a dot, a colon or a non-ASCII letter is still a flag.
+ */
+const FLAG_SHAPED = /^--[^\s=]+(=.*)?$/su;
 
 /** A finding count: digits only, and few enough to be an exact integer. */
 const COUNT = /^\d{1,9}$/;

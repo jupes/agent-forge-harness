@@ -336,6 +336,18 @@ describe("forge:verdict, its arguments", () => {
         ],
         "--summary needs a value: the next argument, --hihg=1, looks like a flag (for text that starts with dashes, write --summary=<text>)",
       ],
+      // Whatever the mistyped name is made of: two dashes, no whitespace.
+      ...["--high_count=1", "--high.count=1", "--high:1", "--hög=1"].map(
+        (mistyped): [string[], string] => [
+          [...FAIL_LOW, "--summary", mistyped],
+          `--summary needs a value: the next argument, ${mistyped}, looks like a flag (for text that starts with dashes, write --summary=<text>)`,
+        ],
+      ),
+      // A tenth digit is past the bound, even for a count that fits a float.
+      [
+        ["--verdict", "FAIL", "--medium", "1000000000", ...AS_REVIEWER],
+        "--medium must be a non-negative integer of at most nine digits",
+      ],
       [
         [
           ...PASS,
@@ -392,6 +404,17 @@ describe("forge:verdict, its arguments", () => {
       });
       expect(runVerdict(box)).toBeNull();
     }
+  });
+
+  test("a count of nine digits is taken as written", () => {
+    const box = sandbox();
+    expect(
+      write(box, ["--verdict", "FAIL", "--low", "999999999", ...AS_REVIEWER])
+        .code,
+    ).toBe(0);
+    expect(runVerdict(box)).toMatchObject({
+      findings: { blocker: 0, high: 0, medium: 0, low: 999999999 },
+    });
   });
 
   test("--review in either spelling writes the round's file and leaves the run's verdict unwritten", () => {
