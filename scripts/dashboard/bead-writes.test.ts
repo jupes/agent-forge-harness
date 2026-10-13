@@ -690,29 +690,42 @@ describe("a write whose answer the page does not have", () => {
     const store = createAppliedStore(memory());
     const first = store.begin({ action: "claim", id: "demo-task" });
     const second = store.begin({ action: "comment", id: "demo-task" });
-    expect(store.unsettled("demo-task")).toEqual([]);
+    expect(
+      store.notices().filter((notice) => notice.id === "demo-task"),
+    ).toEqual([]);
     store.settle(first);
     store.settle(second);
-    expect(store.unsettled("demo-task")).toEqual([]);
+    expect(
+      store.notices().filter((notice) => notice.id === "demo-task"),
+    ).toEqual([]);
   });
 
   test("an answer that leaves the outcome unknown is kept, with what was said, until it is dismissed", () => {
     const store = createAppliedStore(memory());
     const key = store.begin({ action: "comment", id: "demo-task" });
     store.unknown(key, "bd comments add did not finish within its time limit.");
-    expect(store.unsettled("demo-task")).toEqual([
+    expect(
+      store.notices().filter((notice) => notice.id === "demo-task"),
+    ).toEqual([
       {
         key,
         action: "comment",
         id: "demo-task",
         at: expect.any(Number),
+        outcome: "unknown",
         message: "bd comments add did not finish within its time limit.",
       },
     ]);
-    expect(store.unsettled("demo-other")).toEqual([]);
-    expect(store.unsettled()).toEqual([]);
+    expect(
+      store.notices().filter((notice) => notice.id === "demo-other"),
+    ).toEqual([]);
+    expect(
+      store.notices().filter((notice) => notice.action === "create"),
+    ).toEqual([]);
     store.dismiss(key);
-    expect(store.unsettled("demo-task")).toEqual([]);
+    expect(
+      store.notices().filter((notice) => notice.id === "demo-task"),
+    ).toEqual([]);
   });
 
   test("a write still awaited when the page is reloaded is listed afterwards: the page that would have shown its answer is gone", () => {
@@ -726,30 +739,42 @@ describe("a write whose answer the page does not have", () => {
     page.begin({ action: "close", id: "demo-task" });
 
     const afterReload = createAppliedStore(storage);
-    expect(afterReload.unsettled()).toEqual([
+    expect(
+      afterReload.notices().filter((notice) => notice.action === "create"),
+    ).toEqual([
       {
         key: expect.any(String),
         action: "create",
         title: "A bead in flight",
         at: expect.any(Number),
+        outcome: "unknown",
         message: expect.stringContaining("reloaded before the answer"),
       },
     ]);
-    expect(afterReload.unsettled("demo-task")).toEqual([
+    expect(
+      afterReload.notices().filter((notice) => notice.id === "demo-task"),
+    ).toEqual([
       {
         key: expect.any(String),
         action: "close",
         id: "demo-task",
         at: expect.any(Number),
+        outcome: "unknown",
         message: expect.stringContaining("reloaded before the answer"),
       },
     ]);
     // And it stays listed across another reload, until it is dismissed.
     const again = createAppliedStore(storage);
-    const [left] = again.unsettled("demo-task");
+    const [left] = again
+      .notices()
+      .filter((notice) => notice.id === "demo-task");
     expect(left?.action).toBe("close");
     again.dismiss(left?.key ?? "");
-    expect(createAppliedStore(storage).unsettled("demo-task")).toEqual([]);
+    expect(
+      createAppliedStore(storage)
+        .notices()
+        .filter((notice) => notice.id === "demo-task"),
+    ).toEqual([]);
   });
 
   test("a listener is told when one becomes unknown or is dismissed", () => {
@@ -800,10 +825,17 @@ describe("a write whose answer the page does not have", () => {
       }),
     );
     expect(
-      tampered.unsettled("demo-task").map((attempt) => attempt.key),
+      tampered
+        .notices()
+        .filter((notice) => notice.id === "demo-task")
+        .map((attempt) => attempt.key),
     ).toEqual(["d"]);
-    expect(tampered.unsettled("--help")).toEqual([]);
-    expect(tampered.unsettled()).toEqual([]);
+    expect(
+      tampered.notices().filter((notice) => notice.id === "--help"),
+    ).toEqual([]);
+    expect(
+      tampered.notices().filter((notice) => notice.action === "create"),
+    ).toEqual([]);
 
     const broken = createAppliedStore({
       getItem: (): string | null => {
@@ -815,16 +847,105 @@ describe("a write whose answer the page does not have", () => {
     });
     const key = broken.begin({ action: "claim", id: "demo-task" });
     broken.unknown(key, "not known");
-    expect(broken.unsettled("demo-task")).toHaveLength(1);
+    expect(
+      broken.notices().filter((notice) => notice.id === "demo-task"),
+    ).toHaveLength(1);
   });
 
   test("only the twenty most recent are kept", () => {
     const store = createAppliedStore(memory());
     for (let n = 1; n <= 25; n++)
       store.unknown(store.begin({ action: "claim", id: "demo-task" }), `n${n}`);
-    const kept = store.unsettled("demo-task").map((attempt) => attempt.message);
+    const kept = store
+      .notices()
+      .filter((notice) => notice.id === "demo-task")
+      .map((attempt) => attempt.message);
     expect(kept).toHaveLength(20);
     expect(kept[0]).toBe("n6");
     expect(kept.at(-1)).toBe("n25");
+  });
+});
+
+describe("writes the page is waiting on, and the notices it keeps", () => {
+  test("awaiting lists the writes sent for a bead and not yet answered, and the creates without an id; answered or unknown ones are not among them", () => {
+    const store = createAppliedStore(memory());
+    const claim = store.begin({ action: "claim", id: "demo-task" });
+    const comment = store.begin({ action: "comment", id: "demo-task" });
+    store.begin({ action: "close", id: "demo-other" });
+    const create = store.begin({ action: "create", title: "New one" });
+    expect(store.awaiting("demo-task").map((write) => write.key)).toEqual([
+      claim,
+      comment,
+    ]);
+    expect(store.awaiting().map((write) => write.key)).toEqual([create]);
+    store.settle(claim);
+    store.unknown(comment, "no answer");
+    expect(store.awaiting("demo-task")).toEqual([]);
+  });
+
+  test("a refusal kept as refused is a notice with its outcome, outlives a reload, and goes when it is dismissed", () => {
+    const storage = memory();
+    const store = createAppliedStore(storage);
+    const key = store.begin({ action: "close", id: "demo-task" });
+    store.refused(key, "bd close failed: no issue found");
+    const expected = {
+      key,
+      action: "close",
+      id: "demo-task",
+      at: expect.any(Number),
+      outcome: "refused",
+      message: "bd close failed: no issue found",
+    } as const;
+    expect(store.notices()).toEqual([expected]);
+    expect(store.awaiting("demo-task")).toEqual([]);
+    const reloaded = createAppliedStore(storage);
+    expect(reloaded.notices()).toEqual([expected]);
+    reloaded.dismiss(key);
+    expect(createAppliedStore(storage).notices()).toEqual([]);
+  });
+
+  test("notices lists every unknown or refused write, for any bead and the creates, oldest first", () => {
+    const store = createAppliedStore(memory());
+    const a = store.begin({ action: "claim", id: "demo-a" });
+    const create = store.begin({ action: "create", title: "T" });
+    const b = store.begin({ action: "close", id: "demo-b" });
+    store.begin({ action: "comment", id: "demo-a" });
+    store.refused(b, "refused");
+    store.unknown(a, "unknown");
+    store.unknown(create, "unknown create");
+    expect(
+      store.notices().map((notice) => [notice.key, notice.outcome]),
+    ).toEqual([
+      [a, "unknown"],
+      [create, "unknown"],
+      [b, "refused"],
+    ]);
+  });
+
+  test("an attempt stored with a message and no outcome, as an older page kept it, is read as unknown", () => {
+    const storage = memory({
+      "agent-forge.bead-writes.v1": JSON.stringify({
+        beads: [],
+        attempts: [
+          {
+            key: "w3",
+            action: "claim",
+            id: "demo-task",
+            at: 3,
+            message: "kept by an older page",
+          },
+        ],
+      }),
+    });
+    expect(createAppliedStore(storage).notices()).toEqual([
+      {
+        key: "w3",
+        action: "claim",
+        id: "demo-task",
+        at: 3,
+        outcome: "unknown",
+        message: "kept by an older page",
+      },
+    ]);
   });
 });

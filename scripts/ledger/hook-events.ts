@@ -268,11 +268,16 @@ function learnModel(
  * SessionStart: remember the model when the host reports one, record the
  * session once, and leave the mirror that lets scripts launched from this
  * worktree attach to it. A resume, clear or compact of a known session offers
- * the same start again and the ledger ignores it.
+ * the same start again and the ledger ignores it. Returns what the ledger made
+ * of the start, so the hook can tell the session when it was refused; null
+ * when the payload names no session.
  */
-export function handleSessionStart(input: HookInput, deps: HookDeps): void {
+export function handleSessionStart(
+  input: HookInput,
+  deps: HookDeps,
+): AppendResult | null {
   const context = contextOf(input, deps);
-  if (context === null) return;
+  if (context === null) return null;
   const { identity } = context;
   const model = text(input.model);
   if (model !== undefined) {
@@ -285,7 +290,7 @@ export function handleSessionStart(input: HookInput, deps: HookDeps): void {
     });
   }
   const source = text(input.source);
-  deps.append({
+  const started = deps.append({
     kind: "session.started",
     ...envelope(context, executorOf(input, identity, deps)),
     payload: {
@@ -300,6 +305,7 @@ export function handleSessionStart(input: HookInput, deps: HookDeps): void {
   if (identity.sessionId === identity.hostSessionId)
     deps.writeMirror(context.worktree, identity.sessionId);
   deps.backupIfDue();
+  return started;
 }
 
 /** UserPromptSubmit: the prompt's hash and length. */

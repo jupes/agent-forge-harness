@@ -647,6 +647,30 @@ describe("session start and end", () => {
     expect(statSync(snapshot).mtimeMs).toBe(old.getTime());
     expect(events(box)).toHaveLength(2);
   });
+
+  // An ordinary name the scanner flags (`sk-` after a single letter), put
+  // together here so the file does not carry it.
+  const flaggedName = ["ask", "the", "docs", "chatbot", "service"].join("-");
+
+  test(`a start from a checkout named ${flaggedName} returns the ledger's refusal and stores nothing; a stored start returns its id, and a payload with no session returns null`, () => {
+    const box = sandbox();
+    const flagged = join(box.cwd, "..", flaggedName);
+    mkdirSync(join(flagged, ".git"), { recursive: true });
+    const { deps } = harness(box);
+
+    expect(handleSessionStart({ ...start, cwd: flagged }, deps)).toEqual({
+      ok: false,
+      error: expect.stringContaining(
+        "workspace looks like a secret (openai-api-key)",
+      ),
+    });
+    expect(events(box)).toHaveLength(0);
+
+    expect(handleSessionStart(start, deps)).toMatchObject({ ok: true, id: 1 });
+    expect(
+      handleSessionStart({ hook_event_name: "SessionStart" }, deps),
+    ).toBeNull();
+  });
 });
 
 describe("the hook probe", () => {

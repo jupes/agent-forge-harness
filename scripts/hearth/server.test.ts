@@ -7,11 +7,13 @@ import {
   rmSync,
 } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hasAmbiguousPath } from "./gate";
 import { lockPath } from "./home";
 import { readLock } from "./lock";
+import { HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { createHearth, type StartedHearth } from "./server";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -90,6 +92,157 @@ test("serves the token only to a same-origin request, never to a bare GET", asyn
     headers: { "Sec-Fetch-Site": "same-origin" },
   });
   expect(viaFetchSite.status).toBe(200);
+});
+
+/**
+ * Paths the operator table does not serve, and what each answers a GET that
+ * declares the hearth's own origin. The table's runner has its own repeat
+ * check; these were guarded by the front door alone.
+ */
+const OUTSIDE_THE_TABLE: Array<[string, number]> = [
+  [TOKEN_ROUTE, 200],
+  [HEALTH_ROUTE, 200],
+  [`${DEV}/forge-run`, 200],
+  ["/__agent-forge/council-api/profiles", 200],
+  ["/__agent-forge/nope", 404],
+];
+
+/** A GET with exactly these header lines, over a raw socket: fetch folds a repeated header into one line. */
+function rawGetWith(
+  port: number,
+  path: string,
+  headerLines: string[],
+): Promise<{ status: number; body: string }> {
+  return new Promise((done, fail) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      socket.write(
+        [
+          `GET ${path} HTTP/1.1`,
+          ...headerLines,
+          "Connection: close",
+          "",
+          "",
+        ].join("\r\n"),
+      );
+    });
+    let received = "";
+    socket.on("data", (chunk) => {
+      received += chunk.toString("utf8");
+    });
+    socket.on("error", fail);
+    socket.on("close", () => {
+      const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(received)?.[1] ?? 0);
+      done({ status, body: received.slice(received.indexOf("\r\n\r\n") + 4) });
+    });
+  });
+}
+
+test("a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is 403 on the token, health, dev-api, council-api and an unknown path, and is not served the token", async () => {
+  const { hearth } = await start();
+  const host = `Host: 127.0.0.1:${hearth.port}`;
+  const origin = `Origin: ${hearth.url}`;
+  const site = "Sec-Fetch-Site: same-origin";
+  const foreignOrigin = "Origin: https://evil.example";
+  const crossSite = "Sec-Fetch-Site: cross-site";
+  const foreignHost = "Host: evil.example";
+  const repeats: Array<[string, string[]]> = [
+    ["a foreign Origin then the hearth's", [host, foreignOrigin, origin, site]],
+    [
+      "the hearth's Origin then a foreign one",
+      [host, origin, foreignOrigin, site],
+    ],
+    [
+      "the hearth's Origin twice, once in lower case",
+      [host, origin, origin.replace("Origin", "origin"), site],
+    ],
+    ["cross-site then same-origin", [host, origin, crossSite, site]],
+    ["same-origin then cross-site", [host, origin, site, crossSite]],
+    ["same-origin twice", [host, origin, site, site]],
+    ["a foreign Host then the hearth's", [foreignHost, host, origin, site]],
+    ["the hearth's Host then a foreign one", [host, foreignHost, origin, site]],
+    ["the hearth's Host twice", [host, host, origin, site]],
+  ];
+  const answers: unknown[] = [];
+  const refusals: unknown[] = [];
+  for (const [path, answered] of OUTSIDE_THE_TABLE) {
+    // Each header once is answered, so the refusals below are about the repeat.
+    const once = await rawGetWith(hearth.port, path, [host, origin, site]);
+    expect({ path, status: once.status }).toEqual({ path, status: answered });
+    if (path === TOKEN_ROUTE) expect(once.body).toContain(hearth.token);
+    for (const [label, lines] of repeats) {
+      const answer = await rawGetWith(hearth.port, path, lines);
+      answers.push({
+        path,
+        label,
+        status: answer.status,
+        ok: (JSON.parse(answer.body) as { ok: boolean }).ok,
+        token: answer.body.includes(hearth.token),
+      });
+      refusals.push({ path, label, status: 403, ok: false, token: false });
+    }
+  }
+  expect(answers).toEqual(refusals);
+});
+
+test("Sec-Fetch-Site: same-site, cross-site, an unknown value or two values folded into one line is 403 on the token, health, dev-api, council-api and an unknown path, with or without the hearth's own Origin", async () => {
+  const { hearth } = await start();
+  const refused = [
+    "same-site",
+    "cross-site",
+    "same-sight",
+    "cross-site, same-origin",
+  ];
+  // With the hearth's own Origin the fetch metadata is the only thing wrong.
+  const declarations: Array<Record<string, string>> = [
+    {},
+    { Origin: hearth.url },
+  ];
+  const answers: unknown[] = [];
+  const refusals: unknown[] = [];
+  for (const [path] of OUTSIDE_THE_TABLE) {
+    for (const declared of declarations) {
+      for (const value of refused) {
+        const response = await fetch(`${hearth.url}${path}`, {
+          headers: { ...declared, "Sec-Fetch-Site": value },
+        });
+        const body = await response.text();
+        answers.push({
+          path,
+          declared,
+          value,
+          status: response.status,
+          ok: (JSON.parse(body) as { ok: boolean }).ok,
+          token: body.includes(hearth.token),
+        });
+        refusals.push({
+          path,
+          declared,
+          value,
+          status: 403,
+          ok: false,
+          token: false,
+        });
+      }
+    }
+  }
+  expect(answers).toEqual(refusals);
+});
+
+test("Sec-Fetch-Site: same-origin or none, with the hearth's own Origin, keeps its answer on the token, health, dev-api, council-api and an unknown path", async () => {
+  const { hearth } = await start();
+  for (const [path, answered] of OUTSIDE_THE_TABLE) {
+    for (const value of ["same-origin", "none"]) {
+      const response = await fetch(`${hearth.url}${path}`, {
+        headers: { Origin: hearth.url, "Sec-Fetch-Site": value },
+      });
+      await response.body?.cancel();
+      expect({ path, value, status: response.status }).toEqual({
+        path,
+        value,
+        status: answered,
+      });
+    }
+  }
 });
 
 test("unknown routes answer a 404 envelope", async () => {

@@ -70,7 +70,7 @@ async function fixture(): Promise<Fixture> {
     root,
     configFile: false,
     logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
+    server: { host: "127.0.0.1", port: freePort(), strictPort: false },
     plugins: [
       rebuildStub(),
       hearthPlugin(root, {
@@ -192,8 +192,202 @@ test("rebuild-pages is answered by Vite and never forwarded to the hearth", asyn
   expect(((await res.json()) as { via?: string }).via).toBe("vite");
 });
 
-function fakeRequest(remoteAddress: string, url: string): IncomingMessage {
-  return { url, socket: { remoteAddress } } as unknown as IncomingMessage;
+/**
+ * A port nothing listened on a moment ago. Vite given port 0 starts at 5173,
+ * where another run of this suite may already be.
+ */
+function freePort(): number {
+  const probe = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: { data() {} },
+  });
+  const { port } = probe;
+  probe.stop(true);
+  return port;
+}
+
+/** The body of a raw HTTP/1.1 response, with a chunked body put back together. */
+function responseBody(head: string, rest: string): string {
+  if (!/^transfer-encoding:\s*chunked\s*$/im.test(head)) return rest;
+  let body = "";
+  let at = 0;
+  for (;;) {
+    const lineEnd = rest.indexOf("\r\n", at);
+    if (lineEnd < 0) return body;
+    const size = Number.parseInt(rest.slice(at, lineEnd), 16);
+    if (!(size > 0)) return body;
+    body += rest.slice(lineEnd + 2, lineEnd + 2 + size);
+    at = lineEnd + 2 + size + 2;
+  }
+}
+
+/**
+ * A GET with exactly these header lines, over a raw socket to the dashboard:
+ * `fetch` folds a repeated header into one line.
+ */
+async function rawGet(
+  url: string,
+  path: string,
+  headerLines: string[],
+): Promise<{ status: number; body: string }> {
+  const request = [
+    `GET ${path} HTTP/1.1`,
+    ...headerLines,
+    "Connection: close",
+    "",
+    "",
+  ].join("\r\n");
+  const received = await new Promise<string>((done, fail) => {
+    let text = "";
+    Bun.connect({
+      hostname: "127.0.0.1",
+      port: Number(new URL(url).port),
+      socket: {
+        open(socket) {
+          socket.write(request);
+        },
+        data(_socket, chunk) {
+          text += chunk.toString("utf8");
+        },
+        close() {
+          done(text);
+        },
+        error(_socket, error) {
+          fail(error);
+        },
+      },
+    }).catch(fail);
+  });
+  const split = received.indexOf("\r\n\r\n");
+  const head = split < 0 ? received : received.slice(0, split);
+  return {
+    status: Number(/^HTTP\/1\.1 (\d{3})/.exec(head)?.[1] ?? 0),
+    body: split < 0 ? "" : responseBody(head, received.slice(split + 4)),
+  };
+}
+
+/**
+ * Proxied paths and what each answers a GET that declares the dashboard's own
+ * origin: the token route, three handlers older than the operator table, and
+ * one read row of the table.
+ */
+const PROXIED_GETS: Array<[string, number]> = [
+  ["/__agent-forge/token", 200],
+  ["/__agent-forge/health", 200],
+  ["/__agent-forge/dev-api/forge-run", 200],
+  ["/__agent-forge/council-api/profiles", 200],
+  ["/__agent-forge/sessions", 200],
+];
+
+/** What the guard answers a repeated Host, Origin or Sec-Fetch-Site with. */
+const REPEAT_REFUSAL =
+  "The control-plane APIs refuse a request that sends Host, Origin or Sec-Fetch-Site more than once";
+
+test("through the proxy, a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is refused by the guard on the token, health, dev-api, council-api and sessions paths, and is not served the token", async () => {
+  const { url, token } = await fixture();
+  const host = `Host: ${new URL(url).host}`;
+  const origin = `Origin: ${url}`;
+  const site = "Sec-Fetch-Site: same-origin";
+  const foreignOrigin = "Origin: https://evil.example";
+  const crossSite = "Sec-Fetch-Site: cross-site";
+  const foreignHost = "Host: evil.example";
+  const repeats: Array<[string, string[]]> = [
+    [
+      "a foreign Origin then the dashboard's",
+      [host, foreignOrigin, origin, site],
+    ],
+    [
+      "the dashboard's Origin then a foreign one",
+      [host, origin, foreignOrigin, site],
+    ],
+    [
+      "the dashboard's Origin twice, once in lower case",
+      [host, origin, origin.replace("Origin", "origin"), site],
+    ],
+    ["cross-site then same-origin", [host, origin, crossSite, site]],
+    ["same-origin then cross-site", [host, origin, site, crossSite]],
+    ["same-origin twice", [host, origin, site, site]],
+    ["a foreign Host then the dashboard's", [foreignHost, host, origin, site]],
+    [
+      "the dashboard's Host then a foreign one",
+      [host, foreignHost, origin, site],
+    ],
+    ["the dashboard's Host twice", [host, host, origin, site]],
+  ];
+  const answers: unknown[] = [];
+  const refusals: unknown[] = [];
+  for (const [path] of PROXIED_GETS) {
+    for (const [label, lines] of repeats) {
+      const answer = await rawGet(url, path, lines);
+      let error: unknown = null;
+      try {
+        error = (JSON.parse(answer.body) as { error: unknown }).error;
+      } catch {
+        error = `not JSON: ${answer.body.slice(0, 80)}`;
+      }
+      answers.push({
+        path,
+        label,
+        status: answer.status,
+        error,
+        token: answer.body.includes(token),
+      });
+      refusals.push({
+        path,
+        label,
+        status: 403,
+        error: REPEAT_REFUSAL,
+        token: false,
+      });
+    }
+  }
+  expect(answers).toEqual(refusals);
+}, 20_000);
+
+test("through the proxy, a GET with Host, Origin and Sec-Fetch-Site each sent once keeps its answer on the same paths, also when Accept is sent twice", async () => {
+  const { url, token } = await fixture();
+  const once = [
+    `Host: ${new URL(url).host}`,
+    `Origin: ${url}`,
+    "Sec-Fetch-Site: same-origin",
+  ];
+  const variants: Array<[string, string[]]> = [
+    ["each once", once],
+    ["each once, Accept twice", [...once, "Accept: */*", "Accept: */*"]],
+  ];
+  const answers: unknown[] = [];
+  const expected: unknown[] = [];
+  for (const [path, answered] of PROXIED_GETS) {
+    for (const [label, lines] of variants) {
+      const answer = await rawGet(url, path, lines);
+      answers.push({
+        path,
+        label,
+        status: answer.status,
+        token: answer.body.includes(token),
+      });
+      expected.push({
+        path,
+        label,
+        status: answered,
+        token: path === "/__agent-forge/token",
+      });
+    }
+  }
+  expect(answers).toEqual(expected);
+}, 20_000);
+
+function fakeRequest(
+  remoteAddress: string,
+  url: string,
+  rawHeaders: string[] = [],
+): IncomingMessage {
+  return {
+    url,
+    rawHeaders,
+    socket: { remoteAddress },
+  } as unknown as IncomingMessage;
 }
 
 function fakeResponse(): { res: ServerResponse; status: () => number } {
@@ -252,4 +446,46 @@ test("the guard covers every path Vite would proxy, including a bare-prefix dot-
     ),
   ).toBe(false);
   expect(sneaky.status()).toBe(403);
+});
+
+test("the guard counts Host, Origin and Sec-Fetch-Site in any letter case, as Node's rawHeaders keeps the sender's, and only on paths Vite would proxy", () => {
+  const api = "/__agent-forge/dev-api/forge-run";
+  const repeated: string[][] = [
+    ["Origin", "https://evil.example", "origin", "http://127.0.0.1:8787"],
+    ["SEC-FETCH-SITE", "cross-site", "Sec-Fetch-Site", "same-origin"],
+    ["Host", "127.0.0.1:8787", "hOST", "evil.example"],
+  ];
+  for (const rawHeaders of repeated) {
+    const refused = fakeResponse();
+    expect(
+      guardRequest(fakeRequest("127.0.0.1", api, rawHeaders), refused.res),
+    ).toBe(false);
+    expect(refused.status()).toBe(403);
+    // Vite answers these itself; what it does with a repeat is not the guard's.
+    for (const local of ["/index.html", "/__agent-forge/rebuild-pages"]) {
+      const passed = fakeResponse();
+      expect(
+        guardRequest(fakeRequest("127.0.0.1", local, rawHeaders), passed.res),
+      ).toBe(true);
+    }
+  }
+  const once = fakeResponse();
+  expect(
+    guardRequest(
+      fakeRequest("127.0.0.1", api, [
+        "Host",
+        "127.0.0.1:8787",
+        "Origin",
+        "http://127.0.0.1:8787",
+        "Sec-Fetch-Site",
+        "same-origin",
+        "Accept",
+        "*/*",
+        "accept",
+        "*/*",
+      ]),
+      once.res,
+    ),
+  ).toBe(true);
+  expect(once.status()).toBe(200);
 });

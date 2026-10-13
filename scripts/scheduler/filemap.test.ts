@@ -574,6 +574,84 @@ describe("parsePlanFileMaps: a fence, or a missing map, never hides a checkpoint
   });
 });
 
+describe("parsePlanFileMaps: a fence the parser reads as open does not carry a checkpoint past a `##` heading above it", () => {
+  test("a checkpoint with no map, whose list line opens a fence, does not take the plan-level `Files` section after `## Validation`", () => {
+    const plan = [
+      "### Checkpoint A — first",
+      "#### Files",
+      "src/a.ts",
+      "",
+      "### Checkpoint B — second",
+      "1. ```bash",
+      "   bun test src/b.test.ts",
+      "   ```",
+      "",
+      "## Validation",
+      "",
+      "## Files",
+      "src/whole-plan.ts",
+    ].join("\n");
+    expect(parsePlanFileMaps(plan)).toEqual([
+      {
+        checkpoint: "Checkpoint A — first",
+        map: { ok: true, globs: ["src/a.ts"] },
+      },
+      {
+        checkpoint: "Checkpoint B — second",
+        map: { ok: false, reason: "missing", error: "no `Files` section" },
+      },
+    ]);
+  });
+
+  test("inside a fence that is never closed, a `##` heading still ends a `###` checkpoint, so a `### Files` section after it is not the checkpoint's map", () => {
+    const plan = [
+      "### Checkpoint A — first",
+      "Demo:",
+      "```bash",
+      "bun test src/a.test.ts",
+      "",
+      "## Notes",
+      "",
+      "### Files",
+      "src/notes.ts",
+    ].join("\n");
+    expect(parsePlanFileMaps(plan)).toEqual([
+      {
+        checkpoint: "Checkpoint A — first",
+        map: { ok: false, reason: "missing", error: "no `Files` section" },
+      },
+    ]);
+  });
+});
+
+describe("parsePlanFileMaps: a fence closes only on its own marker", () => {
+  test("a fence ends only on a line of its own character, at least as long, with nothing after it: a `#` line before that line stays inside", () => {
+    const fences: ReadonlyArray<readonly string[]> = [
+      ["```text", "```bash", "# a comment", "```"],
+      ["~~~markdown", "```bash", "# a comment", "```", "# another", "~~~"],
+      ["````markdown", "```bash", "# a comment", "```", "# another", "````"],
+    ];
+    for (const fence of fences) {
+      const plan = [
+        "### Checkpoint A — first",
+        ...fence,
+        "",
+        "#### Files",
+        "src/a.ts",
+      ].join("\n");
+      expect({ fence, maps: parsePlanFileMaps(plan) }).toEqual({
+        fence,
+        maps: [
+          {
+            checkpoint: "Checkpoint A — first",
+            map: { ok: true, globs: ["src/a.ts"] },
+          },
+        ],
+      });
+    }
+  });
+});
+
 // ── The documents that show the format ───────────────────────────────────────
 
 const FILES_HEADING = /^#{2,6}[ \t]+Files$/m;
