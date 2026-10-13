@@ -649,12 +649,33 @@ describe("the Forge documents: what the review of the first build found", () => 
     }
   });
 
-  test("the research skill reads a repo's knowledge file only as a command that survives its absence, and says what to do when there is none", () => {
-    for (const path of skill("forge-research")) {
-      const bare = commandsIn(path, read(path) ?? "", /cat knowledge\/repos\//)
+  test("no instruction file `cat`s a repo's knowledge file without a fallback for the file not being there", () => {
+    const bare = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /cat knowledge\/repos\//)
         .filter((documented) => !documented.command.includes("||"))
-        .map(show);
-      expect(bare).toEqual([]);
+        .map(show),
+    );
+    expect(bare).toEqual([]);
+  });
+
+  test("each instruction that loads a repo's knowledge file says the directory is empty in a fresh checkout", () => {
+    const loaders = [
+      ...skill("forge-research"),
+      ...command("plan"),
+      ...command("ask"),
+      ...command("review"),
+      ".claude/agents/worker.md",
+      ".agents/skills/forge-roles/references/worker.md",
+      ".claude/workflows/feature.md",
+      ".claude/workflows/fix.md",
+    ];
+    for (const path of loaders) {
+      expect(missing(path, ["is empty in a fresh checkout"])).toEqual([]);
+    }
+  });
+
+  test("the research skill says what to do when a repo has no knowledge file", () => {
+    for (const path of skill("forge-research")) {
       expect(
         missing(path, [
           "the directory is empty in a fresh checkout",
@@ -662,6 +683,23 @@ describe("the Forge documents: what the review of the first build found", () => 
         ]),
       ).toEqual([]);
     }
+  });
+
+  test("the tasks template creates each task with a priority and points at the skill that chooses it", () => {
+    const create = commandsIn(
+      BEADS_TASKS_TEMPLATE,
+      read(BEADS_TASKS_TEMPLATE) ?? "",
+      /bd create\b/,
+    );
+    expect(create.length).toBeGreaterThan(0);
+    expect(
+      create.filter((documented) => !documented.command.includes("--priority")),
+    ).toEqual([]);
+    expect(
+      missing(BEADS_TASKS_TEMPLATE, [
+        ".claude/skills/beads-priority-assignment/SKILL.md",
+      ]),
+    ).toEqual([]);
   });
 
   test("the plan skill gives the command that checks a plan's maps, checkpoint by checkpoint, and says where a reason for `**` goes", () => {

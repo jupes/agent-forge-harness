@@ -17,11 +17,14 @@ Before any code exploration, load the relevant knowledge files:
 
 ```bash
 cat knowledge/_shared.yaml
-cat knowledge/repos/<repo>.yaml      # For each affected repo
+cat knowledge/repos/<repo>.yaml 2>/dev/null || echo "no knowledge file for <repo>"   # For each affected repo
 ```
 
-If knowledge files are missing or stale (>50 commits behind HEAD):
-- Warn: "knowledge/<repo>.yaml may be stale — consider running /sync-knowledge <repo>"
+A repo has a knowledge file only after `/add-repo` or `/sync-knowledge` has been run for it;
+`knowledge/repos/` is empty in a fresh checkout, and the harness itself has none.
+
+If a knowledge file is missing or stale (>50 commits behind HEAD):
+- Warn: "knowledge/<repo>.yaml may be missing or stale — consider running /sync-knowledge <repo>"
 - Proceed anyway with a note that exploration results may supersede stale knowledge
 
 ---

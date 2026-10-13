@@ -21,8 +21,11 @@ bd create \
   --type task \
   --title "<verb> <object>" \
   --repo <repo> \
+  --priority <value> \
   --acceptance "<acceptance criterion>"
 ```
+
+Set `<value>` using `.claude/skills/beads-priority-assignment/SKILL.md`.
 
 For dependencies:
 ```bash

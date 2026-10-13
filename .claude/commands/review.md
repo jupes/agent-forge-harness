@@ -39,7 +39,7 @@ bd show <TASK-ID> 2>/dev/null || true
 Before reviewing, understand intent:
 1. Read the PR/commit description
 2. Read the Beads task and its AC (if available)
-3. Read the knowledge file for the affected repo: `cat knowledge/repos/<repo>.yaml`
+3. Read the knowledge file for the affected repo, if it has one: `cat knowledge/repos/<repo>.yaml 2>/dev/null || echo "no knowledge file for <repo>"`. A repo has one only after `/add-repo` or `/sync-knowledge` has been run for it, and `knowledge/repos/` is empty in a fresh checkout; with none, review from the diff and the files around it.
 4. Spot-check 2-3 key files to understand the full context (not just the diff)
 
 ---
