@@ -6,7 +6,8 @@
  * and the tests of the write routes all build their answers here, so the
  * three cannot drift apart. The shapes are those of bd 1.1.0 with `--json`:
  *
- * - `create` prints the issue as an object;
+ * - `create` prints the issue as an object, with the description it was
+ *   given as `description`, absent when it was given none;
  * - `update --claim` and `close` print a one-element array;
  * - `comments add` prints the comment;
  * - `show` and an `update` of labels or metadata print a one-element array;

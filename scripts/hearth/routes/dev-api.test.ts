@@ -190,6 +190,14 @@ describe("bdRunner", () => {
     expect(result.stderr.trim()).not.toBe("");
     expect(result.stderr).not.toContain("zzzz");
   });
+
+  test("a program that reads standard input to its end is handed an empty, ended one: it exits 0 before the limit, having read nothing", async () => {
+    // What `bd create --description=-` does: read standard input until it ends.
+    const readsStdin =
+      'let read = ""; process.stdin.on("data", (chunk) => { read += chunk; }); process.stdin.on("end", () => { process.stdout.write(JSON.stringify(read)); });';
+    const result = await standIn()(["-e", readsStdin], { timeoutMs: 4000 });
+    expect(result).toEqual({ status: 0, stdout: '""', stderr: "" });
+  }, 15_000);
 });
 
 describe("gateLogsNewestFirst", () => {

@@ -72,6 +72,9 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
       issue_type: write.type,
       priority: Number(write.priority),
       status: "open",
+      ...(write.description !== undefined
+        ? { description: write.description }
+        : {}),
       created_at: now,
       updated_at: now,
     };

@@ -214,8 +214,8 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
   );
   if (!description.ok) return description;
   // `bd create --description=-` means "read the description from standard
-  // input". The runner leaves stdin open, so that call would wait for the
-  // runner's limit and then create the issue without its description.
+  // input". The runner ends stdin at once, so that call would create the
+  // issue without its description.
   if (description.value === "-")
     return fail(
       'description: a description of exactly "-" is read by bd as "take it from standard input"; say more than that',
@@ -292,17 +292,32 @@ function strings(value: unknown): string[] | undefined {
     : undefined;
 }
 
-/** The issue `bd create --json` printed, when it printed one with a usable id. */
-function created(stdout: string): Confirmed | null {
-  const issue = parsed(stdout);
-  if (!isRecord(issue) || !beadId(issue["id"])) return null;
-  const labels = strings(issue["labels"]);
-  return {
-    id: issue["id"],
-    ...(typeof issue["status"] === "string" ? { status: issue["status"] } : {}),
-    ...(labels !== undefined ? { labels } : {}),
+/**
+ * The issue `bd create --json` printed, when it printed one with a usable id
+ * and the description that was sent (none, when none was: bd prints none).
+ *
+ * bd can make the issue without it and exit 0: `--description=-` reads the
+ * description from standard input, which the runner ends at once. That issue
+ * exists, so it is named, and the create is not confirmed.
+ */
+const created =
+  (description: string | undefined) =>
+  (stdout: string): Confirmed | Unconfirmed | null => {
+    const issue = parsed(stdout);
+    if (!isRecord(issue) || !beadId(issue["id"])) return null;
+    if (issue["description"] !== description)
+      return {
+        unconfirmed: `made ${issue["id"]}, but the description it printed is not the one that was sent. Check with \`bd show ${issue["id"]}\` before trying again.`,
+      };
+    const labels = strings(issue["labels"]);
+    return {
+      id: issue["id"],
+      ...(typeof issue["status"] === "string"
+        ? { status: issue["status"] }
+        : {}),
+      ...(labels !== undefined ? { labels } : {}),
+    };
   };
-}
 
 /**
  * The one issue `bd update --json` or `bd close --json` printed, with the id
@@ -413,6 +428,11 @@ interface Conflict {
   conflict: string;
 }
 
+/** A write bd made, but not as it was asked for: what it made, and how to check it. */
+interface Unconfirmed {
+  unconfirmed: string;
+}
+
 /** What a write is, for the one helper that carries it out. */
 interface Write {
   action: BeadWrite;
@@ -424,7 +444,10 @@ interface Write {
   status: 200 | 201;
   /** How to see whether the write happened, for an answer that cannot say. */
   check: string;
-  confirm(stdout: string, began: number): Confirmed | Conflict | null;
+  confirm(
+    stdout: string,
+    began: number,
+  ): Confirmed | Conflict | Unconfirmed | null;
 }
 
 export function beadRoutes(deps: BeadDeps): ApiRoute[] {
@@ -494,6 +517,11 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
       );
     if ("conflict" in confirmed)
       return { status: 409, error: confirmed.conflict };
+    if ("unconfirmed" in confirmed)
+      return {
+        status: 504,
+        error: `bd ${spec.command} ${confirmed.unconfirmed}`,
+      };
     const unrecorded = await record(spec.action, confirmed.id, spec.text);
     const data: BeadWriteResult = {
       ...confirmed,
@@ -540,7 +568,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         status: 201,
         // A create that did not answer left no id to look up.
         check: "bd list",
-        confirm: created,
+        confirm: created(input.description),
       }),
   };
 

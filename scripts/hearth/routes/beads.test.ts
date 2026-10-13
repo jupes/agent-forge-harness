@@ -1366,6 +1366,43 @@ describe("the id bd prints for a create", () => {
   });
 });
 
+describe("the description bd prints for a create", () => {
+  // `bd create --description=-` reads the description from standard input,
+  // which the runner ends at once: bd then makes the issue with none, exit 0.
+  test("printed without the description that was sent, with another one, or with one when none was sent: 504 naming the issue bd made, no bead.transitioned, and the text is not repeated", async () => {
+    const h = await start();
+    const sent = `Two lines\nof context ${MARKER}`;
+    const printed: Array<[string, string | undefined, BdIssue]> = [
+      ["no description", sent, anIssue({ id: "made-1" })],
+      [
+        "another description",
+        sent,
+        anIssue({ id: "made-1", description: "Two" }),
+      ],
+      [
+        "a description when none was sent",
+        undefined,
+        anIssue({ id: "made-1", description: "Two" }),
+      ],
+    ];
+    for (const [label, description, issue] of printed) {
+      h.bd.answer = () => bdAnswers.created(issue);
+      const answer = await post(h, "/beads", {
+        title: "A bead",
+        ...(description !== undefined ? { description } : {}),
+      });
+      expect({ label, status: answer.status }).toEqual({ label, status: 504 });
+      expect(answer.body.error).toContain(
+        "made made-1, but the description it printed is not the one that was sent",
+      );
+      expect(answer.body.error).toContain("bd show made-1");
+      expect(answer.body.error).not.toContain(MARKER);
+    }
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+    expect(h.events(["operator.action"])).toHaveLength(printed.length);
+  });
+});
+
 describe("a call with no exit status", () => {
   // Review round 1 of the implementation, measured with a real bd: bd prints
   // warnings on stderr, and a warning can hold any word. Only the runtime's own
