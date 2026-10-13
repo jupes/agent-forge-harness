@@ -10,6 +10,11 @@ import type {
   LedgerEventInput,
   Provider,
 } from "../../types/hearth";
+import {
+  readSessionMirror,
+  removeSessionMirror,
+  writeSessionMirror,
+} from "../ledger/identity";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
 import { supervise } from "./supervisor";
@@ -92,6 +97,26 @@ function toolPayload(parsed: ParsedTool) {
   return payload;
 }
 
+/**
+ * Mirror a headless session into the checkout its child runs in, so that a
+ * script the child launches (a phase gate, a quality gate) attaches to it as
+ * it would to an interactive session. Returns what undoes it at the end: when
+ * the file still names this session, the fresh mirror it replaced is put
+ * back, or the file is removed. A mirror written over it in the meantime
+ * belongs to a newer session and is left alone.
+ */
+function mirrorSession(checkout: string, sessionId: string): () => void {
+  const replaced = readSessionMirror(checkout);
+  writeSessionMirror(checkout, sessionId);
+  return () => {
+    if (replaced === null || replaced === sessionId) {
+      removeSessionMirror(checkout, sessionId);
+    } else if (readSessionMirror(checkout) === sessionId) {
+      writeSessionMirror(checkout, replaced);
+    }
+  };
+}
+
 function resolveCommand(
   spec: CliAdapterSpec,
   override?: string[],
@@ -159,9 +184,14 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // The session's id is the provider's, from the first line that reports
       // it. Used only when an event must be written before any line has.
       const mintedId = crypto.randomUUID();
-      let session: { id: string; base: EventBase } | undefined;
+      let session:
+        | { id: string; base: EventBase; unmirror: () => void }
+        | undefined;
 
-      /** Fix the session's id and announce it: `session.started` comes first. */
+      /**
+       * Fix the session's id, announce it (`session.started` comes first) and
+       * mirror it into the checkout the child runs in.
+       */
       const begin = (sessionId: string) => {
         const executor: Executor = {
           provider: spec.provider,
@@ -177,7 +207,11 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
           sessionId,
           executor,
         };
-        session = { id: sessionId, base };
+        session = {
+          id: sessionId,
+          base,
+          unmirror: mirrorSession(worktree, sessionId),
+        };
         queue.push({
           ...base,
           ts: new Date().toISOString(),
@@ -224,12 +258,14 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
             : result.exitCode === 0
               ? "completed"
               : `failed: exit ${result.exitCode}`;
+        const { base, unmirror } = current();
         queue.push({
-          ...current().base,
+          ...base,
           ts: new Date().toISOString(),
           kind: "session.ended",
           payload: { reason, durationMs: Date.now() - startedAt },
         });
+        unmirror();
         queue.close();
         return result;
       });

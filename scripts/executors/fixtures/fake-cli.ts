@@ -13,12 +13,13 @@
  *                                  a new UUID per run, as the real CLIs mint
  *   --fake-no-id                   the stream reports no session id at all
  *   --fake-attach <file>           once the line with the id is out, wait (up
- *                                  to 5 s) for a session mirror in the checkout
- *                                  this process runs in, then write what a
- *                                  script run here attaches to (`resolveAttach`
- *                                  with this process's environment) as JSON.
- *                                  The model cache it reads is a ledger file
- *                                  beside <file>
+ *                                  to 2 s) for the checkout this process runs
+ *                                  in to mirror that id (any mirror, with
+ *                                  --fake-no-id), then write what a script run
+ *                                  here attaches to (`resolveAttach` with this
+ *                                  process's environment) as JSON. The model
+ *                                  cache it reads is a ledger file beside
+ *                                  <file>
  *
  * The line shapes (field names and nesting) follow what the real CLIs printed
  * when each binary was run directly on Windows — `claude` 2.1.293 as far as
@@ -41,7 +42,11 @@
 
 import { existsSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { resolveAttach, SESSION_MIRROR_FILE } from "../../ledger/identity";
+import {
+  readSessionMirror,
+  resolveAttach,
+  SESSION_MIRROR_FILE,
+} from "../../ledger/identity";
 import { resolveCheckout } from "../../ledger/workspace";
 
 const argv = process.argv.slice(2);
@@ -79,12 +84,15 @@ const claudeLine = (value: Record<string, unknown>) =>
 /** What a script launched from this session attaches to, once it is mirrored. */
 async function recordAttach(): Promise<void> {
   if (!attach) return;
-  const mirror = join(
-    resolveCheckout(process.cwd()).worktree,
-    SESSION_MIRROR_FILE,
-  );
-  const deadline = Date.now() + 5000;
-  while (!existsSync(mirror) && Date.now() < deadline) await Bun.sleep(20);
+  const checkout = resolveCheckout(process.cwd()).worktree;
+  // A mirror may be there before the run: wait for this session's own id.
+  const mirrored = () =>
+    sessionId === undefined
+      ? existsSync(join(checkout, SESSION_MIRROR_FILE))
+      : readSessionMirror(checkout) === sessionId;
+  // Well inside a test's own 5 s, so a missing mirror fails an assertion.
+  const deadline = Date.now() + 2000;
+  while (!mirrored() && Date.now() < deadline) await Bun.sleep(20);
   const attached = resolveAttach({
     cwd: process.cwd(),
     env: process.env,
