@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Plugin } from "vite";
+import type { HttpProxy, Plugin } from "vite";
 import { isLoopbackAddress } from "./gate";
 import { hearthHome } from "./home";
 import { API_PREFIX } from "./paths";
@@ -91,6 +91,26 @@ export function guardRequest(
   return false;
 }
 
+/**
+ * Close the client's response when the hearth's answer is cut off. The proxy
+ * pipes the hearth's answer through and ends the client's response only when
+ * the answer ends cleanly; when the hearth's socket closes mid-answer (its
+ * process was killed), the client's response stayed open with nothing more to
+ * come, and a page's event stream went deaf until its own silence limit. The
+ * response is destroyed, not ended, so a cut-off answer never reads as a
+ * complete one; the page's stream client then retries and resumes.
+ *
+ * A cut-off answer is one that closed without ending (`readableEnded`). Not
+ * `complete`: under Bun that is already true when a cut-off answer closes.
+ */
+function closeWithUpstream(proxy: HttpProxy.Server): void {
+  proxy.on("proxyRes", (proxyRes, _req, res) => {
+    proxyRes.once("close", () => {
+      if (!proxyRes.readableEnded && !res.writableEnded) res.destroy();
+    });
+  });
+}
+
 export function hearthPlugin(
   root: string,
   options: HearthPluginOptions = {},
@@ -114,6 +134,7 @@ export function hearthPlugin(
         [API_PREFIX]: {
           target: `http://127.0.0.1:${port}`,
           changeOrigin: false,
+          configure: closeWithUpstream,
         },
       };
 
