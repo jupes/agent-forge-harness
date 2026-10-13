@@ -846,6 +846,7 @@ test("an actions block mounted again while its bead's comment is out says so and
     "A comment sent from this page is still out",
   );
   await expect(actions.getByLabel("Comment", { exact: true })).toBeDisabled();
+  await expect(actions.getByLabel("Reason for closing")).toBeDisabled();
   await expect(
     actions.getByRole("button", { name: "Claim", exact: true }),
   ).toBeDisabled();
@@ -884,6 +885,28 @@ test("a builder opened again while a create is out does not offer Create, and sa
   await expect(createButton(page)).toBeEnabled();
 });
 
+test("a create refused after the builder was left is listed as refused, naming its title", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const create = await holdPosts(page, `**${API}/beads`);
+  await page.fill("#bb-title", "Refused while away");
+  await page.fill("#bb-parent", "e2e-no-such-parent");
+  await createButton(page).click();
+  await expect.poll(create.count).toBe(1);
+
+  await openSettled(page, "/index.html#/issues");
+  create.release();
+  const refused = writesToCheck(page).locator('[data-outcome="refused"]', {
+    hasText: 'create "Refused while away"',
+  });
+  await expect(refused).toContainText('Refused (create "Refused while away"):');
+  await expect(refused).toContainText(
+    "parent issue e2e-no-such-parent not found",
+  );
+});
+
 test("a close refused after its panel was closed is listed as refused, is still listed after a reload, and goes on Dismiss", async ({
   page,
 }) => {
@@ -897,6 +920,7 @@ test("a close refused after its panel was closed is listed as refused, is still 
   const actions = page
     .locator(".af-detail")
     .getByRole("region", { name: `Actions on ${ghost}` });
+  const callsBefore = standInCalls().length;
   const close = await holdPosts(page, `**${API}/beads/${ghost}/close`);
   await actions.getByLabel("Reason for closing").fill("Closed, then left");
   await actions.getByRole("button", { name: "Close issue" }).click();
@@ -911,7 +935,12 @@ test("a close refused after its panel was closed is listed as refused, is still 
     hasText: `close on ${ghost}`,
   });
   await expect(refused).toContainText(`Refused (close on ${ghost}):`);
-  await expect(refused).toContainText(ghost);
+  await expect(refused).toContainText("no issue found");
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call) && call.includes(ghost)),
+  ).toHaveLength(1);
   await reloadSettled(page);
   await expect(refused).toContainText(`Refused (close on ${ghost}):`);
   await writesToCheck(page)

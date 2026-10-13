@@ -93,6 +93,7 @@ export function NoticePointer({
       to check at the top of the page.{" "}
       <Button
         variant="ghost"
+        aria-label="Show Writes to check"
         onClick={() => {
           const list = document.getElementById(LIST_ID);
           list?.scrollIntoView({ block: "start" });
