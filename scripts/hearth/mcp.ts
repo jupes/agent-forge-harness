@@ -126,8 +126,8 @@ export const FORGE_TOOLS: readonly ForgeTool[] = [
     authority: "agent",
     scope: "checkout",
     description:
-      "One forge run: its summary, stored state and newest 200 ledger events (large).",
-    input: z.strictObject({ slug: segment }),
+      "One forge run: summary, state and newest ledger events (events: how many, 0 for none).",
+    input: z.strictObject({ slug: segment, events: whole.default(20) }),
     method: "GET",
     path: "/runs/:slug",
   },
