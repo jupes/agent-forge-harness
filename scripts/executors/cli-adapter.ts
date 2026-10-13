@@ -4,12 +4,27 @@
  * hearth events. A provider supplies only its flags and its line parser.
  */
 
-import type { Executor, LedgerEventInput, Provider } from "../../types/hearth";
+import type {
+  Executor,
+  LedgerEventBase,
+  LedgerEventInput,
+  Provider,
+  ProviderUsage,
+  ProviderUsageCount,
+} from "../../types/hearth";
+import { hashText } from "../hash-text";
+import {
+  readSessionMirror,
+  removeSessionMirror,
+  writeSessionMirror,
+} from "../ledger/identity";
+import { ulid } from "../ledger/ulid";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
 import { supervise } from "./supervisor";
 import type {
   DoctorResult,
+  ExecResult,
   ExecutorAdapter,
   ExecutorHandle,
   SpawnRequest,
@@ -22,16 +37,50 @@ export interface ParsedTool {
   exitCode?: number;
 }
 
+/** What one provider output line reports. */
+export interface ParsedLine {
+  tools: ParsedTool[];
+  /** The provider's own id for the session, when this line carries it. */
+  sessionId?: string;
+  /** What the run used, when this line reports it. */
+  usage?: ProviderUsage;
+}
+
+/**
+ * The counts of a provider's usage object, renamed as `names` maps them: each
+ * a non-negative whole number, else left out. Undefined when none is left.
+ */
+export function usageCounts(
+  source: unknown,
+  names: Readonly<Record<string, ProviderUsageCount>>,
+): ProviderUsage | undefined {
+  if (typeof source !== "object" || source === null) return undefined;
+  const record = source as Record<string, unknown>;
+  const usage: ProviderUsage = {};
+  for (const [field, name] of Object.entries(names)) {
+    const count = record[field];
+    if (typeof count === "number" && Number.isInteger(count) && count >= 0) {
+      usage[name] = count;
+    }
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
 export interface CliAdapterSpec {
   provider: Provider;
   binary: string;
   versionArgs: string[];
   buildArgs(request: SpawnRequest): string[];
-  /** Tool calls in one stdout line; unparseable or irrelevant lines yield none. */
-  parseLine(line: string): ParsedTool[];
+  /** What one stdout line reports; an unparseable or irrelevant line reports no tools and nothing else. */
+  parseLine(line: string): ParsedLine;
+  /** The error one stdout line reports, in the provider's words; undefined for any other line. */
+  parseError(line: string): string | undefined;
   /** Runs before spawning (e.g. mirror skills for Codex). */
   prepare?(request: SpawnRequest): Promise<void> | void;
 }
+
+/** The fields every event of one session shares. */
+type EventBase = Omit<LedgerEventBase, "ts">;
 
 export function hashArgs(input: unknown): string {
   const text = JSON.stringify(input ?? null);
@@ -75,6 +124,26 @@ function toolPayload(parsed: ParsedTool) {
   };
   if (parsed.exitCode !== undefined) payload.exitCode = parsed.exitCode;
   return payload;
+}
+
+/**
+ * Mirror a headless session into the checkout its child runs in, so that a
+ * script the child launches (a phase gate, a quality gate) attaches to it as
+ * it would to an interactive session. Returns what undoes it at the end: when
+ * the file still names this session, the fresh mirror it replaced is put
+ * back, or the file is removed. A mirror written over it in the meantime
+ * belongs to a newer session and is left alone.
+ */
+function mirrorSession(checkout: string, sessionId: string): () => void {
+  const replaced = readSessionMirror(checkout);
+  writeSessionMirror(checkout, sessionId);
+  return () => {
+    if (replaced === null || replaced === sessionId) {
+      removeSessionMirror(checkout, sessionId);
+    } else if (readSessionMirror(checkout) === sessionId) {
+      writeSessionMirror(checkout, replaced);
+    }
+  };
 }
 
 function resolveCommand(
@@ -134,42 +203,78 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       if ("error" in resolved) throw new Error(resolved.error);
       await spec.prepare?.(request);
 
-      const sessionId = crypto.randomUUID();
-      const executor: Executor = {
-        provider: spec.provider,
-        model: request.smith.model,
-        effort: request.smith.effort,
-        smith: request.smith.name,
-        sessionId,
-      };
       // Spelled the way every other emitter spells them: the harness's main
       // checkout (also when the run was launched from a linked worktree of
       // it), and the checkout the executor runs in.
       const { workspace } = resolveCheckout(request.workspace);
       const { worktree } = resolveCheckout(request.worktree);
-      const base = {
-        workspace,
-        beadId: request.beadId,
-        ...(request.runId ? { runId: request.runId } : {}),
-        sessionId,
-        executor,
-      };
       const queue = eventQueue();
       const startedAt = Date.now();
+      // The session's id is the provider's, from the first line that reports
+      // it. A ULID, as the protocol mints, only when an event must be written
+      // before any line has.
+      const mintedId = ulid();
+      let session:
+        | { id: string; base: EventBase; unmirror: () => void }
+        | undefined;
+      // In the provider's words: for the command's output, never an event.
+      const providerErrors = new Set<string>();
 
-      queue.push({
-        ...base,
-        ts: new Date().toISOString(),
-        kind: "session.started",
-        payload: {
-          source: `headless:${spec.provider}`,
-          kind: "headless",
-          worktree,
-          ...(request.parentSessionId
-            ? { parentSessionId: request.parentSessionId }
-            : {}),
-        },
-      });
+      /**
+       * Fix the session's id, announce it (`session.started` comes first,
+       * then `prompt.submitted`) and mirror it into the checkout the child
+       * runs in.
+       */
+      const begin = (sessionId: string) => {
+        const executor: Executor = {
+          provider: spec.provider,
+          model: request.smith.model,
+          effort: request.smith.effort,
+          smith: request.smith.name,
+          sessionId,
+        };
+        const base: EventBase = {
+          workspace,
+          beadId: request.beadId,
+          ...(request.runId ? { runId: request.runId } : {}),
+          sessionId,
+          executor,
+        };
+        session = {
+          id: sessionId,
+          base,
+          unmirror: mirrorSession(worktree, sessionId),
+        };
+        queue.push({
+          ...base,
+          ts: new Date().toISOString(),
+          kind: "session.started",
+          payload: {
+            source: `headless:${spec.provider}`,
+            kind: "headless",
+            worktree,
+            ...(request.parentSessionId
+              ? { parentSessionId: request.parentSessionId }
+              : {}),
+          },
+        });
+        // The prompt went to the child on stdin at spawn: its hash and
+        // length, as the prompt hook records them, never the text.
+        queue.push({
+          ...base,
+          ts: new Date().toISOString(),
+          kind: "prompt.submitted",
+          payload: {
+            hash: hashText(request.prompt),
+            length: request.prompt.length,
+          },
+        });
+        return session;
+      };
+      const current = () => session ?? begin(mintedId);
+      // The last usage the stream reported: one turn per run is what has
+      // been seen, so a later report is taken to replace an earlier one.
+      let usage: ProviderUsage | undefined;
 
       const child = supervise({
         command: [...resolved.command, ...spec.buildArgs(request)],
@@ -178,38 +283,55 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         stdin: request.prompt,
         timeoutMs: request.timeoutMs,
         onLine: (line) => {
-          for (const parsed of spec.parseLine(line)) {
+          const reported = spec.parseError(line);
+          if (reported !== undefined) providerErrors.add(reported);
+          const parsed = spec.parseLine(line);
+          if (!session && parsed.sessionId) begin(parsed.sessionId);
+          if (parsed.usage) usage = parsed.usage;
+          for (const tool of parsed.tools) {
             queue.push({
-              ...base,
+              ...current().base,
               ts: new Date().toISOString(),
               kind: "tool.called",
-              payload: toolPayload(parsed),
+              payload: toolPayload(tool),
             });
           }
         },
       });
 
       let stopReason: string | undefined;
-      const done = child.done.then((result) => {
+      const done = child.done.then((exit): ExecResult => {
+        const result = { ...exit, providerErrors: [...providerErrors] };
+        // Fixed wording only: the provider's own text stays out of the ledger.
         const reason = result.timedOut
           ? "timeout"
           : result.stopped
             ? `stopped: ${stopReason ?? "operator"}`
-            : result.exitCode === 0
-              ? "completed"
-              : `failed: exit ${result.exitCode}`;
+            : result.exitCode !== 0
+              ? `failed: exit ${result.exitCode}`
+              : result.providerErrors.length > 0
+                ? "failed: exit 0, provider reported an error"
+                : "completed";
+        const { base, unmirror } = current();
         queue.push({
           ...base,
           ts: new Date().toISOString(),
           kind: "session.ended",
-          payload: { reason, durationMs: Date.now() - startedAt },
+          payload: {
+            reason,
+            durationMs: Date.now() - startedAt,
+            ...(usage ? { usage } : {}),
+          },
         });
+        unmirror();
         queue.close();
         return result;
       });
 
       return {
-        sessionId,
+        get sessionId() {
+          return session?.id ?? mintedId;
+        },
         pid: child.pid,
         events: queue.iterate(),
         done,

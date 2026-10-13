@@ -4,7 +4,10 @@
  * (including a crash or Ctrl-C) kills the whole tree synchronously.
  */
 
-import type { ExecResult } from "./types";
+import type { ChildExit } from "./types";
+
+/** How much of a child's stderr is kept: the end, where a failure says why. */
+export const STDERR_TAIL_CHARS = 4000;
 
 export interface SuperviseOptions {
   command: string[];
@@ -17,7 +20,7 @@ export interface SuperviseOptions {
 
 export interface Supervised {
   pid: number;
-  done: Promise<ExecResult>;
+  done: Promise<ChildExit>;
   stop(reason: string): Promise<void>;
 }
 
@@ -90,6 +93,22 @@ async function pumpLines(
   drain(true);
 }
 
+/** Read a stream to its end, keeping only its last `max` characters. */
+async function readTail(
+  stream: ReadableStream<Uint8Array>,
+  max: number,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text = (text + decoder.decode(value, { stream: true })).slice(-max);
+  }
+  return (text + decoder.decode()).slice(-max);
+}
+
 export function supervise(options: SuperviseOptions): Supervised {
   hookParentExit();
   const proc = Bun.spawn(options.command, {
@@ -98,7 +117,7 @@ export function supervise(options: SuperviseOptions): Supervised {
     stdin: "pipe",
     ...(process.platform === "win32" ? {} : { detached: true }),
     stdout: "pipe",
-    stderr: "ignore",
+    stderr: "pipe",
   });
   live.add(proc.pid);
 
@@ -118,11 +137,13 @@ export function supervise(options: SuperviseOptions): Supervised {
   proc.stdin.end();
 
   const pumped = pumpLines(proc.stdout, options.onLine);
-  const done = (async (): Promise<ExecResult> => {
+  const stderrTail = readTail(proc.stderr, STDERR_TAIL_CHARS).catch(() => "");
+  const done = (async (): Promise<ChildExit> => {
     try {
       const exitCode = await proc.exited;
       await pumped.catch(() => undefined);
-      return { exitCode, timedOut, stopped };
+      const stderr = await stderrTail;
+      return { exitCode, timedOut, stopped, stderr };
     } finally {
       if (timer) clearTimeout(timer);
       live.delete(proc.pid);
