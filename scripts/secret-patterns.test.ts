@@ -80,6 +80,9 @@ const PREFIXES: ReadonlyArray<[string, string]> = [
   ["a bracket", "["],
 ];
 
+/** What follows `sk-` in a slug: lowercase segments, each too short to be a key body. */
+const SLUG_BODY = "queue-state-machine-v2";
+
 /** Ordinary slugs: `sk-` only ever appears inside a word. */
 const SLUGS: readonly string[] = [
   "task-queue-state-machine-v2",
@@ -193,6 +196,24 @@ describe("sk- key patterns", () => {
         redacted: expect.stringContaining("[REDACTED:openai-api-key]"),
       });
     }
+  });
+
+  // Each case is decided by one branch of the word-start check alone: the
+  // same two letters after a space are exempt, so dropping the branch for
+  // the character in front lets the text through. The texts are put together
+  // here because the redacted ones are what the scanner flags.
+  test("sk- and a slug body after two lowercase letters are redacted when a digit, an uppercase letter, a backslash or a percent sign comes before the letters, and left alone when a space does", () => {
+    const text = (before: string): string => `${before}task-${SLUG_BODY}`;
+    for (const before of ["7", "D", "\\", "%"]) {
+      expect({ before, redacted: redactSecrets(text(before)).text }).toEqual({
+        before,
+        redacted: `${before}ta[REDACTED:openai-api-key]`,
+      });
+    }
+    expect(redactSecrets(text(" "))).toEqual({
+      text: text(" "),
+      redactions: [],
+    });
   });
 
   test("the two key kinds keep their own labels and the count leaves exempt slugs out", () => {
