@@ -1163,6 +1163,26 @@ describe("a close of an issue that was already closed", () => {
     expect(h.events(["bead.transitioned"])).toEqual([]);
   });
 
+  test("is told by a closing time bd printed three seconds back, just outside the two seconds allowed: 409, nothing recorded", async () => {
+    const h = await start();
+    const reason = "Verified today";
+    // bdTime drops the milliseconds: the time printed is three to four seconds
+    // before bd answered. A slack of four seconds or more would take it for
+    // this call's close.
+    h.bd.answer = () =>
+      bdAnswers.closed(
+        anIssue({
+          status: "closed",
+          close_reason: reason,
+          closed_at: bdTime(new Date(Date.now() - 3000)),
+        }),
+      );
+    const answer = await post(h, "/beads/demo-task/close", { reason });
+    expect(answer.status).toBe(409);
+    expect(answer.body.error).toContain("already closed");
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+  });
+
   test("a close bd timed within the second it rounds to is the close that was asked for", async () => {
     const h = await start();
     const reason = "Verified today";
@@ -1509,6 +1529,24 @@ describe("what a refusal says", () => {
     );
   });
 
+  test("with two lines that begin Error, is the last of them", async () => {
+    const h = await start();
+    h.bd.answer = () => ({
+      status: 1,
+      stdout: "",
+      stderr:
+        "Error: a first error line\nError: parent issue demo-nope not found\n",
+    });
+    const answer = await post(h, "/beads", {
+      title: "A child",
+      parent: "demo-nope",
+    });
+    expect(answer.status).toBe(502);
+    expect(answer.body.error).toBe(
+      "bd create failed: parent issue demo-nope not found",
+    );
+  });
+
   test("is made safe: a secret in bd's error is redacted and a long one is cut", async () => {
     const h = await start();
     const secret = `ghp_${"a1B2c3D4e5".repeat(4)}`;
@@ -1634,6 +1672,47 @@ describe("a claim of a bead that was already claimed", () => {
     expect(h.events(["operator.action"])).toHaveLength(1);
     expect(h.bd.calls.length).toBe(1);
   });
+
+  test("is told by a last change bd printed three seconds back, just outside the two seconds allowed: 409, nothing recorded", async () => {
+    const h = await start();
+    // bdTime drops the milliseconds: the time printed is three to four seconds
+    // before bd answered. A slack of four seconds or more would take it for
+    // this call's claim.
+    h.bd.answer = () =>
+      bdAnswers.claimed(
+        anIssue({
+          status: "in_progress",
+          assignee: "operator",
+          updated_at: bdTime(new Date(Date.now() - 3000)),
+        }),
+      );
+    const answer = await post(h, "/beads/demo-task/claim", {});
+    expect(answer.status).toBe(409);
+    expect(answer.body.error).toContain("already claimed");
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+  });
+
+  test("is timed against when the call began, not when bd answered: a slow bd does not turn a claim into 'already claimed'", async () => {
+    const h = await start();
+    // bd changes the issue as the call reaches it and answers 3.1 s later.
+    // Timed against that answer, the change would be more than the two
+    // seconds allowed before it, and the claim would be taken for an old one.
+    h.bd.answer = async () => {
+      const updatedAt = bdTime();
+      await new Promise((done) => setTimeout(done, 3100));
+      return bdAnswers.claimed(
+        anIssue({
+          status: "in_progress",
+          assignee: "operator",
+          updated_at: updatedAt,
+        }),
+      );
+    };
+    const answer = await post(h, "/beads/demo-task/claim", {});
+    expect(answer.status).toBe(200);
+    expect(answer.body.data?.status).toBe("in_progress");
+    expect(h.events(["bead.transitioned"])).toHaveLength(1);
+  }, 10_000);
 
   test("a claim bd timed within the second it rounds to, or did not time, is this call's", async () => {
     const h = await start();
