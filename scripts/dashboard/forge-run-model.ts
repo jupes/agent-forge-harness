@@ -656,7 +656,15 @@ export function boardRows(runs: readonly ForgeRunView[]): RunBoardRow[] {
 
 export type ReviewDecision = "approve" | "request-changes";
 
+/**
+ * The longest note a review takes. The comment travels to `bd` as one
+ * argument, so this also keeps the call far under the 32,767 characters of a
+ * Windows command line.
+ */
 export const REVIEW_NOTE_LIMIT = 2000;
+
+/** No program can be handed an argument holding one: the runtime refuses the call. */
+const NUL = String.fromCharCode(0);
 
 /** The only Beads status a review can be recorded against. */
 export const REVIEWABLE_STATUS = "in_progress";
@@ -694,6 +702,9 @@ export function reviewCommentFor(input: unknown): ReviewComment {
       ok: false,
       error: `note must be ${REVIEW_NOTE_LIMIT} characters or fewer`,
     };
+  }
+  if (note.includes(NUL)) {
+    return { ok: false, error: "note must not hold a NUL character" };
   }
   if (raw.decision === "request-changes" && !note) {
     return {
