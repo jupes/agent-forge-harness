@@ -44,15 +44,25 @@ export interface SupervisorOptions {
   startTimeoutMs?: number;
 }
 
-async function isHealthy(lock: HearthLock): Promise<boolean> {
+/**
+ * Whether the lock names a live hearth: its pid is alive and its port answers
+ * the health route with that pid and the root the lock names. A live pid alone
+ * is not enough: the pid of a hearth that was killed can belong to any process
+ * by now. Used by this supervisor and by a hearth started directly
+ * (`createHearth`).
+ */
+export async function isHealthy(lock: HearthLock): Promise<boolean> {
   if (!isPidAlive(lock.pid)) return false;
   try {
     const res = await fetch(`http://127.0.0.1:${lock.port}${HEALTH_ROUTE}`, {
       signal: AbortSignal.timeout(2_000),
     });
     if (!res.ok) return false;
-    const body = (await res.json()) as { data?: { pid?: number } };
-    return body.data?.pid === lock.pid;
+    const body = (await res.json()) as {
+      data?: { pid?: number; root?: string };
+    };
+    // A hearth answers the very root it wrote into its lock.
+    return body.data?.pid === lock.pid && body.data.root === lock.root;
   } catch {
     return false;
   }

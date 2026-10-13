@@ -16,8 +16,10 @@ import type {
   IssueType,
 } from "../types/beads";
 
-/** One line from `bd export --no-memories` (issue + embedded dependencies). */
+/** One line from `bd export --no-memories` (issue + embedded dependencies and comments). */
 export interface BdExportRow {
+  /** `"issue"` on issue lines; other record kinds are not issues. */
+  _type?: string;
   id: string;
   title: string;
   acceptance_criteria?: string;
@@ -45,8 +47,10 @@ export interface BdExportRow {
     depends_on_id: string;
     type: string;
   }>;
-  /** Present on `bd export` rows; used to decide whether to call `bd comments <id>`. */
+  /** How many comments the issue has; compared with `comments` to spot a short export. */
   comment_count?: number;
+  /** The issue's comments, embedded by `bd export` (bd 1.1 and later). */
+  comments?: BdCommentJson[];
 }
 
 /** One element from `bd comments <id> --json` (field names match upstream CLI). */
@@ -57,20 +61,11 @@ export interface BdCommentJson {
   created_at?: string;
 }
 
-/**
- * Parse stdout from `bd comments <issueId> --json` into normalized dashboard comments.
- */
-export function parseBdCommentsJson(
-  json: string,
+/** Normalize bd comment records (from `bd comments --json` or an export row). */
+function normalizeBdComments(
+  parsed: unknown[],
   fallbackIssueId: string,
 ): BeadsComment[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
   const out: BeadsComment[] = [];
   for (const raw of parsed) {
     if (!raw || typeof raw !== "object") continue;
@@ -88,6 +83,46 @@ export function parseBdCommentsJson(
     out.push({ issueId, body, author, createdAt });
   }
   return out;
+}
+
+/**
+ * Parse stdout from `bd comments <issueId> --json` into normalized dashboard comments.
+ */
+export function parseBdCommentsJson(
+  json: string,
+  fallbackIssueId: string,
+): BeadsComment[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return normalizeBdComments(parsed, fallbackIssueId);
+}
+
+/**
+ * The comments `bd export` embeds in its rows, normalized, plus the ids of
+ * issues whose `comment_count` is higher than what the row carried (an older
+ * bd that does not embed comments, or a short export).
+ */
+export function commentsFromExportRows(rows: BdExportRow[]): {
+  comments: BeadsComment[];
+  short: string[];
+} {
+  const comments: BeadsComment[] = [];
+  const short: string[] = [];
+  for (const row of rows) {
+    const carried = Array.isArray(row.comments) ? row.comments : [];
+    comments.push(...normalizeBdComments(carried, row.id));
+    if (
+      typeof row.comment_count === "number" &&
+      row.comment_count > carried.length
+    )
+      short.push(row.id);
+  }
+  return { comments, short };
 }
 
 export function mapNumericPriority(
@@ -210,6 +245,17 @@ export function parseBdExportStdout(stdout: string): BdExportRow[] {
     }
   }
   return rows;
+}
+
+/** The rows that are issues: objects with a string id and no other record kind. */
+export function issueRowsOf(rows: BdExportRow[]): BdExportRow[] {
+  return rows.filter(
+    (row) =>
+      typeof row === "object" &&
+      row !== null &&
+      typeof row.id === "string" &&
+      (row._type === undefined || row._type === "issue"),
+  );
 }
 
 export function issuesAndDepsFromExportRows(rows: BdExportRow[]): {

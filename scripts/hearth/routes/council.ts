@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { sanitizeContent } from "../../council/context";
 import type { createCouncilService } from "../../council/service";
 import { passesFrontDoor } from "../gate";
+import { STREAM_KEEPALIVE_MS } from "../stream";
 
 export const COUNCIL_API = "/__agent-forge/council-api";
 type Service = ReturnType<typeof createCouncilService>;
@@ -29,7 +30,11 @@ export function isLocalCouncilRequest(req: IncomingMessage): boolean {
  * run's event stream. Starting and cancelling a run are action rows of the
  * operator API (`./operator.ts`), at these same paths; nothing here mutates.
  */
-export function councilHttpHandler(service: Service) {
+export function councilHttpHandler(
+  service: Service,
+  options: { keepaliveMs?: number | undefined } = {},
+) {
+  const keepaliveMs = options.keepaliveMs ?? STREAM_KEEPALIVE_MS;
   return async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -72,12 +77,17 @@ export function councilHttpHandler(service: Service) {
       let unsubscribe = () => {};
       const heartbeat = setInterval(() => {
         if (!res.destroyed && !res.writableEnded) res.write(": keepalive\n\n");
-      }, 15_000);
+      }, keepaliveMs);
       const cleanup = () => {
         clearInterval(heartbeat);
         unsubscribe();
       };
+      // Under Bun, a client that goes away closes the request and the socket;
+      // the response emits nothing. All three are listened to, as the ledger
+      // stream does; running `cleanup` again changes nothing.
+      req.once("close", cleanup);
       res.once("close", cleanup);
+      req.socket.once("close", cleanup);
       unsubscribe = service.subscribe(runId, snapshot);
       if (res.writableEnded || res.destroyed) cleanup();
     } catch (error) {

@@ -8,9 +8,13 @@
  * with a stand-in provider CLI that dumps the environment it was started
  * with; its pointer travels in that environment. The gate end is
  * `runQualityGate` with recording runners, not a spawned hook.
+ *
+ * Each `forge:exec` test runs with the test process moved into a scratch
+ * checkout that mirrors a live session (`runFromCheckoutWithMirror`), so a
+ * deps object that names no launch directory hands that session to the child.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -25,6 +29,7 @@ import { type GateDeps, runQualityGate } from "../.claude/hooks/quality-gate";
 import { claudeAdapter } from "./executors/claude";
 import { type ExecDeps, runExec } from "./executors/exec-cli";
 import { closeLedger } from "./ledger/db";
+import { SESSION_MIRROR_FILE } from "./ledger/identity";
 import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "./run-correlation";
 import { runCorrelate } from "./run-correlation-cli";
@@ -404,7 +409,38 @@ describe("forge:correlate", () => {
   });
 });
 
+/** The variable forge:exec sets in its child for the session it was launched from. */
+const PARENT_SESSION_ENV = "AGENT_FORGE_PARENT_SESSION";
+const MIRRORED_SESSION = "session-mirrored-where-the-test-process-runs";
+
+/**
+ * For each test in the calling block, moves the test process into a scratch
+ * checkout whose session mirror names `MIRRORED_SESSION`, and back out
+ * afterwards. forge:exec falls back to that directory when a deps object
+ * names no launch directory; the launch directory each deps object below
+ * names mirrors nothing.
+ */
+function runFromCheckoutWithMirror(): void {
+  let moved: { dir: string; from: string } | undefined;
+  beforeEach(() => {
+    const dir = mkdtempSync(join(tmpdir(), "launcher test process "));
+    mkdirSync(join(dir, ".git"));
+    writeFileSync(join(dir, SESSION_MIRROR_FILE), `${MIRRORED_SESSION}\n`);
+    moved = { dir, from: process.cwd() };
+    process.chdir(dir);
+  });
+  afterEach(() => {
+    if (!moved) return;
+    // Back out before removing it: Windows does not remove a process's directory.
+    process.chdir(moved.from);
+    rmSync(moved.dir, { recursive: true, force: true });
+    moved = undefined;
+  });
+}
+
 describe("forge:exec", () => {
+  runFromCheckoutWithMirror();
+
   function setup(): { box: Box; deps: ExecDeps; dump: string } {
     const box = sandbox();
     return {
@@ -413,6 +449,9 @@ describe("forge:exec", () => {
       deps: {
         harnessRoot: box.root,
         home: box.root,
+        // Launched from the scratch checkout, not box.root: that has no `.git`,
+        // so it would resolve to whatever checkout the temp directory sits in.
+        cwd: box.cwd,
         env: { PATH: process.env.PATH },
         adapters: { claude: claudeAdapter },
         sink: () => undefined,
@@ -457,6 +496,7 @@ describe("forge:exec", () => {
       },
     });
 
+    expect(seenEnv(dump)[PARENT_SESSION_ENV]).toBeUndefined();
     const pointer = seenEnv(dump)[RUN_CORRELATION_ENV];
     expect(typeof pointer).toBe("string");
     // What a hook inside that child would see: the same environment.
@@ -481,6 +521,7 @@ describe("forge:exec", () => {
     );
     expect(out.code).toBe(0);
     expect(out.body.data).toMatchObject({ correlation: null });
+    expect(seenEnv(dump)[PARENT_SESSION_ENV]).toBeUndefined();
     expect(RUN_CORRELATION_ENV in seenEnv(dump)).toBe(false);
     expect(existsSync(join(box.cwd, RUN_CORRELATIONS_DIR))).toBe(false);
   });
@@ -513,6 +554,7 @@ describe("forge:exec", () => {
       correlationNote:
         "run run-1 is already correlated to bead-a; rebind it with: bun run forge:correlate --bead bead-b --run run-1",
     });
+    expect(seenEnv(dump)[PARENT_SESSION_ENV]).toBeUndefined();
     expect(RUN_CORRELATION_ENV in seenEnv(dump)).toBe(false);
     // The file still names the bead it was written for.
     const loaded = loadRunCorrelation(
@@ -524,6 +566,8 @@ describe("forge:exec", () => {
 });
 
 describe("forge:exec with a worktree or a bead it cannot correlate", () => {
+  runFromCheckoutWithMirror();
+
   test("a --worktree that is only a directory inside a checkout gets no pointer, and nothing is written around it", async () => {
     const box = sandbox();
     const inside = join(box.cwd, "packages", "app");
@@ -543,6 +587,7 @@ describe("forge:exec with a worktree or a bead it cannot correlate", () => {
       {
         harnessRoot: box.root,
         home: box.root,
+        cwd: box.cwd,
         env: { PATH: process.env.PATH },
         adapters: { claude: claudeAdapter },
         sink: () => undefined,
@@ -565,6 +610,7 @@ describe("forge:exec with a worktree or a bead it cannot correlate", () => {
     const seen = (
       JSON.parse(readFileSync(dump, "utf8")) as { env: Record<string, string> }
     ).env;
+    expect(seen[PARENT_SESSION_ENV]).toBeUndefined();
     expect(RUN_CORRELATION_ENV in seen).toBe(false);
     expect(existsSync(join(box.cwd, ".tmp"))).toBe(false);
     expect(existsSync(join(inside, ".tmp"))).toBe(false);
@@ -578,6 +624,7 @@ describe("forge:exec with a worktree or a bead it cannot correlate", () => {
       executionRunId: "run-1",
     });
     expect(held.ok).toBe(true);
+    const dump = join(box.root, "dump.json");
     const out = await runExec(
       [
         "--bead",
@@ -592,10 +639,18 @@ describe("forge:exec with a worktree or a bead it cannot correlate", () => {
       {
         harnessRoot: box.root,
         home: box.root,
+        cwd: box.cwd,
         env: { PATH: process.env.PATH },
         adapters: { claude: claudeAdapter },
         sink: () => undefined,
-        command: [process.execPath, FAKE, "--fake-provider", "claude"],
+        command: [
+          process.execPath,
+          FAKE,
+          "--fake-provider",
+          "claude",
+          "--fake-dump",
+          dump,
+        ],
       },
     );
     expect(out.body.data).toMatchObject({
@@ -603,6 +658,10 @@ describe("forge:exec with a worktree or a bead it cannot correlate", () => {
       correlationNote:
         "run correlation not written: beadsIssueId must be a Beads issue id",
     });
+    const seen = (
+      JSON.parse(readFileSync(dump, "utf8")) as { env: Record<string, string> }
+    ).env;
+    expect(seen[PARENT_SESSION_ENV]).toBeUndefined();
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createOperatorPost } from "../../docs/js/operator";
 import {
   COLUMN_ORDER,
   DONE_SHOWN,
@@ -6,6 +7,7 @@ import {
   workbenchColumns,
 } from "../../docs/js/workbench-model";
 import type { QueueEntry } from "../../types/hearth";
+import { TOKEN_ROUTE } from "../hearth/paths";
 import type { Eligibility } from "../scheduler/eligibility";
 
 const entry = (
@@ -180,6 +182,75 @@ describe("moveOutcome", () => {
     expect(
       await moveOutcome("t-1", "pause", answering(200, "<html>proxy</html>")),
     ).toEqual(unknown);
+  });
+
+  const tokenRefused = () =>
+    Response.json(
+      { ok: false, data: null, error: "the control plane is starting" },
+      { status: 503 },
+    );
+  const tokenGiven = () =>
+    Response.json({ ok: true, data: { token: "t" }, error: null });
+  const notSent = {
+    tone: "failed" as const,
+    message:
+      "Not sent (approve): the page could not get an operator token from the control plane (the control plane is starting). Nothing was changed.",
+  };
+
+  test("a move whose operator token cannot be had is a failure that says it was not sent, and no POST is made", async () => {
+    const calls: string[] = [];
+    const post = createOperatorPost(async (input, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      return input === TOKEN_ROUTE
+        ? tokenRefused()
+        : Response.json({ ok: true, data: {}, error: null });
+    });
+    expect(
+      await moveOutcome("t-1", "approve", () =>
+        post("/__agent-forge/queue/t-1/approve", {}),
+      ),
+    ).toEqual(notSent);
+    expect(calls).toEqual([`GET ${TOKEN_ROUTE}`]);
+  });
+
+  test("a move refused with a 403 whose token cannot be had again is said as not sent", async () => {
+    const calls: string[] = [];
+    let tokens = 0;
+    const post = createOperatorPost(async (input, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input !== TOKEN_ROUTE)
+        return Response.json(
+          { ok: false, data: null, error: "token" },
+          { status: 403 },
+        );
+      return tokens++ === 0 ? tokenGiven() : tokenRefused();
+    });
+    expect(
+      await moveOutcome("t-1", "approve", () =>
+        post("/__agent-forge/queue/t-1/approve", {}),
+      ),
+    ).toEqual(notSent);
+    expect(calls).toEqual([
+      `GET ${TOKEN_ROUTE}`,
+      "POST /__agent-forge/queue/t-1/approve",
+      `GET ${TOKEN_ROUTE}`,
+    ]);
+  });
+
+  test("a move whose POST fails after the token was had is still not known", async () => {
+    const post = createOperatorPost(async (input) => {
+      if (input === TOKEN_ROUTE) return tokenGiven();
+      throw new TypeError("Failed to fetch");
+    });
+    expect(
+      await moveOutcome("t-1", "approve", () =>
+        post("/__agent-forge/queue/t-1/approve", {}),
+      ),
+    ).toEqual({
+      tone: "unknown",
+      message:
+        "Outcome not known (approve). Check with `bd show t-1` before trying again.",
+    });
   });
 });
 
