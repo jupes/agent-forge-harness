@@ -13,6 +13,9 @@
  * is also appended to the event ledger as `verdict.bound` (the verdict file
  * as read) and `review.recorded` (the decision).
  *
+ * A command line that cannot be read whole (`parseReviewArgs`) is refused
+ * before a round is recorded.
+ *
  * CLI:
  *   bun run forge:review --slug <slug> --phase <phase> --verdict <path>
  *     [--tier <tier>] [--max-revisions <n>]
@@ -76,9 +79,84 @@ interface CliResult<T = unknown> {
   error: string | null;
 }
 
-function getFlag(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+/** The flags that take a value. */
+const VALUE_FLAGS = [
+  "slug",
+  "phase",
+  "verdict",
+  "tier",
+  "max-revisions",
+] as const;
+/** The flags that take none. */
+const SWITCHES = ["decision-only", "ledger"] as const;
+
+type ReviewValueFlag = (typeof VALUE_FLAGS)[number];
+type ReviewSwitch = (typeof SWITCHES)[number];
+
+const isValueFlag = (name: string): name is ReviewValueFlag =>
+  (VALUE_FLAGS as readonly string[]).includes(name);
+const isSwitch = (name: string): name is ReviewSwitch =>
+  (SWITCHES as readonly string[]).includes(name);
+
+export interface ReviewArgs {
+  values: Partial<Record<ReviewValueFlag, string>>;
+  decisionOnly: boolean;
+  ledger: boolean;
+}
+
+/**
+ * The command line, read strictly: the value flags as `--flag value` or
+ * `--flag=value`, and the two switches. A flag that is unknown, given twice or
+ * left without its value is refused, and so is a word that is no flag's value:
+ * a scripting slip must not become a recorded round. What the values mean
+ * (a known phase, a usable slug) is the caller's to judge.
+ */
+export function parseReviewArgs(
+  argv: readonly string[],
+):
+  | { ok: true; data: ReviewArgs; error: null }
+  | { ok: false; data: null; error: string } {
+  const refuse = (error: string) => ({ ok: false, data: null, error }) as const;
+  const args: ReviewArgs = { values: {}, decisionOnly: false, ledger: false };
+  const seen = new Set<string>();
+
+  for (let at = 0; at < argv.length; at++) {
+    const word = argv[at] as string;
+    if (!word.startsWith("--")) {
+      return refuse(`unexpected argument "${word}".`);
+    }
+    const equals = word.indexOf("=");
+    const name = word.slice(2, equals < 0 ? undefined : equals);
+    if (!isValueFlag(name) && !isSwitch(name)) {
+      return refuse(
+        `unknown flag --${name}. Known flags: ${[...VALUE_FLAGS, ...SWITCHES].map((flag) => `--${flag}`).join(", ")}.`,
+      );
+    }
+    if (seen.has(name)) return refuse(`--${name} is given twice.`);
+    seen.add(name);
+    if (isSwitch(name)) {
+      if (equals >= 0) return refuse(`--${name} takes no value.`);
+      if (name === "ledger") args.ledger = true;
+      else args.decisionOnly = true;
+      continue;
+    }
+    // A value is the rest of the word after `=`, else the next word, which
+    // must not be a flag itself.
+    const value = equals >= 0 ? word.slice(equals + 1) : argv[++at];
+    if (
+      value === undefined ||
+      value.trim().length === 0 ||
+      (equals < 0 && value.startsWith("--"))
+    ) {
+      return refuse(`--${name} needs a value.`);
+    }
+    // A line copied from a document with its `<path>` still in it names nothing.
+    if (/^<[^<>]*>$/.test(value.trim())) {
+      return refuse(`--${name} ${value} is a placeholder, not a value.`);
+    }
+    args.values[name] = value;
+  }
+  return { ok: true, data: args, error: null };
 }
 
 function emit(result: CliResult, code: number): never {
@@ -154,9 +232,11 @@ export function verdictOfRun(
 }
 
 if (import.meta.main) {
-  const argv = process.argv.slice(2);
+  const parsed = parseReviewArgs(process.argv.slice(2));
+  if (!parsed.ok) fail(parsed.error);
+  const args = parsed.data;
 
-  const slug = getFlag(argv, "slug");
+  const { slug } = args.values;
   if (!slug || !isValidSlug(slug)) {
     fail("Missing or unusable --slug <slug>.");
   }
@@ -167,25 +247,25 @@ if (import.meta.main) {
     );
   }
 
-  if (argv.includes("--ledger")) {
+  if (args.ledger) {
     emit({ ok: true, data: state.reviews ?? [], error: null }, 0);
   }
 
-  const phaseArg = getFlag(argv, "phase");
+  const phaseArg = args.values.phase;
   if (!phaseArg || !isForgePhase(phaseArg)) {
     fail("Missing or unknown --phase <research|plan|implement|ship>.");
   }
   const phase = phaseArg;
   const history = state.reviews ?? [];
 
-  const budgetArg = getFlag(argv, "max-revisions");
+  const budgetArg = args.values["max-revisions"];
   if (budgetArg !== undefined && !/^\d+$/.test(budgetArg)) {
     fail(`--max-revisions must be a non-negative integer, not "${budgetArg}".`);
   }
   const budget =
     budgetArg === undefined ? {} : { maxRevisions: Number(budgetArg) };
 
-  if (argv.includes("--decision-only")) {
+  if (args.decisionOnly) {
     const decision = decideNext({ phase, history, ...budget });
     emit(
       { ok: true, data: { decision, rounds: history.length }, error: null },
@@ -193,7 +273,7 @@ if (import.meta.main) {
     );
   }
 
-  const verdictPath = getFlag(argv, "verdict");
+  const verdictPath = args.values.verdict;
   if (!verdictPath) {
     fail("Missing required --verdict <path to the evaluator verdict JSON>.");
   }
@@ -272,7 +352,7 @@ if (import.meta.main) {
     history,
     verdict,
     at: new Date().toISOString(),
-    ...(getFlag(argv, "tier") ? { tier: getFlag(argv, "tier") as string } : {}),
+    ...(args.values.tier !== undefined ? { tier: args.values.tier } : {}),
   });
   // Decide first, from the history including this round, and store the
   // decision on the round: the revision budget is known only here, so anything
