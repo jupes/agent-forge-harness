@@ -218,6 +218,25 @@ describe("forge:exec", () => {
     expect((await runExec([], deps)).body.error).toContain("usage");
   });
 
+  test("--smith constructor, a key every object has, exits 2 as an unknown smith", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "x",
+        "--smith",
+        "constructor",
+      ],
+      deps,
+    );
+    expect(out).toMatchObject({ code: 2 });
+    expect(out.body.error).toBe('unknown smith "constructor"');
+  });
+
   test("a provider failure exits 2 with its exit code", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(

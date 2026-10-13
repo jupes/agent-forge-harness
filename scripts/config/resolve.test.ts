@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { Smith } from "../../types/hearth";
+import type { BenchName, Smith } from "../../types/hearth";
 import { loadConfig } from "./load";
 import { pickFromBench, resolveSmith } from "./resolve";
 
@@ -46,6 +46,23 @@ describe("resolveSmith", () => {
       ok: false,
       error: 'smith "claude-master" is disabled',
     });
+  });
+
+  test("a name every object has a key for is an unknown smith, whether named by flag or by bead", () => {
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      const unknown = { ok: false as const, error: `unknown smith "${name}"` };
+      expect(resolveSmith(config, { explicit: name })).toEqual(unknown);
+      expect(resolveSmith(config, { beadSmith: name })).toEqual(unknown);
+    }
+  });
+
+  test("a complexity every object has a key for is an unknown bench, returned rather than thrown", () => {
+    // What a caller that skipped its own check could pass: typed as a bench, not one.
+    for (const name of ["constructor", "__proto__", "toString"] as string[]) {
+      expect(
+        resolveSmith(config, { complexity: name as BenchName, seed: "b-1" }),
+      ).toEqual({ ok: false, error: `unknown bench "${name}"` });
+    }
   });
 
   test("the bench pick is stable per seed and respects weights", () => {

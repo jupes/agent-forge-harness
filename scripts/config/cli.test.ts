@@ -47,6 +47,18 @@ describe("forge:config", () => {
     expect(bad.stderr).toContain("unknown key");
   });
 
+  test("get of a key every object has exits 2 as an unknown key", () => {
+    const opts = setup();
+    for (const key of ["constructor", "__proto__", "toString"]) {
+      const out = runConfigCli(["get", key], opts);
+      expect(out).toEqual({
+        code: 2,
+        stdout: "",
+        stderr: `unknown key "${key}" (see: forge:config keys)`,
+      });
+    }
+  });
+
   test("keys lists every settable key", () => {
     const out = runConfigCli(["keys", "--json"], setup());
     const { keys } = JSON.parse(out.stdout).data;
