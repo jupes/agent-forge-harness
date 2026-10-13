@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "path";
-import { killAllLive, liveChildCount, supervise } from "./supervisor";
+import {
+  killAllLive,
+  liveChildCount,
+  STDERR_TAIL_CHARS,
+  supervise,
+} from "./supervisor";
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const hang = [process.execPath, FAKE, "--fake-mode", "hang"];
@@ -52,5 +57,21 @@ describe("supervise", () => {
     });
     await child.done;
     expect(lines).toEqual(["one", "two", "three"]);
+  });
+
+  test("keeps the end of the child's stderr, STDERR_TAIL_CHARS characters at most", async () => {
+    const child = supervise({
+      command: [
+        process.execPath,
+        "-e",
+        'process.stderr.write("a".repeat(9000) + "the end")',
+      ],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+    });
+    const { stderr } = await child.done;
+    expect(stderr).toHaveLength(STDERR_TAIL_CHARS);
+    expect(stderr).toEndWith("aaathe end");
   });
 });

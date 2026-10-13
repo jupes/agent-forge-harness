@@ -13,7 +13,7 @@ import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
-import { claudeAdapter, parseClaudeLine } from "./claude";
+import { claudeAdapter, parseClaudeError, parseClaudeLine } from "./claude";
 import { type ExecDeps, runExec } from "./exec-cli";
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
@@ -180,7 +180,6 @@ describe("claude adapter: shapes the real CLI printed, replayed by the fake bina
       { ...deps, command: fake("auth") },
     );
     expect(out.code).toBe(2);
-    expect(out.body.error).toBe("provider exited 1");
     expect(out.body.data).toMatchObject({ events: 2, recorded: 2 });
 
     const rows = queryEvents({ beadId: "b-auth" }, { path: ledger });
@@ -189,6 +188,25 @@ describe("claude adapter: shapes the real CLI printed, replayed by the fake bina
       "session.ended",
     ]);
     expect(rows[1]?.payload).toMatchObject({ reason: "failed: exit 1" });
+  });
+
+  test("the reason an error result gives is in forge:exec's output, and stays out of the ledger", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-auth-why", "--worktree", worktree, "--prompt", "hi"],
+      { ...deps, command: fake("auth") },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.ok).toBe(false);
+    expect(out.body.error).toBe("provider exited 1: not signed in (fake)");
+    expect(out.body.data).toMatchObject({
+      exitCode: 1,
+      providerErrors: ["not signed in (fake)"],
+    });
+
+    const rows = queryEvents({ beadId: "b-auth-why" }, { path: ledger });
+    expect(rows).toHaveLength(2);
+    expect(JSON.stringify(rows)).not.toContain("not signed in");
   });
 });
 
@@ -241,5 +259,38 @@ describe("parseClaudeLine", () => {
       parseClaudeLine(line({ type: "result", is_error: true, result: "no" })),
     ).toEqual([]);
     expect(parseClaudeLine("not json")).toEqual([]);
+  });
+});
+
+describe("parseClaudeError", () => {
+  const line = (value: unknown) => JSON.stringify(value);
+
+  test("a result line with is_error gives its result text, else its subtype, else says it had no message", () => {
+    expect(
+      parseClaudeError(
+        line({ type: "result", is_error: true, result: " no sign-in " }),
+      ),
+    ).toBe("no sign-in");
+    expect(
+      parseClaudeError(
+        line({ type: "result", is_error: true, subtype: "error_kind" }),
+      ),
+    ).toBe("error_kind");
+    expect(parseClaudeError(line({ type: "result", is_error: true }))).toBe(
+      "an error result with no message",
+    );
+  });
+
+  test("a result without is_error, any other line and a line that is not JSON report no error", () => {
+    expect(
+      parseClaudeError(line({ type: "result", is_error: false, result: "x" })),
+    ).toBeUndefined();
+    expect(parseClaudeError(line({ type: "result" }))).toBeUndefined();
+    expect(
+      parseClaudeError(
+        line({ type: "assistant", is_error: true, result: "x" }),
+      ),
+    ).toBeUndefined();
+    expect(parseClaudeError("not json")).toBeUndefined();
   });
 });

@@ -45,6 +45,17 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   - One run through `forge:exec` itself (`codex` 0.160.0, 2026-10-09, a one-file task in a scratch repository, an
     isolated ledger home): the ledger held `session.started`, one `tool.called` (`shell`, exit code 0) and
     `session.ended` (`completed`), each with the smith. No `forge:exec` run against a real `claude` has been made.
-  - `forge:doctor` checks `--version` only. A binary can answer that and still be unusable: not signed in, or missing
-    the helper it runs tools with (one such copy exited 0 without doing the task).
+  - A binary can answer `--version` and still be unusable: `claude` 2.1.293 with an expired sign-in exited 1 with its
+    reason only in an error `result` line (stderr empty), and a `codex` 0.159.0 copy missing the helper it runs tools
+    with printed an `error` item and an agent message saying it could not do the task, then `turn.completed`, and
+    exited 0.
+- What the provider said goes in the command's output, never the ledger. An adapter's `parseError` picks the error a
+  stdout line reports (Claude: a `result` with `is_error`; Codex: an `error` item, `error`, `turn.failed`); the
+  supervisor keeps the end of stderr. `forge:exec`'s `error` puts the first reported error, else the last stderr line,
+  after the exit code, and a run that exits 0 after reporting an error is not a success (exit 2). `session.ended`
+  records only fixed reasons (`failed: exit <n>`, `failed: exit 0, provider reported an error`). `outcome.ts` decides.
+- `forge:doctor` answers two questions: does the binary answer `--version` (`ok`), and, with `--task`, can it run a
+  task (`task`): one `git status` through the adapter in a new git repository under the OS temp directory, passing
+  only on exit 0, no reported error and at least one tool call. Against a real provider `--task` spends a request.
+  Both are tested on the fake binary only; no `--task` run against a real CLI has been made.
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.

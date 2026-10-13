@@ -233,6 +233,36 @@ describe("forge:exec", () => {
     expect(out.body.error).toBe("provider exited 3");
   });
 
+  test("a provider that fails with its reason on stderr only: the reason is in the output, after the exit code", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-stderr", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude", "stderr") },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toBe(
+      "provider exited 2: the stream could not be started (fake)",
+    );
+    expect(out.body.data).toMatchObject({ exitCode: 2, providerErrors: [] });
+    expect(
+      String((out.body.data as Record<string, unknown>).stderr).trim(),
+    ).toBe("the stream could not be started (fake)");
+    expect(
+      JSON.stringify(queryEvents({ beadId: "b-stderr" }, { path: ledger })),
+    ).not.toContain("could not be started");
+  });
+
+  test("a run that exits 0 and reports no error is a success with no provider errors", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-clean", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude") },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body).toMatchObject({ ok: true, error: null });
+    expect(out.body.data).toMatchObject({ exitCode: 0, providerErrors: [] });
+  });
+
   test("the child never sees a planted DATABASE_URL, but sees configured pass vars", async () => {
     const { root, worktree, deps } = setup();
     writeFileSync(
