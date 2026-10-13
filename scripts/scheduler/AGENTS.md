@@ -51,6 +51,12 @@ process spawned is git, by the registry.
   append `bead.transitioned` `{ from, to, reason: "<action>:<actor>" }`. The event is appended
   before the lock is released. A refusal names the current state and every move allowed from it,
   and writes nothing. Do not write a queue label anywhere else.
+- A `bd` call with no exit status is "`bd` could not be started, nothing was changed" only when
+  `neverStarted` says so (the runtime's own message for a missing program, whole). Anything else
+  with no exit status is `failed` on the read and `unknown` on the write, and the answer says the
+  call was stopped before it answered or never started, not which: a call killed at the runner's
+  limit and one the runtime could not spawn for another reason (its working directory gone, which
+  Bun reports as `ENOENT: no such file or directory, uv_spawn 'bd'`) look alike here.
 - A label counts as a state only when the queue wrote it. Every write sets metadata `queue_state`
   to the same state in the same call, because `bd create --parent` copies the parent's labels onto
   the child and not its metadata. A label with no such backing (inherited, or added by hand) is

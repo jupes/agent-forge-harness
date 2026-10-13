@@ -348,12 +348,15 @@ export function createQueue(deps: QueueDeps): Queue {
       // The runner's own message repeats its arguments; it is not passed on.
       return no("failed", "bd show could not be run. Nothing was changed.");
     }
+    // No exit status: a call killed at the runner's limit, and one the runtime
+    // could not spawn for a reason other than a missing program (its working
+    // directory gone), look alike here, so the answer gives both.
     if (result.status === null)
       return no(
         "failed",
         neverStarted(result)
           ? "bd could not be started (is it installed, and on the PATH of this process?). Nothing was changed."
-          : "bd show did not finish within its time limit. Nothing was changed.",
+          : "bd show did not finish: it was stopped before it answered, or it never started. Nothing was changed.",
       );
     if (result.status !== 0) {
       const why = refusal(result);
@@ -392,6 +395,8 @@ export function createQueue(deps: QueueDeps): Queue {
         "did not finish: it could not be run. The change may still have been made.",
       );
     }
+    // No exit status, and not a missing program: killed at the limit, or not
+    // spawned (see `read`). Which one is not known, so neither is the change.
     if (result.status === null)
       return neverStarted(result)
         ? no(
@@ -399,7 +404,7 @@ export function createQueue(deps: QueueDeps): Queue {
             "bd could not be started (is it installed, and on the PATH of this process?). Nothing was changed.",
           )
         : unknown(
-            "did not finish within its time limit. The change may still have been made.",
+            "did not finish: it was stopped before it answered, or it never started. The change may still have been made.",
           );
     if (result.status !== 0)
       return no(
