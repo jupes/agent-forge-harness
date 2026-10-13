@@ -294,7 +294,9 @@ not relied on.
    exiting), the adapter mints a ULID and the whole run keeps it. No id is chosen at spawn: `claude
    --session-id` has not been run against a real CLI. With `session.started` the adapter writes the
    session mirror in the checkout the child runs in (see *Minted and mirrored identity*), so a script
-   the child launches attaches to the session.
+   the child launches attaches to the session. Right after `session.started` it appends
+   `prompt.submitted` for the initial prompt: the hash (`scripts/hash-text.ts`, as the prompt hook
+   uses) and the length of the prompt it sent on stdin, under the same session id.
 3. It parses the stream and appends `tool.called` with the same metadata-only rules; it exposes the
    same events on `ExecutorHandle.events` for the hearth's SSE. What it maps is limited to what a real
    CLI has been recorded printing:
@@ -305,11 +307,12 @@ not relied on.
    - Claude: each `tool_use` block of an `assistant` message is one `tool.called`. That is the
      documented stream-json format; no real `tool_use` block has been recorded yet, because the only
      recorded run stopped at sign-in (the owner's sign-in bead, `x1gs.4.8`).
-   - `prompt.submitted` for the initial prompt is **not appended yet** (`x1gs.4.15`).
-4. On exit, timeout or `stop(reason)` it appends `session.ended` with `payload.reason` (an exit code
-   other than 0 is in it: `failed: exit <n>`), `durationMs` and, when the stream reported it,
-   `payload.usage`: the token counts of Claude's `result` line (and its `total_cost_usd` as `costUsd`)
-   or of Codex's `turn.completed`, each under the provider's own field name in camelCase
+4. On exit, timeout or `stop(reason)` it appends `session.ended` with `payload.reason`, `durationMs`
+   and, when the stream reported it, `payload.usage`. The reason is fixed wording: an exit code other
+   than 0 is `failed: exit <n>`, and an exit 0 after the stream reported an error is `failed: exit 0,
+   provider reported an error`; the provider's own words go to the command's output, never the
+   ledger. The usage is the token counts of Claude's `result` line (and its `total_cost_usd` as
+   `costUsd`) or of Codex's `turn.completed`, each under the provider's own field name in camelCase
    (`ProviderUsage` in `types/hearth.ts`). Providers define their counts differently, so usage is
    compared per provider. A stream that reports usage more than once has its last report kept; a run
    of more than one turn has not been recorded. Then the adapter undoes its mirror.
@@ -374,7 +377,8 @@ Facts this file leans on that the adapter and hook beads must confirm and, if wr
    `session_id` on each of its lines, `system` / `init` first, in a run that stopped at sign-in. The
    adapters take those ids (`x1gs.4.11`). **Not run:** `claude --session-id`, which would pre-assign
    an id; the adapters do not pass it. No `forge:exec` run against a real CLI has been made since the
-   adapters began taking these ids, writing the mirror and recording usage.
+   adapters began taking these ids, writing the mirror, recording usage and appending
+   `prompt.submitted`.
 3. Whether SessionEnd fires for a headless child (assumed not relied on, hence the adapter emits).
 4. Headless usage. **Recorded:** `codex` 0.159.0 and 0.160.0 ended a finished turn with
    `turn.completed` and a `usage` of `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`,
