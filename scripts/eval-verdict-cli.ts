@@ -50,6 +50,7 @@ import {
   type EvalVerdict,
   parseEvaluatorIdentity,
   parseEvalVerdictJson,
+  verdictCountsProblem,
 } from "./eval-verdict";
 import {
   reviewVerdictFile,
@@ -310,16 +311,15 @@ function bodyFrom(
     }
     findings[name] = Number(raw);
   }
-  // A verdict is one statement: it cannot say PASS and count a blocker.
-  if (verdict === "PASS" && (findings.blocker !== 0 || findings.high !== 0)) {
-    return { ok: false, error: "a PASS has no blocker or high findings" };
-  }
-  if (
-    verdict === "FAIL" &&
-    FINDING_FLAGS.every((name) => findings[name] === 0)
-  ) {
-    return { ok: false, error: "a FAIL names at least one finding" };
-  }
+  // A verdict is one statement: it cannot say PASS and count a blocker. The
+  // parser holds the same rule, so the gate refuses what this refuses.
+  const contradiction = verdictCountsProblem(verdict, {
+    blocker: findings.blocker ?? 0,
+    high: findings.high ?? 0,
+    medium: findings.medium ?? 0,
+    low: findings.low ?? 0,
+  });
+  if (contradiction !== null) return { ok: false, error: contradiction };
   const attestations = new Map<string, number>();
   for (const pair of attest) {
     const [name, score, ...rest] = pair.split("=");

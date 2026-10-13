@@ -83,7 +83,7 @@ The command prints `{ ok, data, error }`: `data.path` is the file it wrote, rela
 | `schemaVersion` | yes | `2` |
 | `beadsIssueId` | yes | The run correlation's Beads issue id |
 | `executionRunId` | yes | The run correlation's run id (the Forge run id) |
-| `verdict` | yes | `"PASS"` or `"FAIL"` |
+| `verdict` | yes | `"PASS"` or `"FAIL"`. A PASS counts no blocker or high finding, and a FAIL counts at least one finding: a file that says otherwise does not parse, in either schema, so it never satisfies strict completion. |
 | `findings.*` | yes | Non-negative integers: `blocker`, `high`, `medium`, `low` |
 | `evaluator` | yes | Who judged: see below. A file without one does not parse. |
 | `summary` | no | String |
@@ -135,8 +135,8 @@ When `AGENT_FORGE_EVAL_VERDICT=strict`, on a `TaskCompleted` run of the gate:
 
 1. The gate **must** have been given a run correlation: `bun run quality-gate --correlation <pointer>`, or `AGENT_FORGE_RUN_CORRELATION` set by a launcher. Without one the check fails: an uncorrelated run cannot satisfy strict completion.
 2. It reads the file at the path the correlation's run id declares, **once**, into one buffer. A path that is, or sits under, a link is refused, as is a file over 64 KiB.
-3. From that buffer it requires: schema 2; `beadsIssueId` and `executionRunId` equal to the correlation's; a human evaluator, or a model evaluator that was observed, whose own recorded decision is `allowed`, and whose observed provider and model pass the rank policy as the gate computes it.
-4. **`verdict: "PASS"`** → the check passes. **`"FAIL"`** with `blocker > 0` or `high > 0` → it fails. **`"FAIL"`** with only medium/low → it passes (file follow-up beads).
+3. From that buffer it requires: schema 2, with a verdict word its counts agree with (see *Schema*); `beadsIssueId` and `executionRunId` equal to the correlation's; a human evaluator, or a model evaluator that was observed, whose own recorded decision is `allowed`, and whose observed provider and model pass the rank policy as the gate computes it.
+4. **`verdict: "PASS"`** → the check passes. **`"FAIL"`** with `blocker > 0` or `high > 0` → it fails. **`"FAIL"`** with only medium/low → it passes (file follow-up beads). A PASS that counts a blocker or high finding, or a FAIL that counts none, never gets here: it does not parse, and the check fails with the parser's reason.
 5. A verdict that got through step 3 is **bound**: the gate log entry carries `evaluatorArtifact` (the path, the SHA-256 and byte count of that buffer, both ids and the evaluator), and one `verdict.bound` ledger event carries the same path, digest, size and evaluator. The file is not opened again.
 6. That log entry is the record of what satisfied strict completion. If it cannot be appended, a run that bound a verdict **fails**: its result gains a failing `gate-log` check, so what it prints, its `gate.ran` event and its exit code all say blocked. (The ledger events stay best-effort: a ledger that cannot be written is reported and does not block.)
 

@@ -93,6 +93,67 @@ describe("parseEvalVerdictJson", () => {
     expect(r.ok).toBe(false);
   });
 
+  test("a verdict that contradicts its own counts does not parse, in either schema", () => {
+    const legacy = (body: Record<string, unknown>) =>
+      JSON.stringify({ schemaVersion: 1, taskId: "x", ...body });
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [
+        {
+          verdict: "PASS",
+          findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+        },
+        "a PASS has no blocker or high findings",
+      ],
+      [
+        {
+          verdict: "PASS",
+          findings: { blocker: 0, high: 2, medium: 1, low: 0 },
+        },
+        "a PASS has no blocker or high findings",
+      ],
+      [
+        {
+          verdict: "FAIL",
+          findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        },
+        "a FAIL names at least one finding",
+      ],
+    ];
+    for (const [body, error] of cases) {
+      expect(parseEvalVerdictJson(legacy(body))).toEqual({ ok: false, error });
+      expect(parseEvalVerdictJson(v2(body))).toEqual({ ok: false, error });
+    }
+    // Medium and low findings go with either verdict.
+    for (const verdict of ["PASS", "FAIL"]) {
+      expect(
+        parseEvalVerdictJson(
+          v2({ verdict, findings: { blocker: 0, high: 0, medium: 0, low: 1 } }),
+        ).ok,
+      ).toBe(true);
+    }
+  });
+
+  test("the ship check blocks on a blocker or high count whatever the verdict word says", () => {
+    expect(
+      verdictBlocksShip({
+        verdict: "PASS",
+        findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+      }),
+    ).toBe(true);
+    expect(
+      verdictBlocksShip({
+        verdict: "PASS",
+        findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+      }),
+    ).toBe(true);
+    expect(
+      verdictBlocksShip({
+        verdict: "FAIL",
+        findings: { blocker: 0, high: 0, medium: 3, low: 0 },
+      }),
+    ).toBe(false);
+  });
+
   test("rejects unknown attestation dimension", () => {
     const r = parseEvalVerdictJson(
       JSON.stringify({

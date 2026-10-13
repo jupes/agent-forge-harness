@@ -10,9 +10,15 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { type GateDeps, runQualityGate } from "../.claude/hooks/quality-gate";
 import type { Executor } from "../types/hearth";
 import { BUILTIN_SMITHS } from "./config/defaults";
@@ -849,6 +855,57 @@ describe("forge:verdict, what it refuses", () => {
       expect(wrote.body.error).toBe(error);
     }
     expect(runVerdict(box)).toBeNull();
+  });
+});
+
+describe("the strict gate, over a verdict written by hand", () => {
+  test("a PASS that counts a blocker or high finding, or a FAIL that names none, does not satisfy strict completion", () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [
+        {
+          verdict: "PASS",
+          findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+        },
+        "a PASS has no blocker or high findings",
+      ],
+      [
+        {
+          verdict: "PASS",
+          findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+        },
+        "a PASS has no blocker or high findings",
+      ],
+      [
+        {
+          verdict: "FAIL",
+          findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        },
+        "a FAIL names at least one finding",
+      ],
+    ];
+    for (const [body, error] of cases) {
+      const box = sandbox();
+      // What forge:verdict refuses to write, put where the gate looks.
+      const file = join(box.cwd, evaluatorVerdictPath("run-1") ?? "");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({
+          schemaVersion: 2,
+          beadsIssueId: "bead-1",
+          executionRunId: "run-1",
+          ...body,
+          evaluator: { kind: "human", actorKind: "reviewer" },
+        }),
+      );
+      const { check, artifact } = gateCheck(box);
+      expect(check).toEqual({
+        name: "eval-verdict",
+        passed: false,
+        output: error,
+      });
+      expect(artifact).toBeUndefined();
+    }
   });
 });
 

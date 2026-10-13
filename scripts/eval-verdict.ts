@@ -140,6 +140,27 @@ function oneOf<T extends string>(
   return allowed.find((item) => item === value);
 }
 
+/**
+ * Why a verdict word and its counts contradict each other, or null when they
+ * agree. A verdict is one statement: a PASS counts no blocker or high finding,
+ * and a FAIL counts at least one finding.
+ */
+export function verdictCountsProblem(
+  verdict: EvalVerdictBody["verdict"],
+  findings: EvalFindings,
+): string | null {
+  if (verdict === "PASS" && (findings.blocker > 0 || findings.high > 0)) {
+    return "a PASS has no blocker or high findings";
+  }
+  if (
+    verdict === "FAIL" &&
+    findings.blocker + findings.high + findings.medium + findings.low === 0
+  ) {
+    return "a FAIL names at least one finding";
+  }
+  return null;
+}
+
 function bodyFrom(o: Fields): Parsed<EvalVerdictBody> {
   if (o.verdict !== "PASS" && o.verdict !== "FAIL") {
     return refuse('verdict must be "PASS" or "FAIL"');
@@ -165,6 +186,8 @@ function bodyFrom(o: Fields): Parsed<EvalVerdictBody> {
       low: fr.low,
     },
   };
+  const contradiction = verdictCountsProblem(value.verdict, value.findings);
+  if (contradiction !== null) return refuse(contradiction);
   if (typeof o.summary === "string") {
     value.summary = o.summary;
   } else if (o.summary !== undefined) {
@@ -422,10 +445,11 @@ export function observedExecutor(
 }
 
 /**
- * When strict gate is on: FAIL with any BLOCKER or HIGH finding blocks completion hooks / ship path.
- * PASS always allowed; FAIL with only MEDIUM/LOW does not block (follow-up beads instead).
+ * When strict gate is on: any BLOCKER or HIGH finding blocks completion hooks
+ * and the ship path, whatever the verdict word says (the parser already
+ * refuses a PASS that counts one). A FAIL with only MEDIUM/LOW findings does
+ * not block (follow-up beads instead).
  */
 export function verdictBlocksShip(value: EvalVerdictBody): boolean {
-  if (value.verdict === "PASS") return false;
   return value.findings.blocker > 0 || value.findings.high > 0;
 }
