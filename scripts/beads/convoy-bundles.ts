@@ -7,53 +7,50 @@
  * can run in parallel — each batch contains only tasks whose Beads `blocks`
  * dependencies are already satisfied (closed or in an earlier batch).
  *
+ * The graph comes from the live tracker (one `bd export`): parents and
+ * blockers are read from each row's dependencies. Only when bd does not answer
+ * is `.beads/issues.jsonl` used, and a warning on stderr and `data.source` say
+ * so.
+ *
  * Usage:
  *   bun run beads:bundles <EPIC-ID>
  *
- * Emits `{ ok, data: { epicId, batches, unbatched, closed }, error }`.
+ * Emits `{ ok, data: { epicId, batches, unbatched, closed, source }, error }`.
  */
 
-import { execFileSync } from "child_process";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import type { BeadsDependency, BeadsIssue } from "../../types/beads";
+import type {
+  BeadsDependency,
+  BeadsIssue,
+  SnapshotSource,
+} from "../../types/beads";
+import { issuesAndDepsFromExportRows } from "../beads-dashboard";
 import {
-  issuesAndDepsFromExportRows,
-  parseBdExportStdout,
-} from "../beads-dashboard";
+  type BdRunner,
+  FALLBACK_FILE,
+  fallbackNotice,
+  readTrackerRows,
+  runBdOnPath,
+} from "./live-tracker";
 
-const ISSUES_FILE = join(process.cwd(), ".beads", "issues.jsonl");
-const DEPS_FILE = join(process.cwd(), ".beads", "deps.jsonl");
+type Graph = {
+  issues: BeadsIssue[];
+  deps: BeadsDependency[];
+  source: SnapshotSource;
+};
 
-function readJsonl<T>(path: string): T[] {
-  if (!existsSync(path)) return [];
-  const out: T[] = [];
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line) as T);
-    } catch {
-      /* skip */
-    }
+async function loadGraph(
+  cwd: string,
+  runBd: BdRunner,
+): Promise<{ ok: true; graph: Graph } | { ok: false; error: string }> {
+  const read = await readTrackerRows({ cwd, runBd });
+  if (!read.ok) {
+    return {
+      ok: false,
+      error: `beads:bundles: \`bd export\` did not answer (${read.reason}), and there are no issues in ${FALLBACK_FILE} to fall back to.`,
+    };
   }
-  return out;
-}
-
-function loadGraph(): { issues: BeadsIssue[]; deps: BeadsDependency[] } {
-  let issues = readJsonl<BeadsIssue>(ISSUES_FILE);
-  let deps = readJsonl<BeadsDependency>(DEPS_FILE);
-  if (issues.length === 0) {
-    const stdout = execFileSync("bd", ["export", "--no-memories"], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const rows = parseBdExportStdout(stdout);
-    const built = issuesAndDepsFromExportRows(rows);
-    issues = built.issues;
-    deps = built.deps;
-  }
-  return { issues, deps };
+  const { issues, deps } = issuesAndDepsFromExportRows(read.rows);
+  return { ok: true, graph: { issues, deps, source: read.source } };
 }
 
 /** Issues in the parent-child subtree rooted at epicId (bead `parent` field). */
@@ -144,47 +141,47 @@ export function planBundles(
   return { epicId, batches, unbatched, closed };
 }
 
-function main(): void {
-  const epicId = process.argv[2];
-  if (!epicId) {
-    console.log(
-      JSON.stringify(
-        {
-          ok: false,
-          data: null,
-          error: "usage: bun run beads:bundles <EPIC-ID>",
-        },
-        null,
-        2,
-      ),
-    );
-    process.exit(1);
-  }
-  let graph: { issues: BeadsIssue[]; deps: BeadsDependency[] };
-  try {
-    graph = loadGraph();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.log(JSON.stringify({ ok: false, data: null, error: msg }, null, 2));
-    process.exit(1);
-  }
-  const { issues, deps } = graph!;
+export type BundlesEnvelope =
+  | {
+      ok: true;
+      /** `source`: where the graph came from, the live tracker or the fallback file. */
+      data: BundlePlan & { source: SnapshotSource };
+      error: null;
+    }
+  | { ok: false; data: null; error: string };
+
+/** What `bun run beads:bundles <EPIC-ID>` prints, for the checkout at `cwd`. */
+export async function runBundles(options: {
+  /** The checkout whose `.beads/issues.jsonl` is the fallback. */
+  cwd: string;
+  runBd: BdRunner;
+  epicId: string;
+  warn?: (line: string) => void;
+}): Promise<BundlesEnvelope> {
+  const { epicId } = options;
+  const warn = options.warn ?? ((line: string) => console.error(line));
+  const loaded = await loadGraph(options.cwd, options.runBd);
+  if (!loaded.ok) return { ok: false, data: null, error: loaded.error };
+  const { issues, deps, source } = loaded.graph;
+  if (source.kind === "file") warn(`beads:bundles: ${fallbackNotice(source)}`);
   const epic = issues.find((i) => i.id === epicId);
   if (!epic) {
-    console.log(
-      JSON.stringify(
-        { ok: false, data: null, error: `epic not found: ${epicId}` },
-        null,
-        2,
-      ),
-    );
-    process.exit(1);
+    return { ok: false, data: null, error: `epic not found: ${epicId}` };
   }
   const subtree = collectSubtree(issues, epicId);
   const plan = planBundles(epicId, subtree, deps);
-  console.log(JSON.stringify({ ok: true, data: plan, error: null }, null, 2));
+  return { ok: true, data: { ...plan, source }, error: null };
 }
 
 if (import.meta.main) {
-  main();
+  const epicId = process.argv[2];
+  const envelope: BundlesEnvelope = epicId
+    ? await runBundles({ cwd: process.cwd(), runBd: runBdOnPath, epicId })
+    : {
+        ok: false,
+        data: null,
+        error: "usage: bun run beads:bundles <EPIC-ID>",
+      };
+  console.log(JSON.stringify(envelope, null, 2));
+  if (!envelope.ok) process.exit(1);
 }

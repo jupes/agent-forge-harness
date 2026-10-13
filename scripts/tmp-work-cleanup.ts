@@ -18,26 +18,33 @@
  * verdict in the directory its run id declares, behind no link) whose digest
  * the event ledger already holds: see `sweepEvaluations`.
  *
+ * Which beads are closed comes from the live tracker (one `bd export`). Only
+ * when bd does not answer is `.beads/issues.jsonl` used: a warning says so on
+ * stderr before anything is removed, and the envelope's `data.source` names
+ * the file, when it was last written and why bd was not used. With neither,
+ * nothing is swept.
+ *
  * Emits `{ ok, data, error }` JSON envelope.
  */
 
-import { execFileSync } from "child_process";
 import {
-  existsSync,
   lstatSync,
   readdirSync,
-  readFileSync,
   realpathSync,
   rmdirSync,
   statSync,
   unlinkSync,
 } from "fs";
 import { join } from "path";
-import type { BeadsIssue } from "../types/beads";
+import type { BeadsIssue, SnapshotSource } from "../types/beads";
 import {
-  issuesAndDepsFromExportRows,
-  parseBdExportStdout,
-} from "./beads-dashboard";
+  type BdRunner,
+  FALLBACK_FILE,
+  fallbackNotice,
+  readTrackerRows,
+  runBdOnPath,
+} from "./beads/live-tracker";
+import { issuesAndDepsFromExportRows } from "./beads-dashboard";
 import {
   EVAL_VERDICT_SCHEMA_VERSION,
   parseEvalVerdictJson,
@@ -61,33 +68,32 @@ import { resolveCheckout } from "./ledger/workspace";
  */
 export const DEFAULT_TTL_DAYS = 14;
 
-const ISSUES_FILE = join(process.cwd(), ".beads", "issues.jsonl");
-
-function loadIssues(): BeadsIssue[] {
-  if (existsSync(ISSUES_FILE)) {
-    const lines = readFileSync(ISSUES_FILE, "utf8")
-      .split("\n")
-      .filter((l) => l.trim());
-    const out: BeadsIssue[] = [];
-    for (const l of lines) {
-      try {
-        out.push(JSON.parse(l) as BeadsIssue);
-      } catch {
-        /* skip malformed */
-      }
-    }
-    if (out.length > 0) return out;
+/**
+ * The issues whose statuses decide what is swept: the live tracker's when bd
+ * answers, else `.beads/issues.jsonl`'s, and `source` says which.
+ */
+async function loadIssues(
+  cwd: string,
+  runBd: BdRunner,
+): Promise<
+  | { ok: true; issues: BeadsIssue[]; source: SnapshotSource }
+  | { ok: false; error: string }
+> {
+  const read = await readTrackerRows({ cwd, runBd });
+  if (!read.ok) {
+    return {
+      ok: false,
+      error: `tmp-work-cleanup: nothing swept. \`bd export\` did not answer (${read.reason}), and there are no issues in ${FALLBACK_FILE} to fall back to.`,
+    };
   }
-  const stdout = execFileSync("bd", ["export", "--no-memories"], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const { issues } = issuesAndDepsFromExportRows(parseBdExportStdout(stdout));
-  return issues;
+  const { issues } = issuesAndDepsFromExportRows(read.rows);
+  return { ok: true, issues, source: read.source };
 }
 
-const TMP_WORK = join(process.cwd(), ".tmp", "work");
+/** The directory swept for task-scoped files, under a checkout. */
+function tmpWorkOf(cwd: string): string {
+  return join(cwd, ".tmp", "work");
+}
 
 export type SweepCandidate = {
   path: string;
@@ -104,6 +110,8 @@ export function classifyFile(
   ageDays: number,
   issuesById: Map<string, BeadsIssue>,
   ttlDays: number,
+  /** The directory the file is in. Default: `.tmp/work` under the current directory. */
+  workDir: string = tmpWorkOf(process.cwd()),
 ): SweepCandidate | null {
   if (SAFE_NAMES.has(name)) return null;
   if (name.endsWith("-interfaces.md")) return null;
@@ -112,7 +120,7 @@ export function classifyFile(
   if (!m || !m[1]) return null;
 
   const taskId = m[1];
-  const path = join(TMP_WORK, name);
+  const path = join(workDir, name);
   const issue = issuesById.get(taskId);
   if (!issue) {
     return {
@@ -150,11 +158,11 @@ export function classifyFile(
   };
 }
 
-function listFiles(): string[] {
+function listFiles(workDir: string): string[] {
   try {
-    return readdirSync(TMP_WORK).filter((name) => {
+    return readdirSync(workDir).filter((name) => {
       try {
-        return statSync(join(TMP_WORK, name)).isFile();
+        return statSync(join(workDir, name)).isFile();
       } catch {
         return false;
       }
@@ -391,26 +399,59 @@ function classifyEvaluationFile(
   };
 }
 
-function main(): void {
-  const apply = process.argv.includes("--apply");
-  const ttlDays = parseTtl();
-  const nowMs = Date.now();
+export interface TmpWorkCleanupOptions {
+  /** The checkout whose `.tmp/work` is swept. */
+  cwd: string;
+  runBd: BdRunner;
+  apply: boolean;
+  ttlDays: number;
+  nowMs: number;
+  /** Default: the event ledger (`ledgerHoldsVerdict`). */
+  ledgerHolds?: (digest: LedgerDigest) => boolean;
+  warn?: (line: string) => void;
+}
 
-  let issues: BeadsIssue[] = [];
-  try {
-    issues = loadIssues();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.log(JSON.stringify({ ok: false, data: null, error: msg }, null, 2));
-    process.exit(1);
+export type TmpWorkCleanupEnvelope =
+  | {
+      ok: true;
+      data: {
+        ttlDays: number;
+        apply: boolean;
+        /** Where the bead statuses came from: the live tracker, or the fallback file. */
+        source: SnapshotSource;
+        scanned: number;
+        candidates: SweepCandidate[];
+        deleted: string[];
+        evaluations: EvaluationSweep;
+      };
+      error: null;
+    }
+  | { ok: false; data: null; error: string };
+
+/** One sweep of a checkout's `.tmp/work`: what `bun run tmp:cleanup` prints. */
+export async function runTmpWorkCleanup(
+  options: TmpWorkCleanupOptions,
+): Promise<TmpWorkCleanupEnvelope> {
+  const { apply, ttlDays, nowMs } = options;
+  const warn = options.warn ?? ((line: string) => console.error(line));
+  const workDir = tmpWorkOf(options.cwd);
+
+  const loaded = await loadIssues(options.cwd, options.runBd);
+  if (!loaded.ok) return { ok: false, data: null, error: loaded.error };
+  const { issues, source } = loaded;
+  // Said before anything is removed: the statuses may be older than the tracker's.
+  if (source.kind === "file") {
+    warn(
+      `tmp-work-cleanup: ${fallbackNotice(source)} Closed beads are taken from that file, and --apply deletes by it.`,
+    );
   }
   const byId = new Map<string, BeadsIssue>();
   for (const i of issues) byId.set(i.id, i);
 
-  const files = listFiles();
+  const files = listFiles(workDir);
   const candidates: SweepCandidate[] = [];
   for (const name of files) {
-    const abs = join(TMP_WORK, name);
+    const abs = join(workDir, name);
     let ageDays = 0;
     try {
       const ms = statSync(abs).mtimeMs;
@@ -418,7 +459,7 @@ function main(): void {
     } catch {
       continue;
     }
-    const c = classifyFile(name, ageDays, byId, ttlDays);
+    const c = classifyFile(name, ageDays, byId, ttlDays, workDir);
     if (c) candidates.push(c);
   }
 
@@ -431,9 +472,7 @@ function main(): void {
         deleted.push(c.path);
       } catch (e) {
         // best effort
-        console.error(
-          `warn: could not delete ${c.path}: ${(e as Error).message}`,
-        );
+        warn(`warn: could not delete ${c.path}: ${(e as Error).message}`);
       }
     }
   }
@@ -443,10 +482,11 @@ function main(): void {
   let evaluations: EvaluationSweep;
   try {
     evaluations = sweepEvaluations({
-      checkout: process.cwd(),
+      checkout: options.cwd,
       issuesById: byId,
       ttlDays,
-      ledgerHolds: (digest) => ledgerHoldsVerdict(digest),
+      ledgerHolds:
+        options.ledgerHolds ?? ((digest) => ledgerHoldsVerdict(digest)),
       apply,
       nowMs,
     });
@@ -458,26 +498,29 @@ function main(): void {
     };
   }
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        data: {
-          ttlDays,
-          apply,
-          scanned: files.length,
-          candidates,
-          deleted,
-          evaluations,
-        },
-        error: null,
-      },
-      null,
-      2,
-    ),
-  );
+  return {
+    ok: true,
+    data: {
+      ttlDays,
+      apply,
+      source,
+      scanned: files.length,
+      candidates,
+      deleted,
+      evaluations,
+    },
+    error: null,
+  };
 }
 
 if (import.meta.main) {
-  main();
+  const envelope = await runTmpWorkCleanup({
+    cwd: process.cwd(),
+    runBd: runBdOnPath,
+    apply: process.argv.includes("--apply"),
+    ttlDays: parseTtl(),
+    nowMs: Date.now(),
+  });
+  console.log(JSON.stringify(envelope, null, 2));
+  if (!envelope.ok) process.exit(1);
 }
