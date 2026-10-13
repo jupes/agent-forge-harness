@@ -939,7 +939,7 @@ test("a close refused after its panel was closed is listed as refused, is still 
   expect(
     standInCalls()
       .slice(callsBefore)
-      .filter((call) => !isList(call) && call.includes(ghost)),
+      .filter((call) => call[0] === "close" && call.includes(ghost)),
   ).toHaveLength(1);
   await reloadSettled(page);
   await expect(refused).toContainText(`Refused (close on ${ghost}):`);

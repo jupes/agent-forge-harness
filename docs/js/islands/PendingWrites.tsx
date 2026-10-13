@@ -85,12 +85,13 @@ export function NoticePointer({
   sent: ReadonlySet<string>;
 }): JSX.Element | null {
   const notices = useNotices();
+  // A refusal is kept only once the view that sent it is gone, so a mounted
+  // view's own writes in the list are unknown outcomes.
   const mine = notices.find((attempt) => sent.has(attempt.key));
   if (mine === undefined) return null;
   return (
     <p class="af-muted af-bead-pointer">
-      {mine.outcome === "unknown" ? "Outcome not known" : "Refused"}: see Writes
-      to check at the top of the page.{" "}
+      Outcome not known: see Writes to check at the top of the page.{" "}
       <Button
         variant="ghost"
         aria-label="Show Writes to check"
