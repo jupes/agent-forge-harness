@@ -49,10 +49,14 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   `resolveAttach` inside the child once its id is mirrored) are in its header.
 - The fake binary proves plumbing. What real CLIs have shown, on Windows, each binary run directly with the adapter's
   flags and an allowlisted environment (2026-10-08):
-  - `claude` 2.1.293 accepts every flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
+  - The smith's effort is passed in each provider's documented flag — `claude --effort <level>`, `codex exec -c
+    model_reasoning_effort=<level>` — and neither has been run against a real CLI: both were added after the runs
+    below. The fake binary only shows the arguments arrive. Claude's reference does not say what a model without
+    effort support (`claude-apprentice`'s Haiku 4.5) does with `--effort`.
+  - `claude` 2.1.293 accepts every other flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
     `system` / `assistant` / `result` lines. That run stopped at authentication, so a `tool_use` block has **not**
     been observed from a real CLI; the tool mapping rests on the fake binary.
-  - `codex` 0.159.0 and 0.160.0 accept every flag `codex.ts` passes. On 0.160.0 one shell command arrived as
+  - `codex` 0.159.0 and 0.160.0 accept every other flag `codex.ts` passes. On 0.160.0 one shell command arrived as
     `item.started` then `item.completed` (`item.type: "command_execution"`, numeric `exit_code`), which is what the
     parser maps. Items other than a shell command have **not** been observed and are not mapped.
   - The session ids and the usage the adapters read are fields those runs printed: `claude` put one `session_id` on

@@ -5,7 +5,8 @@
  * (inject `prepare` in tests).
  *
  * Checked against `codex` on Windows, run directly (2026-10-08): 0.159.0 and
- * 0.160.0 both accept the flags below, and every recorded stream opened with
+ * 0.160.0 both accept the flags below except the `-c` that carries the
+ * effort, and every recorded stream opened with
  * `thread.started` carrying a `thread_id`, the session id `parseCodexLine`
  * takes. On 0.160.0 — the only version that got as far as a command — one
  * shell command arrived as `item.started` then `item.completed` with
@@ -18,6 +19,15 @@
  * through `forge:exec` on 0.160.0 (2026-10-09) left `session.started`, a
  * `tool.called` for the shell command and `session.ended` in the ledger; that
  * was before the adapter read the thread id or the usage.
+ *
+ * The smith's effort goes in `-c model_reasoning_effort=<level>`: `-c` is the
+ * inline config override `codex exec` documents, and `model_reasoning_effort`
+ * the documented config key (levels such as `low`, `medium`, `high`,
+ * `xhigh`, depending on the model). The value is passed bare: a `-c` value
+ * that does not parse as TOML is taken as the literal string, so `medium`
+ * arrives as the string `medium`, and no quote has to survive a Windows
+ * command shim. It was added after those runs and has not been run against a
+ * real CLI.
  */
 
 import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
@@ -149,6 +159,8 @@ export function createCodexAdapter(options: CodexOptions = {}) {
       "workspace-write",
       "--model",
       request.smith.model,
+      "-c",
+      `model_reasoning_effort=${request.smith.effort}`,
       "--cd",
       request.worktree,
       "-",

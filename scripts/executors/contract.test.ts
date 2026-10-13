@@ -35,6 +35,8 @@ const adapters: Array<{
   smith: string;
   /** The usage the stand-in CLI's last line reports for this provider. */
   usage: Record<string, number>;
+  /** The arguments that carry a smith's effort: the flag the provider documents. */
+  effortArgs: (effort: string) => string[];
 }> = [
   {
     name: "claude",
@@ -47,6 +49,7 @@ const adapters: Array<{
       outputTokens: 56,
       costUsd: 0.0125,
     },
+    effortArgs: (effort) => ["--effort", effort],
   },
   {
     name: "codex",
@@ -59,6 +62,7 @@ const adapters: Array<{
       outputTokens: 90,
       reasoningOutputTokens: 40,
     },
+    effortArgs: (effort) => ["-c", `model_reasoning_effort=${effort}`],
   },
 ];
 
@@ -141,7 +145,12 @@ const attachAs = (id: string) => (root: string) => [
   join(root, "attach.json"),
 ];
 
-for (const { name, adapter, smith, usage } of adapters) {
+/** Whether `args` holds `items` next to each other, in order. */
+function holdsInOrder(args: readonly string[], items: readonly string[]) {
+  return args.some((_, at) => items.every((item, i) => args[at + i] === item));
+}
+
+for (const { name, adapter, smith, usage, effortArgs } of adapters) {
   describe(`${name} adapter contract`, () => {
     test("streams session.started, prompt.submitted, tool.called per tool, session.ended — all valid", async () => {
       const { events, result } = await run(adapter, name, smith, "ok");
@@ -331,6 +340,18 @@ for (const { name, adapter, smith, usage } of adapters) {
       });
       // The predicate the harness hooks use to stand down inside such a child.
       expect(isAdapterChild(seen)).toBe(true);
+    });
+
+    test(`the smith's model and effort reach the child's command line, the effort as ${effortArgs("<effort>").join(" ")}`, async () => {
+      const builtin = BUILTIN_SMITHS[smith] as SpawnRequest["smith"];
+      for (const effort of [builtin.effort, "xhigh"]) {
+        const { dump } = await run(adapter, name, smith, "ok", {
+          smith: { ...builtin, effort },
+        });
+        const argv = dump.argv as string[];
+        expect(holdsInOrder(argv, ["--model", builtin.model])).toBe(true);
+        expect(holdsInOrder(argv, effortArgs(effort))).toBe(true);
+      }
     });
 
     test("never asks for dangerously-skip-permissions", async () => {
