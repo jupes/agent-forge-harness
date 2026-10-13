@@ -10,6 +10,7 @@ import { childEnv } from "./env";
 import { supervise } from "./supervisor";
 import type {
   DoctorResult,
+  ExecResult,
   ExecutorAdapter,
   ExecutorHandle,
   SpawnRequest,
@@ -29,6 +30,8 @@ export interface CliAdapterSpec {
   buildArgs(request: SpawnRequest): string[];
   /** Tool calls in one stdout line; unparseable or irrelevant lines yield none. */
   parseLine(line: string): ParsedTool[];
+  /** The error one stdout line reports, in the provider's words; undefined for any other line. */
+  parseError(line: string): string | undefined;
   /** Runs before spawning (e.g. mirror skills for Codex). */
   prepare?(request: SpawnRequest): Promise<void> | void;
 }
@@ -156,6 +159,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       };
       const queue = eventQueue();
       const startedAt = Date.now();
+      // In the provider's words: for the command's output, never an event.
+      const providerErrors = new Set<string>();
 
       queue.push({
         ...base,
@@ -178,6 +183,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         stdin: request.prompt,
         timeoutMs: request.timeoutMs,
         onLine: (line) => {
+          const reported = spec.parseError(line);
+          if (reported !== undefined) providerErrors.add(reported);
           for (const parsed of spec.parseLine(line)) {
             queue.push({
               ...base,
@@ -190,14 +197,18 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       });
 
       let stopReason: string | undefined;
-      const done = child.done.then((result) => {
+      const done = child.done.then((exit): ExecResult => {
+        const result = { ...exit, providerErrors: [...providerErrors] };
+        // Fixed wording only: the provider's own text stays out of the ledger.
         const reason = result.timedOut
           ? "timeout"
           : result.stopped
             ? `stopped: ${stopReason ?? "operator"}`
-            : result.exitCode === 0
-              ? "completed"
-              : `failed: exit ${result.exitCode}`;
+            : result.exitCode !== 0
+              ? `failed: exit ${result.exitCode}`
+              : result.providerErrors.length > 0
+                ? "failed: exit 0, provider reported an error"
+                : "completed";
         queue.push({
           ...base,
           ts: new Date().toISOString(),

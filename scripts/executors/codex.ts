@@ -43,6 +43,40 @@ export function parseCodexLine(line: string): ParsedTool[] {
   ];
 }
 
+/**
+ * The message of a line that reports an error: an `error` item, a top-level
+ * `error`, or `turn.failed`. `codex` 0.159.0 printed all three for a rejected
+ * model (exit 1); a copy missing the helper it runs tools with printed an
+ * `error` item and an agent message, then `turn.completed`, and exited 0. A
+ * line with no message yields its type.
+ */
+export function parseCodexError(line: string): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(value)) return undefined;
+  const said = (message: unknown, type: string) =>
+    typeof message === "string" && message.trim() ? message.trim() : type;
+  if (value.type === "error") return said(value.message, "error");
+  if (value.type === "turn.failed") {
+    return said(
+      isRecord(value.error) ? value.error.message : undefined,
+      "turn.failed",
+    );
+  }
+  if (
+    value.type === "item.completed" &&
+    isRecord(value.item) &&
+    value.item.type === "error"
+  ) {
+    return said(value.item.message, "error item");
+  }
+  return undefined;
+}
+
 function syncSkills(request: SpawnRequest): void {
   const result = Bun.spawnSync(["bun", "run", "codex:sync"], {
     cwd: request.workspace,
@@ -79,6 +113,7 @@ export function createCodexAdapter(options: CodexOptions = {}) {
       "-",
     ],
     parseLine: parseCodexLine,
+    parseError: parseCodexError,
   });
 }
 
