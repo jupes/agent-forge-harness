@@ -973,6 +973,74 @@ describe("a write that does not happen, or cannot be confirmed", () => {
     }
   });
 
+  test("no exit status, from a call killed at its limit or from one the runtime could not spawn because its working directory is gone: the read is still failed and the write still unknown, and neither answer says the call ran out of time", async () => {
+    const stderrs: Array<
+      [string, (args: string[]) => ReturnType<typeof bdAnswers.help>]
+    > = [
+      ["killed at its limit", (args) => bdAnswers.notFinished(args)],
+      [
+        "working directory gone",
+        // Measured under Bun 1.3.10 with the runner's options: a working
+        // directory that is gone ends the call with no exit status, nothing on
+        // stdout, and this, whole, as what the runner hands back on stderr.
+        () => ({
+          status: null,
+          stdout: "",
+          stderr: "ENOENT: no such file or directory, uv_spawn 'bd'",
+        }),
+      ],
+    ];
+    const calls = [
+      {
+        call: "show",
+        kind: "failed",
+        says: "bd show did not finish: it was stopped before it answered, or it never started. Nothing was changed.",
+        updates: 0,
+      },
+      {
+        call: "update",
+        kind: "unknown",
+        says: "bd update did not finish: it was stopped before it answered, or it never started. The change may still have been made.",
+        updates: 1,
+      },
+    ];
+    for (const [how, answer] of stderrs)
+      for (const { call, kind, says, updates } of calls) {
+        const bead = beadIn("proposed");
+        const { tracker, queue, events } = rig([bead]);
+        tracker.intercept = (args) =>
+          args[0] === call ? answer(args) : undefined;
+        const result = await queue.move(bead.id, "approve", "operator");
+        const where = `${how}, bd ${call}`;
+        const error = result.ok ? "" : result.error;
+        expect({ where, kind: result.ok ? "ok" : result.kind }).toEqual({
+          where,
+          kind,
+        });
+        expect({ where, error }).toEqual({
+          where,
+          error: expect.stringContaining(says),
+        });
+        expect({ where, error }).not.toEqual({
+          where,
+          error: expect.stringContaining("time limit"),
+        });
+        if (call === "update")
+          expect({ where, error }).toEqual({
+            where,
+            error: expect.stringContaining(`bd show ${bead.id}`),
+          });
+        expect({ where, updates: tracker.updates().length }).toEqual({
+          where,
+          updates,
+        });
+        expect({ where, events: events(bead.id) }).toEqual({
+          where,
+          events: [],
+        });
+      }
+  });
+
   test("bd's text in an answer is made safe: a secret is redacted and a long one is cut, on the read and on the write", async () => {
     const secret = `ghp_${"a1B2c3D4e5".repeat(4)}`;
     for (const call of ["show", "update"]) {
