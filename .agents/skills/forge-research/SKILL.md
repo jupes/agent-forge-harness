@@ -40,9 +40,15 @@ Load knowledge first, then read real code. Be exhaustive enough to write accurat
 
 ```bash
 cat knowledge/_shared.yaml
-cat knowledge/repos/<repo>.yaml        # for each affected repo
+cat knowledge/repos/<repo>.yaml 2>/dev/null || echo "no knowledge file for <repo>"   # for each affected repo
 bd show <id> 2>/dev/null               # if a task id was given
 ```
+
+A repo has a `knowledge/repos/<repo>.yaml` only after `/add-repo` or `/sync-knowledge` has been run
+for it; the directory is empty in a fresh checkout, and the harness itself has none. When there is
+no file, do not generate one here: read the repo's `README`, its manifest (`package.json` or the
+like) and its `AGENTS.md`/`CLAUDE.md` if it has them, say in the research document that no
+knowledge file existed, and carry on with the code read below.
 
 Then use Glob/Grep/Read (read-only) to map:
 

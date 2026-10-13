@@ -17,7 +17,11 @@ Break the feature into tasks following these rules:
 
 For each task:
 ```bash
-bd create \n  --type task \n  --title "<verb> <object>" \n  --repo <repo> \n  --ac "<acceptance criterion>"
+bd create \
+  --type task \
+  --title "<verb> <object>" \
+  --repo <repo> \
+  --acceptance "<acceptance criterion>"
 ```
 
 For dependencies:

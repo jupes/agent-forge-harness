@@ -48,6 +48,12 @@ function instructionFiles(): string[] {
     );
 }
 
+/** The instruction files, and the one prompt template a run is asked to paste. */
+const withTasksTemplate = (): string[] => [
+  ...instructionFiles(),
+  BEADS_TASKS_TEMPLATE,
+];
+
 function read(path: string): string | null {
   const file = join(ROOT, path);
   try {
@@ -587,13 +593,32 @@ describe("the Forge documents: what the review of the first build found", () => 
   });
 
   test("no instruction file gives `bd dep add` the --requires or --blocks flag, which this bd rejects as unknown", () => {
-    const wrong = [...instructionFiles(), BEADS_TASKS_TEMPLATE].flatMap(
-      (path) =>
-        commandsIn(path, read(path) ?? "", /bd dep add/)
-          .filter((documented) =>
-            /--(requires|blocks)\b/.test(documented.command),
-          )
-          .map(show),
+    const wrong = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd dep add/)
+        .filter((documented) =>
+          /--(requires|blocks)\b/.test(documented.command),
+        )
+        .map(show),
+    );
+    expect(wrong).toEqual([]);
+  });
+
+  test("no instruction file gives `bd create` or `bd update` the --ac flag, which this bd rejects as unknown (it is --acceptance)", () => {
+    const wrong = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd (?:create|update)\b/)
+        .filter((documented) =>
+          /(?:^|\s)--ac(?=[\s="']|$)/.test(documented.command),
+        )
+        .map(show),
+    );
+    expect(wrong).toEqual([]);
+  });
+
+  test("no `bd create` example joins its flags with a literal backslash-n, which the shell passes on as an argument", () => {
+    const wrong = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd create\b/)
+        .filter((documented) => /\\n\s/.test(documented.command))
+        .map(show),
     );
     expect(wrong).toEqual([]);
   });
@@ -621,6 +646,21 @@ describe("the Forge documents: what the review of the first build found", () => 
     ];
     for (const [path, phrases] of directions) {
       expect(missing(path, phrases)).toEqual([]);
+    }
+  });
+
+  test("the research skill reads a repo's knowledge file only as a command that survives its absence, and says what to do when there is none", () => {
+    for (const path of skill("forge-research")) {
+      const bare = commandsIn(path, read(path) ?? "", /cat knowledge\/repos\//)
+        .filter((documented) => !documented.command.includes("||"))
+        .map(show);
+      expect(bare).toEqual([]);
+      expect(
+        missing(path, [
+          "the directory is empty in a fresh checkout",
+          "say in the research document that no knowledge file existed",
+        ]),
+      ).toEqual([]);
     }
   });
 
