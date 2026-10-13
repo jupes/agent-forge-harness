@@ -264,6 +264,11 @@ function check(recorded: Recorded, name: string) {
   return ran(recorded).result.checks.find((entry) => entry.name === name);
 }
 
+/** The calls the gate made to `bd`: what it asked Beads. */
+function beads(recorded: Recorded): Array<{ file: string; args: string[] }> {
+  return recorded.execs.filter((call) => call.file === "bd");
+}
+
 const BASE_COMMANDS = [
   "bun run typecheck",
   "bun run lint",
@@ -406,9 +411,10 @@ describe("a correlated run", () => {
       bd: {
         "show bead-1 --json": {
           ok: true,
-          output: JSON.stringify([{ issue_type: "task" }]),
+          output: JSON.stringify([
+            { issue_type: "task", acceptance_criteria: "It works." },
+          ]),
         },
-        "show bead-1": { ok: true, output: "ac: it works" },
       },
     });
     const { result, correlation } = ran(recorded);
@@ -421,14 +427,70 @@ describe("a correlated run", () => {
     });
     expect("unlinkedReason" in result).toBe(false);
     expect(String(correlation?.beadsIssueId)).toBe("bead-1");
-    expect(recorded.execs).toEqual([
+    expect(beads(recorded)).toEqual([
       { file: "bd", args: ["show", "bead-1", "--json"] },
-      { file: "bd", args: ["show", "bead-1"] },
       { file: "bd", args: ["comments", "bead-1", "--json"] },
     ]);
     expect(check(recorded, "ac-verify")).toMatchObject({
       passed: true,
       output: "AC found — verify before closing task",
+    });
+  });
+
+  test("ac-verify finds the criteria an issue has in its acceptance field, with no ac: comment and no ac: anywhere in it", () => {
+    const box = sandbox();
+    const issue = {
+      id: "bead-1",
+      title: "A task",
+      description: "What to do.",
+      issue_type: "task",
+      acceptance_criteria: "A run passes; the docs say so.",
+    };
+    const recorded = gate(box, {
+      argv: ["--correlation", correlate(box)],
+      bd: {
+        "show bead-1 --json": { ok: true, output: JSON.stringify([issue]) },
+        "comments bead-1 --json": {
+          ok: true,
+          output: JSON.stringify([{ text: "worklog: started" }]),
+        },
+      },
+    });
+    expect(JSON.stringify(issue)).not.toContain("ac:");
+    expect(check(recorded, "ac-verify")).toEqual({
+      name: "ac-verify",
+      passed: true,
+      output: "AC found — verify before closing task",
+    });
+  });
+
+  test("ac-verify finds no criteria in an issue whose only ac: is text in its description and comments", () => {
+    const box = sandbox();
+    const recorded = gate(box, {
+      argv: ["--correlation", correlate(box)],
+      bd: {
+        "show bead-1 --json": {
+          ok: true,
+          output: JSON.stringify([
+            { issue_type: "task", description: "ac: lilac: maniac:" },
+          ]),
+        },
+        // What a plain `bd show` prints for that issue.
+        "show bead-1": {
+          ok: true,
+          output: "DESCRIPTION\n  ac: lilac: maniac:",
+        },
+        "comments bead-1 --json": {
+          ok: true,
+          output: JSON.stringify([{ text: "ac: changed the criterion" }]),
+        },
+      },
+    });
+    expect(check(recorded, "ac-verify")).toEqual({
+      name: "ac-verify",
+      passed: true,
+      skipped: true,
+      skipReason: "no AC found or Beads not configured",
     });
   });
 
@@ -904,10 +966,9 @@ describe("hostile stdin", () => {
         expect(call.args.join(" ")).not.toContain(MARK);
       }
     }
-    expect(unlinked.execs).toEqual([]);
-    expect(linked.execs.map((call) => call.args)).toEqual([
+    expect(beads(unlinked)).toEqual([]);
+    expect(beads(linked).map((call) => call.args)).toEqual([
       ["show", "bead-1", "--json"],
-      ["show", "bead-1"],
       ["comments", "bead-1", "--json"],
     ]);
   });
