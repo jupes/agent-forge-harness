@@ -191,16 +191,19 @@ function loadEvents(): LedgerEvent[] {
   });
 }
 
-/** Answer `/events` from `events` as the hearth would: forward pages after a cursor, by session when asked. */
+/** Answer `/events` from `events` as the hearth would: forward pages after a cursor, by session and by kind when asked. */
 async function serveEvents(page: Page, events: LedgerEvent[]): Promise<void> {
   await page.route("**/__agent-forge/events?*", (route) => {
     const params = new URL(route.request().url()).searchParams;
     const after = Number(params.get("after") ?? "0");
     const limit = Number(params.get("limit") ?? "200");
     const session = params.get("session");
+    const kinds = params.get("kind")?.split(",") ?? null;
     const matching = events.filter(
       (entry) =>
-        entry.id > after && (session === null || entry.sessionId === session),
+        entry.id > after &&
+        (session === null || entry.sessionId === session) &&
+        (kinds === null || kinds.includes(entry.kind)),
     );
     const answer = matching.slice(0, limit);
     return route.fulfill({
@@ -327,4 +330,79 @@ test("10,000 events: at every step of a scroll to the end the document holds no 
       `before the first read (page start): ${describeTasks(boot)}; ` +
       `most rows in the document: ${Math.max(...scroll.counts)} (bound ${scroll.inView + 2 * OVERSCAN})\n`,
   );
+});
+
+// ── Past 10,000 events ──────────────────────────────────────────────────────
+
+const PAST_CAP_EVENTS = 10_005;
+const PAST_CAP_BEAD = "past-cap";
+
+/** More events of one bead than the Timeline holds: a session start first, tool calls, a verdict last. */
+function pastCapEvents(): LedgerEvent[] {
+  const start = Date.UTC(2026, 9, 12);
+  return Array.from({ length: PAST_CAP_EVENTS }, (_, index): LedgerEvent => {
+    const base = {
+      id: index + 1,
+      ulid: `past-${index + 1}`,
+      ts: new Date(start + index * 1000).toISOString(),
+      workspace: "/load",
+      beadId: PAST_CAP_BEAD,
+      sessionId: "session-0",
+    };
+    if (index === 0) return { ...base, kind: "session.started", payload: {} };
+    if (index === PAST_CAP_EVENTS - 1)
+      return { ...base, kind: "verdict.bound", payload: { verdict: "pass" } };
+    return {
+      ...base,
+      kind: "tool.called",
+      payload: { tool: "Bash", argsHash: "h" },
+    };
+  });
+}
+
+test("past 10,000 events: the newest 10,000 are shown down to the last event, and choosing a kind found only among the older ones reads it from the ledger", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await serveEvents(page, pastCapEvents());
+  await openSettled(page, `/index.html#/timeline?bead=${PAST_CAP_BEAD}`);
+  const line = page.locator(".af-timeline-scope-line");
+  await expect(line).toContainText("10000 shown of 10000");
+  await expect(line).not.toContainText("reading more");
+  await expect(rows(page).first()).toHaveAttribute(
+    "data-event-id",
+    String(PAST_CAP_EVENTS - 10_000 + 1),
+  );
+
+  const end = await page.locator(".af-timeline-list").evaluate(async (list) => {
+    list.scrollTop = list.scrollHeight;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    const shown = [...list.querySelectorAll(".af-timeline-row")];
+    const last = shown.at(-1);
+    return {
+      id: Number(last?.getAttribute("data-event-id")),
+      kind: last?.getAttribute("data-kind") ?? "",
+    };
+  });
+  expect(end).toEqual({ id: PAST_CAP_EVENTS, kind: "verdict.bound" });
+
+  const started = page
+    .getByRole("group", { name: "Kinds" })
+    .getByRole("button", { name: /^session\.started/ });
+  await expect(started.locator(".af-timeline-count")).toHaveText("0");
+  const reads: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/__agent-forge/events"))
+      reads.push(request.url());
+  });
+  await started.click();
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page).first()).toHaveAttribute("data-event-id", "1");
+  expect(await kindsShown(page)).toEqual(["session.started"]);
+  expect(
+    reads.map((url) => new URL(url).searchParams.get("kind")),
+    "the chosen kind is asked of the ledger",
+  ).toContain("session.started");
 });

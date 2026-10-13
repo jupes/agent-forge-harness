@@ -89,6 +89,23 @@ describe("the paths the timeline reads", () => {
     );
   });
 
+  test("a scope's page narrowed to kinds names them in kind=", () => {
+    expect(
+      eventsPath({ by: "run", id: "r" }, 7, [
+        "session.started",
+        "verdict.bound",
+      ]),
+    ).toBe(
+      `/events?run=r&after=7&limit=${PAGE_LIMIT}&kind=session.started%2Cverdict.bound`,
+    );
+  });
+
+  test("a session's events narrowed to kinds name them in kind=", () => {
+    expect(sessionPath("s", 0, 1, ["gate.ran"])).toBe(
+      "/events?session=s&after=0&limit=1&kind=gate.ran",
+    );
+  });
+
   test("a page is the most the hearth answers", () => {
     expect(PAGE_LIMIT).toBe(EVENTS_MAX_LIMIT);
   });
@@ -123,9 +140,9 @@ describe("merging pages", () => {
     expect(merged.cut).toBe(false);
   });
 
-  test("past the cap the oldest are kept and the merge says it cut", () => {
+  test("past the cap the newest are kept and the merge says it cut", () => {
     const merged = mergeEvents([event(1), event(2)], [event(3), event(4)], 3);
-    expect(ids(merged.events)).toEqual([1, 2, 3]);
+    expect(ids(merged.events)).toEqual([2, 3, 4]);
     expect(merged.cut).toBe(true);
   });
 
@@ -148,6 +165,14 @@ describe("kinds", () => {
 
   test("each kind present is counted, in the ledger's order of kinds", () => {
     expect(kindCounts(events)).toEqual([
+      { kind: "tool.called", count: 1 },
+      { kind: "gate.ran", count: 2 },
+    ]);
+  });
+
+  test("a kind named as present but not among the events is listed with a count of 0", () => {
+    expect(kindCounts(events, ["session.started", "gate.ran"])).toEqual([
+      { kind: "session.started", count: 0 },
       { kind: "tool.called", count: 1 },
       { kind: "gate.ran", count: 2 },
     ]);
