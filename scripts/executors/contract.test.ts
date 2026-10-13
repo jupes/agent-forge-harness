@@ -452,5 +452,29 @@ for (const { name, adapter, smith, usage, effortArgs } of adapters) {
       expect(report).toMatchObject({ provider: name, found: true, ok: true });
       expect(report.version).toBe(`fake-${name} 0.0.1`);
     });
+
+    test("doctor: an override whose program does not exist is found:false, ok:false, with a reason naming it — data, not a throw", async () => {
+      const missing = join(tmpdir(), "definitely-not-a-real-binary-xyz");
+      const report = await adapter.doctor([missing, "--some-flag"]);
+      expect(report).toEqual({
+        provider: name,
+        found: false,
+        ok: false,
+        reason: `${missing} not found`,
+      });
+    });
+
+    test("doctor: an override that is found but cannot run (its program starts, the command fails) is found:true, ok:false with a reason, not a throw", async () => {
+      const override = [
+        process.execPath,
+        join(tmpdir(), "no such script for forge doctor.ts"),
+      ];
+      const report = await adapter.doctor(override);
+      expect(report.provider).toBe(name);
+      expect(report.found).toBe(true);
+      expect(report.ok).toBe(false);
+      expect(report.reason).toMatch(/^version check exited [1-9]\d*$/);
+      expect(report.path).toBe(override.join(" "));
+    });
   });
 }

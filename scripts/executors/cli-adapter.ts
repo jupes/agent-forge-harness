@@ -163,7 +163,14 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
     provider: spec.provider,
 
     async doctor(override): Promise<DoctorResult> {
-      const resolved = resolveCommand(spec, override);
+      // An override's program is found the way the binary is: as `Bun.which`
+      // finds it, which is also how `Bun.spawn` looks it up. One that is not
+      // there is not found; one that is there but fails is found and not ok.
+      const program = override?.[0];
+      const resolved =
+        program !== undefined && !Bun.which(program)
+          ? { error: `${program} not found` }
+          : resolveCommand(spec, override);
       if ("error" in resolved) {
         return {
           provider: spec.provider,

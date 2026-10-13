@@ -78,6 +78,11 @@ export interface ExecutorHandle {
 
 export interface DoctorResult {
   provider: Provider;
+  /**
+   * The binary is there: the provider's on PATH, or an override's program
+   * (its first item) as `Bun.which` finds it. Found says nothing about
+   * whether it runs.
+   */
   found: boolean;
   /**
    * The binary answered `--version` with exit 0. That is all: a CLI that is

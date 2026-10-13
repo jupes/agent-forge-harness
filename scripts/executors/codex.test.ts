@@ -6,7 +6,6 @@ import type { LedgerEvent } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
-import { claudeAdapter } from "./claude";
 import { createCodexAdapter, parseCodexError, parseCodexLine } from "./codex";
 import { buildChildEnv } from "./env";
 import { type ExecDeps, runExec } from "./exec-cli";
@@ -408,17 +407,5 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
       reason: "failed: exit 0, provider reported an error",
     });
     expect(JSON.stringify(rows)).not.toContain("tool host");
-  });
-});
-
-describe("doctor", () => {
-  test("a missing binary is data (found:false), not a throw", async () => {
-    const report = await claudeAdapter.doctor([
-      join(tmpdir(), "definitely-not-a-real-binary-xyz"),
-    ]);
-    expect(report.provider).toBe("claude");
-    expect(report.found).toBe(true); // override given, but it cannot run
-    expect(report.ok).toBe(false);
-    expect(report.reason).toBeTruthy();
   });
 });
