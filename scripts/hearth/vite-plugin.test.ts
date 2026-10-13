@@ -29,7 +29,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-/** Stands in for `rebuildPagesApiPlugin`, which lives in the dashboard config. */
+/** Stands in for `rebuildPagesPlugin` (`scripts/dashboard/rebuild-pages.ts`). */
 function rebuildStub(): Plugin {
   return {
     name: "rebuild-stub",

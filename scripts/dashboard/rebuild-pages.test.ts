@@ -36,6 +36,89 @@ appendFileSync(join(box, "runs.log"), "end\\n");
 console.log("gate: built");
 `;
 
+/**
+ * Sends one request to `127.0.0.1` from the source address `127.0.0.2`, and
+ * prints the address it sent from, the status and the body. Run by Node: Bun
+ * ignores `localAddress`, so under Bun the request would come from 127.0.0.1.
+ * The loopback check accepts only 127.0.0.1, ::1 and ::ffff:127.0.0.1, so to
+ * it this is a client on another machine.
+ */
+const OTHER_PEER = `
+import { connect } from "node:net";
+const [port, method, target] = process.argv.slice(2);
+const socket = connect({ host: "127.0.0.1", port: Number(port), localAddress: "127.0.0.2" });
+let from = null;
+let answer = "";
+socket.on("connect", () => {
+  from = socket.localAddress;
+  socket.write(method + " " + target + " HTTP/1.1\\r\\nHost: 127.0.0.1:" + port + "\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n");
+});
+let done = false;
+// The answer is printed once it is whole: the server may keep the socket open.
+const finish = () => {
+  const split = answer.indexOf("\\r\\n\\r\\n");
+  if (split === -1) return false;
+  const head = answer.slice(0, split);
+  let body = answer.slice(split + 4);
+  const length = /\\r\\ncontent-length: *(\\d+)/i.exec(head);
+  if (length) {
+    if (Buffer.byteLength(body) < Number(length[1])) return false;
+  } else if (/\\r\\ntransfer-encoding: *chunked/i.test(head)) {
+    if (!body.endsWith("0\\r\\n\\r\\n")) return false;
+    let plain = "";
+    for (let at = 0; ; ) {
+      const end = body.indexOf("\\r\\n", at);
+      const size = Number.parseInt(body.slice(at, end), 16);
+      if (!size) break;
+      plain += body.slice(end + 2, end + 2 + size);
+      at = end + 2 + size + 2;
+    }
+    body = plain;
+  } else return false;
+  const status = Number(/^HTTP\\/1\\.[01] (\\d{3})/.exec(head)?.[1] ?? 0);
+  console.log(JSON.stringify({ from, status, body }));
+  done = true;
+  socket.destroy();
+  return true;
+};
+socket.on("data", (chunk) => { answer += chunk.toString("utf8"); finish(); });
+socket.on("error", (error) => { if (!done) { console.log(JSON.stringify({ error: error.message })); process.exit(1); } });
+socket.on("close", () => { if (!done) console.log(JSON.stringify({ from, status: 0, body: answer })); });
+`;
+
+const NODE = Bun.which("node");
+
+/** One request to the dev server from 127.0.0.2, made by a Node child process. */
+async function requestFromOtherPeer(
+  box: string,
+  port: number,
+  method: string,
+  target: string,
+): Promise<{ from: string | null; status: number; body: string }> {
+  if (!NODE) throw new Error("node is not on PATH");
+  const script = join(box, "other-peer.mjs");
+  writeFileSync(script, OTHER_PEER);
+  // Asynchronous: the dev server answering it runs in this process.
+  const child = Bun.spawn([NODE, script, String(port), method, target], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  try {
+    return JSON.parse(out) as {
+      from: string | null;
+      status: number;
+      body: string;
+    };
+  } catch {
+    throw new Error(`the Node peer printed no answer: ${out}${err}`);
+  }
+}
+
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
@@ -83,6 +166,7 @@ async function freePort(): Promise<number> {
 
 interface Fixture {
   url: string;
+  port: number;
   root: string;
   box: string;
   pushed: unknown[];
@@ -140,7 +224,13 @@ async function fixture(
     rmSync(root, { recursive: true, force: true, maxRetries: 3 });
     rmSync(box, { recursive: true, force: true, maxRetries: 3 });
   });
-  return { url: `http://127.0.0.1:${address.port}`, root, box, pushed };
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    port: address.port,
+    root,
+    box,
+    pushed,
+  };
 }
 
 function runs(box: string): string[] {
@@ -225,6 +315,30 @@ describe("rebuild-pages endpoint", () => {
     expect(res.status).toBe(405);
     expect(runs(box)).toEqual([]);
   });
+
+  test.skipIf(!NODE)(
+    "a POST sent from 127.0.0.1 is served; a POST and a GET sent from 127.0.0.2 are answered 403 and start no build",
+    async () => {
+      const { url, port, box } = await fixture();
+
+      const post = await requestFromOtherPeer(box, port, "POST", REBUILD_PATH);
+      expect(post.from).toBe("127.0.0.2");
+      expect(post.status).toBe(403);
+      expect(JSON.parse(post.body)).toEqual({
+        ok: false,
+        error: "The rebuild is available only from this machine",
+      });
+      const get = await requestFromOtherPeer(box, port, "GET", REBUILD_PATH);
+      expect(get.status).toBe(403);
+
+      // Had a refused request started a build, the log would show two builds.
+      release(box);
+      const local = await fetch(`${url}${REBUILD_PATH}`, { method: "POST" });
+      expect(local.status).toBe(200);
+      expect(runs(box)).toEqual(["start", "end"]);
+    },
+    15_000,
+  );
 });
 
 describe("rebuilds the dev server starts on its own", () => {

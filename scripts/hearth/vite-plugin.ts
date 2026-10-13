@@ -15,7 +15,10 @@ import { hearthHome } from "./home";
 import { API_PREFIX } from "./paths";
 import { createSupervisor, type HearthSupervisor } from "./supervisor";
 
-/** Served by `rebuildPagesApiPlugin` in the dashboard config; never proxied. */
+/**
+ * Served by `rebuildPagesPlugin` (`scripts/dashboard/rebuild-pages.ts`), which
+ * refuses a non-loopback client itself; never proxied.
+ */
 const LOCAL_ONLY_PATH = `${API_PREFIX}/rebuild-pages`;
 
 export interface HearthPluginOptions {
@@ -38,7 +41,7 @@ function refuse(
  * Whether Vite's proxy would forward this path to the hearth. Matches the proxy's
  * own rule (a bare prefix, no trailing slash), so `/__agent-forgeX/../…` cannot
  * slip past a stricter-looking guard.
- * `rebuild-pages` is excluded because `rebuildPagesApiPlugin` (registered first)
+ * `rebuild-pages` is excluded because `rebuildPagesPlugin` (registered first)
  * answers it before the proxy is reached.
  */
 export function isProxiedPath(pathname: string): boolean {

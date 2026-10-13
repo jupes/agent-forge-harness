@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import chokidar from "chokidar";
 import type { Plugin } from "vite";
+import { isLoopbackAddress } from "../hearth/gate";
 import { createRebuildQueue, type RebuildOutcome } from "./rebuild-queue";
 
 export const REBUILD_PATH = "/__agent-forge/rebuild-pages";
@@ -142,6 +143,18 @@ export function rebuildPagesPlugin(options: RebuildPagesOptions): Plugin {
           return;
         }
         res.setHeader("Content-Type", "application/json");
+        // Vite may be bound beyond loopback (`DASHBOARD_HOST`); a build is
+        // started only for a client on this machine, whatever the method.
+        if (!isLoopbackAddress(req.socket.remoteAddress)) {
+          res.statusCode = 403;
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: "The rebuild is available only from this machine",
+            }),
+          );
+          return;
+        }
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.end(
