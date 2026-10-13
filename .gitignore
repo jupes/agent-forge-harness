@@ -30,7 +30,7 @@ plans/session-context.json
 knowledge/repos/*.yaml
 !knowledge/repos/.gitkeep
 # Knowledge/walkthrough notes about specific external projects (not the harness).
-knowledge/gastown-code-archaeology.yaml
+knowledge/*-code-archaeology.yaml
 knowledge/walkthroughs/gitnexus.md
 
 # Beads runtime files (Dolt backend)
