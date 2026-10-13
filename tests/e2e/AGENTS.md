@@ -51,7 +51,7 @@ The browser suite for the dashboard: `bun run verify:ui` (Playwright, Chromium, 
 
 ## Notes
 
-- Counts, as of the Timeline specs: 194 tests exist (97 per project). A normal run selects 173 (85 desktop, 88 mobile): the 18 captures are opt-in and the 3 mobile-only tests are left out of the desktop project. Recompute with `bun run verify:ui -- --list`, and with `SHOT_DIR` set to include the captures.
+- Counts, as of the Forge run hold specs: 206 tests exist (103 per project). A normal run selects 185 (91 desktop, 94 mobile): the 18 captures are opt-in and the 3 mobile-only tests are left out of the desktop project. Recompute with `bun run verify:ui -- --list`, and with `SHOT_DIR` set to include the captures.
 - What a green CI run does not prove. CI has no Beads snapshot and no forge run, so there: Dashboard, All issues, Epics and Insights render their "No snapshot loaded" state, and the real-API Forge run test takes its no-run branch. Populated states are covered only where a test serves a fixture. CI runs Chromium on Linux only.
 - A failed CI run uploads `test-results/` (a trace per failed test and a screenshot of the page at failure) as the `playwright-test-results` artifact. Open a trace with `bunx playwright show-trace <trace.zip>`.
 - `bun run lint` does not cover this directory. Keep new files clean with `bunx biome check <file>`.
