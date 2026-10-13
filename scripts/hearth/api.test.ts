@@ -269,12 +269,14 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { smith: "nobody" },
     },
     prepare: (h) => queued(h, "demo-reassign", "queued"),
-    // It moves no state, so it leaves no transition: the audit row is the record.
+    // It moves no state: its outcome is a tracker write, with no from or to.
+    outcome: [{ kind: "bead.transitioned", payload: { action: "reassign" } }],
     happened: async (h, data) => {
       expect(data).toEqual({
         id: "demo-reassign",
         state: "queued",
         smith: "claude-master",
+        recorded: true,
       });
       expect(h.bd.calls.slice(-2)).toEqual([
         ["show", "--readonly", "--json", "--", "demo-reassign"],

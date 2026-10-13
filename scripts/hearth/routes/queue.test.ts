@@ -7,8 +7,10 @@ import type {
   QueueEntry,
   QueueMoveResult,
   QueueReassignResult,
+  StreamSnapshot,
 } from "../../../types/hearth";
 import {
+  answerQueueList,
   type QueueTracker,
   queueTracker,
   type TrackedBead,
@@ -16,6 +18,7 @@ import {
 import { bdAnswers } from "../bd-answers";
 import { OPERATOR_HEADER } from "../paths";
 import {
+  openEventStream,
   startTestHearth,
   type TestHearth,
   type TestHearthOptions,
@@ -581,7 +584,7 @@ describe("two requests at once", () => {
 });
 
 describe("POST /queue/:id/reassign", () => {
-  test("records the smith on the bead; the audit row names the bead and the smith; no transition", async () => {
+  test("records the smith on the bead; the audit row names the bead and the smith; then one bead.transitioned that moves no state", async () => {
     const { h, tracker } = await start([backed("demo-1", "queued")]);
     const answer = await post<QueueReassignResult>(
       h,
@@ -592,7 +595,12 @@ describe("POST /queue/:id/reassign", () => {
       status: 200,
       body: {
         ok: true,
-        data: { id: "demo-1", state: "queued", smith: "claude-master" },
+        data: {
+          id: "demo-1",
+          state: "queued",
+          smith: "claude-master",
+          recorded: true,
+        },
         error: null,
       },
     });
@@ -619,7 +627,62 @@ describe("POST /queue/:id/reassign", () => {
           target: "claude-master",
         },
       },
+      {
+        kind: "bead.transitioned",
+        beadId: "demo-1",
+        payload: { action: "reassign" },
+      },
     ] as never);
+  });
+
+  test("an open stream gets the audit row and then a bead.transitioned delta for the bead; a /queue read made after that delta shows the new smith", async () => {
+    const { h, tracker } = await start([backed("demo-1", "queued")]);
+    // GET /queue reads the same in-memory tracker the reassign writes.
+    h.bd.answer = (args) =>
+      tracker.answer(args) ??
+      answerQueueList(args, [...tracker.beads.values()]);
+    const smiths = async (): Promise<Array<[string, string | undefined]>> => {
+      const response = await fetch(`${h.api}/queue`, { headers: h.headers() });
+      const body = (await response.json()) as OperatorEnvelope<QueueEntry[]>;
+      return (body.data ?? []).map((entry) => [entry.beadId, entry.smith]);
+    };
+
+    const client = await openEventStream(`${h.api}/stream`, {
+      Origin: h.hearth.url,
+    });
+    try {
+      const first = await client.next();
+      expect(first?.event).toBe("snapshot");
+      const snapshot = JSON.parse(first?.data ?? "null") as StreamSnapshot;
+      expect(snapshot.queue.data?.map((entry) => entry.smith)).toEqual([
+        undefined,
+      ]);
+
+      const posted = post(h, "/queue/demo-1/reassign", {
+        smith: "claude-master",
+      });
+      const deltas: LedgerEvent[] = [];
+      while (deltas.length < 2) {
+        const message = await client.next(2000);
+        if (message?.event === "delta")
+          deltas.push(JSON.parse(message.data) as LedgerEvent);
+        else expect(message?.event).toBe("comment");
+      }
+      expect(
+        deltas.map((event) => [event.kind, event.beadId, event.payload]),
+      ).toEqual([
+        [
+          "operator.action",
+          "demo-1",
+          { action: "queue.reassign", surface: "api", target: "claude-master" },
+        ],
+        ["bead.transitioned", "demo-1", { action: "reassign" }],
+      ]);
+      expect(await smiths()).toEqual([["demo-1", "claude-master"]]);
+      expect((await posted).status).toBe(200);
+    } finally {
+      client.close();
+    }
   });
 
   test("a smith that is not configured, is disabled, or is not a name: 400, nothing appended, bd not called", async () => {

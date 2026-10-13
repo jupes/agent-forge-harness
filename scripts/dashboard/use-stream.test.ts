@@ -1238,6 +1238,32 @@ describe("client: watchers and the routes read again", () => {
     });
   });
 
+  test("a reassign's delta reads the queue route again, and the page then holds the smith that read answered", async () => {
+    const entry = { beadId: "b-1", title: "B", state: "queued" as const };
+    const { wire, client, clock, reads } = harness();
+    client.subscribe(() => undefined);
+    wire.current.open();
+    wire.current.snapshot({
+      cursor: 10,
+      queue: ok([{ ...entry, status: "open" }]),
+    });
+    wire.current.delta(
+      event(11, {
+        kind: "bead.transitioned",
+        beadId: "b-1",
+        payload: { action: "reassign" },
+      }),
+    );
+    clock.advance(BATCH_MS);
+    expect(reads.asked).toEqual(["/queue"]);
+    await reads.answer(
+      ok([{ ...entry, status: "open", smith: "claude-master" }]),
+    );
+    expect(client.getState().queue.data?.map((each) => each.smith)).toEqual([
+      "claude-master",
+    ]);
+  });
+
   test("a burst of events is one read now and one after it; nothing reads on a timer", async () => {
     const { wire, client, clock, reads } = harness();
     client.subscribe(() => undefined);

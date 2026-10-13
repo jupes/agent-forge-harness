@@ -9,7 +9,6 @@
  */
 
 import {
-  BEAD_WRITES,
   BENCH_NAMES,
   type Executor,
   LEDGER_EVENT_KINDS,
@@ -25,6 +24,7 @@ import {
   type SessionEnvelope,
   SHIFT_STOP_REASONS,
   type Smith,
+  TRACKER_WRITES,
 } from "../../types/hearth";
 
 export type ValidationResult<T> =
@@ -225,7 +225,7 @@ const queueTransition = shape({
 });
 
 const trackerWrite = shape({
-  action: oneOf(BEAD_WRITES),
+  action: oneOf(TRACKER_WRITES),
   hash: optional(sha256Hex),
   length: optional(nonNegInt),
   from: absent("a tracker write"),
