@@ -116,7 +116,7 @@ export interface GateDeps {
   env: Env;
   /** Runs one of the gate's own fixed command lines. Never given a value from outside. */
   run(cmd: string): { ok: boolean; output: string };
-  /** Runs a program with an argument array and no shell: how `bd` is called. */
+  /** Runs a program with an argument array and no shell: how `bd`, and git for the test evidence, are called. */
   execFile: ExecFile;
   hasScript(name: string): boolean;
   hasTestFiles(): boolean;
@@ -300,22 +300,11 @@ function runChecks(
     }
   }
 
-  // Check 7: Test evidence (recent commits should include test files)
+  // Check 7: Test evidence (the branch's own commits should include test files)
   {
-    const r = run("git log --oneline --name-only -5");
-    const hasRecentTests =
-      r.ok && (r.output.includes(".test.") || r.output.includes(".spec."));
-    checks.push({
-      name: "test-evidence",
-      passed: hasRecentTests,
-      ...(hasRecentTests
-        ? {}
-        : {
-            output:
-              "No test files in recent commits — ensure tests were committed",
-          }),
-    });
-    if (!hasRecentTests) blockingFailures.push("test-evidence");
+    const evidence = testEvidenceCheck(deps.execFile);
+    checks.push(evidence);
+    if (!evidence.passed) blockingFailures.push("test-evidence");
   }
 
   // Check 8 (optional): strict evaluator verdict JSON
@@ -352,6 +341,108 @@ function runChecks(
   }
 
   return { checks, blockingFailures, bound };
+}
+
+/** A branch's own commits are the ones since the remote's default branch. */
+const BRANCH_BASE = "origin/HEAD";
+
+/** Each commit's line in the listing starts with this byte, which no listed path holds. */
+const COMMIT_MARK = "\0";
+
+/** What `git log` is asked for: one marked line per commit, then the paths it changes. */
+const LISTING = ["log", "--format=%x00%H", "--name-only"] as const;
+
+/** Paths whose change leaves the tests nothing to run. */
+const DOCUMENTATION = /\.(md|mdx|markdown|txt|rst|adoc)$/i;
+const DOCUMENTATION_KINDS = ".md, .mdx, .markdown, .txt, .rst, .adoc";
+
+const isTestFile = (path: string): boolean =>
+  path.includes(".test.") || path.includes(".spec.");
+
+/**
+ * The commits and paths a listing holds. git quotes a path with unusual bytes
+ * in it; the quotes are dropped so its name can still be read.
+ */
+function commitListing(output: string): { commits: number; paths: string[] } {
+  let commits = 0;
+  const paths: string[] = [];
+  for (const line of output.split("\n")) {
+    const text = line.trimEnd();
+    if (text.startsWith(COMMIT_MARK)) commits++;
+    else if (text.length > 1 && text.startsWith('"') && text.endsWith('"'))
+      paths.push(text.slice(1, -1));
+    else if (text.length > 0) paths.push(text);
+  }
+  return { commits, paths };
+}
+
+/**
+ * Check 7: the work's tests are committed. The evidence is every commit of the
+ * branch's own, the ones since origin/HEAD, however many there are: a test
+ * file in any of them passes. Commits that change only documentation, or no
+ * commits at all, leave nothing to test, and the check says so as a skip.
+ *
+ * Without an origin/HEAD the branch's own commits cannot be told apart, so the
+ * last five commits are read instead, and only a test file among them passes.
+ *
+ * git is run with an argument array, never through a shell.
+ */
+function testEvidenceCheck(exec: ExecFile): CheckResult {
+  const name = "test-evidence";
+  const own = exec("git", [...LISTING, `${BRANCH_BASE}..HEAD`]);
+  if (own.ok) {
+    const { commits, paths } = commitListing(own.output);
+    const theirs = `this branch's ${commits} commit${commits === 1 ? "" : "s"} since ${BRANCH_BASE}`;
+    const test = paths.find(isTestFile);
+    if (test !== undefined) {
+      return {
+        name,
+        passed: true,
+        output: `test file among ${theirs}: ${test}`,
+      };
+    }
+    const nothingToTest = (why: string): CheckResult => ({
+      name,
+      passed: true,
+      skipped: true,
+      skipReason: `${why}: nothing to test`,
+    });
+    if (commits === 0 && paths.length === 0) {
+      return nothingToTest(`this branch has no commits since ${BRANCH_BASE}`);
+    }
+    if (paths.length === 0) return nothingToTest(`${theirs} change no files`);
+    if (paths.every((path) => DOCUMENTATION.test(path))) {
+      return nothingToTest(
+        `${theirs} change documentation only (${DOCUMENTATION_KINDS})`,
+      );
+    }
+    return {
+      name,
+      passed: false,
+      output: `No test file among ${theirs}, and they change more than documentation: commit the tests with the work`,
+    };
+  }
+
+  const recent = exec("git", [...LISTING, "-5"]);
+  if (!recent.ok) {
+    return {
+      name,
+      passed: false,
+      output: `git could not list the commits: ${recent.output.slice(0, 400)}`,
+    };
+  }
+  const test = commitListing(recent.output).paths.find(isTestFile);
+  return test !== undefined
+    ? {
+        name,
+        passed: true,
+        output: `no ${BRANCH_BASE} to find this branch's own commits from, so the last five commits were read: test file ${test}`,
+      }
+    : {
+        name,
+        passed: false,
+        output: `No test file in the last five commits. There is no ${BRANCH_BASE} to find this branch's own commits from (\`git remote set-head origin --auto\` sets it)`,
+      };
 }
 
 /** A verdict the strict check bound, with the file it was read from. */
