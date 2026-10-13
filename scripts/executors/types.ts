@@ -39,10 +39,26 @@ export interface SpawnRequest {
   command?: string[] | undefined;
 }
 
-export interface ExecResult {
+/** How a supervised child ended. */
+export interface ChildExit {
   exitCode: number | null;
   timedOut: boolean;
   stopped: boolean;
+  /**
+   * The end of what the child wrote to stderr (`STDERR_TAIL_CHARS` at most).
+   * Shown in a command's own output, never stored in the ledger.
+   */
+  stderr: string;
+}
+
+/** How a run ended: the child's exit, and what the provider said went wrong. */
+export interface ExecResult extends ChildExit {
+  /**
+   * The errors the provider reported in its own stream, in its words, oldest
+   * first and each once. Shown in a command's own output, never stored in the
+   * ledger.
+   */
+  providerErrors: string[];
 }
 
 export interface ExecutorHandle {
@@ -63,6 +79,10 @@ export interface ExecutorHandle {
 export interface DoctorResult {
   provider: Provider;
   found: boolean;
+  /**
+   * The binary answered `--version` with exit 0. That is all: a CLI that is
+   * not signed in, or cannot run a tool, answers it too (`forge:doctor --task`).
+   */
   ok: boolean;
   version?: string | undefined;
   path?: string | undefined;

@@ -14,6 +14,11 @@ import { closeLedger } from "../ledger/db";
 import { SESSION_MIRROR_FILE } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
 import { queryEvents } from "../ledger/query";
+import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
+import {
+  initRunCorrelation,
+  loadRunCorrelation,
+} from "../run-correlation-store";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { runDoctor } from "./doctor-cli";
@@ -228,6 +233,36 @@ describe("forge:exec", () => {
     expect(out.body.error).toBe("provider exited 3");
   });
 
+  test("a provider that fails with its reason on stderr only: the reason is in the output, after the exit code", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-stderr", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude", "stderr") },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toBe(
+      "provider exited 2: the stream could not be started (fake)",
+    );
+    expect(out.body.data).toMatchObject({ exitCode: 2, providerErrors: [] });
+    expect(
+      String((out.body.data as Record<string, unknown>).stderr).trim(),
+    ).toBe("the stream could not be started (fake)");
+    expect(
+      JSON.stringify(queryEvents({ beadId: "b-stderr" }, { path: ledger })),
+    ).not.toContain("could not be started");
+  });
+
+  test("a run that exits 0 and reports no error is a success with no provider errors", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-clean", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude") },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body).toMatchObject({ ok: true, error: null });
+    expect(out.body.data).toMatchObject({ exitCode: 0, providerErrors: [] });
+  });
+
   test("the child never sees a planted DATABASE_URL, but sees configured pass vars", async () => {
     const { root, worktree, deps } = setup();
     writeFileSync(
@@ -344,6 +379,98 @@ describe("forge:exec", () => {
       ledger: null,
       exitCode: 0,
     });
+  });
+});
+
+describe("forge:exec --run when the run correlation is refused (fake binary)", () => {
+  test("a run held by another bead: the child still runs, its ledger rows and adapter variables carry --bead and --run, and the correlation file keeps the other bead", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const held = initRunCorrelation({
+      checkout: worktree,
+      topLevel: true,
+      beadsIssueId: "bead-a",
+      executionRunId: "run-9",
+    });
+    expect(held.ok).toBe(true);
+    const dump = join(root, "dump.json");
+
+    const out = await runExec(
+      [
+        "--bead",
+        "bead-b",
+        "--run",
+        "run-9",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "x",
+      ],
+      { ...deps, command: [...fake("claude"), "--fake-dump", dump] },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body.data).toMatchObject({
+      recorded: 4,
+      correlation: null,
+      correlationNote:
+        "run run-9 is already correlated to bead-a; rebind it with: bun run forge:correlate --bead bead-b --run run-9",
+    });
+
+    // Every row of the run names the bead this session was launched for.
+    expect(
+      queryEvents({ runId: "run-9" }, { path: ledger }).map((row) => [
+        row.kind,
+        row.beadId,
+        row.runId,
+      ]),
+    ).toEqual([
+      ["session.started", "bead-b", "run-9"],
+      ["tool.called", "bead-b", "run-9"],
+      ["tool.called", "bead-b", "run-9"],
+      ["session.ended", "bead-b", "run-9"],
+    ]);
+
+    const seen = JSON.parse(readFileSync(dump, "utf8")).env as Record<
+      string,
+      string
+    >;
+    expect(seen).toMatchObject({
+      AGENT_FORGE_BEAD_ID: "bead-b",
+      FORGE_SLUG: "run-9",
+    });
+    expect(RUN_CORRELATION_ENV in seen).toBe(false);
+
+    const loaded = loadRunCorrelation(
+      `${RUN_CORRELATIONS_DIR}/run-9.json`,
+      worktree,
+    );
+    expect(loaded.ok && String(loaded.value.beadsIssueId)).toBe("bead-a");
+  });
+
+  test("a --run that is not a Forge run id exits 2 before the provider starts, and nothing is written: no ledger, no correlation", async () => {
+    for (const run of ["../run-9", "run 9"]) {
+      const { root, worktree, ledger, deps } = setup();
+      const dump = join(root, "dump.json");
+
+      const out = await runExec(
+        [
+          "--bead",
+          "bead-b",
+          "--run",
+          run,
+          "--worktree",
+          worktree,
+          "--prompt",
+          "x",
+        ],
+        { ...deps, command: [...fake("claude"), "--fake-dump", dump] },
+      );
+      expect(out.code).toBe(2);
+      expect(out.body).toMatchObject({ ok: false, data: null });
+      expect(out.body.error).toStartWith("--run must be a Forge run id");
+      expect(existsSync(dump)).toBe(false);
+      expect(existsSync(ledger)).toBe(false);
+      expect(existsSync(join(worktree, ".tmp"))).toBe(false);
+    }
   });
 });
 

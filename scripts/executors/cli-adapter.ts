@@ -23,6 +23,7 @@ import { childEnv } from "./env";
 import { supervise } from "./supervisor";
 import type {
   DoctorResult,
+  ExecResult,
   ExecutorAdapter,
   ExecutorHandle,
   SpawnRequest,
@@ -71,6 +72,8 @@ export interface CliAdapterSpec {
   buildArgs(request: SpawnRequest): string[];
   /** What one stdout line reports; an unparseable or irrelevant line reports no tools and nothing else. */
   parseLine(line: string): ParsedLine;
+  /** The error one stdout line reports, in the provider's words; undefined for any other line. */
+  parseError(line: string): string | undefined;
   /** Runs before spawning (e.g. mirror skills for Codex). */
   prepare?(request: SpawnRequest): Promise<void> | void;
 }
@@ -213,6 +216,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       let session:
         | { id: string; base: EventBase; unmirror: () => void }
         | undefined;
+      // In the provider's words: for the command's output, never an event.
+      const providerErrors = new Set<string>();
 
       /**
        * Fix the session's id, announce it (`session.started` comes first) and
@@ -265,6 +270,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         stdin: request.prompt,
         timeoutMs: request.timeoutMs,
         onLine: (line) => {
+          const reported = spec.parseError(line);
+          if (reported !== undefined) providerErrors.add(reported);
           const parsed = spec.parseLine(line);
           if (!session && parsed.sessionId) begin(parsed.sessionId);
           if (parsed.usage) usage = parsed.usage;
@@ -280,14 +287,18 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       });
 
       let stopReason: string | undefined;
-      const done = child.done.then((result) => {
+      const done = child.done.then((exit): ExecResult => {
+        const result = { ...exit, providerErrors: [...providerErrors] };
+        // Fixed wording only: the provider's own text stays out of the ledger.
         const reason = result.timedOut
           ? "timeout"
           : result.stopped
             ? `stopped: ${stopReason ?? "operator"}`
-            : result.exitCode === 0
-              ? "completed"
-              : `failed: exit ${result.exitCode}`;
+            : result.exitCode !== 0
+              ? `failed: exit ${result.exitCode}`
+              : result.providerErrors.length > 0
+                ? "failed: exit 0, provider reported an error"
+                : "completed";
         const { base, unmirror } = current();
         queue.push({
           ...base,

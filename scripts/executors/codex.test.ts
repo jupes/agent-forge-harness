@@ -7,7 +7,7 @@ import { BUILTIN_SMITHS } from "../config/defaults";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { claudeAdapter } from "./claude";
-import { createCodexAdapter, parseCodexLine } from "./codex";
+import { createCodexAdapter, parseCodexError, parseCodexLine } from "./codex";
 import { buildChildEnv } from "./env";
 import { type ExecDeps, runExec } from "./exec-cli";
 import type { SpawnRequest } from "./types";
@@ -273,6 +273,45 @@ describe("codex adapter", () => {
       [started, completed].flatMap((line) => parseCodexLine(line).tools),
     ).toEqual([{ tool: "shell", input: "write-file hello.txt", exitCode: 0 }]);
   });
+
+  test("parseCodexError: an error item, error and turn.failed give their message, or their type when it has none; other lines report no error", () => {
+    const line = (value: unknown) => JSON.stringify(value);
+    expect(
+      parseCodexError(
+        line({
+          type: "item.completed",
+          item: { id: "i", type: "error", message: " no host " },
+        }),
+      ),
+    ).toBe("no host");
+    expect(parseCodexError(line({ type: "error", message: "gone" }))).toBe(
+      "gone",
+    );
+    expect(
+      parseCodexError(line({ type: "turn.failed", error: { message: "no" } })),
+    ).toBe("no");
+    expect(
+      parseCodexError(
+        line({ type: "item.completed", item: { type: "error" } }),
+      ),
+    ).toBe("error item");
+    expect(parseCodexError(line({ type: "error" }))).toBe("error");
+    expect(parseCodexError(line({ type: "turn.failed" }))).toBe("turn.failed");
+
+    expect(
+      parseCodexError(
+        line({
+          type: "item.completed",
+          item: { type: "agent_message", text: "I could not do it" },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseCodexError(line({ type: "item.started", item: { type: "error" } })),
+    ).toBeUndefined();
+    expect(parseCodexError(line({ type: "turn.completed" }))).toBeUndefined();
+    expect(parseCodexError("not json")).toBeUndefined();
+  });
 });
 
 describe("codex adapter: shapes the real CLI printed, replayed by the fake binary", () => {
@@ -292,7 +331,6 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
       { ...deps, command: fake("model") },
     );
     expect(out.code).toBe(2);
-    expect(out.body.error).toBe("provider exited 1");
     expect(out.body.data).toMatchObject({ events: 2, recorded: 2 });
 
     const rows = queryEvents({ beadId: "b-model" }, { path: ledger });
@@ -301,6 +339,72 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
       "session.ended",
     ]);
     expect(rows[1]?.payload).toMatchObject({ reason: "failed: exit 1" });
+  });
+
+  test("a rejected model: the message its error item, error and turn.failed carry is in forge:exec's output once, and stays out of the ledger", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b-model-why",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "hi",
+        "--smith",
+        "codex-journeyman",
+      ],
+      { ...deps, command: fake("model") },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toBe(
+      "provider exited 1: the model is not supported (fake)",
+    );
+    expect(out.body.data).toMatchObject({
+      providerErrors: ["the model is not supported (fake)"],
+    });
+
+    const rows = queryEvents({ beadId: "b-model-why" }, { path: ledger });
+    expect(rows).toHaveLength(2);
+    expect(JSON.stringify(rows)).not.toContain("not supported");
+  });
+
+  test("a copy with no tool host (an error item, an agent message, turn.completed, exit 0) is not reported as success: exit 2, the provider's message in the output, and session.ended says the provider reported an error", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b-no-host",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "hi",
+        "--smith",
+        "codex-journeyman",
+      ],
+      { ...deps, command: fake("no-tool-host") },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.ok).toBe(false);
+    expect(out.body.error).toBe(
+      "provider exited 0 but reported an error: the tool host was not found, so no command can run (fake)",
+    );
+    expect(out.body.data).toMatchObject({
+      exitCode: 0,
+      providerErrors: [
+        "the tool host was not found, so no command can run (fake)",
+      ],
+    });
+
+    const rows = queryEvents({ beadId: "b-no-host" }, { path: ledger });
+    expect(rows.map((row) => row.kind)).toEqual([
+      "session.started",
+      "session.ended",
+    ]);
+    expect(rows[1]?.payload).toMatchObject({
+      reason: "failed: exit 0, provider reported an error",
+    });
+    expect(JSON.stringify(rows)).not.toContain("tool host");
   });
 });
 

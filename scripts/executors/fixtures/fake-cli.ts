@@ -5,7 +5,7 @@
  * later argument is the adapter's own and is recorded, not interpreted.
  *
  *   --fake-provider claude|codex   which stream dialect to print
- *   --fake-mode ok|tools|garbage|crash|hang|auth|model
+ *   --fake-mode ok|tools|garbage|crash|hang|auth|model|no-tool-host|no-tools|stderr
  *   --fake-dump <file>             write { cwd, env, argv, stdin } as JSON
  *   --fake-session-id <id>         the session id the stream reports (Claude:
  *                                  `session_id` on every line; Codex:
@@ -23,21 +23,28 @@
  *
  * The line shapes (field names and nesting) follow what the real CLIs printed
  * when each binary was run directly on Windows — `claude` 2.1.293 as far as
- * an authentication failure, `codex` 0.159.0 for a rejected model, `codex`
- * 0.160.0 through one shell command. Each line carries a subset of the real
- * fields; the discriminating values (`authentication_failed`,
- * `command_execution`, the statuses) and the field names of the session ids
- * and of the usage objects are the real ones, while ids, text and counts are
- * invented, and no recorded line is copied. Two shapes are not from a
- * recording: the Claude `tool_use` block (the documented stream-json format;
- * that run never got as far as a tool) and a successful Claude `result`,
- * which carries the same `usage` and `total_cost_usd` fields as the recorded
- * failed one.
+ * an authentication failure, `codex` 0.159.0 for a rejected model and for a
+ * copy with no tool host, `codex` 0.160.0 through one shell command. Each
+ * line carries a subset of the real fields; the discriminating values
+ * (`authentication_failed`, `is_error`, `command_execution`, the `error` item
+ * type, the statuses) and the field names of the session ids and of the usage
+ * objects are the real ones, while ids, text and counts are invented, and no
+ * recorded line is copied. Four shapes are not from a recording: the Claude
+ * `tool_use` block (the documented stream-json format; that run never got as
+ * far as a tool), a successful Claude `result` (it carries the same `usage`
+ * and `total_cost_usd` fields as the recorded failed one), a run that ends
+ * without calling a tool and reports nothing wrong (`no-tools`), and a
+ * failure told only on stderr (`stderr`).
  *
- *   auth   (claude) the stored sign-in is rejected: an assistant error message,
- *          an error `result` (all-zero usage), exit 1
- *   model  (codex)  the provider rejects the model: an `error` item, `error`,
- *          `turn.failed`, exit 1
+ *   auth          (claude) the stored sign-in is rejected: an assistant error
+ *                 message, an error `result` (all-zero usage), exit 1
+ *   model         (codex)  the provider rejects the model: an `error` item,
+ *                 `error`, `turn.failed`, exit 1
+ *   no-tool-host  (codex)  the helper that runs tools is missing: an `error`
+ *                 item, an agent message saying the task was not done,
+ *                 `turn.completed`, exit 0
+ *   no-tools      the stream's first and last lines and no tool, exit 0
+ *   stderr        one line on stderr and nothing on stdout, exit 2
  */
 
 import { existsSync, writeFileSync } from "fs";
@@ -140,6 +147,11 @@ if (mode === "hang") {
   await new Promise(() => undefined);
 }
 
+if (mode === "stderr") {
+  console.error("the stream could not be started (fake)");
+  process.exit(2);
+}
+
 if (provider === "claude") {
   emit(
     claudeLine({
@@ -208,6 +220,17 @@ if (provider === "claude") {
     process.exit(1);
   }
   emit({ type: "turn.started" });
+  if (mode === "no-tool-host") {
+    emit({
+      type: "item.completed",
+      item: {
+        id: `item_${codexItems++}`,
+        type: "error",
+        message: "the tool host was not found, so no command can run (fake)",
+      },
+    });
+    codexSays("I could not create the file (fake)");
+  }
   if (mode === "tools" || mode === "ok") {
     codexSays("on it");
     codexTool("bun test SECRET_BODY_MUST_NOT_LEAK", 0);

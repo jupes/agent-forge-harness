@@ -49,7 +49,10 @@ a run that is correlated to another bead alone. Move the run to this bead first 
 `bun run forge:correlate --bead <id> --run <slug> --checkout <path>`.
 The run's `session.started`, `tool.called` and `session.ended` events go to the ledger with the smith on each:
 `bun run forge:audit --bead <id>` shows them. A ledger that cannot be written is reported in the command's output and
-never stops the provider. `bun run forge:doctor` reports which provider CLIs are installed.
+never stops the provider. A failed run's output gives the provider's own reason, and a provider that exits 0 after
+reporting an error is not counted a success. `bun run forge:doctor` reports which provider CLIs are installed and answer
+`--version`; `bun run forge:doctor --task` also runs one small task through each and reports whether it exited 0,
+reported no error and called a tool (against a real provider it spends a request).
 
 ## When to use which rank
 

@@ -109,6 +109,27 @@ export function parseClaudeLine(line: string): ParsedLine {
   };
 }
 
+/**
+ * The reason a `result` line with `is_error: true` gives: its `result` text,
+ * else its `subtype`. `claude` 2.1.293 with an expired sign-in gave its reason
+ * in such a line's `result`, with nothing on stderr, and exited 1.
+ */
+export function parseClaudeError(line: string): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(value) || value.type !== "result" || value.is_error !== true) {
+    return undefined;
+  }
+  for (const said of [value.result, value.subtype]) {
+    if (typeof said === "string" && said.trim()) return said.trim();
+  }
+  return "an error result with no message";
+}
+
 export const claudeAdapter = createCliAdapter({
   provider: "claude",
   binary: "claude",
@@ -126,4 +147,5 @@ export const claudeAdapter = createCliAdapter({
     CLAUDE_ALLOWED_TOOLS.join(","),
   ],
   parseLine: parseClaudeLine,
+  parseError: parseClaudeError,
 });
