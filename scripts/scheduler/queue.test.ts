@@ -1158,7 +1158,7 @@ describe("two callers at once", () => {
 describe("reassign", () => {
   const config = loadConfig({ harnessRoot: workspace, env: {}, home }).config;
 
-  test("records the smith as the bead's smith metadata, in the states where the work has not started", async () => {
+  test("records the smith as the bead's smith metadata, in the states where the work has not started, with one event that moves no state", async () => {
     for (const state of QUEUE_STATES) {
       const bead = beadIn(state, state === "paused" ? "queued" : undefined);
       const { tracker, queue, events } = rig([bead]);
@@ -1171,11 +1171,12 @@ describe("reassign", () => {
         });
         expect(result.ok ? "" : result.error).toContain(`queue:${state}`);
         expect(tracker.updates()).toEqual([]);
+        expect(events(bead.id)).toEqual([]);
         continue;
       }
       expect(result).toEqual({
         ok: true,
-        value: { id: bead.id, state, smith: "claude-master" },
+        value: { id: bead.id, state, smith: "claude-master", recorded: true },
       });
       expect(tracker.calls).toEqual([
         show(bead.id),
@@ -1190,13 +1191,51 @@ describe("reassign", () => {
       expect(tracker.beads.get(bead.id)?.metadata?.["smith"]).toBe(
         "claude-master",
       );
-      // The state did not move, so no transition is recorded.
+      // The state did not move: the one event is a tracker write, with no from or to.
       expect(queueLabels(tracker, bead.id)).toEqual([`queue:${state}`]);
-      expect(events(bead.id)).toEqual([]);
+      expect(events(bead.id)).toEqual([{ action: "reassign" }]);
     }
   });
 
-  test("a bead outside the queue, with an inherited label, or with two labels is refused", async () => {
+  test("the event is appended once bd has written the smith: when it is appended, the bead already carries the smith", async () => {
+    const bead = beadIn("queued");
+    const smithWhenAppended: unknown[] = [];
+    let smithNow: () => unknown = () => "the tracker is not made yet";
+    const { tracker, queue, events } = rig([bead], (event) => {
+      smithWhenAppended.push(smithNow());
+      return appendEvent(event, { path: ledger });
+    });
+    smithNow = () => tracker.beads.get(bead.id)?.metadata?.["smith"];
+    const result = await queue.reassign(bead.id, "claude-master", config);
+    expect(result.ok).toBe(true);
+    expect(smithWhenAppended).toEqual(["claude-master"]);
+    expect(events(bead.id)).toEqual([{ action: "reassign" }]);
+  });
+
+  test("the smith is written and the ledger will not store the event: the answer says so, and the smith stands", async () => {
+    const outcomes: Array<[() => AppendResult, string]> = [
+      [() => ({ ok: false, error: "the disk is full" }), "the disk is full"],
+      [
+        () => {
+          throw new Error("the ledger threw");
+        },
+        "the ledger threw",
+      ],
+      [() => ({ ok: true, duplicate: true, ulid: "x" }), "stored no row"],
+    ];
+    for (const [append, why] of outcomes) {
+      const bead = beadIn("queued");
+      const { tracker, queue } = rig([bead], append);
+      const result = await queue.reassign(bead.id, "claude-master", config);
+      expect(result.ok && result.value.recorded).toBe(false);
+      expect(result.ok ? result.value.recordError : "").toContain(why);
+      expect(tracker.beads.get(bead.id)?.metadata?.["smith"]).toBe(
+        "claude-master",
+      );
+    }
+  });
+
+  test("a bead outside the queue, with an inherited label, or with two labels is refused, and nothing is written or recorded", async () => {
     const beads: TrackedBead[] = [
       beadIn(null),
       { id: `probe-${++serial}`, labels: ["queue:queued"] },
@@ -1207,10 +1246,11 @@ describe("reassign", () => {
       },
     ];
     for (const bead of beads) {
-      const { tracker, queue } = rig([bead]);
+      const { tracker, queue, events } = rig([bead]);
       const result = await queue.reassign(bead.id, "claude-master", config);
       expect(result.ok ? "ok" : result.kind).toBe("refused");
       expect(tracker.updates()).toEqual([]);
+      expect(events(bead.id)).toEqual([]);
     }
   });
 
@@ -1250,9 +1290,9 @@ describe("reassign", () => {
     });
   });
 
-  test("a write bd does not confirm is an unknown outcome", async () => {
+  test("a write bd does not confirm is an unknown outcome, and no event is recorded", async () => {
     const bead = beadIn("queued");
-    const { tracker, queue } = rig([bead]);
+    const { tracker, queue, events } = rig([bead]);
     tracker.intercept = (args) =>
       args[0] === "update" ? bdAnswers.help() : undefined;
     const result = await queue.reassign(bead.id, "claude-master", config);
@@ -1278,6 +1318,7 @@ describe("reassign", () => {
     expect(unconfirmed.ok ? "" : unconfirmed.error).toContain(
       `bd show ${bead.id}`,
     );
+    expect(events(bead.id)).toEqual([]);
   });
 });
 

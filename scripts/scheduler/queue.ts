@@ -26,7 +26,7 @@
  *   time leaves exactly the target, so neither writer can tell; when both
  *   are this module (two lock files), the move is recorded twice.
  * - A process that ends between the `bd update` and the append leaves the
- *   move made on the bead with no `bead.transitioned` for it.
+ *   move (or the reassign) made on the bead with no `bead.transitioned` for it.
  */
 
 import {
@@ -288,7 +288,10 @@ export interface Queue {
     action: QueueAction,
     by: QueueActor,
   ): Promise<QueueOutcome<QueueMoveResult>>;
-  /** Record `smith` as the bead's smith. It moves no state and appends no transition. */
+  /**
+   * Record `smith` as the bead's smith. It moves no state; once `bd`
+   * confirmed the write it appends `bead.transitioned` `{ action: "reassign" }`.
+   */
   reassign(
     id: string,
     smith: string,
@@ -522,12 +525,30 @@ export function createQueue(deps: QueueDeps): Queue {
     const written = await write(id, [`--set-metadata=smith=${smith}`]);
     if (!written.ok) return written;
     const metadata = written.value["metadata"];
-    return isRecord(metadata) && metadata["smith"] === smith
-      ? { ok: true, value: { id, state: standing.state, smith } }
-      : no(
-          "unknown",
-          `bd update exited 0 but ${id} is not confirmed as assigned to ${smith}. Check with \`bd show ${id}\` before trying again.`,
-        );
+    if (!isRecord(metadata) || metadata["smith"] !== smith)
+      return no(
+        "unknown",
+        `bd update exited 0 but ${id} is not confirmed as assigned to ${smith}. Check with \`bd show ${id}\` before trying again.`,
+      );
+
+    // After the write, so that a reader that reads the queue again on this
+    // event finds the smith. A tracker write: the state did not move.
+    const unrecorded = await storeEvent(deps.appendEvent, {
+      kind: "bead.transitioned",
+      workspace: deps.workspace,
+      beadId: id,
+      payload: { action: "reassign" },
+    });
+    return {
+      ok: true,
+      value: {
+        id,
+        state: standing.state,
+        smith,
+        recorded: unrecorded === null,
+        ...(unrecorded !== null ? { recordError: unrecorded } : {}),
+      },
+    };
   }
 
   return {

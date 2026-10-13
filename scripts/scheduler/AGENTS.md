@@ -81,11 +81,13 @@ process spawned is git, by the registry.
   the same move at the same time leaves exactly the target, so it is not found; when both writers
   are `queue.ts` (two lock files), the move is recorded twice.
 - `queue_state` and `queue_resume` are trusted as written: metadata set by hand is read as the
-  queue's own. A process that ends between the `bd update` and the append leaves the move made with
-  no `bead.transitioned` for it.
+  queue's own. A process that ends between the `bd update` and the append leaves the move (or the
+  reassign) made with no `bead.transitioned` for it.
 - `reassign` records a smith as the bead's `smith` metadata, which is where smith resolution reads
-  a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state and appends
-  no transition. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
+  a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state. Once `bd`
+  confirmed the write, it appends `bead.transitioned` `{ action: "reassign" }` under the lock, the
+  tracker-write form with no `from` or `to`, so that a page or a stream client that reads `/queue`
+  again on that event finds the new smith. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
   picks the bench, and a bead without one gets `workflow.default_crew`.
 - `bd list --label queue:queued` prints the beads a shift may pick plus two kinds that `start`
   refuses, both made outside the queue: an inherited or hand-added label, and a bead with a second

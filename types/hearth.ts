@@ -255,12 +255,21 @@ export const BEAD_WRITES = ["create", "claim", "comment", "close"] as const;
 export type BeadWrite = (typeof BEAD_WRITES)[number];
 
 /**
- * What `bead.transitioned` records for a tracker write. It says nothing about
- * the queue: `from`, `to` and `reason` are never present, and the validator
+ * Every write `bead.transitioned` records as a tracker write: the bead writes
+ * (`POST /beads…`), and `reassign`, the queue's write of a bead's `smith`
+ * metadata (`POST /queue/:id/reassign`), which moves no state.
+ */
+export const TRACKER_WRITES = [...BEAD_WRITES, "reassign"] as const;
+
+export type TrackerWrite = (typeof TRACKER_WRITES)[number];
+
+/**
+ * What `bead.transitioned` records for a tracker write. It moves no queue
+ * state: `from`, `to` and `reason` are never present, and the validator
  * refuses a payload that mixes this form with a queue transition.
  */
 export interface BeadWriteRecord {
-  action: BeadWrite;
+  action: TrackerWrite;
   /**
    * SHA-256 (hex) of the one text the write carried: the title of a create,
    * the comment, the close reason. Never the text itself.
@@ -344,9 +353,9 @@ export interface LedgerPayloads {
     summary?: string;
   };
   /**
-   * A queue transition (`from`, `to`), or a tracker write made through the
-   * operator API (`action`). A write has no `to`: read it only on a payload
-   * without `action`.
+   * A queue transition (`from`, `to`), or a tracker write (`action`): one
+   * made through the operator API, or a reassign. A write has no `to`: read
+   * it only on a payload without `action`.
    */
   "bead.transitioned":
     | {
@@ -438,7 +447,8 @@ export type OperatorEnvelope<T = unknown> =
 // What the read routes of the operator API answer as `data`, and what the
 // stream sends. Added with the API. The types above this line are as they were
 // before it, with one later exception: `bead.transitioned` gained a second
-// payload form (`BeadWriteRecord`) with the Beads write path.
+// payload form (`BeadWriteRecord`) with the Beads write path, whose `action`
+// later also took `reassign` (`TRACKER_WRITES`).
 
 /**
  * What the ledger knows about one session, folded from its events. Not a
@@ -599,4 +609,7 @@ export interface QueueReassignResult {
   id: string;
   state: QueueState;
   smith: string;
+  /** Whether the `bead.transitioned` event was stored. The smith was written either way. */
+  recorded: boolean;
+  recordError?: string;
 }
