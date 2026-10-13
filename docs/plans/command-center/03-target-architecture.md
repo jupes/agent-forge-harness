@@ -92,7 +92,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | Route | State | Notes |
   |---|---|---|
   | `GET /sessions` | mounted | `?open=1`, `?limit=` (1–500, default 100). Folded from the newest 50,000 ledger events of the workspace. Reports `lastEventAt` and `endedAt`; asserts nothing about a session being alive. |
-  | `GET /runs`, `GET /runs/:slug` | mounted | The run registry of the checkout. `/runs/:slug` adds the stored state and the run's newest 200 ledger events. |
+  | `GET /runs`, `GET /runs/:slug` | mounted | The run registry of the checkout. `/runs/:slug` adds the stored state and the run's newest ledger events: `?events=` (0–200, default 200), 0 for none, which still says in `more` whether the run has any. Older ones are paged through `/events?run=`. The MCP tool `forge_run_get` asks for 20 unless told. |
   | `GET /events` | mounted | `bead`, `beadExact`, `run`, `session`, `since`, `kind`, `after`, `limit` (1–1000, default 200), by the rules of `forge:audit`. Always this workspace. Answers `{ events, cursor, more }`. An unknown or repeated parameter is 400. |
   | `GET /queue` | mounted | `?state=` (comma list). Reads `queue:<state>` labels from Beads with a read-only `bd list`. One entry per (bead, queue label), each with `backed`: whether the queue wrote that label (see Queue actions). |
   | `GET /reservations` | mounted | Claims acquired and not released, from the ledger, written by `reserve` in `scripts/scheduler/reservations.ts` (`x1gs.5.3`). |

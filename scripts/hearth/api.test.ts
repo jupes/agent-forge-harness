@@ -1570,6 +1570,90 @@ describe("reads over the ledger and run state", () => {
     expect(body.data?.events.events.length).toBe(200);
     expect(body.data?.events.more).toBe(true);
   });
+
+  test("/runs/:slug?events=N carries the run's newest N events; 0 carries none, and the run and its state are still answered", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++)
+      ids.push(
+        h.append({
+          kind: "gate.ran",
+          runId: "demo",
+          payload: { gate: "typecheck", passed: true },
+        }),
+      );
+    const read = async (query: string) => {
+      const response = await get(h, `/runs/demo${query}`);
+      const body = await envelope<RunDetail>(response);
+      return {
+        status: response.status,
+        slug: body.data?.run.slug,
+        feature: body.data?.state.feature,
+        ids: body.data?.events.events.map((event) => event.id),
+        cursor: body.data?.events.cursor,
+        more: body.data?.events.more,
+      };
+    };
+    const answered = { status: 200, slug: "demo", feature: "Demo run" };
+
+    expect(await read("?events=2")).toEqual({
+      ...answered,
+      ids: ids.slice(-2),
+      cursor: ids[4],
+      more: true,
+    });
+    // None carried: the cursor is where a forward page starts, and `more` says the run has events.
+    expect(await read("?events=0")).toEqual({
+      ...answered,
+      ids: [],
+      cursor: 0,
+      more: true,
+    });
+    expect(await read("?events=5")).toEqual({
+      ...answered,
+      ids,
+      cursor: ids[4],
+      more: false,
+    });
+    expect(await read("?events=200")).toEqual({
+      ...answered,
+      ids,
+      cursor: ids[4],
+      more: false,
+    });
+  });
+
+  test("/runs/:slug refuses an events value that is not a whole number from 0 to 200, a repeated one, and any other parameter", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    h.append({
+      kind: "gate.ran",
+      runId: "demo",
+      payload: { gate: "typecheck", passed: true },
+    });
+    const range = "events: expected a whole number from 0 to 200";
+    for (const [query, error] of [
+      ["?events=201", range],
+      ["?events=-1", range],
+      ["?events=1.5", range],
+      ["?events=ten", range],
+      ["?events=", range],
+      ["?events=1&events=2", "events: given more than once"],
+      ["?event=1", "event: unknown parameter (expected events)"],
+      ["?limit=5", "limit: unknown parameter (expected events)"],
+    ] as const) {
+      const response = await get(h, `/runs/demo${query}`);
+      const body = await envelope(response);
+      expect({ query, status: response.status, body }).toEqual({
+        query,
+        status: 400,
+        body: { ok: false, data: null, error },
+      });
+    }
+  });
 });
 
 const QUEUE_ARGS = [
