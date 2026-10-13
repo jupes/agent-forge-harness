@@ -5,15 +5,21 @@
  * `bash -c`, with `CLAUDE_PROJECT_DIR` set to this checkout and a PreToolUse
  * payload for the Bash tool piped on stdin.
  *
- * Each group hands bash a PATH that reaches `cat` and `grep`, plus `bun`, `jq`
- * or neither as its title says, and its first test asks that bash which of
- * them it finds. On Windows the PATH is Git for Windows' `usr\bin` (which holds
- * no `jq` or `bun`) and, where named, the directory of the `bun` running this
- * suite; elsewhere it is a scratch directory of links to the named programs.
+ * Each group hands bash a PATH that reaches `cat`; the system's `grep`, unless
+ * its title says otherwise; and `bun`, `jq` or neither, as its title says. Its
+ * first test asks that bash which of them it finds. With the system's `grep`,
+ * the Windows PATH is Git for Windows' `usr\bin` (which holds no `jq` or `bun`)
+ * and, where named, the directory of the `bun` running this suite. On other
+ * platforms it is a scratch directory of links to the named programs.
  * The group with `jq` runs where a `jq` is on this suite's PATH, and always
  * under CI; it also compares what `jq -r '.tool_input.command'` and
  * `read-tool-command.ts` (the reader the script runs without jq) print for the
  * same payloads.
+ *
+ * Two groups take the system's `grep` away. One has no `grep` on PATH at all;
+ * the other has a stand-in `grep` script that exits 2. On Windows, where
+ * `usr\bin` holds `grep` beside `cat`, `usr\bin` stays off their PATH and a
+ * stand-in `cat` script runs `/usr/bin/cat` instead.
  *
  * These prove what the script decides for a payload under a given PATH. They
  * do not prove that a live session calls it.
@@ -27,6 +33,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -99,6 +106,8 @@ function which(name: string): string {
 interface Tools {
   bun: boolean;
   jq: boolean;
+  /** No `grep` on PATH, or a stand-in that exits 2. Left out: the system's. */
+  grep?: "none" | "exits 2";
 }
 
 interface Box {
@@ -107,23 +116,41 @@ interface Box {
   env: Record<string, string>;
 }
 
-/** The PATH for bash: `cat` and `grep`, and `bun` and `jq` where `tools` says. */
+/** An executable bash script `name` in `dir` that runs `body`. */
+function writeScript(dir: string, name: string, body: string): void {
+  writeFileSync(join(dir, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+}
+
+/**
+ * The PATH for bash: `cat`, `grep` as `tools.grep` says, and `bun` and `jq`
+ * where `tools` says.
+ */
 function toolPath(root: string, tools: Tools): string {
   if (WINDOWS) {
-    const dirs = [dirname(BASH)];
+    const dirs: string[] = [];
+    if (tools.grep === undefined) {
+      dirs.push(dirname(BASH));
+    } else {
+      // usr\bin holds grep beside cat, so it stays off this PATH: the stand-in
+      // cat runs the one there by its path in Git Bash.
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      writeScript(bin, "cat", 'exec /usr/bin/cat "$@"');
+      if (tools.grep === "exits 2") writeScript(bin, "grep", "exit 2");
+      dirs.push(bin);
+    }
     if (tools.bun) dirs.push(dirname(process.execPath));
     if (tools.jq) dirs.push(dirname(which("jq")));
     return dirs.join(";");
   }
   const bin = join(root, "bin");
   mkdirSync(bin);
-  const links: Array<[string, string]> = [
-    ["cat", which("cat")],
-    ["grep", which("grep")],
-  ];
+  const links: Array<[string, string]> = [["cat", which("cat")]];
+  if (tools.grep === undefined) links.push(["grep", which("grep")]);
   if (tools.bun) links.push(["bun", process.execPath]);
   if (tools.jq) links.push(["jq", which("jq")]);
   for (const [name, target] of links) symlinkSync(target, join(bin, name));
+  if (tools.grep === "exits 2") writeScript(bin, "grep", "exit 2");
   return bin;
 }
 
@@ -417,6 +444,84 @@ describe("the git guardrail with neither jq nor bun on PATH", () => {
       const ran = await guard(sandbox(tools), payload("git status --short"));
       expect(ran.exitCode).toBe(2);
       expect(ran.stderr).toContain("neither jq nor bun is on PATH");
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
+describe("the git guardrail with bun on PATH and no grep", () => {
+  const tools: Tools = { bun: true, jq: false, grep: "none" };
+
+  test(
+    "bash on this PATH finds cat and bun, and no grep or jq",
+    async () => {
+      expect(
+        await reachable(sandbox(tools), ["cat", "grep", "bun", "jq"]),
+      ).toEqual(["cat", "bun"]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "blocks git push --force origin master with exit 2, saying grep exited 127",
+    async () => {
+      const ran = await guard(
+        sandbox(tools),
+        payload("git push --force origin master"),
+      );
+      expect(ran.exitCode).toBe(2);
+      expect(ran.stderr).toContain(
+        "BLOCKED: grep exited 127 checking the command against pattern 'push --force'.",
+      );
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "blocks git status --short too: with no grep it checks no command",
+    async () => {
+      const ran = await guard(sandbox(tools), payload("git status --short"));
+      expect(ran.exitCode).toBe(2);
+      expect(ran.stderr).toContain("BLOCKED: grep exited 127 ");
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
+describe("the git guardrail with bun on PATH and a grep that exits 2", () => {
+  const tools: Tools = { bun: true, jq: false, grep: "exits 2" };
+
+  test(
+    "bash on this PATH finds cat, grep and bun, and no jq",
+    async () => {
+      expect(
+        await reachable(sandbox(tools), ["cat", "grep", "bun", "jq"]),
+      ).toEqual(["cat", "grep", "bun"]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "blocks git push --force origin master with exit 2, saying grep exited 2",
+    async () => {
+      const ran = await guard(
+        sandbox(tools),
+        payload("git push --force origin master"),
+      );
+      expect(ran.exitCode).toBe(2);
+      expect(ran.stderr).toContain(
+        "BLOCKED: grep exited 2 checking the command against pattern 'push --force'.",
+      );
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "blocks git status --short too: a grep that exits 2 checks no command",
+    async () => {
+      const ran = await guard(sandbox(tools), payload("git status --short"));
+      expect(ran.exitCode).toBe(2);
+      expect(ran.stderr).toContain("BLOCKED: grep exited 2 ");
     },
     SPAWN_TIMEOUT_MS,
   );
