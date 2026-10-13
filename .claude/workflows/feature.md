@@ -34,8 +34,10 @@ If you **`bd create`** any follow-on or child issues during this workflow, set *
 Load knowledge first. Then map the full scope.
 
 ```bash
-# 2a. Load knowledge files (mandatory)
-cat knowledge/repos/<repo>.yaml
+# 2a. Load knowledge files (mandatory). A repo has one only after /add-repo or /sync-knowledge
+# has been run for it, and knowledge/repos/ is empty in a fresh checkout: with none, say so
+# and explore from the code.
+cat knowledge/repos/<repo>.yaml 2>/dev/null || echo "no knowledge file for <repo>"
 cat knowledge/_shared.yaml
 
 # 2b. Reuse verification (mandatory — do NOT skip)

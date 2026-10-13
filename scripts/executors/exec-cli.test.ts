@@ -218,6 +218,25 @@ describe("forge:exec", () => {
     expect((await runExec([], deps)).body.error).toContain("usage");
   });
 
+  test("--smith constructor, a key every object has, exits 2 as an unknown smith", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "x",
+        "--smith",
+        "constructor",
+      ],
+      deps,
+    );
+    expect(out).toMatchObject({ code: 2 });
+    expect(out.body.error).toBe('unknown smith "constructor"');
+  });
+
   test("a provider failure exits 2 with its exit code", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(
@@ -359,18 +378,45 @@ describe("forge:doctor", () => {
     expect(report[1]).toMatchObject({ ok: false });
   });
 
-  test("with no override and nothing on PATH the adapter is found:false", async () => {
-    const saved = process.env.PATH;
-    process.env.PATH = "";
-    try {
-      const report = await claudeAdapter.doctor();
+  test("with no override and nothing on PATH (a child process whose PATH is one empty directory), forge:doctor --json reports every adapter found:false", async () => {
+    // Emptying process.env.PATH in this process does not reach Bun.which (on
+    // Windows, Bun 1.3.10, it still found an installed claude), so the doctor
+    // runs in a child whose PATH and working directory are a directory this
+    // test has just made, with nothing in it.
+    const empty = realpathSync.native(
+      mkdtempSync(join(tmpdir(), "forge doctor path ")),
+    );
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && key.toUpperCase() !== "PATH") env[key] = value;
+    }
+    env.PATH = empty;
+    const child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "doctor-cli.ts"), "--json"],
+      { cwd: empty, env, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exitCode: await child.exited, stderr }).toEqual({
+      exitCode: 0,
+      stderr: expect.any(String),
+    });
+    const body = JSON.parse(stdout) as {
+      ok: boolean;
+      data: { adapters: { provider: string }[] };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.data.adapters.map((r) => r.provider)).toEqual(
+      expect.arrayContaining(["claude", "codex"]),
+    );
+    for (const report of body.data.adapters) {
       expect(report).toMatchObject({
-        provider: "claude",
         found: false,
         ok: false,
+        reason: `${report.provider} not found on PATH`,
       });
-    } finally {
-      process.env.PATH = saved;
     }
-  });
+  }, 30_000);
 });

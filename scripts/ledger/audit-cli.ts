@@ -17,9 +17,11 @@
  * printed (with or without --json) and the exit code is 2.
  *
  * When more events match than the limit, the result is cut and one line on
- * stderr says so, with and without --json. The note is not a field of the
- * envelope: `data` stays the array of events its readers parse, and stdout
- * stays the envelope alone.
+ * stderr says so, with and without --json. So does one more line when the
+ * scope is a value the ledger refuses to store (a checkout path, bead, run or
+ * session the secret scanner flags): an empty answer there does not mean that
+ * nothing happened. The notes are not fields of the envelope: `data` stays the
+ * array of events its readers parse, and stdout stays the envelope alone.
  */
 
 import {
@@ -28,6 +30,7 @@ import {
   type LedgerEventKind,
   type OperatorEnvelope,
 } from "../../types/hearth";
+import { refusedJoinValue } from "./append";
 import { backupLedger, compact } from "./backup";
 import { ledgerPath } from "./paths";
 import { type EventFilter, queryEventPage } from "./query";
@@ -216,10 +219,38 @@ export function formatTable(events: readonly LedgerEvent[]): string {
     .join("\n");
 }
 
+/**
+ * A note for a query scoped to a value the ledger refuses (`refusedJoinValue`):
+ * the checkout it runs from, or the bead, run or session it names. Nothing
+ * that carries such a value is stored, so an empty answer would otherwise
+ * read as "nothing happened". Null when the scope holds no such value.
+ */
+function refusedScopeNote(filter: EventFilter): string | null {
+  const scope: ReadonlyArray<[string, Parameters<typeof refusedJoinValue>[0]]> =
+    [
+      [
+        "the checkout of the current directory",
+        { workspace: filter.workspace },
+      ],
+      ["the --bead value", { beadId: filter.beadId }],
+      ["the --run value", { runId: filter.runId }],
+      ["the --session value", { sessionId: filter.sessionId }],
+    ];
+  for (const [subject, values] of scope) {
+    const refused = refusedJoinValue(values);
+    if (refused !== null)
+      return `forge:audit: ${subject} looks like a secret to the ledger's scanner (${refused.kind}); the ledger refuses every event that carries such a value, so what happened under it is not recorded (scripts/ledger/AGENTS.md)`;
+  }
+  return null;
+}
+
 export interface AuditOutcome {
   code: 0 | 2;
   stdout: string;
-  /** A note for the reader that is not part of the answer: the result was cut at the limit. */
+  /**
+   * Notes for the reader that are not part of the answer: the result was cut
+   * at the limit, or its scope is a value the ledger refuses to store.
+   */
   stderr?: string;
 }
 
@@ -260,24 +291,31 @@ export function runAudit(
       );
     }
     const limit = filter.limit ?? DEFAULT_LIMIT;
-    const { events, more } = queryEventPage(
-      {
-        ...filter,
-        limit,
-        ...(allWorkspaces
-          ? {}
-          : { workspace: resolveCheckout(context.cwd).workspace }),
-      },
-      { path },
-    );
-    if (!more) return success(events, json, formatTable(events));
-    // A page after a cursor keeps its first events; a tail keeps its newest.
-    const paged = filter.afterId !== undefined;
-    const shown = `${limit} matching event${limit === 1 ? "" : "s"}`;
-    const note = paged
-      ? `forge:audit: showing the first ${shown} after id ${filter.afterId}; more follow — continue with --after-id ${events[events.length - 1]?.id}`
-      : `forge:audit: showing the newest ${shown}; older ones were left out — raise --limit or narrow the filters`;
-    return { ...success(events, json, formatTable(events)), stderr: note };
+    const scope: EventFilter & { limit: number } = {
+      ...filter,
+      limit,
+      ...(allWorkspaces
+        ? {}
+        : { workspace: resolveCheckout(context.cwd).workspace }),
+    };
+    const { events, more } = queryEventPage(scope, { path });
+    const notes: string[] = [];
+    if (more) {
+      // A page after a cursor keeps its first events; a tail keeps its newest.
+      const paged = filter.afterId !== undefined;
+      const shown = `${limit} matching event${limit === 1 ? "" : "s"}`;
+      notes.push(
+        paged
+          ? `forge:audit: showing the first ${shown} after id ${filter.afterId}; more follow — continue with --after-id ${events[events.length - 1]?.id}`
+          : `forge:audit: showing the newest ${shown}; older ones were left out — raise --limit or narrow the filters`,
+      );
+    }
+    const refused = refusedScopeNote(scope);
+    if (refused !== null) notes.push(refused);
+    const outcome = success(events, json, formatTable(events));
+    return notes.length === 0
+      ? outcome
+      : { ...outcome, stderr: notes.join("\n") };
   } catch (error) {
     return failure(error instanceof Error ? error.message : String(error));
   }

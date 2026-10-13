@@ -186,4 +186,81 @@ describe("the file-map check command: a task whose description carries its check
       globs: ["src/settings/export.ts"],
     });
   });
+
+  const carriesHeading =
+    "### Checkpoint A — The export document\nBuild it.\n\n## Files\nsrc/settings/export.ts\n";
+
+  test("--description reads a file that carries its checkpoint heading, and gives what --bd-json gives for the same text once stored", () => {
+    const checked = runFileMapCli(["task.md", "--description"], {
+      read: files({ "task.md": carriesHeading }),
+    });
+    const stored = runFileMapCli(["-", "--bd-json"], {
+      read: files({
+        "-": JSON.stringify([{ id: "bd-1", description: carriesHeading }]),
+      }),
+    });
+    expect(checked).toEqual({
+      code: 0,
+      body: {
+        ok: true,
+        data: { ok: true, globs: ["src/settings/export.ts"] },
+        error: null,
+      },
+    });
+    expect(checked).toEqual(stored);
+  });
+
+  test("without a flag that file is refused, and the refusal names --description as well as --plan", () => {
+    const outcome = runFileMapCli(["task.md"], {
+      read: files({ "task.md": carriesHeading }),
+    });
+    expect(outcome.code).toBe(2);
+    expect(outcome.body.error).toContain("--plan");
+    expect(outcome.body.error).toContain("--description");
+  });
+
+  test("--description is refused beside --plan or --bd-json, and on `bd show <id> --json` output it names --bd-json", () => {
+    const read = files({
+      "task.md": carriesHeading,
+      "-": JSON.stringify([{ id: "bd-1", description: carriesHeading }]),
+    });
+    for (const argv of [
+      ["task.md", "--description", "--plan"],
+      ["task.md", "--description", "--bd-json"],
+    ]) {
+      const outcome = runFileMapCli(argv, { read });
+      expect({ argv, code: outcome.code }).toEqual({ argv, code: 2 });
+      expect(outcome.body.error).toContain("usage:");
+    }
+    const printed = runFileMapCli(["-", "--description"], { read });
+    expect(printed.code).toBe(2);
+    expect(printed.body.error).toContain("add --bd-json");
+  });
+});
+
+describe("the file-map check command: --plan on a checkpoint that opens a fence beside a plan-level `Files` section", () => {
+  test("a checkpoint with no map, whose list line opens a fence, is refused rather than passed on the plan-level `Files` section after `## Validation`", () => {
+    const plan = [
+      "### Checkpoint A — first",
+      "#### Files",
+      "src/a.ts",
+      "",
+      "### Checkpoint B — second",
+      "1. ```bash",
+      "   bun test src/b.test.ts",
+      "   ```",
+      "",
+      "## Validation",
+      "",
+      "## Files",
+      "src/whole-plan.ts",
+    ].join("\n");
+    const outcome = runFileMapCli(["plan.md", "--plan"], {
+      read: files({ "plan.md": plan }),
+    });
+    expect(outcome.code).toBe(2);
+    expect(outcome.body.error).toBe(
+      "Checkpoint B — second: no `Files` section",
+    );
+  });
 });
