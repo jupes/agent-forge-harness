@@ -988,7 +988,7 @@ const FAILURES: Failure[] = [
     bd: (args) => bdAnswers.notFinished(args),
     status: 504,
     says: (attempt) => [
-      "did not finish",
+      "did not finish: it was stopped before it answered, or it never started",
       "may still have been made",
       attempt.check,
     ],
@@ -1425,6 +1425,28 @@ describe("a call with no exit status", () => {
     });
     expect((await post(h, "/beads", { title: "A bead" })).status).toBe(504);
   });
+
+  test("that the runtime could not spawn for another reason is still an unknown outcome, and the answer says it may never have started instead of that it ran out of time", async () => {
+    const h = await start();
+    // Measured under Bun 1.3.10 with the runner's options: a working directory
+    // that is gone ends the call with no exit status, nothing on stdout, and
+    // this, whole, as what the runner hands back on stderr.
+    h.bd.answer = () =>
+      killed("ENOENT: no such file or directory, uv_spawn 'bd'");
+    for (const attempt of ATTEMPTS) {
+      const answer = await post(h, attempt.path, attempt.body);
+      const where = attempt.verb;
+      expect({ where, status: answer.status }).toEqual({ where, status: 504 });
+      expect({ where, error: answer.body.error }).toEqual({
+        where,
+        error: expect.stringContaining("or it never started"),
+      });
+      expect(answer.body.error).not.toContain("time limit");
+      expect(answer.body.error).toContain("may still have been made");
+      expect(answer.body.error).toContain(attempt.check);
+    }
+    expect(h.events(["bead.transitioned"])).toEqual([]);
+  });
 });
 
 describe("what a refusal says", () => {
@@ -1630,6 +1652,37 @@ describe("a claim of a bead that was already claimed", () => {
       expect((await post(h, "/beads/demo-task/claim", {})).status).toBe(200);
     }
     expect(h.events(["bead.transitioned"])).toHaveLength(2);
+  });
+
+  test("is not told by started_at: a claim printed with a started_at from before the call and an updated_at inside its two seconds is answered 200 and recorded", async () => {
+    // bd 1.1.0 writes started_at on a claim only while it is empty, so a bead
+    // that was released and is claimed again prints the time of its first
+    // claim. On 2026-10-12 this project's tracker held an open issue that still
+    // carried the started_at of an earlier claim.
+    const h = await start();
+    h.bd.answer = () =>
+      bdAnswers.claimed(
+        anIssue({
+          status: "in_progress",
+          assignee: "operator",
+          started_at: bdTime(new Date(Date.now() - 10 * 86_400_000)),
+          updated_at: bdTime(),
+        }),
+      );
+    const answer = await post(h, "/beads/demo-task/claim", {});
+    expect(answer.status).toBe(200);
+    expect(recorded(h)).toEqual([
+      {
+        kind: "operator.action",
+        beadId: "demo-task",
+        payload: { action: "bead.claim", surface: "api", target: "demo-task" },
+      },
+      {
+        kind: "bead.transitioned",
+        beadId: "demo-task",
+        payload: { action: "claim" },
+      },
+    ]);
   });
 });
 
