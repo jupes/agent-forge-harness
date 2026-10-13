@@ -25,6 +25,9 @@ const ALSO_SCANNED = [
   "CLAUDE.md",
 ];
 
+/** The task-breakdown prompt template: an instruction file the scan above does not list. */
+const BEADS_TASKS_TEMPLATE = ".beads/templates/tasks.prompt.md";
+
 const MAX_BYTES = 2 * 1024 * 1024;
 
 /** The Markdown instructions git knows about. `docs/plans/` is history and is not among them. */
@@ -44,6 +47,12 @@ function instructionFiles(): string[] {
         /^\.(claude|agents)\/.*\.md$/.test(path) || ALSO_SCANNED.includes(path),
     );
 }
+
+/** The instruction files, and the one prompt template a run is asked to paste. */
+const withTasksTemplate = (): string[] => [
+  ...instructionFiles(),
+  BEADS_TASKS_TEMPLATE,
+];
 
 function read(path: string): string | null {
   const file = join(ROOT, path);
@@ -581,6 +590,116 @@ describe("the Forge documents: what the review of the first build found", () => 
     for (const path of skill("forge-plan")) {
       expect(missing(path, ["bd dep add <later-id> <earlier-id>"])).toEqual([]);
     }
+  });
+
+  test("no instruction file gives `bd dep add` the --requires or --blocks flag, which this bd rejects as unknown", () => {
+    const wrong = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd dep add/)
+        .filter((documented) =>
+          /--(requires|blocks)\b/.test(documented.command),
+        )
+        .map(show),
+    );
+    expect(wrong).toEqual([]);
+  });
+
+  test("no instruction file gives `bd create` or `bd update` the --ac flag, which this bd rejects as unknown (it is --acceptance)", () => {
+    const wrong = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd (?:create|update)\b/)
+        .filter((documented) =>
+          /(?:^|\s)--ac(?=[\s="']|$)/.test(documented.command),
+        )
+        .map(show),
+    );
+    expect(wrong).toEqual([]);
+  });
+
+  test("no `bd create` example joins its flags with a literal backslash-n, which the shell passes on as an argument", () => {
+    const wrong = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /bd create\b/)
+        .filter((documented) => /\\n\s/.test(documented.command))
+        .map(show),
+    );
+    expect(wrong).toEqual([]);
+  });
+
+  test("each `bd dep add` line that used to name its direction with a flag still puts the dependent issue first", () => {
+    const directions: Array<[string, readonly string[]]> = [
+      ["CLAUDE.md", ["bd dep add <later-id> <earlier-id>"]],
+      [BEADS_TASKS_TEMPLATE, ["bd dep add <task-b-id> <task-a-id>"]],
+      ...command("go").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <B-id> <A-id>"],
+      ]),
+      ...command("plan").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <step-2-id> <step-1-id>"],
+      ]),
+      ...skill("qa").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <blocked-id> <blocker-id>"],
+      ]),
+      ...skill("to-issues").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <blocked-id> <slice-id>"],
+      ]),
+    ];
+    for (const [path, phrases] of directions) {
+      expect(missing(path, phrases)).toEqual([]);
+    }
+  });
+
+  test("no instruction file `cat`s a repo's knowledge file without a fallback for the file not being there", () => {
+    const bare = withTasksTemplate().flatMap((path) =>
+      commandsIn(path, read(path) ?? "", /cat knowledge\/repos\//)
+        .filter((documented) => !documented.command.includes("||"))
+        .map(show),
+    );
+    expect(bare).toEqual([]);
+  });
+
+  test("each instruction that loads a repo's knowledge file says the directory is empty in a fresh checkout", () => {
+    const loaders = [
+      ...skill("forge-research"),
+      ...command("plan"),
+      ...command("ask"),
+      ...command("review"),
+      ".claude/agents/worker.md",
+      ".agents/skills/forge-roles/references/worker.md",
+      ".claude/workflows/feature.md",
+      ".claude/workflows/fix.md",
+    ];
+    for (const path of loaders) {
+      expect(missing(path, ["is empty in a fresh checkout"])).toEqual([]);
+    }
+  });
+
+  test("the research skill says what to do when a repo has no knowledge file", () => {
+    for (const path of skill("forge-research")) {
+      expect(
+        missing(path, [
+          "the directory is empty in a fresh checkout",
+          "say in the research document that no knowledge file existed",
+        ]),
+      ).toEqual([]);
+    }
+  });
+
+  test("the tasks template creates each task with a priority and points at the skill that chooses it", () => {
+    const create = commandsIn(
+      BEADS_TASKS_TEMPLATE,
+      read(BEADS_TASKS_TEMPLATE) ?? "",
+      /bd create\b/,
+    );
+    expect(create.length).toBeGreaterThan(0);
+    expect(
+      create.filter((documented) => !documented.command.includes("--priority")),
+    ).toEqual([]);
+    expect(
+      missing(BEADS_TASKS_TEMPLATE, [
+        ".claude/skills/beads-priority-assignment/SKILL.md",
+      ]),
+    ).toEqual([]);
   });
 
   test("the plan skill gives the command that checks a plan's maps, checkpoint by checkpoint, and says where a reason for `**` goes", () => {

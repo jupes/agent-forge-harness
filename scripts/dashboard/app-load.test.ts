@@ -52,6 +52,31 @@ describe("snapshotLabelFor", () => {
     expect(result.label).toContain("not-a-date");
     expect(result.label).not.toContain("Invalid");
   });
+
+  test("names the fallback file and that bd did not answer when the snapshot came from the file", () => {
+    const result = snapshotLabelFor("2026-10-12T12:10:00.000Z", {
+      kind: "file",
+      path: ".beads/issues.jsonl",
+      // A year the build time does not share, so its presence is the file's age.
+      modifiedAt: "2025-07-25T20:35:35.000Z",
+      reason: "spawn bd ENOENT",
+    });
+    expect(result.label.startsWith("Snapshot built:")).toBe(true);
+    expect(result.label).toContain(".beads/issues.jsonl");
+    expect(result.label).toContain("bd did not answer");
+    expect(result.label).toContain("2025");
+    expect(result.iso).toBe("2026-10-12T12:10:00.000Z");
+  });
+
+  test("adds nothing when the snapshot came from the tracker or names no source", () => {
+    const plain = snapshotLabelFor("2026-10-12T12:10:00.000Z");
+    expect(
+      snapshotLabelFor("2026-10-12T12:10:00.000Z", { kind: "tracker" }),
+    ).toEqual(plain);
+    expect(snapshotLabelFor("2026-10-12T12:10:00.000Z", undefined)).toEqual(
+      plain,
+    );
+  });
 });
 
 describe("pageTitleFor", () => {

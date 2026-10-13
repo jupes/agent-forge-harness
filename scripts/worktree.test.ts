@@ -19,6 +19,18 @@ import type { WorktreeResult } from "../types/beads";
 const SCRIPT = resolve(import.meta.dir, "worktree.ts");
 const roots: string[] = [];
 
+/**
+ * Each test runs the real script, and the script runs git for every step, so
+ * a test's time is processes starting, not work it could skip
+ * (agent-forge-harness-6msi). Measured on Windows 11 with bun 1.3.10: a git
+ * call takes about 40 ms. The cleanup test runs the script 6 times (36 git
+ * calls between them) and git 6 more times to make its repository; it takes
+ * 3.3 s alone and 7.0 to 7.4 s with eight copies of this file running at
+ * once, past bun's default limit of 5 s. 60 s is the limit the other tests
+ * that spawn processes use.
+ */
+const SPAWN_TIMEOUT_MS = 60_000;
+
 afterAll(() => {
   for (const root of roots)
     rmSync(root, { recursive: true, force: true, maxRetries: 5 });
@@ -70,103 +82,123 @@ const branches = (dir: string): string[] =>
   git(dir, "branch", "--format=%(refname:short)").split("\n");
 
 describe("bun run worktree, in a repository whose path has spaces", () => {
-  test("create, list and cleanup: the worktree is made under trees/, listed with its bead, and removed", () => {
-    const dir = repo();
-    const top = git(dir, "rev-parse", "--show-toplevel");
-    const created = cli(
-      dir,
-      "create",
-      "feat/spaced",
-      "--bead",
-      "agent-forge-harness-x1gs.5.2",
-    );
-    expect(created.exit).toBe(0);
-    expect(created.out.ok).toBe(true);
-    const made = created.out.worktree;
-    if (!made) throw new Error("no worktree in the answer");
-    expect(made.path).toBe(`${top}/trees/${made.id}`);
-    expect(made.branch).toBe("feat/spaced");
-    expect(existsSync(made.path)).toBe(true);
-    expect(git(made.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe(
-      "feat/spaced",
-    );
-    expect(created.out.warnings?.[0]).toContain("shared by every worktree");
+  test(
+    "create, list and cleanup: the worktree is made under trees/, listed with its bead, and removed",
+    () => {
+      const dir = repo();
+      const top = git(dir, "rev-parse", "--show-toplevel");
+      const created = cli(
+        dir,
+        "create",
+        "feat/spaced",
+        "--bead",
+        "agent-forge-harness-x1gs.5.2",
+      );
+      expect(created.exit).toBe(0);
+      expect(created.out.ok).toBe(true);
+      const made = created.out.worktree;
+      if (!made) throw new Error("no worktree in the answer");
+      expect(made.path).toBe(`${top}/trees/${made.id}`);
+      expect(made.branch).toBe("feat/spaced");
+      expect(existsSync(made.path)).toBe(true);
+      expect(git(made.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe(
+        "feat/spaced",
+      );
+      expect(created.out.warnings?.[0]).toContain("shared by every worktree");
 
-    const listed = cli(dir, "list");
-    expect(listed.exit).toBe(0);
-    expect(
-      listed.out.worktrees?.map((entry) => [entry.kind, entry.id ?? null]),
-    ).toEqual([
-      ["main", null],
-      ["trees", made.id],
-    ]);
-    expect(listed.out.worktrees?.[1]?.beadId).toBe(
-      "agent-forge-harness-x1gs.5.2",
-    );
-    expect(listed.out.warnings?.[0]).toContain("shared by every worktree");
+      const listed = cli(dir, "list");
+      expect(listed.exit).toBe(0);
+      expect(
+        listed.out.worktrees?.map((entry) => [entry.kind, entry.id ?? null]),
+      ).toEqual([
+        ["main", null],
+        ["trees", made.id],
+      ]);
+      expect(listed.out.worktrees?.[1]?.beadId).toBe(
+        "agent-forge-harness-x1gs.5.2",
+      );
+      expect(listed.out.warnings?.[0]).toContain("shared by every worktree");
 
-    const cleaned = cli(dir, "cleanup", made.id);
-    expect(cleaned.exit).toBe(0);
-    expect(existsSync(made.path)).toBe(false);
-    expect(cli(dir, "list").out.worktrees?.length).toBe(1);
-  });
+      const cleaned = cli(dir, "cleanup", made.id);
+      expect(cleaned.exit).toBe(0);
+      expect(existsSync(made.path)).toBe(false);
+      expect(cli(dir, "list").out.worktrees?.length).toBe(1);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
-  test("run from a linked worktree, it uses the main checkout's registry", () => {
-    const dir = repo();
-    const first = cli(dir, "create", "feat/first").out.worktree;
-    if (!first) throw new Error("create failed");
-    const second = cli(first.path, "create", "feat/second");
-    expect(second.exit).toBe(0);
-    expect(second.out.worktree?.path).toContain("/repo x/trees/");
-    expect(
-      cli(first.path, "list").out.worktrees?.filter((e) => e.kind === "trees")
-        .length,
-    ).toBe(2);
-  });
+  test(
+    "run from a linked worktree, it uses the main checkout's registry",
+    () => {
+      const dir = repo();
+      const first = cli(dir, "create", "feat/first").out.worktree;
+      if (!first) throw new Error("create failed");
+      const second = cli(first.path, "create", "feat/second");
+      expect(second.exit).toBe(0);
+      expect(second.out.worktree?.path).toContain("/repo x/trees/");
+      expect(
+        cli(first.path, "list").out.worktrees?.filter((e) => e.kind === "trees")
+          .length,
+      ).toBe(2);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
-  test("a create that is refused exits 1 and leaves no branch and no worktree", () => {
-    const dir = repo();
-    for (const branch of ["@{-1}", "-x", "a b"]) {
-      const refused = cli(dir, "create", branch);
-      expect({ branch, exit: refused.exit, ok: refused.out.ok }).toEqual({
-        branch,
-        exit: 1,
-        ok: false,
-      });
-    }
-    expect(branches(dir)).toEqual(["master"]);
-    expect(existsSync(join(dir, "trees"))).toBe(false);
-  });
+  test(
+    "a create that is refused exits 1 and leaves no branch and no worktree",
+    () => {
+      const dir = repo();
+      for (const branch of ["@{-1}", "-x", "a b"]) {
+        const refused = cli(dir, "create", branch);
+        expect({ branch, exit: refused.exit, ok: refused.out.ok }).toEqual({
+          branch,
+          exit: 1,
+          ok: false,
+        });
+      }
+      expect(branches(dir)).toEqual(["master"]);
+      expect(existsSync(join(dir, "trees"))).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
-  test("cleanup keeps a worktree with changes unless --force; cleanup-all removes the clean ones and reports the rest", () => {
-    const dir = repo();
-    const dirty = cli(dir, "create", "feat/dirty").out.worktree;
-    const clean = cli(dir, "create", "feat/clean").out.worktree;
-    if (!dirty || !clean) throw new Error("create failed");
-    writeFileSync(join(dirty.path, "work.txt"), "unsaved\n");
+  test(
+    "cleanup keeps a worktree with changes unless --force; cleanup-all removes the clean ones and reports the rest",
+    () => {
+      const dir = repo();
+      const dirty = cli(dir, "create", "feat/dirty").out.worktree;
+      const clean = cli(dir, "create", "feat/clean").out.worktree;
+      if (!dirty || !clean) throw new Error("create failed");
+      writeFileSync(join(dirty.path, "work.txt"), "unsaved\n");
 
-    const refused = cli(dir, "cleanup", dirty.id);
-    expect(refused.exit).toBe(1);
-    expect(existsSync(join(dirty.path, "work.txt"))).toBe(true);
+      const refused = cli(dir, "cleanup", dirty.id);
+      expect(refused.exit).toBe(1);
+      expect(existsSync(join(dirty.path, "work.txt"))).toBe(true);
 
-    const all = cli(dir, "cleanup-all");
-    expect(all.exit).toBe(1);
-    expect(existsSync(clean.path)).toBe(false);
-    expect(existsSync(dirty.path)).toBe(true);
-    expect(cli(dir, "list").out.worktrees?.map((e) => e.id ?? null)).toEqual([
-      null,
-      dirty.id,
-    ]);
+      const all = cli(dir, "cleanup-all");
+      expect(all.exit).toBe(1);
+      expect(existsSync(clean.path)).toBe(false);
+      expect(existsSync(dirty.path)).toBe(true);
+      expect(cli(dir, "list").out.worktrees?.map((e) => e.id ?? null)).toEqual([
+        null,
+        dirty.id,
+      ]);
 
-    expect(cli(dir, "cleanup", dirty.id, "--force").exit).toBe(0);
-    expect(existsSync(dirty.path)).toBe(false);
-  });
+      expect(cli(dir, "cleanup", dirty.id, "--force").exit).toBe(0);
+      expect(existsSync(dirty.path)).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
-  test("an unknown command or a missing argument is a usage error", () => {
-    const dir = repo();
-    expect(cli(dir, "nothing").exit).toBe(1);
-    expect(cli(dir, "create").exit).toBe(1);
-    expect(cli(dir, "cleanup").exit).toBe(1);
-    expect(cli(dir, "create", "feat/x", "--bead").exit).toBe(1);
-  });
+  test(
+    "an unknown command or a missing argument is a usage error",
+    () => {
+      const dir = repo();
+      expect(cli(dir, "nothing").exit).toBe(1);
+      expect(cli(dir, "create").exit).toBe(1);
+      expect(cli(dir, "cleanup").exit).toBe(1);
+      expect(cli(dir, "create", "feat/x", "--bead").exit).toBe(1);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 });

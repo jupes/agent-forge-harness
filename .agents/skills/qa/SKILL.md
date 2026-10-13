@@ -115,7 +115,7 @@ When creating a breakdown:
 - Add Beads dependencies after the relevant IDs exist:
 
 ```bash
-bd dep add <blocker-id> --blocks <blocked-id>
+bd dep add <blocked-id> <blocker-id>   # the blocked issue first: it depends on the blocker
 ```
 
 - Mark independent slices as `None - can start immediately`.

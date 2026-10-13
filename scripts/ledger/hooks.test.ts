@@ -282,8 +282,10 @@ describe("the hook scripts, given a hook payload on stdin", () => {
         ),
       ];
       expect(runs.map((ran) => ran.exitCode)).toEqual([0, 0, 0, 0]);
-      // Only SessionStart has anything to say to the host.
+      // Only SessionStart has anything to say to the host, and a start the
+      // ledger stored brings no ledger line.
       expect(runs.slice(1).map((ran) => ran.stdout)).toEqual(["", "", ""]);
+      expect(runs[0]?.stdout).not.toContain("[session] ledger:");
 
       const stored = events(box);
       expect(stored.map((event) => event.kind)).toEqual([
@@ -316,6 +318,37 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       expect("git" in (endLine ?? {})).toBe(true);
       expect(typeof endLine?.timestamp).toBe("string");
       expect((stored[3]?.ts ?? "") <= String(endLine?.timestamp)).toBe(true);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  // An ordinary name the scanner flags (`sk-` after a single letter), put
+  // together here so the file does not carry it.
+  const flaggedName = ["ask", "the", "docs", "chatbot", "service"].join("-");
+
+  test(
+    `a SessionStart from a checkout named ${flaggedName} stores nothing and prints on stdout that the ledger refused its start, and why`,
+    async () => {
+      const box = sandbox();
+      const flagged = join(box.cwd, "..", flaggedName);
+      mkdirSync(join(flagged, ".git"), { recursive: true });
+      const ran = await hook(
+        box,
+        SESSION,
+        payload("SessionStart", box, {
+          source: "startup",
+          model: "m-1",
+          cwd: flagged,
+        }),
+      );
+      expect(ran.exitCode).toBe(0);
+      expect(ran.stdout).toContain(
+        "[session] ledger: session.started was not recorded: workspace looks like a secret (openai-api-key)",
+      );
+      expect(ran.stdout).toContain("refuses every event that carries it");
+      expect(ran.stdout).not.toContain(flaggedName);
+      expect(ran.stdout).toContain("[session] SessionStart logged.");
+      expect(events(box)).toHaveLength(0);
     },
     SPAWN_TIMEOUT_MS,
   );

@@ -57,13 +57,19 @@ export function resolveSmith(
     name = input.beadSmith;
     via = "bead";
   } else if (input.complexity) {
+    // Configured means a key of its own: `constructor` is on every object.
+    if (!Object.hasOwn(config.benches, input.complexity))
+      return { ok: false, error: `unknown bench "${input.complexity}"` };
     name = pickFromBench(config.benches[input.complexity], input.seed ?? "");
     via = "bench";
   } else {
     name = config.workflow.defaultCrew;
     via = "default";
   }
-  const smith = config.smiths[name];
+  // Likewise for the smith, however it was named.
+  const smith = Object.hasOwn(config.smiths, name)
+    ? config.smiths[name]
+    : undefined;
   if (!smith) return { ok: false, error: `unknown smith "${name}"` };
   if (!smith.enabled)
     return { ok: false, error: `smith "${name}" is disabled` };

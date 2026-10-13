@@ -311,6 +311,92 @@ describe("forgeRunSnapshot", () => {
     expect(snapshot.selected).toBe("agent-forge-harness-dg40");
   });
 
+  test("carries each run's review hold from its summary: halted, review pending, revising, or none", () => {
+    const findings = (high: number) => ({
+      blocker: 0,
+      high,
+      medium: 0,
+      low: 0,
+    });
+    const at = "2026-09-10T12:00:00.000Z";
+    const auto = (slug: string, completed: ForgePhase[], reviews: unknown[]) =>
+      JSON.stringify({
+        ...STATE,
+        slug,
+        mode: "auto",
+        completed,
+        phase: completed[completed.length - 1],
+        reviews,
+      });
+    const snapshot = forgeRunSnapshot({
+      runStates: [
+        JSON.stringify(STATE),
+        auto(
+          "halted-run",
+          ["research"],
+          [
+            {
+              phase: "research",
+              round: 1,
+              verdict: "UNREADABLE",
+              findings: findings(0),
+              at,
+            },
+          ],
+        ),
+        auto(
+          "revising-run",
+          ["research"],
+          [
+            {
+              phase: "research",
+              round: 1,
+              verdict: "FAIL",
+              findings: findings(1),
+              at,
+            },
+          ],
+        ),
+        auto("awaiting-run", ["research"], []),
+      ],
+      checkout: CHECKOUT,
+      gateLogs: [],
+      artifactExists: () => true,
+    });
+    const hold = (slug: string) => {
+      const run = snapshot.runs.find((candidate) => candidate.slug === slug);
+      return {
+        halted: run?.halted,
+        reviewPending: run?.reviewPending,
+        revising: run?.revising,
+      };
+    };
+    expect(hold("halted-run")).toEqual({
+      halted: {
+        phase: "research",
+        reason:
+          'The review of "research" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.',
+      },
+      reviewPending: null,
+      revising: false,
+    });
+    expect(hold("revising-run")).toEqual({
+      halted: null,
+      reviewPending: "research",
+      revising: true,
+    });
+    expect(hold("awaiting-run")).toEqual({
+      halted: null,
+      reviewPending: "research",
+      revising: false,
+    });
+    expect(hold("agent-forge-harness-dg40")).toEqual({
+      halted: null,
+      reviewPending: null,
+      revising: false,
+    });
+  });
+
   test("a gate from another checkout never attaches to a run here", () => {
     const snapshot = forgeRunSnapshot({
       runStates: [JSON.stringify(STATE)],

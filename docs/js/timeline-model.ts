@@ -73,31 +73,45 @@ export function timelineHash(query: TimelineQuery): string {
   return search === "" ? "#/timeline" : `#/timeline?${search}`;
 }
 
-/** A page of a scope's events after a cursor, as the operator API path. */
-export function eventsPath(scope: TimelineScope, after: number): string {
+/** `params`, narrowed to `kinds` when any is given, as an `/events` path. */
+function withKinds(
+  params: URLSearchParams,
+  kinds: readonly LedgerEventKind[],
+): string {
+  if (kinds.length > 0) params.set("kind", kinds.join(","));
+  return `/events?${params.toString()}`;
+}
+
+/** A page of a scope's events after a cursor (of `kinds` only, when given), as the operator API path. */
+export function eventsPath(
+  scope: TimelineScope,
+  after: number,
+  kinds: readonly LedgerEventKind[] = [],
+): string {
   const params = new URLSearchParams({
     [scope.by]: scope.id,
     after: String(after),
     limit: String(PAGE_LIMIT),
   });
-  return `/events?${params.toString()}`;
+  return withKinds(params, kinds);
 }
 
-/** Up to `limit` of one session's events after a cursor. */
+/** Up to `limit` of one session's events after a cursor (of `kinds` only, when given). */
 export function sessionPath(
   sessionId: string,
   after: number,
   limit: number,
+  kinds: readonly LedgerEventKind[] = [],
 ): string {
   const params = new URLSearchParams({
     session: sessionId,
     after: String(after),
     limit: String(limit),
   });
-  return `/events?${params.toString()}`;
+  return withKinds(params, kinds);
 }
 
-/** The most events the Timeline holds for one scope: the oldest are kept. */
+/** The most events the Timeline holds for one scope: the newest are kept. */
 export const EVENT_CAP = 10_000;
 
 export interface Merged {
@@ -106,7 +120,7 @@ export interface Merged {
   cut: boolean;
 }
 
-/** `held` and `incoming` together in id order, each id once, at most `cap` of the oldest. */
+/** `held` and `incoming` together in id order, each id once, at most `cap` of the newest. */
 export function mergeEvents(
   held: readonly LedgerEvent[],
   incoming: readonly LedgerEvent[],
@@ -117,7 +131,7 @@ export function mergeEvents(
   for (const entry of incoming) byId.set(entry.id, entry);
   const events = [...byId.values()].sort((a, b) => a.id - b.id);
   return events.length > cap
-    ? { events: events.slice(0, cap), cut: true }
+    ? { events: events.slice(events.length - cap), cut: true }
     : { events, cut: false };
 }
 
@@ -126,9 +140,17 @@ export interface KindCount {
   count: number;
 }
 
-/** How many events of each kind are present, in the order of `LEDGER_EVENT_KINDS`. */
-export function kindCounts(events: readonly LedgerEvent[]): KindCount[] {
+/**
+ * How many events of each kind are present, in the order of
+ * `LEDGER_EVENT_KINDS`. A kind in `present` that none of `events` has is
+ * listed with a count of 0: the scope has events of it that are not held.
+ */
+export function kindCounts(
+  events: readonly LedgerEvent[],
+  present: readonly LedgerEventKind[] = [],
+): KindCount[] {
   const counts = new Map<LedgerEventKind, number>();
+  for (const kind of present) counts.set(kind, 0);
   for (const entry of events)
     counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
   return LEDGER_EVENT_KINDS.flatMap((kind) => {
