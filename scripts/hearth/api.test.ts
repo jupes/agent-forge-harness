@@ -17,6 +17,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
@@ -1179,6 +1180,25 @@ describe("request bounds", () => {
       expect(JSON.stringify(await response.json())).not.toContain(secret);
     }
     expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+  });
+
+  test("a review note holding a NUL, or longer than the note limit, is 400: nothing is recorded and bd is not run", async () => {
+    const { h, probes } = await probed();
+    const NUL = String.fromCharCode(0);
+    for (const note of [
+      `before${NUL}after`,
+      "x".repeat(REVIEW_NOTE_LIMIT + 1),
+    ]) {
+      const response = await post(h, "/dev-api/forge-run/review", {
+        ...REVIEW,
+        note,
+      });
+      expect(response.status).toBe(400);
+      expect((await envelope(response)).ok).toBe(false);
+    }
+    expect(h.events()).toEqual([]);
+    expect(h.bd.calls).toEqual([]);
     expect(probes).toEqual([]);
   });
 });

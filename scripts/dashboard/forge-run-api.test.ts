@@ -470,6 +470,19 @@ describe("reviewCommentFor", () => {
     ).toBe(false);
     expect(reviewCommentFor(null).ok).toBe(false);
   });
+
+  test("rejects a note holding a NUL, which cannot be passed to bd as an argument", () => {
+    const NUL = String.fromCharCode(0);
+    for (const decision of ["approve", "request-changes"]) {
+      expect(
+        reviewCommentFor({
+          issueId: "a-1",
+          decision,
+          note: `before${NUL}after`,
+        }),
+      ).toEqual({ ok: false, error: "note must not hold a NUL character" });
+    }
+  });
 });
 
 describe("issueStatusFromBdShow", () => {
