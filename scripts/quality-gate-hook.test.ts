@@ -679,7 +679,7 @@ describe("test-evidence: the branch's own commits", () => {
       passed: true,
       skipped: true,
       skipReason:
-        "this branch's 2 commits since origin/HEAD change documentation only (.md, .mdx, .markdown, .txt, .rst, .adoc): nothing to test",
+        "only documentation changed in this branch's 2 commits since origin/HEAD (.md, .mdx, .markdown, .txt, .rst, .adoc): nothing to test",
     });
     expect(ran(recorded).result.passed).toBe(true);
   });
@@ -709,7 +709,7 @@ describe("test-evidence: the branch's own commits", () => {
       passed: true,
       skipped: true,
       skipReason:
-        "this branch's 2 commits since origin/HEAD change no files: nothing to test",
+        "no files changed in this branch's 2 commits since origin/HEAD: nothing to test",
     });
   });
 
@@ -722,9 +722,14 @@ describe("test-evidence: the branch's own commits", () => {
       name: "test-evidence",
       passed: false,
       output:
-        "No test file among this branch's 2 commits since origin/HEAD, and they change more than documentation: commit the tests with the work",
+        "No test file among this branch's 2 commits since origin/HEAD, and more than documentation changed: commit the tests with the work",
     });
     expect(ran(recorded).result.blockingFailures).toEqual(["test-evidence"]);
+
+    const one = evidence({ branch: [["scripts/a.ts"]] });
+    expect(check(one, "test-evidence")?.output).toBe(
+      "No test file among this branch's 1 commit since origin/HEAD, and more than documentation changed: commit the tests with the work",
+    );
   });
 
   test("with no origin/HEAD the last five commits are read instead, and the check says so", () => {

@@ -410,16 +410,17 @@ function testEvidenceCheck(exec: ExecFile): CheckResult {
     if (commits === 0 && paths.length === 0) {
       return nothingToTest(`this branch has no commits since ${BRANCH_BASE}`);
     }
-    if (paths.length === 0) return nothingToTest(`${theirs} change no files`);
+    if (paths.length === 0)
+      return nothingToTest(`no files changed in ${theirs}`);
     if (paths.every((path) => DOCUMENTATION.test(path))) {
       return nothingToTest(
-        `${theirs} change documentation only (${DOCUMENTATION_KINDS})`,
+        `only documentation changed in ${theirs} (${DOCUMENTATION_KINDS})`,
       );
     }
     return {
       name,
       passed: false,
-      output: `No test file among ${theirs}, and they change more than documentation: commit the tests with the work`,
+      output: `No test file among ${theirs}, and more than documentation changed: commit the tests with the work`,
     };
   }
 
