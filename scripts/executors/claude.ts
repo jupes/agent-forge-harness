@@ -14,9 +14,9 @@
  * documented stream-json format — has not been observed from a real CLI, and
  * neither has a successful `result`.
  *
- * The CLI also accepts `--session-id` to fix the id up front; the adapter
- * does not pass it, and takes the id the stream reports instead: that flag
- * has not been run against a real CLI.
+ * The CLI's help lists a `--session-id` flag that would fix the id up front.
+ * The adapter does not pass it and takes the id the stream reports instead:
+ * the flag has not been run against a real CLI.
  */
 
 import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
