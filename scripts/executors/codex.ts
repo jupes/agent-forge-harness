@@ -15,21 +15,20 @@
  * `session.ended` in the ledger.
  */
 
-import { createCliAdapter, type ParsedTool } from "./cli-adapter";
+import {
+  createCliAdapter,
+  type ParsedLine,
+  type ParsedTool,
+} from "./cli-adapter";
 import type { SpawnRequest } from "./types";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-export function parseCodexLine(line: string): ParsedTool[] {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return [];
-  }
-  if (!isRecord(value) || value.type !== "item.completed") return [];
+/** A completed shell command is one tool call; no other item is mapped. */
+function toolsOf(value: Record<string, unknown>): ParsedTool[] {
+  if (value.type !== "item.completed") return [];
   const item = value.item;
   if (!isRecord(item) || item.type !== "command_execution") return [];
   return [
@@ -41,6 +40,27 @@ export function parseCodexLine(line: string): ParsedTool[] {
         : {}),
     },
   ];
+}
+
+export function parseCodexLine(line: string): ParsedLine {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return { tools: [] };
+  }
+  if (!isRecord(value)) return { tools: [] };
+  // The stream's first line, `thread.started`, names the thread.
+  const sessionId =
+    value.type === "thread.started" &&
+    typeof value.thread_id === "string" &&
+    value.thread_id.length > 0
+      ? value.thread_id
+      : undefined;
+  return {
+    tools: toolsOf(value),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  };
 }
 
 function syncSkills(request: SpawnRequest): void {

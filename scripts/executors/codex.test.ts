@@ -95,6 +95,33 @@ describe("codex adapter through forge:exec (fake binary)", () => {
   });
 });
 
+describe("codex adapter through forge:exec: the thread id is the session id (fake binary)", () => {
+  test("the envelope's sessionId and every row's session are the thread_id the stream printed on thread.started", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b-thread",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "hi",
+        "--smith",
+        "codex-journeyman",
+      ],
+      { ...deps, command: [...fake(), "--fake-session-id", "thread-42"] },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body.data).toMatchObject({ sessionId: "thread-42" });
+    const rows = queryEvents({ beadId: "b-thread" }, { path: ledger });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.sessionId).toBe("thread-42");
+      expect(row.executor?.sessionId).toBe("thread-42");
+    }
+  });
+});
+
 describe("codex adapter", () => {
   test("runs its prepare step (codex:sync) before spawning", async () => {
     const prepared: string[] = [];
@@ -125,10 +152,25 @@ describe("codex adapter", () => {
       type: "item.completed",
       item: { type: "command_execution", command: "ls", exit_code: 2 },
     });
-    expect(parseCodexLine(line)).toEqual([
+    expect(parseCodexLine(line).tools).toEqual([
       { tool: "shell", input: "ls", exitCode: 2 },
     ]);
-    expect(parseCodexLine("nope")).toEqual([]);
+    expect(parseCodexLine("nope")).toEqual({ tools: [] });
+  });
+
+  test("the session id is the non-empty thread_id string of thread.started; no other line reports one", () => {
+    const line = (value: unknown) => JSON.stringify(value);
+    expect(
+      parseCodexLine(line({ type: "thread.started", thread_id: "thread-1" })),
+    ).toEqual({ tools: [], sessionId: "thread-1" });
+    for (const missing of [
+      { type: "thread.started" },
+      { type: "thread.started", thread_id: "" },
+      { type: "thread.started", thread_id: 7 },
+      { type: "turn.started", thread_id: "thread-1" },
+    ]) {
+      expect(parseCodexLine(line(missing))).toEqual({ tools: [] });
+    }
   });
 
   test("a command the stream reports twice (item.started, then item.completed) is one tool call, with the completed item's exit code", () => {
@@ -146,9 +188,9 @@ describe("codex adapter", () => {
       type: "item.completed",
       item: { ...item, exit_code: 0, status: "completed" },
     });
-    expect([started, completed].flatMap(parseCodexLine)).toEqual([
-      { tool: "shell", input: "write-file hello.txt", exitCode: 0 },
-    ]);
+    expect(
+      [started, completed].flatMap((line) => parseCodexLine(line).tools),
+    ).toEqual([{ tool: "shell", input: "write-file hello.txt", exitCode: 0 }]);
   });
 });
 

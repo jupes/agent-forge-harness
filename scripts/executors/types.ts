@@ -46,7 +46,13 @@ export interface ExecResult {
 }
 
 export interface ExecutorHandle {
-  sessionId: string;
+  /**
+   * The id every event of the run carries: the provider's own, taken from the
+   * first stream line that reports it, else one the adapter minted. Until the
+   * run's first event it can still change from the minted id to the
+   * provider's, so read it after an event (or after `done`).
+   */
+  readonly sessionId: string;
   pid: number;
   /** Every event the run produces, in order. Ends after `session.ended`. */
   events: AsyncIterable<LedgerEventInput>;

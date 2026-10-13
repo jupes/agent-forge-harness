@@ -4,7 +4,12 @@
  * hearth events. A provider supplies only its flags and its line parser.
  */
 
-import type { Executor, LedgerEventInput, Provider } from "../../types/hearth";
+import type {
+  Executor,
+  LedgerEventBase,
+  LedgerEventInput,
+  Provider,
+} from "../../types/hearth";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
 import { supervise } from "./supervisor";
@@ -22,16 +27,26 @@ export interface ParsedTool {
   exitCode?: number;
 }
 
+/** What one provider output line reports. */
+export interface ParsedLine {
+  tools: ParsedTool[];
+  /** The provider's own id for the session, when this line carries it. */
+  sessionId?: string;
+}
+
 export interface CliAdapterSpec {
   provider: Provider;
   binary: string;
   versionArgs: string[];
   buildArgs(request: SpawnRequest): string[];
-  /** Tool calls in one stdout line; unparseable or irrelevant lines yield none. */
-  parseLine(line: string): ParsedTool[];
+  /** What one stdout line reports; an unparseable or irrelevant line reports no tools and nothing else. */
+  parseLine(line: string): ParsedLine;
   /** Runs before spawning (e.g. mirror skills for Codex). */
   prepare?(request: SpawnRequest): Promise<void> | void;
 }
+
+/** The fields every event of one session shares. */
+type EventBase = Omit<LedgerEventBase, "ts">;
 
 export function hashArgs(input: unknown): string {
   const text = JSON.stringify(input ?? null);
@@ -134,42 +149,51 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       if ("error" in resolved) throw new Error(resolved.error);
       await spec.prepare?.(request);
 
-      const sessionId = crypto.randomUUID();
-      const executor: Executor = {
-        provider: spec.provider,
-        model: request.smith.model,
-        effort: request.smith.effort,
-        smith: request.smith.name,
-        sessionId,
-      };
       // Spelled the way every other emitter spells them: the harness's main
       // checkout (also when the run was launched from a linked worktree of
       // it), and the checkout the executor runs in.
       const { workspace } = resolveCheckout(request.workspace);
       const { worktree } = resolveCheckout(request.worktree);
-      const base = {
-        workspace,
-        beadId: request.beadId,
-        ...(request.runId ? { runId: request.runId } : {}),
-        sessionId,
-        executor,
-      };
       const queue = eventQueue();
       const startedAt = Date.now();
+      // The session's id is the provider's, from the first line that reports
+      // it. Used only when an event must be written before any line has.
+      const mintedId = crypto.randomUUID();
+      let session: { id: string; base: EventBase } | undefined;
 
-      queue.push({
-        ...base,
-        ts: new Date().toISOString(),
-        kind: "session.started",
-        payload: {
-          source: `headless:${spec.provider}`,
-          kind: "headless",
-          worktree,
-          ...(request.parentSessionId
-            ? { parentSessionId: request.parentSessionId }
-            : {}),
-        },
-      });
+      /** Fix the session's id and announce it: `session.started` comes first. */
+      const begin = (sessionId: string) => {
+        const executor: Executor = {
+          provider: spec.provider,
+          model: request.smith.model,
+          effort: request.smith.effort,
+          smith: request.smith.name,
+          sessionId,
+        };
+        const base: EventBase = {
+          workspace,
+          beadId: request.beadId,
+          ...(request.runId ? { runId: request.runId } : {}),
+          sessionId,
+          executor,
+        };
+        session = { id: sessionId, base };
+        queue.push({
+          ...base,
+          ts: new Date().toISOString(),
+          kind: "session.started",
+          payload: {
+            source: `headless:${spec.provider}`,
+            kind: "headless",
+            worktree,
+            ...(request.parentSessionId
+              ? { parentSessionId: request.parentSessionId }
+              : {}),
+          },
+        });
+        return session;
+      };
+      const current = () => session ?? begin(mintedId);
 
       const child = supervise({
         command: [...resolved.command, ...spec.buildArgs(request)],
@@ -178,12 +202,14 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         stdin: request.prompt,
         timeoutMs: request.timeoutMs,
         onLine: (line) => {
-          for (const parsed of spec.parseLine(line)) {
+          const parsed = spec.parseLine(line);
+          if (!session && parsed.sessionId) begin(parsed.sessionId);
+          for (const tool of parsed.tools) {
             queue.push({
-              ...base,
+              ...current().base,
               ts: new Date().toISOString(),
               kind: "tool.called",
-              payload: toolPayload(parsed),
+              payload: toolPayload(tool),
             });
           }
         },
@@ -199,7 +225,7 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
               ? "completed"
               : `failed: exit ${result.exitCode}`;
         queue.push({
-          ...base,
+          ...current().base,
           ts: new Date().toISOString(),
           kind: "session.ended",
           payload: { reason, durationMs: Date.now() - startedAt },
@@ -209,7 +235,9 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       });
 
       return {
-        sessionId,
+        get sessionId() {
+          return session?.id ?? mintedId;
+        },
         pid: child.pid,
         events: queue.iterate(),
         done,

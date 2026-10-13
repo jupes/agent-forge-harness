@@ -12,7 +12,11 @@
  * from a real CLI.
  */
 
-import { createCliAdapter, type ParsedTool } from "./cli-adapter";
+import {
+  createCliAdapter,
+  type ParsedLine,
+  type ParsedTool,
+} from "./cli-adapter";
 
 export const CLAUDE_ALLOWED_TOOLS = [
   "Read",
@@ -34,14 +38,9 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-export function parseClaudeLine(line: string): ParsedTool[] {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return [];
-  }
-  if (!isRecord(value) || value.type !== "assistant") return [];
+/** The `tool_use` blocks of an assistant message. */
+function toolsOf(value: Record<string, unknown>): ParsedTool[] {
+  if (value.type !== "assistant") return [];
   const message = value.message;
   if (!isRecord(message) || !Array.isArray(message.content)) return [];
   const tools: ParsedTool[] = [];
@@ -55,6 +54,26 @@ export function parseClaudeLine(line: string): ParsedTool[] {
     }
   }
   return tools;
+}
+
+export function parseClaudeLine(line: string): ParsedLine {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return { tools: [] };
+  }
+  if (!isRecord(value)) return { tools: [] };
+  // The real CLI put the same `session_id` on every line it printed, the
+  // `system` / `init` line first.
+  const sessionId =
+    typeof value.session_id === "string" && value.session_id.length > 0
+      ? value.session_id
+      : undefined;
+  return {
+    tools: toolsOf(value),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  };
 }
 
 export const claudeAdapter = createCliAdapter({

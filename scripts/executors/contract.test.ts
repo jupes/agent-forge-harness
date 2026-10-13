@@ -39,12 +39,17 @@ const adapters: Array<{
   },
 ];
 
+/** A UUID as `crypto.randomUUID` writes one. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 async function run(
   adapter: ExecutorAdapter,
   provider: string,
   smithName: string,
   mode: string,
   extra: Partial<SpawnRequest> = {},
+  /** More `--fake-*` flags for the stand-in CLI. */
+  fakeFlags: string[] = [],
 ) {
   // Each directory is its own checkout: a bare temp directory would resolve to
   // whatever checkout the temp directory happens to sit in.
@@ -75,6 +80,7 @@ async function run(
       mode,
       "--fake-dump",
       dumpFile,
+      ...fakeFlags,
     ],
     ...extra,
   });
@@ -129,6 +135,36 @@ for (const { name, adapter, smith } of adapters) {
       });
       for (const event of events)
         expect(event.workspace).toBe(comparableCheckout(root));
+    });
+
+    test("every event, and the handle, carry the session id the provider's stream reports", async () => {
+      const { events, handle } = await run(adapter, name, smith, "ok", {}, [
+        "--fake-session-id",
+        "provider-session-7",
+      ]);
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(event.sessionId).toBe("provider-session-7");
+        expect(event.executor?.sessionId).toBe("provider-session-7");
+      }
+      expect(handle.sessionId).toBe("provider-session-7");
+    });
+
+    test("a stream that reports no session id: every event, and the handle, carry one id the adapter minted", async () => {
+      const { events, handle } = await run(adapter, name, smith, "ok", {}, [
+        "--fake-no-id",
+      ]);
+      expect(events.map((e) => e.kind)).toEqual([
+        "session.started",
+        "tool.called",
+        "tool.called",
+        "session.ended",
+      ]);
+      expect(handle.sessionId).toMatch(UUID);
+      for (const event of events) {
+        expect(event.sessionId).toBe(handle.sessionId);
+        expect(event.executor?.sessionId).toBe(handle.sessionId);
+      }
     });
 
     test("tool events carry a hash, never the tool input", async () => {

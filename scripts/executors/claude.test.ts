@@ -206,10 +206,12 @@ describe("parseClaudeLine", () => {
         ],
       },
     });
-    expect(parseClaudeLine(assistant)).toEqual([
-      { tool: "Write", input: { a: 1 } },
-      { tool: "Bash", input: { b: 2 } },
-    ]);
+    expect(parseClaudeLine(assistant)).toEqual({
+      tools: [
+        { tool: "Write", input: { a: 1 } },
+        { tool: "Bash", input: { b: 2 } },
+      ],
+    });
   });
 
   test("a block that is not a tool_use is not a tool, even when it carries a name", () => {
@@ -222,24 +224,49 @@ describe("parseClaudeLine", () => {
         ],
       },
     });
-    expect(parseClaudeLine(assistant)).toEqual([
-      { tool: "Read", input: { c: 3 } },
-    ]);
+    expect(parseClaudeLine(assistant)).toEqual({
+      tools: [{ tool: "Read", input: { c: 3 } }],
+    });
   });
 
   test("a line that is not an assistant message yields nothing, even when it carries a tool_use block", () => {
     const echoed = {
       content: [{ type: "tool_use", id: "t1", name: "Write", input: {} }],
     };
+    const nothing = { tools: [] };
     expect(parseClaudeLine(line({ type: "user", message: echoed }))).toEqual(
-      [],
+      nothing,
     );
     expect(
       parseClaudeLine(line({ type: "system", subtype: "init", model: "m" })),
-    ).toEqual([]);
+    ).toEqual(nothing);
     expect(
       parseClaudeLine(line({ type: "result", is_error: true, result: "no" })),
-    ).toEqual([]);
-    expect(parseClaudeLine("not json")).toEqual([]);
+    ).toEqual(nothing);
+    expect(parseClaudeLine("not json")).toEqual(nothing);
+  });
+
+  test("the session id is the non-empty session_id string a line carries: on the init line, or on any other line", () => {
+    expect(
+      parseClaudeLine(
+        line({ type: "system", subtype: "init", session_id: "sess-1" }),
+      ).sessionId,
+    ).toBe("sess-1");
+    expect(
+      parseClaudeLine(
+        line({
+          type: "assistant",
+          message: { content: [] },
+          session_id: "sess-2",
+        }),
+      ).sessionId,
+    ).toBe("sess-2");
+    for (const missing of [
+      { type: "system", subtype: "init" },
+      { type: "system", subtype: "init", session_id: "" },
+      { type: "system", subtype: "init", session_id: 7 },
+    ]) {
+      expect(parseClaudeLine(line(missing))).not.toHaveProperty("sessionId");
+    }
   });
 });
