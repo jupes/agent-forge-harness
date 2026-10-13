@@ -45,6 +45,7 @@ import type {
   EventsPage,
   LedgerEvent,
   OperatorEnvelope,
+  RunDetail,
 } from "../../types/hearth";
 import { createCouncilMcpServer } from "../council/mcp";
 import { appendEvent } from "../ledger/append";
@@ -55,14 +56,16 @@ import type { ApiRoute } from "./api";
 import { lockPath, tokenPath } from "./home";
 import { type HearthLock, readLock } from "./lock";
 import {
-  type CouncilServer,
-  createHearthMcpServer,
   type Exchange,
-  FORGE_TOOLS,
-  type ForgeTool,
   type LoopbackAnswer,
   type LoopbackRequest,
   loopbackExchange,
+} from "./loopback";
+import {
+  type CouncilServer,
+  createHearthMcpServer,
+  FORGE_TOOLS,
+  type ForgeTool,
   parseArgs,
 } from "./mcp";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
@@ -904,7 +907,7 @@ const READS: Record<
 > = {
   forge_sessions_list: { target: "/sessions?limit=50" },
   forge_runs_list: { target: "/runs" },
-  forge_run_get: { args: { slug: "demo" }, target: "/runs/demo" },
+  forge_run_get: { args: { slug: "demo" }, target: "/runs/demo?events=20" },
   forge_events_query: { target: "/events?limit=50" },
   forge_queue_list: { target: "/queue" },
   forge_reservations_list: { target: "/reservations" },
@@ -1072,6 +1075,58 @@ describe("arguments become the request", () => {
     expect(ids(next)).toEqual(all.slice(2, 4));
   });
 
+  test("forge_run_get asks for the run's 20 newest events when not told, and for the number given: 0 is the run with none", async () => {
+    const hearth = await stocked();
+    // More events than the tool asks for by default, so its bound shows.
+    for (let i = 0; i < 25; i++)
+      hearth.append({
+        kind: "gate.ran",
+        runId: "demo",
+        payload: { gate: "typecheck", passed: true },
+      });
+    const s = await session(place(hearth));
+    // A direct GET that names no number: the route's own default, every one of them.
+    const whole = (await direct(hearth.hearth.url, `${API}/runs/demo`))
+      .data as RunDetail;
+    const ids = whole.events.events.map((event) => event.id);
+    expect(ids.length).toBe(27);
+    const read = async (args: Record<string, unknown>) => {
+      const answer = await s.call("forge_run_get", args);
+      const detail = answer.envelope.data as RunDetail;
+      return {
+        query: query(s.sent.at(-1)),
+        slug: detail.run.slug,
+        ids: detail.events.events.map((event) => event.id),
+        more: detail.events.more,
+      };
+    };
+
+    expect(await read({ slug: "demo" })).toEqual({
+      query: { events: "20" },
+      slug: "demo",
+      ids: ids.slice(-20),
+      more: true,
+    });
+    expect(await read({ slug: "demo", events: 0 })).toEqual({
+      query: { events: "0" },
+      slug: "demo",
+      ids: [],
+      more: true,
+    });
+    expect(await read({ slug: "demo", events: 3 })).toEqual({
+      query: { events: "3" },
+      slug: "demo",
+      ids: ids.slice(-3),
+      more: true,
+    });
+    expect(await read({ slug: "demo", events: 200 })).toEqual({
+      query: { events: "200" },
+      slug: "demo",
+      ids,
+      more: false,
+    });
+  });
+
   test("a value the hearth refuses comes back as the hearth's own refusal", async () => {
     const hearth = await stocked();
     const s = await session(place(hearth));
@@ -1088,7 +1143,8 @@ describe("arguments become the request", () => {
         "/events?since=yesterday&limit=50",
       ],
       ["forge_sessions_list", { limit: 0 }, "/sessions?limit=0"],
-      ["forge_run_get", { slug: "no-such-run" }, "/runs/no-such-run"],
+      ["forge_run_get", { slug: "no-such-run" }, "/runs/no-such-run?events=20"],
+      ["forge_run_get", { slug: "demo", events: 201 }, "/runs/demo?events=201"],
     ];
     for (const [name, args, target] of cases) {
       const answer = await s.call(name, args);
@@ -1116,6 +1172,8 @@ describe("arguments become the request", () => {
       ["forge_sessions_list", { open: "yes" }, "open"],
       ["forge_runs_list", { slug: "demo" }, "slug"],
       ["forge_run_get", {}, "slug"],
+      ["forge_run_get", { slug: "demo", events: "5" }, "events"],
+      ["forge_run_get", { slug: "demo", events: -1 }, "events"],
       ["forge_queue_list", { state: "running" }, "state"],
       ["forge_queue_list", { state: ["no-such-state"] }, "state"],
       ["forge_events_query", { bead: "x".repeat(1001) }, "bead"],

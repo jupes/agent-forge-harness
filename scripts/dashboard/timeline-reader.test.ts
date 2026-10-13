@@ -1,17 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import type { TimelineScope } from "../../docs/js/timeline-model";
 import {
+  narrowing,
   startTimelineRead,
   type TimelineView,
 } from "../../docs/js/timeline-reader";
 import type { WatchReason } from "../../docs/js/use-stream";
-import type { EventsPage, LedgerEvent } from "../../types/hearth";
+import type {
+  EventsPage,
+  LedgerEvent,
+  LedgerEventKind,
+} from "../../types/hearth";
 
 /**
  * A ledger that answers `/events` as the hearth does: `bead` joins every event
  * of a session that has tagged the bead (worked out when the read is made, as
- * the query's subquery is), `after` pages forward, `more` says whether more
- * matched, `cursor` is the last id or the `after` asked for.
+ * the query's subquery is), `kind` keeps the kinds of a comma list, `after`
+ * pages forward, `more` says whether more matched, `cursor` is the last id or
+ * the `after` asked for.
  */
 function fakeLedger() {
   const events: LedgerEvent[] = [];
@@ -40,6 +46,7 @@ function fakeLedger() {
     const bead = params.get("bead");
     const run = params.get("run");
     const session = params.get("session");
+    const kinds = params.get("kind")?.split(",") ?? null;
     const after = Number(params.get("after") ?? "0");
     const limit = Number(params.get("limit") ?? "200");
     const joined = new Set(
@@ -54,7 +61,8 @@ function fakeLedger() {
           entry.beadId === bead ||
           (entry.sessionId !== undefined && joined.has(entry.sessionId))) &&
         (run === null || entry.runId === run) &&
-        (session === null || entry.sessionId === session),
+        (session === null || entry.sessionId === session) &&
+        (kinds === null || kinds.includes(entry.kind)),
     );
     const page = matching.slice(0, limit);
     return {
@@ -119,6 +127,7 @@ function start(
   scope: TimelineScope,
   ledger: ReturnType<typeof fakeLedger>,
   cap?: number,
+  kinds?: LedgerEventKind[],
 ) {
   const client = fakeClient();
   const views: TimelineView[] = [];
@@ -131,6 +140,7 @@ function start(
     // Every ask starts at once: the refetch window is not under test here.
     now: () => (clock += 10_000),
     ...(cap !== undefined ? { cap } : {}),
+    ...(kinds !== undefined ? { kinds } : {}),
   });
   return {
     client,
@@ -173,14 +183,32 @@ describe("the first read", () => {
     expect(timeline.last().cut).toBe(false);
   });
 
-  test("stops at the cap, keeps the oldest and says it cut", async () => {
+  test("past the cap it reads on to the end, holds the newest and says it cut", async () => {
     const ledger = fakeLedger();
     for (let index = 0; index < 2500; index++) ledger.add({ runId: "r" });
     const timeline = start(RUN, ledger, 1500);
     await settle();
-    expect(ledger.paths).toHaveLength(2);
-    expect(ids(timeline.last())).toEqual(range(1, 1500));
+    expect(ledger.paths).toEqual([
+      "/events?run=r&after=0&limit=1000",
+      "/events?run=r&after=1000&limit=1000",
+      "/events?run=r&after=2000&limit=1000",
+    ]);
+    expect(ids(timeline.last())).toEqual(range(1001, 2500));
     expect(timeline.last()).toMatchObject({ cut: true, loading: false });
+  });
+
+  test("every kind read is named, also one whose events the cap no longer holds", async () => {
+    const ledger = fakeLedger();
+    ledger.add({ runId: "r", kind: "session.started", payload: {} });
+    for (let index = 0; index < 2500; index++) ledger.add({ runId: "r" });
+    const timeline = start(RUN, ledger, 1500);
+    await settle();
+    const held = new Set(timeline.last().events.map((entry) => entry.kind));
+    expect([...held]).toEqual(["tool.called"]);
+    expect(timeline.last().kindsRead).toEqual([
+      "session.started",
+      "tool.called",
+    ]);
   });
 });
 
@@ -214,16 +242,18 @@ describe("following the ledger", () => {
     expect(ids(timeline.last())).toEqual(range(1, 1501));
   });
 
-  test("once the list was cut, nothing more is read", async () => {
+  test("once the list was cut, new events are still read and the oldest held make way", async () => {
     const ledger = fakeLedger();
     for (let index = 0; index < 3; index++) ledger.add({ runId: "r" });
     const timeline = start(RUN, ledger, 2);
     await settle();
-    const reads = ledger.paths.length;
+    expect(ids(timeline.last())).toEqual([2, 3]);
     ledger.add({ runId: "r" });
     timeline.client.tell("events");
     await settle();
-    expect(ledger.paths).toHaveLength(reads);
+    expect(ledger.paths.at(-1)).toBe("/events?run=r&after=3&limit=1000");
+    expect(ids(timeline.last())).toEqual([3, 4]);
+    expect(timeline.last().cut).toBe(true);
   });
 
   test("stopping ends the reads", async () => {
@@ -275,6 +305,24 @@ describe("a session that joins the bead later", () => {
       "/events?session=host%3Aagent&after=0&limit=1",
     ]);
     expect(ids(timeline.last())).toEqual([1, 2, 3]);
+  });
+
+  test("each one that brings older events in is counted; one tagged from its first event is not", async () => {
+    const ledger = fakeLedger();
+    ledger.add({ sessionId: "s" });
+    ledger.add({ beadId: "b", sessionId: "t" });
+    const timeline = start(BEAD, ledger);
+    await settle();
+    expect(timeline.last().lateJoins).toBe(0);
+    ledger.add({ beadId: "b", sessionId: "fresh" });
+    timeline.client.tell("events");
+    await settle();
+    expect(timeline.last().lateJoins).toBe(0);
+    ledger.add({ beadId: "b", sessionId: "s" });
+    timeline.client.tell("events");
+    await settle();
+    expect(ids(timeline.last())).toEqual([1, 2, 3, 4]);
+    expect(timeline.last().lateJoins).toBe(1);
   });
 
   test("a session already shown is not asked about again", async () => {
@@ -463,5 +511,76 @@ describe("a read from the start after a reopen", () => {
       true,
       false,
     ]);
+  });
+});
+
+describe("a read narrowed to kinds", () => {
+  test("asks the ledger for those kinds only, and holds every event of them in a scope past the cap", async () => {
+    const ledger = fakeLedger();
+    ledger.add({ runId: "r", kind: "session.started", payload: {} });
+    for (let index = 0; index < 2500; index++) ledger.add({ runId: "r" });
+    ledger.add({
+      runId: "r",
+      kind: "verdict.bound",
+      payload: { verdict: "pass" },
+    });
+    const timeline = start(RUN, ledger, 1500, [
+      "session.started",
+      "verdict.bound",
+    ]);
+    await settle();
+    expect(ledger.paths).toEqual([
+      "/events?run=r&after=0&limit=1000&kind=session.started%2Cverdict.bound",
+    ]);
+    expect(ids(timeline.last())).toEqual([1, 2502]);
+    expect(timeline.last().cut).toBe(false);
+  });
+
+  test("a session that joins the bead later brings in its older events of those kinds only", async () => {
+    const ledger = fakeLedger();
+    ledger.add({ sessionId: "s" });
+    ledger.add({
+      sessionId: "s",
+      kind: "gate.ran",
+      payload: { gate: "lint", passed: true },
+    });
+    ledger.add({ beadId: "b", sessionId: "t" });
+    const timeline = start(BEAD, ledger, undefined, ["tool.called"]);
+    await settle();
+    expect(ids(timeline.last())).toEqual([3]);
+    ledger.add({ beadId: "b", sessionId: "s" });
+    timeline.client.tell("events");
+    await settle();
+    expect(sessionReads(ledger.paths)).toEqual([
+      "/events?session=s&after=0&limit=1&kind=tool.called",
+      "/events?session=s&after=0&limit=1000&kind=tool.called",
+    ]);
+    expect(ids(timeline.last())).toEqual([1, 3, 4]);
+  });
+});
+
+describe("when chosen kinds are read from the ledger", () => {
+  const view = (more: Partial<TimelineView> = {}): TimelineView => ({
+    events: [],
+    loading: false,
+    cut: false,
+    error: null,
+    kindsRead: [],
+    lateJoins: 0,
+    ...more,
+  });
+
+  test("not while nothing is read yet, the list holds every event, or no kind is chosen", () => {
+    expect(narrowing(null, ["gate.ran"])).toBeNull();
+    expect(narrowing(view(), ["gate.ran"])).toBeNull();
+    expect(narrowing(view({ cut: true }), [])).toBeNull();
+  });
+
+  test("once the list was cut: the chosen kinds, under a key that changes with them and with each late join", () => {
+    const first = narrowing(view({ cut: true }), ["gate.ran"]);
+    expect(first?.kinds).toEqual(["gate.ran"]);
+    const joined = narrowing(view({ cut: true, lateJoins: 1 }), ["gate.ran"]);
+    const other = narrowing(view({ cut: true }), ["gate.ran", "tool.called"]);
+    expect(new Set([first?.key, joined?.key, other?.key]).size).toBe(3);
   });
 });

@@ -5,7 +5,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { validateLedgerEvent } from "../hearth/validate";
-import { appendEvent } from "./append";
+import { redactSecrets } from "../secret-patterns";
+import { appendEvent, type JoinField, refusedJoinValue } from "./append";
 import { runAudit } from "./audit-cli";
 import { closeLedger, openLedger } from "./db";
 import { queryEvents } from "./query";
@@ -498,6 +499,72 @@ describe("secrets in the correlation and executor columns", () => {
         beadId: "desk-booking-calendar-sync-2026",
       });
     }
+  });
+});
+
+/**
+ * Ordinary names that the scanner flags: `sk-` after a single letter, and
+ * after an uppercase one. Put together here so the file does not carry them.
+ */
+const FLAGGED_CHECKOUT = ["ask", "the", "docs", "chatbot", "service"].join("-");
+const FLAGGED_RUN = ["Task", "queue", "state", "machine", "v2"].join("-");
+
+describe("a checkout or id whose ordinary name the scanner flags", () => {
+  test("the scanner flags both names, which is what the tests below rely on", () => {
+    expect(redactSecrets(FLAGGED_CHECKOUT).redactions).not.toEqual([]);
+    expect(redactSecrets(FLAGGED_RUN).redactions).not.toEqual([]);
+  });
+
+  test(`an event from a checkout named ${FLAGGED_CHECKOUT} is refused, nothing is stored, and the reason says the ledger refuses every event that carries that workspace`, () => {
+    const path = tempLedger();
+    const result = appendEvent(
+      { ...toolCall, workspace: `c:/work/${FLAGGED_CHECKOUT}` },
+      { path },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain(
+        "workspace looks like a secret (openai-api-key)",
+      );
+      expect(result.error).toContain("refuses every event that carries it");
+      expect(result.error).not.toContain(FLAGGED_CHECKOUT);
+    }
+    openLedger(path);
+    expect(rawRows(path)).toEqual([]);
+  });
+
+  test("refusedJoinValue names the field of each value appendEvent refuses and nothing for each it stores, reading a workspace the way it is stored", () => {
+    const path = tempLedger();
+    // Flagged as spelled with backslashes; not once stored with slashes.
+    const backslashed = ["C:", "work", "task-queue-state-machine-v2"].join(
+      "\\",
+    );
+    expect(redactSecrets(backslashed).redactions).not.toEqual([]);
+    const cases: Array<
+      [
+        {
+          workspace?: string;
+          beadId?: string;
+          runId?: string;
+          sessionId?: string;
+        },
+        JoinField | null,
+      ]
+    > = [
+      [{ workspace: `c:/work/${FLAGGED_CHECKOUT}` }, "workspace"],
+      [{ workspace: backslashed }, null],
+      [{ beadId: FLAGGED_RUN }, "beadId"],
+      [{ runId: FLAGGED_RUN }, "runId"],
+      [{ sessionId: FLAGGED_RUN }, "sessionId"],
+      [{ runId: "task-queue-state-machine-v2" }, null],
+    ];
+    for (const [values, field] of cases) {
+      const refused = refusedJoinValue(values);
+      expect(refused === null ? null : refused.field).toBe(field);
+      const appended = appendEvent({ ...toolCall, ...values }, { path });
+      expect(appended.ok).toBe(field === null);
+    }
+    expect(rawRows(path)).toHaveLength(2);
   });
 });
 

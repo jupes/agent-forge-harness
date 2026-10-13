@@ -14,6 +14,11 @@ import { closeLedger } from "../ledger/db";
 import { SESSION_MIRROR_FILE } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
 import { queryEvents } from "../ledger/query";
+import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
+import {
+  initRunCorrelation,
+  loadRunCorrelation,
+} from "../run-correlation-store";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { runDoctor } from "./doctor-cli";
@@ -218,6 +223,25 @@ describe("forge:exec", () => {
     expect((await runExec([], deps)).body.error).toContain("usage");
   });
 
+  test("--smith constructor, a key every object has, exits 2 as an unknown smith", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "x",
+        "--smith",
+        "constructor",
+      ],
+      deps,
+    );
+    expect(out).toMatchObject({ code: 2 });
+    expect(out.body.error).toBe('unknown smith "constructor"');
+  });
+
   test("a provider failure exits 2 with its exit code", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(
@@ -347,6 +371,98 @@ describe("forge:exec", () => {
   });
 });
 
+describe("forge:exec --run when the run correlation is refused (fake binary)", () => {
+  test("a run held by another bead: the child still runs, its ledger rows and adapter variables carry --bead and --run, and the correlation file keeps the other bead", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const held = initRunCorrelation({
+      checkout: worktree,
+      topLevel: true,
+      beadsIssueId: "bead-a",
+      executionRunId: "run-9",
+    });
+    expect(held.ok).toBe(true);
+    const dump = join(root, "dump.json");
+
+    const out = await runExec(
+      [
+        "--bead",
+        "bead-b",
+        "--run",
+        "run-9",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "x",
+      ],
+      { ...deps, command: [...fake("claude"), "--fake-dump", dump] },
+    );
+    expect(out.code).toBe(0);
+    expect(out.body.data).toMatchObject({
+      recorded: 4,
+      correlation: null,
+      correlationNote:
+        "run run-9 is already correlated to bead-a; rebind it with: bun run forge:correlate --bead bead-b --run run-9",
+    });
+
+    // Every row of the run names the bead this session was launched for.
+    expect(
+      queryEvents({ runId: "run-9" }, { path: ledger }).map((row) => [
+        row.kind,
+        row.beadId,
+        row.runId,
+      ]),
+    ).toEqual([
+      ["session.started", "bead-b", "run-9"],
+      ["tool.called", "bead-b", "run-9"],
+      ["tool.called", "bead-b", "run-9"],
+      ["session.ended", "bead-b", "run-9"],
+    ]);
+
+    const seen = JSON.parse(readFileSync(dump, "utf8")).env as Record<
+      string,
+      string
+    >;
+    expect(seen).toMatchObject({
+      AGENT_FORGE_BEAD_ID: "bead-b",
+      FORGE_SLUG: "run-9",
+    });
+    expect(RUN_CORRELATION_ENV in seen).toBe(false);
+
+    const loaded = loadRunCorrelation(
+      `${RUN_CORRELATIONS_DIR}/run-9.json`,
+      worktree,
+    );
+    expect(loaded.ok && String(loaded.value.beadsIssueId)).toBe("bead-a");
+  });
+
+  test("a --run that is not a Forge run id exits 2 before the provider starts, and nothing is written: no ledger, no correlation", async () => {
+    for (const run of ["../run-9", "run 9"]) {
+      const { root, worktree, ledger, deps } = setup();
+      const dump = join(root, "dump.json");
+
+      const out = await runExec(
+        [
+          "--bead",
+          "bead-b",
+          "--run",
+          run,
+          "--worktree",
+          worktree,
+          "--prompt",
+          "x",
+        ],
+        { ...deps, command: [...fake("claude"), "--fake-dump", dump] },
+      );
+      expect(out.code).toBe(2);
+      expect(out.body).toMatchObject({ ok: false, data: null });
+      expect(out.body.error).toStartWith("--run must be a Forge run id");
+      expect(existsSync(dump)).toBe(false);
+      expect(existsSync(ledger)).toBe(false);
+      expect(existsSync(join(worktree, ".tmp"))).toBe(false);
+    }
+  });
+});
+
 describe("forge:doctor", () => {
   test("reports every adapter and treats a missing CLI as data", async () => {
     const { deps } = setup();
@@ -359,18 +475,45 @@ describe("forge:doctor", () => {
     expect(report[1]).toMatchObject({ ok: false });
   });
 
-  test("with no override and nothing on PATH the adapter is found:false", async () => {
-    const saved = process.env.PATH;
-    process.env.PATH = "";
-    try {
-      const report = await claudeAdapter.doctor();
+  test("with no override and nothing on PATH (a child process whose PATH is one empty directory), forge:doctor --json reports every adapter found:false", async () => {
+    // Emptying process.env.PATH in this process does not reach Bun.which (on
+    // Windows, Bun 1.3.10, it still found an installed claude), so the doctor
+    // runs in a child whose PATH and working directory are a directory this
+    // test has just made, with nothing in it.
+    const empty = realpathSync.native(
+      mkdtempSync(join(tmpdir(), "forge doctor path ")),
+    );
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && key.toUpperCase() !== "PATH") env[key] = value;
+    }
+    env.PATH = empty;
+    const child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "doctor-cli.ts"), "--json"],
+      { cwd: empty, env, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exitCode: await child.exited, stderr }).toEqual({
+      exitCode: 0,
+      stderr: expect.any(String),
+    });
+    const body = JSON.parse(stdout) as {
+      ok: boolean;
+      data: { adapters: { provider: string }[] };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.data.adapters.map((r) => r.provider)).toEqual(
+      expect.arrayContaining(["claude", "codex"]),
+    );
+    for (const report of body.data.adapters) {
       expect(report).toMatchObject({
-        provider: "claude",
         found: false,
         ok: false,
+        reason: `${report.provider} not found on PATH`,
       });
-    } finally {
-      process.env.PATH = saved;
     }
-  });
+  }, 30_000);
 });

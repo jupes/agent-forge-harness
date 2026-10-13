@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import {
   type AddressInfo,
   connect as connectSocket,
@@ -482,10 +482,13 @@ describe("createLedgerStream (injected ledger, bare server)", () => {
 describe("a stream client that does not read (raw socket, injected ledger)", () => {
   /**
    * Events waiting to be streamed. What a server can hand to a client that is
-   * not reading, before anything queues in the server itself, is whatever the
-   * operating system's socket buffers take, and that differs by platform: a
-   * megabyte or two on Windows loopback, about ten on Linux. The backlogs here
-   * are 48 MB so that they exceed it on either.
+   * not reading, before anything waits in the response itself, is whatever the
+   * socket buffers take, and that differs by platform. On Windows loopback it
+   * grows with how much is written at once: with this harness, about 2 MB at a
+   * limit of 1 MB or less and about 6 MB at a 4 MB limit. On the Linux CI
+   * runner it was about 4 MB (between 3.8 and 4.4 MB, at a 256 kB limit, in
+   * the run that failed). The backlogs here are 48 MB so that they exceed it
+   * on either.
    */
   const backlog = (count = 12_000, bytes = 4000): LedgerEvent[] =>
     Array.from({ length: count }, (_, index) => ({
@@ -497,9 +500,41 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
       payload: { gate: "g".repeat(bytes), passed: true },
     }));
 
+  /**
+   * How many events the stream reads from the ledger and writes each time it
+   * finds the response under its limit: `BATCH` in stream.ts, which does not
+   * export it.
+   */
+  const STREAM_BATCH = 500;
+
+  /**
+   * The most that one batch of `events` adds to what waits in the response:
+   * each message, and the chunk framing around it (its length in hex and two
+   * line ends), which `writableLength` counts too.
+   */
+  function largestBatchBytes(events: LedgerEvent[]): number {
+    const sizes = events.map((event) => {
+      const message = Buffer.byteLength(
+        `event: delta\nid: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`,
+      );
+      return message.toString(16).length + 2 + message + 2;
+    });
+    let running = 0;
+    let largest = 0;
+    sizes.forEach((size, index) => {
+      running +=
+        size - (index >= STREAM_BATCH ? (sizes[index - STREAM_BATCH] ?? 0) : 0);
+      largest = Math.max(largest, running);
+    });
+    return largest;
+  }
+
   interface Stalled {
     reads: () => number;
-    asked: () => number;
+    /** What waits in the response, as the stream measures it: `res.writableLength`. */
+    waiting: () => number;
+    /** Run `then` once, the next time the ledger is read for this client. */
+    onNextRead: (then: () => void) => void;
     connections: () => number;
     socket: Socket;
     received: () => string;
@@ -515,13 +550,15 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     events: LedgerEvent[],
   ): Promise<Stalled> {
     let reads = 0;
-    let asked = 0;
+    let nextRead: (() => void) | null = null;
     const ledgerStream = createLedgerStream({
       cursor: () => 0,
       collections: async () => ({}),
       eventsAfter: (cursor, limit) => {
         reads++;
-        asked = Math.max(asked, cursor);
+        const then = nextRead;
+        nextRead = null;
+        then?.();
         return events.filter((event) => event.id > cursor).slice(0, limit);
       },
       pollMs: 5,
@@ -529,7 +566,9 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
       ...options,
     });
     let serverClosed = false;
+    let response: ServerResponse | null = null;
     const server = createServer((req, res) => {
+      response = res;
       req.socket.once("close", () => {
         serverClosed = true;
       });
@@ -559,7 +598,10 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
     });
     return {
       reads: () => reads,
-      asked: () => asked,
+      waiting: () => response?.writableLength ?? 0,
+      onNextRead: (then) => {
+        nextRead = then;
+      },
       connections: () => ledgerStream.connections(),
       socket,
       received: () => pieces.join(""),
@@ -571,22 +613,29 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
   const pause = (ms: number): Promise<void> =>
     new Promise((done) => setTimeout(done, ms));
 
-  test("is not fed without bound: the ledger is not read for it while its buffer is full, and it loses nothing when it reads again", async () => {
+  test("is not fed without bound: while its buffer is over the limit the ledger is not read for it, and what waits in the response is over the limit by one batch at most; it loses nothing when it reads again", async () => {
     const events = backlog();
+    const oneBatch = largestBatchBytes(events);
+    // More than one batch, so a limit looked at once a tick instead of once a
+    // batch shows in what waits; and more than the default limit and a batch,
+    // so a stream that ignores the limit it was given shows too.
+    const limit = 4_000_000;
+    expect(limit).toBeGreaterThan(STREAM_MAX_BUFFERED_BYTES + oneBatch);
     const client = await stalled(
-      { maxBufferedBytes: 256_000, stalledMs: 60_000 },
+      { maxBufferedBytes: limit, stalledMs: 60_000 },
       events,
     );
 
     // Give the stream every chance to push the whole backlog at a client that takes none of it.
     await pause(400);
     const readsWhileFull = client.reads();
-    const askedWhileFull = client.asked();
+    const waiting = client.waiting();
     await pause(300);
     expect(client.reads()).toBe(readsWhileFull);
-    // Far short of the backlog: most of it is still in the ledger, not in this
-    // process (what did leave it is in the operating system's socket buffers).
-    expect(askedWhileFull).toBeLessThan(events.length / 2);
+    // It stopped because the response held more than the limit, and it had
+    // added no more than one batch since it last found it under the limit.
+    expect(waiting).toBeGreaterThan(limit);
+    expect(waiting).toBeLessThanOrEqual(limit + oneBatch);
     expect(client.connections()).toBe(1);
 
     client.socket.resume();
@@ -623,20 +672,38 @@ describe("a stream client that does not read (raw socket, injected ledger)", () 
   }, 20_000);
 
   test("a client that falls behind and catches up, again and again, is never counted as stalled", async () => {
-    // The backlog is far larger than the socket's own buffers, so a pause
-    // finds the connection full again.
+    // Each round: the client reads nothing for half the stall limit, and by the
+    // end of that the response is over its limit. Then it reads until the
+    // stream finds room and reads the ledger for it again, and stops there. The
+    // four pauses together are twice the stall limit, so a stall clock that
+    // catching up does not stop runs out by the third.
     const events = backlog();
+    const limit = 64_000;
+    const stalledMs = 1000;
     const client = await stalled(
-      { maxBufferedBytes: 64_000, stalledMs: 600 },
+      { maxBufferedBytes: limit, stalledMs },
       events,
     );
-    // Each pause is half the stall limit; together they are twice it.
     for (let round = 0; round < 4; round++) {
-      await pause(300);
-      expect({ round, open: client.connections() }).toEqual({ round, open: 1 });
+      await pause(stalledMs / 2);
+      expect({
+        round,
+        open: client.connections(),
+        full: client.waiting() > limit,
+      }).toEqual({ round, open: 1, full: true });
+      let caughtUp = false;
+      client.onNextRead(() => {
+        client.socket.pause();
+        caughtUp = true;
+      });
       client.socket.resume();
-      await pause(60);
-      client.socket.pause();
+      for (let i = 0; i < 1000 && !caughtUp && client.connections() === 1; i++)
+        await pause(5);
+      expect({ round, open: client.connections(), caughtUp }).toEqual({
+        round,
+        open: 1,
+        caughtUp: true,
+      });
     }
     client.socket.resume();
     for (

@@ -311,6 +311,138 @@ describe("forgeRunSnapshot", () => {
     expect(snapshot.selected).toBe("agent-forge-harness-dg40");
   });
 
+  /**
+   * The older gated run in flight, beside a newer auto run that recorded ship
+   * and whose one ship review returned `verdict`.
+   */
+  function besideShipReview(slug: string, verdict: "UNREADABLE" | "FAIL") {
+    const at = "2026-09-12T12:00:00.000Z";
+    const shipped = {
+      ...STATE,
+      slug,
+      mode: "auto",
+      completed: ["research", "plan", "implement", "ship"] as ForgePhase[],
+      phase: "ship" as ForgePhase,
+      reviews: [
+        {
+          phase: "ship",
+          round: 1,
+          verdict,
+          findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+          at,
+        },
+      ],
+      updatedAt: at,
+    };
+    return forgeRunSnapshot({
+      runStates: [JSON.stringify(STATE), JSON.stringify(shipped)],
+      checkout: CHECKOUT,
+      gateLogs: [],
+      artifactExists: () => true,
+    });
+  }
+
+  test("selects a newer run that recorded ship but whose ship review halted over an older run in flight", () => {
+    const snapshot = besideShipReview("ship-halted", "UNREADABLE");
+    expect(snapshot.runs[0]?.complete).toBe(true);
+    expect(snapshot.runs[0]?.halted?.phase).toBe("ship");
+    expect(snapshot.selected).toBe("ship-halted");
+  });
+
+  test("selects a newer run that recorded ship but whose ship review asks for a revision over an older run in flight", () => {
+    const snapshot = besideShipReview("ship-revising", "FAIL");
+    expect(snapshot.runs[0]?.complete).toBe(true);
+    expect(snapshot.runs[0]?.reviewPending).toBe("ship");
+    expect(snapshot.runs[0]?.revising).toBe(true);
+    expect(snapshot.selected).toBe("ship-revising");
+  });
+
+  test("carries each run's review hold from its summary: halted, review pending, revising, or none", () => {
+    const findings = (high: number) => ({
+      blocker: 0,
+      high,
+      medium: 0,
+      low: 0,
+    });
+    const at = "2026-09-10T12:00:00.000Z";
+    const auto = (slug: string, completed: ForgePhase[], reviews: unknown[]) =>
+      JSON.stringify({
+        ...STATE,
+        slug,
+        mode: "auto",
+        completed,
+        phase: completed[completed.length - 1],
+        reviews,
+      });
+    const snapshot = forgeRunSnapshot({
+      runStates: [
+        JSON.stringify(STATE),
+        auto(
+          "halted-run",
+          ["research"],
+          [
+            {
+              phase: "research",
+              round: 1,
+              verdict: "UNREADABLE",
+              findings: findings(0),
+              at,
+            },
+          ],
+        ),
+        auto(
+          "revising-run",
+          ["research"],
+          [
+            {
+              phase: "research",
+              round: 1,
+              verdict: "FAIL",
+              findings: findings(1),
+              at,
+            },
+          ],
+        ),
+        auto("awaiting-run", ["research"], []),
+      ],
+      checkout: CHECKOUT,
+      gateLogs: [],
+      artifactExists: () => true,
+    });
+    const hold = (slug: string) => {
+      const run = snapshot.runs.find((candidate) => candidate.slug === slug);
+      return {
+        halted: run?.halted,
+        reviewPending: run?.reviewPending,
+        revising: run?.revising,
+      };
+    };
+    expect(hold("halted-run")).toEqual({
+      halted: {
+        phase: "research",
+        reason:
+          'The review of "research" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.',
+      },
+      reviewPending: null,
+      revising: false,
+    });
+    expect(hold("revising-run")).toEqual({
+      halted: null,
+      reviewPending: "research",
+      revising: true,
+    });
+    expect(hold("awaiting-run")).toEqual({
+      halted: null,
+      reviewPending: "research",
+      revising: false,
+    });
+    expect(hold("agent-forge-harness-dg40")).toEqual({
+      halted: null,
+      reviewPending: null,
+      revising: false,
+    });
+  });
+
   test("a gate from another checkout never attaches to a run here", () => {
     const snapshot = forgeRunSnapshot({
       runStates: [JSON.stringify(STATE)],
@@ -383,6 +515,19 @@ describe("reviewCommentFor", () => {
       }).ok,
     ).toBe(false);
     expect(reviewCommentFor(null).ok).toBe(false);
+  });
+
+  test("rejects a note holding a NUL, which cannot be passed to bd as an argument", () => {
+    const NUL = String.fromCharCode(0);
+    for (const decision of ["approve", "request-changes"]) {
+      expect(
+        reviewCommentFor({
+          issueId: "a-1",
+          decision,
+          note: `before${NUL}after`,
+        }),
+      ).toEqual({ ok: false, error: "note must not hold a NUL character" });
+    }
   });
 });
 

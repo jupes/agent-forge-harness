@@ -3,16 +3,18 @@
  * them current.
  *
  * `/events` pages only forward, so the history is read from the start, a page
- * of 1000 at a time, up to the cap (`timeline-model.ts`). After that the
- * stream says when the ledger moved, and only what lies past the cursor is
- * read. The I/O is handed in, so all of this runs against a fake ledger in the
- * tests.
+ * of 1000 at a time, to its end. Past the cap (`timeline-model.ts`) the
+ * newest are held and the older ones make way. After that the stream says
+ * when the ledger moved, and only what lies past the cursor is read. A read
+ * may be narrowed to some kinds, which the ledger then answers alone. The I/O
+ * is handed in, so all of this runs against a fake ledger in the tests.
  */
 
 import {
   type EventsPage,
   LEDGER_EVENT_KINDS,
   type LedgerEvent,
+  type LedgerEventKind,
 } from "../../types/hearth";
 import {
   EVENT_CAP,
@@ -28,14 +30,20 @@ export interface TimelineView {
   events: LedgerEvent[];
   /** The first read (or one after a resync) still has pages to fetch. */
   loading: boolean;
-  /** The cap was reached: older events are shown, newer ones are not read. */
+  /** More events were read than the cap: the newest are held, older ones are not. */
   cut: boolean;
   /** Why the last read failed; null after one that worked. */
   error: string | null;
+  /** Every kind among the events read, held or not, in the order of `LEDGER_EVENT_KINDS`. */
+  kindsRead: LedgerEventKind[];
+  /** How many sessions joined the bead late and brought older events in; it only grows. */
+  lateJoins: number;
 }
 
 export interface TimelineReadOptions {
   scope: TimelineScope;
+  /** Read only events of these kinds (the ledger narrows them); every kind when absent or empty. */
+  kinds?: readonly LedgerEventKind[];
   /** GET an operator API read path and answer its page of events. */
   read(path: string): Promise<EventsPage>;
   client: Pick<StreamClient, "watch">;
@@ -49,6 +57,7 @@ export interface TimelineReadOptions {
 /** Start reading; the returned function stops it. */
 export function startTimelineRead(options: TimelineReadOptions): () => void {
   const { scope, read } = options;
+  const kinds = options.kinds ?? [];
   const cap = options.cap ?? EVENT_CAP;
   let live = true;
   let events: LedgerEvent[] = [];
@@ -57,7 +66,9 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
   let loaded = false;
   let loading = false;
   let error: string | null = null;
-  /** Sessions with an event in the list. */
+  let kindsRead = new Set<LedgerEventKind>();
+  let lateJoins = 0;
+  /** Sessions with an event read, held or not. */
   let seen = new Set<string>();
   /**
    * Sessions still to be asked about, each with the cursor the page that
@@ -71,10 +82,19 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
   let pendingResync = false;
 
   const publish = (): void => {
-    if (live) options.onChange({ events, loading, cut, error });
+    if (live)
+      options.onChange({
+        events,
+        loading,
+        cut,
+        error,
+        kindsRead: LEDGER_EVENT_KINDS.filter((kind) => kindsRead.has(kind)),
+        lateJoins,
+      });
   };
 
   const merge = (incoming: readonly LedgerEvent[]): void => {
+    for (const entry of incoming) kindsRead.add(entry.kind);
     const merged = mergeEvents(events, incoming, cap);
     events = merged.events;
     if (merged.cut) cut = true;
@@ -99,11 +119,12 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
    * that is at or below `bound`, its events up to `bound` are read and merged.
    */
   const backfill = async (session: string, bound: number): Promise<void> => {
-    const oldest = (await read(sessionPath(session, 0, 1))).events[0];
+    const oldest = (await read(sessionPath(session, 0, 1, kinds))).events[0];
     if (!live || oldest === undefined || oldest.id > bound) return;
+    lateJoins += 1;
     let from = 0;
-    while (live && !cut) {
-      const page = await read(sessionPath(session, from, PAGE_LIMIT));
+    while (live) {
+      const page = await read(sessionPath(session, from, PAGE_LIMIT, kinds));
       if (!live) return;
       const older = page.events.filter((entry) => entry.id <= bound);
       merge(older);
@@ -121,14 +142,14 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
   };
 
   /**
-   * Read forward from `after` until the ledger has no more or the list is
-   * full. On the first page of a read from the start, every session shown
-   * already brought all its events with it: nothing was read before.
+   * Read forward from `after` until the ledger has no more. On the first page
+   * of a read from the start, every session shown already brought all its
+   * events with it: nothing was read before.
    */
   const readForward = async (after: number): Promise<void> => {
     let from = after;
     for (;;) {
-      const page = await read(eventsPath(scope, from));
+      const page = await read(eventsPath(scope, from, kinds));
       if (!live) return;
       error = null;
       if (restart) {
@@ -137,6 +158,7 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
         seen = new Set();
         unprobed = new Map();
         cut = false;
+        kindsRead = new Set();
       }
       const joined = newSessions(page);
       merge(page.events);
@@ -145,7 +167,7 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
         for (const session of joined) unprobed.set(session, from);
       await probeWaiting();
       if (!live) return;
-      const more = !cut && page.more;
+      const more = page.more;
       loading = !loaded && more;
       publish();
       if (!more) return;
@@ -172,7 +194,7 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
         if (!loaded || pendingResync) {
           pendingResync = false;
           await fullRead();
-        } else if (!cut) {
+        } else {
           await probeWaiting();
           await readForward(cursor);
         }
@@ -195,4 +217,26 @@ export function startTimelineRead(options: TimelineReadOptions): () => void {
     unwatch();
     refetcher.dispose();
   };
+}
+
+/** A read narrowed to the chosen kinds, and the key it is read again under. */
+export interface Narrowing {
+  kinds: readonly LedgerEventKind[];
+  key: string;
+}
+
+/**
+ * Whether the chosen kinds are read from the ledger rather than filtered from
+ * `view`: only once `view` was cut, when its events are not all of the
+ * scope's. The key changes with the kinds and with each late join that
+ * brought older events: such a join can be made by an event of a kind not
+ * chosen, which a read narrowed to the chosen kinds never sees, so that read
+ * starts again from the beginning.
+ */
+export function narrowing(
+  view: TimelineView | null,
+  kinds: readonly LedgerEventKind[],
+): Narrowing | null {
+  if (view === null || !view.cut || kinds.length === 0) return null;
+  return { kinds, key: `${kinds.join(",")}#${view.lateJoins}` };
 }
