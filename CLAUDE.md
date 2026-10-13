@@ -114,7 +114,7 @@ bd update <id> --claim     # Claim work
 bd update <id> --acceptance "..."  # Add acceptance criteria (flag is --acceptance, NOT --ac)
 bd close <id>              # Mark complete
 bd comments add <id> "worklog: description"
-bd dep add <id> --blocks <other-id>
+bd dep add <later-id> <earlier-id>   # <later-id> depends on <earlier-id>, so <earlier-id> blocks it
 ```
 
 Note: **`bd sync` is not part of current `bd` releases** — upstream removed it in favor of **`bd dolt pull` / `bd dolt push`** (see [gastownhall/beads#2435](https://github.com/gastownhall/beads/issues/2435)). Follow `bd doctor` for your install.

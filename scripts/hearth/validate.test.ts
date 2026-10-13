@@ -492,6 +492,7 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
       { action: "claim" },
       { action: "comment", hash: HASH, length: 0 },
       { action: "close", hash: HASH, length: 1000 },
+      { action: "reassign" },
     ]) {
       expect({ payload, refusal: refusal(payload) }).toEqual({
         payload,

@@ -20,10 +20,12 @@ import {
   type ReviewRound,
 } from "../forge/phases";
 import {
+  activeRuns,
   byRecency,
   comparableCheckout,
   isValidSlug,
   parseState,
+  type RunSummary,
   summarizeRun,
 } from "../forge/runs";
 import {
@@ -137,6 +139,12 @@ export interface ForgeRunView {
   phases: PhaseRow[];
   /** Subagent review rounds, oldest first. Empty for a run nobody reviewed. */
   reviews: ReviewRound[];
+  /** From the run summary: the phase and reason an auto run's review loop halted it at. */
+  halted: RunSummary["halted"];
+  /** From the run summary: the completed phase an auto run still has to review. */
+  reviewPending: RunSummary["reviewPending"];
+  /** From the run summary: true when `reviewPending`'s last review asked for a revision. */
+  revising: RunSummary["revising"];
   /** The newest quality-gate run within `gateScope`, or null if there is none. */
   gate: GateRun | null;
   gateScope: GateScope;
@@ -545,15 +553,19 @@ export function forgeRunSnapshot(input: {
       updatedAt: summary.updatedAt || null,
       phases: phaseRows(state ?? null, input.artifactExists),
       reviews: state?.reviews ?? [],
+      halted: summary.halted,
+      reviewPending: summary.reviewPending,
+      revising: summary.revising,
       gate: byRun.get(summary.slug) ?? null,
       gateScope,
     };
   });
 
   // In-flight work is what a reader came for; a shipped run is only the answer
-  // when nothing is still moving.
-  const selected =
-    runs.find((run) => !run.complete)?.slug ?? runs[0]?.slug ?? null;
+  // when nothing is still moving. In flight is what `forge:runs` counts: a run
+  // that recorded ship is still in flight while its ship review holds it.
+  // `runs` keeps the order of `summaries`, so the first of either is the newest.
+  const selected = activeRuns(summaries)[0]?.slug ?? runs[0]?.slug ?? null;
 
   return {
     runs,
@@ -592,9 +604,12 @@ function latestReview(run: ForgeRunView): ReviewRound | null {
 }
 
 export function runHealth(run: ForgeRunView): RunHealth {
+  // A halted run waits on a human, even one that recorded ship.
+  if (run.halted !== null) return "attention";
   // A shipped run is done being judged — a stale failing gate from mid-run
-  // should not make a finished run look broken.
-  if (run.complete) return "shipped";
+  // should not make a finished run look broken. A ship review that still
+  // holds the run means it is not done.
+  if (run.complete && run.reviewPending === null) return "shipped";
 
   if (countedGate(run) === false) return "attention";
   if (run.phases.some((phase) => phase.artifactMissing)) return "attention";
@@ -603,6 +618,59 @@ export function runHealth(run: ForgeRunView): RunHealth {
   if (review !== null && review.verdict !== "PASS") return "attention";
 
   return "running";
+}
+
+/**
+ * What a run is doing now. A run its reviews hold is named by the hold, in
+ * the order `forge:runs` uses (a halt, then a pending review), never by the
+ * phase after it: an auto run cannot enter that phase until the hold clears.
+ */
+export type RunStatus =
+  | { kind: "halted"; phase: ForgePhase; reason: string }
+  | { kind: "revising"; phase: ForgePhase }
+  | { kind: "awaiting-review"; phase: ForgePhase }
+  | { kind: "shipped" }
+  | { kind: "phase"; phase: ForgePhase };
+
+export function runStatus(run: ForgeRunView): RunStatus {
+  if (run.halted !== null) {
+    return {
+      kind: "halted",
+      phase: run.halted.phase,
+      reason: run.halted.reason,
+    };
+  }
+  if (run.reviewPending !== null) {
+    return {
+      kind: run.revising ? "revising" : "awaiting-review",
+      phase: run.reviewPending,
+    };
+  }
+  const active = run.phases.find((phase) => phase.state === "active");
+  return run.complete || active === undefined
+    ? { kind: "shipped" }
+    : { kind: "phase", phase: active.id };
+}
+
+/** The phase a review holds the run at, or null when nothing holds it. */
+function heldPhase(run: ForgeRunView): ForgePhase | null {
+  return run.halted?.phase ?? run.reviewPending;
+}
+
+/**
+ * The phase cells as the board and the run panel draw them. While a review
+ * holds the run, a phase after the held one is locked rather than active, as
+ * the phase gate treats it.
+ */
+export function shownPhases(run: ForgeRunView): PhaseRow[] {
+  const held = heldPhase(run);
+  if (held === null) return run.phases;
+  const at = FORGE_PHASES.indexOf(held);
+  return run.phases.map((phase) =>
+    phase.state === "active" && FORGE_PHASES.indexOf(phase.id) > at
+      ? { ...phase, state: "locked" }
+      : phase,
+  );
 }
 
 /** One line of the board: a whole run, small enough to scan. */
@@ -614,8 +682,8 @@ export interface RunBoardRow {
   health: RunHealth;
   /** The phase cells, in pipeline order. */
   phases: PhaseRow[];
-  /** What the run is doing now: the active phase id, or "shipped". */
-  status: string;
+  /** What the run is doing now. */
+  status: RunStatus;
   completedCount: number;
   totalPhases: number;
   /** The run's correlated gate's verdict, or null when no linked gate run belongs to it. */
@@ -633,7 +701,6 @@ export interface RunBoardRow {
  */
 export function boardRows(runs: readonly ForgeRunView[]): RunBoardRow[] {
   return runs.map((run) => {
-    const active = run.phases.find((phase) => phase.state === "active");
     const review = latestReview(run);
     return {
       slug: run.slug,
@@ -641,8 +708,8 @@ export function boardRows(runs: readonly ForgeRunView[]): RunBoardRow[] {
       epic: run.epic,
       mode: run.mode,
       health: runHealth(run),
-      phases: run.phases,
-      status: run.complete ? "shipped" : (active?.id ?? "shipped"),
+      phases: shownPhases(run),
+      status: runStatus(run),
       completedCount: run.phases.filter((phase) => phase.state === "complete")
         .length,
       totalPhases: run.phases.length,

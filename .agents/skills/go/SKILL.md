@@ -76,7 +76,7 @@ When input is a file path, parse the spec and create Beads tasks:
    Set **`<value>`** using `.claude/skills/beads-priority-assignment/SKILL.md`.
 4. If items have clear dependencies (item B requires item A), add them:
    ```bash
-   bd dep add <B-id> --requires <A-id>
+   bd dep add <B-id> <A-id>   # B depends on A: the later item first, the earlier item second
    ```
 5. If there are 3+ related items: create an epic to group them
    ```bash

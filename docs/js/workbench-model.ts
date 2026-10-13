@@ -15,6 +15,7 @@ import {
   operatorMoves,
 } from "../../scripts/scheduler/queue-table";
 import type { QueueEntry, QueueState } from "../../types/hearth";
+import { NotSent } from "./operator";
 
 /** The columns, left to right: the happy path, then the two side states, then the end. */
 export const COLUMN_ORDER = [
@@ -154,7 +155,8 @@ export interface MoveOutcome {
  * What one move's answer means for the card, by the write path's rules: no
  * answer, a 504, or a success that is not the control plane's envelope means
  * the outcome is not known; a refusal is said in the hearth's own words; only
- * an `ok: true` envelope is done.
+ * an `ok: true` envelope is done. A move that could not get an operator token
+ * (`NotSent`) was not sent, so it failed and changed nothing.
  */
 export async function moveOutcome(
   id: string,
@@ -168,7 +170,12 @@ export async function moveOutcome(
   let response: Response;
   try {
     response = await send();
-  } catch {
+  } catch (error) {
+    if (error instanceof NotSent)
+      return {
+        tone: "failed",
+        message: `Not sent (${move}): the page could not get an operator token from the control plane (${error.message}). Nothing was changed.`,
+      };
     return unknown;
   }
   if (response.status === 504) return unknown;

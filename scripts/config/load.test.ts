@@ -140,6 +140,49 @@ describe("loadConfig", () => {
       loadConfig({ harnessRoot: s.harness, home: s.home, env: {} }),
     ).toThrow(/default_crew.*nobody/);
   });
+
+  test("a name every object has a key for is an unknown smith as the default crew, from AGENT_FORGE_SMITH, and in a bench", () => {
+    const crew = sandbox();
+    writeFileSync(
+      crew.workspaceFile,
+      '[workflow]\ndefault_crew = "constructor"\n',
+    );
+    expect(() =>
+      loadConfig({ harnessRoot: crew.harness, home: crew.home, env: {} }),
+    ).toThrow(
+      `${crew.workspaceFile}: workflow.default_crew: unknown smith "constructor"`,
+    );
+
+    const env = sandbox();
+    expect(() =>
+      loadConfig({
+        harnessRoot: env.harness,
+        home: env.home,
+        env: { AGENT_FORGE_SMITH: "toString" },
+      }),
+    ).toThrow('env: workflow.default_crew: unknown smith "toString"');
+
+    const bench = sandbox();
+    writeFileSync(bench.workspaceFile, '[benches]\nlow = ["__proto__:1"]\n');
+    expect(() =>
+      loadConfig({ harnessRoot: bench.harness, home: bench.home, env: {} }),
+    ).toThrow(`${bench.workspaceFile}: benches.low: unknown smith "__proto__"`);
+  });
+
+  test("a smith table named after a key every object has is refused with that reason, naming the file", () => {
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      const s = sandbox();
+      writeFileSync(
+        s.workspaceFile,
+        `[smiths.${name}]\nprovider = "claude"\nmodel = "m"\neffort = "low"\n`,
+      );
+      expect(() =>
+        loadConfig({ harnessRoot: s.harness, home: s.home, env: {} }),
+      ).toThrow(
+        `${s.workspaceFile}: smiths.${name}: "${name}" is a key every object has; name the smith something else`,
+      );
+    }
+  });
 });
 
 describe("loadConfig: what it reads", () => {

@@ -121,11 +121,28 @@ export interface DerivedData {
   epicFlowByEpic?: Record<string, EpicFlowData>;
 }
 
+/** Where `scripts/build-pages.ts` read a snapshot's issues from. */
+export type SnapshotSource =
+  /** `bd export`: the live tracker answered. */
+  | { kind: "tracker" }
+  /** bd did not answer, so a file written by an earlier export was used. */
+  | {
+      kind: "file";
+      /** Relative to the checkout, e.g. `.beads/issues.jsonl`. */
+      path: string;
+      /** ISO 8601 time the file was last written. */
+      modifiedAt: string;
+      /** Why the tracker was not used (bd's error, shortened). */
+      reason: string;
+    };
+
 export interface BeadsPayload {
   /** Schema version */
   version: string;
   /** ISO 8601 timestamp when this payload was generated */
   generatedAt: string;
+  /** Where the issues came from; absent in snapshots built before it was recorded. */
+  source?: SnapshotSource;
   /** All issues */
   issues: BeadsIssue[];
   /** All comments */

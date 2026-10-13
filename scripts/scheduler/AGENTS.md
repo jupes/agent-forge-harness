@@ -24,6 +24,12 @@ process spawned is git, by the registry.
   `description` (`filemap-cli.ts - --bd-json` takes that output as it is). Plain `bd show` renders
   Markdown and garbles a glob that holds `*`; the garbled form is refused, because it puts `**`
   inside a segment.
+- `filemap-cli.ts` refuses a file that has a `Checkpoint` heading unless it is told what the file
+  is: `--plan` reads each checkpoint, and `--description` reads it as one task's description, the
+  way `--bd-json` reads the stored one.
+- In a plan, a heading of level two or deeper above a checkpoint's level ends the checkpoint even
+  inside a fence, so a fence the parser reads wrong never hands a checkpoint a plan-level `Files`
+  section. A level-one `# …` line inside a fence does not end it: there it is a shell comment.
 - `reservations.ts` and `eligibility.ts` consume file maps (below).
 
 ## The queue (`queue.ts`, `queue-lock.ts`)
@@ -45,6 +51,12 @@ process spawned is git, by the registry.
   append `bead.transitioned` `{ from, to, reason: "<action>:<actor>" }`. The event is appended
   before the lock is released. A refusal names the current state and every move allowed from it,
   and writes nothing. Do not write a queue label anywhere else.
+- A `bd` call with no exit status is "`bd` could not be started, nothing was changed" only when
+  `neverStarted` says so (the runtime's own message for a missing program, whole). Anything else
+  with no exit status is `failed` on the read and `unknown` on the write, and the answer says the
+  call was stopped before it answered or never started, not which: a call killed at the runner's
+  limit and one the runtime could not spawn for another reason (its working directory gone, which
+  Bun reports as `ENOENT: no such file or directory, uv_spawn 'bd'`) look alike here.
 - A label counts as a state only when the queue wrote it. Every write sets metadata `queue_state`
   to the same state in the same call, because `bd create --parent` copies the parent's labels onto
   the child and not its metadata. A label with no such backing (inherited, or added by hand) is
@@ -75,11 +87,13 @@ process spawned is git, by the registry.
   the same move at the same time leaves exactly the target, so it is not found; when both writers
   are `queue.ts` (two lock files), the move is recorded twice.
 - `queue_state` and `queue_resume` are trusted as written: metadata set by hand is read as the
-  queue's own. A process that ends between the `bd update` and the append leaves the move made with
-  no `bead.transitioned` for it.
+  queue's own. A process that ends between the `bd update` and the append leaves the move (or the
+  reassign) made with no `bead.transitioned` for it.
 - `reassign` records a smith as the bead's `smith` metadata, which is where smith resolution reads
-  a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state and appends
-  no transition. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
+  a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state. Once `bd`
+  confirmed the write, it appends `bead.transitioned` `{ action: "reassign" }` under the lock, the
+  tracker-write form with no `from` or `to`, so that a page or a stream client that reads `/queue`
+  again on that event finds the new smith. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
   picks the bench, and a bead without one gets `workflow.default_crew`.
 - `bd list --label queue:queued` prints the beads a shift may pick plus two kinds that `start`
   refuses, both made outside the queue: an inherited or hand-added label, and a bead with a second

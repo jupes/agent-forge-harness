@@ -11,16 +11,18 @@ import { Dialog } from "../ds/Dialog";
 import { Field, Input, Select, Textarea } from "../ds/Field";
 import { Tag } from "../ds/Tag";
 import { statusLabel, statusTone } from "../issue-presentation";
-import { BeadActions, UnsettledNotice } from "./BeadActions";
+import { BeadActions } from "./BeadActions";
 import {
   applied,
   beadWrites,
   createState,
+  NO_ROOM,
+  useAwaiting,
   useBeadWrites,
   useCreated,
-  useUnsettled,
 } from "./bead-writes";
 import { CopyIdButton } from "./CopyIdButton";
+import { NoticePointer } from "./PendingWrites";
 
 type ModalState =
   | { open: false }
@@ -71,7 +73,18 @@ export function BeadBuilderIsland() {
   const plane = useBeadWrites();
   const made = useCreated();
   const latest = made[0];
-  const unsettledCreates = useUnsettled();
+  // A create out from before this builder was mounted (it was left and come back to).
+  const awaitedCreates = useAwaiting();
+  // An answer that comes back after the builder is gone has nobody to tell.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  // The creates sent from here: the pointer to the list is for these.
+  const [sentKeys] = useState(() => new Set<string>());
 
   // Select the whole command so Ctrl+C / Cmd+C copies it straight away. Child
   // effects run first, so the dialog is already shown when this runs.
@@ -188,10 +201,15 @@ export function BeadBuilderIsland() {
     if (sending.current) return;
     const data = read();
     if (!data) return;
+    const key = applied.begin({ action: "create", title: data.title });
+    if (key === null) {
+      setCreateResult({ tone: "failed", message: NO_ROOM });
+      return;
+    }
     sending.current = true;
     setCreating(true);
     setCreateResult(null);
-    const key = applied.begin({ action: "create", title: data.title });
+    sentKeys.add(key);
     try {
       const outcome = await beadWrites.create({
         title: data.title,
@@ -221,6 +239,7 @@ export function BeadBuilderIsland() {
               }`,
         });
       } else if (outcome.unknown) applied.unknown(key, outcome.error);
+      else if (!mounted.current) applied.refused(key, outcome.error);
       else {
         applied.settle(key);
         setCreateResult({ tone: "failed", message: outcome.error });
@@ -429,7 +448,12 @@ export function BeadBuilderIsland() {
             <Button onClick={onClear}>Clear form</Button>
             <Button
               class="af-bead-create"
-              disabled={!offer.enabled || creating || submitting}
+              disabled={
+                !offer.enabled ||
+                creating ||
+                submitting ||
+                awaitedCreates.length > 0
+              }
               {...(createReason ? { title: createReason } : {})}
               onClick={() => void onCreate()}
             >
@@ -461,13 +485,13 @@ export function BeadBuilderIsland() {
               {createResult.message}
             </p>
           ) : null}
-          {unsettledCreates.length > 0 ? (
-            <div id="bb-create-unsettled">
-              {unsettledCreates.map((attempt) => (
-                <UnsettledNotice key={attempt.key} attempt={attempt} />
-              ))}
-            </div>
+          {!creating && awaitedCreates.length > 0 ? (
+            <p class="af-muted af-bead-out">
+              A create sent from this page is still out: Create bead is not
+              offered until it is answered.
+            </p>
           ) : null}
+          <NoticePointer sent={sentKeys} />
         </form>
       </Card>
 
