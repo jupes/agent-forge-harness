@@ -27,13 +27,9 @@ export type OperatorPost = (url: string, body: unknown) => Promise<Response>;
  * changed: either no POST left the page, or the one that did was refused with
  * a 403, which the control plane answers only before doing anything. A
  * request that fails after the token was had is not this: it may have arrived.
+ * Its name stays "Error", so a view that prints the error reads as before.
  */
-export class NotSent extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "NotSent";
-  }
-}
+export class NotSent extends Error {}
 
 async function fetchToken(fetchImpl: Fetch): Promise<string> {
   const response = await fetchImpl(TOKEN_ROUTE);

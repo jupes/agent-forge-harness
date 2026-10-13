@@ -197,6 +197,20 @@ describe("operatorPost", () => {
     ]);
   });
 
+  test("a NotSent prints as the Error it replaced: Error and the token route's reason", async () => {
+    const post = createOperatorPost(async () =>
+      Response.json(
+        { ok: false, data: null, error: "still starting" },
+        { status: 503 },
+      ),
+    );
+    const error = await post("/__agent-forge/x", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(NotSent);
+    expect(String(error)).toBe("Error: still starting");
+  });
+
   test("a POST that fails after the token was had fails with its own error, not NotSent", async () => {
     const post = createOperatorPost(async (input) => {
       if (input === TOKEN_ROUTE)
