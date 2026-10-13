@@ -1534,6 +1534,16 @@ form.is-submitting {
   grid-column: 1 / -1;
 }
 
+/* The run panel's hold: what holds the run, then why a halted one stopped. */
+.af-run-hold-status {
+  font-weight: 600;
+}
+
+.af-run-hold-reason {
+  display: block;
+  margin-top: var(--space-1);
+}
+
 @media (width <= 720px) {
   .af-run-row {
     grid-template-columns: minmax(0, 1fr);

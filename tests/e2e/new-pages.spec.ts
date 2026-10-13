@@ -9,6 +9,7 @@ import {
   LEGACY_VERDICT_GATE,
   openSettled,
   REVISING_RUN,
+  SHIP_HALT_REASON,
   SHIP_HALTED_RUN,
   stubForgeRun,
   stubRepos,
@@ -36,6 +37,13 @@ const NO_RUN_TITLE = "No forge run in flight";
 function boardRow(page: Page, slug: string): Locator {
   return page.locator(".af-run-row", {
     has: page.locator(".af-run-slug", { hasText: slug }),
+  });
+}
+
+/** The panel of the run on show, titled by its slug. */
+function runPanel(page: Page, slug: string): Locator {
+  return page.locator(".af-card", {
+    has: page.getByRole("heading", { name: slug, exact: true }),
   });
 }
 
@@ -428,6 +436,94 @@ test.describe("Forge run", () => {
     await expect(row.locator(".af-run-phase")).toHaveText(
       "Halted in Ship · 4/4",
     );
+  });
+
+  test("a lone run its plan review halted: its panel says it halted in Plan and why, and draws Implement locked, not active", async ({
+    page,
+  }) => {
+    const errors = collectErrors(page);
+    await stubForgeRun(page, { alone: HALTED_RUN });
+    await openSettled(page, FORGE_RUN);
+
+    // One run, so no board: the panel is the only place the halt can show.
+    await expect(page.locator(".af-run-board")).toHaveCount(0);
+    const panel = runPanel(page, "search-index");
+    await expect(panel.locator(".af-card-kicker")).toHaveText(
+      "halted run · auto",
+    );
+    await expect(panel.locator(".af-run-hold-status")).toHaveText(
+      "Halted in Plan",
+    );
+    await expect(panel.locator(".af-run-hold-reason")).toHaveText(HALT_REASON);
+
+    const implement = page.locator(".af-phase").nth(2);
+    await expect(implement).toHaveClass(/af-phase-locked/);
+    await expect(implement.locator(".af-phase-head .af-tag")).toHaveText(
+      "locked",
+    );
+    await expect(page.locator(".af-phase-active")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("a lone run that recorded ship but whose ship review halted: its panel's kicker is not shipped, and the panel says it halted in Ship and why", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { alone: SHIP_HALTED_RUN });
+    await openSettled(page, FORGE_RUN);
+
+    await expect(page.locator(".af-run-board")).toHaveCount(0);
+    const panel = runPanel(page, "release-notes");
+    await expect(panel.locator(".af-card-kicker")).toHaveText(
+      "halted run · auto",
+    );
+    await expect(panel.locator(".af-run-hold-status")).toHaveText(
+      "Halted in Ship",
+    );
+    await expect(panel.locator(".af-run-hold-reason")).toHaveText(
+      SHIP_HALT_REASON,
+    );
+  });
+
+  test("the panel of a run under revision or awaiting a review names the hold and locks the phase after it, and a run nothing holds shows no hold", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, {
+      extraRuns: [REVISING_RUN, AWAITING_REVIEW_RUN],
+    });
+    await openSettled(page, FORGE_RUN);
+
+    const plain = runPanel(page, "design-system");
+    await expect(plain.locator(".af-card-kicker")).toHaveText(
+      "active run · gated",
+    );
+    await expect(page.locator(".af-run-hold")).toHaveCount(0);
+    await expect(page.locator(".af-phase").nth(2)).toHaveClass(
+      /af-phase-active/,
+    );
+
+    await boardRow(page, "billing-export").click();
+    const revising = runPanel(page, "billing-export");
+    await expect(revising.locator(".af-card-kicker")).toHaveText(
+      "active run · auto",
+    );
+    await expect(revising.locator(".af-run-hold-status")).toHaveText(
+      "Revising Research",
+    );
+    await expect(revising.locator(".af-run-hold-reason")).toHaveCount(0);
+    await expect(page.locator(".af-phase").nth(1)).toHaveClass(
+      /af-phase-locked/,
+    );
+    await expect(page.locator(".af-phase-active")).toHaveCount(0);
+
+    await boardRow(page, "audit-log").click();
+    const awaiting = runPanel(page, "audit-log");
+    await expect(awaiting.locator(".af-run-hold-status")).toHaveText(
+      "Implement awaiting review",
+    );
+    await expect(page.locator(".af-phase").nth(3)).toHaveClass(
+      /af-phase-locked/,
+    );
+    await expect(page.locator(".af-phase-active")).toHaveCount(0);
   });
 
   test("renders the real forge state from this checkout without errors", async ({
