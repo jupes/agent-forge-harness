@@ -12,6 +12,7 @@ import type {
   ProviderUsage,
   ProviderUsageCount,
 } from "../../types/hearth";
+import { hashText } from "../hash-text";
 import {
   readSessionMirror,
   removeSessionMirror,
@@ -220,8 +221,9 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       const providerErrors = new Set<string>();
 
       /**
-       * Fix the session's id, announce it (`session.started` comes first) and
-       * mirror it into the checkout the child runs in.
+       * Fix the session's id, announce it (`session.started` comes first,
+       * then `prompt.submitted`) and mirror it into the checkout the child
+       * runs in.
        */
       const begin = (sessionId: string) => {
         const executor: Executor = {
@@ -254,6 +256,17 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
             ...(request.parentSessionId
               ? { parentSessionId: request.parentSessionId }
               : {}),
+          },
+        });
+        // The prompt went to the child on stdin at spawn: its hash and
+        // length, as the prompt hook records them, never the text.
+        queue.push({
+          ...base,
+          ts: new Date().toISOString(),
+          kind: "prompt.submitted",
+          payload: {
+            hash: hashText(request.prompt),
+            length: request.prompt.length,
           },
         });
         return session;

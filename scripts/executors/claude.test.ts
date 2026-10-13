@@ -57,7 +57,7 @@ function setup() {
 }
 
 describe("claude adapter through forge:exec (fake binary)", () => {
-  test("the default smith leaves session.started, a tool.called per tool and session.ended in the ledger, each carrying the smith", async () => {
+  test("the default smith leaves session.started, prompt.submitted, a tool.called per tool and session.ended in the ledger, each carrying the smith", async () => {
     const { root, worktree, ledger, deps } = setup();
     const out = await runExec(
       [
@@ -78,6 +78,7 @@ describe("claude adapter through forge:exec (fake binary)", () => {
     const rows = queryEvents({ beadId: "b-1" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([
       "session.started",
+      "prompt.submitted",
       "tool.called",
       "tool.called",
       "session.ended",
@@ -100,8 +101,8 @@ describe("claude adapter through forge:exec (fake binary)", () => {
     expect(data).toMatchObject({
       smith: "claude-journeyman",
       via: "default",
-      events: 4,
-      recorded: 4,
+      events: 5,
+      recorded: 5,
       notRecorded: 0,
       ledgerError: null,
       ledger,
@@ -134,6 +135,7 @@ describe("forge:exec --run (fake binary): the ledger and the run correlation in 
     const rows = queryEvents({ beadId: "b-both" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([
       "session.started",
+      "prompt.submitted",
       "tool.called",
       "tool.called",
       "session.ended",
@@ -142,7 +144,7 @@ describe("forge:exec --run (fake binary): the ledger and the run correlation in 
 
     // The correlation half, in the same envelope.
     expect(out.body.data).toMatchObject({
-      recorded: 4,
+      recorded: 5,
       notRecorded: 0,
       ledger,
       correlation: {
@@ -173,21 +175,22 @@ describe("forge:exec --run (fake binary): the ledger and the run correlation in 
 });
 
 describe("claude adapter: shapes the real CLI printed, replayed by the fake binary", () => {
-  test("a run that fails authentication (init, an assistant error message, an error result, exit 1) leaves session.started and session.ended with the failure, and no tool.called", async () => {
+  test("a run that fails authentication (init, an assistant error message, an error result, exit 1) leaves session.started, prompt.submitted and session.ended with the failure, and no tool.called", async () => {
     const { worktree, ledger, deps } = setup();
     const out = await runExec(
       ["--bead", "b-auth", "--worktree", worktree, "--prompt", "hi"],
       { ...deps, command: fake("auth") },
     );
     expect(out.code).toBe(2);
-    expect(out.body.data).toMatchObject({ events: 2, recorded: 2 });
+    expect(out.body.data).toMatchObject({ events: 3, recorded: 3 });
 
     const rows = queryEvents({ beadId: "b-auth" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([
       "session.started",
+      "prompt.submitted",
       "session.ended",
     ]);
-    expect(rows[1]?.payload).toMatchObject({ reason: "failed: exit 1" });
+    expect(rows[2]?.payload).toMatchObject({ reason: "failed: exit 1" });
   });
 
   test("a run that fails authentication: the session.ended row keeps the all-zero token counts and cost its result line reported", async () => {
@@ -226,7 +229,7 @@ describe("claude adapter: shapes the real CLI printed, replayed by the fake bina
     });
 
     const rows = queryEvents({ beadId: "b-auth-why" }, { path: ledger });
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(JSON.stringify(rows)).not.toContain("not signed in");
   });
 });

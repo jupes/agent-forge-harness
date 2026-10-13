@@ -19,6 +19,7 @@ import { isAdapterChild } from "../../.claude/hooks/utils/hook-input";
 import type { LedgerEventInput } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
+import { hashText } from "../hash-text";
 import { validateLedgerEventInput } from "../hearth/validate";
 import { type Attach, SESSION_MIRROR_FILE } from "../ledger/identity";
 import { claudeAdapter } from "./claude";
@@ -142,10 +143,11 @@ const attachAs = (id: string) => (root: string) => [
 
 for (const { name, adapter, smith, usage } of adapters) {
   describe(`${name} adapter contract`, () => {
-    test("streams session.started, tool.called per tool, session.ended — all valid", async () => {
+    test("streams session.started, prompt.submitted, tool.called per tool, session.ended — all valid", async () => {
       const { events, result } = await run(adapter, name, smith, "ok");
       expect(events.map((e) => e.kind)).toEqual([
         "session.started",
+        "prompt.submitted",
         "tool.called",
         "tool.called",
         "session.ended",
@@ -159,7 +161,7 @@ for (const { name, adapter, smith, usage } of adapters) {
         expect(event.runId).toBe("run-1");
         expect(event.executor?.smith).toBe(smith);
       }
-      const ended = events[3] as Extract<
+      const ended = events[4] as Extract<
         LedgerEventInput,
         { kind: "session.ended" }
       >;
@@ -179,6 +181,22 @@ for (const { name, adapter, smith, usage } of adapters) {
       });
       for (const event of events)
         expect(event.workspace).toBe(comparableCheckout(root));
+    });
+
+    test("right after session.started comes prompt.submitted: the hash and length of the prompt sent on stdin, under the same session, never the text", async () => {
+      const { events } = await run(adapter, name, smith, "ok");
+      const [started, submitted] = events;
+      expect(started?.kind).toBe("session.started");
+      expect(submitted).toMatchObject({
+        kind: "prompt.submitted",
+        sessionId: started?.sessionId,
+        payload: {
+          hash: hashText("do the thing & echo %PATH%"),
+          length: "do the thing & echo %PATH%".length,
+        },
+      });
+      expect(validateLedgerEventInput(submitted).ok).toBe(true);
+      expect(JSON.stringify(events)).not.toContain("do the thing");
     });
 
     test("every event, and the handle, carry the session id the provider's stream reports", async () => {
@@ -213,6 +231,7 @@ for (const { name, adapter, smith, usage } of adapters) {
       );
       expect(events.map((e) => e.kind)).toEqual([
         "session.started",
+        "prompt.submitted",
         "tool.called",
         "tool.called",
         "session.ended",
@@ -268,7 +287,7 @@ for (const { name, adapter, smith, usage } of adapters) {
     test("tool events carry a hash, never the tool input", async () => {
       const { events } = await run(adapter, name, smith, "ok");
       expect(JSON.stringify(events)).not.toContain("SECRET_BODY_MUST_NOT_LEAK");
-      const tool = events[1] as Extract<
+      const tool = events.find((e) => e.kind === "tool.called") as Extract<
         LedgerEventInput,
         { kind: "tool.called" }
       >;
@@ -323,6 +342,7 @@ for (const { name, adapter, smith, usage } of adapters) {
       const { events } = await run(adapter, name, smith, "garbage");
       expect(events.map((e) => e.kind)).toEqual([
         "session.started",
+        "prompt.submitted",
         "tool.called",
         "session.ended",
       ]);

@@ -96,13 +96,14 @@ describe("forge:exec", () => {
         queryEvents({ beadId: "b-default" }).map((row) => row.kind),
       ).toEqual([
         "session.started",
+        "prompt.submitted",
         "tool.called",
         "tool.called",
         "session.ended",
       ]);
       expect(out.body.data).toMatchObject({
-        events: 4,
-        recorded: 4,
+        events: 5,
+        recorded: 5,
         ledger: processLedger,
       });
       expect(existsSync(processLedger)).toBe(true);
@@ -133,7 +134,7 @@ describe("forge:exec", () => {
     );
     expect(out.code).toBe(0);
     const rows = queryEvents({ beadId: "b-7" }, { path: ledger });
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     for (const row of rows)
       expect(row.workspace).toBe(comparableCheckout(main));
   });
@@ -316,9 +317,9 @@ describe("forge:exec", () => {
     expect(out.body.ok).toBe(true);
     const data = out.body.data as Record<string, unknown>;
     expect(data).toMatchObject({
-      events: 4,
+      events: 5,
       recorded: 0,
-      notRecorded: 4,
+      notRecorded: 5,
       exitCode: 0,
       timedOut: false,
     });
@@ -344,13 +345,14 @@ describe("forge:exec", () => {
     expect(out.code).toBe(0);
     expect(seen).toEqual([
       "session.started",
+      "prompt.submitted",
       "tool.called",
       "tool.called",
       "session.ended",
     ]);
     expect(out.body.data).toMatchObject({
-      events: 4,
-      recorded: 4,
+      events: 5,
+      recorded: 5,
       notRecorded: 0,
       ledgerError: null,
       ledger: null,
@@ -372,9 +374,9 @@ describe("forge:exec", () => {
     expect(out.code).toBe(0);
     expect(out.body.error).toBeNull();
     expect(out.body.data).toMatchObject({
-      events: 4,
+      events: 5,
       recorded: 0,
-      notRecorded: 4,
+      notRecorded: 5,
       ledgerError: "disk full",
       ledger: null,
       exitCode: 0,
@@ -409,7 +411,7 @@ describe("forge:exec --run when the run correlation is refused (fake binary)", (
     );
     expect(out.code).toBe(0);
     expect(out.body.data).toMatchObject({
-      recorded: 4,
+      recorded: 5,
       correlation: null,
       correlationNote:
         "run run-9 is already correlated to bead-a; rebind it with: bun run forge:correlate --bead bead-b --run run-9",
@@ -424,6 +426,7 @@ describe("forge:exec --run when the run correlation is refused (fake binary)", (
       ]),
     ).toEqual([
       ["session.started", "bead-b", "run-9"],
+      ["prompt.submitted", "bead-b", "run-9"],
       ["tool.called", "bead-b", "run-9"],
       ["tool.called", "bead-b", "run-9"],
       ["session.ended", "bead-b", "run-9"],

@@ -68,7 +68,7 @@ describe("codex adapter through forge:exec (fake binary)", () => {
     expect(out.body.data).toMatchObject({
       provider: "codex",
       via: "explicit",
-      recorded: 4,
+      recorded: 5,
       notRecorded: 0,
       ledgerError: null,
     });
@@ -76,6 +76,7 @@ describe("codex adapter through forge:exec (fake binary)", () => {
     const rows = queryEvents({ beadId: "b-2" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([
       "session.started",
+      "prompt.submitted",
       "tool.called",
       "tool.called",
       "session.ended",
@@ -315,7 +316,7 @@ describe("codex adapter", () => {
 });
 
 describe("codex adapter: shapes the real CLI printed, replayed by the fake binary", () => {
-  test("a run whose model is rejected (an error item, error, turn.failed, exit 1) leaves session.started and session.ended with the failure, and no tool.called", async () => {
+  test("a run whose model is rejected (an error item, error, turn.failed, exit 1) leaves session.started, prompt.submitted and session.ended with the failure, and no tool.called", async () => {
     const { worktree, ledger, deps } = setup();
     const out = await runExec(
       [
@@ -331,14 +332,15 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
       { ...deps, command: fake("model") },
     );
     expect(out.code).toBe(2);
-    expect(out.body.data).toMatchObject({ events: 2, recorded: 2 });
+    expect(out.body.data).toMatchObject({ events: 3, recorded: 3 });
 
     const rows = queryEvents({ beadId: "b-model" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([
       "session.started",
+      "prompt.submitted",
       "session.ended",
     ]);
-    expect(rows[1]?.payload).toMatchObject({ reason: "failed: exit 1" });
+    expect(rows[2]?.payload).toMatchObject({ reason: "failed: exit 1" });
   });
 
   test("a rejected model: the message its error item, error and turn.failed carry is in forge:exec's output once, and stays out of the ledger", async () => {
@@ -365,7 +367,7 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
     });
 
     const rows = queryEvents({ beadId: "b-model-why" }, { path: ledger });
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(JSON.stringify(rows)).not.toContain("not supported");
   });
 
@@ -399,9 +401,10 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
     const rows = queryEvents({ beadId: "b-no-host" }, { path: ledger });
     expect(rows.map((row) => row.kind)).toEqual([
       "session.started",
+      "prompt.submitted",
       "session.ended",
     ]);
-    expect(rows[1]?.payload).toMatchObject({
+    expect(rows[2]?.payload).toMatchObject({
       reason: "failed: exit 0, provider reported an error",
     });
     expect(JSON.stringify(rows)).not.toContain("tool host");
