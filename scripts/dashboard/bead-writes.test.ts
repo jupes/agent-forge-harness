@@ -706,6 +706,7 @@ describe("a write whose answer the page does not have", () => {
         action: "comment",
         id: "demo-task",
         at: expect.any(Number),
+        outcome: "unknown",
         message: "bd comments add did not finish within its time limit.",
       },
     ]);
@@ -732,6 +733,7 @@ describe("a write whose answer the page does not have", () => {
         action: "create",
         title: "A bead in flight",
         at: expect.any(Number),
+        outcome: "unknown",
         message: expect.stringContaining("reloaded before the answer"),
       },
     ]);
@@ -741,6 +743,7 @@ describe("a write whose answer the page does not have", () => {
         action: "close",
         id: "demo-task",
         at: expect.any(Number),
+        outcome: "unknown",
         message: expect.stringContaining("reloaded before the answer"),
       },
     ]);
@@ -826,5 +829,89 @@ describe("a write whose answer the page does not have", () => {
     expect(kept).toHaveLength(20);
     expect(kept[0]).toBe("n6");
     expect(kept.at(-1)).toBe("n25");
+  });
+});
+
+describe("writes the page is waiting on, and the notices it keeps", () => {
+  test("awaiting lists the writes sent for a bead and not yet answered, and the creates without an id; answered or unknown ones are not among them", () => {
+    const store = createAppliedStore(memory());
+    const claim = store.begin({ action: "claim", id: "demo-task" });
+    const comment = store.begin({ action: "comment", id: "demo-task" });
+    store.begin({ action: "close", id: "demo-other" });
+    const create = store.begin({ action: "create", title: "New one" });
+    expect(store.awaiting("demo-task").map((write) => write.key)).toEqual([
+      claim,
+      comment,
+    ]);
+    expect(store.awaiting().map((write) => write.key)).toEqual([create]);
+    store.settle(claim);
+    store.unknown(comment, "no answer");
+    expect(store.awaiting("demo-task")).toEqual([]);
+  });
+
+  test("a refusal kept as refused is a notice with its outcome, outlives a reload, and goes when it is dismissed", () => {
+    const storage = memory();
+    const store = createAppliedStore(storage);
+    const key = store.begin({ action: "close", id: "demo-task" });
+    store.refused(key, "bd close failed: no issue found");
+    const expected = {
+      key,
+      action: "close",
+      id: "demo-task",
+      at: expect.any(Number),
+      outcome: "refused",
+      message: "bd close failed: no issue found",
+    } as const;
+    expect(store.notices()).toEqual([expected]);
+    expect(store.awaiting("demo-task")).toEqual([]);
+    const reloaded = createAppliedStore(storage);
+    expect(reloaded.notices()).toEqual([expected]);
+    reloaded.dismiss(key);
+    expect(createAppliedStore(storage).notices()).toEqual([]);
+  });
+
+  test("notices lists every unknown or refused write, for any bead and the creates, oldest first", () => {
+    const store = createAppliedStore(memory());
+    const a = store.begin({ action: "claim", id: "demo-a" });
+    const create = store.begin({ action: "create", title: "T" });
+    const b = store.begin({ action: "close", id: "demo-b" });
+    store.begin({ action: "comment", id: "demo-a" });
+    store.refused(b, "refused");
+    store.unknown(a, "unknown");
+    store.unknown(create, "unknown create");
+    expect(
+      store.notices().map((notice) => [notice.key, notice.outcome]),
+    ).toEqual([
+      [a, "unknown"],
+      [create, "unknown"],
+      [b, "refused"],
+    ]);
+  });
+
+  test("an attempt stored with a message and no outcome, as an older page kept it, is read as unknown", () => {
+    const storage = memory({
+      "agent-forge.bead-writes.v1": JSON.stringify({
+        beads: [],
+        attempts: [
+          {
+            key: "w3",
+            action: "claim",
+            id: "demo-task",
+            at: 3,
+            message: "kept by an older page",
+          },
+        ],
+      }),
+    });
+    expect(createAppliedStore(storage).notices()).toEqual([
+      {
+        key: "w3",
+        action: "claim",
+        id: "demo-task",
+        at: 3,
+        outcome: "unknown",
+        message: "kept by an older page",
+      },
+    ]);
   });
 });
