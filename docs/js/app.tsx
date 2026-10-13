@@ -132,6 +132,7 @@ function DashboardApp() {
   const { title, blurb } = pageTitleFor(route);
   const { label, iso } = snapshotLabelFor(
     snapshot.payload?.generatedAt ?? null,
+    snapshot.payload?.source,
   );
 
   const changeInitiative = useCallback((value: string) => {

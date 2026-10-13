@@ -119,7 +119,7 @@ Think in **layers** so upgrades from upstream stay mergeable.
 
 ### 7. Dashboard
 
-- **`docs/`** — static GitHub Pages dashboard; `bun run build-pages` regenerates `docs/data/beads.json` from Beads JSONL for visualization.
+- **`docs/`** — static GitHub Pages dashboard; `bun run build-pages` regenerates `docs/data/beads.json` from the live tracker (`bd export`), falling back to `.beads/issues.jsonl` only when bd does not answer; the snapshot records which one it used.
 
 ### 8. Plan storage contract
 
