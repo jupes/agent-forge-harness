@@ -2,10 +2,17 @@
  * Rebuild `docs/data/beads.json` from the dev server, off its thread.
  *
  * `POST /__agent-forge/rebuild-pages` (the Refresh snapshot button), the first
- * build when the server starts, and a change under `.beads/` all run
- * `scripts/build-pages.ts` as a child process the server does not wait on, one
- * at a time through `createRebuildQueue`. The server keeps answering other
- * requests, the hearth proxy among them, while a build runs.
+ * build when the server starts, a change under `.beads/` and `api.rebuildSoon`
+ * all run `scripts/build-pages.ts` as a child process the server does not wait
+ * on, one at a time through `createRebuildQueue`. The server keeps answering
+ * other requests, the hearth proxy among them, while a build runs.
+ *
+ * The `.beads/` watcher does not follow the tracker: in a linked worktree bd
+ * writes the main checkout's, so nothing under this `.beads/` changes. The
+ * dashboard config therefore also calls `api.rebuildSoon` when the hearth
+ * reports a tracker write (`scripts/hearth/follow-tracker-writes.ts`). A write
+ * made with `bd` outside the hearth reaches neither in a worktree: Refresh
+ * snapshot reads the tracker then.
  *
  * Loaded by Vite under Node: imports nothing from Bun.
  */
@@ -24,6 +31,8 @@ export const REBUILD_PATH = "/__agent-forge/rebuild-pages";
 const DEFAULT_TIMEOUT_MS = 180_000;
 /** How much of a build's output is kept for an error answer. */
 const OUTPUT_MAX = 8000;
+/** How long a requested rebuild waits for more requests to join it. */
+const DEBOUNCE_MS = 700;
 
 export interface BuildCommand {
   file: string;
@@ -115,16 +124,36 @@ export function runBuild(
   });
 }
 
-export function rebuildPagesPlugin(options: RebuildPagesOptions): Plugin {
+export interface RebuildPagesApi {
+  /**
+   * Rebuild after a short pause, then tell the page to reload when the build
+   * succeeded: what a change under `.beads/` does, and debounced with those
+   * changes. Does nothing before the dev server has started or after it closed.
+   */
+  rebuildSoon(): void;
+}
+
+export function rebuildPagesPlugin(
+  options: RebuildPagesOptions,
+): Plugin & { api: RebuildPagesApi } {
   const { root } = options;
   const command = options.command ?? {
     file: "bun",
     args: [path.join(root, "scripts", "build-pages.ts")],
   };
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  /** Set while the dev server runs. */
+  let rebuildSoon: (() => void) | null = null;
 
   return {
     name: "agent-forge-rebuild-pages",
+    // Vite's way for one plugin to call another: the dashboard config hands
+    // `rebuildSoon` to the hearth plugin, which calls it after a tracker write.
+    api: {
+      rebuildSoon() {
+        rebuildSoon?.();
+      },
+    },
     configureServer(server) {
       const queue = createRebuildQueue(() =>
         runBuild(command, root, timeoutMs),
@@ -177,6 +206,22 @@ export function rebuildPagesPlugin(options: RebuildPagesOptions): Plugin {
 
       if (options.initialBuild ?? true) rebuildAndReload();
 
+      // Debounced so a burst of Dolt writes, or of tracker writes, becomes one rebuild.
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      const schedule = (): void => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          debounce = null;
+          rebuildAndReload();
+        }, DEBOUNCE_MS);
+      };
+      rebuildSoon = schedule;
+      server.httpServer?.on("close", () => {
+        // A restart configures the next server before this one closes.
+        if (rebuildSoon === schedule) rebuildSoon = null;
+        if (debounce) clearTimeout(debounce);
+      });
+
       const beadsDir = path.join(root, ".beads");
       if (!existsSync(beadsDir)) return;
 
@@ -197,22 +242,11 @@ export function rebuildPagesPlugin(options: RebuildPagesOptions): Plugin {
         ],
       });
 
-      // Debounced so a burst of Dolt writes becomes one rebuild.
-      let debounce: ReturnType<typeof setTimeout> | null = null;
-      const schedule = (): void => {
-        if (debounce) clearTimeout(debounce);
-        debounce = setTimeout(() => {
-          debounce = null;
-          rebuildAndReload();
-        }, 700);
-      };
-
       watcher.on("add", schedule);
       watcher.on("change", schedule);
       watcher.on("unlink", schedule);
 
       server.httpServer?.on("close", () => {
-        if (debounce) clearTimeout(debounce);
         void watcher.close();
       });
     },

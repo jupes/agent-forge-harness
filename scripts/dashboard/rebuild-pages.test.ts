@@ -11,6 +11,9 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Plugin } from "vite";
+import { OPERATOR_HEADER } from "../hearth/paths";
+import { startTestHearth, type TestHearth } from "../hearth/testing";
+import { hearthPlugin } from "../hearth/vite-plugin";
 import { REBUILD_PATH, rebuildPagesPlugin } from "./rebuild-pages";
 
 /**
@@ -170,6 +173,10 @@ interface Fixture {
   root: string;
   box: string;
   pushed: unknown[];
+  /** How many times the hearth plugin has asked for the hearth's port. */
+  ensured: () => number;
+  /** Close the dev server (cleanup closes it too). */
+  close: () => Promise<void>;
 }
 
 async function fixture(
@@ -178,6 +185,11 @@ async function fixture(
     beadsDir?: boolean;
     timeoutMs?: number;
     waitMs?: number;
+    /**
+     * Mount the hearth plugin too, proxying to this hearth and wired to the
+     * rebuild as `vite.dashboard.config.ts` wires it.
+     */
+    hearth?: TestHearth;
   } = {},
 ): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "af-rebuild-root-"));
@@ -185,6 +197,19 @@ async function fixture(
   writeFileSync(join(box, "gate.mjs"), GATE);
   if (options.beadsDir) mkdirSync(join(root, ".beads"));
   const pushed: unknown[] = [];
+  const rebuildPages = rebuildPagesPlugin({
+    root,
+    command: {
+      file: process.execPath,
+      args: [join(box, "gate.mjs"), box, String(options.waitMs ?? 3000)],
+    },
+    initialBuild: options.initialBuild ?? false,
+    ...(options.timeoutMs !== undefined
+      ? { timeoutMs: options.timeoutMs }
+      : {}),
+  });
+  let ensured = 0;
+  const { hearth } = options;
   const vite = await createServer({
     root,
     configFile: false,
@@ -201,26 +226,37 @@ async function fixture(
     plugins: [
       recordPushes(pushed),
       pingPlugin(),
-      rebuildPagesPlugin({
-        root,
-        command: {
-          file: process.execPath,
-          args: [join(box, "gate.mjs"), box, String(options.waitMs ?? 3000)],
-        },
-        initialBuild: options.initialBuild ?? false,
-        ...(options.timeoutMs !== undefined
-          ? { timeoutMs: options.timeoutMs }
-          : {}),
-      }),
+      rebuildPages,
+      ...(hearth
+        ? [
+            hearthPlugin(root, {
+              home: hearth.home,
+              supervisor: {
+                ensure: async () => {
+                  ensured++;
+                  return hearth.hearth.port;
+                },
+                stopIfOwner: async () => {},
+              },
+              onTrackerWrite: () => rebuildPages.api.rebuildSoon(),
+              trackerWritePollMs: 50,
+            }),
+          ]
+        : []),
     ],
   });
   await vite.listen();
   const address = vite.httpServer?.address();
   if (!address || typeof address === "string") throw new Error("no address");
+  let closing: Promise<void> | null = null;
+  const close = (): Promise<void> => {
+    closing ??= vite.close();
+    return closing;
+  };
   cleanup.push(async () => {
     // Let a waiting gate finish rather than linger until its deadline.
     writeFileSync(join(box, "release"), "");
-    await vite.close();
+    await close();
     rmSync(root, { recursive: true, force: true, maxRetries: 3 });
     rmSync(box, { recursive: true, force: true, maxRetries: 3 });
   });
@@ -230,6 +266,8 @@ async function fixture(
     root,
     box,
     pushed,
+    ensured: () => ensured,
+    close,
   };
 }
 
@@ -369,4 +407,55 @@ describe("rebuilds the dev server starts on its own", () => {
     await waitFor("a full-reload push", () => reloads(pushed) === 1);
     expect(runs(box)).toEqual(["start", "end"]);
   }, 15_000);
+
+  test("a claim sent through the dashboard's proxy to the hearth starts a rebuild with no .beads/ directory, and the page is told to reload after it", async () => {
+    // A hermetic hearth: its own ledger, and a bd that records and agrees.
+    const hearth = await startTestHearth();
+    cleanup.push(() => hearth.close());
+    const { url, box, pushed, ensured } = await fixture({ hearth });
+    // One ask at start, then one per poll; polls run one at a time, so a
+    // third ask means the first poll, which finds where following begins, is done.
+    await waitFor("the first poll", () => ensured() >= 3);
+    expect(runs(box)).toEqual([]);
+
+    const claim = await fetch(`${url}/__agent-forge/beads/demo-task/claim`, {
+      method: "POST",
+      headers: {
+        Origin: url,
+        "Content-Type": "application/json",
+        [OPERATOR_HEADER]: hearth.hearth.token,
+      },
+      body: "{}",
+    });
+    expect(claim.status).toBe(200);
+    expect(hearth.events(["bead.transitioned"])).toHaveLength(1);
+
+    await waitFor("the rebuild to start", () => runs(box).includes("start"));
+    expect((await fetch(`${url}/__ping`)).status).toBe(200);
+    expect(reloads(pushed)).toBe(0);
+
+    release(box);
+    await waitFor("a full-reload push", () => reloads(pushed) === 1);
+    expect(runs(box)).toEqual(["start", "end"]);
+  }, 20_000);
+
+  test("once the dev server has closed, the hearth plugin stops polling, and a claim made then starts no build", async () => {
+    const hearth = await startTestHearth();
+    cleanup.push(() => hearth.close());
+    const { box, ensured, close } = await fixture({ hearth });
+    await waitFor("the first poll", () => ensured() >= 3);
+
+    await close();
+    const asked = ensured();
+    const claim = await fetch(`${hearth.api}/beads/demo-task/claim`, {
+      method: "POST",
+      headers: hearth.headers(hearth.hearth.token),
+      body: "{}",
+    });
+    expect(claim.status).toBe(200);
+    // Twenty poll intervals, and the rebuild's own pause twice over.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(ensured()).toBe(asked);
+    expect(runs(box)).toEqual([]);
+  }, 20_000);
 });
