@@ -89,7 +89,7 @@ Epic/Feature: <beads id> · Branch: <branch> · PR: <url once created>
 ### 4. Quality gate, push, PR
 
 **Gate the run through its correlation** before anything is pushed. One command runs typecheck,
-lint and the tests, checks that the tree is clean and that a test file is among the last five
+lint and the tests, checks that the tree is clean and that a test file is among the branch's own
 commits, and logs the result against this run and the issue it names (reuse [[ship]] for the rest
 of the mechanics):
 
@@ -107,10 +107,12 @@ git push origin <branch>
 - If that file is not there (a run whose writes named no bead, or one started before the phases
   named theirs), create it with the task the run worked last:
   `bun run forge:correlate --bead <id> --run <slug>`.
-- A failing check blocks the push: fix what it names and run the gate again. `test-evidence` fails
-  when none of the last five commits holds a test file. That is the gate's rule for any completed
-  task, and it also stops a run whose tests are further back than five commits
-  (`agent-forge-harness-exeh`); there is no way past it here.
+- A failing check blocks the push: fix what it names and run the gate again. `test-evidence` reads
+  every commit of the branch's own, the ones since `origin/HEAD`, however far back the tests are,
+  and fails when none of them holds a test file. A branch whose commits change documentation only
+  (`.md`, `.mdx`, `.markdown`, `.txt`, `.rst`, `.adoc`), or that has no commits of its own, has
+  nothing to test: the check is skipped and its entry says so. With no `origin/HEAD` the gate reads
+  the last five commits instead and says so (`git remote set-head origin --auto` sets it).
 - Strict verdict mode (`AGENT_FORGE_EVAL_VERDICT=strict`) is opt-in. When it is on, file the run's
   verdict with this pointer before the gate (`.claude/commands/ship.md`).
 

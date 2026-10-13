@@ -300,6 +300,19 @@ describe("the Forge documents: the ship step gates through the run's correlation
     ).toEqual([]);
   });
 
+  test("the ship skill says test-evidence reads the branch's own commits, and what a run with nothing to test gets", () => {
+    for (const path of skill("forge-ship")) {
+      expect(
+        missing(path, [
+          "every commit of the branch's own, the ones since `origin/HEAD`",
+          "has nothing to test: the check is skipped and its entry says so",
+          "the last five commits instead",
+        ]),
+      ).toEqual([]);
+      expect(read(path)).not.toContain("there is no way past it");
+    }
+  });
+
   test("the ship documents say what a run in another repository does instead, and that it has no linked gate entry", () => {
     for (const path of [
       ...skill("forge-ship"),
