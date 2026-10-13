@@ -16,6 +16,7 @@ import {
   applied,
   beadWrites,
   createState,
+  NO_ROOM,
   useAwaiting,
   useBeadWrites,
   useCreated,
@@ -200,10 +201,14 @@ export function BeadBuilderIsland() {
     if (sending.current) return;
     const data = read();
     if (!data) return;
+    const key = applied.begin({ action: "create", title: data.title });
+    if (key === null) {
+      setCreateResult({ tone: "failed", message: NO_ROOM });
+      return;
+    }
     sending.current = true;
     setCreating(true);
     setCreateResult(null);
-    const key = applied.begin({ action: "create", title: data.title });
     sentKeys.add(key);
     try {
       const outcome = await beadWrites.create({

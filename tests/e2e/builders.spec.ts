@@ -1072,3 +1072,113 @@ test("a page reloaded while a write is out says afterwards that its outcome is n
       .filter((call) => !isList(call)),
   ).toEqual([]);
 });
+
+/** What a view says when the page already holds twenty writes out or to check. */
+const NO_ROOM =
+  "Not sent: 20 writes from this page are still out or listed under Writes to check. Dismiss the ones you have checked, then try again.";
+
+test("with twenty writes to check, a twenty-first comment and a create are not sent and say so, the twenty stay listed, and after a Dismiss a create is sent", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Twenty to check");
+  const callsBefore = standInCalls().length;
+  let comments = 0;
+  await page.route(`**${API}/beads/${id}/comment`, (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    comments++;
+    const answer = notFinished(id, "comments add");
+    return route.fulfill({
+      status: answer.status,
+      contentType: "application/json",
+      body: JSON.stringify(answer.body),
+    });
+  });
+  const actions = page
+    .locator("#bead-created-card")
+    .getByRole("region", { name: `Actions on ${id}` });
+  const listed = writesToCheck(page).locator('[data-outcome="unknown"]', {
+    hasText: `comment on ${id}`,
+  });
+  for (let n = 1; n <= 20; n++) {
+    await actions.getByLabel("Comment").fill(`worklog: comment ${n}`);
+    await actions.getByRole("button", { name: "Add comment" }).click();
+    await expect(listed).toHaveCount(n);
+  }
+
+  await actions.getByLabel("Comment").fill("worklog: the twenty-first");
+  await actions.getByRole("button", { name: "Add comment" }).click();
+  await expect(actions.locator('[data-outcome="failed"]')).toHaveText(NO_ROOM);
+  await expect(listed).toHaveCount(20);
+  expect(comments).toBe(20);
+  await expect(actions.getByLabel("Comment", { exact: true })).toHaveValue(
+    "worklog: the twenty-first",
+  );
+
+  await page.fill("#bb-title", "One write too many");
+  await createButton(page).click();
+  const result = page.locator("#bb-create-result");
+  await expect(result).toHaveText(NO_ROOM);
+  await expect(result).toHaveAttribute("data-outcome", "failed");
+  await expect(listed).toHaveCount(20);
+
+  // One checked and dismissed: there is room, and the create goes out.
+  await writesToCheck(page)
+    .getByRole("button", { name: `Dismiss the comment notice for ${id}` })
+    .first()
+    .click();
+  await expect(listed).toHaveCount(19);
+  await createButton(page).click();
+  await expect(page.locator("#bead-created-card")).toContainText(
+    "One write too many",
+  );
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=One write too many",
+      "--type=task",
+      "--priority=2",
+      "--json",
+    ],
+  ]);
+});
+
+test("a create whose operator token cannot be had is said as not sent, is not listed under Writes to check, and reaches no bd", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
+  // A fresh page has no token yet: the create's own request for it is refused.
+  await page.route(`**${TOKEN_ROUTE}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "the control plane is starting",
+      }),
+    }),
+  );
+  await page.fill("#bb-title", "Never sent");
+  await createButton(page).click();
+
+  const result = page.locator("#bb-create-result");
+  await expect(result).toHaveText(
+    "Not sent: the page could not get an operator token from the control plane (the control plane is starting). Nothing was changed.",
+  );
+  await expect(result).toHaveAttribute("data-outcome", "failed");
+  await expect(writesToCheck(page)).toHaveCount(0);
+  await expect(page.locator("#bead-created-card")).toHaveCount(0);
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([]);
+});

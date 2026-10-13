@@ -16,7 +16,8 @@
  *   over the snapshot until the snapshot says the same or something later;
  * - which writes it sent and has no answer for. A write is noted when it is
  *   sent. One whose outcome nobody knows, or whose page was reloaded while it
- *   was out, stays on the page until the operator dismisses it.
+ *   was out, stays on the page until the operator dismisses it. With twenty
+ *   out or kept, no other write is sent until one is answered or dismissed.
  */
 
 import { useEffect, useState } from "preact/hooks";
@@ -28,7 +29,7 @@ import {
   type BeadWrite,
   type BeadWriteResult,
 } from "../../../types/hearth";
-import { type OperatorPost, operatorPost } from "../operator";
+import { NotSent, type OperatorPost, operatorPost } from "../operator";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -157,7 +158,14 @@ export function createBeadWrites(
     try {
       response = await post(`${API_PREFIX}${path}`, body);
       parsed = await response.json().catch(() => null);
-    } catch {
+    } catch (error) {
+      // Without a token nothing was posted, or only what a 403 refused.
+      if (error instanceof NotSent)
+        return {
+          ok: false,
+          unknown: false,
+          error: `Not sent: the page could not get an operator token from the control plane (${error.message}). Nothing was changed.`,
+        };
       return unknownOutcome("The request did not complete.", check);
     }
     const envelope = envelopeOf(parsed);
@@ -376,9 +384,11 @@ export interface AppliedStore {
   /**
    * Note a write as it is sent, and get the key to end the note with. The note
    * is stored at once: if the page is reloaded before the answer arrives, the
-   * next page finds it and says so.
+   * next page finds it and says so. With twenty writes out or kept as notices
+   * there is no room: nothing is noted, the answer is null, and the write is
+   * not to be sent (`NO_ROOM` says why). No kept notice is pushed out.
    */
-  begin(sent: Sent): string;
+  begin(sent: Sent): string | null;
   /** The write was answered, done or refused: nothing is left unknown about it. */
   settle(key: string): void;
   /** The answer left the outcome unknown: keep it, with what was said. */
@@ -399,10 +409,15 @@ type Stored = Pick<Storage, "getItem" | "setItem">;
 const STORE_KEY = "agent-forge.bead-writes.v1";
 /** How many beads are remembered; the one changed longest ago goes first. */
 const KEPT = 50;
-/** How many writes without an answer are remembered; the oldest goes first. */
+/** How many writes out or kept as notices are remembered; with this many, no other is sent. */
 const KEPT_ATTEMPTS = 20;
 /** As much of a create's title as a notice shows. */
 const TITLE_SHOWN = 200;
+/** As much of a notice's message as is kept: the control plane cuts what `bd` said to 500. */
+const MESSAGE_SHOWN = 1000;
+
+/** What a view says when `begin` had no room for a write: it was not sent. */
+export const NO_ROOM = `Not sent: ${KEPT_ATTEMPTS} writes from this page are still out or listed under Writes to check. Dismiss the ones you have checked, then try again.`;
 
 /** A write that was sent. Without a message it is still awaited by the page that sent it. */
 type Attempt = Omit<Unsettled, "message" | "outcome"> & {
@@ -416,6 +431,18 @@ const checkFor = (attempt: { id?: string }): string =>
 
 const text = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
+
+/** The largest order read back: more writes than a tab makes, and far below where whole numbers stop being exact. */
+const LAST_ORDER = 1_000_000_000;
+
+/** A stored order (`at`) as the page writes them, a whole number from 1 to LAST_ORDER, or null. */
+const orderOf = (value: unknown): number | null =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 1 &&
+  value <= LAST_ORDER
+    ? value
+    : null;
 
 /** One entry as it was stored, or null: what storage holds is not trusted. */
 function entryOf(value: unknown): Applied | null {
@@ -466,26 +493,32 @@ function entryOf(value: unknown): Applied | null {
           },
         }
       : {}),
-    at: typeof value["at"] === "number" ? value["at"] : 0,
+    // Any other order would move the clock that every later write's key is made from.
+    at: orderOf(value["at"]) ?? 0,
   };
 }
 
-/** One sent write as it was stored, or null. One stored without a message was still awaited. */
+/**
+ * One sent write as it was stored, or null. One stored without a message was
+ * still awaited. Its `at` is an order as `orderOf` reads it and its key is `w`
+ * and that number, as `begin` makes them: a key read back is one no later
+ * write is given.
+ */
 function attemptOf(value: unknown): Attempt | null {
   if (!isRecord(value)) return null;
   const key = value["key"];
   const action = value["action"];
   const message = value["message"];
-  if (typeof key !== "string" || key === "") return null;
+  const at = orderOf(value["at"]);
+  if (at === null || key !== `w${at}`) return null;
   if (!BEAD_WRITES.some((known) => known === action)) return null;
   if (message !== undefined && typeof message !== "string") return null;
-  const at = typeof value["at"] === "number" ? value["at"] : 0;
   // An older page kept no outcome: what it kept was an unknown one.
   const said =
     message === undefined
       ? {}
       : {
-          message,
+          message: message.slice(0, MESSAGE_SHOWN),
           outcome:
             value["outcome"] === "refused"
               ? ("refused" as const)
@@ -538,9 +571,14 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
       isRecord(stored) && Array.isArray(stored["attempts"])
         ? stored["attempts"]
         : [];
-    for (const value of sent) {
-      const attempt = attemptOf(value);
-      if (attempt === null) continue;
+    // This page never keeps more than KEPT_ATTEMPTS: of more, written by
+    // something else, the ones sent last are read.
+    const read = sent
+      .map(attemptOf)
+      .filter((attempt): attempt is Attempt => attempt !== null)
+      .sort((a, b) => a.at - b.at)
+      .slice(-KEPT_ATTEMPTS);
+    for (const attempt of read) {
       attempts.set(attempt.key, {
         ...attempt,
         outcome: attempt.outcome ?? "unknown",
@@ -642,6 +680,7 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
       changed();
     },
     begin(sent) {
+      if (attempts.size >= KEPT_ATTEMPTS) return null;
       const at = ++clock;
       const key = `w${at}`;
       attempts.set(
@@ -655,10 +694,6 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
             }
           : { key, action: sent.action, id: sent.id, at },
       );
-      if (attempts.size > KEPT_ATTEMPTS) {
-        const oldest = [...attempts.values()].sort((a, b) => a.at - b.at)[0];
-        if (oldest !== undefined) attempts.delete(oldest.key);
-      }
       changed();
       return key;
     },
@@ -668,13 +703,21 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
     unknown(key, message) {
       const attempt = attempts.get(key);
       if (attempt === undefined) return;
-      attempts.set(key, { ...attempt, outcome: "unknown", message });
+      attempts.set(key, {
+        ...attempt,
+        outcome: "unknown",
+        message: message.slice(0, MESSAGE_SHOWN),
+      });
       changed();
     },
     refused(key, message) {
       const attempt = attempts.get(key);
       if (attempt === undefined) return;
-      attempts.set(key, { ...attempt, outcome: "refused", message });
+      attempts.set(key, {
+        ...attempt,
+        outcome: "refused",
+        message: message.slice(0, MESSAGE_SHOWN),
+      });
       changed();
     },
     awaiting: (id) =>
