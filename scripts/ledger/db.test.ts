@@ -174,6 +174,38 @@ describe("openLedger", () => {
     }
   });
 
+  test("a migration that fails part way is rolled back: its connection is left outside a transaction, another connection can take the write lock, and none of the tables it created remain", () => {
+    const file = join(tempHome(), "ledger.db");
+    // A file still at version 0 that already holds the last table the
+    // migration creates, so the migration creates the others and then fails.
+    const setup = new Database(file, { create: true });
+    setup.exec("CREATE TABLE daily_summaries (day TEXT)");
+    setup.close();
+    const opener = new Database(file);
+    const other = new Database(file);
+    const tableNames = (db: Database): string[] =>
+      db
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        )
+        .all()
+        .map((row) => row.name);
+    try {
+      expect(() => migrate(opener)).toThrow("daily_summaries");
+      expect(opener.inTransaction).toBe(false);
+      // `other` has no busy timeout: a write lock still held fails here at once.
+      other.exec("BEGIN IMMEDIATE");
+      other.exec("ROLLBACK");
+      for (const db of [opener, other]) {
+        expect(tableNames(db)).toEqual(["daily_summaries"]);
+        expect(userVersion(db)).toBe(0);
+      }
+    } finally {
+      opener.close();
+      other.close();
+    }
+  });
+
   test("several processes opening an empty ledger at once all succeed and the schema is created once", async () => {
     const home = tempHome();
     const children = await Promise.all(
