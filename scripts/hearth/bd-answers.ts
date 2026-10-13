@@ -43,6 +43,13 @@ export interface BdIssue {
   closed_at?: string;
   created_at: string;
   updated_at: string;
+  /**
+   * When the issue was first in progress. bd sets it once and keeps it: an
+   * issue released and claimed again prints the time of its first claim.
+   * Checked on bd 1.1.0 on 2026-10-12: a claim repeated minutes later printed
+   * `started_at` and `updated_at` as the first claim left them.
+   */
+  started_at?: string;
 }
 
 /** A write as the routes send it to bd. */
