@@ -174,11 +174,11 @@ Nothing writes schema 1 any more.
 - **The gate looks for the builder where it runs.** When a run builds in another checkout than the one its phase gates ran in, the run's state is not in the checkout the gate runs in, so the gate sees no builder and accepts only a master evaluator or a person. The writer applies the policy the same way.
 - **A hard link is not seen as a link.** The reader refuses symbolic links and junctions anywhere on the path. A `verdict.json` that is a hard link to another file is read like any file; what is recorded is still the digest of the bytes read.
 - **A run that is rebound after its verdict was filed needs a new run.** `forge:correlate --bead` and `forge:phase-gate --bead` can point a run at another Beads issue. The verdict already filed names the earlier issue, the gate refuses it, and the run's one place is taken.
-- **A writer that dies part-way leaves a scratch file.** The verdict is written beside its place (`.verdict.json.<pid>.<stamp>.tmp`) and linked in, so `verdict.json` is whole or absent and the run is not blocked. The scratch file stays; the sweep leaves it, and that run's directory, alone.
+- **A writer that dies part-way leaves a scratch file.** The verdict is written beside its place (`.verdict.json.<pid>.<stamp>.tmp`) and linked in, so `verdict.json` is whole or absent and the run is not blocked. The scratch file stays until the sweep removes it, once it is older than the TTL (see *Cleanup*). It is never a verdict: a writer killed before the link filed nothing from it, and one killed after it left a second name for the bytes `verdict.json` already holds.
 
 ## Cleanup
 
-`bun run tmp:cleanup` sweeps these files under the same closed-bead and age rule as other `.tmp/work` files (`.claude/protocols/tmp-work-ttl.md`), and only a file it can validate, whose digest the event ledger already holds.
+`bun run tmp:cleanup` sweeps these files under the same closed-bead and age rule as other `.tmp/work` files (`.claude/protocols/tmp-work-ttl.md`), and only a file it can validate, whose digest the event ledger already holds. A writer's scratch file in a run's directory goes on its age alone, once it is older than the TTL; a run's directory goes when the sweep has emptied it.
 
 ## Related
 

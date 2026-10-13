@@ -22,10 +22,13 @@ import {
   EVALUATIONS_DIR,
   evaluationDir,
   evaluatorVerdictPath,
+  isManagedVerdictFile,
+  isWriterScratchFile,
   MAX_VERDICT_BYTES,
   readEvaluationFile,
   readVerdictOnce,
   reviewVerdictFile,
+  writerScratchName,
   writeVerdictOnce,
 } from "./eval-verdict-store";
 import { resolveCheckout } from "./ledger/workspace";
@@ -353,7 +356,8 @@ describe("writeVerdictOnce", () => {
     const dir = join(checkout, evaluationDir("run-1") ?? "");
     mkdirSync(dir, { recursive: true });
     // Half a verdict in a writer's scratch file, as a kill mid-write leaves it.
-    writeFileSync(join(dir, ".verdict.json.4242.tmp"), BODY.slice(0, 40));
+    const left = writerScratchName("verdict.json", 4242, Date.now());
+    writeFileSync(join(dir, left), BODY.slice(0, 40));
 
     const wrote = writeVerdictOnce({
       checkout,
@@ -363,10 +367,31 @@ describe("writeVerdictOnce", () => {
     expect(wrote.ok).toBe(true);
     expect(readFileSync(join(dir, "verdict.json"), "utf8")).toBe(BODY);
     // This call's own scratch file is gone; the stranger's is not its to remove.
-    expect(readdirSync(dir).sort()).toEqual([
-      ".verdict.json.4242.tmp",
-      "verdict.json",
-    ]);
+    expect(readdirSync(dir).sort()).toEqual([left, "verdict.json"]);
+  });
+
+  test("a writer's scratch file has a name the sweep knows as one, and no verdict file has", () => {
+    for (const file of ["verdict.json", "review-plan-1.json"]) {
+      const name = writerScratchName(file, process.pid, Date.now());
+      expect(name).toStartWith(`.${file}.${process.pid}.`);
+      expect(isWriterScratchFile(name)).toBe(true);
+      expect(isManagedVerdictFile(name)).toBe(false);
+      expect(isWriterScratchFile(file)).toBe(false);
+    }
+    // Only the names a writer can make: a managed file, a pid, a stamp.
+    for (const name of [
+      ".verdict.json.tmp",
+      ".verdict.json.12.tmp",
+      ".notes.json.12.k3.tmp",
+      ".review-Plan.json.12.k3.tmp",
+      "verdict.json.12.k3.tmp",
+      ".verdict.json.12.k3.tmp.bak",
+    ]) {
+      expect({ name, scratch: isWriterScratchFile(name) }).toEqual({
+        name,
+        scratch: false,
+      });
+    }
   });
 
   test("says what is in the way when it is not a verdict", () => {
