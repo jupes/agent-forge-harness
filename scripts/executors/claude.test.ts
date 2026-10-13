@@ -190,6 +190,53 @@ describe("claude adapter: shapes the real CLI printed, replayed by the fake bina
     ]);
     expect(rows[1]?.payload).toMatchObject({ reason: "failed: exit 1" });
   });
+
+  test("a run that fails authentication: the session.ended row keeps the all-zero token counts and cost its result line reported", async () => {
+    const { worktree, ledger, deps } = setup();
+    await runExec(
+      ["--bead", "b-auth-usage", "--worktree", worktree, "--prompt", "hi"],
+      { ...deps, command: fake("auth") },
+    );
+    const [ended] = queryEvents(
+      { beadId: "b-auth-usage", kinds: ["session.ended"] },
+      { path: ledger },
+    );
+    expect(ended?.payload).toMatchObject({
+      usage: {
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      },
+    });
+  });
+});
+
+describe("claude adapter through forge:exec: usage (fake binary)", () => {
+  test("the usage the result line reported reaches the session.ended row, and nothing else of the result does", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-usage", "--worktree", worktree, "--prompt", "hi"],
+      { ...deps, command: fake() },
+    );
+    expect(out.code).toBe(0);
+    const [ended] = queryEvents(
+      { beadId: "b-usage", kinds: ["session.ended"] },
+      { path: ledger },
+    );
+    expect(ended?.payload).toEqual({
+      reason: "completed",
+      durationMs: expect.any(Number),
+      usage: {
+        inputTokens: 12,
+        cacheCreationInputTokens: 300,
+        cacheReadInputTokens: 4000,
+        outputTokens: 56,
+        costUsd: 0.0125,
+      },
+    });
+  });
 });
 
 describe("parseClaudeLine", () => {
@@ -268,5 +315,62 @@ describe("parseClaudeLine", () => {
     ]) {
       expect(parseClaudeLine(line(missing))).not.toHaveProperty("sessionId");
     }
+  });
+
+  test("a result line reports its usage: each token count under its camelCase name and total_cost_usd as costUsd; other fields are not taken", () => {
+    const result = line({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      total_cost_usd: 0.5,
+      usage: {
+        input_tokens: 10,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+        output_tokens: 40,
+        server_tool_use: { web_search_requests: 1 },
+        service_tier: "standard",
+      },
+    });
+    expect(parseClaudeLine(result).usage).toEqual({
+      inputTokens: 10,
+      cacheCreationInputTokens: 20,
+      cacheReadInputTokens: 30,
+      outputTokens: 40,
+      costUsd: 0.5,
+    });
+  });
+
+  test("a count that is not a non-negative integer, or a cost that is not a non-negative number, is left out; a result with neither reports no usage", () => {
+    expect(
+      parseClaudeLine(
+        line({
+          type: "result",
+          total_cost_usd: 0.25,
+          usage: {
+            input_tokens: -1,
+            output_tokens: 1.5,
+            cache_read_input_tokens: "3",
+          },
+        }),
+      ).usage,
+    ).toEqual({ costUsd: 0.25 });
+    expect(
+      parseClaudeLine(
+        line({
+          type: "result",
+          total_cost_usd: -2,
+          usage: { output_tokens: "9" },
+        }),
+      ),
+    ).toEqual({ tools: [] });
+  });
+
+  test("an assistant message's own usage is not the run's: only the result line reports usage", () => {
+    const assistant = line({
+      type: "assistant",
+      message: { content: [], usage: { input_tokens: 5, output_tokens: 6 } },
+    });
+    expect(parseClaudeLine(assistant)).toEqual({ tools: [] });
   });
 });

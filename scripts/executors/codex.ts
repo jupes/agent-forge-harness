@@ -5,22 +5,38 @@
  * (inject `prepare` in tests).
  *
  * Checked against `codex` on Windows, run directly (2026-10-08): 0.159.0 and
- * 0.160.0 both accept the flags below. On 0.160.0 — the only version that got
- * as far as a command — one shell command arrived as `item.started` then
- * `item.completed` with `item.type: "command_execution"` and a numeric
- * `exit_code`. Only the completed item is mapped, so a command is one tool
- * call. Items other than a shell command have not been observed and are not
- * mapped. One run through `forge:exec` on 0.160.0 (2026-10-09) left
- * `session.started`, a `tool.called` for the shell command and
- * `session.ended` in the ledger.
+ * 0.160.0 both accept the flags below, and every recorded stream opened with
+ * `thread.started` carrying a `thread_id`, the session id `parseCodexLine`
+ * takes. On 0.160.0 — the only version that got as far as a command — one
+ * shell command arrived as `item.started` then `item.completed` with
+ * `item.type: "command_execution"` and a numeric `exit_code`. Only the
+ * completed item is mapped, so a command is one tool call. The other items
+ * recorded were `agent_message` and `error`, neither a tool; items for file
+ * edits, MCP calls or web searches have not been observed and are not mapped.
+ * A turn that finished ended with `turn.completed` and a `usage` object of five
+ * token counts (0.159.0 and 0.160.0), which is the usage taken. One run
+ * through `forge:exec` on 0.160.0 (2026-10-09) left `session.started`, a
+ * `tool.called` for the shell command and `session.ended` in the ledger; that
+ * was before the adapter read the thread id or the usage.
  */
 
+import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
 import {
   createCliAdapter,
   type ParsedLine,
   type ParsedTool,
+  usageCounts,
 } from "./cli-adapter";
 import type { SpawnRequest } from "./types";
+
+/** The token counts of `turn.completed`'s `usage`, by the names the ledger stores them under. */
+const USAGE_COUNTS: Readonly<Record<string, ProviderUsageCount>> = {
+  input_tokens: "inputTokens",
+  output_tokens: "outputTokens",
+  cached_input_tokens: "cachedInputTokens",
+  cache_write_input_tokens: "cacheWriteInputTokens",
+  reasoning_output_tokens: "reasoningOutputTokens",
+};
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -57,9 +73,14 @@ export function parseCodexLine(line: string): ParsedLine {
     value.thread_id.length > 0
       ? value.thread_id
       : undefined;
+  const usage: ProviderUsage | undefined =
+    value.type === "turn.completed"
+      ? usageCounts(value.usage, USAGE_COUNTS)
+      : undefined;
   return {
     tools: toolsOf(value),
     ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(usage !== undefined ? { usage } : {}),
   };
 }
 

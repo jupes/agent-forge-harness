@@ -291,6 +291,32 @@ export type ShiftStopReason = (typeof SHIFT_STOP_REASONS)[number];
 /** Verdict an evaluator or the council returned for a run. */
 export type VerdictOutcome = "pass" | "fail" | "unreadable";
 
+/**
+ * The token counts a provider CLI reports for a headless run, each the
+ * provider's own field in camelCase: Claude's `result` line (`input_tokens`,
+ * `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`)
+ * and Codex's `turn.completed` (`input_tokens`, `output_tokens`,
+ * `cached_input_tokens`, `cache_write_input_tokens`,
+ * `reasoning_output_tokens`). Each provider defines its own counts, so they
+ * are compared per provider, not added across providers.
+ */
+export const PROVIDER_USAGE_COUNTS = [
+  "inputTokens",
+  "outputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "reasoningOutputTokens",
+  "cacheReadInputTokens",
+  "cacheCreationInputTokens",
+] as const;
+
+export type ProviderUsageCount = (typeof PROVIDER_USAGE_COUNTS)[number];
+
+/** What a provider reported a headless run used: token counts, and Claude's `total_cost_usd` as `costUsd`. */
+export type ProviderUsage = { [K in ProviderUsageCount]?: number } & {
+  costUsd?: number;
+};
+
 /** Payload per event kind. Metadata only: hashes, sizes, names, durations. */
 export interface LedgerPayloads {
   "session.started": {
@@ -299,7 +325,12 @@ export interface LedgerPayloads {
     worktree?: string;
     parentSessionId?: string;
   };
-  "session.ended": { reason?: string; durationMs?: number };
+  "session.ended": {
+    reason?: string;
+    durationMs?: number;
+    /** A headless session's usage, when its provider reported any. */
+    usage?: ProviderUsage;
+  };
   "tool.called": {
     tool: string;
     /** Hash of the tool input — never the input itself. */

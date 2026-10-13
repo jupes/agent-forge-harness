@@ -18,6 +18,7 @@ import {
   type LedgerEventKind,
   OPERATOR_SURFACES,
   type OperatorEnvelope,
+  PROVIDER_USAGE_COUNTS,
   QUEUE_STATES,
   type QueueState,
   type Reservation,
@@ -244,6 +245,14 @@ const beadTransitioned: Check = (v, path) =>
     ? trackerWrite(v, path)
     : queueTransition(v, path);
 
+/** A provider's usage: whole token counts and a cost, each optional. */
+const providerUsage = shape({
+  ...Object.fromEntries(
+    PROVIDER_USAGE_COUNTS.map((count) => [count, optional(nonNegInt)]),
+  ),
+  costUsd: optional(num),
+});
+
 /** One entry per kind: adding a kind to `LEDGER_EVENT_KINDS` fails typecheck until it has a check. */
 const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
   "session.started": shape({
@@ -255,6 +264,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
   "session.ended": shape({
     reason: optional(str),
     durationMs: optional(nonNegInt),
+    usage: optional(providerUsage),
   }),
   "tool.called": shape({
     tool: nonEmptyStr,

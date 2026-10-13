@@ -32,14 +32,36 @@ const adapters: Array<{
   name: string;
   adapter: ExecutorAdapter;
   smith: string;
+  /** The usage the stand-in CLI's last line reports for this provider. */
+  usage: Record<string, number>;
 }> = [
-  { name: "claude", adapter: claudeAdapter, smith: "claude-journeyman" },
+  {
+    name: "claude",
+    adapter: claudeAdapter,
+    smith: "claude-journeyman",
+    usage: {
+      inputTokens: 12,
+      cacheCreationInputTokens: 300,
+      cacheReadInputTokens: 4000,
+      outputTokens: 56,
+      costUsd: 0.0125,
+    },
+  },
   {
     name: "codex",
     adapter: createCodexAdapter({ prepare: () => undefined }),
     smith: "codex-journeyman",
+    usage: {
+      inputTokens: 2400,
+      cachedInputTokens: 1800,
+      cacheWriteInputTokens: 5,
+      outputTokens: 90,
+      reasoningOutputTokens: 40,
+    },
   },
 ];
+
+type SessionEnded = Extract<LedgerEventInput, { kind: "session.ended" }>;
 
 /** A UUID as `crypto.randomUUID` writes one. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -118,7 +140,7 @@ const attachAs = (id: string) => (root: string) => [
   join(root, "attach.json"),
 ];
 
-for (const { name, adapter, smith } of adapters) {
+for (const { name, adapter, smith, usage } of adapters) {
   describe(`${name} adapter contract`, () => {
     test("streams session.started, tool.called per tool, session.ended — all valid", async () => {
       const { events, result } = await run(adapter, name, smith, "ok");
@@ -304,6 +326,21 @@ for (const { name, adapter, smith } of adapters) {
         "tool.called",
         "session.ended",
       ]);
+    });
+
+    test("session.ended carries the usage the provider's stream reported, and is still a valid event", async () => {
+      const { events } = await run(adapter, name, smith, "ok");
+      const ended = events[events.length - 1] as SessionEnded;
+      expect(ended.kind).toBe("session.ended");
+      expect(ended.payload.usage).toEqual(usage);
+      expect(validateLedgerEventInput(ended).ok).toBe(true);
+    });
+
+    test("a child that exits before its stream reported usage: session.ended carries none", async () => {
+      const { events } = await run(adapter, name, smith, "crash");
+      const ended = events[events.length - 1] as SessionEnded;
+      expect(ended.kind).toBe("session.ended");
+      expect(ended.payload).not.toHaveProperty("usage");
     });
 
     test("a crashing child ends the session with a failure reason", async () => {

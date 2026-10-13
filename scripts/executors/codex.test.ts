@@ -122,6 +122,41 @@ describe("codex adapter through forge:exec: the thread id is the session id (fak
   });
 });
 
+describe("codex adapter through forge:exec: usage (fake binary)", () => {
+  test("the usage turn.completed reported reaches the session.ended row", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b-usage",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "hi",
+        "--smith",
+        "codex-journeyman",
+      ],
+      { ...deps, command: fake() },
+    );
+    expect(out.code).toBe(0);
+    const [ended] = queryEvents(
+      { beadId: "b-usage", kinds: ["session.ended"] },
+      { path: ledger },
+    );
+    expect(ended?.payload).toEqual({
+      reason: "completed",
+      durationMs: expect.any(Number),
+      usage: {
+        inputTokens: 2400,
+        cachedInputTokens: 1800,
+        cacheWriteInputTokens: 5,
+        outputTokens: 90,
+        reasoningOutputTokens: 40,
+      },
+    });
+  });
+});
+
 describe("codex adapter", () => {
   test("runs its prepare step (codex:sync) before spawning", async () => {
     const prepared: string[] = [];
@@ -170,6 +205,52 @@ describe("codex adapter", () => {
       { type: "turn.started", thread_id: "thread-1" },
     ]) {
       expect(parseCodexLine(line(missing))).toEqual({ tools: [] });
+    }
+  });
+
+  test("turn.completed reports its usage: the five token counts under camelCase names, a count that is not a non-negative integer left out; no other line reports usage", () => {
+    const line = (value: unknown) => JSON.stringify(value);
+    expect(
+      parseCodexLine(
+        line({
+          type: "turn.completed",
+          usage: {
+            input_tokens: 100,
+            cached_input_tokens: 60,
+            cache_write_input_tokens: 2,
+            output_tokens: 9,
+            reasoning_output_tokens: 4,
+          },
+        }),
+      ),
+    ).toEqual({
+      tools: [],
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 60,
+        cacheWriteInputTokens: 2,
+        outputTokens: 9,
+        reasoningOutputTokens: 4,
+      },
+    });
+    expect(
+      parseCodexLine(
+        line({
+          type: "turn.completed",
+          usage: {
+            input_tokens: 7,
+            output_tokens: -1,
+            cached_input_tokens: "3",
+          },
+        }),
+      ).usage,
+    ).toEqual({ inputTokens: 7 });
+    for (const without of [
+      { type: "turn.completed" },
+      { type: "turn.completed", usage: { input_tokens: "1" } },
+      { type: "turn.failed", usage: { input_tokens: 1 } },
+    ]) {
+      expect(parseCodexLine(line(without))).toEqual({ tools: [] });
     }
   });
 

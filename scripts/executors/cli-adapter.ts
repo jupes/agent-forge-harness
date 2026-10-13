@@ -9,6 +9,8 @@ import type {
   LedgerEventBase,
   LedgerEventInput,
   Provider,
+  ProviderUsage,
+  ProviderUsageCount,
 } from "../../types/hearth";
 import {
   readSessionMirror,
@@ -37,6 +39,28 @@ export interface ParsedLine {
   tools: ParsedTool[];
   /** The provider's own id for the session, when this line carries it. */
   sessionId?: string;
+  /** What the run used, when this line reports it. */
+  usage?: ProviderUsage;
+}
+
+/**
+ * The counts of a provider's usage object, renamed as `names` maps them: each
+ * a non-negative whole number, else left out. Undefined when none is left.
+ */
+export function usageCounts(
+  source: unknown,
+  names: Readonly<Record<string, ProviderUsageCount>>,
+): ProviderUsage | undefined {
+  if (typeof source !== "object" || source === null) return undefined;
+  const record = source as Record<string, unknown>;
+  const usage: ProviderUsage = {};
+  for (const [field, name] of Object.entries(names)) {
+    const count = record[field];
+    if (typeof count === "number" && Number.isInteger(count) && count >= 0) {
+      usage[name] = count;
+    }
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 export interface CliAdapterSpec {
@@ -228,6 +252,9 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         return session;
       };
       const current = () => session ?? begin(mintedId);
+      // The last usage the stream reported: one turn per run is what has
+      // been seen, so a later report is taken to replace an earlier one.
+      let usage: ProviderUsage | undefined;
 
       const child = supervise({
         command: [...resolved.command, ...spec.buildArgs(request)],
@@ -238,6 +265,7 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         onLine: (line) => {
           const parsed = spec.parseLine(line);
           if (!session && parsed.sessionId) begin(parsed.sessionId);
+          if (parsed.usage) usage = parsed.usage;
           for (const tool of parsed.tools) {
             queue.push({
               ...current().base,
@@ -263,7 +291,11 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
           ...base,
           ts: new Date().toISOString(),
           kind: "session.ended",
-          payload: { reason, durationMs: Date.now() - startedAt },
+          payload: {
+            reason,
+            durationMs: Date.now() - startedAt,
+            ...(usage ? { usage } : {}),
+          },
         });
         unmirror();
         queue.close();
