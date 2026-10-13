@@ -258,6 +258,67 @@ describe("forge:audit when more events match than the limit", () => {
   });
 });
 
+describe("forge:audit scoped to a value the ledger refuses to store", () => {
+  /**
+   * Ordinary names that the scanner flags: `sk-` after a single letter, and
+   * after an uppercase one. Put together here so the file does not carry them.
+   */
+  const FLAGGED_CHECKOUT = ["ask", "the", "docs", "chatbot", "service"].join(
+    "-",
+  );
+  const FLAGGED_RUN = ["Task", "queue", "state", "machine", "v2"].join("-");
+
+  test(`run from a checkout named ${FLAGGED_CHECKOUT}, it answers an empty list and says on stderr that the ledger refuses every event from that checkout; with --all-workspaces it does not`, () => {
+    const box = sandbox();
+    const cwd = join(box.cwd, "..", FLAGGED_CHECKOUT);
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    const here = resolveCheckout(cwd).workspace;
+    expect(appendEvent(event(here), { path: box.path }).ok).toBe(false);
+    const context = { cwd, env: { AGENT_FORGE_HOME: box.home } };
+
+    const outcome = runAudit(["--json"], context);
+    expect(outcome.code).toBe(0);
+    expect(JSON.parse(outcome.stdout)).toEqual({
+      ok: true,
+      data: [],
+      error: null,
+    });
+    expect(outcome.stderr).toContain(
+      "the checkout of the current directory looks like a secret to the ledger's scanner (openai-api-key)",
+    );
+    expect(outcome.stderr).toContain("refuses every event that carries");
+    expect(outcome.stderr).not.toContain(FLAGGED_CHECKOUT);
+    const table = runAudit([], context);
+    expect(table.stdout).toBe("no events");
+    expect(table.stderr).toBe(outcome.stderr);
+
+    expect(
+      runAudit(["--all-workspaces", "--json"], context).stderr,
+    ).toBeUndefined();
+  });
+
+  test("a --bead, --run or --session value the scanner flags gets a note naming its flag, and ordinary values from an ordinary checkout get none", () => {
+    const box = sandbox();
+    const context = { cwd: box.cwd, env: { AGENT_FORGE_HOME: box.home } };
+    for (const flag of ["--bead", "--run", "--session"]) {
+      const flagged = runAudit([flag, FLAGGED_RUN, "--json"], context);
+      expect(flagged.code).toBe(0);
+      expect(flagged.stderr).toContain(
+        `the ${flag} value looks like a secret to the ledger's scanner (openai-api-key)`,
+      );
+      expect(flagged.stderr).not.toContain(FLAGGED_RUN);
+
+      const ordinary = runAudit(
+        [flag, "task-queue-state-machine-v2", "--json"],
+        context,
+      );
+      expect(ordinary.code).toBe(0);
+      expect(ordinary.stderr).toBeUndefined();
+    }
+    expect(runAudit(["--json"], context).stderr).toBeUndefined();
+  });
+});
+
 describe("forge:audit (spawned)", () => {
   test("a cut result prints its note on stderr and only the envelope on stdout", async () => {
     const box = sandbox();

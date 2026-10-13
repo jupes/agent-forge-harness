@@ -54,19 +54,41 @@ interface Row {
   payload: string;
 }
 
+/** The values events are joined on, in the order they are checked. */
+const JOIN_FIELDS = [
+  "workspace",
+  "beadId",
+  "runId",
+  "sessionId",
+  "ulid",
+] as const;
+
+export type JoinField = (typeof JOIN_FIELDS)[number];
+
+export interface JoinRefusal {
+  field: JoinField;
+  /** The scanner's name for the shape it found, such as `openai-api-key`. */
+  kind: string;
+}
+
 /**
- * The first of the given fields the secret scanner would change, as a refusal
- * message that does not repeat the value. These fields are what events are
- * joined on, so they are stored exactly as given or not at all: a redacted id
- * would no longer match anything, and a secret-shaped one is a bug in the
- * emitter.
+ * The first of the given join values the secret scanner would change, or null.
+ * These values are what events are joined on, so they are stored exactly as
+ * given or not at all: a redacted id would no longer match anything. An event
+ * that carries such a value is refused, so a checkout, bead, run or session
+ * named that way has no events at all; forge:audit asks this to say so. A
+ * workspace is read the way it is stored.
  */
-function secretShaped(fields: Record<string, string | null>): string | null {
-  for (const [name, value] of Object.entries(fields)) {
-    if (value === null) continue;
-    const found = redactSecrets(value).redactions[0];
-    if (found !== undefined)
-      return `${name} looks like a secret (${found.kind}); the event was dropped rather than stored under a secret or a redacted id`;
+export function refusedJoinValue(
+  values: Partial<Record<JoinField, string | null | undefined>>,
+): JoinRefusal | null {
+  for (const field of JOIN_FIELDS) {
+    const value = values[field];
+    if (value === undefined || value === null) continue;
+    const found = redactSecrets(
+      field === "workspace" ? comparableCheckout(value) : value,
+    ).redactions[0];
+    if (found !== undefined) return { field, kind: found.kind };
   }
   return null;
 }
@@ -81,8 +103,18 @@ function toRow(
   const beadId = input.beadId ?? null;
   const runId = input.runId ?? null;
   const sessionId = input.sessionId ?? input.executor?.sessionId ?? null;
-  const error = secretShaped({ workspace, beadId, runId, sessionId, ulid });
-  if (error !== null) return { ok: false, error };
+  const refused = refusedJoinValue({
+    workspace,
+    beadId,
+    runId,
+    sessionId,
+    ulid,
+  });
+  if (refused !== null)
+    return {
+      ok: false,
+      error: `${refused.field} looks like a secret (${refused.kind}): the ledger refuses every event that carries it rather than store a secret or a redacted id`,
+    };
 
   const executor = input.executor ? redactDeep(input.executor) : undefined;
   const payload = capSummary(

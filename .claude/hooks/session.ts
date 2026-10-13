@@ -7,9 +7,10 @@
  * from a `SessionStart` / `SessionEnd` token on the command line; with
  * neither (a run by hand) it acts as SessionStart.
  *
- * SessionStart: records `session.started` in the ledger, leaves the session
- * mirror in the worktree, logs to `session.jsonl`, pulls Beads and prints the
- * orientation lines the session reads.
+ * SessionStart: records `session.started` in the ledger (and says why on
+ * stdout when the ledger refuses it), leaves the session mirror in the
+ * worktree, logs to `session.jsonl`, pulls Beads and prints the orientation
+ * lines the session reads.
  * SessionEnd: records `session.ended` first, then logs to `session.jsonl`. It
  * prints nothing and runs no `bd` command. Without a payload there is no
  * session id, so nothing is recorded in the ledger; the log line is still
@@ -65,12 +66,24 @@ function log(entry: Record<string, unknown>): void {
   }
 }
 
-/** The ledger half of the hook. A failure is one stderr line, never an exit code. */
+/**
+ * The ledger half of the hook. A failure is one stderr line, never an exit
+ * code. A start the ledger refused is also one stdout line, which the session
+ * reads: the hooks after it record in the background, and the session does
+ * not see their refusals.
+ */
 function ledger(event: SessionHookEvent, input: HookInput): void {
   try {
     const deps = hookDeps({ env: process.env, cwd: process.cwd() });
-    if (event === "SessionEnd") handleSessionEnd(input, deps);
-    else handleSessionStart(input, deps);
+    if (event === "SessionEnd") {
+      handleSessionEnd(input, deps);
+      return;
+    }
+    const started = handleSessionStart(input, deps);
+    if (started !== null && !started.ok)
+      console.log(
+        `[session] ledger: session.started was not recorded: ${started.error}`,
+      );
   } catch (error) {
     console.error(
       `[session] ledger: ${error instanceof Error ? error.message : String(error)}`,
