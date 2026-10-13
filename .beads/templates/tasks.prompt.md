@@ -17,12 +17,19 @@ Break the feature into tasks following these rules:
 
 For each task:
 ```bash
-bd create \n  --type task \n  --title "<verb> <object>" \n  --repo <repo> \n  --ac "<acceptance criterion>"
+bd create \
+  --type task \
+  --title "<verb> <object>" \
+  --repo <repo> \
+  --priority <value> \
+  --acceptance "<acceptance criterion>"
 ```
+
+Set `<value>` using `.claude/skills/beads-priority-assignment/SKILL.md`.
 
 For dependencies:
 ```bash
-bd dep add <task-b-id> --requires <task-a-id>
+bd dep add <task-b-id> <task-a-id>   # task B depends on task A: the later task first
 ```
 
 After creating all tasks, report:

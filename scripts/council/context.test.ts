@@ -1109,6 +1109,8 @@ describe("a bead's pull request", () => {
   });
 
   test("a URL that is not this repository's pull request is never fetched: it is named as a reference, without credentials or query", async () => {
+    const withCredentials =
+      "https://someone:PRIVATE-PASSWORD@github.com/demo-org/kiln-works/pull/1?token=PRIVATE-QUERY";
     const foreign: Array<[string, string]> = [
       [
         "https://github.com/other-org/kiln-works/pull/1",
@@ -1126,10 +1128,7 @@ describe("a bead's pull request", () => {
         "https://evil.example/github.com/demo-org/kiln-works/pull/1",
         "https://evil.example/github.com/demo-org/kiln-works/pull/1",
       ],
-      [
-        "https://someone:PRIVATE-PASSWORD@github.com/demo-org/kiln-works/pull/1?token=PRIVATE-QUERY",
-        "https://github.com/demo-org/kiln-works/pull/1",
-      ],
+      [withCredentials, "https://github.com/demo-org/kiln-works/pull/1"],
       [
         "https://github.com:8443/demo-org/kiln-works/pull/1",
         "https://github.com:8443/demo-org/kiln-works/pull/1",
@@ -1152,11 +1151,26 @@ describe("a bead's pull request", () => {
       ],
     ];
     for (const [mention, shown] of foreign) {
-      const fake = fakeRunner({
-        comments: [comment("2031-01-06T10:00:00Z", `see ${mention} please`)],
-        extra: withPullRequest(),
+      const arrange = () =>
+        fakeRunner({
+          comments: [comment("2031-01-06T10:00:00Z", `see ${mention} please`)],
+          extra: withPullRequest(),
+        });
+      // A password in the URL is a secret like any other: the comment that
+      // holds it refuses the bead, and under redact it is replaced.
+      if (mention === withCredentials) {
+        const message = await refusalOf(pack(arrange(), workspace()));
+        expect(message).toContain(
+          "potential secrets detected in the comment of 2031-01-06T10:00:00Z",
+        );
+        expect(message).not.toContain("PRIVATE-PASSWORD");
+      }
+      const fake = arrange();
+      const packed = await pack(fake, workspace(), {
+        secretPolicy: mention === withCredentials ? "redact" : "reject",
       });
-      const packed = await pack(fake, workspace());
+      if (mention === withCredentials)
+        expect(JSON.stringify(packed)).not.toContain("PRIVATE-PASSWORD");
       expect({ mention, gh: ghCalls(fake) }).toEqual({ mention, gh: [] });
       expect({ mention, last: listingOf(packed).at(-1) }).toEqual({
         mention,
@@ -1659,7 +1673,7 @@ describe("a bead source under attack", () => {
     );
   });
 
-  test("a key split over two comments, or over the description and the design notes, is caught when the part is read as a whole; under redact it is replaced", async () => {
+  test("a key split over two comments, or over the description and the design notes, is caught in each half on its own: the refusal names the first half read, and under redact both halves are replaced", async () => {
     const [first, second] = [PRIVATE_KEY.slice(0, 70), PRIVATE_KEY.slice(70)];
     const cases: Array<[Parameters<typeof fakeRunner>[0], string]> = [
       [
@@ -1670,11 +1684,11 @@ describe("a bead source under attack", () => {
             comment("2031-01-06T10:00:00Z", `key: ${first}`),
           ],
         },
-        "latest comments",
+        "the comment of 2031-01-06T10:00:00Z",
       ],
       [
         { issue: issue({ description: `key: ${first}`, design: second }) },
-        "description",
+        "the description",
       ],
     ];
     for (const [arranged, where] of cases) {
@@ -1688,14 +1702,15 @@ describe("a bead source under attack", () => {
       const packed = await pack(fakeRunner(arranged), workspace(), {
         secretPolicy: "redact",
       });
-      // Both halves are gone, not only the key as one string.
+      // Both halves are gone, each where it was: the start of the key to the
+      // end of its field, the rest of the key from the start of its field.
       expect(JSON.stringify(packed)).not.toContain(KEY_BODY.slice(0, 30));
       expect(JSON.stringify(packed)).not.toContain("q".repeat(64));
-      expect(packed.redactions).toEqual([{ kind: "private-key", count: 1 }]);
+      expect(packed.redactions).toEqual([{ kind: "private-key", count: 2 }]);
     }
   });
 
-  test("a key split over two parts refuses the bead under either policy: it cannot be redacted", async () => {
+  test("a key split over two parts is refused naming the field that starts it; under redact each half is replaced in its own part", async () => {
     const [first, second] = [PRIVATE_KEY.slice(0, 70), PRIVATE_KEY.slice(70)];
     const arrange = () => ({
       fake: fakeRunner({
@@ -1706,16 +1721,19 @@ describe("a bead source under attack", () => {
       root: workspace({ "plans/drafts/tail.md": second }),
     });
     const rejected = arrange();
-    expect(await refusalOf(pack(rejected.fake, rejected.root))).toContain(
-      "potential secrets detected across parts",
-    );
-    const redacting = arrange();
-    const message = await refusalOf(
-      pack(redacting.fake, redacting.root, { secretPolicy: "redact" }),
-    );
-    expect(message).toContain("potential secrets detected across parts");
-    expect(message).toContain("cannot be redacted");
+    const message = await refusalOf(pack(rejected.fake, rejected.root));
+    expect(message).toContain("potential secrets detected in the notes");
     expect(message).not.toContain(KEY_BODY);
+    const redacting = arrange();
+    const packed = await pack(redacting.fake, redacting.root, {
+      secretPolicy: "redact",
+    });
+    expect(JSON.stringify(packed)).not.toContain(KEY_BODY.slice(0, 30));
+    expect(JSON.stringify(packed)).not.toContain("q".repeat(64));
+    expect(packed.redactions).toEqual([{ kind: "private-key", count: 2 }]);
+    expect(listingOf(packed)).toContain(
+      `E4 linked file plans/drafts/tail.md: ${Buffer.byteLength("[REDACTED:private-key]")} bytes`,
+    );
   });
 
   test("control characters never reach the source name, an evidence title or a listing line", async () => {
@@ -1992,9 +2010,9 @@ describe("a pack made of parts, at the edges", () => {
 });
 
 describe("a bead source under attack, second pass", () => {
-  test("a key split the natural way round — its first half in the older comment or the earlier field — is caught too, and refuses under either policy", async () => {
+  test("a key split the natural way round — its first half in the older comment or the earlier field — is caught in one half on its own too; under redact both halves are gone", async () => {
     const [first, second] = [PRIVATE_KEY.slice(0, 70), PRIVATE_KEY.slice(70)];
-    const cases: Array<[() => { fake: Fake; root: string }, string]> = [
+    const cases: Array<[() => { fake: Fake; root: string }, string, number]> = [
       [
         () => ({
           fake: fakeRunner({
@@ -2005,7 +2023,8 @@ describe("a bead source under attack, second pass", () => {
           }),
           root: workspace(),
         }),
-        "potential secrets detected in latest comments",
+        "potential secrets detected in the comment of 2031-01-06T10:00:00Z",
+        2,
       ],
       [
         () => ({
@@ -2014,7 +2033,8 @@ describe("a bead source under attack, second pass", () => {
           }),
           root: workspace(),
         }),
-        "potential secrets detected in description",
+        "potential secrets detected in the description",
+        2,
       ],
       [
         // The key starts in the description, which is packed after the comment that ends it.
@@ -2025,9 +2045,12 @@ describe("a bead source under attack, second pass", () => {
           }),
           root: workspace(),
         }),
-        "potential secrets detected across parts (from description to latest comments)",
+        "potential secrets detected in the description",
+        2,
       ],
       [
+        // The rest of the key takes the notes with it up to its END line, the
+        // file's name included, so the file that holds the start is never read.
         () => ({
           fake: fakeRunner({
             issue: issue({
@@ -2036,52 +2059,140 @@ describe("a bead source under attack, second pass", () => {
           }),
           root: workspace({ "plans/drafts/head.md": `key: ${first}` }),
         }),
-        "potential secrets detected across parts (from linked file plans/drafts/head.md to description)",
+        "potential secrets detected in the notes",
+        1,
       ],
     ];
-    for (const [arrange, expected] of cases) {
+    for (const [arrange, expected, count] of cases) {
       const rejected = arrange();
       const message = await refusalOf(pack(rejected.fake, rejected.root));
       expect({ expected, message }).toEqual({
         expected,
         message: expect.stringContaining(expected),
       });
+      expect(message).not.toContain(KEY_BODY.slice(0, 30));
       const redacting = arrange();
-      const again = await refusalOf(
-        pack(redacting.fake, redacting.root, { secretPolicy: "redact" }),
-      );
-      expect({ expected, again }).toEqual({
-        expected,
-        again: expect.stringContaining("cannot be redacted"),
+      const packed = await pack(redacting.fake, redacting.root, {
+        secretPolicy: "redact",
       });
-      expect(again).not.toContain(KEY_BODY.slice(0, 30));
+      const everything = JSON.stringify(packed);
+      expect({
+        expected,
+        leaked:
+          everything.includes(KEY_BODY.slice(0, 30)) ||
+          everything.includes("q".repeat(64)),
+        redactions: packed.redactions,
+      }).toEqual({
+        expected,
+        leaked: false,
+        redactions: [{ kind: "private-key", count }],
+      });
     }
   });
 
-  test("a refusal across parts names the two parts it runs between", async () => {
-    const [first, second] = [PRIVATE_KEY.slice(0, 70), PRIVATE_KEY.slice(70)];
-    const fake = fakeRunner({
-      issue: issue({ notes: `see plans/drafts/tail.md, key: ${first}` }),
-    });
-    const root = workspace({ "plans/drafts/tail.md": second });
-    expect(await refusalOf(pack(fake, root))).toContain(
-      "potential secrets detected across parts (from description to linked file plans/drafts/tail.md)",
-    );
+  /**
+   * A provider variable at the end of one chunk and its value at the start of
+   * the next: a secret only when the two are read together, so neither chunk
+   * is caught on its own. A private key no longer serves for this: each half
+   * of one is caught where it is.
+   */
+  const SPLIT_NAME = "OPENAI_API_KEY=";
+  const SPLIT_VALUE = "Zq9Zq8Zq7Zq6Zq5Zq4";
+
+  /** Why a pack of `parts` was refused under `secretPolicy`, or "" when it was built. */
+  function partsRefusal(
+    parts: ContextPart[],
+    secretPolicy: "reject" | "redact",
+  ): string {
+    try {
+      buildContextPackFromParts({
+        kind: "bead",
+        displayName: "demo",
+        locator: "demo",
+        secretPolicy,
+        parts,
+      });
+      return "";
+    } catch (error) {
+      if (!(error instanceof ContextSecurityError)) throw error;
+      return error.message;
+    }
+  }
+
+  test("a refusal across parts names the two parts it runs between, in the order it is written, under either policy", () => {
+    const cases: Array<[ContextPart[], string]> = [
+      [
+        [
+          { label: "head", chunks: [{ text: `key: ${SPLIT_NAME}` }] },
+          { label: "tail", chunks: [{ text: SPLIT_VALUE }] },
+        ],
+        "potential secrets detected across parts (from head to tail)",
+      ],
+      [
+        // Written the other way round: only the reversed read finds it.
+        [
+          { label: "head", chunks: [{ text: SPLIT_VALUE }] },
+          { label: "tail", chunks: [{ text: `key: ${SPLIT_NAME}` }] },
+        ],
+        "potential secrets detected across parts (from tail to head)",
+      ],
+    ];
+    for (const [parts, expected] of cases) {
+      const rejected = partsRefusal(parts, "reject");
+      const redacting = partsRefusal(parts, "redact");
+      expect({ expected, rejected, redacting }).toEqual({
+        expected,
+        rejected: expect.stringContaining(expected),
+        redacting: expect.stringContaining(expected),
+      });
+      expect(redacting).toContain("cannot be redacted");
+      expect(`${rejected} ${redacting}`).not.toContain(SPLIT_VALUE);
+    }
   });
 
-  test("under redact a part whose key ran across two comments is listed by its size, not by a comment count it no longer has", async () => {
-    const [first, second] = [PRIVATE_KEY.slice(0, 70), PRIVATE_KEY.slice(70)];
-    const packed = await pack(
-      fakeRunner({
-        comments: [
-          comment("2031-01-05T10:00:00Z", second),
-          comment("2031-01-06T10:00:00Z", `key: ${first}`),
-        ],
-      }),
-      workspace(),
-      { secretPolicy: "redact" },
+  test("a secret written the other way round inside one part — its value in the earlier chunk — is found by the reversed read and refuses under either policy", () => {
+    const parts: ContextPart[] = [
+      {
+        label: "latest comments",
+        unit: "comment",
+        chunks: [{ text: SPLIT_VALUE }, { text: `key: ${SPLIT_NAME}` }],
+      },
+    ];
+    const rejected = partsRefusal(parts, "reject");
+    const redacting = partsRefusal(parts, "redact");
+    expect(rejected).toContain("potential secrets detected in latest comments");
+    expect(redacting).toContain(
+      "potential secrets detected in latest comments",
     );
-    expect(listingOf(packed)[1]).toMatch(/^E2 latest comments: \d+ bytes$/);
+    expect(redacting).toContain("cannot be redacted");
+  });
+
+  test("a secret written across two comments is caught when their part is read whole; under redact the part is listed by its size, not by a comment count it no longer has", () => {
+    const parts: ContextPart[] = [
+      {
+        label: "latest comments",
+        unit: "comment",
+        chunks: [
+          { text: `key: ${SPLIT_NAME}`, name: "the comment of Tuesday" },
+          { text: SPLIT_VALUE, name: "the comment of Monday" },
+        ],
+      },
+    ];
+    expect(partsRefusal(parts, "reject")).toContain(
+      "potential secrets detected in latest comments",
+    );
+    const packed = buildContextPackFromParts({
+      kind: "bead",
+      displayName: "demo",
+      locator: "demo",
+      secretPolicy: "redact",
+      parts,
+    });
+    expect(JSON.stringify(packed)).not.toContain(SPLIT_VALUE);
+    expect(packed.redactions).toEqual([
+      { kind: "provider-api-key-assignment", count: 1 },
+    ]);
+    expect(listingOf(packed)[0]).toMatch(/^E1 latest comments: \d+ bytes$/);
   });
 
   test("what is shown is scanned after control characters are replaced: a key hidden behind them in a pull request's title refuses the bead", async () => {

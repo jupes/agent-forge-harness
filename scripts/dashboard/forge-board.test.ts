@@ -74,10 +74,42 @@ function view(over: Partial<ForgeRunView> = {}): ForgeRunView {
     updatedAt: AT,
     phases: phases(["research"]),
     reviews: [],
+    halted: null,
+    reviewPending: null,
+    revising: false,
     gate: null,
     gateScope: { checkout: "C:/work", slug: "alpha" },
     ...over,
   };
+}
+
+const HALT_REASON =
+  '2 revision rounds did not clear "plan" (still 1 blocker, 0 high).';
+
+/** An auto run whose plan review halted it, with the rounds that did. */
+function haltedInPlan(): ForgeRunView {
+  return view({
+    mode: "auto",
+    phases: phases(["research", "plan"]),
+    reviews: [
+      round({ phase: "research" }),
+      round({ round: 1, verdict: "FAIL" }),
+      round({ round: 2, verdict: "FAIL" }),
+      round({ round: 3, verdict: "FAIL", action: "halt", reason: HALT_REASON }),
+    ],
+    halted: { phase: "plan", reason: HALT_REASON },
+  });
+}
+
+/** An auto run that recorded ship, whose ship review returned no verdict. */
+function haltedInShip(): ForgeRunView {
+  return view({
+    mode: "auto",
+    complete: true,
+    phases: phases(["research", "plan", "implement", "ship"]),
+    reviews: [round({ phase: "ship", verdict: "UNREADABLE" })],
+    halted: { phase: "ship", reason: "No usable verdict." },
+  });
 }
 
 describe("runHealth", () => {
@@ -134,6 +166,96 @@ describe("runHealth", () => {
       ),
     ).toBe("running");
   });
+
+  test("a run that recorded ship but whose ship review halted wants attention, not shipped", () => {
+    expect(runHealth(haltedInShip())).toBe("attention");
+  });
+
+  test("a run that recorded ship while its ship review asks for a revision is not shipped: its failing review wants attention", () => {
+    const run = view({
+      mode: "auto",
+      complete: true,
+      phases: phases(["research", "plan", "implement", "ship"]),
+      reviews: [
+        round({
+          phase: "ship",
+          verdict: "FAIL",
+          findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+        }),
+      ],
+      reviewPending: "ship",
+      revising: true,
+    });
+    expect(runHealth(run)).toBe("attention");
+  });
+});
+
+describe("boardRows: runs held by their reviews", () => {
+  test("a halted run is named by the halt, its phase and its reason, not by the phase after it", () => {
+    const [row] = boardRows([haltedInPlan()]);
+    expect(row?.status).toEqual({
+      kind: "halted",
+      phase: "plan",
+      reason: HALT_REASON,
+    });
+  });
+
+  test("a run under revision is named by the phase it is revising", () => {
+    const [row] = boardRows([
+      view({
+        mode: "auto",
+        phases: phases(["research"]),
+        reviews: [
+          round({
+            phase: "research",
+            verdict: "FAIL",
+            findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+          }),
+        ],
+        reviewPending: "research",
+        revising: true,
+      }),
+    ]);
+    expect(row?.status).toEqual({ kind: "revising", phase: "research" });
+  });
+
+  test("a run that has not reviewed a completed phase is shown awaiting that review, not the phase after it", () => {
+    const [row] = boardRows([
+      view({
+        mode: "auto",
+        phases: phases(["research", "plan", "implement"]),
+        reviews: [round({ phase: "research" }), round({ phase: "plan" })],
+        reviewPending: "implement",
+      }),
+    ]);
+    expect(row?.status).toEqual({
+      kind: "awaiting-review",
+      phase: "implement",
+    });
+  });
+
+  test("a run that recorded ship but whose ship review halted reports the halt, not shipped", () => {
+    const [row] = boardRows([haltedInShip()]);
+    expect(row?.status).toEqual({
+      kind: "halted",
+      phase: "ship",
+      reason: "No usable verdict.",
+    });
+    expect(row?.health).toBe("attention");
+  });
+
+  test("while a review holds a run, the phase after the held one is locked on the board, not active", () => {
+    const run = haltedInPlan();
+    const [row] = boardRows([run]);
+    expect(row?.phases.map((phase) => phase.state)).toEqual([
+      "complete",
+      "complete",
+      "locked",
+      "locked",
+    ]);
+    // The run's own phases are left as they were.
+    expect(run.phases[2]?.state).toBe("active");
+  });
 });
 
 describe("boardRows", () => {
@@ -151,7 +273,7 @@ describe("boardRows", () => {
     expect(row?.health).toBe("running");
     expect(row?.completedCount).toBe(2);
     expect(row?.totalPhases).toBe(4);
-    expect(row?.status).toBe("implement");
+    expect(row?.status).toEqual({ kind: "phase", phase: "implement" });
     expect(row?.reviewRounds).toBe(2);
     expect(row?.latestVerdict).toBe("PASS");
     expect(row?.gatePassed).toBe(true);
@@ -165,7 +287,7 @@ describe("boardRows", () => {
         phases: phases(["research", "plan", "implement", "ship"]),
       }),
     ]);
-    expect(row?.status).toBe("shipped");
+    expect(row?.status).toEqual({ kind: "shipped" });
     expect(row?.completedCount).toBe(4);
   });
 

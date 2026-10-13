@@ -69,7 +69,10 @@ export function useShellChrome(): ShellChrome {
     })();
   }, [load]);
 
-  const { label, iso } = snapshotLabelFor(payload?.generatedAt ?? null);
+  const { label, iso } = snapshotLabelFor(
+    payload?.generatedAt ?? null,
+    payload?.source,
+  );
 
   return {
     payload,

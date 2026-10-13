@@ -5,6 +5,7 @@
  * a failed snapshot fetch may and may not hide — are testable without a DOM.
  */
 
+import type { SnapshotSource } from "../../types/beads";
 import type {
   LedgerEvent,
   OperatorEnvelope,
@@ -41,27 +42,43 @@ export interface SnapshotLabel {
   iso: string;
 }
 
-/** Sidebar snapshot line: local time to read, ISO on hover. */
-export function snapshotLabelFor(generatedAt: string | null): SnapshotLabel {
+/**
+ * Sidebar snapshot line: local time to read, ISO on hover. A snapshot built
+ * from the fallback file says so, with the file's age.
+ */
+export function snapshotLabelFor(
+  generatedAt: string | null,
+  source?: SnapshotSource,
+): SnapshotLabel {
   const raw = String(generatedAt ?? "").trim();
   if (!raw) return { label: "Snapshot: not loaded", iso: "" };
 
   const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) {
-    return { label: `Snapshot built: ${raw}`, iso: raw };
-  }
+  const built = Number.isNaN(parsed.getTime())
+    ? raw
+    : parsed.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+  const fallback =
+    source?.kind === "file"
+      ? ` · from ${source.path} (written ${fileDate(source.modifiedAt)}); bd did not answer`
+      : "";
+  return { label: `Snapshot built: ${built}${fallback}`, iso: raw };
+}
 
-  return {
-    label: `Snapshot built: ${parsed.toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    })}`,
-    iso: raw,
-  };
+function fileDate(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return parsed.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 export interface PageHeading {

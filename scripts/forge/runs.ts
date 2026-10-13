@@ -182,8 +182,12 @@ export interface RunSummary {
 
 export function summarizeRun(state: ForgeState): RunSummary {
   const gate = reviewGate(state);
-  const firstIncomplete =
-    FORGE_PHASES.find((phase) => !state.completed.includes(phase)) ?? null;
+  const complete = isRunComplete(state);
+  // A shipped run has nothing left even when it skipped phases: the mini path
+  // records itself with a single ship write.
+  const firstIncomplete = complete
+    ? null
+    : (FORGE_PHASES.find((phase) => !state.completed.includes(phase)) ?? null);
   return {
     slug: state.slug,
     phase: state.phase,
@@ -203,7 +207,7 @@ export function summarizeRun(state: ForgeState): RunSummary {
         ? gate.phase
         : null,
     revising: gate.status === "revise",
-    complete: isRunComplete(state),
+    complete,
     mode: state.mode ?? "gated",
     feature: state.feature ?? null,
     epic: state.epic ?? null,

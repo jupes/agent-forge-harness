@@ -860,7 +860,7 @@ describe("forge:phase-gate --smith, as a command", () => {
     ).toBe(false);
   });
 
-  test("one ship write with a bead and a smith, the way the mini path records itself, leaves a shipped run that is not in flight", async () => {
+  test("one ship write with a bead and a smith, the way the mini path records itself, leaves a shipped run that is not in flight and that forge:runs --json lists as complete with no next phase", async () => {
     const box = sandbox("mini-run");
     const smith = configuredSmith(box);
     const written = await run(box, PHASE_GATE, [
@@ -888,6 +888,17 @@ describe("forge:phase-gate --smith, as a command", () => {
     const active = await run(box, RUNS, ["--active", "--json"]);
     expect(active.exitCode).toBe(0);
     expect(active.printed.data).toEqual([]);
+
+    const listed = await run(box, RUNS, ["--json"]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.printed.data).toEqual([
+      expect.objectContaining({
+        slug: "mini-run",
+        completed: ["ship"],
+        complete: true,
+        next: null,
+      }),
+    ]);
   });
 });
 
