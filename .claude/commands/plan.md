@@ -196,7 +196,7 @@ Pick **`<value>`** with `.claude/skills/beads-priority-assignment/SKILL.md` (cri
 
 Add sequential dependencies (step 2 requires step 1):
 ```bash
-bd dep add <step-2-id> --requires <step-1-id>
+bd dep add <step-2-id> <step-1-id>   # the later step first, the earlier step second
 ```
 
 If there are 4+ tasks: create a parent feature:

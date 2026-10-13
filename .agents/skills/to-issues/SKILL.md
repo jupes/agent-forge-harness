@@ -78,7 +78,7 @@ Commands:
 
 ```bash
 bd create --type task --title "<slice title>" --description "<template markdown>" --priority 2 --repo .
-bd dep add <slice-id> --blocks <blocked-id>
+bd dep add <blocked-id> <slice-id>   # the blocked issue first: it depends on the slice that blocks it
 ```
 
 If slices derive from a parent PRD/feature, attach children:

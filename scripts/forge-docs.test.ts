@@ -25,6 +25,9 @@ const ALSO_SCANNED = [
   "CLAUDE.md",
 ];
 
+/** The task-breakdown prompt template: an instruction file the scan above does not list. */
+const BEADS_TASKS_TEMPLATE = ".beads/templates/tasks.prompt.md";
+
 const MAX_BYTES = 2 * 1024 * 1024;
 
 /** The Markdown instructions git knows about. `docs/plans/` is history and is not among them. */
@@ -580,6 +583,44 @@ describe("the Forge documents: what the review of the first build found", () => 
     expect(wrong).toEqual([]);
     for (const path of skill("forge-plan")) {
       expect(missing(path, ["bd dep add <later-id> <earlier-id>"])).toEqual([]);
+    }
+  });
+
+  test("no instruction file gives `bd dep add` the --requires or --blocks flag, which this bd rejects as unknown", () => {
+    const wrong = [...instructionFiles(), BEADS_TASKS_TEMPLATE].flatMap(
+      (path) =>
+        commandsIn(path, read(path) ?? "", /bd dep add/)
+          .filter((documented) =>
+            /--(requires|blocks)\b/.test(documented.command),
+          )
+          .map(show),
+    );
+    expect(wrong).toEqual([]);
+  });
+
+  test("each `bd dep add` line that used to name its direction with a flag still puts the dependent issue first", () => {
+    const directions: Array<[string, readonly string[]]> = [
+      ["CLAUDE.md", ["bd dep add <later-id> <earlier-id>"]],
+      [BEADS_TASKS_TEMPLATE, ["bd dep add <task-b-id> <task-a-id>"]],
+      ...command("go").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <B-id> <A-id>"],
+      ]),
+      ...command("plan").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <step-2-id> <step-1-id>"],
+      ]),
+      ...skill("qa").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <blocked-id> <blocker-id>"],
+      ]),
+      ...skill("to-issues").map((path): [string, readonly string[]] => [
+        path,
+        ["bd dep add <blocked-id> <slice-id>"],
+      ]),
+    ];
+    for (const [path, phrases] of directions) {
+      expect(missing(path, phrases)).toEqual([]);
     }
   });
 

@@ -22,7 +22,7 @@ bd create \n  --type task \n  --title "<verb> <object>" \n  --repo <repo> \n  --
 
 For dependencies:
 ```bash
-bd dep add <task-b-id> --requires <task-a-id>
+bd dep add <task-b-id> <task-a-id>   # task B depends on task A: the later task first
 ```
 
 After creating all tasks, report:
