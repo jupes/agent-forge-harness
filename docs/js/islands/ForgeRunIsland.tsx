@@ -8,6 +8,9 @@ import {
   type GateScope,
   type RunBoardRow,
   type RunHealth,
+  type RunStatus,
+  runStatus,
+  shownPhases,
 } from "../../../scripts/dashboard/forge-run-model";
 import type { BeadsPayload } from "../../../types/beads";
 import type { LedgerEventKind } from "../../../types/hearth";
@@ -101,6 +104,52 @@ function shortTime(iso: string | null): string {
       });
 }
 
+const phaseLabel = (phase: string): string => PHASE_LABEL[phase] ?? phase;
+
+/** What a run is doing now, in the words the board and the run panel show. */
+function statusText(status: RunStatus): string {
+  switch (status.kind) {
+    case "halted":
+      return `Halted in ${phaseLabel(status.phase)}`;
+    case "revising":
+      return `Revising ${phaseLabel(status.phase)}`;
+    case "awaiting-review":
+      return `${phaseLabel(status.phase)} awaiting review`;
+    case "shipped":
+      return "Shipped";
+    case "phase":
+      return phaseLabel(status.phase);
+  }
+}
+
+/** The run panel's kicker: shipped only when nothing holds the run. */
+function kickerText(mode: ForgeRunView["mode"], status: RunStatus): string {
+  switch (status.kind) {
+    case "shipped":
+      return "shipped run";
+    case "halted":
+      return `halted run · ${mode}`;
+    default:
+      return `active run · ${mode}`;
+  }
+}
+
+/**
+ * What holds the run on show, when its reviews hold it, and why a halted run
+ * stopped. The board's row says the same, but a page with one run has no board.
+ */
+function RunHold({ status }: { status: RunStatus }): JSX.Element | null {
+  if (status.kind === "shipped" || status.kind === "phase") return null;
+  return (
+    <p class="af-notice af-run-hold">
+      <span class="af-run-hold-status">{statusText(status)}</span>
+      {status.kind === "halted" ? (
+        <span class="af-run-hold-reason">{status.reason}</span>
+      ) : null}
+    </p>
+  );
+}
+
 /** One run on the board: identity, phase progress, and how it is doing. */
 function RunBoardEntry({
   row,
@@ -111,10 +160,7 @@ function RunBoardEntry({
   current: boolean;
   onSelect: (slug: string) => void;
 }): JSX.Element {
-  const phaseSummary =
-    row.status === "shipped"
-      ? "Shipped"
-      : (PHASE_LABEL[row.status] ?? row.status);
+  const phaseSummary = statusText(row.status);
 
   return (
     <li>
@@ -165,6 +211,10 @@ function RunBoardEntry({
             {shortTime(row.updatedAt)}
           </span>
         </span>
+
+        {row.status.kind === "halted" ? (
+          <span class="af-run-reason af-muted">{row.status.reason}</span>
+        ) : null}
       </button>
     </li>
   );
@@ -274,12 +324,14 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
     );
   }
 
+  const status = runStatus(run);
+
   return (
     <>
       <RunsBoard runs={data.runs} selected={run.slug} onSelect={setPicked} />
 
       <Card
-        kicker={run.complete ? "shipped run" : `active run · ${run.mode}`}
+        kicker={kickerText(run.mode, status)}
         title={run.slug}
         headingLevel={2}
         actions={
@@ -297,6 +349,7 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
           </>
         }
       >
+        <RunHold status={status} />
         {run.feature ? <p class="af-prose">{run.feature}</p> : null}
         {run.updatedAt ? (
           <p class="af-muted">
@@ -306,7 +359,7 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
       </Card>
 
       <div class="af-phase-list">
-        {run.phases.map((phase) => (
+        {shownPhases(run).map((phase) => (
           <div key={phase.id} class={`af-phase af-phase-${phase.state}`}>
             <span class="af-phase-node" aria-hidden="true">
               <Icon name={PHASE_ICON[phase.id] ?? "circle"} size={14} />

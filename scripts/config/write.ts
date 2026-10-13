@@ -92,7 +92,14 @@ function keyShape(key: string): KeyShape | string {
   }
   if (parts.length === 3 && parts[0] === "smiths") {
     const [, smith = "", field = ""] = parts;
-    const kind = SMITH_FIELDS[field];
+    // The loader refuses such a smith, and the edit walks the parsed file by
+    // this name: `__proto__` would reach Object.prototype.
+    if (smith in Object.prototype)
+      return `smiths.${smith}: "${smith}" is a key every object has; name the smith something else`;
+    // A key of its own: `constructor` is on every object.
+    const kind = Object.hasOwn(SMITH_FIELDS, field)
+      ? SMITH_FIELDS[field]
+      : undefined;
     if (kind === undefined)
       return `unknown smith field "${field}" (expected ${Object.keys(SMITH_FIELDS).join(" | ")})`;
     return { table: ["smiths", smith], field, kind, smith };

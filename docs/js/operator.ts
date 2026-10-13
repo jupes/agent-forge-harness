@@ -8,7 +8,8 @@
  * The hearth mints a new token every time it starts, and the dashboard restarts
  * a stopped hearth without the page knowing. So a 403 is answered by fetching
  * the token again and posting once more: a refused action has done nothing,
- * which is what makes the second attempt safe.
+ * which is what makes the second attempt safe. When the token cannot be had,
+ * the post fails with `NotSent`: the caller can say the action was not made.
  */
 
 import {
@@ -20,6 +21,15 @@ import {
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type OperatorPost = (url: string, body: unknown) => Promise<Response>;
+
+/**
+ * The post was not made because no operator token could be had. Nothing was
+ * changed: either no POST left the page, or the one that did was refused with
+ * a 403, which the control plane answers only before doing anything. A
+ * request that fails after the token was had is not this: it may have arrived.
+ * Its name stays "Error", so a view that prints the error reads as before.
+ */
+export class NotSent extends Error {}
 
 async function fetchToken(fetchImpl: Fetch): Promise<string> {
   const response = await fetchImpl(TOKEN_ROUTE);
@@ -54,16 +64,23 @@ export function createOperatorPost(
     return token;
   };
 
-  const send = async (url: string, body: unknown): Promise<Response> =>
-    fetchImpl(url, {
+  const send = async (url: string, body: unknown): Promise<Response> => {
+    let held: string;
+    try {
+      held = await currentToken();
+    } catch (error) {
+      throw new NotSent(error instanceof Error ? error.message : String(error));
+    }
+    return fetchImpl(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        [OPERATOR_HEADER]: await currentToken(),
+        [OPERATOR_HEADER]: held,
         [SURFACE_HEADER]: "ui",
       },
       body: JSON.stringify(body),
     });
+  };
 
   return async (url, body) => {
     const response = await send(url, body);

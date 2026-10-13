@@ -170,6 +170,13 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
     if (isTable(doc.smiths)) {
       for (const [name, raw] of Object.entries(doc.smiths)) {
         if (!isTable(raw)) fail(file, `smiths.${name}`, "expected a table");
+        // Such a name reads back what every object inherits, not this smith.
+        if (name in Object.prototype)
+          fail(
+            file,
+            `smiths.${name}`,
+            `"${name}" is a key every object has; name the smith something else`,
+          );
         const base = smiths[name] ?? { name, enabled: true, tags: [] };
         const checked = validateSmith({ ...base, ...raw, name });
         if (!checked.ok) fail(file, `smiths.${name}`, checked.error);
@@ -212,7 +219,8 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   }
 
   const source = (key: string) => provenance[key]?.source ?? "builtin";
-  if (!smiths[defaultCrew]) {
+  // Configured means a key of its own: `constructor` is on every object.
+  if (!Object.hasOwn(smiths, defaultCrew)) {
     fail(
       source("workflow.default_crew"),
       "workflow.default_crew",
@@ -221,7 +229,7 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   }
   for (const bench of BENCH_NAMES) {
     for (const entry of benches[bench]) {
-      if (!smiths[entry.smith]) {
+      if (!Object.hasOwn(smiths, entry.smith)) {
         fail(
           source(`benches.${bench}`),
           `benches.${bench}`,

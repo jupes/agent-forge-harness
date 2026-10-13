@@ -32,13 +32,7 @@ import {
   isDeclaredSameOrigin,
 } from "./gate";
 import { hearthHome, lockPath, tokenPath } from "./home";
-import {
-  acquireLock,
-  type HearthLock,
-  isPidAlive,
-  readLock,
-  releaseLock,
-} from "./lock";
+import { acquireLock, type HearthLock, readLock, releaseLock } from "./lock";
 import { API_PREFIX, HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { councilHttpHandler } from "./routes/council";
 import {
@@ -49,6 +43,7 @@ import {
 } from "./routes/dev-api";
 import { operatorRoutes } from "./routes/operator";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
+import { isHealthy } from "./supervisor";
 import { createToken, readToken } from "./token";
 
 export interface HearthOptions {
@@ -127,10 +122,13 @@ function reply(
   );
 }
 
-function liveLock(path: string, root: string): HearthLock | null {
-  const lock = readLock(path);
-  if (!lock || !isPidAlive(lock.pid)) return null;
-  return resolve(lock.root) === resolve(root) ? lock : null;
+function reusedHearth(lock: HearthLock): ReusedHearth {
+  return {
+    kind: "reused",
+    port: lock.port,
+    url: `http://127.0.0.1:${lock.port}`,
+    lock,
+  };
 }
 
 export async function createHearth(options: HearthOptions): Promise<Hearth> {
@@ -138,15 +136,12 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const home = options.home ?? hearthHome();
   const lockFile = lockPath(home, root);
 
-  const existing = liveLock(lockFile, root);
-  if (existing) {
-    return {
-      kind: "reused",
-      port: existing.port,
-      url: `http://127.0.0.1:${existing.port}`,
-      lock: existing,
-    };
-  }
+  // Reused only once its port has answered the health route with its pid and
+  // root. Any other lock is stale, also when its pid is alive: a killed
+  // hearth's pid can belong to another process by now.
+  const existing = readLock(lockFile);
+  if (existing && (await isHealthy(existing))) return reusedHearth(existing);
+  if (existing) releaseLock(lockFile, existing.pid);
 
   const service = createCouncilService({
     workspaceRoot: root,
@@ -293,14 +288,13 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   };
 
   if (claimed.kind === "held") {
-    // Lost a start-up race to another hearth for this root: defer to it.
+    // Lost a start-up race to another hearth for this root: defer to it, once
+    // its health route has confirmed it.
     await stop();
-    return {
-      kind: "reused",
-      port: claimed.lock.port,
-      url: `http://127.0.0.1:${claimed.lock.port}`,
-      lock: claimed.lock,
-    };
+    if (await isHealthy(claimed.lock)) return reusedHearth(claimed.lock);
+    throw new Error(
+      `The hearth lock ${lockFile} names pid ${claimed.lock.pid}, which does not answer as a hearth for ${claimed.lock.root}`,
+    );
   }
 
   // Written only once the lock is ours, so a losing racer never overwrites the

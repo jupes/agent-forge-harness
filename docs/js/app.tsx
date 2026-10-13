@@ -21,6 +21,7 @@ import { ForgeRunIsland } from "./islands/ForgeRunIsland";
 import { InsightsIsland } from "./islands/InsightsIsland";
 import { IssuesViewsIsland } from "./islands/IssuesViewsIsland";
 import { LiveBanner, LiveStats } from "./islands/LiveStatus";
+import { PendingWrites } from "./islands/PendingWrites";
 import { ReposIsland } from "./islands/ReposIsland";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland";
 import { TimelineIsland } from "./islands/TimelineIsland";
@@ -133,6 +134,7 @@ function DashboardApp() {
   const { title, blurb } = pageTitleFor(route);
   const { label, iso } = snapshotLabelFor(
     snapshot.payload?.generatedAt ?? null,
+    snapshot.payload?.source,
   );
 
   const changeInitiative = useCallback((value: string) => {
@@ -163,6 +165,7 @@ function DashboardApp() {
       snapshotIso={iso}
     >
       <LiveBanner route={route} />
+      <PendingWrites />
       {renderRoute()}
     </AppShell>
   );

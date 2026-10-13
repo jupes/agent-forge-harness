@@ -177,7 +177,10 @@ function sessionsQuery(request: RouteRequest): ValidationResult<SessionsQuery> {
 /** How many events `/events` returns when the request does not say, and at most. */
 const EVENTS_DEFAULT_LIMIT = 200;
 export const EVENTS_MAX_LIMIT = 1000;
-/** How many of a run's newest events `/runs/:slug` carries; the rest are paged through `/events?run=`. */
+/**
+ * How many of a run's newest events `/runs/:slug` carries when the request
+ * does not say, and at most; the rest are paged through `/events?run=`.
+ */
 const RUN_EVENTS = 200;
 const MAX_ID_LENGTH = 200;
 
@@ -237,13 +240,25 @@ function eventsQuery(request: RouteRequest): ValidationResult<EventsQuery> {
   return { ok: true, value: { ...parsed.value.filter, limit } };
 }
 
-function runSlug(request: RouteRequest): ValidationResult<string> {
-  const given = noParameters(request);
+interface RunQuery {
+  slug: string;
+  /** How many of the run's newest events to carry; 0 for none. */
+  events: number;
+}
+
+function runQuery(request: RouteRequest): ValidationResult<RunQuery> {
+  const given = parameters(request, ["events"]);
   if (!given.ok) return given;
   const slug = request.params["slug"] ?? "";
-  return isValidSlug(slug)
-    ? { ok: true, value: slug }
-    : fail("slug: not a forge run slug");
+  if (!isValidSlug(slug)) return fail("slug: not a forge run slug");
+  const events = integer("events", given.value.get("events"), {
+    min: 0,
+    max: RUN_EVENTS,
+    fallback: RUN_EVENTS,
+  });
+  return events.ok
+    ? { ok: true, value: { slug, events: events.value } }
+    : events;
 }
 
 /** A page of events as the API answers it. */
@@ -270,12 +285,12 @@ export function ledgerReads(deps: ReadDeps) {
       data: listSessions({ workspace, ...query }, ledger),
     }),
   };
-  const run: ReadRoute<string> = {
+  const run: ReadRoute<RunQuery> = {
     kind: "read",
     method: "GET",
     path: "/runs/:slug",
-    validate: runSlug,
-    read: (slug) => {
+    validate: runQuery,
+    read: ({ slug, events }) => {
       const state = readRunState(slug, deps.root);
       if (state === null)
         return {
@@ -286,7 +301,7 @@ export function ledgerReads(deps: ReadDeps) {
         run: summarizeRun(state),
         state,
         events: eventsPage(
-          queryEventPage({ workspace, runId: slug, limit: RUN_EVENTS }, ledger),
+          queryEventPage({ workspace, runId: slug, limit: events }, ledger),
           undefined,
         ),
       };

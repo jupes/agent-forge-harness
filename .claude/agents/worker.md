@@ -35,8 +35,12 @@ grep -rE "^export (interface|type) " src/types/ --include="*.ts"
 grep -rE "export (default|function|const)" src/components/ --include="*.tsx"
 
 # Check knowledge file for documented patterns
-cat knowledge/repos/<repo>.yaml | grep -A5 "patterns:"
+cat knowledge/repos/<repo>.yaml 2>/dev/null | grep -A5 "patterns:" || echo "no documented patterns for <repo>"
 ```
+
+A repo has a knowledge file only after `/add-repo` or `/sync-knowledge` has been run for it;
+`knowledge/repos/` is empty in a fresh checkout, and the harness itself has none. With none, rely
+on the searches above.
 
 **If a match exists**: use it — adapt if needed, document why.
 **If nothing fits**: note what you searched, then build new.

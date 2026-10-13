@@ -342,6 +342,9 @@ describe("set: keys it does not write", () => {
   const cases: Array<[string, string]> = [
     ["smiths.my-codex.model", "unknown smith"],
     ["smiths.claude-master.colour", "unknown smith field"],
+    ["smiths.claude-master.constructor", 'unknown smith field "constructor"'],
+    ["smiths.claude-master.__proto__", 'unknown smith field "__proto__"'],
+    ["smiths.claude-master.toString", 'unknown smith field "toString"'],
     ["benches.huge", "unknown bench"],
     ["workflow.other", "not a key"],
     ["nothing", "not a key"],
@@ -368,6 +371,33 @@ describe("set: keys it does not write", () => {
       "user",
     );
     expect(set(box, "smiths.my-codex.model", "n").ok).toBe(true);
+  });
+
+  test("a smith the user file names after a key every object has is refused for --workspace with that reason; the file is left alone and Object.prototype gains no field", () => {
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      const box = sandbox();
+      mkdirSync(box.userDir, { recursive: true });
+      writeFileSync(
+        box.userFile,
+        `[smiths.${name}]\nprovider = "claude"\nmodel = "m"\neffort = "low"\n`,
+      );
+      // A [smiths] table of its own, so the edit walks into it by the smith's name.
+      const before = '[smiths.claude-master]\nmodel = "x"\n';
+      writeFileSync(box.workspaceFile, before);
+      try {
+        const outcome = set(box, `smiths.${name}.model`, "n");
+        expect(Object.hasOwn(Object.prototype, "model")).toBe(false);
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok)
+          expect(outcome.error).toContain(
+            `smiths.${name}: "${name}" is a key every object has`,
+          );
+        untouched(box, box.workspaceFile, before);
+      } finally {
+        // A regression would leave the field on every object for the rest of the run.
+        Reflect.deleteProperty(Object.prototype, "model");
+      }
+    }
   });
 });
 

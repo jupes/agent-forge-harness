@@ -1,10 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { lockPath } from "./home";
-import { isPidAlive, readLock } from "./lock";
+import { type HearthLock, isPidAlive, readLock } from "./lock";
+import { HEALTH_ROUTE } from "./paths";
 import { createSupervisor } from "./supervisor";
+import { deadProxyEnvironment, startTestHearth } from "./testing";
+
+const REPO = resolve(import.meta.dir, "..", "..");
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -68,4 +73,61 @@ test("respawns on the same port when the hearth was stopped underneath it", asyn
   expect(await first.ensure()).toBe(port);
   expect(lock()?.pid).not.toBe(pid);
   expect(isPidAlive(lock()?.pid ?? 0)).toBe(true);
+}, 30_000);
+
+/** What a bun process run from the repository root prints, read as JSON. */
+async function printedBy(
+  script: string,
+  env: Record<string, string>,
+): Promise<unknown> {
+  const child = spawn(process.execPath, ["-e", script], {
+    cwd: REPO,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let out = "";
+  let err = "";
+  child.stdout?.on("data", (chunk) => {
+    out += String(chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    err += String(chunk);
+  });
+  const code = await new Promise<number | null>((done) =>
+    child.once("close", done),
+  );
+  if (code !== 0) throw new Error(`the script exited ${code}: ${err}`);
+  return JSON.parse(out);
+}
+
+/**
+ * In that process: whether a plain `fetch` of the lock's health route got any
+ * answer, and what `isHealthy` says of the lock.
+ */
+const PROBE = `
+import { isHealthy } from "./scripts/hearth/supervisor";
+const lock = JSON.parse(process.env.PROBE_LOCK ?? "null");
+let fetchAnswered = true;
+try {
+  await fetch("http://127.0.0.1:" + lock.port + ${JSON.stringify(HEALTH_ROUTE)}, {
+    signal: AbortSignal.timeout(2000),
+  });
+} catch {
+  fetchAnswered = false;
+}
+process.stdout.write(JSON.stringify({ fetchAnswered, healthy: await isHealthy(lock) }));
+`;
+
+test("isHealthy, in a bun process whose HTTP_PROXY names a port nothing listens on and that has no NO_PROXY, judges a running hearth healthy where fetch in that process gets no answer", async () => {
+  const running = await startTestHearth();
+  cleanup.push(() => running.close());
+  const lock: HearthLock | null = readLock(
+    lockPath(running.home, running.root),
+  );
+  expect(lock?.port).toBe(running.hearth.port);
+  const env = await deadProxyEnvironment();
+  expect(
+    await printedBy(PROBE, { ...env, PROBE_LOCK: JSON.stringify(lock) }),
+  ).toEqual({ fetchAnswered: false, healthy: true });
 }, 30_000);
