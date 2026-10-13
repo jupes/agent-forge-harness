@@ -1,8 +1,9 @@
 /**
  * Codex adapter: `codex exec --json`, prompt on stdin (`-`).
  *
- * `bun run codex:sync` runs first so `.agents/skills/` exists for the worktree
- * (inject `prepare` in tests).
+ * `bun run codex:sync` runs first, in the checkout the executor runs in when
+ * that is a checkout of the harness, so `.agents/skills/` there mirrors its
+ * `.claude/` (`codexSyncDirectory`; inject `prepare` in tests).
  *
  * Checked against `codex` on Windows, run directly (2026-10-08): 0.159.0 and
  * 0.160.0 both accept the flags below except the `-c` that carries the
@@ -31,6 +32,7 @@
  */
 
 import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
+import { resolveCheckout } from "../ledger/workspace";
 import {
   createCliAdapter,
   type ParsedLine,
@@ -128,21 +130,44 @@ export function parseCodexError(line: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Where `codex:sync` runs for a request: the top level of the checkout the
+ * executor runs in, when that checkout is the harness's — its main checkout
+ * or a linked worktree of it. Codex looks for `.agents/skills/` from the
+ * directory it runs in up to its repository's top level, and a linked
+ * worktree has a copy of its own, mirrored from its own `.claude/`.
+ * Undefined for a checkout of any other repository (a sub-repo, the
+ * directory `forge:doctor --task` makes): it holds no `.claude/` of the
+ * harness to mirror, and a sync anywhere else is not where Codex looks.
+ */
+export function codexSyncDirectory(
+  request: Pick<SpawnRequest, "worktree" | "workspace">,
+): string | undefined {
+  const run = resolveCheckout(request.worktree);
+  const harness = resolveCheckout(request.workspace);
+  return run.workspace === harness.workspace ? run.worktree : undefined;
+}
+
 function syncSkills(request: SpawnRequest): void {
+  const directory = codexSyncDirectory(request);
+  if (directory === undefined) return;
   const result = Bun.spawnSync(["bun", "run", "codex:sync"], {
-    cwd: request.workspace,
+    cwd: directory,
     stdout: "ignore",
     stderr: "ignore",
   });
   if (result.exitCode !== 0) {
     throw new Error(
-      `codex:sync failed (exit ${result.exitCode}) in ${request.workspace}`,
+      `codex:sync failed (exit ${result.exitCode}) in ${directory}`,
     );
   }
 }
 
 export interface CodexOptions {
-  /** Runs before each spawn; the default mirrors skills with `codex:sync` in the workspace. */
+  /**
+   * Runs before each spawn. The default runs `codex:sync` where
+   * `codexSyncDirectory` says, and nowhere when it names no directory.
+   */
   prepare?: (request: SpawnRequest) => Promise<void> | void;
 }
 

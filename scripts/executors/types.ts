@@ -19,8 +19,9 @@ export interface SpawnRequest {
   worktree: string;
   /**
    * The harness root the run was launched from. Events carry its main checkout
-   * (a linked worktree resolves to the checkout it belongs to); adapter
-   * preparation such as `codex:sync` runs in the directory as given.
+   * (a linked worktree resolves to the checkout it belongs to). Codex's
+   * `codex:sync` runs in the worktree's checkout when it belongs to the same
+   * main checkout, and not at all otherwise (`codexSyncDirectory`).
    */
   workspace: string;
   smith: Smith;

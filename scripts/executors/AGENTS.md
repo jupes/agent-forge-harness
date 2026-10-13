@@ -3,6 +3,11 @@
 Adapters that drive provider CLIs headlessly and turn their output into hearth events.
 
 - `cli-adapter.ts` is the shared machinery; `claude.ts` / `codex.ts` supply flags and a line parser only.
+- Before each Codex run, `codex:sync` runs at the top level of the checkout the executor runs in, when that checkout
+  is the harness's (its main checkout or a linked worktree of it): Codex reads `.agents/skills/` from there, mirrored
+  from that checkout's own `.claude/`. For a checkout of another repository (a sub-repo, `forge:doctor --task`'s
+  directory) it does not run at all, and the harness checkout the run was launched from is not written either
+  (`codexSyncDirectory`). Tested with a planted `codex:sync` script, never the real one.
 - The prompt goes on **stdin**, never argv. Child env is built by `buildChildEnv` — never pass `process.env` through.
 - Events are metadata only (hash of tool input, never the input). Validate with `scripts/hearth/validate.ts`.
 - `EventSink` is the seam to the ledger: `sinks.ts` has `ledgerSink`, one `appendEvent` per event. A sink reports a
