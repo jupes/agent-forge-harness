@@ -326,7 +326,10 @@ export type Sent =
   | { action: "create"; title: string }
   | { action: Exclude<BeadWrite, "create">; id: string };
 
-/** A write this page sent whose outcome it does not know. */
+/** What a kept notice says of a write: its outcome is not known, or it was refused where nobody saw it. */
+export type NoticeOutcome = "unknown" | "refused";
+
+/** A write this page sent whose outcome it does not know, or whose refusal nobody saw. */
 export interface Unsettled {
   /** What `begin` returned for it. */
   key: string;
@@ -337,9 +340,14 @@ export interface Unsettled {
   title?: string;
   /** Order of sending: larger is later. */
   at: number;
-  /** Why the outcome is not known, and how to check. */
+  /** Not known, or refused while no view of it was there. */
+  outcome: NoticeOutcome;
+  /** Why the outcome is not known and how to check, or what the refusal said. */
   message: string;
 }
+
+/** A write this page sent and has had no answer for yet. */
+export type Awaited = Omit<Unsettled, "outcome" | "message">;
 
 /** What the snapshot says about a bead: what the detail panel is given. */
 export interface SnapshotIssue {
@@ -375,12 +383,12 @@ export interface AppliedStore {
   settle(key: string): void;
   /** The answer left the outcome unknown: keep it, with what was said. */
   unknown(key: string, message: string): void;
-  /**
-   * The writes whose outcome is not known, oldest first: those to `id`, or
-   * the creates when no id is given. One still awaited on this page is not
-   * among them.
-   */
-  unsettled(id?: string): Unsettled[];
+  /** The write was refused, and no view of it was there to say so: keep it, with what was said. */
+  refused(key: string, message: string): void;
+  /** The writes this page sent for `id` (the creates, with no id) that have no answer yet, oldest first. */
+  awaiting(id?: string): Awaited[];
+  /** Every write kept as a notice, unknown or refused, for any bead, oldest first. */
+  notices(): Unsettled[];
   /** The operator has checked: forget it. */
   dismiss(key: string): void;
   subscribe(listener: () => void): () => void;
@@ -397,7 +405,10 @@ const KEPT_ATTEMPTS = 20;
 const TITLE_SHOWN = 200;
 
 /** A write that was sent. Without a message it is still awaited by the page that sent it. */
-type Attempt = Omit<Unsettled, "message"> & { message?: string };
+type Attempt = Omit<Unsettled, "message" | "outcome"> & {
+  message?: string;
+  outcome?: NoticeOutcome;
+};
 
 /** How to see for oneself what became of a write. */
 const checkFor = (attempt: { id?: string }): string =>
@@ -469,7 +480,17 @@ function attemptOf(value: unknown): Attempt | null {
   if (!BEAD_WRITES.some((known) => known === action)) return null;
   if (message !== undefined && typeof message !== "string") return null;
   const at = typeof value["at"] === "number" ? value["at"] : 0;
-  const said = message === undefined ? {} : { message };
+  // An older page kept no outcome: what it kept was an unknown one.
+  const said =
+    message === undefined
+      ? {}
+      : {
+          message,
+          outcome:
+            value["outcome"] === "refused"
+              ? ("refused" as const)
+              : ("unknown" as const),
+        };
   if (action === "create") {
     const title = value["title"];
     return typeof title === "string"
@@ -522,6 +543,7 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
       if (attempt === null) continue;
       attempts.set(attempt.key, {
         ...attempt,
+        outcome: attempt.outcome ?? "unknown",
         message:
           attempt.message ??
           notKnown(
@@ -646,14 +668,23 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
     unknown(key, message) {
       const attempt = attempts.get(key);
       if (attempt === undefined) return;
-      attempts.set(key, { ...attempt, message });
+      attempts.set(key, { ...attempt, outcome: "unknown", message });
       changed();
     },
-    unsettled: (id) =>
+    refused(key, message) {
+      const attempt = attempts.get(key);
+      if (attempt === undefined) return;
+      attempts.set(key, { ...attempt, outcome: "refused", message });
+      changed();
+    },
+    awaiting: (id) =>
+      [...attempts.values()]
+        .filter((attempt) => attempt.message === undefined && attempt.id === id)
+        .sort((a, b) => a.at - b.at),
+    notices: () =>
       [...attempts.values()]
         .filter(
-          (attempt): attempt is Unsettled =>
-            attempt.message !== undefined && attempt.id === id,
+          (attempt): attempt is Unsettled => attempt.message !== undefined,
         )
         .sort((a, b) => a.at - b.at),
     dismiss(key) {
@@ -715,8 +746,14 @@ export function useCreated(): Applied[] {
   return applied.created();
 }
 
-/** The writes to `id` (or the creates) whose outcome is not known, kept current. */
-export function useUnsettled(id?: string): Unsettled[] {
+/** Every write kept as a notice, for any bead, kept current. */
+export function useNotices(): Unsettled[] {
   useStore();
-  return applied.unsettled(id);
+  return applied.notices();
+}
+
+/** The writes this page sent for `id` (the creates, with no id) and has no answer for yet, kept current. */
+export function useAwaiting(id?: string): Awaited[] {
+  useStore();
+  return applied.awaiting(id);
 }
