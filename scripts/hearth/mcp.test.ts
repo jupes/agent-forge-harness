@@ -55,14 +55,16 @@ import type { ApiRoute } from "./api";
 import { lockPath, tokenPath } from "./home";
 import { type HearthLock, readLock } from "./lock";
 import {
-  type CouncilServer,
-  createHearthMcpServer,
   type Exchange,
-  FORGE_TOOLS,
-  type ForgeTool,
   type LoopbackAnswer,
   type LoopbackRequest,
   loopbackExchange,
+} from "./loopback";
+import {
+  type CouncilServer,
+  createHearthMcpServer,
+  FORGE_TOOLS,
+  type ForgeTool,
   parseArgs,
 } from "./mcp";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";

@@ -21,7 +21,7 @@ import {
   releaseLock,
   updateLock,
 } from "./lock";
-import { HEALTH_ROUTE } from "./paths";
+import { healthProblem } from "./loopback";
 
 const SERVER_SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -50,22 +50,14 @@ export interface SupervisorOptions {
  * is not enough: the pid of a hearth that was killed can belong to any process
  * by now. Used by this supervisor and by a hearth started directly
  * (`createHearth`).
+ *
+ * Asked over `loopbackExchange`, not `fetch`: under Bun, `fetch` sends a
+ * request for `127.0.0.1` to `HTTP_PROXY` unless `NO_PROXY` covers it, which
+ * would judge a healthy hearth unhealthy.
  */
 export async function isHealthy(lock: HearthLock): Promise<boolean> {
   if (!isPidAlive(lock.pid)) return false;
-  try {
-    const res = await fetch(`http://127.0.0.1:${lock.port}${HEALTH_ROUTE}`, {
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as {
-      data?: { pid?: number; root?: string };
-    };
-    // A hearth answers the very root it wrote into its lock.
-    return body.data?.pid === lock.pid && body.data.root === lock.root;
-  } catch {
-    return false;
-  }
+  return (await healthProblem(lock)) === null;
 }
 
 const sleep = (ms: number): Promise<void> =>

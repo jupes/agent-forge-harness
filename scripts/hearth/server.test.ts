@@ -18,6 +18,7 @@ import { lockPath, tokenPath } from "./home";
 import { type HearthLock, readLock } from "./lock";
 import { HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { createHearth, type Hearth, type StartedHearth } from "./server";
+import { deadProxyEnvironment } from "./testing";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -388,15 +389,20 @@ interface ServerProcess {
 
 /**
  * `bun scripts/hearth/server.ts --root <root>` with `home` as its
- * `AGENT_FORGE_HOME`, stopped after the test through its own handle.
+ * `AGENT_FORGE_HOME`, stopped after the test through its own handle. The rest
+ * of its environment is `base`.
  */
-function runServer(home: string, root: string): ServerProcess {
+function runServer(
+  home: string,
+  root: string,
+  base: NodeJS.ProcessEnv = process.env,
+): ServerProcess {
   const child = spawn(
     process.execPath,
     [join(import.meta.dir, "server.ts"), "--root", root],
     {
       env: {
-        ...process.env,
+        ...base,
         AGENT_FORGE_HOME: home,
         HEARTH_PORT: "",
         COUNCIL_RUNS_DIR: join(root, "council-runs"),
@@ -458,6 +464,22 @@ test("the server process prints 'already running' and exits 0 after the lock's p
   expect(standIn.asked).toEqual([`GET ${HEALTH_ROUTE}`]);
   // Reused, not replaced.
   expect(readLock(lockPath(home, root))).toEqual(planted);
+}, 30_000);
+
+test("with HTTP_PROXY naming a port nothing listens on and no NO_PROXY, the server process prints 'already running' for the running hearth of its root, exits 0, and leaves its lock and token file as they were", async () => {
+  const { home, root } = places();
+  const running = await startIn(home, root);
+  expect(running.kind).toBe("started");
+  const lock = readLock(lockPath(home, root));
+  expect(lock?.port).toBe(running.port);
+  const token = readFileSync(tokenPath(home, root), "utf8");
+  const server = runServer(home, root, await deadProxyEnvironment());
+  expect(await server.firstLine).toBe(
+    `hearth already running on ${running.url}`,
+  );
+  expect(await server.closed).toBe(0);
+  expect(readLock(lockPath(home, root))).toEqual(lock);
+  expect(readFileSync(tokenPath(home, root), "utf8")).toBe(token);
 }, 30_000);
 
 test("health reports the pid and root", async () => {
