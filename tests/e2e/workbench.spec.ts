@@ -5,6 +5,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
+import { TOKEN_ROUTE } from "../../scripts/hearth/paths";
 import type {
   EventsPage,
   OperatorEnvelope,
@@ -146,6 +147,52 @@ test("a move the hearth refuses says why on the card, and nothing moves", async 
   await expect(cardIn(page, "approved", id)).toHaveCount(0);
   expect(
     errors.filter((text) => !/Failed to load resource.*409/.test(text)),
+  ).toEqual([]);
+});
+
+test("a move whose operator token cannot be had says on the card it was not sent; no move is posted, the card stays, and bd gets no update for the bead", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  const id = await createBead(page, `Workbench not sent ${Date.now()}`);
+  seedProposed(id);
+  await openSettled(page, "/index.html#/workbench");
+  // A new document: the token the bead builder's create fetched would otherwise stay.
+  await reloadSettled(page);
+  await expect(cardIn(page, "proposed", id)).toBeVisible();
+  const callsBefore = standInCalls().length;
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") posts.push(request.url());
+  });
+  // The page's request for the token is refused, as while the control plane starts.
+  await page.route(`**${TOKEN_ROUTE}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "the control plane is starting",
+      }),
+    }),
+  );
+  await page.getByRole("button", { name: `Approve ${id}` }).click();
+
+  await expect(
+    cardIn(page, "proposed", id).locator('[data-outcome="failed"]'),
+  ).toHaveText(
+    "Not sent (approve): the page could not get an operator token from the control plane (the control plane is starting). Nothing was changed.",
+  );
+  await expect(cardIn(page, "approved", id)).toHaveCount(0);
+  expect(posts).toEqual([]);
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => call[0] === "update" && call.includes(id)),
+  ).toEqual([]);
+  expect(
+    errors.filter((text) => !/Failed to load resource.*503/.test(text)),
   ).toEqual([]);
 });
 
