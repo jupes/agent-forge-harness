@@ -699,6 +699,20 @@ describe("test-evidence: the branch's own commits", () => {
     expect(ran(recorded).result.passed).toBe(true);
   });
 
+  test("a branch whose own commits change no files (merges only) has nothing to test, and the check says so", () => {
+    const recorded = evidence({
+      branch: [[], []],
+      base: [["scripts/a.ts"]],
+    });
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: true,
+      skipped: true,
+      skipReason:
+        "this branch's 2 commits since origin/HEAD change no files: nothing to test",
+    });
+  });
+
   test("a branch whose own commits change code with no test file fails, and says which commits were read", () => {
     const recorded = evidence({
       branch: [["README.md"], ["scripts/a.ts"]],
