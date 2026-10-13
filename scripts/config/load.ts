@@ -44,6 +44,11 @@ export interface LoadOptions {
   harnessRoot: string;
   home?: string | undefined;
   env?: Record<string, string | undefined> | undefined;
+  /**
+   * Text that stands in for a layer's file, as if the file held it (and so
+   * existed). `forge:config set` checks an edit this way before writing it.
+   */
+  contents?: { user?: string; workspace?: string } | undefined;
 }
 
 type Table = Record<string, unknown>;
@@ -56,9 +61,31 @@ function fail(file: string, key: string, message: string): never {
   throw new Error(`${file}: ${key}: ${message}`);
 }
 
-function readToml(file: string): Table {
+/** A leading byte-order mark, which `Bun.TOML` reads as an empty document. */
+const BOM = "\uFEFF";
+
+/**
+ * A config file's text. UTF-16 (what Windows PowerShell 5.1 writes by default)
+ * is refused with a message: read as UTF-8 it is not TOML, and a lenient
+ * parse could take it for an empty file that still counts as present.
+ */
+export function readConfigText(file: string): string {
+  const bytes = readFileSync(file);
+  const [first, second] = bytes;
+  if (
+    (first === 0xff && second === 0xfe) ||
+    (first === 0xfe && second === 0xff)
+  )
+    throw new Error(`${file}: is saved as UTF-16; save it as UTF-8`);
+  return bytes.toString("utf8");
+}
+
+function readToml(file: string, content?: string): Table {
+  const text = content ?? readConfigText(file);
   try {
-    const parsed = Bun.TOML.parse(readFileSync(file, "utf8"));
+    const parsed = Bun.TOML.parse(
+      text.startsWith(BOM) ? text.slice(BOM.length) : text,
+    );
     return isTable(parsed) ? parsed : {};
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -93,7 +120,9 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
     "config.toml",
   );
   const workspaceFile = join(options.harnessRoot, "agent-forge.toml");
-  const hasWorkspace = existsSync(workspaceFile);
+  const given = options.contents ?? {};
+  const hasWorkspace =
+    given.workspace !== undefined || existsSync(workspaceFile);
 
   const smiths: Record<string, Smith> = {};
   const provenance: Record<string, Provenance> = {};
@@ -119,14 +148,18 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   }
   set("execution.env.pass", envPass, "builtin");
 
-  const layers: Array<{ file: string; secure: boolean }> = [
-    { file: userFile, secure: !hasWorkspace },
-    { file: workspaceFile, secure: true },
+  const layers: Array<{
+    file: string;
+    secure: boolean;
+    content: string | undefined;
+  }> = [
+    { file: userFile, secure: !hasWorkspace, content: given.user },
+    { file: workspaceFile, secure: true, content: given.workspace },
   ];
-  for (const { file, secure } of layers) {
-    if (!existsSync(file)) continue;
+  for (const { file, secure, content } of layers) {
+    if (content === undefined && !existsSync(file)) continue;
     files.push(file);
-    const doc = readToml(file);
+    const doc = readToml(file, content);
 
     const workflow = doc.workflow;
     if (isTable(workflow) && typeof workflow.default_crew === "string") {
