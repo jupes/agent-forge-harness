@@ -17,8 +17,8 @@
  * stops the provider: the envelope reports `recorded`, `notRecorded` and the
  * first `ledgerError`, and `ledger` names the file written.
  *
- * --run must be a Forge run id (a run's slug): any other value is refused
- * before anything is started or written. With --run, the run's correlation
+ * A --run value that is not a Forge run id (a run's slug) is refused before
+ * anything is started or written. With --run, the run's correlation
  * (`scripts/run-correlation.ts`) is written in the worktree and its path put
  * in the child's environment, so a quality gate that runs inside the child is
  * linked to this bead and run. The worktree must be a checkout's top level for
@@ -191,7 +191,7 @@ export async function runExec(
     return failure(`--complexity must be one of ${BENCH_NAMES.join(", ")}`);
   }
   const runId = args.get("run");
-  if (runId !== undefined && !isValidSlug(runId)) {
+  if (runId && !isValidSlug(runId)) {
     return failure(
       "--run must be a Forge run id: a letter or digit, then letters, digits, dot, dash or underscore (80 at most)",
     );
