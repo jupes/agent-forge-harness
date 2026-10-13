@@ -14,6 +14,7 @@ import {
   createFromBuilder,
   isList,
   requireStandIn,
+  seedProposed,
   standInCalls,
 } from "./stand-in";
 
@@ -375,6 +376,34 @@ test("create, claim and comment from the bead builder go through the control pla
     "worklog: round trip comment",
   );
   await expect(again).toContainText(parentId);
+});
+
+test("labels bd prints in its answer to a claim are shown in a Labels row on the builder's created card", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Labelled by bd");
+  const card = page.locator("#bead-created-card");
+  const row = (name: string) =>
+    card
+      .locator(".af-detail-row")
+      .filter({ has: page.locator("dt", { hasText: name }) });
+  // The create's answer has no labels: the card has no Labels row.
+  await expect(row("Status")).toBeVisible();
+  await expect(row("Labels")).toHaveCount(0);
+
+  // bd's issue now holds a label, put there as the queue's propose would; bd
+  // prints it with the claim.
+  seedProposed(id);
+  const actions = card.getByRole("region", { name: `Actions on ${id}` });
+  await actions.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(actions.locator('[data-outcome="done"]')).toContainText(
+    `Claimed ${id}`,
+  );
+  await expect(row("Labels").locator("dd .af-tag")).toHaveText([
+    "queue:proposed",
+  ]);
 });
 
 test("claim, comment and close from the issue detail panel; what was changed is still shown when the row is reopened and after a reload", async ({
@@ -1066,6 +1095,198 @@ test("a page reloaded while a write is out says afterwards that its outcome is n
 
   // Here both requests were held before the control plane: nothing reached bd.
   // On a real page either may have: that is why the page will not say.
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([]);
+});
+
+/**
+ * Wait until a freshly loaded page has drawn the list's live region, which is
+ * always there and drawn from the page's store, then require the list itself
+ * to be absent: no write is listed to check.
+ */
+async function expectNothingToCheck(page: Page): Promise<void> {
+  await expect(page.locator(".af-writes-to-check-live")).toHaveCount(1);
+  await expect(writesToCheck(page)).toHaveCount(0);
+}
+
+test("a create and a claim that bd confirmed are not listed under Writes to check, then or after a reload", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Confirmed, then reloaded");
+  const card = page.locator("#bead-created-card");
+  const actions = card.getByRole("region", { name: `Actions on ${id}` });
+  await actions.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(actions.locator('[data-outcome="done"]')).toContainText(
+    `Claimed ${id}`,
+  );
+  await expectNothingToCheck(page);
+
+  await reloadSettled(page);
+  // The page read what it kept: the bead and the claim's answer are shown.
+  await expect(card.locator(".issue-id-copy code").first()).toHaveText(id);
+  await expect(card).toContainText("in progress");
+  await expectNothingToCheck(page);
+});
+
+test("a create and a claim that bd refused, each shown where it was sent, are not listed under Writes to check, then or after a reload", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
+  await page.fill("#bb-title", "Refused where it was sent");
+  await page.fill("#bb-parent", "e2e-no-such-parent");
+  await createButton(page).click();
+  const created = page.locator("#bb-create-result");
+  await expect(created).toHaveAttribute("data-outcome", "failed");
+  await expect(created).toContainText(
+    "parent issue e2e-no-such-parent not found",
+  );
+  await expectNothingToCheck(page);
+
+  // A claim, from an open issue panel, of an id bd does not know.
+  const ghost = "e2e-999998";
+  await stubSnapshot(page, snapshotWith(ghost, "A bead bd does not know"));
+  await openIssues(page);
+  await page.locator(`[data-issue-id="${ghost}"]`).click();
+  const actions = page
+    .locator(".af-detail")
+    .getByRole("region", { name: `Actions on ${ghost}` });
+  await actions.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(actions.locator('[data-outcome="failed"]')).toContainText(
+    "no issue found",
+  );
+  await expectNothingToCheck(page);
+
+  await reloadSettled(page);
+  await expect(page.locator(`[data-issue-id="${ghost}"]`)).toBeVisible();
+  await expectNothingToCheck(page);
+  // Both reached bd, which refused them.
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=Refused where it was sent",
+      "--type=task",
+      "--priority=2",
+      "--parent=e2e-no-such-parent",
+      "--json",
+    ],
+    ["update", "--claim", "--json", "--", ghost],
+  ]);
+});
+
+/** What a view says when the page already holds twenty writes out or to check. */
+const NO_ROOM =
+  "Not sent: 20 writes from this page are still out or listed under Writes to check. Dismiss the ones you have checked, then try again.";
+
+test("with twenty writes to check, a twenty-first comment and a create are not sent and say so, the twenty stay listed, and after a Dismiss a create is sent", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Twenty to check");
+  const callsBefore = standInCalls().length;
+  let comments = 0;
+  await page.route(`**${API}/beads/${id}/comment`, (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    comments++;
+    const answer = notFinished(id, "comments add");
+    return route.fulfill({
+      status: answer.status,
+      contentType: "application/json",
+      body: JSON.stringify(answer.body),
+    });
+  });
+  const actions = page
+    .locator("#bead-created-card")
+    .getByRole("region", { name: `Actions on ${id}` });
+  const listed = writesToCheck(page).locator('[data-outcome="unknown"]', {
+    hasText: `comment on ${id}`,
+  });
+  for (let n = 1; n <= 20; n++) {
+    await actions.getByLabel("Comment").fill(`worklog: comment ${n}`);
+    await actions.getByRole("button", { name: "Add comment" }).click();
+    await expect(listed).toHaveCount(n);
+  }
+
+  await actions.getByLabel("Comment").fill("worklog: the twenty-first");
+  await actions.getByRole("button", { name: "Add comment" }).click();
+  await expect(actions.locator('[data-outcome="failed"]')).toHaveText(NO_ROOM);
+  await expect(listed).toHaveCount(20);
+  expect(comments).toBe(20);
+  await expect(actions.getByLabel("Comment", { exact: true })).toHaveValue(
+    "worklog: the twenty-first",
+  );
+
+  await page.fill("#bb-title", "One write too many");
+  await createButton(page).click();
+  const result = page.locator("#bb-create-result");
+  await expect(result).toHaveText(NO_ROOM);
+  await expect(result).toHaveAttribute("data-outcome", "failed");
+  await expect(listed).toHaveCount(20);
+
+  // One checked and dismissed: there is room, and the create goes out.
+  await writesToCheck(page)
+    .getByRole("button", { name: `Dismiss the comment notice for ${id}` })
+    .first()
+    .click();
+  await expect(listed).toHaveCount(19);
+  await createButton(page).click();
+  await expect(page.locator("#bead-created-card")).toContainText(
+    "One write too many",
+  );
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=One write too many",
+      "--type=task",
+      "--priority=2",
+      "--json",
+    ],
+  ]);
+});
+
+test("a create whose operator token cannot be had is said as not sent, is not listed under Writes to check, and reaches no bd", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
+  // A fresh page has no token yet: the create's own request for it is refused.
+  await page.route(`**${TOKEN_ROUTE}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "the control plane is starting",
+      }),
+    }),
+  );
+  await page.fill("#bb-title", "Never sent");
+  await createButton(page).click();
+
+  const result = page.locator("#bb-create-result");
+  await expect(result).toHaveText(
+    "Not sent: the page could not get an operator token from the control plane (the control plane is starting). Nothing was changed.",
+  );
+  await expect(result).toHaveAttribute("data-outcome", "failed");
+  await expect(writesToCheck(page)).toHaveCount(0);
+  await expect(page.locator("#bead-created-card")).toHaveCount(0);
   expect(
     standInCalls()
       .slice(callsBefore)

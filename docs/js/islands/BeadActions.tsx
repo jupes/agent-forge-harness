@@ -7,6 +7,7 @@ import {
   actionState,
   applied,
   beadWrites,
+  NO_ROOM,
   useAwaiting,
   useBeadWrites,
   type WriteOutcome,
@@ -53,8 +54,9 @@ function said(action: Action, data: BeadWriteResult): string {
  * what `bd` said is shown here and kept in the page's store, so the views
  * that show this bead can show it too. An answer that leaves the outcome
  * unknown is kept there as well, and listed under Writes to check, as is a
- * refusal that comes back after this block is gone. With no control plane
- * every control is disabled and one line says why.
+ * refusal that comes back after this block is gone. While the page holds
+ * twenty writes out or listed, an action is not sent and the block says so.
+ * With no control plane every control is disabled and one line says why.
  */
 export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
   const plane = useBeadWrites();
@@ -98,10 +100,14 @@ export function BeadActions({ id, status }: BeadActionsProps): JSX.Element {
     sent: { text?: string } = {},
   ): Promise<void> {
     if (sending.current) return;
+    const key = applied.begin({ action, id });
+    if (key === null) {
+      setResult({ tone: "failed", message: NO_ROOM });
+      return;
+    }
     sending.current = true;
     setPending(action);
     setResult(null);
-    const key = applied.begin({ action, id });
     sentKeys.add(key);
     try {
       const outcome = await send();
