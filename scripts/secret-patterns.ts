@@ -4,6 +4,7 @@
  * redaction. Imports nothing, so it is safe in any runtime.
  */
 
+/** A kind of secret one regular expression finds. */
 export interface SecretPattern {
   kind: string;
   pattern: RegExp;
@@ -12,6 +13,13 @@ export interface SecretPattern {
    * pattern without it treats every match as a secret.
    */
   exempt?: (match: string, offset: number, text: string) => boolean;
+}
+
+/** A kind of secret found by reading the text rather than by one pattern. */
+export interface SecretFinder {
+  kind: string;
+  /** Where the secrets are in `text`: `[start, end)` spans, in order, none overlapping. */
+  spans: (text: string) => Array<[number, number]>;
 }
 
 /** A key body is at least this long, so a slug segment this long may be one. */
@@ -69,17 +77,79 @@ function isSlugNotKey(match: string, offset: number, text: string): boolean {
   return letters >= 2;
 }
 
-export const SECRET_PATTERNS: readonly SecretPattern[] = [
+/** A private key's first or last line. */
+const KEY_MARKER =
+  /-----(BEGIN|END) (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/;
+
+/**
+ * Where private keys are in `text`, read in one pass over their marker lines.
+ * A pattern that looked from every BEGIN line for an END line read the rest of
+ * the text again at each one, which took seconds over a megabyte of BEGIN
+ * lines; this reads the text once, however many marker lines it holds.
+ *
+ * - A key runs from a BEGIN line to the first END line after it.
+ * - A BEGIN line with no END line after it is a key cut short: it runs to the
+ *   end of the text.
+ * - An END line with no BEGIN line before it is the rest of a key that began
+ *   somewhere else (an earlier comment, another file): it runs back to where
+ *   the key before it ended, or to the start of the text.
+ */
+function privateKeySpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const markers = new RegExp(KEY_MARKER.source, "g");
+  let open: number | null = null;
+  let previousEnd = 0;
+  for (
+    let marker = markers.exec(text);
+    marker !== null;
+    marker = markers.exec(text)
+  ) {
+    if (marker[1] === "BEGIN") {
+      open ??= marker.index;
+      continue;
+    }
+    const end = marker.index + marker[0].length;
+    spans.push([open ?? previousEnd, end]);
+    open = null;
+    previousEnd = end;
+  }
+  if (open !== null) spans.push([open, text.length]);
+  return spans;
+}
+
+/** `://`, then a user and a password, up to the `@` before the host. */
+const URL_USERINFO = /:\/\/([^\s/?#:[\]"<>]*:[^\s/?#[\]"<>]+)(?=@)/;
+
+/**
+ * The user and password written into a URL, between `scheme://` and the `@`
+ * before the host, read as a URL parser reads them: the user stops at the
+ * first `:`, and the password runs to the last `@` before the path, query or
+ * fragment. The scheme and the host are kept. A URL with a user and no
+ * password, an scp-style `git@host:path` remote, and a `:` or `@` after the
+ * host are not matched. Nor is a redaction marker (`[` and `]` never belong to
+ * a user or a password), so text redacted once has nothing more to find.
+ *
+ * Found from the literal `://` rather than with a lookbehind for it: a
+ * lookbehind is tried at every character, and made scanning ordinary text
+ * about six times slower.
+ */
+function urlCredentialSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const found = new RegExp(URL_USERINFO.source, "g");
+  for (let url = found.exec(text); url !== null; url = found.exec(text)) {
+    const start = url.index + "://".length;
+    spans.push([start, start + (url[1] ?? "").length]);
+  }
+  return spans;
+}
+
+export const SECRET_PATTERNS: readonly (SecretPattern | SecretFinder)[] = [
   {
     kind: "provider-api-key-assignment",
     pattern:
       /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|OPENROUTER_API_KEY)\s*[:=]\s*["']?[^\s"']{8,}/gi,
   },
-  {
-    kind: "private-key",
-    pattern:
-      /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
-  },
+  { kind: "private-key", spans: privateKeySpans },
   {
     kind: "anthropic-api-key",
     pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g,
@@ -91,10 +161,15 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
   },
   {
     kind: "github-token",
-    pattern: /gh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}/g,
+    // Classic tokens, and fine-grained ones: `github_pat_`, a run of letters
+    // and digits, `_`, and another run. Twenty letters and digits straight
+    // after `github_pat_` are enough, so a token cut short is still caught
+    // and a snake_case name that merely starts with the prefix is not.
+    pattern: /gh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9]{20,}\w*/g,
   },
   { kind: "aws-access-key", pattern: /AKIA[0-9A-Z]{16}/g },
   { kind: "slack-token", pattern: /xox(?:b|p|a|r|s)-[A-Za-z0-9-]{10,}/g },
+  { kind: "url-credentials", spans: urlCredentialSpans },
 ];
 
 export interface SecretRedaction {
@@ -110,18 +185,47 @@ export function redactSecrets(text: string): {
   let sanitized = text;
   const redactions: SecretRedaction[] = [];
   for (const secret of SECRET_PATTERNS) {
-    let count = 0;
-    // None of the patterns has a capture group, so the callback's second and
-    // third arguments are the match's offset and the text being scanned.
-    sanitized = sanitized.replace(
-      secret.pattern,
-      (match: string, offset: number, scanned: string) => {
-        if (secret.exempt?.(match, offset, scanned)) return match;
-        count++;
-        return `[REDACTED:${secret.kind}]`;
-      },
-    );
-    if (count > 0) redactions.push({ kind: secret.kind, count });
+    const found =
+      "spans" in secret
+        ? redactSpans(sanitized, secret)
+        : redactMatches(sanitized, secret);
+    sanitized = found.text;
+    if (found.count > 0)
+      redactions.push({ kind: secret.kind, count: found.count });
   }
   return { text: sanitized, redactions };
+}
+
+function redactMatches(
+  text: string,
+  secret: SecretPattern,
+): { text: string; count: number } {
+  let count = 0;
+  // None of the patterns has a capture group, so the callback's second and
+  // third arguments are the match's offset and the text being scanned.
+  const redacted = text.replace(
+    secret.pattern,
+    (match: string, offset: number, scanned: string) => {
+      if (secret.exempt?.(match, offset, scanned)) return match;
+      count++;
+      return `[REDACTED:${secret.kind}]`;
+    },
+  );
+  return { text: redacted, count };
+}
+
+function redactSpans(
+  text: string,
+  secret: SecretFinder,
+): { text: string; count: number } {
+  const spans = secret.spans(text);
+  if (spans.length === 0) return { text, count: 0 };
+  const pieces: string[] = [];
+  let kept = 0;
+  for (const [start, end] of spans) {
+    pieces.push(text.slice(kept, start), `[REDACTED:${secret.kind}]`);
+    kept = end;
+  }
+  pieces.push(text.slice(kept));
+  return { text: pieces.join(""), count: spans.length };
 }

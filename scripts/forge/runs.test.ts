@@ -80,6 +80,28 @@ describe("run summaries", () => {
     expect(done.complete).toBe(true);
   });
 
+  test("a run whose only write recorded ship, gated or auto, reads complete with no next phase", () => {
+    // The mini path given --smith records itself with exactly one ship write.
+    for (const mode of ["gated", "auto"] as const) {
+      const written = recordComplete(
+        "ship",
+        "x-mini",
+        () => true,
+        null,
+        { mode, beadId: "bd-1" },
+        () => "2026-06-04T00:00:00.000Z",
+      );
+      if (written.data === null) throw new Error(written.error ?? "refused");
+      expect(written.data.completed).toEqual(["ship"]);
+      const summary = summarizeRun(written.data);
+      expect({ mode, complete: summary.complete, next: summary.next }).toEqual({
+        mode,
+        complete: true,
+        next: null,
+      });
+    }
+  });
+
   test("mode defaults to gated and carries through when set", () => {
     expect(summarizeRun(state("a", [])).mode).toBe("gated");
     expect(summarizeRun(state("a", [], undefined, { mode: "auto" })).mode).toBe(

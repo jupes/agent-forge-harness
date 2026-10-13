@@ -24,6 +24,12 @@ process spawned is git, by the registry.
   `description` (`filemap-cli.ts - --bd-json` takes that output as it is). Plain `bd show` renders
   Markdown and garbles a glob that holds `*`; the garbled form is refused, because it puts `**`
   inside a segment.
+- `filemap-cli.ts` refuses a file that has a `Checkpoint` heading unless it is told what the file
+  is: `--plan` reads each checkpoint, and `--description` reads it as one task's description, the
+  way `--bd-json` reads the stored one.
+- In a plan, a heading of level two or deeper above a checkpoint's level ends the checkpoint even
+  inside a fence, so a fence the parser reads wrong never hands a checkpoint a plan-level `Files`
+  section. A level-one `# …` line inside a fence does not end it: there it is a shell comment.
 - `reservations.ts` and `eligibility.ts` consume file maps (below).
 
 ## The queue (`queue.ts`, `queue-lock.ts`)

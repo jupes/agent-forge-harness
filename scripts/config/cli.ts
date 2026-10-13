@@ -90,7 +90,8 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
   if (command === "get") {
     const key = positional[1];
     if (!key) return fail("usage: forge:config get <key>");
-    const entry = provenance[key];
+    // A key of its own: `constructor` is on every object.
+    const entry = Object.hasOwn(provenance, key) ? provenance[key] : undefined;
     if (!entry) return fail(`unknown key "${key}" (see: forge:config keys)`);
     return done(
       { key, ...entry },

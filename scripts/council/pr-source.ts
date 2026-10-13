@@ -147,7 +147,9 @@ function shownStderr(stderr: string): string {
     .trim();
   return (
     sanitizeContent(shown, "redact")
-      // A private key with no end line is not a pattern the scanner knows.
+      // The scanner takes a private key with no END line to the end of the
+      // text; this also takes any other BEGIN line, such as one cut short or
+      // a key type the scanner does not list.
       .text.replace(/-----BEGIN[\s\S]*$/, "[REDACTED:private-key]")
       .slice(0, 1_000)
   );

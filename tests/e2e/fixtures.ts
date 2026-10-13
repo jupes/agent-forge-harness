@@ -3,11 +3,13 @@ import type {
   ForgeRunSnapshot,
   ForgeRunView,
   GateRun,
+  PhaseRow,
 } from "../../scripts/dashboard/forge-run-model";
 import type {
   RepoEntry,
   ReposKnowledge,
 } from "../../scripts/dashboard/repos-knowledge-model";
+import type { ForgePhase, ReviewRound } from "../../scripts/forge/phases";
 import type { BeadsIssue, BeadsPayload, IssueStatus } from "../../types/beads";
 
 /**
@@ -244,9 +246,177 @@ const RUN: ForgeRunView = {
     },
   ],
   reviews: [],
+  halted: null,
+  reviewPending: null,
+  revising: false,
   gate: GATE,
   gateScope: { checkout: CHECKOUT, slug: "design-system" },
 };
+
+const PIPELINE: readonly ForgePhase[] = [
+  "research",
+  "plan",
+  "implement",
+  "ship",
+];
+
+/** Phase cells as the API reports them for a run that recorded `completed`. */
+function phasesFor(slug: string, completed: readonly ForgePhase[]): PhaseRow[] {
+  const active = PIPELINE.find((phase) => !completed.includes(phase));
+  const artifact: Record<ForgePhase, string | null> = {
+    research: `plans/research/${slug}.md`,
+    plan: `plans/drafts/${slug}.md`,
+    implement: null,
+    ship: `reports/${slug}-ship.md`,
+  };
+  return PIPELINE.map((id) => ({
+    id,
+    state: completed.includes(id)
+      ? "complete"
+      : id === active
+        ? "active"
+        : "locked",
+    artifact: artifact[id],
+    artifactMissing: false,
+  }));
+}
+
+const findings = (blocker: number, high: number) => ({
+  blocker,
+  high,
+  medium: 0,
+  low: 0,
+});
+
+const passed = (phase: ForgePhase): ReviewRound => ({
+  phase,
+  round: 1,
+  verdict: "PASS",
+  findings: findings(0, 0),
+  action: "advance",
+  reason: `Review PASSED "${phase}".`,
+  at: ts,
+});
+
+/** An auto run with no gate of its own, held as `over` says. */
+function autoRun(
+  slug: string,
+  completed: readonly ForgePhase[],
+  over: Pick<ForgeRunView, "reviews" | "halted" | "reviewPending" | "revising">,
+): ForgeRunView {
+  return {
+    slug,
+    feature: null,
+    epic: null,
+    mode: "auto",
+    complete: completed.includes("ship"),
+    updatedAt: ts,
+    phases: phasesFor(slug, completed),
+    gate: null,
+    gateScope: { checkout: CHECKOUT, slug },
+    ...over,
+  };
+}
+
+export const HALT_REASON =
+  '2 revision rounds did not clear "plan" (still 1 blocker, 0 high).';
+
+/** An auto run its plan review halted after two revisions. */
+export const HALTED_RUN: ForgeRunView = autoRun(
+  "search-index",
+  ["research", "plan"],
+  {
+    reviews: [
+      passed("research"),
+      {
+        ...passed("plan"),
+        verdict: "FAIL",
+        findings: findings(1, 1),
+        action: "revise",
+        reason:
+          'Review FAILED "plan" with 1 blocker and 1 high findings; revising.',
+      },
+      {
+        ...passed("plan"),
+        round: 2,
+        verdict: "FAIL",
+        findings: findings(1, 0),
+        action: "revise",
+        reason:
+          'Review FAILED "plan" with 1 blocker and 0 high findings; revising.',
+      },
+      {
+        ...passed("plan"),
+        round: 3,
+        verdict: "FAIL",
+        findings: findings(1, 0),
+        action: "halt",
+        reason: HALT_REASON,
+      },
+    ],
+    halted: { phase: "plan", reason: HALT_REASON },
+    reviewPending: null,
+    revising: false,
+  },
+);
+
+/** An auto run whose research review asked for a revision. */
+export const REVISING_RUN: ForgeRunView = autoRun(
+  "billing-export",
+  ["research"],
+  {
+    reviews: [
+      {
+        ...passed("research"),
+        verdict: "FAIL",
+        findings: findings(0, 1),
+        action: "revise",
+        reason:
+          'Review FAILED "research" with 0 blocker and 1 high findings; revising.',
+      },
+    ],
+    halted: null,
+    reviewPending: "research",
+    revising: true,
+  },
+);
+
+/** An auto run that recorded implement and has not reviewed it yet. */
+export const AWAITING_REVIEW_RUN: ForgeRunView = autoRun(
+  "audit-log",
+  ["research", "plan", "implement"],
+  {
+    reviews: [passed("research"), passed("plan")],
+    halted: null,
+    reviewPending: "implement",
+    revising: false,
+  },
+);
+
+export const SHIP_HALT_REASON =
+  'The review of "ship" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.';
+
+/** An auto run that recorded ship, whose ship review returned no verdict. */
+export const SHIP_HALTED_RUN: ForgeRunView = autoRun(
+  "release-notes",
+  PIPELINE,
+  {
+    reviews: [
+      passed("research"),
+      passed("plan"),
+      passed("implement"),
+      {
+        ...passed("ship"),
+        verdict: "UNREADABLE",
+        action: "halt",
+        reason: SHIP_HALT_REASON,
+      },
+    ],
+    halted: { phase: "ship", reason: SHIP_HALT_REASON },
+    reviewPending: null,
+    revising: false,
+  },
+);
 
 export const FORGE = {
   ok: true,
@@ -387,6 +557,13 @@ export interface ForgeRunStub {
   unattributedGate?: GateRun;
   /** Serve a checkout with no forge run at all, as a fresh clone has. */
   empty?: boolean;
+  /** More runs, after the fixture run. With two or more the page shows the board. */
+  extraRuns?: ForgeRunView[];
+  /**
+   * Serve this run in place of the fixture run, as the checkout's only run,
+   * selected, with no gate run logged. With one run the page shows no board.
+   */
+  alone?: ForgeRunView;
 }
 
 /**
@@ -410,12 +587,20 @@ export async function stubForgeRun(
         gate: newest,
         unattributedGate: newest,
       }
-    : {
-        ...FORGE.data,
-        runs: [{ ...RUN, gate }],
-        gate: newest,
-        unattributedGate: stub.unattributedGate ?? null,
-      };
+    : stub.alone
+      ? {
+          runs: [stub.alone],
+          selected: stub.alone.slug,
+          checkout: CHECKOUT,
+          gate: null,
+          unattributedGate: null,
+        }
+      : {
+          ...FORGE.data,
+          runs: [{ ...RUN, gate }, ...(stub.extraRuns ?? [])],
+          gate: newest,
+          unattributedGate: stub.unattributedGate ?? null,
+        };
   const forge = { ...FORGE, data };
 
   const posts: unknown[] = [];

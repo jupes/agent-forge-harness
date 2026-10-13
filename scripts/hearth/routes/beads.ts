@@ -473,8 +473,8 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     try {
       result = await deps.runBd(spec.args);
     } catch {
-      // The runner rejects for an argument it cannot pass on. Its message
-      // repeats that argument, so it is not passed on either.
+      // `bdRunner` never rejects; a runner that throws is an outcome nobody
+      // knows, and what it threw can repeat an argument, so it is not passed on.
       return unknown(
         "did not finish: it could not be run. The change may still have been made.",
       );

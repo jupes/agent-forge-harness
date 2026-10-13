@@ -20,11 +20,15 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   worktree and hands the child (`AGENT_FORGE_RUN_CORRELATION`, `scripts/run-correlation.ts`) — not from these
   variables, of which the gate reads only the smith, and only when it can otherwise resolve an executor. Without a
   correlation the gate names no bead and no run; but when one is refused (for example the run is held by another
-  bead, or the worktree is not a checkout's top level) the run's ledger events and these variables still carry
-  `--bead` and `--run`. `scripts/run-correlation-launchers.test.ts` shows the pointer reaching a fake child, and the
-  gate's own function — called in the test process with that pointer, not run as a hook inside the child — resolving
-  it to the bead and run. No gate has been run inside any `forge:exec` child, fake or real. The values come from the
-  request, never from the parent environment.
+  bead, or the worktree is not a checkout's top level) the child still runs, and the run's ledger events and these
+  variables still carry `--bead` and `--run`. That is deliberate: a run moves from one bead to the next, so they
+  record the bead the session was launched for, while the correlation records the bead a gate in the run is checked
+  against. `exec-cli.test.ts` pins it for a run held by another bead, on the fake binary. A `--run` that is not a
+  Forge run id is refused before the child starts, and nothing is written.
+  `scripts/run-correlation-launchers.test.ts` shows the pointer reaching a fake child, and the gate's own function —
+  called in the test process with that pointer, not run as a hook inside the child — resolving it to the bead and
+  run. No gate has been run inside any `forge:exec` child, fake or real. The values come from the request, never from
+  the parent environment.
 - Tests use `fixtures/fake-cli.ts` and their own ledger file (`ExecDeps.ledgerPath`). The one test of the default
   ledger path cannot pass a file, so it points `AGENT_FORGE_HOME` at its own temp home for its duration instead of
   relying on the test preload. Every temp root plants a `.git` directory: the adapter resolves checkouts, and a bare

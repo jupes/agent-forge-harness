@@ -19,11 +19,18 @@ import {
   timelineHash,
   visibleWindow,
 } from "../timeline-model";
-import { startTimelineRead, type TimelineView } from "../timeline-reader";
+import {
+  type Narrowing,
+  narrowing,
+  startTimelineRead,
+  type TimelineView,
+} from "../timeline-reader";
 import { appStream, readOperatorRoute } from "../use-stream";
 
 /** The list's height when the page has not measured it yet. */
 const DEFAULT_VIEWPORT_PX = 480;
+/** A read of every kind. */
+const NO_KINDS: readonly LedgerEventKind[] = [];
 
 /**
  * The query in the address bar. The shell re-renders only when the route
@@ -42,9 +49,16 @@ function useTimelineQuery(): TimelineQuery {
   return query;
 }
 
-/** A scope's events, read again only when the scope changes (a kind change is the page's own). */
-function useTimelineRead(scope: TimelineScope | null): TimelineView | null {
-  // Kept with the scope it belongs to: on the render after the address moves
+/**
+ * A scope's events (of `kinds` only, when any are given), read again when the
+ * scope or `readKey` changes: a kind change is otherwise the page's own.
+ */
+function useTimelineRead(
+  scope: TimelineScope | null,
+  kinds: readonly LedgerEventKind[],
+  readKey: string,
+): TimelineView | null {
+  // Kept with the read it belongs to: on the render after the address moves
   // to another bead, the previous bead's events are not shown under its name.
   const [held, setHeld] = useState<{
     key: string;
@@ -52,16 +66,17 @@ function useTimelineRead(scope: TimelineScope | null): TimelineView | null {
   } | null>(null);
   const by = scope?.by;
   const id = scope?.id;
-  const key = `${by}:${id}`;
+  const key = `${by}:${id}:${readKey}`;
   useEffect(() => {
     if (by === undefined || id === undefined) return;
     return startTimelineRead({
       scope: { by, id },
+      kinds,
       read: (path) => readOperatorRoute<EventsPage>(path),
       client: appStream(),
-      onChange: (view) => setHeld({ key: `${by}:${id}`, view }),
+      onChange: (view) => setHeld({ key: `${by}:${id}:${readKey}`, view }),
     });
-  }, [by, id]);
+  }, [by, id, kinds, readKey]);
   return held !== null && held.key === key ? held.view : null;
 }
 
@@ -72,7 +87,15 @@ function go(query: TimelineQuery): void {
 /** One bead's or one run's ledger events, in ledger order, narrowed by kind. */
 export function TimelineIsland(): JSX.Element {
   const query = useTimelineQuery();
-  const view = useTimelineRead(query.scope);
+  const view = useTimelineRead(query.scope, NO_KINDS, "");
+  // Once the list was cut, the chosen kinds are read from the ledger: some of
+  // their events may lie among the older ones that are not held.
+  const narrow = narrowing(view, query.kinds);
+  const narrowView = useTimelineRead(
+    narrow === null ? null : query.scope,
+    narrow?.kinds ?? NO_KINDS,
+    narrow?.key ?? "",
+  );
 
   if (query.scope === null) return <ScopeForm />;
   if (view === null || (view.loading && view.events.length === 0))
@@ -90,7 +113,15 @@ export function TimelineIsland(): JSX.Element {
         }
       />
     );
-  return <TimelineBody query={query} scope={query.scope} view={view} />;
+  return (
+    <TimelineBody
+      query={query}
+      scope={query.scope}
+      view={view}
+      narrow={narrow}
+      narrowView={narrowView}
+    />
+  );
 }
 
 /** Asks for a bead or a run when the address names neither. */
@@ -148,13 +179,26 @@ function TimelineBody({
   query,
   scope,
   view,
+  narrow,
+  narrowView,
 }: {
   query: TimelineQuery;
   scope: TimelineScope;
   view: TimelineView;
+  /** The chosen kinds are read from the ledger (`narrowView`), not filtered from `view`. */
+  narrow: Narrowing | null;
+  narrowView: TimelineView | null;
 }): JSX.Element {
-  const counts = kindCounts(view.events);
-  const shown = filterByKinds(view.events, query.kinds);
+  const counts = kindCounts(view.events, view.kindsRead);
+  const shown =
+    narrow === null
+      ? filterByKinds(view.events, query.kinds)
+      : (narrowView?.events ?? []);
+  const readingKinds =
+    narrow !== null &&
+    (narrowView === null ||
+      (narrowView.loading && narrowView.events.length === 0));
+  const error = view.error ?? narrowView?.error ?? null;
   const toggle = (kind: LedgerEventKind): void => {
     const chosen = query.kinds.includes(kind)
       ? query.kinds.filter((other) => other !== kind)
@@ -165,19 +209,36 @@ function TimelineBody({
     <section class="af-timeline" aria-label="Timeline">
       <p class="af-timeline-scope-line">
         Events of {scope.by === "bead" ? "bead" : "forge run"}{" "}
-        <code>{scope.id}</code>: {shown.length} shown of {view.events.length}
-        {view.loading ? " (reading more…)" : ""}
+        <code>{scope.id}</code>:{" "}
+        {narrow === null ? (
+          <>
+            {shown.length} shown of {view.events.length}
+            {view.loading ? " (reading more…)" : ""}
+          </>
+        ) : (
+          <>
+            {shown.length} of the chosen kinds, read from the ledger
+            {narrowView?.loading ? " (reading more…)" : ""}
+          </>
+        )}
       </p>
       {view.cut ? (
         <p class="af-timeline-notice" role="status">
-          More events match than the Timeline holds: the oldest{" "}
-          {view.events.length} are shown, the kind filter applies to those, and
-          newer events are not followed.
+          More events match than the Timeline holds: the newest{" "}
+          {view.events.length} are shown and new ones are followed. The count by
+          each kind is of those; a kind you choose is read from all of the
+          ledger's events, older ones included.
         </p>
       ) : null}
-      {view.error !== null ? (
+      {narrowView?.cut ? (
         <p class="af-timeline-notice" role="status">
-          The last read failed ({view.error}); what is shown is from before.
+          More events of the chosen kinds match than the Timeline holds: the
+          newest {narrowView.events.length} are shown.
+        </p>
+      ) : null}
+      {error !== null ? (
+        <p class="af-timeline-notice" role="status">
+          The last read failed ({error}); what is shown is from before.
         </p>
       ) : null}
       <div class="af-timeline-kinds" role="group" aria-label="Kinds">
@@ -202,7 +263,9 @@ function TimelineBody({
           </button>
         ) : null}
       </div>
-      {shown.length === 0 ? (
+      {readingKinds ? (
+        <EmptyState title="Reading the chosen kinds from the ledger…" live />
+      ) : shown.length === 0 ? (
         <EmptyState
           title={
             view.events.length === 0
