@@ -17,6 +17,7 @@ import {
   removeSessionMirror,
   writeSessionMirror,
 } from "../ledger/identity";
+import { ulid } from "../ledger/ulid";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
 import { supervise } from "./supervisor";
@@ -206,8 +207,9 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       const queue = eventQueue();
       const startedAt = Date.now();
       // The session's id is the provider's, from the first line that reports
-      // it. Used only when an event must be written before any line has.
-      const mintedId = crypto.randomUUID();
+      // it. A ULID, as the protocol mints, only when an event must be written
+      // before any line has.
+      const mintedId = ulid();
       let session:
         | { id: string; base: EventBase; unmirror: () => void }
         | undefined;

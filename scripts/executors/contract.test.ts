@@ -63,8 +63,8 @@ const adapters: Array<{
 
 type SessionEnded = Extract<LedgerEventInput, { kind: "session.ended" }>;
 
-/** A UUID as `crypto.randomUUID` writes one. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A ULID: 26 characters of Crockford base 32. */
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 interface RunOptions {
   /** More `--fake-*` flags for the stand-in CLI, given the run's temp root. */
@@ -200,7 +200,7 @@ for (const { name, adapter, smith, usage } of adapters) {
       expect(handle.sessionId).toBe("provider-session-7");
     });
 
-    test("a stream that reports no session id: every event, and the handle, carry one id the adapter minted", async () => {
+    test("a stream that reports no session id: every event, and the handle, carry one ULID the adapter minted", async () => {
       const { events, handle } = await run(
         adapter,
         name,
@@ -217,7 +217,7 @@ for (const { name, adapter, smith, usage } of adapters) {
         "tool.called",
         "session.ended",
       ]);
-      expect(handle.sessionId).toMatch(UUID);
+      expect(handle.sessionId).toMatch(ULID);
       for (const event of events) {
         expect(event.sessionId).toBe(handle.sessionId);
         expect(event.executor?.sessionId).toBe(handle.sessionId);
