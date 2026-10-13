@@ -311,6 +311,52 @@ describe("forgeRunSnapshot", () => {
     expect(snapshot.selected).toBe("agent-forge-harness-dg40");
   });
 
+  /**
+   * The older gated run in flight, beside a newer auto run that recorded ship
+   * and whose one ship review returned `verdict`.
+   */
+  function besideShipReview(slug: string, verdict: "UNREADABLE" | "FAIL") {
+    const at = "2026-09-12T12:00:00.000Z";
+    const shipped = {
+      ...STATE,
+      slug,
+      mode: "auto",
+      completed: ["research", "plan", "implement", "ship"] as ForgePhase[],
+      phase: "ship" as ForgePhase,
+      reviews: [
+        {
+          phase: "ship",
+          round: 1,
+          verdict,
+          findings: { blocker: 0, high: 1, medium: 0, low: 0 },
+          at,
+        },
+      ],
+      updatedAt: at,
+    };
+    return forgeRunSnapshot({
+      runStates: [JSON.stringify(STATE), JSON.stringify(shipped)],
+      checkout: CHECKOUT,
+      gateLogs: [],
+      artifactExists: () => true,
+    });
+  }
+
+  test("selects a newer run that recorded ship but whose ship review halted over an older run in flight", () => {
+    const snapshot = besideShipReview("ship-halted", "UNREADABLE");
+    expect(snapshot.runs[0]?.complete).toBe(true);
+    expect(snapshot.runs[0]?.halted?.phase).toBe("ship");
+    expect(snapshot.selected).toBe("ship-halted");
+  });
+
+  test("selects a newer run that recorded ship but whose ship review asks for a revision over an older run in flight", () => {
+    const snapshot = besideShipReview("ship-revising", "FAIL");
+    expect(snapshot.runs[0]?.complete).toBe(true);
+    expect(snapshot.runs[0]?.reviewPending).toBe("ship");
+    expect(snapshot.runs[0]?.revising).toBe(true);
+    expect(snapshot.selected).toBe("ship-revising");
+  });
+
   test("carries each run's review hold from its summary: halted, review pending, revising, or none", () => {
     const findings = (high: number) => ({
       blocker: 0,

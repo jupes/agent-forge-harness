@@ -20,6 +20,7 @@ import {
   type ReviewRound,
 } from "../forge/phases";
 import {
+  activeRuns,
   byRecency,
   comparableCheckout,
   isValidSlug,
@@ -561,9 +562,10 @@ export function forgeRunSnapshot(input: {
   });
 
   // In-flight work is what a reader came for; a shipped run is only the answer
-  // when nothing is still moving.
-  const selected =
-    runs.find((run) => !run.complete)?.slug ?? runs[0]?.slug ?? null;
+  // when nothing is still moving. In flight is what `forge:runs` counts: a run
+  // that recorded ship is still in flight while its ship review holds it.
+  // `runs` keeps the order of `summaries`, so the first of either is the newest.
+  const selected = activeRuns(summaries)[0]?.slug ?? runs[0]?.slug ?? null;
 
   return {
     runs,
@@ -630,7 +632,7 @@ export type RunStatus =
   | { kind: "shipped" }
   | { kind: "phase"; phase: ForgePhase };
 
-function runStatus(run: ForgeRunView): RunStatus {
+export function runStatus(run: ForgeRunView): RunStatus {
   if (run.halted !== null) {
     return {
       kind: "halted",
@@ -656,11 +658,11 @@ function heldPhase(run: ForgeRunView): ForgePhase | null {
 }
 
 /**
- * The phase cells as the board draws them. While a review holds the run, a
- * phase after the held one is locked rather than active, as the phase gate
- * treats it.
+ * The phase cells as the board and the run panel draw them. While a review
+ * holds the run, a phase after the held one is locked rather than active, as
+ * the phase gate treats it.
  */
-function boardPhases(run: ForgeRunView): PhaseRow[] {
+export function shownPhases(run: ForgeRunView): PhaseRow[] {
   const held = heldPhase(run);
   if (held === null) return run.phases;
   const at = FORGE_PHASES.indexOf(held);
@@ -706,7 +708,7 @@ export function boardRows(runs: readonly ForgeRunView[]): RunBoardRow[] {
       epic: run.epic,
       mode: run.mode,
       health: runHealth(run),
-      phases: boardPhases(run),
+      phases: shownPhases(run),
       status: runStatus(run),
       completedCount: run.phases.filter((phase) => phase.state === "complete")
         .length,

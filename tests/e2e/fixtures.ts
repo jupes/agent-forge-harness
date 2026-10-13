@@ -393,7 +393,7 @@ export const AWAITING_REVIEW_RUN: ForgeRunView = autoRun(
   },
 );
 
-const SHIP_HALT_REASON =
+export const SHIP_HALT_REASON =
   'The review of "ship" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.';
 
 /** An auto run that recorded ship, whose ship review returned no verdict. */
@@ -559,6 +559,11 @@ export interface ForgeRunStub {
   empty?: boolean;
   /** More runs, after the fixture run. With two or more the page shows the board. */
   extraRuns?: ForgeRunView[];
+  /**
+   * Serve this run in place of the fixture run, as the checkout's only run,
+   * selected, with no gate run logged. With one run the page shows no board.
+   */
+  alone?: ForgeRunView;
 }
 
 /**
@@ -582,12 +587,20 @@ export async function stubForgeRun(
         gate: newest,
         unattributedGate: newest,
       }
-    : {
-        ...FORGE.data,
-        runs: [{ ...RUN, gate }, ...(stub.extraRuns ?? [])],
-        gate: newest,
-        unattributedGate: stub.unattributedGate ?? null,
-      };
+    : stub.alone
+      ? {
+          runs: [stub.alone],
+          selected: stub.alone.slug,
+          checkout: CHECKOUT,
+          gate: null,
+          unattributedGate: null,
+        }
+      : {
+          ...FORGE.data,
+          runs: [{ ...RUN, gate }, ...(stub.extraRuns ?? [])],
+          gate: newest,
+          unattributedGate: stub.unattributedGate ?? null,
+        };
   const forge = { ...FORGE, data };
 
   const posts: unknown[] = [];
