@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createOperatorPost } from "../../docs/js/operator";
+import { createOperatorPost, NotSent } from "../../docs/js/operator";
 import { OPERATOR_HEADER, SURFACE_HEADER, TOKEN_ROUTE } from "../hearth/paths";
 
 interface Call {
@@ -138,5 +138,75 @@ describe("operatorPost", () => {
     );
     up = true;
     expect((await post("/__agent-forge/x", {})).status).toBe(200);
+  });
+
+  test("a token that cannot be had fails the post with NotSent, and no POST is made", async () => {
+    const failures: Array<() => Response> = [
+      () =>
+        Response.json(
+          { ok: false, data: null, error: "still starting" },
+          { status: 503 },
+        ),
+      () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ];
+    for (const failure of failures) {
+      const calls: string[] = [];
+      const post = createOperatorPost(async (input, init = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        return input === TOKEN_ROUTE
+          ? failure()
+          : Response.json({ ok: true, data: 1, error: null });
+      });
+      const error = await post("/__agent-forge/x", {}).catch(
+        (thrown: unknown) => thrown,
+      );
+      expect(error).toBeInstanceOf(NotSent);
+      expect(calls).toEqual([`GET ${TOKEN_ROUTE}`]);
+    }
+  });
+
+  test("after a 403, a token that cannot be had again fails with NotSent: the one POST made was refused", async () => {
+    const calls: string[] = [];
+    let tokens = 0;
+    const post = createOperatorPost(async (input, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input !== TOKEN_ROUTE)
+        return Response.json(
+          { ok: false, data: null, error: "token" },
+          { status: 403 },
+        );
+      return tokens++ === 0
+        ? Response.json({ ok: true, data: { token: "t" }, error: null })
+        : Response.json(
+            { ok: false, data: null, error: "still starting" },
+            { status: 503 },
+          );
+    });
+    const error = await post("/__agent-forge/x", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(NotSent);
+    expect(error).toHaveProperty("message", "still starting");
+    expect(calls).toEqual([
+      `GET ${TOKEN_ROUTE}`,
+      "POST /__agent-forge/x",
+      `GET ${TOKEN_ROUTE}`,
+    ]);
+  });
+
+  test("a POST that fails after the token was had fails with its own error, not NotSent", async () => {
+    const post = createOperatorPost(async (input) => {
+      if (input === TOKEN_ROUTE)
+        return Response.json({ ok: true, data: { token: "t" }, error: null });
+      throw new TypeError("Failed to fetch");
+    });
+    const error = await post("/__agent-forge/x", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toBeInstanceOf(NotSent);
   });
 });

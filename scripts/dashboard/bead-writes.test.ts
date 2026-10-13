@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type AppliedStore,
   actionState,
   createAppliedStore,
   createBeadWrites,
   createState,
   NO_CONTROL_PLANE,
+  type Sent,
 } from "../../docs/js/islands/bead-writes";
 import { createOperatorPost } from "../../docs/js/operator";
 import type { BeadOptions, BeadWriteResult } from "../../types/hearth";
@@ -40,10 +42,11 @@ const envelope = (data: unknown, status = 200): Response =>
 const refusal = (error: string, status: number): Response =>
   Response.json({ ok: false, data: null, error }, { status });
 
-/** A stand-in control plane: a token, the options, and whatever the test says a write answers. */
+/** A stand-in control plane: a token (or what the test says the token route answers), the options, and whatever the test says a write answers. */
 function plane(
   write: Reply = () => envelope({}),
   options: Reply | null = null,
+  token: Reply | null = null,
 ) {
   const calls: Call[] = [];
   const fetchImpl = async (
@@ -61,7 +64,8 @@ function plane(
       headers,
       body: typeof init.body === "string" ? JSON.parse(init.body) : null,
     });
-    if (input === TOKEN_ROUTE) return envelope({ token: "t-1" });
+    if (input === TOKEN_ROUTE)
+      return token ? token() : envelope({ token: "t-1" });
     if (input === "/__agent-forge/beads/options")
       return options ? options() : envelope(OPTIONS);
     return write();
@@ -218,6 +222,42 @@ describe("the page's writes", () => {
     expect(outcome).toMatchObject({ ok: false, unknown: true });
     expect(outcome.ok ? "" : outcome.error).toContain("may have been made");
     expect(outcome.ok ? "" : outcome.error).toContain("bd show demo-task");
+  });
+
+  test("a write whose operator token could not be had is a failure that says it was not sent, not an unknown outcome, and nothing is posted", async () => {
+    const tokenAnswers: Reply[] = [
+      () => refusal("the control plane is starting", 503),
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ];
+    for (const token of tokenAnswers) {
+      const hearth = plane(() => envelope(CLAIMED), null, token);
+      for (const outcome of [
+        await hearth.writes.claim("demo-task"),
+        await hearth.writes.create({
+          title: "A bead",
+          type: "task",
+          priority: "P2",
+        }),
+      ]) {
+        expect(outcome).toMatchObject({ ok: false, unknown: false });
+        const error = outcome.ok ? "" : outcome.error;
+        expect(error).toStartWith("Not sent:");
+        expect(error).toContain("Nothing was changed.");
+        expect(error).not.toContain("may have been made");
+      }
+      expect(hearth.posts()).toEqual([]);
+    }
+    const starting = plane(
+      () => envelope(CLAIMED),
+      null,
+      () => refusal("the control plane is starting", 503),
+    );
+    const said = await starting.writes.claim("demo-task");
+    expect(said.ok ? "" : said.error).toContain(
+      "(the control plane is starting)",
+    );
   });
 
   test("an id that is not a Beads id is not sent anywhere", async () => {
@@ -387,6 +427,15 @@ function memory(initial: Record<string, string> = {}) {
     },
   };
 }
+
+/** `begin` on a store with room for the write: its key. A store without room fails the test. */
+function begun(store: AppliedStore, sent: Sent): string {
+  const key = store.begin(sent);
+  if (key === null) throw new Error("the store had no room for the write");
+  return key;
+}
+
+const STORE_KEY = "agent-forge.bead-writes.v1";
 
 const COMMENTED: BeadWriteResult = {
   id: "demo-task",
@@ -688,8 +737,8 @@ describe("what the store keeps of a text, and in what order", () => {
 describe("a write whose answer the page does not have", () => {
   test("while the answer is awaited on this page it is not listed; a refusal or a confirmation ends it", () => {
     const store = createAppliedStore(memory());
-    const first = store.begin({ action: "claim", id: "demo-task" });
-    const second = store.begin({ action: "comment", id: "demo-task" });
+    const first = begun(store, { action: "claim", id: "demo-task" });
+    const second = begun(store, { action: "comment", id: "demo-task" });
     expect(
       store.notices().filter((notice) => notice.id === "demo-task"),
     ).toEqual([]);
@@ -702,7 +751,7 @@ describe("a write whose answer the page does not have", () => {
 
   test("an answer that leaves the outcome unknown is kept, with what was said, until it is dismissed", () => {
     const store = createAppliedStore(memory());
-    const key = store.begin({ action: "comment", id: "demo-task" });
+    const key = begun(store, { action: "comment", id: "demo-task" });
     store.unknown(key, "bd comments add did not finish within its time limit.");
     expect(
       store.notices().filter((notice) => notice.id === "demo-task"),
@@ -731,7 +780,7 @@ describe("a write whose answer the page does not have", () => {
   test("a write still awaited when the page is reloaded is listed afterwards: the page that would have shown its answer is gone", () => {
     const storage = memory();
     const page = createAppliedStore(storage);
-    const settled = page.begin({ action: "claim", id: "demo-task" });
+    const settled = begun(page, { action: "claim", id: "demo-task" });
     page.settle(settled);
     // Begun last: each is in storage from the moment it is sent, not from the
     // next change to the store.
@@ -783,7 +832,7 @@ describe("a write whose answer the page does not have", () => {
     store.subscribe(() => {
       told++;
     });
-    const key = store.begin({ action: "claim", id: "demo-task" });
+    const key = begun(store, { action: "claim", id: "demo-task" });
     const sent = told;
     store.unknown(key, "not known");
     expect(told).toBe(sent + 1);
@@ -802,23 +851,23 @@ describe("a write whose answer the page does not have", () => {
         "agent-forge.bead-writes.v1": JSON.stringify({
           beads: [],
           attempts: [
-            { key: "a", action: "claim", id: "--help", at: 1, message: "x" },
+            { key: "w1", action: "claim", id: "--help", at: 1, message: "x" },
             {
-              key: "b",
+              key: "w2",
               action: "delete",
               id: "demo-task",
-              at: 1,
+              at: 2,
               message: "x",
             },
-            { key: "c", action: "claim", id: "demo-task", at: 1, message: 7 },
+            { key: "w3", action: "claim", id: "demo-task", at: 3, message: 7 },
             {
-              key: "d",
+              key: "w4",
               action: "claim",
               id: "demo-task",
-              at: 1,
+              at: 4,
               message: "kept",
             },
-            { action: "claim", id: "demo-task", at: 1, message: "no key" },
+            { action: "claim", id: "demo-task", at: 5, message: "no key" },
             "not an attempt",
           ],
         }),
@@ -829,7 +878,7 @@ describe("a write whose answer the page does not have", () => {
         .notices()
         .filter((notice) => notice.id === "demo-task")
         .map((attempt) => attempt.key),
-    ).toEqual(["d"]);
+    ).toEqual(["w4"]);
     expect(
       tampered.notices().filter((notice) => notice.id === "--help"),
     ).toEqual([]);
@@ -845,34 +894,131 @@ describe("a write whose answer the page does not have", () => {
         throw new Error("QuotaExceededError");
       },
     });
-    const key = broken.begin({ action: "claim", id: "demo-task" });
+    const key = begun(broken, { action: "claim", id: "demo-task" });
     broken.unknown(key, "not known");
     expect(
       broken.notices().filter((notice) => notice.id === "demo-task"),
     ).toHaveLength(1);
   });
 
-  test("only the twenty most recent are kept", () => {
+  test("with twenty notices kept a twenty-first write is not noted: begin answers null, and all twenty stay listed, after a reload too", () => {
+    const storage = memory();
+    const store = createAppliedStore(storage);
+    for (let n = 1; n <= 20; n++)
+      store.unknown(
+        begun(store, { action: "claim", id: "demo-task" }),
+        `n${n}`,
+      );
+    let told = 0;
+    store.subscribe(() => {
+      told++;
+    });
+
+    expect(store.begin({ action: "claim", id: "demo-task" })).toBeNull();
+    expect(store.begin({ action: "create", title: "One more" })).toBeNull();
+
+    expect(told).toBe(0);
+    expect(store.awaiting("demo-task")).toEqual([]);
+    expect(store.awaiting()).toEqual([]);
+    const listed = (from: AppliedStore) =>
+      from.notices().map((notice) => notice.message);
+    const all = Array.from({ length: 20 }, (_, n) => `n${n + 1}`);
+    expect(listed(store)).toEqual(all);
+    expect(listed(createAppliedStore(storage))).toEqual(all);
+  });
+
+  test("a write still awaited counts toward the twenty, and an answer or a dismissal makes room again", () => {
     const store = createAppliedStore(memory());
-    for (let n = 1; n <= 25; n++)
-      store.unknown(store.begin({ action: "claim", id: "demo-task" }), `n${n}`);
-    const kept = store
-      .notices()
-      .filter((notice) => notice.id === "demo-task")
-      .map((attempt) => attempt.message);
-    expect(kept).toHaveLength(20);
-    expect(kept[0]).toBe("n6");
-    expect(kept.at(-1)).toBe("n25");
+    for (let n = 1; n <= 19; n++)
+      store.unknown(
+        begun(store, { action: "claim", id: "demo-task" }),
+        `n${n}`,
+      );
+    const out = begun(store, { action: "close", id: "demo-other" });
+    expect(store.begin({ action: "comment", id: "demo-task" })).toBeNull();
+
+    store.settle(out);
+    const next = begun(store, { action: "comment", id: "demo-task" });
+    store.unknown(next, "n20");
+    expect(store.begin({ action: "comment", id: "demo-task" })).toBeNull();
+
+    store.dismiss(store.notices()[0]?.key ?? "");
+    expect(store.begin({ action: "comment", id: "demo-task" })).toEqual(
+      expect.any(String),
+    );
+  });
+});
+
+describe("what the store reads back about writes", () => {
+  const stored = (attempts: unknown[]) =>
+    memory({ [STORE_KEY]: JSON.stringify({ beads: [], attempts }) });
+  const claim = (at: unknown, message: string, key = `w${String(at)}`) => ({
+    key,
+    action: "claim",
+    id: "demo-task",
+    at,
+    message,
+  });
+
+  test("an attempt whose at is not a whole number from 1 up, or whose key is not w and its at, is left out", () => {
+    const text = JSON.stringify({
+      beads: [],
+      attempts: [
+        claim(0, "at zero", "w1"),
+        claim(-2, "negative"),
+        claim(1.5, "a fraction"),
+        claim("3", "at as a text", "w3"),
+        claim(4, "key and at disagree", "w9"),
+        { key: "w5", action: "claim", id: "demo-task", message: "no at" },
+        claim(6, "kept"),
+      ],
+    });
+    // JSON.stringify cannot write it; a hand-made text can: 1e999 reads as Infinity.
+    const infinite =
+      '{"key":"wInfinity","action":"claim","id":"demo-task","at":1e999,"message":"infinite"}';
+    const store = createAppliedStore(
+      memory({
+        [STORE_KEY]: text.replace('"attempts":[', `"attempts":[${infinite},`),
+      }),
+    );
+    expect(store.notices().map((notice) => notice.message)).toEqual(["kept"]);
+  });
+
+  test("of more than twenty stored attempts only the twenty sent last are read", () => {
+    const many = Array.from({ length: 5000 }, (_, n) =>
+      claim(n + 1, `n${n + 1}`),
+    );
+    // Stored newest first: what is read does not depend on the order kept.
+    const store = createAppliedStore(stored(many.reverse()));
+    const kept = store.notices().map((notice) => notice.message);
+    expect(kept).toEqual(Array.from({ length: 20 }, (_, n) => `n${n + 4981}`));
+  });
+
+  test("a stored message longer than 1,000 characters is read as its first 1,000", () => {
+    const long = `${"x".repeat(999)}yz${"z".repeat(99_997)}`;
+    const store = createAppliedStore(stored([claim(1, long)]));
+    expect(store.notices()[0]?.message).toBe(`${"x".repeat(999)}y`);
+  });
+
+  test("a message longer than 1,000 characters given to unknown or refused is kept as its first 1,000", () => {
+    const store = createAppliedStore(memory());
+    const long = `${"x".repeat(999)}yz${"z".repeat(99_997)}`;
+    store.unknown(begun(store, { action: "claim", id: "demo-task" }), long);
+    store.refused(begun(store, { action: "close", id: "demo-task" }), long);
+    expect(store.notices().map((notice) => notice.message)).toEqual([
+      `${"x".repeat(999)}y`,
+      `${"x".repeat(999)}y`,
+    ]);
   });
 });
 
 describe("writes the page is waiting on, and the notices it keeps", () => {
   test("awaiting lists the writes sent for a bead and not yet answered, and the creates without an id; answered or unknown ones are not among them", () => {
     const store = createAppliedStore(memory());
-    const claim = store.begin({ action: "claim", id: "demo-task" });
-    const comment = store.begin({ action: "comment", id: "demo-task" });
+    const claim = begun(store, { action: "claim", id: "demo-task" });
+    const comment = begun(store, { action: "comment", id: "demo-task" });
     store.begin({ action: "close", id: "demo-other" });
-    const create = store.begin({ action: "create", title: "New one" });
+    const create = begun(store, { action: "create", title: "New one" });
     expect(store.awaiting("demo-task").map((write) => write.key)).toEqual([
       claim,
       comment,
@@ -886,7 +1032,7 @@ describe("writes the page is waiting on, and the notices it keeps", () => {
   test("a refusal kept as refused is a notice with its outcome, outlives a reload, and goes when it is dismissed", () => {
     const storage = memory();
     const store = createAppliedStore(storage);
-    const key = store.begin({ action: "close", id: "demo-task" });
+    const key = begun(store, { action: "close", id: "demo-task" });
     store.refused(key, "bd close failed: no issue found");
     const expected = {
       key,
@@ -906,9 +1052,9 @@ describe("writes the page is waiting on, and the notices it keeps", () => {
 
   test("notices lists every unknown or refused write, for any bead and the creates, oldest first", () => {
     const store = createAppliedStore(memory());
-    const a = store.begin({ action: "claim", id: "demo-a" });
-    const create = store.begin({ action: "create", title: "T" });
-    const b = store.begin({ action: "close", id: "demo-b" });
+    const a = begun(store, { action: "claim", id: "demo-a" });
+    const create = begun(store, { action: "create", title: "T" });
+    const b = begun(store, { action: "close", id: "demo-b" });
     store.begin({ action: "comment", id: "demo-a" });
     store.refused(b, "refused");
     store.unknown(a, "unknown");
