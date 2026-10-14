@@ -14,12 +14,13 @@ import { installCopyDelegation } from "./copy-to-clipboard";
 import { AppShell } from "./ds/AppShell";
 import { EmptyState } from "./ds/EmptyState";
 import { BeadBuilderIsland } from "./islands/BeadBuilderIsland";
+import { BeadCounts } from "./islands/BeadCounts";
 import { CommandsIsland } from "./islands/CommandsIsland";
 import { EpicsIsland } from "./islands/EpicsIsland";
 import { ForgeRunIsland } from "./islands/ForgeRunIsland";
 import { InsightsIsland } from "./islands/InsightsIsland";
 import { IssuesViewsIsland } from "./islands/IssuesViewsIsland";
-import { LiveBanner } from "./islands/LiveStatus";
+import { LiveBanner, LiveStats } from "./islands/LiveStatus";
 import { PendingWrites } from "./islands/PendingWrites";
 import { ReposIsland } from "./islands/ReposIsland";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland";
@@ -177,7 +178,7 @@ function DashboardApp() {
         return <EmptyState title="Loading the Beads snapshot…" live />;
       }
       if (!snapshot.payload) {
-        return (
+        const missing = (
           <EmptyState
             title="No snapshot loaded"
             hint={
@@ -190,6 +191,17 @@ function DashboardApp() {
             }
             live
           />
+        );
+        // The dashboard's two stat rows can come from the control plane, so
+        // they are shown without a snapshot; each is absent where it cannot.
+        return route === "dashboard" ? (
+          <>
+            <BeadCounts snapshot={null} initiativeFilter="all" />
+            <LiveStats />
+            {missing}
+          </>
+        ) : (
+          missing
         );
       }
     }

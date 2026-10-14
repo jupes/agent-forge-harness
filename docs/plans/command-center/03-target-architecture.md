@@ -82,7 +82,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 - Every `POST` writes `operator.action` first, then performs the effect through the same scripts the CLI uses (no second implementation). The effect runs only if the ledger stored the row; otherwise the answer is 503 and nothing was done. A request refused for its origin, its token or its content writes nothing. The row records an authorised, valid attempt: an effect that then refuses leaves the row, and the effect's own events or comment carry the outcome.
 - Routes (the contract):
   - `GET /sessions`, `GET /runs`, `GET /runs/:slug`, `GET /events?…`, `GET /queue`, `GET /reservations`, `GET /worktrees`, `GET /eligibility`, `GET /smiths`, `GET /config` (with provenance), `GET /stream` (SSE: snapshot + deltas)
-  - `GET /beads/options`, `POST /beads` (create), `POST /beads/:id/claim|close|comment`
+  - `GET /beads/options`, `GET /beads/counts`, `POST /beads` (create), `POST /beads/:id/claim|close|comment`
   - `POST /queue/:id/approve|queue|pause|resume|reassign` (`{ smith }`)
   - `POST /council/runs` (`{ source: { kind: "bead", id } , profile, budget }`), `POST /council/runs/:id/cancel`
   - `POST /shifts` (`{ for, concurrency, filter }`), `POST /shifts/:id/stop`
@@ -103,6 +103,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
   | `POST /council/runs`, `POST /council/runs/:id/cancel` | mounted | Body today is the council service's input (`sourceType`, `source`, `profile?`, `maxUsd?`, `maxBytes?`, `runId?`, `redactSecrets?`, `beadId?`). A bead is the source as `sourceType: "bead"` with its id as `source` (`x1gs.7.1`): the run is audited and recorded against that bead, and a `beadId` that is not that id is refused. The nested `{ source: { kind: "bead", id } }` body of the contract line above is not accepted (`x1gs.7.3`). Also served at `/council-api/runs…`, the paths the dashboard has always used. |
   | `POST /dev-api/forge-run/review` | mounted | The checkpoint review that predates this table: a `review:` comment in Beads. Same path, and the same answers once a request is accepted; now an audited action, so it refuses what every action refuses (no token, no declared origin, a query string, a body over the cap). |
   | `GET /beads/options` | mounted | What a create may say: the issue types, the priority rubric (`P0`–`P4`, each with its tier and meaning, the table of the `beads-priority-assignment` skill) and the longest text each field takes. A page that gets no answer has no control plane. |
+  | `GET /beads/counts` | mounted | The dashboard's four Beads cards for the tracker (`x1gs.8.9`): `{ open, inProgress, blocked, closed }` from one read-only `bd export`, by the snapshot builder's rules. `502` when `bd` fails. Not a stream collection: the dashboard reads it again on `bead.transitioned`. |
   | `POST /beads`, `POST /beads/:id/claim\|close\|comment` | mounted | Writes to the tracker; see below. |
   | `POST /queue/:id/approve\|queue\|pause\|resume\|reassign` | mounted | The operator's queue actions; see below. |
   | `POST /shifts`, `POST /shifts/:id/stop` | not mounted | `x1gs.5.4` |
