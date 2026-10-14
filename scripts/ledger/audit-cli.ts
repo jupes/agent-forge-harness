@@ -233,10 +233,21 @@ export function parseAuditArgs(argv: readonly string[]): ParsedArgs {
   };
 }
 
+/**
+ * The `action` an event's payload names: what a review round decided
+ * (`review.recorded`), the write a `bead.transitioned` records, or what an
+ * `operator.action` did. A dash for an event without one.
+ */
+function actionOf(event: LedgerEvent): string {
+  const action = "action" in event.payload ? event.payload.action : undefined;
+  return typeof action === "string" ? action : "-";
+}
+
 const COLUMNS: ReadonlyArray<[string, (event: LedgerEvent) => string]> = [
   ["id", (event) => String(event.id)],
   ["ts", (event) => event.ts],
   ["kind", (event) => event.kind],
+  ["action", actionOf],
   ["session", (event) => event.sessionId ?? "-"],
   ["bead", (event) => event.beadId ?? "-"],
   ["run", (event) => event.runId ?? "-"],
