@@ -22,7 +22,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import chokidar from "chokidar";
 import type { Plugin } from "vite";
-import { isLoopbackAddress } from "../hearth/gate";
+import { isLoopbackAddress, passesFrontDoor } from "../hearth/gate";
 import { createRebuildQueue, type RebuildOutcome } from "./rebuild-queue";
 
 export const REBUILD_PATH = "/__agent-forge/rebuild-pages";
@@ -180,6 +180,21 @@ export function rebuildPagesPlugin(
             JSON.stringify({
               ok: false,
               error: "The rebuild is available only from this machine",
+            }),
+          );
+          return;
+        }
+        // A page of another site open in this machine's browser is a loopback
+        // client too. The hearth's front-door rules tell it apart: Host,
+        // Origin and Sec-Fetch-Site each sent at most once, a loopback Host, an
+        // Origin (when sent) equal to that host's, and Sec-Fetch-Site (when
+        // sent) same-origin or none.
+        if (!passesFrontDoor(req)) {
+          res.statusCode = 403;
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: "The rebuild is answered only to the dashboard's own page",
             }),
           );
           return;

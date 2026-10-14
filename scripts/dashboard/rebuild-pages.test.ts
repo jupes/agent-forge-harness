@@ -7,7 +7,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer as createNetServer } from "node:net";
+import {
+  connect as connectSocket,
+  createServer as createNetServer,
+} from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Plugin } from "vite";
@@ -300,6 +303,46 @@ const reloads = (pushed: unknown[]): number =>
       (p as { type?: unknown }).type === "full-reload",
   ).length;
 
+/**
+ * One request over a socket of its own, with exactly the header lines given
+ * (repeats included): `fetch` decides some headers itself. Answers the status
+ * and the body once the answer is whole.
+ */
+function rawRequest(
+  port: number,
+  head: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = connectSocket({ host: "127.0.0.1", port });
+    let answer = "";
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`no whole answer: ${answer}`));
+    }, 10_000);
+    socket.on("connect", () =>
+      socket.write(`${head}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`),
+    );
+    socket.on("data", (chunk: Buffer) => {
+      answer += chunk.toString("utf8");
+      const split = answer.indexOf("\r\n\r\n");
+      if (split === -1) return;
+      const length = /\r\ncontent-length: *(\d+)/i.exec(answer.slice(0, split));
+      const body = answer.slice(split + 4);
+      if (!length || Buffer.byteLength(body) < Number(length[1])) return;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({
+        status: Number(/^HTTP\/1\.[01] (\d{3})/.exec(answer)?.[1] ?? 0),
+        body,
+      });
+    });
+    socket.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 describe("rebuild-pages endpoint", () => {
   test("while a rebuild runs, the dev server answers another request; the POST is answered ok when the build finishes", async () => {
     const { url, box } = await fixture();
@@ -377,6 +420,48 @@ describe("rebuild-pages endpoint", () => {
     },
     15_000,
   );
+
+  test("from 127.0.0.1, a POST with a foreign Origin, with Sec-Fetch-Site: cross-site, with a Host that is not loopback, or with Origin sent twice is answered 403 and starts no build; one from the page's own origin is served", async () => {
+    const { port, box } = await fixture();
+    const host = `127.0.0.1:${port}`;
+    const own = `http://${host}`;
+    const refused = [
+      ["a foreign Origin", `Host: ${host}\r\nOrigin: https://evil.example`],
+      [
+        "Sec-Fetch-Site: cross-site",
+        `Host: ${host}\r\nSec-Fetch-Site: cross-site`,
+      ],
+      [
+        "a foreign Origin with Sec-Fetch-Site: cross-site",
+        `Host: ${host}\r\nOrigin: https://evil.example\r\nSec-Fetch-Site: cross-site`,
+      ],
+      ["a Host that is not loopback", `Host: evil.example:${port}`],
+      [
+        "Origin sent twice",
+        `Host: ${host}\r\nOrigin: https://evil.example\r\nOrigin: ${own}`,
+      ],
+    ];
+    for (const [label, headers] of refused) {
+      const answer = await rawRequest(
+        port,
+        `POST ${REBUILD_PATH} HTTP/1.1\r\n${headers}`,
+      );
+      expect({ label, status: answer.status }).toEqual({ label, status: 403 });
+      expect(JSON.parse(answer.body)).toEqual({
+        ok: false,
+        error: "The rebuild is answered only to the dashboard's own page",
+      });
+    }
+
+    // Had a refused request started a build, the log would show two builds.
+    release(box);
+    const served = await rawRequest(
+      port,
+      `POST ${REBUILD_PATH} HTTP/1.1\r\nHost: ${host}\r\nOrigin: ${own}\r\nSec-Fetch-Site: same-origin`,
+    );
+    expect(served.status).toBe(200);
+    expect(runs(box)).toEqual(["start", "end"]);
+  }, 15_000);
 });
 
 describe("rebuilds the dev server starts on its own", () => {
