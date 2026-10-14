@@ -64,13 +64,29 @@ describe("buildBdCreateCommand", () => {
     expect(cmd).toContain('--title "Fix \\"smart\\" \\`quotes\\`"');
   });
 
-  test("collapses newlines in description to literal \\n", () => {
+  test("keeps the description's newlines as newlines inside its quotes, CRLF as LF", () => {
     const cmd = buildBdCreateCommand({
       ...base,
       description: "line 1\nline 2\r\nline 3",
     });
-    expect(cmd).toContain('--description "line 1\\nline 2\\nline 3"');
+    expect(cmd).toContain('--description "line 1\nline 2\nline 3"');
+    expect(cmd).not.toContain("\\n");
   });
+
+  test.skipIf(!sh)(
+    "a description reaches bd through sh with real newlines, not a backslash and n",
+    () => {
+      const args = argvFromShell(
+        buildBdCreateCommand({
+          ...base,
+          description: "## Why\n\n  indented line\r\nlast line",
+        }),
+      );
+      expect(args[args.indexOf("--description") + 1]).toBe(
+        "## Why\n\n  indented line\nlast line",
+      );
+    },
+  );
 
   test("never emits the short --ac form, which bd rejects", () => {
     // `bd create --ac` fails with "unknown flag: --ac". The generated command

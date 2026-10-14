@@ -36,15 +36,13 @@ function shellEscapeDoubleQuoted(s) {
 }
 
 /**
- * Collapse newlines in descriptions to literal `\n` so the command stays on
- * one line. Single-quoted shells would need different handling, but our
- * README and /add-bead examples all use double-quoted `"..."` arguments.
+ * Line endings as `\n`. The newlines stay real: inside quotes a shell passes
+ * them on as they are, where a written `\n` would reach bd as a backslash and
+ * an n.
  * @param {string} s
  */
-function encodeDescriptionNewlines(s) {
-  return String(s ?? "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\n/g, "\\n");
+function normalizeNewlines(s) {
+  return String(s ?? "").replace(/\r\n?/g, "\n");
 }
 
 /** @param {string} s */
@@ -90,8 +88,9 @@ function repoName(s) {
 
 /**
  * Build a `bd create` command with sensible defaults and shell escaping.
- * Never emits empty flags. It is one line unless there are several acceptance
- * criteria: those stay on their own lines inside one quoted value.
+ * Never emits empty flags. It is one line unless the description or the
+ * acceptance criteria have several: those stay on their own lines inside
+ * their quoted value.
  * @param {BeadBuilderFormData} d
  */
 export function buildBdCreateCommand(d) {
@@ -122,10 +121,8 @@ export function buildBdCreateCommand(d) {
   }
   parts.push(`--title "${shellEscapeDoubleQuoted(title)}"`);
   if (description) {
-    // Shell-escape first so pre-existing backslashes/quotes are handled, then
-    // encode real newlines as literal `\n` so the command stays on one line.
     parts.push(
-      `--description "${encodeDescriptionNewlines(shellEscapeDoubleQuoted(description))}"`,
+      `--description "${shellEscapeDoubleQuoted(normalizeNewlines(description))}"`,
     );
   }
   if (labels) {
