@@ -75,6 +75,12 @@ export interface HearthOptions {
   };
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
+  /**
+   * Awaited once the server listens and before the lock is taken and the
+   * token file written, with the port. A test holds the start there to ask
+   * the hearth while it is still starting; a throw fails the start.
+   */
+  onListening?: (port: number) => void | Promise<void>;
 }
 
 export interface OperatorApiOverrides {
@@ -323,6 +329,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       server.listen(options.port ?? 0, "127.0.0.1", done);
     });
     const port = (server.address() as AddressInfo).port;
+    await options.onListening?.(port);
     const claimed = acquireLock(lockFile, {
       pid: process.pid,
       port,
