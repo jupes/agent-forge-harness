@@ -22,6 +22,7 @@ import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { queueTracker } from "../scheduler/queue-fixture";
+import { SHIFTS_DIR, writeShiftRecord } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
@@ -296,6 +297,47 @@ const ACTIONS: Record<string, ActionFixture> = {
       ]);
     },
   },
+  "POST /shifts/:id/stop": {
+    valid: {
+      path: "/shifts/shift-20261014-120000-f1a0/stop",
+      body: {},
+      status: 200,
+      target: "shift-20261014-120000-f1a0",
+    },
+    invalid: { path: "/shifts/shift-1/stop", body: {} },
+    // A running shift of this hearth's workspace, as the shift writes it.
+    prepare: async (h) => {
+      writeShiftRecord(join(h.home, SHIFTS_DIR), {
+        shiftId: "shift-20261014-120000-f1a0",
+        pid: process.pid,
+        workspace: h.workspace,
+        startedAt: "2026-10-14T12:00:00.000Z",
+        deadline: "2026-10-14T14:00:00.000Z",
+        state: "running",
+        options: {
+          concurrency: 2,
+          forMs: 7_200_000,
+          maxBeads: 4,
+          maxUsd: 10,
+          repairs: 3,
+        },
+        spentUsd: 0,
+        unpriced: 0,
+        beads: [],
+      });
+    },
+    // The shift records shift.stopped itself; the row only asks.
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toEqual({
+        shiftId: "shift-20261014-120000-f1a0",
+        already: false,
+      });
+      expect(
+        existsSync(join(h.home, SHIFTS_DIR, "shift-20261014-120000-f1a0.stop")),
+      ).toBe(true);
+    },
+  },
   "POST /beads": {
     valid: {
       path: "/beads",
@@ -491,6 +533,7 @@ const READS: Record<string, string> = {
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
   "GET /scoreboard": "/scoreboard",
+  "GET /shifts": "/shifts",
 };
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -1114,6 +1157,11 @@ describe("the paths that existed before the table", () => {
     expect(posted.status).toBe(405);
     expect(posted.headers.get("allow")).toBe("GET");
 
+    // The shifts can be listed and stopped, not started: POST /shifts is not mounted.
+    const startShift = await post(h, "/shifts", {});
+    expect(startShift.status).toBe(405);
+    expect(startShift.headers.get("allow")).toBe("GET");
+
     const unmounted = [
       // The scheduler's moves, and proposing, are not the operator API's.
       "/queue/demo-1/propose",
@@ -1124,8 +1172,6 @@ describe("the paths that existed before the table", () => {
       "/queue/demo-1/release",
       "/queue/demo-1/halt",
       "/queue/demo-1",
-      "/shifts",
-      "/shifts/shift-1/stop",
       "/runs/demo/replan",
     ];
     for (const path of unmounted) {
