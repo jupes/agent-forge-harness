@@ -46,6 +46,32 @@ test("AGENT_FORGE_HOME overrides the default home, and roots get distinct keys",
   expect(lockPath("/h", "/a/b")).not.toBe(lockPath("/h", "/a/c"));
 });
 
+test.if(process.platform === "win32")(
+  "on Windows, a root spelled in other letter case or with forward slashes gets the same key, lock file and token file",
+  () => {
+    const spellings = [
+      String.raw`C:\Work\Repo`,
+      String.raw`c:\work\repo`,
+      "C:/WORK/Repo",
+    ];
+    expect(new Set(spellings.map(rootKey)).size).toBe(1);
+    expect(new Set(spellings.map((root) => lockPath("/h", root))).size).toBe(1);
+    expect(new Set(spellings.map((root) => tokenPath("/h", root))).size).toBe(
+      1,
+    );
+    expect(rootKey(String.raw`C:\Work\Other`)).not.toBe(
+      rootKey(String.raw`C:\Work\Repo`),
+    );
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "off Windows, roots that differ only in letter case get different keys",
+  () => {
+    expect(rootKey("/work/Repo")).not.toBe(rootKey("/work/repo"));
+  },
+);
+
 test("first acquire wins; a live lock for the same root is returned, not replaced", () => {
   const home = temp();
   const root = "/some/root";
