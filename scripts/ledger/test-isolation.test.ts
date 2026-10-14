@@ -7,9 +7,15 @@
  * setting — every test file that can start a process is run again with the OS
  * home pointed at a scratch directory (`HOME` and `USERPROFILE` both) and no
  * `AGENT_FORGE_HOME`: a child that keeps the OS home variable then has the
- * default home `<scratch>/.agent-forge`, and it must not appear. That
- * directory is the hearth's as well as the ledger's, so a lock or token file
- * written there fails this too.
+ * default home `<scratch>/.agent-forge`, and it must not appear. A child whose
+ * environment has neither `AGENT_FORGE_HOME` nor the OS home variable
+ * (`USERPROFILE` on Windows, `HOME` elsewhere) would take the home of the
+ * user's account instead; in the re-run the spawn probe (`isolation-probe.ts`)
+ * starts such a child with `AGENT_FORGE_HOME` set to `<scratch>/.agent-forge`
+ * when it is started with `Bun.spawn`, `Bun.spawnSync` or a
+ * `node:child_process` function (which the MCP stdio client reaches), so it is
+ * caught the same way. That directory is the hearth's as well as the ledger's,
+ * so a lock or token file written there fails this too.
  *
  * "Can start a process" is decided by a scan, so a new test is covered without
  * being listed here: a `*.test.ts` file under `scripts/` is re-run when it, or
@@ -19,11 +25,13 @@
  * is therefore in, though the test file itself spawns nothing.
  *
  * What this does not cover:
- * - a child whose environment has neither `AGENT_FORGE_HOME` nor the OS home
- *   variable (`USERPROFILE` on Windows, `HOME` elsewhere). The OS home then
- *   comes from the user's account, not the environment, so that child writes
- *   under the real home in this re-run as in an ordinary run, and the scratch
- *   directory never sees it.
+ * - a child whose environment names neither `AGENT_FORGE_HOME` nor the OS home
+ *   variable and that the spawn probe does not reach: one started through the
+ *   Bun shell (`Bun.$` given an environment of its own; no test does that
+ *   today, bead `agent-forge-harness-usuz`), and one started by another child,
+ *   which runs without the preload and so without the probe. Its OS home comes
+ *   from the user's account, so it writes under the real home in this re-run
+ *   as in an ordinary run, and the scratch directory never sees it.
  * - a test file the scan does not list: only `*.test.ts` files under
  *   `scripts/` are read, though `bun test` also runs other names (`.test.tsx`,
  *   `.spec.ts`, `_test.ts`; there are none today). The Playwright specs under
