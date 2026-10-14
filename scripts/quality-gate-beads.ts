@@ -60,18 +60,30 @@ export const execFileNoShell: ExecFile = (file, args, opts = {}) => {
   }
 };
 
-type BdIssueJson = { issue_type?: string; type?: string } | null;
+type BdIssueJson = {
+  issue_type?: unknown;
+  type?: unknown;
+  /** The issue's Acceptance Criteria field. bd leaves it out when it is empty. */
+  acceptance_criteria?: unknown;
+} | null;
 
-function issueTypeFromBdShowJson(output: string): CloseGateIssueType {
+/** The issue row `bd show <id> --json` prints, or null when the output holds none. */
+function issueRowFromBdShowJson(output: string): BdIssueJson {
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);
   } catch {
-    return "unknown";
+    return null;
   }
-  const rows = Array.isArray(parsed) ? parsed : [];
-  const first = (rows[0] ?? null) as BdIssueJson;
-  const raw = String(first?.issue_type ?? first?.type ?? "")
+  const first: unknown = Array.isArray(parsed) ? parsed[0] : null;
+  // justification: a non-null object row; each field is checked where it is read.
+  return typeof first === "object" && first !== null
+    ? (first as BdIssueJson)
+    : null;
+}
+
+function issueTypeFromRow(row: BdIssueJson): CloseGateIssueType {
+  const raw = String(row?.issue_type ?? row?.type ?? "")
     .toLowerCase()
     .trim();
   if (
@@ -107,7 +119,11 @@ export interface BeadsIssueFacts {
   shown: boolean;
   /** `unknown` when bd could not show the issue. */
   issueType: CloseGateIssueType;
-  /** True when `bd show` lists acceptance criteria for it. */
+  /**
+   * True when the issue's Acceptance Criteria field, as `bd show --json`
+   * prints it, holds text. An `ac:` comment or the text `ac:` elsewhere in the
+   * issue is not the field.
+   */
   acceptanceListed: boolean;
   commentBodies: string[];
 }
@@ -118,12 +134,14 @@ export function readBeadsIssue(
   exec: ExecFile = execFileNoShell,
 ): BeadsIssueFacts {
   const json = exec("bd", ["show", id, "--json"]);
-  const shown = exec("bd", ["show", id]);
   const comments = exec("bd", ["comments", id, "--json"]);
+  const row = json.ok ? issueRowFromBdShowJson(json.output) : null;
+  const acceptance = row?.acceptance_criteria;
   return {
     shown: json.ok,
-    issueType: json.ok ? issueTypeFromBdShowJson(json.output) : "unknown",
-    acceptanceListed: shown.ok && shown.output.includes("ac:"),
+    issueType: issueTypeFromRow(row),
+    acceptanceListed:
+      typeof acceptance === "string" && acceptance.trim().length > 0,
     commentBodies: comments.ok
       ? commentBodiesFromBdCommentsJson(comments.output)
       : [],

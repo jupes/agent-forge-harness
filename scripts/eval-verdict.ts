@@ -35,7 +35,8 @@ export const EVAL_VERDICT_SCHEMA_VERSION = 2 as const;
 export const LEGACY_EVAL_VERDICT_SCHEMA_VERSION = 1 as const;
 
 /**
- * Named dimensions allowed in `attestations` (Gas Town / Wasteland "stamps" analog).
+ * Named dimensions allowed in `attestations`: an advisory score per quality
+ * axis, given alongside the PASS/FAIL verdict.
  * Scores are integers in [0, 5]. All fields are optional; extras are rejected.
  */
 export const ATTESTATION_DIMENSIONS = [

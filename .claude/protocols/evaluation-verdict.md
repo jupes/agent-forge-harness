@@ -164,7 +164,8 @@ An unattended run reviews each phase, possibly several times, so one run has sev
 
 - for a **correlated** run, takes only a schema 2 verdict naming the correlation's bead and run; anything else is recorded `UNREADABLE` and halts the loop;
 - for a run with **no correlation**, cannot check a schema 2 verdict against anything and refuses it; it still takes a legacy schema 1 verdict and marks the round as one;
-- reads the file once and records its path, digest and size in the `verdict.bound` event;
+- reads the file once and records its path, digest and size in the `verdict.bound` event, and the digest on the round;
+- refuses, and records nothing, a file whose digest a round of the run was already graded from, whatever its path and whichever phase it is given for: a verdict grades one round. The verdict names no phase or round, so two honest verdicts that are the same bytes (a clean PASS with no summary, say) are refused the same way; give each round's verdict a `--summary` of what it reviewed;
 - reports, without enforcing, when the evaluator would not satisfy strict completion.
 
 So a `verdict.bound` event is not by itself evidence of strict completion: `forge:review` emits one for a round's verdict whatever its evaluator. Strict completion is a linked gate log entry whose `eval-verdict` check passed and which carries `evaluatorArtifact`.

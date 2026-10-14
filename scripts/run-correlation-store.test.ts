@@ -18,6 +18,8 @@ import {
   correlateRun,
   initRunCorrelation,
   loadRunCorrelation,
+  pointedRunCorrelation,
+  pointedRunCorrelationAnywhere,
 } from "./run-correlation-store";
 
 const temporary: string[] = [];
@@ -439,5 +441,116 @@ describe("the writer and a linked correlations directory", () => {
     expect(refused.ok).toBe(false);
     expect(!refused.ok && refused.held).toBeUndefined();
     expect(readFileSync(planted, "utf8")).toBe(before);
+  });
+});
+
+describe("pointedRunCorrelationAnywhere (a gate pointed at a run in another checkout)", () => {
+  const flag = (pointer: string) => ({
+    argv: ["--correlation", pointer],
+    env: {},
+  });
+
+  test("a pointer into another checkout's correlations directory is loaded there, against that checkout", () => {
+    const gate = checkout("gate");
+    const other = checkout("other");
+    const made = init(other);
+    if (!made.ok) throw new Error(made.error);
+    const pointed = pointedRunCorrelationAnywhere({
+      ...flag(made.path),
+      checkout: gate,
+    });
+    expect<unknown>(pointed).toEqual({
+      linked: true,
+      correlation: made.correlation,
+      path: made.path,
+    });
+    expect<unknown>(pointed.linked && pointed.correlation.checkout).toBe(
+      resolveCheckout(other).worktree,
+    );
+  });
+
+  test("a relative pointer is relative to the gate's checkout, wherever it leads", () => {
+    const gate = checkout("gate");
+    const nested = join(gate, "repos", "foo");
+    mkdirSync(join(nested, ".git"), { recursive: true });
+    const made = init(nested);
+    if (!made.ok) throw new Error(made.error);
+    const pointed = pointedRunCorrelationAnywhere({
+      ...flag(`repos/foo/${RUN_CORRELATIONS_DIR}/run-1.json`),
+      checkout: gate,
+    });
+    expect<unknown>(pointed.linked && pointed.correlation).toEqual(
+      made.correlation,
+    );
+  });
+
+  test("a pointer into the gate's own checkout is loaded as pointedRunCorrelation loads it", () => {
+    const gate = checkout("gate");
+    init(gate);
+    const stray = join(gate, "docs", "run-1.json");
+    plant(stray, { checkout: resolveCheckout(gate).worktree });
+    for (const pointer of [
+      `${RUN_CORRELATIONS_DIR}/run-1.json`,
+      `${RUN_CORRELATIONS_DIR}/nope.json`,
+      stray,
+      "",
+    ]) {
+      const input = { ...flag(pointer), checkout: gate };
+      expect({
+        pointer,
+        pointed: pointedRunCorrelationAnywhere(input),
+      }).toEqual({ pointer, pointed: pointedRunCorrelation(input) });
+    }
+  });
+
+  test("a correlations directory in a directory with no .git of its own is not followed", () => {
+    const gate = checkout("gate");
+    const plain = join(dirname(gate), "not a checkout");
+    const file = join(plain, RUN_CORRELATIONS_DIR, "run-1.json");
+    plant(file, { checkout: comparableCheckout(plain) });
+    expect(
+      pointedRunCorrelationAnywhere({ ...flag(file), checkout: gate }),
+    ).toEqual({
+      linked: false,
+      reason: "run correlation refused: the file is outside this checkout",
+      refused: "flag",
+    });
+  });
+
+  test("a correlation copied into another checkout from a third is refused there", () => {
+    const gate = checkout("gate");
+    const there = checkout("there");
+    const third = checkout("third");
+    const made = init(third);
+    if (!made.ok) throw new Error(made.error);
+    const copied = join(there, RUN_CORRELATIONS_DIR, "run-1.json");
+    mkdirSync(dirname(copied), { recursive: true });
+    writeFileSync(copied, readFileSync(made.path));
+    expect(
+      pointedRunCorrelationAnywhere({
+        argv: [],
+        env: { [RUN_CORRELATION_ENV]: copied },
+        checkout: gate,
+      }),
+    ).toEqual({
+      linked: false,
+      reason:
+        "run correlation refused: the correlation was written for another checkout",
+      refused: "env",
+    });
+  });
+
+  test("pointedRunCorrelation, which the verdict writer uses, still refuses a pointer into another checkout", () => {
+    const gate = checkout("gate");
+    const other = checkout("other");
+    const made = init(other);
+    if (!made.ok) throw new Error(made.error);
+    expect(
+      pointedRunCorrelation({ ...flag(made.path), checkout: gate }),
+    ).toEqual({
+      linked: false,
+      reason: "run correlation refused: the file is outside this checkout",
+      refused: "flag",
+    });
   });
 });

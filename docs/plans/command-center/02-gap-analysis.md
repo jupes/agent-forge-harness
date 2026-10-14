@@ -53,7 +53,7 @@ Legend: ✅ have · 🟡 partial · ❌ missing · ★ target goes beyond the pr
 
 1. **SessionEnd never fires.** `.claude/hooks/session.ts:60-64` handles `SessionEnd` (would `bd dolt push`) but `settings.json` wires no SessionEnd hook. Fix as part of the hook telemetry task.
 2. **Hook identity env vars are not set by Claude Code** (`CLAUDE_TASK_ID` / `CLAUDE_HOOK_EVENT`, `.claude/hooks/quality-gate.ts:138-139`). Tracked as `0xxt` (P1). The ledger task depends on it.
-3. **`knowledge/_shared.yaml:73-76` and `.claude/molecules/README.md` cite a deleted file** (`knowledge/gas-town-harness-insights.yaml`, removed in `78dba0e`). Fix in the docs task.
+3. **`knowledge/_shared.yaml:73-76` and `.claude/molecules/README.md` cite a deleted file** (a prior-art insights YAML under `knowledge/`, removed in `78dba0e`). Fix in the docs task.
 4. **`forge:runs` advertises the next phase for a halted run** (`csf2`, P1). Fix inside the run-state v2 task.
 5. **Worktree helper breaks on Windows paths with spaces** (`5mge`) and **shared stash can swap sessions' WIP** (`aenb`). Both sit under the worktree registry task.
 6. **Playwright is not in CI** (`2q5s`, `p5k`). The command center UI tasks require it.

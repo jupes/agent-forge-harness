@@ -21,7 +21,7 @@ import {
   releaseLock,
   updateLock,
 } from "./lock";
-import { healthProblem } from "./loopback";
+import { healthProblem, healthReport } from "./loopback";
 
 const SERVER_SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -137,8 +137,17 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     async stopIfOwner() {
       const lock = readLock(file);
       if (!lock || lock.supervisor !== options.id) return;
-      // A recycled pid must not take the blame for a hearth that already died.
-      if (!(await isHealthy(lock))) {
+      const report = isPidAlive(lock.pid)
+        ? await healthReport(lock)
+        : { problem: "its pid is not alive", silent: false };
+      // A live pid whose port answered nothing in time may be the hearth, too
+      // busy to answer: neither stopped nor released, so that its lock still
+      // names it and the next dashboard does not start a second one for this
+      // root. Whether it is the hearth is not known, so it is not stopped.
+      if (report.silent) return;
+      // Dead, or something else answers: the lock is stale. A recycled pid
+      // must not take the blame for a hearth that already died.
+      if (report.problem !== null) {
         releaseLock(file, lock.pid);
         return;
       }

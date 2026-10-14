@@ -1,11 +1,13 @@
 /**
  * Codex adapter: `codex exec --json`, prompt on stdin (`-`).
  *
- * `bun run codex:sync` runs first so `.agents/skills/` exists for the worktree
- * (inject `prepare` in tests).
+ * `bun run codex:sync` runs first, in the checkout the executor runs in when
+ * that is a checkout of the harness, so `.agents/skills/` there mirrors its
+ * `.claude/` (`codexSyncDirectory`; inject `prepare` in tests).
  *
  * Checked against `codex` on Windows, run directly (2026-10-08): 0.159.0 and
- * 0.160.0 both accept the flags below, and every recorded stream opened with
+ * 0.160.0 both accept the flags below except the `-c` that carries the
+ * effort, and every recorded stream opened with
  * `thread.started` carrying a `thread_id`, the session id `parseCodexLine`
  * takes. On 0.160.0 — the only version that got as far as a command — one
  * shell command arrived as `item.started` then `item.completed` with
@@ -18,9 +20,19 @@
  * through `forge:exec` on 0.160.0 (2026-10-09) left `session.started`, a
  * `tool.called` for the shell command and `session.ended` in the ledger; that
  * was before the adapter read the thread id or the usage.
+ *
+ * The smith's effort goes in `-c model_reasoning_effort=<level>`: `-c` is the
+ * inline config override `codex exec` documents, and `model_reasoning_effort`
+ * the documented config key (levels such as `low`, `medium`, `high`,
+ * `xhigh`, depending on the model). The value is passed bare: a `-c` value
+ * that does not parse as TOML is taken as the literal string, so `medium`
+ * arrives as the string `medium`, and no quote has to survive a Windows
+ * command shim. It was added after those runs and has not been run against a
+ * real CLI.
  */
 
 import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
+import { resolveCheckout } from "../ledger/workspace";
 import {
   createCliAdapter,
   type ParsedLine,
@@ -118,21 +130,45 @@ export function parseCodexError(line: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Where `codex:sync` runs for a request: the top level of the checkout the
+ * executor runs in, when that checkout is the harness's — its main checkout
+ * or a linked worktree of it. Codex looks for `.agents/skills/` from the
+ * directory it runs in up to its repository's top level
+ * (`.agents/CODEX-NOTES.md`; not observed with a real Codex here), and a
+ * linked worktree has a copy of its own, mirrored from its own `.claude/`.
+ * Undefined for a checkout of any other repository (a sub-repo, the
+ * directory `forge:doctor --task` makes): it holds no `.claude/` of the
+ * harness to mirror, and a sync anywhere else is not where Codex looks.
+ */
+export function codexSyncDirectory(
+  request: Pick<SpawnRequest, "worktree" | "workspace">,
+): string | undefined {
+  const run = resolveCheckout(request.worktree);
+  const harness = resolveCheckout(request.workspace);
+  return run.workspace === harness.workspace ? run.worktree : undefined;
+}
+
 function syncSkills(request: SpawnRequest): void {
+  const directory = codexSyncDirectory(request);
+  if (directory === undefined) return;
   const result = Bun.spawnSync(["bun", "run", "codex:sync"], {
-    cwd: request.workspace,
+    cwd: directory,
     stdout: "ignore",
     stderr: "ignore",
   });
   if (result.exitCode !== 0) {
     throw new Error(
-      `codex:sync failed (exit ${result.exitCode}) in ${request.workspace}`,
+      `codex:sync failed (exit ${result.exitCode}) in ${directory}`,
     );
   }
 }
 
 export interface CodexOptions {
-  /** Runs before each spawn; the default mirrors skills with `codex:sync` in the workspace. */
+  /**
+   * Runs before each spawn. The default runs `codex:sync` where
+   * `codexSyncDirectory` says, and nowhere when it names no directory.
+   */
   prepare?: (request: SpawnRequest) => Promise<void> | void;
 }
 
@@ -149,6 +185,8 @@ export function createCodexAdapter(options: CodexOptions = {}) {
       "workspace-write",
       "--model",
       request.smith.model,
+      "-c",
+      `model_reasoning_effort=${request.smith.effort}`,
       "--cd",
       request.worktree,
       "-",

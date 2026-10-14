@@ -189,13 +189,30 @@ describe("forge:doctor --task (fake binary)", () => {
     const { made, options } = taskSetup();
     const [report] = await runDoctor(
       { claude: claudeAdapter },
-      { claude: [join(tmpdir(), "no-such-claude-binary")] },
+      {
+        claude: [process.execPath, join(tmpdir(), "no-such-claude-script.ts")],
+      },
       options,
     );
-    expect(report).toMatchObject({ ok: false, task: null });
+    expect(report).toMatchObject({ found: true, ok: false, task: null });
     expect(made).toEqual([]);
     expect(doctorLine(report as NonNullable<typeof report>)).toStartWith(
-      "claude: does not answer --version (",
+      "claude: does not answer --version (version check exited ",
+    );
+  });
+
+  test("a binary that is not found is not given a task, and the line says it is not found", async () => {
+    const { made, options } = taskSetup();
+    const missing = join(tmpdir(), "no-such-claude-binary");
+    const [report] = await runDoctor(
+      { claude: claudeAdapter },
+      { claude: [missing] },
+      options,
+    );
+    expect(report).toMatchObject({ found: false, ok: false, task: null });
+    expect(made).toEqual([]);
+    expect(doctorLine(report as NonNullable<typeof report>)).toBe(
+      `claude: not found (${missing} not found)`,
     );
   });
 

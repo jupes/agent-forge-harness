@@ -2,10 +2,11 @@
  * The ledger events a Forge run emits: a phase entered, a phase completed, a
  * verdict file bound to the run, a review round recorded.
  *
- * Imported only by the Bun CLIs (`phase-gate.ts`, `auto-loop-cli.ts`), and
- * only when they run as commands: the ledger loads `bun:sqlite`, which the
- * modules the dashboard bundles for the browser (`runs.ts`, `phases.ts`,
- * `review-rules.ts`) must never reach.
+ * Loaded by the Bun CLIs (`phase-gate.ts`, `auto-loop-cli.ts`) only when
+ * they run as commands, and by `scripts/quality-gate-ledger.ts`, which the
+ * quality-gate hook loads only when it records a run: the ledger loads
+ * `bun:sqlite`, which the modules the dashboard bundles for the browser
+ * (`runs.ts`, `phases.ts`, `review-rules.ts`) must never reach.
  */
 
 import type {

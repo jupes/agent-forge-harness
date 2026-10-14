@@ -19,8 +19,9 @@ export interface SpawnRequest {
   worktree: string;
   /**
    * The harness root the run was launched from. Events carry its main checkout
-   * (a linked worktree resolves to the checkout it belongs to); adapter
-   * preparation such as `codex:sync` runs in the directory as given.
+   * (a linked worktree resolves to the checkout it belongs to). Codex's
+   * `codex:sync` runs in the worktree's checkout when it belongs to the same
+   * main checkout, and not at all otherwise (`codexSyncDirectory`).
    */
   workspace: string;
   smith: Smith;
@@ -90,6 +91,11 @@ export interface ExecutorHandle {
 
 export interface DoctorResult {
   provider: Provider;
+  /**
+   * The binary is there: the provider's on PATH, or an override's program
+   * (its first item) as `Bun.which` finds it. Found says nothing about
+   * whether it runs.
+   */
   found: boolean;
   /**
    * The binary answered `--version` with exit 0. That is all: a CLI that is

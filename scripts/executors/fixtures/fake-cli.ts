@@ -5,7 +5,7 @@
  * later argument is the adapter's own and is recorded, not interpreted.
  *
  *   --fake-provider claude|codex   which stream dialect to print
- *   --fake-mode ok|tools|garbage|crash|hang|auth|model|no-tool-host|no-tools|stderr
+ *   --fake-mode ok|tools|garbage|crash|hang|hang-tree|auth|model|no-tool-host|no-tools|stderr
  *   --fake-dump <file>             write { cwd, env, argv, stdin } as JSON
  *   --fake-session-id <id>         the session id the stream reports (Claude:
  *                                  `session_id` on every line; Codex:
@@ -48,6 +48,13 @@
  *                 `turn.completed`, exit 0
  *   no-tools      the stream's first and last lines and no tool, exit 0
  *   stderr        one line on stderr and nothing on stdout, exit 2
+ *   hang-tree     start a child of its own that hangs, print its pid as one
+ *                 line (`{ "childPid": <n> }`), then hang. On Windows the
+ *                 child is started detached, elsewhere it stays in this
+ *                 process's group. On Windows (Bun 1.3.10) a fake the
+ *                 harness supervised did not outlive the harness even with
+ *                 its exit hook removed, and a detached child of that fake
+ *                 did (`supervisor.test.ts`)
  */
 
 import { existsSync, writeFileSync } from "fs";
@@ -150,6 +157,21 @@ function codexSays(text: string) {
 }
 
 if (mode === "hang") {
+  setInterval(() => undefined, 1000);
+  await new Promise(() => undefined);
+}
+
+if (mode === "hang-tree") {
+  const child = Bun.spawn(
+    [process.execPath, import.meta.path, "--fake-mode", "hang"],
+    {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      ...(process.platform === "win32" ? { detached: true } : {}),
+    },
+  );
+  emit({ childPid: child.pid });
   setInterval(() => undefined, 1000);
   await new Promise(() => undefined);
 }

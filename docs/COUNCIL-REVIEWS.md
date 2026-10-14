@@ -69,6 +69,8 @@ Runs are written beneath `reports/council-runs/` by default. Each run reserves a
 
 Source text, labels, and PR metadata are scanned for credential-like values before truncation or dispatch. The default behavior rejects the input; `--redact-secrets` replaces detected values when explicitly preferred. Credential-file patches (including renames) are omitted and recorded. Detection is heuristic, not a guarantee that arbitrary sensitive data is removed: review the material before sending it to external providers.
 
+In every prompt the reviewed material, and the candidates, discussion and aggregate built from model output, sit between tags whose names end in a random token drawn for that prompt, which none of that text holds in any letter case or spacing. The reviewed text is sent as written, line-numbered, so it can contain `</evidence>` or any look-alike, but it cannot close its own block and pose as instructions outside it. This makes the boundaries unforgeable; it does not stop a model from being persuaded by what the material says.
+
 The source is a bounded evidence packet, not an autonomous research session. Models cannot browse linked sites, execute repository tools, or retrieve additional code. Supply relevant excerpts and acceptance criteria alongside plans or research. `pr` accepts a GitHub PR URL; arbitrary webpage fetching and native PDF/Word parsing are not implemented. Export those documents to text/Markdown or paste their relevant contents. PR capture verifies that head/base SHAs did not change while metadata and diff were retrieved and refuses a moving snapshot.
 
 ## Provider credentials
@@ -250,6 +252,7 @@ Review behavior is shared across all three interfaces. Start with `scripts/counc
 | --- | --- |
 | `deliberation.ts` | Anonymous candidates, proposal identity, revised ballots, consensus and dissent. |
 | `prompts.ts` | Independent, peer, revision and chair instructions. |
+| `prompt-fence.ts` | The tags around untrusted text in a prompt: a per-prompt token the text cannot hold, and JSON written without `<`, `>` or `&`. |
 | `output-contracts.ts` | One set of output schemas, inferred TypeScript types and generated provider JSON schemas. |
 | `output-validation.ts` | Evidence/candidate references, full ballot coverage, chair classification and sanitized output. |
 | `model-call.ts` | Deadlines, cancellation, call accounting and single-review execution. |

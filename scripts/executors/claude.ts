@@ -5,14 +5,21 @@
  * project scripts. `--dangerously-skip-permissions` is never used.
  *
  * Checked against `claude` 2.1.293 on Windows, run directly (2026-10-08):
- * every flag below is accepted, and the stream is framed as `system` /
- * `assistant` / `result` lines, each carrying the same `session_id` (the
- * `system` / `init` line first), and the `result` line a `usage` object and
- * `total_cost_usd`. `parseClaudeLine` takes the session id and that usage
- * from those fields. That run stopped at authentication, so the shape it maps
- * to tools — an `assistant` message carrying `tool_use` content blocks, the
- * documented stream-json format — has not been observed from a real CLI, and
- * neither has a successful `result`.
+ * every flag below except `--effort` is accepted, and the stream is framed
+ * as `system` / `assistant` / `result` lines, each carrying the same
+ * `session_id` (the `system` / `init` line first), and the `result` line a
+ * `usage` object and `total_cost_usd`. `parseClaudeLine` takes the session
+ * id and that usage from those fields. That run stopped at authentication,
+ * so the shape it maps to tools — an `assistant` message carrying `tool_use`
+ * content blocks, the documented stream-json format — has not been observed
+ * from a real CLI, and neither has a successful `result`.
+ *
+ * The smith's effort goes in `--effort <level>`, the flag the CLI reference
+ * documents (levels `low`, `medium`, `high`, `xhigh`, `max`; a level the model
+ * does not support runs as the highest one below it). It was added after that
+ * run and has not been run against a real CLI. The reference does not say
+ * what a model without effort support (`claude-apprentice`'s Haiku 4.5) does
+ * with the flag.
  *
  * The CLI's help lists a `--session-id` flag that would fix the id up front.
  * The adapter does not pass it and takes the id the stream reports instead:
@@ -157,6 +164,8 @@ export const claudeAdapter = createCliAdapter({
     "--verbose",
     "--model",
     request.smith.model,
+    "--effort",
+    request.smith.effort,
     "--permission-mode",
     "acceptEdits",
     "--allowedTools",

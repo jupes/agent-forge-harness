@@ -122,6 +122,8 @@ function gateLink(
     env: input.env ?? {},
     run: () => ({ ok: false, output: "" }),
     execFile: () => ({ ok: false, output: "" }),
+    harness: cwd,
+    registry: () => null,
     hasScript: () => false,
     hasTestFiles: () => false,
     smiths: () => [],

@@ -43,7 +43,11 @@ const TASK_TIMEOUT_MS = 5 * 60 * 1000;
 export interface TaskCheckOptions {
   /** The smith each provider's task asks for, by provider. */
   smiths: Readonly<Record<string, Smith>>;
-  /** Where adapter preparation runs (`codex:sync`), as for forge:exec. */
+  /**
+   * The harness checkout, given to the adapter as the workspace, as
+   * forge:exec gives it. A task's directory is a repository of its own, so
+   * Codex's `codex:sync` does not run for a task (`codexSyncDirectory`).
+   */
   harnessRoot: string;
   /** Already allowlisted (`buildChildEnv`). */
   env: Record<string, string>;
