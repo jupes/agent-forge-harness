@@ -83,7 +83,7 @@ export function councilHttpHandler(
             ? `event: snapshot\ndata: ${JSON.stringify(value)}\n\n`
             : `event: delta\ndata: ${JSON.stringify(delta)}\n\n`,
         );
-        sent = value;
+        if (deltas) sent = value;
         if (value.status !== "running" && value.status !== "cancelling")
           res.end();
       };
