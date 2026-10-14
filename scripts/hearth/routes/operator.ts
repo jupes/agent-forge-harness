@@ -75,12 +75,21 @@ function councilRunId(value: unknown): ValidationResult<string> {
 
 type CouncilStart = CouncilServiceInput & { runId: string };
 
+/** What a preview packs from: the fields that change a pack, and the bead. */
+type CouncilPreviewInput = Pick<
+  CouncilServiceInput,
+  "sourceType" | "source" | "maxBytes" | "redactSecrets" | "beadId"
+>;
+
 /**
- * The council service's own input, checked before anything is recorded. The
- * run id is settled here — the caller's, or a new one in the service's format —
- * so the audit row can name the run it starts.
+ * The council service's own input, checked before anything is recorded, with
+ * the bead the request is recorded against. Only the fields the service knows:
+ * nothing else in the body travels on.
  */
-function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
+function councilInput(request: RouteRequest): ValidationResult<{
+  input: CouncilServiceInput;
+  body: Record<string, unknown>;
+}> {
   const parameters = noParameters(request);
   if (!parameters.ok) return parameters;
   const body = request.body;
@@ -98,6 +107,34 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
   const beadId = councilBeadId(input);
   if (beadId !== undefined && !isBeadId(beadId))
     return fail("beadId must be a Beads issue id");
+  return {
+    ok: true,
+    value: {
+      body,
+      input: {
+        sourceType: input.sourceType,
+        source: input.source,
+        ...(input.profile !== undefined ? { profile: input.profile } : {}),
+        ...(input.maxUsd !== undefined ? { maxUsd: input.maxUsd } : {}),
+        ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}),
+        ...(input.redactSecrets !== undefined
+          ? { redactSecrets: input.redactSecrets }
+          : {}),
+        ...(beadId !== undefined ? { beadId } : {}),
+      },
+    },
+  };
+}
+
+/**
+ * A start: the service's input, and the run id settled here — the caller's, or
+ * a new one in the service's format — so the audit row can name the run it
+ * starts.
+ */
+function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
+  const checked = councilInput(request);
+  if (!checked.ok) return checked;
+  const { body, input } = checked.value;
   const runId =
     body["runId"] === undefined
       ? ({
@@ -106,19 +143,28 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
         } as const)
       : councilRunId(body["runId"]);
   if (!runId.ok) return runId;
-  // Only the fields the service knows: nothing else in the body travels on.
+  return { ok: true, value: { ...input, runId: runId.value } };
+}
+
+/**
+ * A preview: checked as a start is, so the page can send the same body, and
+ * handed on with only what changes a pack. The profile, the ceiling and a run
+ * id are a run's, and a preview starts none.
+ */
+function councilPreview(
+  request: RouteRequest,
+): ValidationResult<CouncilPreviewInput> {
+  const checked = councilInput(request);
+  if (!checked.ok) return checked;
+  const { sourceType, source, maxBytes, redactSecrets, beadId } =
+    checked.value.input;
   return {
     ok: true,
     value: {
-      sourceType: input.sourceType,
-      source: input.source,
-      runId: runId.value,
-      ...(input.profile !== undefined ? { profile: input.profile } : {}),
-      ...(input.maxUsd !== undefined ? { maxUsd: input.maxUsd } : {}),
-      ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}),
-      ...(input.redactSecrets !== undefined
-        ? { redactSecrets: input.redactSecrets }
-        : {}),
+      sourceType,
+      source,
+      ...(maxBytes !== undefined ? { maxBytes } : {}),
+      ...(redactSecrets !== undefined ? { redactSecrets } : {}),
       ...(beadId !== undefined ? { beadId } : {}),
     },
   };
@@ -171,6 +217,29 @@ function actions(deps: OperatorDeps): ApiRoute[] {
     }),
     effect: (input) => councilReply(202, () => deps.council.start(input)),
   };
+  // What a run would send, read now and listed part by part, with nothing
+  // started. An action, though it changes nothing: a bead source reads private
+  // text through `bd` (and a pull request through `gh`), so it is the
+  // operator's to ask for, and it is audited against the bead.
+  const preview: ActionRoute<CouncilPreviewInput> = {
+    kind: "action",
+    method: "POST",
+    path: "/council/preview",
+    action: "council.run.preview",
+    maxBodyBytes: 2_100_000,
+    validate: councilPreview,
+    subject: (input) =>
+      input.beadId !== undefined
+        ? { target: input.beadId, beadId: input.beadId }
+        : {},
+    effect: async (input) => {
+      try {
+        return { status: 200, data: await deps.council.preview(input) };
+      } catch (error) {
+        return { status: 400, error: safeCouncilError(error) };
+      }
+    },
+  };
   const cancel: Omit<ActionRoute<string>, "path"> = {
     kind: "action",
     method: "POST",
@@ -195,6 +264,7 @@ function actions(deps: OperatorDeps): ApiRoute[] {
   };
   return [
     { ...start, path: "/council/runs" },
+    preview,
     { ...cancel, path: "/council/runs/:id/cancel" },
     { ...start, path: "/council-api/runs" },
     { ...cancel, path: "/council-api/runs/:id/cancel" },

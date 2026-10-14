@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
 import type {
   EventsPage,
@@ -17,6 +17,8 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import type { CommandResult, CommandRunner } from "../council/pr-source";
+import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
@@ -155,6 +157,82 @@ const text = (runId: string): Record<string, unknown> => ({
   source: "Evaluate this plan and record any missing evidence.",
   runId,
 });
+
+/**
+ * What the two read-only reads of a bead source print for one invented bead,
+ * and, when a comment names a pull request, the origin; `undefined` for any
+ * other command, which the test hearth then refuses.
+ */
+function beadReads(id: string, comments: string[] = []): CommandRunner {
+  return async (command) => {
+    const line = command.join(" ");
+    const printed = (value: unknown): CommandResult => ({
+      exitCode: 0,
+      stdout: JSON.stringify(value),
+      stderr: "",
+    });
+    if (line === `bd --readonly show ${id} --json`)
+      return printed([
+        {
+          id,
+          title: "Teach the kiln to report its temperature",
+          acceptance_criteria: "[ ] The reading is in Celsius.",
+          status: "in_progress",
+          priority: 2,
+          issue_type: "task",
+        },
+      ]);
+    if (line === `bd --readonly comments ${id} --json`)
+      return printed(
+        comments.map((text, index) => ({
+          issue_id: id,
+          text,
+          created_at: `2031-01-0${index + 1}T10:00:00Z`,
+        })),
+      );
+    if (line === "git remote get-url origin")
+      return {
+        exitCode: 0,
+        stdout: "https://github.com/demo-org/kiln-works.git\n",
+        stderr: "",
+      };
+    return { exitCode: 2, stdout: "", stderr: `not arranged: ${line}` };
+  };
+}
+
+/** The ids of the council runs the hearth lists, sorted. */
+async function runIds(h: TestHearth): Promise<string[]> {
+  const runs = await fetch(`${h.api}/council-api/runs`);
+  return ((await envelope<Array<{ runId: string }>>(runs)).data ?? [])
+    .map((run) => run.runId)
+    .sort();
+}
+
+/** The run ids listed before the preview fixture's request. */
+let previewRunsBefore: string[] = [];
+
+/** The council events of one run, once its end is recorded. */
+async function councilEventsOf(
+  h: TestHearth,
+  runId: string,
+): Promise<LedgerEvent[]> {
+  const ofRun = (): LedgerEvent[] =>
+    h
+      .events(["council.run.started", "council.run.finished"])
+      .filter(
+        (event) =>
+          (event.kind === "council.run.started" ||
+            event.kind === "council.run.finished") &&
+          event.payload.councilRunId === runId,
+      );
+  for (
+    let i = 0;
+    i < 400 && !ofRun().some((event) => event.kind === "council.run.finished");
+    i++
+  )
+    await new Promise((done) => setTimeout(done, 25));
+  return ofRun();
+}
 
 async function finishedRun(h: TestHearth, runId: string): Promise<void> {
   const started = await post(h, "/council/runs", text(runId));
@@ -411,6 +489,32 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { sourceType: "nope", source: "x" },
     },
     happened: started("fixture-a"),
+  },
+  "POST /council/preview": {
+    valid: {
+      path: "/council/preview",
+      body: { sourceType: "bead", source: "demo-preview" },
+      status: 200,
+      target: "demo-preview",
+    },
+    invalid: {
+      path: "/council/preview",
+      body: { sourceType: "bead", source: "not a bead id" },
+    },
+    prepare: async (h) => {
+      h.commands.answer = beadReads("demo-preview");
+      previewRunsBefore = await runIds(h);
+    },
+    // It reads and lists; it starts nothing, so it records nothing more.
+    happened: async (h, data) => {
+      const preview = data as CouncilPreview;
+      expect(preview.source.locator).toBe("demo-preview");
+      expect(preview.listing[0]).toStartWith("E1 acceptance criteria: ");
+      expect(
+        h.commands.calls.map(({ command }) => command.slice(0, 3).join(" ")),
+      ).toEqual(["bd --readonly show", "bd --readonly comments"]);
+      expect(await runIds(h)).toEqual(previewRunsBefore);
+    },
   },
   "POST /council/runs/:id/cancel": {
     prepare: (h) => runningRun(h, "to-cancel-a"),
@@ -2296,6 +2400,144 @@ describe("a bead as the source of a council run started through the hearth", () 
     expect(handed).toEqual([]);
     expect(h.events()).toEqual([]);
   });
+
+  test("a bead job through the hearth's own effect and council ledger packs the bead with the hearth's command runner, runs only the two read-only reads, and records the audit row, the start and the end against the bead", async () => {
+    const h = await start({ councilRuns: true });
+    h.commands.answer = beadReads("demo-7", ["worklog: sensor wired."]);
+    const response = await post(h, "/council/runs", {
+      sourceType: "bead",
+      source: "demo-7",
+      runId: "bead-job",
+    });
+    expect(response.status).toBe(202);
+    const recorded = await councilEventsOf(h, "bead-job");
+    await councilRunFinished(h, "bead-job");
+    const job = await envelope<{
+      status: string;
+      run?: { context: { source: { kind: string; locator: string } } };
+    }>(await fetch(`${h.api}/council-api/runs/bead-job`));
+    expect(job.data?.status).toBe("completed");
+    expect(job.data?.run?.context.source).toMatchObject({
+      kind: "bead",
+      locator: "demo-7",
+    });
+    expect(
+      h.commands.calls.map(({ command }) => command.slice(0, 3).join(" ")),
+    ).toEqual(["bd --readonly show", "bd --readonly comments"]);
+    // The API's own bd is not the council's: the job never reached it.
+    expect(h.bd.calls).toEqual([]);
+    const audit = h.events(["operator.action"]);
+    expect(
+      [...audit, ...recorded].map((event) => [event.kind, event.beadId]),
+    ).toEqual([
+      ["operator.action", "demo-7"],
+      ["council.run.started", "demo-7"],
+      ["council.run.finished", "demo-7"],
+    ]);
+  }, 20_000);
+
+  test("a test hearth runs no command for the council that its test did not arrange: a bead job fails with the refusal, and no bd is started", async () => {
+    const h = await start();
+    const response = await post(h, "/council/runs", {
+      sourceType: "bead",
+      source: "demo-7",
+      runId: "bead-refused",
+    });
+    expect(response.status).toBe(202);
+    await councilRunFinished(h, "bead-refused");
+    const job = await envelope<{ status: string; error?: string }>(
+      await fetch(`${h.api}/council-api/runs/bead-refused`),
+    );
+    expect(job.data?.status).toBe("failed");
+    expect(job.data?.error).toContain("bd --readonly show failed");
+    expect(
+      h.commands.calls.map(({ command }) => command.slice(0, 3).join(" ")),
+    ).toEqual(["bd --readonly show"]);
+    expect(h.bd.calls).toEqual([]);
+  }, 20_000);
+
+  test("a hearth whose root is a linked worktree runs the council's bd in the main checkout, as its own bd runner does, and git in its root", async () => {
+    const h = await start({ linkedWorktree: true });
+    expect(h.main).toBeDefined();
+    h.commands.answer = beadReads("demo-7", [
+      "see https://github.com/demo-org/kiln-works/pull/12",
+    ]);
+    const response = await post(h, "/council/preview", {
+      sourceType: "bead",
+      source: "demo-7",
+    });
+    // The pull request itself is not arranged: its capture fails, which is a note.
+    expect(response.status).toBe(200);
+    const where = h.commands.calls.map(({ command, cwd }) => [
+      command.slice(0, 2).join(" "),
+      resolve(cwd),
+    ]);
+    expect(where.slice(0, 3)).toEqual([
+      ["bd --readonly", resolve(h.main ?? "")],
+      ["bd --readonly", resolve(h.main ?? "")],
+      ["git remote", resolve(h.root)],
+    ]);
+    for (const [command, cwd] of where.slice(3))
+      expect({ command, cwd }).toEqual({ command, cwd: resolve(h.root) });
+  }, 20_000);
+
+  test("a preview answers what a run would send, audited against the bead, and refuses as a start refuses", async () => {
+    const h = await start();
+    h.commands.answer = beadReads("demo-7", ["worklog: sensor wired."]);
+    const response = await post(h, "/council/preview", {
+      sourceType: "bead",
+      source: " demo-7\n",
+      // A start's fields that do not change a pack are not refused, and not used.
+      runId: "never-started",
+      maxUsd: 1,
+    });
+    expect(response.status).toBe(200);
+    const preview = (await envelope<CouncilPreview>(response)).data;
+    expect(preview?.source).toEqual({
+      kind: "bead",
+      displayName: "demo-7: Teach the kiln to report its temperature",
+      locator: "demo-7",
+    });
+    expect(preview?.listing).toEqual([
+      expect.stringMatching(/^E1 acceptance criteria: \d+ bytes$/),
+      expect.stringMatching(/^E2 latest comments: 1 comment, \d+ bytes$/),
+      "description: none",
+    ]);
+    expect(
+      h
+        .events(["operator.action"])
+        .map((event) => [event.payload, event.beadId]),
+    ).toEqual([
+      [
+        { action: "council.run.preview", surface: "api", target: "demo-7" },
+        "demo-7",
+      ],
+    ]);
+    const runs = await fetch(`${h.api}/council-api/runs`);
+    expect((await envelope<unknown[]>(runs)).data).toEqual([]);
+
+    // A bd that refuses is the preview's answer, in the service's words.
+    h.commands.answer = null;
+    const refused = await post(h, "/council/preview", {
+      sourceType: "bead",
+      source: "demo-7",
+    });
+    expect(refused.status).toBe(400);
+    expect((await envelope(refused)).error).toContain(
+      "bd --readonly show failed",
+    );
+    for (const [body, message] of [
+      [
+        { sourceType: "bead", source: "demo-7", beadId: "demo-8" },
+        "beadId must name the bead under review when the source is a bead",
+      ],
+      [{ sourceType: "nope", source: "x" }, "source must be a nonempty"],
+    ] as const) {
+      const answer = await post(h, "/council/preview", body);
+      expect(answer.status).toBe(400);
+      expect((await envelope(answer)).error).toContain(message);
+    }
+  }, 20_000);
 
   test("an accepted bead source is audited against its bead and handed to the route's effect with it, whether or not the caller repeated the id or wrote space around it", async () => {
     const { h, handed } = await recording();
