@@ -253,12 +253,19 @@ function gitAnswers(
   };
 }
 
-/** A program run with an argument array, and the directory it was run in when one was given. */
+/**
+ * A program run with an argument array, and the directory it was run in and
+ * the time limit it was given, when they were.
+ */
 interface Exec {
   file: string;
   args: string[];
   cwd?: string;
+  timeoutMs?: number;
 }
+
+/** What a program run answers: `timedOut` when the runner stopped it for time. */
+type Answer = { ok: boolean; output: string; timedOut?: true };
 
 interface Recorded {
   outcome: GateOutcome;
@@ -284,7 +291,7 @@ function gate(
     /** Answers to git argument arrays, over what `history` gives. */
     git?: Record<string, { ok: boolean; output: string }>;
     /** Answers to any other program, by `<program> <arguments>`. Unanswered, a program succeeds. */
-    programs?: Record<string, { ok: boolean; output: string }>;
+    programs?: Record<string, Answer>;
     /** The text of `repos/repos.json`. Absent, it cannot be read. */
     registry?: string;
     /** Who the run's state says built the work. */
@@ -321,6 +328,7 @@ function gate(
         file,
         args: [...args],
         ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       });
       const key = args.join(" ");
       if (file === "bd") return input.bd?.[key] ?? { ok: false, output: "" };
@@ -918,6 +926,53 @@ describe("a run in a repository under repos/", () => {
       output: "test result: FAILED",
     });
     expect(ran(recorded).result.blockingFailures).toEqual(["unit"]);
+  });
+
+  test("a check's own time limit is handed to the runner, and a check stopped for time is reported as stopped, not as failed", () => {
+    const box = sandbox();
+    const { at, pointer } = repositoryRun(box);
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      registry: JSON.stringify({
+        repos: [
+          {
+            name: "foo",
+            checks: [
+              { name: "unit", argv: ["cargo", "test"], timeoutSeconds: 900 },
+              { name: "lint", argv: ["cargo", "clippy"] },
+            ],
+          },
+        ],
+      }),
+      programs: {
+        "cargo test": {
+          ok: false,
+          output: "running 12 tests",
+          timedOut: true,
+        },
+        "cargo clippy": { ok: false, output: "", timedOut: true },
+      },
+    });
+    // A check that sets no limit gets the runner's own.
+    expect(recorded.execs.filter((call) => call.file === "cargo")).toEqual([
+      { file: "cargo", args: ["test"], cwd: at, timeoutMs: 900_000 },
+      { file: "cargo", args: ["clippy"], cwd: at },
+    ]);
+    expect(check(recorded, "unit")).toEqual({
+      name: "unit",
+      passed: false,
+      timedOut: true,
+      output:
+        "stopped after 900 seconds (the check's timeoutSeconds)\nrunning 12 tests",
+    });
+    expect(check(recorded, "lint")).toEqual({
+      name: "lint",
+      passed: false,
+      timedOut: true,
+      output:
+        "stopped after 120 seconds (the default: a check sets its own with timeoutSeconds)",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["unit", "lint"]);
   });
 
   test("a dirty tree in the run's checkout blocks clean-tree", () => {

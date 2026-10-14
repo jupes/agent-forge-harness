@@ -26,7 +26,9 @@
  * gets the gate's own command lines. A run in a repository under the
  * harness's `repos/` (or a worktree of one) gets the `checks` list on its
  * entry in `repos/repos.json`, each run in the run's checkout as an argument
- * array without a shell, then clean-tree and test-evidence there too; the
+ * array without a shell, for as long as its `timeoutSeconds` allows (a check
+ * stopped at that limit is logged `timedOut`, not merely failed), then
+ * clean-tree and test-evidence there too; the
  * entry is logged as that checkout's, with `repository` set. Such a
  * repository with no usable check set, or one that tracks files where run
  * correlations or verdicts are kept, is refused before anything runs.
@@ -64,6 +66,7 @@ import { strictEvaluatorProblem } from "../../scripts/evaluator-policy";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { readRunState } from "../../scripts/forge/runs-store";
 import {
+  EXEC_TIMEOUT_MS,
   type ExecFile,
   execFileNoShell,
   readBeadsIssue,
@@ -112,6 +115,8 @@ interface CheckResult {
   output?: string;
   skipped?: boolean;
   skipReason?: string;
+  /** A repository's check that was stopped at its time limit, rather than failing. */
+  timedOut?: true;
 }
 
 /**
@@ -425,15 +430,38 @@ function repositoryBaseChecks(
   const cwd = repository.checkout;
   const checks: CheckResult[] = [];
   const blockingFailures: string[] = [];
-  for (const { name, argv } of repository.checks) {
+  for (const { name, argv, timeoutSeconds } of repository.checks) {
     const [program = "", ...args] = argv;
-    const r = exec(program, args, { cwd });
-    checks.push({
-      name,
-      passed: r.ok,
-      ...(r.ok ? {} : { output: r.output.slice(0, 1200) }),
+    const r = exec(program, args, {
+      cwd,
+      ...(timeoutSeconds !== undefined
+        ? { timeoutMs: timeoutSeconds * 1000 }
+        : {}),
     });
-    if (!r.ok) blockingFailures.push(name);
+    if (r.ok) {
+      checks.push({ name, passed: true });
+      continue;
+    }
+    blockingFailures.push(name);
+    if (r.timedOut) {
+      // Stopped, not failed: say after how long, and why that long.
+      const limit =
+        timeoutSeconds !== undefined
+          ? `${timeoutSeconds} seconds (the check's timeoutSeconds)`
+          : `${EXEC_TIMEOUT_MS / 1000} seconds (the default: a check sets its own with timeoutSeconds)`;
+      const said = r.output.trim();
+      checks.push({
+        name,
+        passed: false,
+        timedOut: true,
+        output: `stopped after ${limit}${said ? `\n${said}` : ""}`.slice(
+          0,
+          1200,
+        ),
+      });
+      continue;
+    }
+    checks.push({ name, passed: false, output: r.output.slice(0, 1200) });
   }
   const status = exec("git", repositoryStatusArgs(), { cwd });
   const clean = status.ok && status.output.trim() === "";
