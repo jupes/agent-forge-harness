@@ -18,5 +18,10 @@ declare module "@docs/bead-builder" {
 
   /** The acceptance criteria as one text: a line each, trimmed, blank lines dropped. */
   export function acceptanceText(lines: string): string;
+  /** The title as filed by Create and by the copied command: a sub-repo named first, once. */
+  export function titleWithRepo(
+    title: string | undefined,
+    repo: string | undefined,
+  ): string;
   export function buildBdCreateCommand(data: BeadBuilderFormData): string;
 }

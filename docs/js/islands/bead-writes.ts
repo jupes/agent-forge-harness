@@ -270,15 +270,13 @@ export function actionState(input: Plane & { status: string }): {
 }
 
 /**
- * Whether Create may be pressed. Create sends the title, type, priority,
- * parent, description and acceptance criteria to this checkout's tracker; it
- * does not send Labels, and does not name another Repo in the title as the
- * copied command does, so while either is set it is not offered: nothing the
- * form shows is dropped without a word.
+ * Whether Create may be pressed. Create sends the title (with another Repo
+ * named at its start, as the copied command has it), type, priority, parent,
+ * description and acceptance criteria to this checkout's tracker. It does not
+ * send Labels, so while they are set it is not offered: nothing the form shows
+ * is dropped without a word.
  */
-export function createState(
-  input: Plane & { labels: string; repo: string },
-): Offer {
+export function createState(input: Plane & { labels: string }): Offer {
   if (!input.available) return { enabled: false, reason: input.reason };
   const labelled = input.labels.split(",").some((label) => label.trim() !== "");
   if (labelled)
@@ -286,13 +284,6 @@ export function createState(
       enabled: false,
       reason:
         "Create does not send Labels. Clear the field to create the bead here, or copy the command to keep them.",
-    };
-  const repo = input.repo.trim();
-  if (repo !== "" && repo !== ".")
-    return {
-      enabled: false,
-      reason:
-        "Create sends the title as typed, without the Repo. Set Repo back to `.` to create it here, or copy the command, which starts the title with the repo's name.",
     };
   return { enabled: true };
 }

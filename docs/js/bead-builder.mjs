@@ -89,6 +89,23 @@ function repoName(s) {
 }
 
 /**
+ * The title as filed, by Create and by the copied command alike. Never
+ * `--repo`: `.` is the only repository registered with bd, and given any
+ * other value bd files the issue where nothing run here finds it. A sub-repo
+ * is named at the start of the title instead, once.
+ * @param {string | undefined} title
+ * @param {string | undefined} repo
+ */
+export function titleWithRepo(title, repo) {
+  const typed = String(title ?? "").trim();
+  const name = repoName(repo);
+  const tag = name ? `[${name}]` : "";
+  return tag && !typed.toLowerCase().startsWith(tag.toLowerCase())
+    ? `${tag} ${typed}`
+    : typed;
+}
+
+/**
  * Build a `bd create` command with sensible defaults and shell escaping.
  * Never emits empty flags. It is one line unless the description or the
  * acceptance criteria have several: those stay on their own lines inside
@@ -96,16 +113,7 @@ function repoName(s) {
  * @param {BeadBuilderFormData} d
  */
 export function buildBdCreateCommand(d) {
-  const typed = String(d.title ?? "").trim();
-  // Never `--repo`: `.` is the only repository registered with bd, and given
-  // any other value bd files the issue where nothing run here finds it. A
-  // sub-repo is named at the start of the title instead.
-  const repo = repoName(d.repo);
-  const tag = repo ? `[${repo}]` : "";
-  const title =
-    tag && !typed.toLowerCase().startsWith(tag.toLowerCase())
-      ? `${tag} ${typed}`
-      : typed;
+  const title = titleWithRepo(d.title, d.repo);
   const type = BEAD_TYPES.includes(String(d.type).trim())
     ? String(d.type).trim()
     : "task";

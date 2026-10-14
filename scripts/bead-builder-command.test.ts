@@ -3,6 +3,7 @@ import {
   acceptanceText,
   BEAD_TYPES,
   buildBdCreateCommand,
+  titleWithRepo,
 } from "@docs/bead-builder";
 
 const base = {
@@ -237,6 +238,20 @@ describe("the repo in the copied command", () => {
     expect(buildBdCreateCommand({ ...base, repo: "we'ird$x" })).toContain(
       String.raw`--title '[we'\''ird$x] My bead'`,
     );
+  });
+
+  test("titleWithRepo gives the title the copied command quotes", () => {
+    for (const [title, repo, expected] of [
+      ["My bead", ".", "My bead"],
+      ["My bead", "", "My bead"],
+      ["My bead", "./repos/my-api", "[my-api] My bead"],
+      ["[my-api] My bead", "my-api", "[my-api] My bead"],
+    ] as const) {
+      expect(titleWithRepo(title, repo)).toBe(expected);
+      expect(buildBdCreateCommand({ ...base, title, repo })).toContain(
+        `--title '${expected}'`,
+      );
+    }
   });
 
   test.skipIf(!sh)(
