@@ -250,6 +250,7 @@ const RUN: ForgeRunView = {
   reviewPending: null,
   revising: false,
   gate: GATE,
+  earlierGates: [],
   gateScope: { checkout: CHECKOUT, slug: "design-system" },
 };
 
@@ -313,6 +314,7 @@ function autoRun(
     updatedAt: ts,
     phases: phasesFor(slug, completed),
     gate: null,
+    earlierGates: [],
     gateScope: { checkout: CHECKOUT, slug },
     ...over,
   };
