@@ -7,7 +7,9 @@
  *
  * A correlation is honoured in exactly one place: the file named after its run
  * id in the correlations directory of the checkout it names. The directory is
- * gitignored, so a correlation never arrives through a commit.
+ * gitignored, so a correlation never arrives through a commit. For a run in
+ * another repository, which may not ignore it, the gate refuses one whose
+ * checkout tracks files there (`.claude/hooks/quality-gate.ts`).
  */
 
 import {

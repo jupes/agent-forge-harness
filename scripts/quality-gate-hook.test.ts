@@ -52,6 +52,7 @@ import {
 } from "./eval-verdict-store";
 import { closeLedger } from "./ledger/db";
 import { queryEvents } from "./ledger/query";
+import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_ENV } from "./run-correlation";
 import { initRunCorrelation } from "./run-correlation-store";
 
@@ -186,6 +187,24 @@ const OWN_COMMITS = [
 /** What it asks instead when there is no origin/HEAD. */
 const LAST_FIVE = ["log", "--format=%x00%H", "--name-only", "-5"];
 
+/** clean-tree in a repository's checkout: its status, without the files the harness keeps there. */
+const REPOSITORY_STATUS = [
+  "status",
+  "--porcelain",
+  "--",
+  ".",
+  ":(exclude).tmp/work/run-correlations",
+  ":(exclude).tmp/work/evaluations",
+  ":(exclude).agent-forge-session",
+];
+/** Whether a repository tracks files where run correlations and verdicts are kept. */
+const TRACKED = [
+  "ls-files",
+  "--",
+  ".tmp/work/run-correlations",
+  ".tmp/work/evaluations",
+];
+
 /** A commit, as the paths it changes. */
 type Commit = string[];
 
@@ -228,7 +247,17 @@ function gitAnswers(
           }
         : { ok: true, output: gitLog(history.branch) },
     [LAST_FIVE.join(" ")]: { ok: true, output: gitLog(all.slice(0, 5)) },
+    [REPOSITORY_STATUS.join(" ")]: { ok: true, output: "" },
+    [TRACKED.join(" ")]: { ok: true, output: "" },
+    "rev-parse --abbrev-ref HEAD": { ok: true, output: "feat/in-foo" },
   };
+}
+
+/** A program run with an argument array, and the directory it was run in when one was given. */
+interface Exec {
+  file: string;
+  args: string[];
+  cwd?: string;
 }
 
 interface Recorded {
@@ -236,7 +265,7 @@ interface Recorded {
   /** Every command line handed to a shell. */
   commands: string[];
   /** Every program run with an argument array. */
-  execs: Array<{ file: string; args: string[] }>;
+  execs: Exec[];
   /** Every run id whose verdict file the gate read. */
   reads: string[];
 }
@@ -254,6 +283,10 @@ function gate(
     history?: History;
     /** Answers to git argument arrays, over what `history` gives. */
     git?: Record<string, { ok: boolean; output: string }>;
+    /** Answers to any other program, by `<program> <arguments>`. Unanswered, a program succeeds. */
+    programs?: Record<string, { ok: boolean; output: string }>;
+    /** The text of `repos/repos.json`. Absent, it cannot be read. */
+    registry?: string;
     /** Who the run's state says built the work. */
     builder?: Executor;
     /** Runs right after the gate has read a verdict file, before it uses it. */
@@ -261,7 +294,7 @@ function gate(
   } = {},
 ): Recorded {
   const commands: string[] = [];
-  const execs: Array<{ file: string; args: string[] }> = [];
+  const execs: Exec[] = [];
   const reads: string[] = [];
   const history = input.history ?? { branch: [["scripts/a.test.ts"]] };
   const answers: Record<string, { ok: boolean; output: string }> = {
@@ -277,11 +310,19 @@ function gate(
       commands.push(cmd);
       return answers[cmd] ?? { ok: true, output: "" };
     },
-    execFile: (file, args) => {
-      execs.push({ file, args: [...args] });
-      const answer = (file === "git" ? git : input.bd)?.[args.join(" ")];
-      return answer ?? { ok: false, output: "" };
+    execFile: (file, args, opts) => {
+      execs.push({
+        file,
+        args: [...args],
+        ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      });
+      const key = args.join(" ");
+      if (file === "bd") return input.bd?.[key] ?? { ok: false, output: "" };
+      if (file === "git") return git[key] ?? { ok: false, output: "" };
+      return input.programs?.[`${file} ${key}`] ?? { ok: true, output: "" };
     },
+    harness: box.cwd,
+    registry: () => input.registry ?? null,
     hasScript: () => true,
     hasTestFiles: () => true,
     smiths: () => Object.values(BUILTIN_SMITHS),
@@ -773,6 +814,203 @@ describe("test-evidence: the branch's own commits", () => {
       name: "test-evidence",
       passed: false,
       output: "git could not list the commits: fatal: not a git repository",
+    });
+  });
+});
+
+describe("a run in a repository under repos/", () => {
+  /** repos/foo inside the scratch checkout, which stands for the harness, and its run's pointer. */
+  function repositoryRun(box: Box): {
+    dir: string;
+    at: string;
+    pointer: string;
+  } {
+    const dir = join(box.cwd, "repos", "foo");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    const made = initRunCorrelation({
+      checkout: dir,
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+    });
+    if (!made.ok) throw new Error(made.error);
+    return { dir, at: made.correlation.checkout, pointer: made.path };
+  }
+
+  const FOO = JSON.stringify({
+    repos: [
+      {
+        name: "foo",
+        url: "https://example.invalid/foo.git",
+        defaultBranch: "main",
+        checks: [
+          { name: "typecheck", argv: ["node", "tsc.js", "--noEmit"] },
+          { name: "unit", argv: ["cargo", "test", "--", "a b"] },
+        ],
+      },
+    ],
+  });
+
+  test("runs the checks on its entry in repos/repos.json, each an argument array in the run's checkout, and none of the gate's own commands", () => {
+    const box = sandbox();
+    const { at, pointer } = repositoryRun(box);
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      registry: FOO,
+    });
+    const { result } = ran(recorded);
+
+    expect(result.checks.map((entry) => entry.name)).toEqual([
+      "typecheck",
+      "unit",
+      "clean-tree",
+      "ac-verify",
+      "close-testing-attestation",
+      "test-evidence",
+      "eval-verdict",
+    ]);
+    expect<unknown>(result).toMatchObject({
+      checkout: at,
+      branch: "feat/in-foo",
+      repository: "foo",
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+      passed: true,
+    });
+    const elsewhere = recorded.execs.filter((call) => call.file !== "bd");
+    expect(elsewhere).toEqual([
+      { file: "git", args: TRACKED, cwd: at },
+      { file: "node", args: ["tsc.js", "--noEmit"], cwd: at },
+      { file: "cargo", args: ["test", "--", "a b"], cwd: at },
+      { file: "git", args: REPOSITORY_STATUS, cwd: at },
+      { file: "git", args: OWN_COMMITS, cwd: at },
+      { file: "git", args: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: at },
+    ]);
+    // The one command line is where the gate itself was started.
+    expect(recorded.commands).toEqual(["git rev-parse --show-toplevel"]);
+  });
+
+  test("a configured check that fails blocks, with its output in the entry", () => {
+    const box = sandbox();
+    const recorded = gate(box, {
+      argv: ["--correlation", repositoryRun(box).pointer],
+      registry: FOO,
+      programs: {
+        "cargo test -- a b": { ok: false, output: "test result: FAILED" },
+      },
+    });
+    expect(check(recorded, "unit")).toEqual({
+      name: "unit",
+      passed: false,
+      output: "test result: FAILED",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["unit"]);
+  });
+
+  test("a dirty tree in the run's checkout blocks clean-tree", () => {
+    const box = sandbox();
+    const recorded = gate(box, {
+      argv: ["--correlation", repositoryRun(box).pointer],
+      registry: FOO,
+      git: {
+        [REPOSITORY_STATUS.join(" ")]: { ok: true, output: "?? notes.txt" },
+      },
+    });
+    expect(check(recorded, "clean-tree")).toEqual({
+      name: "clean-tree",
+      passed: false,
+      output: "?? notes.txt",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["clean-tree"]);
+  });
+
+  test("a repository with no check set is refused before anything runs, naming the entry, whichever way the pointer came", () => {
+    const box = sandbox();
+    const { pointer } = repositoryRun(box);
+    const noEntry = JSON.stringify({ repos: [{ name: "bar", checks: [] }] });
+    for (const how of [
+      { argv: ["--correlation", pointer] },
+      { env: { [RUN_CORRELATION_ENV]: pointer } },
+    ]) {
+      const recorded = gate(box, { ...how, registry: noEntry });
+      expect(recorded.outcome).toEqual({
+        kind: "refused",
+        error: `${resolveCheckout(box.cwd).worktree}/repos/repos.json has no entry named "foo": add one with a "checks" list, each check { "name": ..., "argv": [program, ...arguments] }`,
+      });
+      expect(recorded.execs).toEqual([]);
+      expect(recorded.commands).toEqual(["git rev-parse --show-toplevel"]);
+    }
+  });
+
+  test("a repository that tracks files where run correlations or verdicts are kept is refused", () => {
+    const box = sandbox();
+    const { at, pointer } = repositoryRun(box);
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      registry: FOO,
+      git: {
+        [TRACKED.join(" ")]: {
+          ok: true,
+          output: ".tmp/work/run-correlations/run-1.json",
+        },
+      },
+    });
+    expect(recorded.outcome).toEqual({
+      kind: "refused",
+      error: `${at} tracks files under .tmp/work/run-correlations or .tmp/work/evaluations, and a run correlation or a verdict is never taken from a commit: untrack them, and ignore .tmp/ there`,
+    });
+    expect(recorded.execs.map((call) => call.file)).toEqual(["git"]);
+  });
+
+  test("strict mode reads the run's verdict in the repository's checkout", () => {
+    const box = sandbox();
+    const { dir, pointer } = repositoryRun(box);
+    // A failing verdict for the same run where the gate was started.
+    verdict(
+      box,
+      "run-1",
+      v2({
+        verdict: "FAIL",
+        findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+      }),
+    );
+    const file = join(dir, evaluatorVerdictPath("run-1") ?? "");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(v2({ summary: "in foo" })));
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
+      registry: FOO,
+    });
+    expect(check(recorded, "eval-verdict")).toEqual({
+      name: "eval-verdict",
+      passed: true,
+      output: "PASS B=0 H=0; evaluator: human reviewer",
+    });
+    expect(ran(recorded).boundVerdict?.summary).toBe("in foo");
+  });
+
+  test("a pointer into a checkout that is neither this one nor a repository under repos/ is refused from the flag, and leaves an environment pointer unlinked", () => {
+    const box = sandbox();
+    const other = join(box.root, "other");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    const made = initRunCorrelation({
+      checkout: other,
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+    });
+    if (!made.ok) throw new Error(made.error);
+    const reason = `run correlation refused: the run builds in ${made.correlation.checkout}, which is neither this checkout nor a repository under ${resolveCheckout(box.cwd).worktree}/repos: run the gate in that checkout`;
+
+    const flagged = gate(box, { argv: ["--correlation", made.path] });
+    expect(flagged.outcome).toEqual({ kind: "refused", error: reason });
+
+    const viaEnv = ran(
+      gate(box, { env: { [RUN_CORRELATION_ENV]: made.path } }),
+    );
+    expect(viaEnv.notice).toBe(reason);
+    expect(viaEnv.result).toMatchObject({
+      beadsIssueId: null,
+      unlinkedReason: reason,
     });
   });
 });

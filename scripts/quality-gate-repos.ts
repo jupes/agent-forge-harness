@@ -17,7 +17,28 @@
  * both are gitignored, so a worktree of the harness has neither.
  */
 
+import { EVALUATIONS_DIR } from "./eval-verdict-store";
 import { resolveCheckout } from "./ledger/workspace";
+import { RUN_CORRELATIONS_DIR } from "./run-correlation";
+
+/**
+ * Where a run's correlation and its evaluator verdicts are kept in the run's
+ * checkout. The gate never takes either from a file git tracks there.
+ */
+export const EVIDENCE_DIRS: readonly string[] = [
+  RUN_CORRELATIONS_DIR,
+  EVALUATIONS_DIR,
+];
+
+/**
+ * What the harness itself writes into a run's checkout: the evidence above
+ * and the session mirror (the ledger's `SESSION_MIRROR_FILE`, spelled out so
+ * the gate loads no ledger module). A repository's clean-tree leaves them out.
+ */
+export const HARNESS_FILES: readonly string[] = [
+  ...EVIDENCE_DIRS,
+  ".agent-forge-session",
+];
 
 /** A repository's check: what the gate runs, as `argv[0]` with the rest as its arguments. */
 export interface RepositoryCheck {

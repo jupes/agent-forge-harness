@@ -2,8 +2,23 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { EVALUATIONS_DIR } from "./eval-verdict-store";
+import { SESSION_MIRROR_FILE } from "./ledger/identity";
 import { resolveCheckout } from "./ledger/workspace";
-import { type RunCheckSet, runCheckSet } from "./quality-gate-repos";
+import {
+  EVIDENCE_DIRS,
+  HARNESS_FILES,
+  type RunCheckSet,
+  runCheckSet,
+} from "./quality-gate-repos";
+import { RUN_CORRELATIONS_DIR } from "./run-correlation";
+
+describe("what the harness keeps in a run's checkout", () => {
+  test("the evidence is the correlations and verdicts directories, and the harness's files add the session mirror the ledger writes", () => {
+    expect(EVIDENCE_DIRS).toEqual([RUN_CORRELATIONS_DIR, EVALUATIONS_DIR]);
+    expect(HARNESS_FILES).toEqual([...EVIDENCE_DIRS, SESSION_MIRROR_FILE]);
+  });
+});
 
 const temporary: string[] = [];
 afterEach(() => {
