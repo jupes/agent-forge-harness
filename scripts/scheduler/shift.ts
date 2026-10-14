@@ -39,7 +39,7 @@ import { resolveSmith } from "../config/resolve";
 import { type ExecDeps, runExec } from "../executors/exec-cli";
 import { isValidSlug } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
-import { parsed, refusal, storeEvent } from "../hearth/tracker-write";
+import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
@@ -99,7 +99,6 @@ const LIMITS = {
 } as const;
 
 const SMITH_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const BEAD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -134,7 +133,7 @@ export function shiftOptions(
       ok: false,
       error: "runTimeoutMs: expected a positive whole number",
     };
-  if (options.epic !== undefined && !BEAD_ID.test(options.epic))
+  if (options.epic !== undefined && !isBeadId(options.epic))
     return { ok: false, error: "epic: expected a Beads issue id" };
   if (options.smith !== undefined && !SMITH_NAME.test(options.smith))
     return {
