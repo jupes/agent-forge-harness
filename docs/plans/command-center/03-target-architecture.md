@@ -154,7 +154,7 @@ Agent Forge becomes a local-first **control plane** where every agent session of
 ## 7. MCP operator surface
 
 - `bun run hearth:mcp` (stdio), registered in `.mcp.json`. Tool names `forge_*`. Same `tools/list` for every session; authority enforced per call via the operator token passed at launch (`--operator`). Agent sessions get read tools plus `forge_bead_propose`, `forge_friction_add`, `forge_event_note`; operator sessions additionally get `forge_queue_*`, `forge_drain_*`, `forge_council_start`, `forge_run_replan`.
-- Supersedes the `3u6` spike. Council's existing `council_*` tools remain and are re-exported.
+- Supersedes the `3u6` spike. Council's existing `council_*` tools remain and are re-exported, under the same rule (`x1gs.3.15`): an agent session may call only the council's read tools (`council_profiles`, `council_readiness`, `council_status`, `council_replay`, `council_list`, each of which the council also marks read-only). `council_start`, `council_review`, `council_cancel`, and any council tool added later until it is put on that list, are an operator session's, refused in an agent session before the council sees the call and listed with "Operator session only." first. A review an operator session starts through them is recorded against that session, as under `bun run council:mcp`; `forge_council_start` is the path audited as an `operator.action`. `bun run council:mcp`, which a user registers for themselves, is not governed, and neither is the CLI: the rule keeps the project-wide registration from handing every agent session a paid action, it is not a sandbox.
 
 ## 8. Executor adapters
 

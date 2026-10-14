@@ -204,6 +204,8 @@ The server exposes eight tools:
 
 File and profile paths are restricted to the configured workspace or harness roots. MCP inputs intentionally have no credential fields. This makes the stdio server suitable for local editors, coding agents, CI wrappers, and other systems that can launch an MCP subprocess.
 
+The harness's own registration is different. `.mcp.json` registers `bun run hearth:mcp`, which re-exports these eight tools into every session that loads project servers. There a session started without `--operator` can call only `council_profiles`, `council_readiness`, `council_status`, `council_replay` and `council_list`; `council_start`, `council_review` and `council_cancel` are refused before the council sees the call, as `forge_council_start` is. An operator registers that server in their own local scope with `--operator` to use them, or registers `bun run council:mcp` as above, which keeps all eight for whoever launched it.
+
 Example tool sequence:
 
 ```json

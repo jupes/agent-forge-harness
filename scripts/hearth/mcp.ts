@@ -6,12 +6,13 @@
  * row of `FORGE_TOOLS` naming a route of the operator API; a call is one
  * request to that route, and the route's `{ ok, data, error }` envelope is the
  * result. Nothing here reads the ledger, runs `bd` or answers in the hearth's
- * place. The council's own tools are re-exported beside them, unchanged.
+ * place. The council's own tools are re-exported beside them.
  *
  * Every session is given the same tool list. What a session may do is decided
- * when a tool is called: a row whose route is an action is governed, and a
- * session started without `--operator` is refused there before its arguments
- * are looked at, before any file is read and before anything is sent.
+ * when a tool is called: a row whose route is an action is governed, and so
+ * is every council tool but its read tools; a session started without
+ * `--operator` is refused a governed tool before its arguments are looked at,
+ * before any file is read and before anything is sent.
  */
 
 import { readdirSync, realpathSync } from "node:fs";
@@ -433,10 +434,27 @@ export interface CouncilServer {
   close(): Promise<void>;
 }
 
+/**
+ * The council's tools an agent session may call: the ones that only read. A
+ * tool answers an agent session only when it is named here and the council
+ * marks it read-only; every other council tool, one added later included, is
+ * an operator session's alone. A list of what is allowed, so that a new tool
+ * is governed until someone decides otherwise.
+ */
+export const COUNCIL_READ_TOOLS: ReadonlySet<string> = new Set([
+  "council_profiles",
+  "council_readiness",
+  "council_status",
+  "council_replay",
+  "council_list",
+]);
+
 interface CouncilBridge {
-  /** The council's own `tools/list` entries, as it gave them. */
+  /** The council's own `tools/list` entries; a governed one's description says it is the operator's. */
   tools: Tool[];
   has(name: string): boolean;
+  /** Whether an agent session is refused this tool. */
+  governed(name: string): boolean;
   /** Forward one call as it came; `signal` is the only thing that ends it early. */
   call(
     params: CallToolRequestParams,
@@ -456,12 +474,15 @@ const NO_TIME_LIMIT = 2_147_483_647;
 /**
  * The council's registry, re-exported and not copied: its server is built
  * unchanged and reached by a client in this process, so whatever tools it has,
- * with whatever descriptions and schemas, are the ones listed and called.
+ * with whatever schemas, are the ones listed and called.
  *
- * Its tools keep the council's own authority. They need no operator token and
- * never reach the hearth; a review one of them starts is the calling
- * session's, as it is under `bun run council:mcp`. The one thing checked is
- * their names, so that none can answer in a forge tool's place.
+ * Its names are checked, so that none can answer in a forge tool's place, and
+ * each tool is judged once, here: one that is not a read tool (see
+ * `COUNCIL_READ_TOOLS`) is governed, and its description is listed with the
+ * same first words as a governed forge row's. A tool an agent session may
+ * call needs no operator token and never reaches the hearth; a review an
+ * operator session starts through one is that session's, as it is under
+ * `bun run council:mcp`, not an operator action of the hearth's.
  */
 async function bridgeCouncil(council: CouncilServer): Promise<CouncilBridge> {
   const client = new Client({ name: "agent-forge", version: SERVER_VERSION });
@@ -490,9 +511,28 @@ async function bridgeCouncil(council: CouncilServer): Promise<CouncilBridge> {
     }
     names.add(name);
   }
+  const governed = new Set(
+    tools
+      .filter(
+        (tool) =>
+          !COUNCIL_READ_TOOLS.has(tool.name) ||
+          tool.annotations?.readOnlyHint !== true,
+      )
+      .map((tool) => tool.name),
+  );
   return {
-    tools,
+    tools: tools.map((tool) =>
+      governed.has(tool.name)
+        ? {
+            ...tool,
+            description: tool.description
+              ? `${OPERATOR_ONLY} ${tool.description}`
+              : OPERATOR_ONLY,
+          }
+        : tool,
+    ),
     has: (name) => names.has(name),
+    governed: (name) => governed.has(name),
     call: (params, signal) =>
       client.callTool(params, { signal, timeout: NO_TIME_LIMIT }),
     close,
@@ -675,7 +715,12 @@ export async function createHearthMcpServer(
       : ctx.mcpReq.signal;
     const tool = forge.get(name);
     if (!tool) {
-      if (bridge?.has(name)) return bridge.call(request.params, signal);
+      if (bridge?.has(name)) {
+        // As for a governed forge row: refused before the council sees it.
+        if (bridge.governed(name) && !options.operator)
+          return result(needsOperator(name));
+        return bridge.call(request.params, signal);
+      }
       // What the SDK's own server answers for a name it does not know.
       throw new ProtocolError(
         ProtocolErrorCode.InvalidParams,
