@@ -33,7 +33,13 @@ import {
   isDeclaredSameOrigin,
 } from "./gate";
 import { hearthHome, lockPath, tokenPath } from "./home";
-import { acquireLock, type HearthLock, readLock, releaseLock } from "./lock";
+import {
+  type AcquireResult,
+  acquireLock,
+  type HearthLock,
+  readLock,
+  releaseLock,
+} from "./lock";
 import { API_PREFIX, HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { councilHttpHandler } from "./routes/council";
 import {
@@ -266,27 +272,46 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     });
   });
 
-  await new Promise<void>((done, fail) => {
-    server.once("error", fail);
-    server.listen(options.port ?? 0, "127.0.0.1", done);
-  });
-  const port = (server.address() as AddressInfo).port;
-
-  const lock: HearthLock = {
-    pid: process.pid,
-    port,
-    root,
-    startedAt: new Date().toISOString(),
-    tokenFile,
-  };
-  const claimed = acquireLock(lockFile, lock);
-
   const stop = async (): Promise<void> => {
     table.close();
     await service.close();
     server.closeAllConnections();
+    // Called back with an error, which changes nothing here, when it never listened.
     await new Promise<void>((done) => server.close(() => done()));
   };
+
+  let lockTaken = false;
+  const begin = async (): Promise<{ port: number; claimed: AcquireResult }> => {
+    await new Promise<void>((done, fail) => {
+      server.once("error", fail);
+      server.listen(options.port ?? 0, "127.0.0.1", done);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const claimed = acquireLock(lockFile, {
+      pid: process.pid,
+      port,
+      root,
+      startedAt: new Date().toISOString(),
+      tokenFile,
+    });
+    lockTaken = claimed.kind === "acquired";
+    // Written only once the lock is ours, so a losing racer never overwrites the
+    // winner's token file.
+    if (lockTaken) token = createToken(tokenFile);
+    return { port, claimed };
+  };
+  let begun: { port: number; claimed: AcquireResult };
+  try {
+    begun = await begin();
+  } catch (error) {
+    // A start that fails leaves nothing behind: a server still listening would
+    // answer the health route for a lock that names it, and its token route
+    // would say "still starting" for as long as this process lived.
+    if (lockTaken) releaseLock(lockFile, process.pid);
+    await stop();
+    throw error;
+  }
+  const { port, claimed } = begun;
 
   if (claimed.kind === "held") {
     // Lost a start-up race to another hearth for this root: defer to it, once
@@ -297,10 +322,6 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       `The hearth lock ${lockFile} names pid ${claimed.lock.pid}, which does not answer as a hearth for ${claimed.lock.root}`,
     );
   }
-
-  // Written only once the lock is ours, so a losing racer never overwrites the
-  // winner's token file.
-  token = createToken(tokenFile);
 
   return {
     kind: "started",

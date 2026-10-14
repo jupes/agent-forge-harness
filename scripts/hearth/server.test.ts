@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
@@ -345,6 +346,71 @@ async function startIn(home: string, root: string): Promise<Hearth> {
   if (hearth.kind === "started") cleanup.push(() => hearth.close());
   return hearth;
 }
+
+/** Whether a connection to `port` on loopback is refused: nothing listens there. */
+function refusesConnections(port: number): Promise<boolean> {
+  return new Promise((done) => {
+    const socket = connect(port, "127.0.0.1");
+    socket.once("connect", () => {
+      socket.destroy();
+      done(false);
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) =>
+      done(error.code === "ECONNREFUSED"),
+    );
+  });
+}
+
+test("a start whose token file cannot be written (a file where the tokens directory goes) rejects, and leaves nothing listening on its port and no lock", async () => {
+  const { home, root } = places();
+  writeFileSync(join(home, "tokens"), "");
+  const port = await closedPort();
+  let failure: unknown = null;
+  try {
+    const hearth = await createHearth({ root, home, port, environment: {} });
+    if (hearth.kind === "started") cleanup.push(() => hearth.close());
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect(existsSync(lockPath(home, root))).toBe(false);
+  expect(await refusesConnections(port)).toBe(true);
+});
+
+test("a start whose lock cannot be taken (a directory where the lock file goes) rejects, and leaves nothing listening on its port and the directory as it was", async () => {
+  const { home, root } = places();
+  mkdirSync(lockPath(home, root));
+  const port = await closedPort();
+  let failure: unknown = null;
+  try {
+    const hearth = await createHearth({ root, home, port, environment: {} });
+    if (hearth.kind === "started") cleanup.push(() => hearth.close());
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect(statSync(lockPath(home, root)).isDirectory()).toBe(true);
+  expect(existsSync(tokenPath(home, root))).toBe(false);
+  expect(await refusesConnections(port)).toBe(true);
+});
+
+test("a start on a port another server holds rejects, and writes no lock and no token file", async () => {
+  const { home, root } = places();
+  const other = createServer();
+  await new Promise<void>((done) => other.listen(0, "127.0.0.1", done));
+  cleanup.push(() => new Promise<void>((done) => other.close(() => done())));
+  const port = (other.address() as AddressInfo).port;
+  let failure: unknown = null;
+  try {
+    const hearth = await createHearth({ root, home, port, environment: {} });
+    if (hearth.kind === "started") cleanup.push(() => hearth.close());
+  } catch (error) {
+    failure = error;
+  }
+  expect((failure as NodeJS.ErrnoException | null)?.code).toBe("EADDRINUSE");
+  expect(existsSync(lockPath(home, root))).toBe(false);
+  expect(existsSync(tokenPath(home, root))).toBe(false);
+});
 
 test("a direct start replaces a lock that names this process's pid when nothing answers on its port, and starts", async () => {
   const { home, root } = places();
