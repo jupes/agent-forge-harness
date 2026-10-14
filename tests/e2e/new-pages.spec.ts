@@ -3,6 +3,7 @@ import type { ForgeRunSnapshot } from "../../scripts/dashboard/forge-run-model";
 import {
   AWAITING_REVIEW_RUN,
   CHECKOUT,
+  EARLIER_GATES,
   HALT_REASON,
   HALTED_RUN,
   LEGACY_GATE,
@@ -249,6 +250,63 @@ test.describe("Forge run", () => {
     await expect(
       page.getByRole("heading", { name: "Unattributed gate run" }),
     ).toHaveCount(0);
+    // A run whose log holds no earlier gate run lists none.
+    await expect(page.locator(".af-gate-history")).toHaveCount(0);
+  });
+
+  test("lists the run's earlier gate runs under its newest, newest first, each with its checks and its task id", async ({
+    page,
+  }) => {
+    await stubForgeRun(page, { earlierGates: EARLIER_GATES });
+    await openSettled(page, FORGE_RUN);
+
+    const card = page.locator(".af-card", {
+      has: page.getByRole("heading", { name: "Quality gate", exact: true }),
+    });
+    // The newest run is drawn as before.
+    await expect(card.locator(".af-gate-check")).toHaveCount(5);
+
+    const history = card.locator(".af-gate-history");
+    await expect(
+      history.getByRole("heading", { name: "Earlier gate runs" }),
+    ).toBeVisible();
+    const runs = history.locator(".af-gate-history-run");
+    await expect(runs).toHaveCount(2);
+
+    const [linked, legacy] = [runs.nth(0), runs.nth(1)];
+    await expect(linked.locator("time")).toHaveAttribute(
+      "datetime",
+      "2026-09-10T18:30:00.000Z",
+    );
+    await expect(legacy.locator("time")).toHaveAttribute(
+      "datetime",
+      "2026-09-10T09:15:00.000Z",
+    );
+
+    await expect(linked).toHaveClass(/is-passed/);
+    await expect(linked).toContainText("passed");
+    await expect(linked).toContainText("bead demo-tokens");
+    const name = ".af-gate-history-check-name";
+    await expect(linked.locator(name)).toHaveText(["typecheck", "lint"]);
+    await expect(
+      linked.locator(".af-gate-history-check.is-passed"),
+    ).toHaveCount(2);
+
+    await expect(legacy).toHaveClass(/is-failed/);
+    await expect(legacy).toContainText("failed");
+    await expect(legacy).toContainText("legacy");
+    // A legacy entry's task field is named as what it is, never as a bead.
+    await expect(legacy).toContainText("task field demo-primitives");
+    await expect(legacy).not.toContainText("bead demo-primitives");
+    const failed = legacy.locator(".af-gate-history-check.is-failed");
+    await expect(failed.locator(name)).toHaveText("typecheck");
+    await expect(failed).toHaveAttribute(
+      "title",
+      "error TS2322: Type 'string' is not assignable",
+    );
+    await expect(
+      legacy.locator(".af-gate-history-check.is-skipped").locator(name),
+    ).toHaveText("tests");
   });
 
   test("a gate run with no run correlation is shown beside the run, labelled unlinked, and is not the run's gate", async ({
