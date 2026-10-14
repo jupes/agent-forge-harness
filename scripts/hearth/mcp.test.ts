@@ -1899,16 +1899,28 @@ describe("what a hearth answers is not trusted", () => {
   });
 });
 
-/** What a hearth's council service says of a run. */
-async function runStatus(url: string, runId: string): Promise<string> {
-  const response = await fetch(`${url}${API}/council-api/runs/${runId}`);
+/** What a hearth's council service says of a run. Reading a stored run needs the operator token. */
+async function runStatus(
+  url: string,
+  token: string,
+  runId: string,
+): Promise<string> {
+  const response = await fetch(`${url}${API}/council-api/runs/${runId}`, {
+    headers: { [OPERATOR_HEADER]: token },
+  });
+  if (response.status === 403)
+    throw new Error(`the hearth at ${url} refused to read run ${runId}`);
   const job = (await response.json()) as { data?: { status?: string } };
   return job.data?.status ?? "";
 }
 
-async function runFinished(url: string, runId: string): Promise<void> {
+async function runFinished(
+  url: string,
+  token: string,
+  runId: string,
+): Promise<void> {
   for (let attempt = 0; attempt < 400; attempt++) {
-    const status = await runStatus(url, runId);
+    const status = await runStatus(url, token, runId);
     if (status !== "running" && status !== "cancelling") return;
     await new Promise((done) => setTimeout(done, 25));
   }
@@ -1966,7 +1978,8 @@ const OPERATOR_FIXTURES: Record<string, OperatorFixture> = {
         runId: "mcp-start",
       },
     },
-    settle: (hearth) => runFinished(hearth.hearth.url, "mcp-start"),
+    settle: (hearth) =>
+      runFinished(hearth.hearth.url, hearth.hearth.token, "mcp-start"),
   },
   forge_council_cancel: {
     args: { id: "mcp-cancel" },
@@ -1979,7 +1992,8 @@ const OPERATOR_FIXTURES: Record<string, OperatorFixture> = {
     action: "council.run.cancel",
     target: "mcp-cancel",
     request: { target: `${API}/council/runs/mcp-cancel/cancel`, body: {} },
-    settle: (hearth) => runFinished(hearth.hearth.url, "mcp-cancel"),
+    settle: (hearth) =>
+      runFinished(hearth.hearth.url, hearth.hearth.token, "mcp-cancel"),
   },
 };
 
@@ -2100,7 +2114,9 @@ describe("a governed tool in an operator session (iterating the table)", () => {
         );
       await fixture.settle(hearth);
     }
-    expect(await runStatus(hearth.hearth.url, "mcp-start")).toBe("completed");
+    expect(
+      await runStatus(hearth.hearth.url, hearth.hearth.token, "mcp-start"),
+    ).toBe("completed");
   }, 30_000);
 
   test("the hearth's own refusal is behind this server's: a well-formed token the hearth did not mint comes back as its 403, and nothing is recorded or done", async () => {
@@ -2389,7 +2405,7 @@ const SCOPE_FIXTURES: Record<
   forge_config_get: {},
   forge_council_start: {
     args: { sourceType: "file", source: "note.md", runId: "scope-start" },
-    settle: (own) => runFinished(own.url, "scope-start"),
+    settle: (own) => runFinished(own.url, own.hearth.token, "scope-start"),
   },
   forge_council_cancel: {
     args: { id: "scope-cancel" },
@@ -2399,7 +2415,7 @@ const SCOPE_FIXTURES: Record<
         source: "Evaluate this plan.",
         runId: "scope-cancel",
       }),
-    settle: (own) => runFinished(own.url, "scope-cancel"),
+    settle: (own) => runFinished(own.url, own.hearth.token, "scope-cancel"),
   },
 };
 
@@ -3910,7 +3926,7 @@ describe("what the second review found", () => {
     ).toEqual([
       { action: "council.run.start", surface: "mcp", target: "large-accepted" },
     ]);
-    await runFinished(hearth.hearth.url, "large-accepted");
+    await runFinished(hearth.hearth.url, hearth.hearth.token, "large-accepted");
   }, 30_000);
 
   test("a large body is held back after the head, 100 ms when not told otherwise: a refusal on the head within that time arrives, and the timer that would write the body never fires once the exchange is over", async () => {

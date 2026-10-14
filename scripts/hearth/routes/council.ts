@@ -3,7 +3,9 @@ import { sanitizeContent } from "../../council/context";
 import { councilJobDelta } from "../../council/job-delta";
 import type { createCouncilService } from "../../council/service";
 import { passesFrontDoor } from "../gate";
+import { OPERATOR_HEADER } from "../paths";
 import { STREAM_KEEPALIVE_MS } from "../stream";
+import { tokenMatches } from "../token";
 
 export const COUNCIL_API = "/__agent-forge/council-api";
 type Service = ReturnType<typeof createCouncilService>;
@@ -27,13 +29,39 @@ export function isLocalCouncilRequest(req: IncomingMessage): boolean {
 }
 
 /**
+ * Whether the request carries the operator token, sent once. Counted in
+ * `rawHeaders`: under Bun a header sent twice arrives as its last value.
+ */
+function carriesToken(req: IncomingMessage, expected: string | null): boolean {
+  let sent = 0;
+  for (let i = 0; i < req.rawHeaders.length; i += 2)
+    if ((req.rawHeaders[i] ?? "").toLowerCase() === OPERATOR_HEADER) sent++;
+  return sent === 1 && tokenMatches(expected, req.headers[OPERATOR_HEADER]);
+}
+
+export interface CouncilHttpOptions {
+  keepaliveMs?: number | undefined;
+  /**
+   * The token a read of a stored run must present, or null while none can be
+   * honoured. No default: a handler mounted without it would hand out runs.
+   */
+  expectedToken: () => string | null;
+}
+
+/**
  * The council routes that only read: profiles, the run list, one run, and a
  * run's event stream. Starting and cancelling a run are action rows of the
  * operator API (`./operator.ts`), at these same paths; nothing here mutates.
+ *
+ * A stored run holds what was reviewed, and for a bead source that is the
+ * bead's private text, so the run list, a run and a run's stream answer only
+ * a request carrying the operator token (`x1gs.7.7`). It is checked before the
+ * run is looked up: an id no run has is refused alike. The profiles hold no
+ * run and need only the front door.
  */
 export function councilHttpHandler(
   service: Service,
-  options: { keepaliveMs?: number | undefined } = {},
+  options: CouncilHttpOptions,
 ) {
   const keepaliveMs = options.keepaliveMs ?? STREAM_KEEPALIVE_MS;
   return async (
@@ -54,13 +82,21 @@ export function councilHttpHandler(
       const route = url.pathname.slice(COUNCIL_API.length);
       if (req.method === "GET" && route === "/profiles")
         return send(res, 200, await service.profiles());
-      if (req.method === "GET" && route === "/runs")
-        return send(res, 200, await service.list());
+      const listing = req.method === "GET" && route === "/runs";
       const match = /^\/runs\/([^/]+)(?:\/(cancel|events))?$/.exec(route);
-      if (!match) return send(res, 404, null, "Council endpoint not found");
-      const runId = decodeURIComponent(match[1]!);
+      if (!listing && !match)
+        return send(res, 404, null, "Council endpoint not found");
       if (req.method !== "GET")
         return send(res, 405, null, "Method not allowed");
+      if (!carriesToken(req, options.expectedToken()))
+        return send(
+          res,
+          403,
+          null,
+          "Reading a stored council run needs the operator token of this control plane",
+        );
+      if (!match) return send(res, 200, await service.list());
+      const runId = decodeURIComponent(match[1]!);
       const job = await service.get(runId);
       if (match[2] !== "events") return send(res, 200, job);
       res.writeHead(200, {

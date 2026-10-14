@@ -259,12 +259,17 @@ test("unknown routes answer a 404 envelope", async () => {
   expect((await fetch(`${hearth.url}/index.html`)).status).toBe(404);
 });
 
-test("serves council routes through the hearth", async () => {
+test("serves council routes through the hearth: the profiles past the front door, the run list only with this hearth's operator token", async () => {
   const { hearth } = await start();
   const res = await fetch(`${hearth.url}/__agent-forge/council-api/profiles`);
   expect(res.status).toBe(200);
   expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
-  const runs = await fetch(`${hearth.url}/__agent-forge/council-api/runs`);
+  const runsUrl = `${hearth.url}/__agent-forge/council-api/runs`;
+  expect((await fetch(runsUrl)).status).toBe(403);
+  const runs = await fetch(runsUrl, {
+    headers: { "X-Agent-Forge-Operator": hearth.token },
+  });
+  expect(runs.status).toBe(200);
   expect(((await runs.json()) as { ok: boolean }).ok).toBe(true);
 });
 

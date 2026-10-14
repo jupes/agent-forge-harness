@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FakeCouncilTransport } from "../../council/fake-transport";
@@ -13,12 +14,17 @@ import {
   createCouncilService,
 } from "../../council/service";
 import type { ModelTransport } from "../../council/types";
+import { OPERATOR_HEADER } from "../paths";
 import {
   openEventStream,
   type StreamClient,
   type StreamMessage,
 } from "../testing";
 import { COUNCIL_API, councilHttpHandler } from "./council";
+
+/** The operator token the handler under test honours. */
+const TOKEN = "7".repeat(64);
+const WITH_TOKEN = { [OPERATOR_HEADER]: TOKEN };
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -86,6 +92,7 @@ async function fixture(
   };
   const handler = councilHttpHandler(counted, {
     keepaliveMs: options.keepaliveMs,
+    expectedToken: () => TOKEN,
   });
   const writes: Array<{ mock: { calls: unknown[] } }> = [];
   const server: Server = createServer((req, res) => {
@@ -109,6 +116,7 @@ async function fixture(
   return {
     service,
     url,
+    port: address.port,
     release: () => release(),
     blocked,
     subscriptions: () => subscriptions,
@@ -118,9 +126,12 @@ async function fixture(
   };
 }
 
-/** Open a run's event stream; the test's cleanup closes it. */
+/** Open a run's event stream with the operator token; the test's cleanup closes it. */
 async function events(url: string, runId: string): Promise<StreamClient> {
-  const client = await openEventStream(`${url}/runs/${runId}/events`, {});
+  const client = await openEventStream(
+    `${url}/runs/${runId}/events`,
+    WITH_TOKEN,
+  );
   cleanup.push(async () => client.close());
   return client;
 }
@@ -176,16 +187,137 @@ test("the handler lists, streams and replays a council run it did not start", as
   });
   const finished = await service.wait("http-review");
   expect(finished.status).toBe("completed");
-  const stream = await fetch(`${url}/runs/http-review/events`);
+  const read = { headers: WITH_TOKEN };
+  const stream = await fetch(`${url}/runs/http-review/events`, read);
   const events = await stream.text();
   expect(stream.headers.get("content-type")).toBe("text/event-stream");
   expect(events.match(/event: snapshot/g)).toHaveLength(1);
   expect(events).toContain('"status":"completed"');
-  const replay = await envelope(await fetch(`${url}/runs/http-review`));
+  const replay = await envelope(await fetch(`${url}/runs/http-review`, read));
   expect(replay.data.run).toEqual(finished.run);
-  const list = await envelope(await fetch(`${url}/runs`));
+  const list = await envelope(await fetch(`${url}/runs`, read));
   expect(Array.isArray(list.data)).toBe(true);
 }, 10000);
+
+/** A GET with exactly these header lines, over a raw socket: fetch folds a repeated header into one line. */
+function rawGet(port: number, path: string, lines: string[]): Promise<string> {
+  return new Promise((done, fail) => {
+    const socket = connect(port, "127.0.0.1");
+    let answer = "";
+    socket.on("data", (chunk) => {
+      answer += chunk.toString("utf8");
+    });
+    socket.on("end", () => done(answer));
+    socket.on("error", fail);
+    socket.write(
+      [
+        `GET ${path} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        "Connection: close",
+        ...lines,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+  });
+}
+
+test("a stored run, the run list and a run's event stream answer only a request that carries the operator token once: without it, with a wrong one or with it twice, 403 and nothing of any run", async () => {
+  const h = await fixture();
+  h.service.start({
+    sourceType: "text",
+    source: "Private acceptance criterion: the widget never leaks its key.",
+    runId: "private-run",
+  });
+  expect((await h.service.wait("private-run")).status).toBe("completed");
+
+  const refusal = {
+    ok: false,
+    data: null,
+    error:
+      "Reading a stored council run needs the operator token of this control plane",
+  };
+  const paths = [
+    "/runs",
+    "/runs/private-run",
+    "/runs/private-run/events",
+    // An id no run has is refused the same way: the refusal says nothing of what is stored.
+    "/runs/no-such-run",
+    "/runs/no-such-run/events",
+  ];
+  const tries: Array<[string, Record<string, string>]> = [
+    ["no token", {}],
+    // A declared same-origin request is not enough.
+    ["the hearth's own origin and no token", { Origin: new URL(h.url).origin }],
+    ["a wrong token", { [OPERATOR_HEADER]: "0".repeat(64) }],
+  ];
+  for (const path of paths) {
+    for (const [label, headers] of tries) {
+      const response = await fetch(`${h.url}${path}`, { headers });
+      const body = await response.text();
+      expect({
+        path,
+        label,
+        status: response.status,
+        type: response.headers.get("content-type"),
+        body: JSON.parse(body),
+      }).toEqual({
+        path,
+        label,
+        status: 403,
+        type: "application/json; charset=utf-8",
+        body: refusal,
+      });
+    }
+    const twice = await rawGet(h.port, `${COUNCIL_API}${path}`, [
+      `X-Agent-Forge-Operator: ${TOKEN}`,
+      `X-Agent-Forge-Operator: ${TOKEN}`,
+    ]);
+    expect({ path, head: twice.split("\r\n")[0] }).toEqual({
+      path,
+      head: "HTTP/1.1 403 Forbidden",
+    });
+    expect(twice).not.toContain("widget");
+  }
+  // Nothing was subscribed for a refused stream.
+  expect(h.subscriptions()).toBe(0);
+
+  // With the token, the run is answered, evidence included.
+  const run = await fetch(`${h.url}/runs/private-run`, {
+    headers: WITH_TOKEN,
+  });
+  expect(run.status).toBe(200);
+  expect(await run.text()).toContain("the widget never leaks its key");
+  // The profiles hold no run and still need no token.
+  expect((await fetch(`${h.url}/profiles`)).status).toBe(200);
+}, 10000);
+
+test("while no token can be honoured, a request carrying one is refused too", async () => {
+  const root = mkdtempSync(join(tmpdir(), "council-http-"));
+  const service = createCouncilService({
+    workspaceRoot: root,
+    harnessRoot: resolve(import.meta.dir, "../../.."),
+    runsRoot: join(root, "runs"),
+  });
+  const handler = councilHttpHandler(service, { expectedToken: () => null });
+  const server: Server = createServer((req, res) => {
+    void handler(req, res, () => {
+      res.statusCode = 404;
+      res.end();
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  cleanup.push(async () => {
+    await service.close();
+    await new Promise<void>((done) => server.close(() => done()));
+    rmSync(root, { recursive: true, force: true });
+  });
+  const port = (server.address() as { port: number }).port;
+  const response = await fetch(`http://127.0.0.1:${port}${COUNCIL_API}/runs`, {
+    headers: WITH_TOKEN,
+  });
+  expect(response.status).toBe(403);
+});
 
 test("mounted alone, the handler performs no mutation for any POST", async () => {
   const { service, url } = await fixture();
@@ -316,10 +448,12 @@ test("with ?deltas=1 a client is sent the whole job once and then only what chan
   });
   // Both subscribe while the run waits at its first model call, so both are sent the same updates.
   await h.blocked;
-  const whole = fetch(`${h.url}/runs/deltas/events`).then((r) => r.text());
-  const changes = fetch(`${h.url}/runs/deltas/events?deltas=1`).then((r) =>
-    r.text(),
-  );
+  const whole = fetch(`${h.url}/runs/deltas/events`, {
+    headers: WITH_TOKEN,
+  }).then((r) => r.text());
+  const changes = fetch(`${h.url}/runs/deltas/events?deltas=1`, {
+    headers: WITH_TOKEN,
+  }).then((r) => r.text());
   await settled(() => h.subscriptions() === 2);
   expect(h.subscriptions()).toBe(2);
   h.release();
@@ -356,7 +490,11 @@ test("with ?deltas=1 a client is sent the whole job once and then only what chan
 
   // A run that has finished is one snapshot either way.
   const replayed = messagesOf(
-    await (await fetch(`${h.url}/runs/deltas/events?deltas=1`)).text(),
+    await (
+      await fetch(`${h.url}/runs/deltas/events?deltas=1`, {
+        headers: WITH_TOKEN,
+      })
+    ).text(),
   );
   expect(replayed.map((message) => message.event)).toEqual(["snapshot"]);
 }, 20000);

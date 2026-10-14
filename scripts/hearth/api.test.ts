@@ -18,6 +18,8 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { runCouncilCli } from "../council/cli";
+import type { CommandRunner } from "../council/pr-source";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
@@ -92,9 +94,18 @@ function post(
   });
 }
 
+/** A read of a stored council run: it needs the operator token. */
+function readRuns(h: TestHearth, path = ""): Promise<Response> {
+  return fetch(`${h.api}/council-api/runs${path}`, {
+    headers: { [OPERATOR_HEADER]: h.hearth.token },
+  });
+}
+
 async function councilRunFinished(h: TestHearth, runId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
-    const response = await fetch(`${h.api}/council-api/runs/${runId}`);
+    const response = await readRuns(h, `/${runId}`);
+    if (response.status !== 200)
+      throw new Error(`council run ${runId} could not be read`);
     const job = (await response.json()) as { data?: { status?: string } };
     if (job.data?.status !== "running" && job.data?.status !== "cancelling")
       return;
@@ -132,7 +143,7 @@ async function runningRun(h: TestHearth, runId: string): Promise<void> {
 }
 
 async function runStatus(h: TestHearth, runId: string): Promise<string> {
-  const response = await fetch(`${h.api}/council-api/runs/${runId}`);
+  const response = await readRuns(h, `/${runId}`);
   return ((await response.json()) as { data?: Job }).data?.status ?? "";
 }
 
@@ -904,7 +915,7 @@ describe("every action row (iterating the table)", () => {
       }
       expect(probes).toEqual([]);
       // Nothing reached the real effects either: no run was started, bd was not called.
-      const runs = await fetch(`${h.api}/council-api/runs`);
+      const runs = await readRuns(h);
       expect((await envelope<unknown[]>(runs)).data).toEqual([]);
       expect(h.bd.calls).toEqual([]);
     });
@@ -1183,8 +1194,95 @@ describe("repeated security headers (raw socket: fetch folds a repeat into one l
   });
 });
 
+describe("a stored council run of a bead", () => {
+  test("is not returned to a loopback request without the operator token, with or without the hearth's own origin; with the token it is, the bead's criterion and comment included", async () => {
+    const h = await start();
+    // A bead run stored in the hearth's runs directory, made by the CLI with
+    // an invented bead: no tracker is read, and the simulated profile calls no model.
+    const bead = "demo-harness-ab12.3";
+    const criterion = "[ ] The kiln reports its temperature in Celsius.";
+    const comment = "worklog: the kiln sensor is wired.";
+    const runner: CommandRunner = async (command) => {
+      const line = command.join(" ");
+      const answer = (value: unknown) => ({
+        exitCode: 0,
+        stdout: JSON.stringify(value),
+        stderr: "",
+      });
+      if (line === `bd --readonly show ${bead} --json`)
+        return answer([
+          {
+            id: bead,
+            title: "Teach the kiln to report its temperature",
+            acceptance_criteria: criterion,
+            status: "in_progress",
+            priority: 2,
+            issue_type: "task",
+          },
+        ]);
+      if (line === `bd --readonly comments ${bead} --json`)
+        return answer([
+          {
+            issue_id: bead,
+            text: comment,
+            created_at: "2031-01-03T10:00:00Z",
+          },
+        ]);
+      throw new Error(`unexpected command: ${line}`);
+    };
+    const code = await runCouncilCli(
+      [
+        "bead",
+        bead,
+        "--run-id",
+        "stored-bead-run",
+        "--runs-dir",
+        join(h.root, "council-runs"),
+      ],
+      {
+        cwd: h.root,
+        readStdin: async () => "",
+        stdout: () => {},
+        stderr: () => {},
+        runCommand: runner,
+      },
+    );
+    expect(code).toBe(0);
+
+    const refusal = {
+      ok: false,
+      data: null,
+      error:
+        "Reading a stored council run needs the operator token of this control plane",
+    };
+    for (const path of [
+      "/council-api/runs",
+      "/council-api/runs/stored-bead-run",
+      "/council-api/runs/stored-bead-run/events",
+    ])
+      for (const headers of [{}, { Origin: h.hearth.url }]) {
+        const response = await fetch(`${h.api}${path}`, { headers });
+        const body = await response.text();
+        expect({ path, headers, status: response.status }).toEqual({
+          path,
+          headers,
+          status: 403,
+        });
+        expect(JSON.parse(body)).toEqual(refusal);
+        expect(body).not.toContain("Celsius");
+        expect(body).not.toContain("sensor is wired");
+      }
+
+    const read = await readRuns(h, "/stored-bead-run");
+    expect(read.status).toBe(200);
+    const text = await read.text();
+    expect(text).toContain("Celsius");
+    expect(text).toContain("sensor is wired");
+  }, 30_000);
+});
+
 describe("the paths that existed before the table", () => {
-  test("keep their answers: a service refusal is 400 after an audit row, the list and the 405 are unchanged", async () => {
+  test("keep their answers: a service refusal is 400 after an audit row; with the operator token the list and the stream answer as before; the 405 is unchanged", async () => {
     const { h, probes } = await probed();
     await finishedRun(h, "kept");
 
@@ -1210,7 +1308,7 @@ describe("the paths that existed before the table", () => {
     );
     expect(probes.length).toBe(3);
 
-    const list = await fetch(`${h.api}/council-api/runs`);
+    const list = await readRuns(h);
     expect(list.status).toBe(200);
     expect(
       (await envelope<Array<{ runId: string }>>(list)).data?.map(
@@ -1218,7 +1316,7 @@ describe("the paths that existed before the table", () => {
       ),
     ).toEqual(["kept"]);
 
-    const stream = await fetch(`${h.api}/council-api/runs/kept/events`);
+    const stream = await readRuns(h, "/kept/events");
     expect(stream.headers.get("content-type")).toBe("text/event-stream");
     expect(await stream.text()).toContain('"status":"completed"');
 
