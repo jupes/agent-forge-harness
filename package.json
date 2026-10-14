@@ -41,6 +41,7 @@
     "lint": "biome check scripts .claude/hooks .claude/skills types docs/js",
     "lint:fix": "biome check --write scripts .claude/hooks .claude/skills types docs/js",
     "dashboard:build": "vite build --config vite.dashboard.config.ts",
+    "dashboard:commands": "bun run scripts/dashboard/commands-catalog.ts",
     "verify:ui": "playwright test"
   },
   "devDependencies": {
