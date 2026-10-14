@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { recordComplete } from "./phase-gate";
 import type { ForgeState, ReviewRound } from "./phases";
 import {
@@ -14,10 +17,12 @@ import {
 } from "./runs";
 import {
   announcedStatusFor,
+  parseRunsArgs,
   runLine,
   shouldAnnounce,
   stopAnnouncement,
 } from "./runs-cli";
+import { writeRunState } from "./runs-store";
 
 function state(
   slug: string,
@@ -678,4 +683,164 @@ describe("run state v2", () => {
       parseState(JSON.stringify({ ...v1, announcedStatus: "stuck" })),
     ).not.toHaveProperty("announcedStatus");
   });
+});
+
+describe("the forge:runs command line, read strictly", () => {
+  test("list, show and remove are read with their switches, in any order", () => {
+    expect(parseRunsArgs([])).toEqual({
+      ok: true,
+      data: { command: "list", active: false, json: false },
+      error: null,
+    });
+    expect(parseRunsArgs(["--json", "list", "--active"]).data).toEqual({
+      command: "list",
+      active: true,
+      json: true,
+    });
+    expect(parseRunsArgs(["--json", "show", "alpha"]).data).toEqual({
+      command: "show",
+      slug: "alpha",
+      active: false,
+      json: true,
+    });
+    expect(parseRunsArgs(["remove", "alpha"]).data).toEqual({
+      command: "remove",
+      slug: "alpha",
+      active: false,
+      json: false,
+    });
+  });
+
+  test("an unknown flag is refused with the known ones, so a mistyped --active lists nothing", () => {
+    for (const argv of [
+      ["--actve"],
+      ["list", "--acitve"],
+      ["--json", "--Active"],
+    ]) {
+      const refused = parseRunsArgs(argv);
+      expect({ argv, ok: refused.ok }).toEqual({ argv, ok: false });
+      expect(refused.error).toContain("Known flags: --active, --json.");
+    }
+    expect(parseRunsArgs(["--actve"]).error).toBe(
+      "unknown flag --actve. Known flags: --active, --json.",
+    );
+  });
+
+  test("a flag given twice, or given a value, is refused", () => {
+    expect(parseRunsArgs(["--active", "--active"]).error).toBe(
+      "--active is given twice.",
+    );
+    expect(parseRunsArgs(["show", "alpha", "--json", "--json"]).error).toBe(
+      "--json is given twice.",
+    );
+    expect(parseRunsArgs(["--json=false"]).error).toBe(
+      "--json takes no value.",
+    );
+  });
+
+  test("a word the command does not use is refused: after list, after the run show or remove names, and an unknown command", () => {
+    expect(parseRunsArgs(["list", "alpha"]).error).toBe(
+      'unexpected argument "alpha": list takes no run.',
+    );
+    expect(parseRunsArgs(["active"]).error).toBe(
+      'Unknown command "active". Use: list | show <slug> | remove <slug>.',
+    );
+    expect(parseRunsArgs(["show", "alpha", "beta"]).error).toBe(
+      'unexpected argument "beta": show takes one run.',
+    );
+    expect(parseRunsArgs(["remove", "alpha", "--active"]).error).toBe(
+      "--active filters list; remove does not use it.",
+    );
+    expect(parseRunsArgs(["remove"]).error).toBe(
+      "Usage: forge:runs remove <slug>",
+    );
+  });
+});
+
+describe("forge:runs refuses a command line it cannot read whole (spawned, scratch checkout)", () => {
+  const RUNS = join(import.meta.dir, "runs-cli.ts");
+  const scratch: string[] = [];
+  afterEach(() => {
+    for (const dir of scratch.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /** A scratch checkout holding one run, `alpha`; the path of its state file. */
+  function checkoutWithRun(): { cwd: string; file: string } {
+    const root = mkdtempSync(join(tmpdir(), "forge runs cli "));
+    scratch.push(root);
+    const cwd = join(root, "check out");
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    writeRunState(state("alpha", ["research"]), cwd);
+    return { cwd, file: join(cwd, ".tmp", "work", "forge-runs", "alpha.json") };
+  }
+
+  async function runs(
+    cwd: string,
+    args: string[],
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const child = Bun.spawn([process.execPath, "run", RUNS, ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { exitCode: await child.exited, stdout, stderr };
+  }
+
+  test("a mistyped --active exits 2 and lists no run, as text and as JSON", async () => {
+    const { cwd } = checkoutWithRun();
+    const text = await runs(cwd, ["--actve"]);
+    expect(text.exitCode).toBe(2);
+    expect(text.stdout).toBe("");
+    expect(text.stderr).toContain("unknown flag --actve");
+
+    const json = await runs(cwd, ["--json", "--actve"]);
+    expect(json.exitCode).toBe(2);
+    expect(JSON.parse(json.stdout)).toEqual({
+      ok: false,
+      data: null,
+      error: "unknown flag --actve. Known flags: --active, --json.",
+    });
+  }, 30_000);
+
+  test("remove with a stray word, a repeated flag or an unknown flag exits 2 and leaves the run's state file", async () => {
+    const { cwd, file } = checkoutWithRun();
+    for (const args of [
+      ["remove", "alpha", "beta"],
+      ["remove", "alpha", "--json", "--json"],
+      ["remove", "alpha", "--force"],
+      ["remove", "alpha", "--active"],
+    ]) {
+      const refused = await runs(cwd, args);
+      expect({ args, exitCode: refused.exitCode }).toEqual({
+        args,
+        exitCode: 2,
+      });
+      expect(existsSync(file)).toBe(true);
+    }
+    // The command line it can read removes the run.
+    const removed = await runs(cwd, ["remove", "alpha"]);
+    expect(removed.exitCode).toBe(0);
+    expect(existsSync(file)).toBe(false);
+  }, 60_000);
+
+  test("show and list with a word they do not use exit 2", async () => {
+    const { cwd } = checkoutWithRun();
+    for (const args of [
+      ["show", "alpha", "beta"],
+      ["list", "alpha"],
+    ]) {
+      const refused = await runs(cwd, args);
+      expect({ args, exitCode: refused.exitCode }).toEqual({
+        args,
+        exitCode: 2,
+      });
+      expect(refused.stdout).toBe("");
+    }
+  }, 30_000);
 });
