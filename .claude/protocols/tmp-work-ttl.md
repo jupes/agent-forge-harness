@@ -20,7 +20,7 @@ This file defines the default retention so long-running harness usage does not a
 3a. **Per-run wisps** follow the run: `.tmp/work/run-correlations/<runId>.json` (which Beads issue a run works on)
     and `.tmp/work/evaluations/<sha256 of the run id>/` (that run's evaluator verdict, `verdict.json`, and its review
     rounds, `review-<label>.json`; see `evaluation-verdict.md`).
-4. **Default TTL is 14 days** since `mtime` for `<TASK-ID>-*` files whose Beads task is **closed**. Open/in-progress tasks are **never** swept automatically. Evaluator verdicts under `evaluations/` follow the same rule, by the Beads issue the verdict names, and are removed only once the event ledger holds their digest.
+4. **Default TTL is 14 days** since `mtime` for `<TASK-ID>-*` files whose Beads task is **closed**. Open/in-progress tasks are **never** swept automatically. Evaluator verdicts under `evaluations/` follow the same rule, by the Beads issue the verdict names, and are removed only once the event ledger holds their digest. Run correlations under `run-correlations/` follow it too, by the Beads issue the correlation names.
 5. Cross-cutting files (`session-handoff.md`, `<EPIC-ID>-interfaces.md`) are **not** swept — operator deletes them when a milestone completes.
 
 ## Cleanup script
@@ -34,8 +34,8 @@ bun run tmp:cleanup --apply --allow-fallback  # delete even when bd did not answ
 
 Safety:
 
-- The script only touches `.tmp/work/<ID>-*` where `<ID>` matches a **closed** Beads issue id, and evaluator
-  verdicts under `.tmp/work/evaluations/`.
+- The script only touches `.tmp/work/<ID>-*` where `<ID>` matches a **closed** Beads issue id, evaluator
+  verdicts under `.tmp/work/evaluations/`, and run correlations under `.tmp/work/run-correlations/`.
 - Which issues are closed comes from the live tracker (one `bd export`). Only when bd does not answer does the
   script use `.beads/issues.jsonl`, which may be older than the tracker: it says so on stderr before anything is
   removed, and the envelope's `data.source` names the file, when it was last written and why bd was not used.
@@ -51,7 +51,13 @@ Safety:
   once it is older than the TTL, whatever it holds and whatever its bead's status: it is never a verdict (see
   `evaluation-verdict.md`, *Limits*). A run's directory is removed only by the sweep that emptied it; anything else
   found there is left alone. Evaluations are swept only when the script runs at the top level of a checkout.
-- Run correlation files are not swept.
+- A run correlation is removed only when the correlation loader validates it as this checkout's correlation of the
+  run it is named after (a `.json` file directly in `run-correlations/`, behind no link and not a link itself), the
+  Beads issue it names is closed, and the file is older than the TTL. Until then the run stays correlated to that
+  bead: a launcher does not hand a correlated run to another bead, and only `forge:correlate --bead <id> --run <run>`
+  rebinds it. Anything else in that directory (a writer's draft `<run>.json.<pid>.tmp`, a file the loader refuses) is left
+  alone, and correlations are swept only when the script runs at the top level of a checkout. The envelope reports
+  them as `data.correlations`.
 - `--apply` is required to delete. Without it, the script prints what it **would** remove.
 - `<EPIC-ID>-interfaces.md` and `session-handoff.md` are always skipped.
 

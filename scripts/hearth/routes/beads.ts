@@ -117,8 +117,13 @@ const CONTROL_IN_A_TEXT = /[^\P{Cc}\n\t]/u;
 /** What a one-line title may not hold: a control character, a line or paragraph separator, a bidirectional control. */
 const NOT_IN_A_TITLE = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/u;
 
-/** Whitespace, and the format characters nobody can see (a zero-width space, a word joiner). */
-const NOTHING_TO_READ = /[\s\p{Cf}]/gu;
+/**
+ * What draws nothing: whitespace, the format characters (a zero-width space, a
+ * word joiner), the other characters Unicode marks as default-ignorable (a
+ * Hangul filler, a variation selector, the combining grapheme joiner) and the
+ * braille blank (U+2800).
+ */
+const NOTHING_TO_READ = /[\s\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 
 /** Whether a text holds anything a reader would see. */
 function saysSomething(text: string): boolean {

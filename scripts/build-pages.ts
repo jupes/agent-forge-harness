@@ -11,6 +11,10 @@
  *    payload's `source` records the file, its age and why bd was not used.
  * With neither, nothing is written and the command exits 1.
  *
+ * Each issue's repository (the Repo column) also reads the machine-local
+ * `repos/repos.json` and `repos/issue-repos.json`; `scripts/beads/issue-repo.ts`
+ * has the rule. A file under `repos/` that cannot be used is warned about.
+ *
  * Usage: bun run build-pages
  */
 
@@ -24,6 +28,7 @@ import {
   readTrackerRows,
   runBdOnPath,
 } from "./beads/live-tracker";
+import { readRepoContext } from "./beads/repo-context";
 import {
   commentsFromExportRows,
   issuesAndDepsFromExportRows,
@@ -62,7 +67,12 @@ export async function buildPages(
   const { rows, source } = read;
   if (source.kind === "file") warn(`build-pages: ${fallbackNotice(source)}`);
 
-  const { issues, deps } = issuesAndDepsFromExportRows(rows);
+  const repoContext = readRepoContext(options.cwd);
+  for (const line of repoContext.warnings) warn(`build-pages: ${line}`);
+  const { issues, deps } = issuesAndDepsFromExportRows(
+    rows,
+    repoContext.context,
+  );
   const { comments, short } = commentsFromExportRows(rows);
   if (short.length > 0) {
     const shown = short.slice(0, 10).join(", ");

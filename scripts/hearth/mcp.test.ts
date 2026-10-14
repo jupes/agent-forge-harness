@@ -9,8 +9,9 @@
  * test can say what was sent and that nothing was.
  */
 
-import { afterEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
+import * as fs from "node:fs";
 import {
   copyFileSync,
   existsSync,
@@ -21,6 +22,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import {
   createServer as createHttpServer,
   type IncomingHttpHeaders,
@@ -33,7 +35,15 @@ import {
   type Socket,
 } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import {
   InMemoryTransport,
@@ -340,6 +350,56 @@ describe("tools/list", () => {
 /** The most the ten rows may cost in `tools/list`. Raise it on purpose, not by accident. */
 const LISTING_BUDGET = 3500;
 
+/**
+ * Every path read through `node:fs` and `node:fs/promises` until `stop`,
+ * whichever module made the read: a spy on the module replaces the binding
+ * every importer holds.
+ */
+function traceFileReads(): { paths: string[]; stop(): void } {
+  const paths: string[] = [];
+  const spies: Array<{ mockRestore(): void }> = [];
+  const note = (target: unknown): void => {
+    if (typeof target === "string") paths.push(target);
+    else if (target instanceof URL) paths.push(fileURLToPath(target));
+    else if (Buffer.isBuffer(target)) paths.push(target.toString("utf8"));
+  };
+  const trace = <T extends object>(module: T, names: Array<keyof T>): void => {
+    for (const name of names) {
+      const original = module[name] as (...args: unknown[]) => unknown;
+      spies.push(
+        spyOn(module, name).mockImplementation(((...args: unknown[]) => {
+          note(args[0]);
+          return original(...args);
+        }) as never),
+      );
+    }
+  };
+  trace(fs, [
+    "readFileSync",
+    "readFile",
+    "openSync",
+    "open",
+    "createReadStream",
+  ]);
+  trace(fsPromises, ["readFile", "open"]);
+  return {
+    paths,
+    stop: () => {
+      for (const spy of spies) spy.mockRestore();
+    },
+  };
+}
+
+/** Whether `path` is `dir` or below it, spelled however the platform allows. */
+function inside(dir: string, path: string): boolean {
+  const spelled = (value: string): string =>
+    process.platform === "win32"
+      ? resolve(value).toLowerCase()
+      : resolve(value);
+  const rel = relative(spelled(dir), spelled(path));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 describe("the tool table", () => {
   test("every row names a route mounted on a hearth, and is governed exactly when that route is an action", async () => {
     const hearth = await startHearth();
@@ -389,24 +449,41 @@ describe("a governed tool in an agent session (iterating the table, no input per
   test("is refused the same way whatever is sent: nothing is sent, no token file is read, nothing is recorded", async () => {
     const hearth = await startHearth();
     const agent = await session(place(hearth));
-    for (const tool of governedRows()) {
-      for (const [label, args] of attempts) {
-        const answer = await agent.call(tool.name, args);
-        expect({ tool: tool.name, label, answer }).toEqual({
-          tool: tool.name,
-          label,
-          answer: {
-            isError: true,
-            texts: [expect.any(String)],
-            envelope: {
-              ok: false,
-              data: null,
-              error: `${tool.name} needs an operator session: this server was started without --operator and holds no operator token.`,
+    // Not only the server's own token reader: every read made through the
+    // file system modules while the calls run.
+    const reads = traceFileReads();
+    let control: string[] = [];
+    try {
+      for (const tool of governedRows()) {
+        for (const [label, args] of attempts) {
+          const answer = await agent.call(tool.name, args);
+          expect({ tool: tool.name, label, answer }).toEqual({
+            tool: tool.name,
+            label,
+            answer: {
+              isError: true,
+              texts: [expect.any(String)],
+              envelope: {
+                ok: false,
+                data: null,
+                error: `${tool.name} needs an operator session: this server was started without --operator and holds no operator token.`,
+              },
             },
-          },
-        });
+          });
+        }
       }
+      // A read another module makes through its own import is seen: the
+      // token module's reader, called here once.
+      const during = reads.paths.length;
+      readToken(tokenPath(hearth.home, hearth.root));
+      control = reads.paths.slice(during);
+      reads.paths.length = during;
+    } finally {
+      reads.stop();
     }
+    const tokenDir = join(hearth.home, "tokens");
+    expect(control.filter((path) => inside(tokenDir, path)).length).toBe(1);
+    expect(reads.paths.filter((path) => inside(tokenDir, path))).toEqual([]);
     expect(agent.sent).toEqual([]);
     expect(agent.tokenReads).toEqual([]);
     expect(hearth.events(["operator.action"])).toEqual([]);
@@ -507,8 +584,53 @@ const outcome = (work: Promise<LoopbackAnswer>): Promise<unknown> =>
     (error: unknown) => `rejected: ${(error as Error).message}`,
   );
 
+/** When a request's body began to arrive at a peer. */
+interface BodyArrival {
+  /** The first bytes the peer read held some of the body, not the head alone. */
+  withHead: boolean;
+  /** `performance.now()` when the first byte of the body was read. */
+  at: number;
+}
+
+/** A raw TCP peer that answers 200 once a whole request is in, and notes when each body began to arrive. */
+async function timedPeer(): Promise<{ port: number; bodies: BodyArrival[] }> {
+  const bodies: BodyArrival[] = [];
+  const server = createTcpServer((socket) => {
+    socket.on("error", () => {});
+    let received = Buffer.alloc(0);
+    let reads = 0;
+    socket.on("data", (chunk: Buffer) => {
+      reads++;
+      received = Buffer.concat([received, chunk]);
+      const headEnd = received.indexOf("\r\n\r\n");
+      if (headEnd === -1) return;
+      const bodyStart = headEnd + 4;
+      if (
+        received.length > bodyStart &&
+        received.length - chunk.length <= bodyStart
+      )
+        bodies.push({ withHead: reads === 1, at: performance.now() });
+      const head = received.subarray(0, headEnd).toString("latin1");
+      const length = Number(/^content-length: (\d+)$/im.exec(head)?.[1] ?? 0);
+      if (received.length === bodyStart + length)
+        socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  cleanup.push(() => new Promise<void>((done) => server.close(() => done())));
+  return { port: (server.address() as AddressInfo).port, bodies };
+}
+
+/**
+ * `performance.now()` when a timer of `ms`, set now, fires. The exchange's
+ * hold-back is a timer on the same clock, so one set after this one fires no
+ * sooner, however busy the machine.
+ */
+const timerFired = (ms: number): Promise<number> =>
+  new Promise((done) => setTimeout(() => done(performance.now()), ms));
+
 describe("the loopback exchange", () => {
-  test("writes one HTTP/1.1 request to the port: Host, Connection: close, the headers given, the body's length in bytes", async () => {
+  test("writes one HTTP/1.1 request to the port: Host, Connection: close, the headers given, the body's length in bytes; a body of up to 65,536 bytes goes with the head, a longer one after it", async () => {
     const echo = await peer((socket) =>
       socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"),
     );
@@ -536,6 +658,31 @@ describe("the loopback exchange", () => {
     ]);
     expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(body.length);
     expect(sentBody).toBe(body);
+
+    // Told to hold a large body back 1,500 ms: a body of 65,536 bytes is in
+    // the peer's first read with the head; of one byte more, the first byte
+    // is read only once a timer of 1,500 ms set as the exchange began has
+    // fired.
+    const timed = await timedPeer();
+    const sent = async (size: number): Promise<void> => {
+      const answer = await loopbackExchange(
+        ask(timed.port, {
+          method: "POST",
+          body: "s".repeat(size),
+          holdBodyMs: 1500,
+        }),
+      );
+      expect({ size, answer }).toEqual({
+        size,
+        answer: { status: 200, body: "ok" },
+      });
+    };
+    await sent(65_536);
+    expect(timed.bodies.map((arrival) => arrival.withHead)).toEqual([true]);
+    const held = timerFired(1500);
+    await sent(65_537);
+    expect(timed.bodies.length).toBe(2);
+    expect(timed.bodies[1]?.at ?? 0).toBeGreaterThanOrEqual(await held);
   });
 
   test("reads one answer, framed by Content-Length, by chunks or by the peer closing, also when it arrives in pieces or the peer keeps the socket open", async () => {
@@ -2914,7 +3061,7 @@ describe("the server as a process, over stdio", () => {
     ]);
   }, 60_000);
 
-  test("what it reports of a message it cannot take is one bounded line of printable ASCII, whatever the client put in the message", async () => {
+  test("what it reports of a message it cannot take is one bounded line of printable ASCII, whatever the client put in the message; a message that fails the schema is named, not quoted", async () => {
     const where = emptyPlace();
     const server = spawnServer("bun", [ENTRY, "--root", where.root], {
       env: serverEnv(where.home),
@@ -2953,6 +3100,21 @@ describe("the server as a process, over stdio", () => {
       expect(line).toMatch(/^[\x20-\x7e]*$/);
     }
     expect(reported[0]?.length).toBeLessThan(260);
+    // A message that fails the schema is named, not quoted: its error is a
+    // JSON list of every way the message was wrong.
+    const seen = lines.length;
+    server.write('{"jsonrpc":"2.0","id":77}');
+    for (
+      let attempt = 0;
+      attempt < 800 && server.stderr().trim().split("\n").length === seen;
+      attempt++
+    )
+      await new Promise((done) => setTimeout(done, 10));
+    expect(server.stderr().trim().split("\n").slice(seen)).toEqual([
+      expect.stringMatching(
+        /^hearth:mcp: \w+: a message that is not a valid request$/,
+      ),
+    ]);
     // It goes on serving.
     await greeted(server);
     expect(toolNames(await server.ask("tools/list")).length).toBeGreaterThan(
@@ -3239,7 +3401,7 @@ describe("what the first review found unpinned", () => {
 });
 
 describe("a body the hearth will not read", () => {
-  test("every governed row's body limit is the mounted route's, and a body over it is refused here, where the reason can be given", async () => {
+  test("every governed row's body limit is the mounted route's, and a body over it is refused here, where the reason can be given; the limit counts bytes, and a body of exactly the limit is sent", async () => {
     const hearth = await stocked();
     const limits = new Map<string, number | undefined>();
     for (const route of hearth.hearth.routes)
@@ -3251,7 +3413,12 @@ describe("a body the hearth will not read", () => {
         maxBodyBytes: limits.get(shape(tool.method, tool.path)),
       });
 
-    const operator = await session(place(hearth), { operator: true });
+    // A body over 64 kB is held back 3 s here, so that the hearth's refusal
+    // on the head below arrives whatever the machine's load.
+    const operator = await session(place(hearth), {
+      operator: true,
+      holdBodyMs: 3000,
+    });
     const answer = await operator.call("forge_council_start", {
       sourceType: "text",
       source: "x".repeat(2_200_000),
@@ -3261,7 +3428,41 @@ describe("a body the hearth will not read", () => {
     );
     expect(operator.sent).toEqual([]);
     expect(operator.tokenReads).toEqual([]);
-  });
+
+    // Fewer characters than the limit, more bytes: refused here as well.
+    const twoBytes = await operator.call("forge_council_start", {
+      sourceType: "text",
+      source: "é".repeat(1_050_000),
+    });
+    expect(twoBytes.envelope.error).toBe(
+      "forge_council_start: the request is 2100033 bytes and its route reads at most 2100000 bytes, so nothing was sent.",
+    );
+    expect(operator.sent).toEqual([]);
+    expect(operator.tokenReads).toEqual([]);
+
+    // Exactly the limit: sent. The token file holds a token this hearth did
+    // not mint, so the hearth refuses it on the head and nothing starts.
+    const foreign = "e".repeat(64);
+    tokens.add(foreign);
+    writeFileSync(tokenPath(hearth.home, hearth.root), `${foreign}\n`);
+    const wrapping = Buffer.byteLength(
+      JSON.stringify({ sourceType: "text", source: "" }),
+    );
+    const exact = await operator.call("forge_council_start", {
+      sourceType: "text",
+      source: "x".repeat(2_100_000 - wrapping),
+    });
+    // After the health probe, one POST of exactly the limit.
+    expect(
+      operator.sent
+        .filter((request) => request.method === "POST")
+        .map((request) => Buffer.byteLength(request.body ?? "")),
+    ).toEqual([2_100_000]);
+    expect(exact.envelope.error).toBe(
+      "This action needs the operator token of this control plane",
+    );
+    expect(hearth.events(["operator.action"])).toEqual([]);
+  }, 30_000);
 
   test("a refusal the hearth gives before it has read a large body comes back as the hearth's refusal", async () => {
     const hearth = await stocked();
@@ -3530,7 +3731,7 @@ describe("what the second review found", () => {
     await runFinished(hearth.hearth.url, "large-accepted");
   }, 30_000);
 
-  test("a refusal on the head arrives when it comes within the time a large body is held back", async () => {
+  test("a large body is held back after the head, 100 ms when not told otherwise: a refusal on the head within that time arrives, and the timer that would write the body never fires once the exchange is over", async () => {
     // A peer that refuses 150 ms after the head arrives and closes, whatever
     // else it is sent; it counts what it received.
     let received = 0;
@@ -3564,7 +3765,113 @@ describe("what the second review found", () => {
       ),
     ).toEqual({ status: 403, body: '"refused"' });
     expect(received).toBeLessThan(1000);
-  });
+
+    // Not told how long: a timer of 100 ms set as the exchange begins has
+    // fired by the time the body's first byte is read.
+    const timed = await timedPeer();
+    const hundred = timerFired(100);
+    expect(
+      await loopbackExchange(
+        ask(timed.port, { method: "POST", body: "w".repeat(100_000) }),
+      ),
+    ).toEqual({ status: 200, body: "ok" });
+    expect(timed.bodies.length).toBe(1);
+    expect(timed.bodies[0]?.at ?? 0).toBeGreaterThanOrEqual(await hundred);
+
+    // The exchange over before the body is due, in each of the ways it can
+    // end: the timer that would write the body does not fire afterwards. Each
+    // way is given a wait of its own, so that its timer can be told apart.
+    const cancel = new AbortController();
+    const ways: Array<{
+      way: string;
+      holdBodyMs: number;
+      onHead(socket: Socket): void;
+      over?: Partial<LoopbackRequest>;
+      expected: unknown;
+    }> = [
+      {
+        way: "an answer on the head",
+        holdBodyMs: 1001,
+        onHead: (socket) =>
+          socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\n\r\nno"),
+        expected: { status: 403, body: "no" },
+      },
+      {
+        way: "the caller cancelling",
+        holdBodyMs: 1002,
+        onHead: () => cancel.abort(),
+        over: { signal: cancel.signal },
+        expected: "rejected: the request was cancelled",
+      },
+      {
+        way: "the time limit",
+        holdBodyMs: 1003,
+        onHead: () => {},
+        over: { timeoutMs: 300 },
+        expected: "rejected: no answer within 300 ms",
+      },
+      {
+        way: "the peer resetting the connection",
+        holdBodyMs: 1004,
+        onHead: (socket) => socket.resetAndDestroy(),
+        expected: expect.stringMatching(/^rejected: /),
+      },
+    ];
+    const log: string[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      ms?: number,
+      ...args: unknown[]
+    ) =>
+      realSetTimeout(() => {
+        log.push(`fired ${ms}`);
+        callback(...args);
+      }, ms)) as unknown as typeof setTimeout);
+    try {
+      const startedAt = performance.now();
+      const outcomes = await Promise.all(
+        ways.map(async ({ holdBodyMs, onHead, over }) => {
+          const server = createTcpServer((socket) => {
+            socket.on("error", () => {});
+            socket.once("data", () => onHead(socket));
+          });
+          await new Promise<void>((done) =>
+            server.listen(0, "127.0.0.1", done),
+          );
+          cleanup.push(
+            () => new Promise<void>((done) => server.close(() => done())),
+          );
+          const result = await outcome(
+            loopbackExchange(
+              ask((server.address() as AddressInfo).port, {
+                method: "POST",
+                body: "v".repeat(100_000),
+                holdBodyMs,
+                ...over,
+              }),
+            ),
+          );
+          log.push(`settled ${holdBodyMs}`);
+          return result;
+        }),
+      );
+      // Past every wait, with room to spare.
+      while (performance.now() - startedAt < 1500)
+        await new Promise((done) => realSetTimeout(done, 50));
+      ways.forEach(({ way, holdBodyMs, expected }, index) => {
+        const settled = log.indexOf(`settled ${holdBodyMs}`);
+        const fired = log.indexOf(`fired ${holdBodyMs}`);
+        expect({
+          way,
+          outcome: outcomes[index],
+          firedAfterwards: fired > settled,
+        }).toEqual({ way, outcome: expected, firedAfterwards: false });
+      });
+    } finally {
+      timers.mockRestore();
+    }
+  }, 15_000);
 });
 
 /** The real serve function with a council whose own work leaves a file behind when it ends. */

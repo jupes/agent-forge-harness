@@ -2,20 +2,18 @@
 /**
  * repo.ts — Multi-repo git operations CLI
  *
- * Usage: bun run repo <command> [--repo <name>] [--human] [--dry-run]
+ * Usage: bun run repo <command> [--repo <name>] [--include-archived] [--human] [--dry-run]
  *
  * Commands: init, status, refresh, reset, branch create <name>, branch cleanup, stacked-rebase <branches...>
+ *
+ * Entries with `"archived": true` are skipped unless named with `--repo` or
+ * `--include-archived` is passed (`./repo-select.ts`).
  */
 
 import { execSync, spawnSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
-
-interface RepoConfig {
-  name: string;
-  url: string;
-  defaultBranch: string;
-}
+import { type RepoConfig, selectRepos } from "./repo-select";
 
 interface RepoRegistry {
   repos: RepoConfig[];
@@ -34,6 +32,8 @@ interface CommandResult {
   ok: boolean;
   command: string;
   repos: RepoResult[];
+  /** Archived entries this run left out. */
+  skipped: string[];
   errors: Array<{ repo: string; message: string }>;
 }
 
@@ -76,16 +76,13 @@ function run(cmd: string, cwd?: string): { ok: boolean; output: string } {
 const args = process.argv.slice(2);
 const humanMode = args.includes("--human");
 const dryRun = args.includes("--dry-run");
+const includeArchived = args.includes("--include-archived");
 const repoFlag = args.indexOf("--repo");
 const targetRepo = repoFlag !== -1 ? args[repoFlag + 1] : undefined;
 
 const command = args.filter((a) => !a.startsWith("--"))[0] ?? "status";
 const subCommand = args.filter((a) => !a.startsWith("--"))[1];
 const extraArgs = args.filter((a) => !a.startsWith("--")).slice(2);
-
-function filterRepos(repos: RepoConfig[]): RepoConfig[] {
-  return targetRepo ? repos.filter((r) => r.name === targetRepo) : repos;
-}
 
 function output(result: CommandResult): void {
   if (humanMode) {
@@ -94,6 +91,11 @@ function output(result: CommandResult): void {
       const icon = r.ok ? "✓" : "✗";
       console.log(
         `  ${icon} ${r.name}: ${r.action}${r.message ? ` — ${r.message}` : ""}`,
+      );
+    }
+    if (result.skipped.length > 0) {
+      console.log(
+        `\nSkipped (archived): ${result.skipped.join(", ")} — name one with --repo, or pass --include-archived`,
       );
     }
     if (result.errors.length > 0) {
@@ -106,7 +108,10 @@ function output(result: CommandResult): void {
 }
 
 const repos = loadRepos();
-const targets = filterRepos(repos);
+const { targets, skipped } = selectRepos(repos, {
+  repo: targetRepo,
+  includeArchived,
+});
 const results: RepoResult[] = [];
 const errors: Array<{ repo: string; message: string }> = [];
 
@@ -264,5 +269,5 @@ if (command === "init") {
   process.exit(1);
 }
 
-output({ ok: errors.length === 0, command, repos: results, errors });
+output({ ok: errors.length === 0, command, repos: results, skipped, errors });
 process.exit(errors.length > 0 ? 1 : 0);

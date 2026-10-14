@@ -1806,11 +1806,22 @@ describe("a text must say something", () => {
   const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
   const WORD_JOINER = String.fromCodePoint(0x2060);
   const NO_BREAK_SPACE = String.fromCodePoint(0xa0);
+  /**
+   * Characters that draw nothing and are neither whitespace nor a format
+   * character: the braille blank, three Hangul fillers, a variation selector
+   * and the combining grapheme joiner.
+   */
+  const BLANK_LOOKING = [0x2800, 0x3164, 0xffa0, 0x115f, 0xfe0f, 0x034f].map(
+    (code) => String.fromCodePoint(code),
+  );
+  const VARIATION_SELECTOR = String.fromCodePoint(0xfe0f);
   const nothing = [
     ZERO_WIDTH_SPACE,
     `${ZERO_WIDTH_SPACE}${ZERO_WIDTH_SPACE}`,
     ` ${ZERO_WIDTH_SPACE}\n${WORD_JOINER}\t`,
     NO_BREAK_SPACE,
+    ...BLANK_LOOKING,
+    ` ${BLANK_LOOKING.join(ZERO_WIDTH_SPACE)} `,
   ];
 
   test("a reason, a comment or a title made only of spaces and characters nobody can see is refused", async () => {
@@ -1851,6 +1862,12 @@ describe("a text must say something", () => {
       (await post(h, "/beads/demo-task/close", { reason: text })).status,
     ).toBe(200);
     expect(h.bd.calls.at(-1)?.[1]).toBe(`--reason=${text}`);
+    // A variation selector says nothing alone; with the mark it styles, the mark is read.
+    const mark = `${String.fromCodePoint(0x2714)}${VARIATION_SELECTOR}`;
+    expect(
+      (await post(h, "/beads/demo-task/comment", { text: mark })).status,
+    ).toBe(201);
+    expect(h.bd.calls.at(-1)?.at(-1)).toBe(mark);
   });
 });
 

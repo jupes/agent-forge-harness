@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  EXEC_TIMEOUT_MS,
   type ExecFile,
   execFileNoShell,
   readBeadsIssue,
@@ -182,6 +183,33 @@ describe("execFileNoShell (the runner bd is called through)", () => {
     expect(echoed.ok).toBe(true);
     expect(JSON.parse(echoed.output)).toEqual(hostile);
     expect(readdirSync(cwd)).toEqual([]);
+  });
+
+  test("a program that outlives its time limit is stopped, and the call says it was stopped for time with what it printed; a program that fails in time does not", () => {
+    const slow = execFileNoShell(
+      process.execPath,
+      ["-e", "console.log('partial'); setTimeout(() => {}, 30000)"],
+      { timeoutMs: 1000 },
+    );
+    expect({ ...slow, output: slow.output.trim() }).toEqual({
+      ok: false,
+      output: "partial",
+      timedOut: true,
+    });
+
+    const failing = execFileNoShell(
+      process.execPath,
+      ["-e", "console.log('quick'); process.exit(3)"],
+      { timeoutMs: 30_000 },
+    );
+    expect({ ...failing, output: failing.output.trim() }).toEqual({
+      ok: false,
+      output: "quick",
+    });
+  }, 30_000);
+
+  test("the default time limit is two minutes", () => {
+    expect(EXEC_TIMEOUT_MS).toBe(120_000);
   });
 
   test("a program that is not there is a failed call, not a crash", () => {

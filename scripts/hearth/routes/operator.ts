@@ -32,6 +32,7 @@ import {
   safeMessage,
 } from "../api";
 import { createLedgerStream } from "../stream";
+import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
 import { applyReview } from "./dev-api";
@@ -59,8 +60,6 @@ export interface OperatorDeps extends ReadDeps {
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
 }
-
-const BEAD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
 function councilRunId(value: unknown): ValidationResult<string> {
   if (typeof value !== "string") return fail("runId must be a string");
@@ -97,10 +96,7 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
   // bead source, the bead under review. Stricter than the service on the two
   // ids, because both go on the audit row.
   const beadId = councilBeadId(input);
-  if (
-    beadId !== undefined &&
-    (!BEAD_ID.test(beadId) || looksLikeSecret(beadId))
-  )
+  if (beadId !== undefined && !isBeadId(beadId))
     return fail("beadId must be a Beads issue id");
   const runId =
     body["runId"] === undefined
@@ -144,7 +140,7 @@ function review(request: RouteRequest): ValidationResult<Review> {
   if (!parameters.ok) return parameters;
   const comment = reviewCommentFor(request.body);
   if (!comment.ok) return fail(comment.error);
-  return looksLikeSecret(comment.issueId)
+  return !isBeadId(comment.issueId)
     ? fail("issueId must be a Beads issue id")
     : { ok: true, value: { issueId: comment.issueId, input: request.body } };
 }
