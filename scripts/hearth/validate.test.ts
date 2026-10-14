@@ -490,13 +490,14 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     return result.ok ? "accepted" : result.error;
   };
 
-  test("a tracker write is accepted: its action, with or without a hash and a length", () => {
+  test("a tracker write is accepted: its action, with or without a hash and a length, and a reassign with or without the smith it recorded", () => {
     for (const payload of [
       { action: "create", hash: HASH, length: 4 },
       { action: "claim" },
       { action: "comment", hash: HASH, length: 0 },
       { action: "close", hash: HASH, length: 1000 },
       { action: "reassign" },
+      { action: "reassign", smith: "claude-master" },
     ]) {
       expect({ payload, refusal: refusal(payload) }).toEqual({
         payload,
@@ -508,7 +509,7 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     }
   });
 
-  test("a tracker write is refused for an action it does not know, a hash that is not a SHA-256, or a length that is not a count", () => {
+  test("a tracker write is refused for an action it does not know, a hash that is not a SHA-256, a length that is not a count, or a smith that is empty, not a string or on a write other than a reassign", () => {
     const refused: Array<[unknown, string]> = [
       [{ action: "delete" }, "payload.action"],
       [{ action: "" }, "payload.action"],
@@ -520,6 +521,9 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
       [{ action: "comment", hash: HASH, length: -1 }, "payload.length"],
       [{ action: "comment", hash: HASH, length: 1.5 }, "payload.length"],
       [{ action: "comment", hash: HASH, length: "12" }, "payload.length"],
+      [{ action: "reassign", smith: "" }, "payload.smith"],
+      [{ action: "reassign", smith: 7 }, "payload.smith"],
+      [{ action: "claim", smith: "claude-master" }, "payload.smith"],
     ];
     for (const [payload, where] of refused)
       expect({ payload, refusal: refusal(payload) }).toEqual({
@@ -558,12 +562,13 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     expect(refusal(null)).toContain("expected object");
   });
 
-  test("a queue transition may not carry a write's keys: hash and length must be absent", () => {
+  test("a queue transition may not carry a write's keys: hash, length and smith must be absent", () => {
     for (const [key, value] of [
       ["hash", "free text under a key the ledger stores"],
       ["hash", HASH],
       ["length", 12],
       ["length", "also text"],
+      ["smith", "claude-master"],
     ] as const) {
       const payload = { from: null, to: "proposed", [key]: value };
       expect({ payload, refusal: refusal(payload) }).toEqual({

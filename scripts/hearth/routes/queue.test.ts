@@ -585,7 +585,7 @@ describe("two requests at once", () => {
 });
 
 describe("POST /queue/:id/reassign", () => {
-  test("records the smith on the bead; the audit row names the bead and the smith; then one bead.transitioned that moves no state", async () => {
+  test("records the smith on the bead; the audit row names the bead and the smith; then one bead.transitioned that names the smith and moves no state", async () => {
     const { h, tracker } = await start([backed("demo-1", "queued")]);
     const answer = await post<QueueReassignResult>(
       h,
@@ -631,7 +631,7 @@ describe("POST /queue/:id/reassign", () => {
       {
         kind: "bead.transitioned",
         beadId: "demo-1",
-        payload: { action: "reassign" },
+        payload: { action: "reassign", smith: "claude-master" },
       },
     ] as never);
   });
@@ -677,7 +677,11 @@ describe("POST /queue/:id/reassign", () => {
           "demo-1",
           { action: "queue.reassign", surface: "api", target: "claude-master" },
         ],
-        ["bead.transitioned", "demo-1", { action: "reassign" }],
+        [
+          "bead.transitioned",
+          "demo-1",
+          { action: "reassign", smith: "claude-master" },
+        ],
       ]);
       expect(await smiths()).toEqual([["demo-1", "claude-master"]]);
       expect((await posted).status).toBe(200);

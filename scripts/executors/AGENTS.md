@@ -94,7 +94,21 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   `process.exit` or dies of an uncaught error, neither the provider nor the child the provider started is running.
   SIGTERM is checked on Linux and macOS only — on Windows a signal from another process ends it outright — so it has
   not been run on the Windows machine this was written on. Observed there (Bun 1.3.10): the provider itself did not
-  outlive the harness even with the hook removed, but a child it started detached did, unless the hook ran. A harness
-  killed outright (SIGKILL, TerminateProcess) runs no hook: on Windows that child outlived a harness terminated that
-  way, in a probe outside the suite (`agent-forge-harness-u98i`).
+  outlive the harness even with the hook removed, but a child it started detached did, unless the hook ran.
+- A harness killed outright (SIGKILL, TerminateProcess) runs no hook, so `supervise` guards each child's tree as it
+  starts (`tree-guard.ts`). On Windows the child is assigned at once to a job object of its own with kill-on-close and
+  no breakaway (kernel32 through `bun:ffi`); what it starts afterwards is in the job, and the system ends the job when
+  the harness's handle closes, however the harness ended. Elsewhere the child leads its own process group and a
+  detached `sh` watcher blocks reading a pipe only the harness writes to; at end of file it kills that group. When the
+  child exits on its own or is stopped, the guard is stood down without ending anything (the job's kill-on-close is
+  cleared before its handle closes; the watcher is killed before its pipe closes), so what a provider left running is
+  left as before. `supervisor.test.ts` kills the stand-in harness with `Subprocess.kill("SIGKILL")` (TerminateProcess
+  on Windows) and checks that neither the provider nor its child is left running, and that a provider that exits on
+  its own (`--fake-mode orphan`) leaves its child running. `tree-guard.test.ts` kills a stand-in that holds only the
+  guard of a provider it did not start (`fixtures/guard-holder.ts`), so nothing but the guard can end it: the provider
+  ends, and its child (started before the guard) ends with it on Linux and is left running on Windows. Run on
+  Windows 11 (Bun 1.3.10) and on Linux in CI; not run on macOS. Not covered: on Windows, a process the child starts before the assignment (it follows `Bun.spawn` at
+  once) or with breakaway; elsewhere, one that leaves the child's process group (for example by `setsid`). No real
+  provider has been run under the guard; a `.cmd` shim's `cmd.exe` and the program it starts would both be in the
+  job, which has not been observed.
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.

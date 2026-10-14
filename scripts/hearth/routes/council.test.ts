@@ -4,7 +4,15 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FakeCouncilTransport } from "../../council/fake-transport";
-import { createCouncilService } from "../../council/service";
+import {
+  applyCouncilJobDelta,
+  type CouncilJobDelta,
+} from "../../council/job-delta";
+import {
+  type CouncilServiceJob,
+  createCouncilService,
+} from "../../council/service";
+import type { ModelTransport } from "../../council/types";
 import {
   openEventStream,
   type StreamClient,
@@ -21,10 +29,28 @@ async function fixture(
   options: {
     /** Every model call waits until the run is cancelled, so a run stays `running`. */
     slow?: boolean;
+    /** Every model call waits for `release()`; `blocked` settles at the first one. */
+    gated?: boolean;
     keepaliveMs?: number;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "council-http-"));
+  let release = () => {};
+  const open = new Promise<void>((done) => {
+    release = done;
+  });
+  let reached = () => {};
+  const blocked = new Promise<void>((done) => {
+    reached = done;
+  });
+  const simulated = new FakeCouncilTransport();
+  const gated: ModelTransport = {
+    async generate(request, signal) {
+      reached();
+      await open;
+      return simulated.generate(request, signal);
+    },
+  };
   const service = createCouncilService({
     workspaceRoot: root,
     harnessRoot: resolve(import.meta.dir, "../../.."),
@@ -34,7 +60,9 @@ async function fixture(
           resolveTransport: () => () =>
             new FakeCouncilTransport({ delayMs: 60_000 }),
         }
-      : {}),
+      : options.gated
+        ? { resolveTransport: () => () => gated }
+        : {}),
   });
   // The handler is handed the service with its subscriptions counted: taken
   // and not yet released, and snapshots the service handed to their listeners.
@@ -81,6 +109,8 @@ async function fixture(
   return {
     service,
     url,
+    release: () => release(),
+    blocked,
     subscriptions: () => subscriptions,
     deliveries: () => deliveries,
     /** Calls to `write` on every response this server has given. */
@@ -259,3 +289,74 @@ test("a client that stays through the run keeps getting keepalives and snapshots
   await settled(() => h.subscriptions() === 0);
   expect(h.subscriptions()).toBe(0);
 }, 10000);
+
+/** The event and data of each message in a whole event-stream body; comments left out. */
+function messagesOf(body: string): Array<{ event: string; data: string }> {
+  return body
+    .split("\n\n")
+    .filter((block) => block.trim() !== "" && !block.startsWith(":"))
+    .map((block) => {
+      const lines = block.split("\n");
+      return {
+        event: lines.find((line) => line.startsWith("event: "))?.slice(7) ?? "",
+        data: lines
+          .filter((line) => line.startsWith("data: "))
+          .map((line) => line.slice(6))
+          .join(""),
+      };
+    });
+}
+
+test("with ?deltas=1 a client is sent the whole job once and then only what changed: it rebuilds every job a snapshot client is sent, each event comes once, and the stream is smaller", async () => {
+  const h = await fixture({ gated: true });
+  h.service.start({
+    sourceType: "text",
+    source: "Evaluate this plan and record any missing evidence.",
+    runId: "deltas",
+  });
+  // Both subscribe while the run waits at its first model call, so both are sent the same updates.
+  await h.blocked;
+  const whole = fetch(`${h.url}/runs/deltas/events`).then((r) => r.text());
+  const changes = fetch(`${h.url}/runs/deltas/events?deltas=1`).then((r) =>
+    r.text(),
+  );
+  await settled(() => h.subscriptions() === 2);
+  expect(h.subscriptions()).toBe(2);
+  h.release();
+  const [wholeBody, changesBody] = await Promise.all([whole, changes]);
+
+  const snapshots = messagesOf(wholeBody);
+  expect(new Set(snapshots.map((message) => message.event))).toEqual(
+    new Set(["snapshot"]),
+  );
+  const [first, ...rest] = messagesOf(changesBody);
+  expect(first?.event).toBe("snapshot");
+  expect(rest.length).toBeGreaterThan(0);
+  expect(new Set(rest.map((message) => message.event))).toEqual(
+    new Set(["delta"]),
+  );
+
+  let job = JSON.parse(first?.data ?? "") as CouncilServiceJob;
+  let eventsSent = job.events.length;
+  const rebuilt = [job];
+  for (const message of rest) {
+    const delta = JSON.parse(message.data) as CouncilJobDelta;
+    eventsSent += delta.events.length;
+    job = applyCouncilJobDelta(job, delta);
+    rebuilt.push(job);
+  }
+  expect(rebuilt).toEqual(
+    snapshots.map((message) => JSON.parse(message.data) as CouncilServiceJob),
+  );
+  expect(job.status).toBe("completed");
+  expect(eventsSent).toBe(job.events.length);
+  expect(Buffer.byteLength(changesBody)).toBeLessThan(
+    Buffer.byteLength(wholeBody) / 2,
+  );
+
+  // A run that has finished is one snapshot either way.
+  const replayed = messagesOf(
+    await (await fetch(`${h.url}/runs/deltas/events?deltas=1`)).text(),
+  );
+  expect(replayed.map((message) => message.event)).toEqual(["snapshot"]);
+}, 20000);
