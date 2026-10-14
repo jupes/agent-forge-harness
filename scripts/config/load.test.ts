@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
-import { loadConfig } from "./load";
+import { loadConfig, machineConfigFile } from "./load";
 import { withProcessHomes } from "./testing";
 
 function sandbox() {
@@ -272,12 +272,14 @@ describe("loadConfig: the machine file follows AGENT_FORGE_HOME", () => {
 
   test("with AGENT_FORGE_HOME unset or blank, the machine file is .agent-forge/config.toml under the OS home", () => {
     for (const forgeHome of [undefined, "  "]) {
-      const s = sandbox();
-      writeFileSync(s.userFile, '[workflow]\ndefault_crew = "claude-master"\n');
-      const { files } = withProcessHomes(forgeHome, s.home, () =>
-        loadConfig({ harnessRoot: s.harness, env: {} }),
+      // Under Bun on Linux the OS home does not follow a variable changed at
+      // runtime, so the path is compared, and nothing is written there.
+      const [file, osHome] = withProcessHomes(
+        forgeHome,
+        sandbox().home,
+        () => [machineConfigFile({}), homedir()] as const,
       );
-      expect(files).toEqual([s.userFile]);
+      expect(file).toBe(join(osHome, ".agent-forge", "config.toml"));
     }
   });
 });

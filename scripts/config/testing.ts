@@ -7,9 +7,14 @@ import { homeVariable } from "../ledger/isolation-probe";
 /**
  * Run `body` with this process's `AGENT_FORGE_HOME` and OS home variable
  * pointed at scratch directories, then put both back. `forgeHome` undefined
- * unsets it. The OS home moves too, so a loader that did not honour
- * `AGENT_FORGE_HOME` would read or write the scratch one, never the real user
- * file. Synchronous only: nothing else may run while the variables are moved.
+ * unsets it. Synchronous only: nothing else may run while the variables are
+ * moved.
+ *
+ * Moving the OS home variable is a safety net that holds on Windows only:
+ * there `os.homedir()` follows `USERPROFILE` as changed at runtime, so a loader
+ * that did not honour `AGENT_FORGE_HOME` reads or writes the scratch home.
+ * Under Bun on Linux `os.homedir()` does not follow a runtime change of
+ * `HOME`. A test must therefore never rely on the OS home having moved.
  */
 export function withProcessHomes<T>(
   forgeHome: string | undefined,

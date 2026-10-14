@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { runConfigCli } from "./cli";
+import { machineConfigFile } from "./load";
 import { withProcessHomes } from "./testing";
 
 function setup() {
@@ -137,13 +138,19 @@ describe("forge:config set", () => {
     mkdirSync(opts.harnessRoot);
     const file = join(forgeHome, "config.toml");
 
-    const [set, show] = withProcessHomes(forgeHome, osHome, () => [
-      runConfigCli(
-        ["set", "workflow.default_crew", "claude-master", "--user", "--json"],
-        opts,
-      ),
-      runConfigCli(["show", "--json"], opts),
-    ]);
+    const [set, show] = withProcessHomes(forgeHome, osHome, () => {
+      // Before anything is written: if the machine file were not in the moved
+      // home, the set below could write the real user file (the OS home does
+      // not move under Bun on Linux).
+      expect(machineConfigFile({})).toBe(file);
+      return [
+        runConfigCli(
+          ["set", "workflow.default_crew", "claude-master", "--user", "--json"],
+          opts,
+        ),
+        runConfigCli(["show", "--json"], opts),
+      ];
+    });
     expect(JSON.parse(set?.stdout ?? "")).toMatchObject({
       ok: true,
       data: { file, created: true },
