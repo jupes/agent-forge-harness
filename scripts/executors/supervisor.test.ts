@@ -86,7 +86,7 @@ async function endParent(
   }
 }
 
-describe("supervise: the parent-exit hook, run in a process of its own", () => {
+describe("supervise: the harness process ends while it supervises a provider (run in a process of its own)", () => {
   test("a harness process that calls process.exit while it supervises a provider leaves neither the provider nor the provider's own child running", async () => {
     const ended = await endParent((parent) => {
       parent.stdin.write("exit");
@@ -109,6 +109,16 @@ describe("supervise: the parent-exit hook, run in a process of its own", () => {
       providerGone: true,
       providerChildGone: true,
     });
+  });
+
+  // No exit hook of the harness runs here: the tree is ended by what
+  // `supervise` set up when it started the provider (`tree-guard.ts`).
+  test("a harness process killed outright (SIGKILL; TerminateProcess on Windows) while it supervises a provider leaves neither the provider nor the provider's own child running", async () => {
+    const ended = await endParent((parent) => parent.kill("SIGKILL"));
+    expect({
+      providerGone: ended.providerGone,
+      providerChildGone: ended.providerChildGone,
+    }).toEqual({ providerGone: true, providerChildGone: true });
   });
 
   // On Windows a signal sent to another process ends it outright: no handler
@@ -146,6 +156,27 @@ describe("supervise", () => {
     expect(ra.exitCode).not.toBe(0);
     expect(rb.exitCode).not.toBe(0);
     expect(liveChildCount()).toBe(0);
+  });
+
+  test("a provider that exits on its own leaves the child it started running: its tree guard is stood down without ending anything", async () => {
+    let childPid: number | undefined;
+    const provider = supervise({
+      command: [process.execPath, FAKE, "--fake-mode", "orphan"],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: (line) => {
+        childPid = (JSON.parse(line) as { childPid: number }).childPid;
+      },
+    });
+    try {
+      expect((await provider.done).exitCode).toBe(0);
+      if (childPid === undefined) throw new Error("the fake printed no pid");
+      // Time for anything set off by the provider's exit to have ended it.
+      await Bun.sleep(500);
+      expect(running(childPid)).toBe(true);
+    } finally {
+      if (childPid !== undefined && running(childPid)) killTree(childPid);
+    }
   });
 
   test("stop() marks the result stopped", async () => {
