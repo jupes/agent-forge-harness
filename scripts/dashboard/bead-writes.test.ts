@@ -398,10 +398,15 @@ describe("whether Create may be pressed", () => {
     );
   });
 
-  test("with another repo named: no, because Create files in this checkout's tracker", () => {
+  test("with another repo named: no, and the reason says Create sends the title without the Repo", () => {
     expect(
       createState({ ...live, labels: "", repo: "./repos/elsewhere" }),
-    ).toEqual({ enabled: false, reason: expect.stringContaining("Repo") });
+    ).toEqual({
+      enabled: false,
+      reason: expect.stringContaining(
+        "Create sends the title as typed, without the Repo.",
+      ),
+    });
   });
 
   test("with no control plane: no, with that reason first", () => {

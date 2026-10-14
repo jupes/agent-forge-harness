@@ -1,4 +1,5 @@
 import {
+  acceptanceText,
   BEAD_PRIORITIES,
   BEAD_TYPES,
   buildBdCreateCommand,
@@ -35,15 +36,6 @@ type ModalState =
 
 const DEFAULT_TYPE = "task";
 const DEFAULT_PRIORITY = "P2";
-
-/** The acceptance criteria as one text: a line each, blank lines dropped. */
-function acceptanceText(lines: string): string {
-  return lines
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
-}
 
 export function BeadBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
@@ -299,7 +291,7 @@ export function BeadBuilderIsland() {
           Describe the bead you want to file. <strong>Create bead</strong> files
           it in this checkout's tracker through the local control plane and
           shows the new id. <strong>Build command &amp; copy</strong> gives you
-          a <code>bd create</code> line to paste into a terminal instead.
+          a <code>bd create</code> command to paste into a terminal instead.
         </p>
 
         <form
@@ -391,7 +383,7 @@ export function BeadBuilderIsland() {
             <Field
               label="Repo"
               id="bb-repo"
-              hint="`.` for the harness root; ./repos/<name> for a registered sub-repo. Copied command only."
+              hint="`.` for the harness itself. For a sub-repo, its name: the copied command starts the title with [<name>] and passes no --repo, since `.` is the only repository bd has registered. Copied command only."
             >
               <Input
                 id="bb-repo"
