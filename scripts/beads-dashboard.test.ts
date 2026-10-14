@@ -128,7 +128,7 @@ describe("the Repo column: the repository an issue shows", () => {
   test("an issue labelled repo:rag-chat shows rag-chat; an unlabeled issue shows the host prefix", () => {
     const labelled = normalizeBdExportRow(
       row("agent-forge-harness-0im.3", "Label names the repository", {
-        labels: ["dnd", "repo:rag-chat"],
+        labels: ["area", "repo:rag-chat"],
       }),
     );
     const unlabeled = normalizeBdExportRow(

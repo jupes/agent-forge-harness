@@ -43,10 +43,10 @@ function row(
 }
 
 const ROWS = [
-  row("0im", "D&D epic"),
-  row("0im.1", "Child", { parent: "0im" }),
-  row("a1", "[game-guide-ai] Login"),
-  row("a2", "Labelled", { labels: ["repo:rag-chat"] }),
+  row("e10", "API epic"),
+  row("e10.1", "Child", { parent: "e10" }),
+  row("a1", "[my-frontend] Login"),
+  row("a2", "Labelled", { labels: ["repo:my-api"] }),
   row("a3", "[dashboard] Harness work"),
 ];
 
@@ -58,11 +58,11 @@ function checkout(fallbackRows?: BdExportRow[]): string {
   mkdirSync(join(dir, ".beads"));
   writeFileSync(
     join(dir, "repos", "repos.json"),
-    JSON.stringify({ repos: [{ name: "game-guide-ai" }] }),
+    JSON.stringify({ repos: [{ name: "my-frontend" }] }),
   );
   writeFileSync(
     join(dir, "repos", "issue-repos.json"),
-    JSON.stringify({ issues: { [`${H}-0im`]: "rag-chat" } }),
+    JSON.stringify({ issues: { [`${H}-e10`]: "my-api" } }),
   );
   if (fallbackRows)
     writeFileSync(
@@ -94,25 +94,30 @@ function fakeBd(
 describe("planRepoLabels", () => {
   test("plans a repo: label for each issue whose repository comes from the map, a title prefix or a parent, and for no other", () => {
     const plan = planRepoLabels(ROWS, {
-      knownRepos: ["game-guide-ai"],
-      map: { issues: { [`${H}-0im`]: "rag-chat" }, titleTags: {} },
+      knownRepos: ["my-frontend"],
+      map: { issues: { [`${H}-e10`]: "my-api" }, titleTags: {} },
     });
     expect(plan.add.map((a) => [a.id, a.repo, a.from])).toEqual([
-      [`${H}-0im`, "rag-chat", "map"],
-      [`${H}-0im.1`, "rag-chat", "parent"],
-      [`${H}-a1`, "game-guide-ai", "title"],
+      [`${H}-e10`, "my-api", "map"],
+      [`${H}-e10.1`, "my-api", "parent"],
+      [`${H}-a1`, "my-frontend", "title"],
     ]);
     expect(plan.conflicts).toEqual([]);
   });
 
   test("an issue whose repo: label differs from its own map entry is a conflict and gets no label", () => {
     const plan = planRepoLabels(
-      [row("a2", "Labelled", { labels: ["repo:rag-chat"] })],
-      { map: { issues: { [`${H}-a2`]: "skills" }, titleTags: {} } },
+      [row("a2", "Labelled", { labels: ["repo:my-api"] })],
+      { map: { issues: { [`${H}-a2`]: "docs-site" }, titleTags: {} } },
     );
     expect(plan.add).toEqual([]);
     expect(plan.conflicts).toEqual([
-      { id: `${H}-a2`, title: "Labelled", label: "rag-chat", mapped: "skills" },
+      {
+        id: `${H}-a2`,
+        title: "Labelled",
+        label: "my-api",
+        mapped: "docs-site",
+      },
     ]);
   });
 });
@@ -132,9 +137,9 @@ describe("backfillRepoLabels", () => {
     expect(result.ok).toBe(true);
     expect(result.data?.applied).toEqual([]);
     expect(result.data?.commands).toEqual([
-      `bd update ${H}-0im --add-label repo:rag-chat`,
-      `bd update ${H}-0im.1 --add-label repo:rag-chat`,
-      `bd update ${H}-a1 --add-label repo:game-guide-ai`,
+      `bd update ${H}-e10 --add-label repo:my-api`,
+      `bd update ${H}-e10.1 --add-label repo:my-api`,
+      `bd update ${H}-a1 --add-label repo:my-frontend`,
     ]);
   });
 
@@ -150,12 +155,12 @@ describe("backfillRepoLabels", () => {
 
     expect(bd.calls).toEqual([
       ["export", "--no-memories"],
-      ["update", `${H}-0im`, "--add-label", "repo:rag-chat"],
-      ["update", `${H}-0im.1`, "--add-label", "repo:rag-chat"],
-      ["update", `${H}-a1`, "--add-label", "repo:game-guide-ai"],
+      ["update", `${H}-e10`, "--add-label", "repo:my-api"],
+      ["update", `${H}-e10.1`, "--add-label", "repo:my-api"],
+      ["update", `${H}-a1`, "--add-label", "repo:my-frontend"],
     ]);
     expect(result.ok).toBe(true);
-    expect(result.data?.applied).toEqual([`${H}-0im`, `${H}-0im.1`, `${H}-a1`]);
+    expect(result.data?.applied).toEqual([`${H}-e10`, `${H}-e10.1`, `${H}-a1`]);
   });
 
   test("with apply and only the fallback file to read, it refuses and writes nothing", async () => {
@@ -196,7 +201,7 @@ describe("backfillRepoLabels", () => {
     const bd = fakeBd((args) => {
       if (args[0] === "export")
         return `${ROWS.map((r) => JSON.stringify(r)).join("\n")}\n`;
-      return args[1] === `${H}-0im.1` ? new Error("locked") : "";
+      return args[1] === `${H}-e10.1` ? new Error("locked") : "";
     });
 
     const result = await backfillRepoLabels({
@@ -207,9 +212,9 @@ describe("backfillRepoLabels", () => {
 
     expect(bd.calls).toHaveLength(4);
     expect(result.ok).toBe(false);
-    expect(result.data?.applied).toEqual([`${H}-0im`, `${H}-a1`]);
+    expect(result.data?.applied).toEqual([`${H}-e10`, `${H}-a1`]);
     expect(result.data?.failed).toEqual([
-      { id: `${H}-0im.1`, error: "locked" },
+      { id: `${H}-e10.1`, error: "locked" },
     ]);
   });
 });

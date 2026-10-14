@@ -31,13 +31,13 @@ describe("parseIssueRepoMap", () => {
   test("reads the issues and title tags", () => {
     const { map, warnings } = parseIssueRepoMap(
       JSON.stringify({
-        issues: { "agent-forge-harness-0im": "rag-chat" },
-        titleTags: { dnd: "rag-chat" },
+        issues: { "agent-forge-harness-e10": "my-api" },
+        titleTags: { api: "my-api" },
       }),
     );
     expect(map).toEqual({
-      issues: { "agent-forge-harness-0im": "rag-chat" },
-      titleTags: { dnd: "rag-chat" },
+      issues: { "agent-forge-harness-e10": "my-api" },
+      titleTags: { api: "my-api" },
     });
     expect(warnings).toEqual([]);
   });
@@ -52,15 +52,15 @@ describe("parseIssueRepoMap", () => {
   test("an entry whose repository is not a non-empty string is left out, and the warning names it", () => {
     const { map, warnings } = parseIssueRepoMap(
       JSON.stringify({
-        issues: { a: "rag-chat", b: 7, c: "  " },
-        titleTags: { gga: ["game-guide-ai"] },
+        issues: { a: "my-api", b: 7, c: "  " },
+        titleTags: { fe: ["my-frontend"] },
       }),
     );
-    expect(map).toEqual({ issues: { a: "rag-chat" }, titleTags: {} });
+    expect(map).toEqual({ issues: { a: "my-api" }, titleTags: {} });
     expect(warnings).toEqual([
       'repos/issue-repos.json: issues["b"] is not a repository name; left out',
       'repos/issue-repos.json: issues["c"] is not a repository name; left out',
-      'repos/issue-repos.json: titleTags["gga"] is not a repository name; left out',
+      'repos/issue-repos.json: titleTags["fe"] is not a repository name; left out',
     ]);
   });
 
@@ -77,7 +77,7 @@ describe("parseIssueRepoMap", () => {
 
   test("a top-level key other than issues and titleTags is warned about", () => {
     const { warnings } = parseIssueRepoMap(
-      JSON.stringify({ issues: {}, titletags: { dnd: "rag-chat" } }),
+      JSON.stringify({ issues: {}, titletags: { api: "my-api" } }),
     );
     expect(warnings).toEqual([
       'repos/issue-repos.json: unknown key "titletags" ignored (the keys are "issues" and "titleTags")',
@@ -90,19 +90,24 @@ describe("readRepoContext", () => {
     const root = checkout({
       "repos/repos.json": JSON.stringify({
         repos: [
-          { name: "game-guide-ai", url: "u", defaultBranch: "main" },
-          { name: "skills", url: "u", defaultBranch: "main", archived: true },
+          { name: "my-frontend", url: "u", defaultBranch: "main" },
+          {
+            name: "docs-site",
+            url: "u",
+            defaultBranch: "main",
+            archived: true,
+          },
         ],
       }),
       "repos/issue-repos.json": JSON.stringify({
-        issues: { "agent-forge-harness-0im": "rag-chat" },
+        issues: { "agent-forge-harness-e10": "my-api" },
       }),
     });
     const { context, warnings } = readRepoContext(root);
     expect(context).toEqual({
-      knownRepos: ["game-guide-ai", "skills"],
+      knownRepos: ["my-frontend", "docs-site"],
       map: {
-        issues: { "agent-forge-harness-0im": "rag-chat" },
+        issues: { "agent-forge-harness-e10": "my-api" },
         titleTags: {},
       },
     });
@@ -117,8 +122,10 @@ describe("readRepoContext", () => {
 
   test("from a linked worktree, both files are read in the main checkout", () => {
     const main = checkout({
-      "repos/repos.json": JSON.stringify({ repos: [{ name: "skills" }] }),
-      "repos/issue-repos.json": JSON.stringify({ titleTags: { sk: "skills" } }),
+      "repos/repos.json": JSON.stringify({ repos: [{ name: "docs-site" }] }),
+      "repos/issue-repos.json": JSON.stringify({
+        titleTags: { ds: "docs-site" },
+      }),
     });
     mkdirSync(join(main, ".git", "worktrees", "w1"), { recursive: true });
     const worktree = checkout({
@@ -126,8 +133,8 @@ describe("readRepoContext", () => {
     });
     const { context } = readRepoContext(worktree);
     expect(context).toEqual({
-      knownRepos: ["skills"],
-      map: { issues: {}, titleTags: { sk: "skills" } },
+      knownRepos: ["docs-site"],
+      map: { issues: {}, titleTags: { ds: "docs-site" } },
     });
   });
 });

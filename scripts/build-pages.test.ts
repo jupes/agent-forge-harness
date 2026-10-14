@@ -259,26 +259,26 @@ describe("buildPages: the Repo column", () => {
     mkdirSync(join(cwd, "repos"));
     writeFileSync(
       join(cwd, "repos", "repos.json"),
-      JSON.stringify({ repos: [{ name: "game-guide-ai" }] }),
+      JSON.stringify({ repos: [{ name: "my-frontend" }] }),
     );
     writeFileSync(
       join(cwd, "repos", "issue-repos.json"),
-      JSON.stringify({ issues: { [`${H}-0im`]: "rag-chat" } }),
+      JSON.stringify({ issues: { [`${H}-e10`]: "my-api" } }),
     );
     const bd = fakeBd(() =>
       jsonl([
-        exportRow(`${H}-0im`, [], { title: "D&D epic" }),
-        exportRow(`${H}-0im.1`, [], {
+        exportRow(`${H}-e10`, [], { title: "API epic" }),
+        exportRow(`${H}-e10.1`, [], {
           title: "Child",
           dependencies: [
             {
-              issue_id: `${H}-0im.1`,
-              depends_on_id: `${H}-0im`,
+              issue_id: `${H}-e10.1`,
+              depends_on_id: `${H}-e10`,
               type: "parent-child",
             },
           ],
         }),
-        exportRow(`${H}-a1`, [], { title: "[game-guide-ai] Login" }),
+        exportRow(`${H}-a1`, [], { title: "[my-frontend] Login" }),
         exportRow(`${H}-a2`, [], { title: "[dashboard] Harness work" }),
       ]),
     );
@@ -286,9 +286,9 @@ describe("buildPages: the Repo column", () => {
     await buildPages({ cwd, runBd: bd.run, ...quiet });
 
     expect(written(cwd).issues.map((issue) => [issue.id, issue.repo])).toEqual([
-      [`${H}-0im`, "rag-chat"],
-      [`${H}-0im.1`, "rag-chat"],
-      [`${H}-a1`, "game-guide-ai"],
+      [`${H}-e10`, "my-api"],
+      [`${H}-e10.1`, "my-api"],
+      [`${H}-a1`, "my-frontend"],
       [`${H}-a2`, H],
     ]);
   });
