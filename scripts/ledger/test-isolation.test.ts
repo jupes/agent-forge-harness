@@ -23,11 +23,13 @@
  * child that writes somewhere other than the default home.
  */
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
 import { importGraph } from "../import-graph";
+import { ISOLATION_HOME } from "./isolation-probe";
 import { ledgerHome, ledgerPath } from "./paths";
 
 const REPO = resolve(import.meta.dir, "..", "..");
@@ -126,6 +128,82 @@ function spawningTestFiles(): string[] {
     .sort();
 }
 
+interface Rerun {
+  exitCode: number;
+  /** The end of the run's output, for a failure message. */
+  tail: string;
+  /** What `<scratch>/.agent-forge` holds after the run, or null when it was never created. */
+  home: string[] | null;
+  /** The session ids of the events in that directory's ledger, if it has one. */
+  sessions: string[];
+}
+
+/** The distinct session ids in a ledger file; none when there is no file. */
+function sessionsIn(path: string): string[] {
+  if (!existsSync(path)) return [];
+  const db = new Database(path, { readonly: true });
+  try {
+    return db
+      .query<{ session: string | null }, []>(
+        "SELECT DISTINCT session_id AS session FROM events ORDER BY session_id",
+      )
+      .all()
+      .flatMap((row) => (row.session === null ? [] : [row.session]));
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Runs `bun test` on the given files from the repo root, with the OS home
+ * (`HOME` and `USERPROFILE`) pointed at a scratch directory and no
+ * `AGENT_FORGE_HOME`, and reports what the run left in
+ * `<scratch>/.agent-forge`. `ISOLATION_HOME` names that directory, so the
+ * preload installs the spawn probe (`isolation-probe.ts`): a child started
+ * with an environment that names no home is given it as `AGENT_FORGE_HOME`.
+ */
+async function rerunWithScratchHome(files: string[]): Promise<Rerun> {
+  const scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
+  try {
+    const home = join(scratch, ".agent-forge");
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined || key === "AGENT_FORGE_HOME") continue;
+      env[key] = value;
+    }
+    env.HOME = scratch;
+    env.USERPROFILE = scratch;
+    env[ISOLATION_HOME] = home;
+
+    const child = Bun.spawn([process.execPath, "test", ...files], {
+      cwd: REPO,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    const exitCode = await child.exited;
+    return {
+      exitCode,
+      tail: `${stdout}${stderr}`.slice(-1500),
+      home: existsSync(home) ? readdirSync(home).sort() : null,
+      sessions: sessionsIn(join(home, "ledger.db")),
+    };
+  } finally {
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      // A file a child still holds on Windows: the OS temp directory reclaims it.
+    }
+  }
+}
+
+/** A test file that starts a child with only PATH in its environment and runs a ledger emitter there. */
+const HOME_LESS_CHILD = "./scripts/ledger/fixtures/home-less-child.ts";
+
 describe("the test suite and the ledger under the user's home", () => {
   test("in the test process the default ledger is a temp directory, not the OS home", () => {
     const home = resolve(ledgerHome());
@@ -156,9 +234,10 @@ describe("the test suite and the ledger under the user's home", () => {
     expect(files).not.toContain("scripts/secret-patterns.test.ts");
   });
 
-  test("every test file that can start a process, re-run with the OS home pointed at a scratch directory, leaves no .agent-forge there", async () => {
+  test("every test file that can start a process, re-run with the OS home pointed at a scratch directory and a child that names no home given <scratch>/.agent-forge as AGENT_FORGE_HOME, leaves no .agent-forge there", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
     try {
+      const home = join(scratch, ".agent-forge");
       const env: Record<string, string> = {};
       for (const [key, value] of Object.entries(process.env)) {
         if (value === undefined || key === "AGENT_FORGE_HOME") continue;
@@ -166,11 +245,12 @@ describe("the test suite and the ledger under the user's home", () => {
       }
       env.HOME = scratch;
       env.USERPROFILE = scratch;
+      env[ISOLATION_HOME] = home;
 
       const files = spawningTestFiles();
       // A failing inner run could have stopped short of the spawn it guards.
       expect(await rerunEach(files, env)).toEqual([]);
-      expect(existsSync(join(scratch, ".agent-forge"))).toBe(false);
+      expect(existsSync(home)).toBe(false);
     } finally {
       try {
         rmSync(scratch, { recursive: true, force: true });
@@ -179,4 +259,16 @@ describe("the test suite and the ledger under the user's home", () => {
       }
     }
   }, 180_000);
+
+  test("a test file that starts children with no home variable and no AGENT_FORGE_HOME, through Bun.spawn and through node:child_process, and runs an emitter in each, is caught by the re-run: both emitters' events land in the scratch .agent-forge", async () => {
+    const { exitCode, tail, home, sessions } = await rerunWithScratchHome([
+      HOME_LESS_CHILD,
+    ]);
+    expect({ exitCode, tail, home: home !== null, sessions }).toEqual({
+      exitCode: 0,
+      tail: expect.any(String),
+      home: true,
+      sessions: ["home-less-bun-spawn", "home-less-child-process"],
+    });
+  }, 60_000);
 });

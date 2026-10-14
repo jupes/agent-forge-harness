@@ -14,9 +14,14 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeLedger } from "./db";
+import { ISOLATION_HOME, installIsolationProbe } from "./isolation-probe";
 
 const home = mkdtempSync(join(tmpdir(), "agent-forge test home "));
 process.env.AGENT_FORGE_HOME = home;
+
+// Only in the isolation guard's re-run: see `isolation-probe.ts`.
+const isolationHome = process.env[ISOLATION_HOME];
+if (isolationHome !== undefined) installIsolationProbe(isolationHome);
 
 afterAll(() => {
   closeLedger();
