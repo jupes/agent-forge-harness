@@ -4,9 +4,10 @@ Explores a repo's codebase and synthesizes a knowledge YAML file. Keeps agents p
 
 ## Usage
 ```
-/sync-knowledge my-api           # Sync one repo
-/sync-knowledge --all            # Sync all repos in repos.json
-/sync-knowledge                  # Sync current repo (if in a sub-repo)
+/sync-knowledge my-api                   # Sync one repo (an archived one too)
+/sync-knowledge --all                    # Sync all repos in repos.json except archived ones
+/sync-knowledge --all --include-archived # Sync all repos in repos.json, archived ones included
+/sync-knowledge                          # Sync current repo (if in a sub-repo)
 ```
 
 ---
@@ -24,6 +25,10 @@ If not cloned: `bun run repo init --human` first.
 ```bash
 cat repos/repos.json   # Get the full list
 ```
+
+Leave out every entry with `"archived": true` unless `--include-archived` was passed, and name the
+ones left out in the report. An archived repository named on its own (`/sync-knowledge <name>`) is
+synced like any other.
 
 Process each repo sequentially (not in parallel — each is a full codebase exploration).
 
@@ -176,6 +181,7 @@ If `--all`:
   - knowledge/repos/my-api.yaml       (187 lines)
   - knowledge/repos/my-frontend.yaml  (212 lines)
   - knowledge/repos/my-infra.yaml     (94 lines)
+Skipped (archived): old-docs — /sync-knowledge old-docs or --include-archived syncs it
 ```
 
 ---

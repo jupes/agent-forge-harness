@@ -31,6 +31,9 @@ If already exists: report and stop.
 
 Add: `{"name":"<name>","url":"<url>","defaultBranch":"main"}`
 
+For a dormant or reference-only repository, add `"archived": true`: it stays registered, and
+all-repos runs skip it unless it is named (see the syncing-repos skill, *Archived repos*).
+
 ### 4. Clone
 
 ```bash
