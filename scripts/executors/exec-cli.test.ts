@@ -23,6 +23,7 @@ import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { runDoctor } from "./doctor-cli";
 import { type ExecDeps, runExec } from "./exec-cli";
+import { liveChildCount } from "./supervisor";
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const fake = (provider: string, mode = "ok") => [
@@ -376,6 +377,89 @@ describe("forge:exec", () => {
       ledgerError: null,
       ledger: null,
     });
+  });
+
+  test("the usage session.ended carried is in the result: the provider's counts and its cost", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-usage", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude") },
+    );
+    expect(out.code).toBe(0);
+    expect((out.body.data as Record<string, unknown>).usage).toEqual({
+      inputTokens: 12,
+      outputTokens: 56,
+      cacheReadInputTokens: 4000,
+      cacheCreationInputTokens: 300,
+      costUsd: 0.0125,
+    });
+  });
+
+  test("a run that reports no usage has none in the result", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-no-usage", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude", "crash") },
+    );
+    expect(out.code).toBe(2);
+    expect((out.body.data as Record<string, unknown>).usage).toBeNull();
+  });
+
+  test("aborting the signal stops a running child: the run ends stopped, session.ended names the abort's reason, and no supervised child is left", async () => {
+    const { worktree, ledger, deps } = setup();
+    const controller = new AbortController();
+    const running = runExec(
+      ["--bead", "b-abort", "--worktree", worktree, "--prompt", "x"],
+      {
+        ...deps,
+        command: fake("claude", "hang"),
+        signal: controller.signal,
+      },
+    );
+    // The child has started once its session is in the ledger.
+    const deadline = Date.now() + 4000;
+    while (
+      queryEvents({ beadId: "b-abort" }, { path: ledger }).length === 0 &&
+      Date.now() < deadline
+    )
+      await Bun.sleep(20);
+    expect(liveChildCount()).toBe(1);
+    controller.abort("shift stopped");
+    const out = await running;
+    expect(out.code).toBe(2);
+    expect(out.body.data).toMatchObject({ stopped: true, timedOut: false });
+    expect(out.body.error).toBe("stopped: shift stopped");
+    expect(liveChildCount()).toBe(0);
+    const ended = queryEvents(
+      { beadId: "b-abort", kinds: ["session.ended"] },
+      { path: ledger },
+    );
+    expect(ended.map((event) => event.payload)).toMatchObject([
+      { reason: "stopped: shift stopped" },
+    ]);
+  }, 10_000);
+
+  test("a signal aborted before the run starts the child: nothing is spawned and nothing is written", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const dump = join(root, "abort-dump.json");
+    const controller = new AbortController();
+    controller.abort("shift stopped");
+    const out = await runExec(
+      ["--bead", "b-pre-abort", "--worktree", worktree, "--prompt", "x"],
+      {
+        ...deps,
+        command: [...fake("claude"), "--fake-dump", dump],
+        signal: controller.signal,
+      },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toBe(
+      "stopped before the provider was started: shift stopped",
+    );
+    expect(existsSync(dump)).toBe(false);
+    expect(queryEvents({ beadId: "b-pre-abort" }, { path: ledger })).toEqual(
+      [],
+    );
   });
 
   test("a sink that throws does not kill the child: the run finishes and the failure is reported", async () => {

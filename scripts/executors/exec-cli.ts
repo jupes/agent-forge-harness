@@ -53,6 +53,7 @@ import {
   BENCH_NAMES,
   type BenchName,
   type LedgerEventInput,
+  type ProviderUsage,
 } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
@@ -89,6 +90,19 @@ export interface ExecDeps {
   ledgerPath?: string;
   /** Replaces the ledger sink altogether; no model is cached then. */
   sink?: EventSink;
+  /**
+   * Stops the run: aborted before the child is spawned, nothing is spawned or
+   * written; aborted while it runs, the child's tree is killed and the run
+   * ends `stopped: <reason>` (the abort's reason, when it is a string).
+   */
+  signal?: AbortSignal;
+}
+
+/** An abort's reason as `session.ended` and the error name it: a short fixed text. */
+function abortReason(signal: AbortSignal): string {
+  return typeof signal.reason === "string" && signal.reason.trim() !== ""
+    ? signal.reason.trim().slice(0, 200)
+    : "aborted";
 }
 
 export interface ExecOutcome {
@@ -248,6 +262,13 @@ export async function runExec(
     return failure("--timeout-ms must be a positive number");
   }
 
+  // Before anything is written: a run stopped before it started leaves nothing.
+  if (deps.signal?.aborted) {
+    return failure(
+      `stopped before the provider was started: ${abortReason(deps.signal)}`,
+    );
+  }
+
   const correlated = correlateChild({
     worktree: resolve(worktree),
     beadId,
@@ -299,19 +320,39 @@ export async function runExec(
     return failure(error instanceof Error ? error.message : String(error));
   }
 
+  // An abort stops the child: the supervisor kills its tree. The handle's
+  // `done` settles once it has, so the loop below ends as for any exit.
+  const { signal } = deps;
+  const onAbort = () => {
+    if (signal) void handle.stop(abortReason(signal));
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  // Aborted between the check above and the spawn: stop it now.
+  if (signal?.aborted) onAbort();
+
   // The provider's outcome decides the result. An event the ledger did not
   // take is counted and reported, and the child is left to finish.
   let events = 0;
   let recorded = 0;
   let ledgerError: string | null = null;
-  for await (const event of handle.events) {
-    events++;
-    const stored = await store(sink, event);
-    if (stored.ok) recorded++;
-    else ledgerError ??= stored.error;
+  let usage: ProviderUsage | null = null;
+  try {
+    for await (const event of handle.events) {
+      events++;
+      if (event.kind === "session.ended" && event.payload.usage)
+        usage = event.payload.usage;
+      const stored = await store(sink, event);
+      if (stored.ok) recorded++;
+      else ledgerError ??= stored.error;
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
   const result = await handle.done;
-  const runError = runFailure(result);
+  const runError =
+    result.stopped && signal?.aborted
+      ? `stopped: ${abortReason(signal)}`
+      : runFailure(result);
   const ok = runError === null;
   return {
     code: ok ? 0 : 2,
@@ -329,6 +370,8 @@ export async function runExec(
         ledger: deps.sink ? null : (deps.ledgerPath ?? ledgerPath()),
         exitCode: result.exitCode,
         timedOut: result.timedOut,
+        stopped: result.stopped,
+        usage,
         providerErrors: result.providerErrors,
         stderr: result.stderr,
         correlation: correlated.correlation,
