@@ -113,12 +113,18 @@ Three things follow from a run being able to move from one issue to the next:
   mode a new run (`.claude/protocols/evaluation-verdict.md`, *Limits*).
 
 The ship step is where the gate runs through the correlation,
-`bun run quality-gate --correlation <pointer>` (`.claude/skills/forge-ship/SKILL.md`). That is for a
-run whose work is in a checkout of this harness. A run whose work is in another repository
-(`repos/<repo>`, or a worktree of one) still names its bead on every write, but the harness gate is
-not run for it: the gate runs this package's checks on the directory it is started in, so it would
-judge the harness and not the run's work. Such a run runs that repository's own checks and ends with
-no linked gate entry (`agent-forge-harness-g043`).
+`bun run quality-gate --correlation <pointer>` (`.claude/skills/forge-ship/SKILL.md`), for a run
+whose work is in a checkout of this harness.
+
+A run whose work is in another repository (`repos/<repo>`, or a worktree of one recorded with
+`--checkout`) names its bead on every write the same way. Its correlation is written in the run's
+checkout, so it is gated from this checkout with
+`bun run quality-gate --correlation <checkout>/<pointer>`.
+
+- The gate runs that repository's own checks: the `checks` list on its entry in `repos/repos.json`,
+  each in the run's checkout without a shell. Then it runs clean-tree and test-evidence there.
+- The gate entry is linked to the run and its issue.
+- A repository with no `checks` list is refused, and the refusal names the entry to fill in.
 
 ---
 

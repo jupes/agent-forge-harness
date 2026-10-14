@@ -116,11 +116,22 @@ git push origin <branch>
 - Strict verdict mode (`AGENT_FORGE_EVAL_VERDICT=strict`) is opt-in. When it is on, file the run's
   verdict with this pointer before the gate (`.claude/commands/ship.md`).
 
-**A run whose work is in another repository** (`repos/<repo>`, or a worktree of one) does not run
-the harness gate: it runs this package's checks on the directory it is started in, so it would judge
-the harness and not the run's work. Run that repository's own checks instead (its typecheck, lint
-and tests) and `git status --porcelain`, then pull and push there. Such a run has no linked gate
-entry, and strict completion cannot be reached for it (`agent-forge-harness-g043`).
+**A run whose work is in another repository** (`repos/<repo>`, or a worktree of one recorded with
+`--checkout`) is gated the same way, from this checkout, with that repository's own checks. Its
+correlation is in the run's checkout: join the `checkout` and the `pointer` the phase gate printed.
+
+```bash
+bun run quality-gate --correlation <checkout>/<pointer>   # from this checkout; must exit 0
+```
+
+- The gate runs the `checks` list on the repository's entry in `repos/repos.json`
+  ([[add-repo]] says how to write one), each in the run's checkout and without a shell. Then it runs
+  clean-tree and test-evidence there. The entry is linked to the run and its issue, and logged as
+  that checkout's.
+- A repository with no `checks` list is refused, and the refusal names the entry to fill in. So is
+  one that tracks files under `.tmp/work/run-correlations` or `.tmp/work/evaluations`.
+- In strict mode the run's verdict is read from the run's checkout, where `forge:verdict` filed it.
+- Then pull and push in that repository.
 
 The PR body MUST follow the canonical template — see [[pr-description]]. The ship report you just
 wrote is the source material: map its sections into the template (What Shipped → What Changed, the
@@ -176,8 +187,9 @@ Try it: <the single most representative command from the walkthrough>
 ## Exit Criteria
 
 - [ ] `reports/<slug>-ship.md` exists with before/after, Beads table, and a runnable walkthrough.
-- [ ] The quality gate passed through the run's correlation (for a run in another repository: that
-      repository's own checks); branch pushed; PR created with a [[pr-description]]-conformant body
+- [ ] The quality gate passed through the run's correlation (for a run in another repository: from
+      this checkout, with that repository's checks); branch pushed; PR created with a
+      [[pr-description]]-conformant body
       (`check-pr-body.ts` reports `ok: true`).
 - [ ] Every planned Beads task is closed or deferred-with-reason; epic/feature closed.
 - [ ] Forge state advanced to `ship` complete.
