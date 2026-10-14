@@ -211,6 +211,38 @@ export const LEGACY_GATE: GateRun = {
   forgeSlug: "design-system",
 };
 
+/**
+ * Earlier gate runs of the fixture run, newest first, as the API carries them
+ * after its newest: a linked pass for another bead, then an entry logged
+ * before entries were versioned, which failed.
+ */
+export const EARLIER_GATES: GateRun[] = [
+  {
+    ...GATE,
+    timestamp: "2026-09-10T18:30:00.000Z",
+    passed: true,
+    beadsIssueId: "demo-tokens",
+    checks: [
+      { name: "typecheck", passed: true, skipped: false, detail: null },
+      { name: "lint", passed: true, skipped: false, detail: null },
+    ],
+  },
+  {
+    ...LEGACY_GATE,
+    timestamp: "2026-09-10T09:15:00.000Z",
+    passed: false,
+    checks: [
+      {
+        name: "typecheck",
+        passed: false,
+        skipped: false,
+        detail: "error TS2322: Type 'string' is not assignable",
+      },
+      { name: "tests", passed: true, skipped: true, detail: "no test files" },
+    ],
+  },
+];
+
 /** One gated run, mid-implement. Runs are concurrent; the API returns a list. */
 const RUN: ForgeRunView = {
   slug: "design-system",
@@ -555,6 +587,8 @@ export interface ForgeRunStub {
   statuses?: Record<string, IssueStatus>;
   /** Replace the gate run; null means no run belongs to this checkout. */
   gate?: GateRun | null;
+  /** The fixture run's gate runs before its newest, newest first. */
+  earlierGates?: GateRun[];
   /** A newer gate run of this checkout that belongs to no run's card. */
   unattributedGate?: GateRun;
   /** Serve a checkout with no forge run at all, as a fresh clone has. */
@@ -599,7 +633,10 @@ export async function stubForgeRun(
         }
       : {
           ...FORGE.data,
-          runs: [{ ...RUN, gate }, ...(stub.extraRuns ?? [])],
+          runs: [
+            { ...RUN, gate, earlierGates: stub.earlierGates ?? [] },
+            ...(stub.extraRuns ?? []),
+          ],
           gate: newest,
           unattributedGate: stub.unattributedGate ?? null,
         };
