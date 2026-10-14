@@ -35,6 +35,8 @@ const adapters: Array<{
   smith: string;
   /** The usage the stand-in CLI's last line reports for this provider. */
   usage: Record<string, number>;
+  /** The arguments that carry a smith's effort: the flag the provider documents. */
+  effortArgs: (effort: string) => string[];
 }> = [
   {
     name: "claude",
@@ -47,6 +49,7 @@ const adapters: Array<{
       outputTokens: 56,
       costUsd: 0.0125,
     },
+    effortArgs: (effort) => ["--effort", effort],
   },
   {
     name: "codex",
@@ -59,6 +62,7 @@ const adapters: Array<{
       outputTokens: 90,
       reasoningOutputTokens: 40,
     },
+    effortArgs: (effort) => ["-c", `model_reasoning_effort=${effort}`],
   },
 ];
 
@@ -141,7 +145,12 @@ const attachAs = (id: string) => (root: string) => [
   join(root, "attach.json"),
 ];
 
-for (const { name, adapter, smith, usage } of adapters) {
+/** Whether `args` holds `items` next to each other, in order. */
+function holdsInOrder(args: readonly string[], items: readonly string[]) {
+  return args.some((_, at) => items.every((item, i) => args[at + i] === item));
+}
+
+for (const { name, adapter, smith, usage, effortArgs } of adapters) {
   describe(`${name} adapter contract`, () => {
     test("streams session.started, prompt.submitted, tool.called per tool, session.ended — all valid", async () => {
       const { events, result } = await run(adapter, name, smith, "ok");
@@ -333,6 +342,18 @@ for (const { name, adapter, smith, usage } of adapters) {
       expect(isAdapterChild(seen)).toBe(true);
     });
 
+    test(`the smith's model and effort reach the child's command line, the effort as ${effortArgs("<effort>").join(" ")}`, async () => {
+      const builtin = BUILTIN_SMITHS[smith] as SpawnRequest["smith"];
+      for (const effort of [builtin.effort, "xhigh"]) {
+        const { dump } = await run(adapter, name, smith, "ok", {
+          smith: { ...builtin, effort },
+        });
+        const argv = dump.argv as string[];
+        expect(holdsInOrder(argv, ["--model", builtin.model])).toBe(true);
+        expect(holdsInOrder(argv, effortArgs(effort))).toBe(true);
+      }
+    });
+
     test("never asks for dangerously-skip-permissions", async () => {
       const { dump } = await run(adapter, name, smith, "ok");
       expect(dump.argv.join(" ")).not.toContain("dangerously");
@@ -430,6 +451,30 @@ for (const { name, adapter, smith, usage } of adapters) {
       ]);
       expect(report).toMatchObject({ provider: name, found: true, ok: true });
       expect(report.version).toBe(`fake-${name} 0.0.1`);
+    });
+
+    test("doctor: an override whose program does not exist is found:false, ok:false, with a reason naming it — data, not a throw", async () => {
+      const missing = join(tmpdir(), "definitely-not-a-real-binary-xyz");
+      const report = await adapter.doctor([missing, "--some-flag"]);
+      expect(report).toEqual({
+        provider: name,
+        found: false,
+        ok: false,
+        reason: `${missing} not found`,
+      });
+    });
+
+    test("doctor: an override that is found but cannot run (its program starts, the command fails) is found:true, ok:false with a reason, not a throw", async () => {
+      const override = [
+        process.execPath,
+        join(tmpdir(), "no such script for forge doctor.ts"),
+      ];
+      const report = await adapter.doctor(override);
+      expect(report.provider).toBe(name);
+      expect(report.found).toBe(true);
+      expect(report.ok).toBe(false);
+      expect(report.reason).toMatch(/^version check exited [1-9]\d*$/);
+      expect(report.path).toBe(override.join(" "));
     });
   });
 }
