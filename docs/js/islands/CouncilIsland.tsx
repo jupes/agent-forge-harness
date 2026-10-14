@@ -1,5 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
-import type { CouncilServiceJob } from "../../../scripts/council/service";
+import type {
+  CouncilPreview,
+  CouncilServiceJob,
+} from "../../../scripts/council/service";
+import { type CouncilPreviewState, previewKey } from "../council-preview";
 import { EmptyState } from "../ds/EmptyState";
 import { operatorPost } from "../operator";
 import { CouncilHistory } from "./CouncilHistory";
@@ -13,26 +17,38 @@ import {
 } from "./CouncilSetup";
 
 const API = "/__agent-forge/council-api";
-async function request<T>(path: string, input?: unknown): Promise<T> {
-  // A request with a body starts or cancels a run: an operator action.
-  const response =
-    input === undefined
-      ? await fetch(`${API}${path}`)
-      : await operatorPost(`${API}${path}`, input);
-  const envelope = (await response.json()) as {
-    ok: boolean;
-    data: T;
-    error: string | null;
-  };
+/** The operator API's preview row: what a run would send, with nothing started. */
+const PREVIEW = "/__agent-forge/council/preview";
+
+async function dataOf<T>(response: Response): Promise<T> {
+  let envelope: { ok: boolean; data: T; error: string | null };
+  try {
+    envelope = (await response.json()) as typeof envelope;
+  } catch {
+    throw new Error("The control plane did not answer.");
+  }
   if (!response.ok || !envelope.ok)
     throw new Error(envelope.error || "The council request failed.");
   return envelope.data;
 }
 
+async function request<T>(path: string, input?: unknown): Promise<T> {
+  // A request with a body starts or cancels a run: an operator action.
+  return dataOf<T>(
+    input === undefined
+      ? await fetch(`${API}${path}`)
+      : await operatorPost(`${API}${path}`, input),
+  );
+}
+
+/** The source kinds a link may preselect (`?sourceType=…&source=…`). */
+const LINKED_KINDS = new Set(["plan", "bead"]);
+
 export function CouncilIsland() {
   const initial = new URLSearchParams(window.location.search);
+  const linked = initial.get("sourceType") ?? "";
   const [draft, setDraft] = useState<CouncilDraft>({
-    sourceType: initial.get("sourceType") === "plan" ? "plan" : "text",
+    sourceType: LINKED_KINDS.has(linked) ? linked : "text",
     source: initial.get("source") ?? "",
     profilePath: "",
     budget: "3",
@@ -45,6 +61,9 @@ export function CouncilIsland() {
   const [error, setError] = useState("");
   const [available, setAvailable] = useState<boolean | null>(null);
   const [starting, setStarting] = useState(false);
+  const [preview, setPreview] = useState<CouncilPreviewState>({
+    status: "idle",
+  });
   const profile = profiles.find((item) => item.path === profilePath);
   const active = job?.status === "running" || job?.status === "cancelling";
   const run = job?.run;
@@ -144,6 +163,28 @@ export function CouncilIsland() {
     }
   }
 
+  /**
+   * Ask the control plane what a run on this draft would send. The answer is
+   * kept with the draft it was asked for: once the draft changes, the setup
+   * shows it no longer and asks for another before the run can be sent.
+   */
+  async function runPreview(): Promise<void> {
+    const key = previewKey(draft);
+    setPreview({ status: "loading", key });
+    try {
+      const answer = await dataOf<CouncilPreview>(
+        await operatorPost(PREVIEW, { sourceType, source, redactSecrets }),
+      );
+      setPreview({ status: "ready", key, preview: answer });
+    } catch (reason) {
+      setPreview({
+        status: "failed",
+        key,
+        error: reason instanceof Error ? reason.message : String(reason),
+      });
+    }
+  }
+
   async function openRun(runId: string): Promise<void> {
     try {
       setJob(
@@ -194,12 +235,14 @@ export function CouncilIsland() {
           profiles={profiles}
           active={active}
           starting={starting}
+          preview={preview}
           onChange={(patch) => {
             setDraft((value) => ({ ...value, ...patch }));
             if (patch.profilePath !== undefined) setJob(null);
           }}
           onStart={start}
           onCancel={cancel}
+          onPreview={runPreview}
         />
         <CouncilMembers job={job} roster={roster} />
         {job ? (

@@ -1178,6 +1178,30 @@ form.is-submitting {
   justify-content: space-between;
 }
 
+/* What a run on a bead would send, listed before anything is sent. */
+.af-evidence-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.af-evidence-preview p {
+  margin: 0;
+}
+
+.af-evidence-listing {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-neutral-200);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
 .af-button-row {
   display: flex;
   gap: var(--space-2);
