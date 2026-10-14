@@ -250,6 +250,43 @@ export const loopbackExchange: Exchange = (request) =>
     );
   });
 
+// ── Proxies ─────────────────────────────────────────────────────────────────
+
+const PROXY_VARIABLES = ["HTTP_PROXY", "http_proxy"] as const;
+const NO_PROXY_VARIABLES = ["NO_PROXY", "no_proxy"] as const;
+
+/**
+ * The variable that would send a `fetch` or `node:http` request for
+ * `http://127.0.0.1` to a proxy, in a process of `runtime` started with `env`;
+ * null when none would. Measured on Windows (Bun 1.3.10, Node 25.8.2):
+ * `HTTP_PROXY` or `http_proxy` does, unless a `NO_PROXY` or `no_proxy` entry
+ * is `127.0.0.1` or `*` (`localhost`, `127.0.0.0/8` and an empty value do not
+ * exempt it); `HTTPS_PROXY` and `ALL_PROXY` are not used for it. Node uses
+ * none of them unless `NODE_USE_ENV_PROXY` is on. Either runtime reads them
+ * when the process starts, so changing them afterwards changes nothing. Where
+ * two spellings are set and disagree, the one that does not exempt counts.
+ */
+export function loopbackProxyVariable(
+  env: Readonly<Record<string, string | undefined>>,
+  runtime: "bun" | "node",
+): string | null {
+  if (runtime === "node") {
+    const on = env["NODE_USE_ENV_PROXY"];
+    if (on === undefined || on === "" || on === "0") return null;
+  }
+  const proxy = PROXY_VARIABLES.find((name) => (env[name] ?? "") !== "");
+  if (proxy === undefined) return null;
+  const lists = NO_PROXY_VARIABLES.map((name) => env[name] ?? "").filter(
+    (list) => list !== "",
+  );
+  const exempts = (list: string): boolean =>
+    list
+      .split(",")
+      .map((entry) => entry.trim())
+      .some((entry) => entry === "*" || entry === "127.0.0.1");
+  return lists.length > 0 && lists.every(exempts) ? null : proxy;
+}
+
 // ── The health probe ────────────────────────────────────────────────────────
 
 /** How long the probe waits for an answer, and how much of one it reads. */
