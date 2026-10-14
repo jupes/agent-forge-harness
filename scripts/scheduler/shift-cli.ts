@@ -32,6 +32,7 @@ import { join } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
 import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
+import { isMain } from "../is-main";
 import { ledgerPath } from "../ledger/paths";
 import { createHostSampler } from "./host-load";
 import type { CliResult } from "./reservations-cli";
@@ -195,7 +196,7 @@ export async function runShiftCli(
   );
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const result = await runShiftCli(
     process.argv.slice(2),
     shiftCliDeps(process.cwd()),
