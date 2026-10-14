@@ -25,7 +25,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
 import { importGraph } from "../import-graph";
 import { ledgerHome, ledgerPath } from "./paths";
@@ -41,6 +41,62 @@ const SELF = resolve(import.meta.path);
  */
 const SPAWNS =
   /Bun\.spawn|Bun\.\$|child_process|StdioClientTransport|\{[^}]*\$[^}]*\}\s*from\s*["']bun["']/;
+
+/**
+ * How many re-run files run at the same time, each in a `bun test` of its own:
+ * a quarter of the machine's threads, at least 2 and at most 4. On a 16-thread
+ * machine, with two other full runs going, the 62 files took 144 to 153 s one
+ * after another in one `bun test`, and 46 to 51 s four at a time (wwj5). One
+ * after another, the re-run went past the test's 180 s limit in full runs.
+ */
+const RERUN_WORKERS = Math.min(
+  4,
+  Math.max(2, Math.floor(availableParallelism() / 4)),
+);
+
+/** A re-run file whose `bun test` did not exit 0, with the end of its output. */
+interface FailedRerun {
+  file: string;
+  exitCode: number;
+  tail: string;
+}
+
+/**
+ * Run each file in its own `bun test` with `env`, `RERUN_WORKERS` at a time.
+ * Every file still runs with the scratch home, so a default home written by
+ * any of them is still found; running them apart also names the file that
+ * failed. The `./` makes bun take the path as a file, not a name filter.
+ */
+async function rerunEach(
+  files: string[],
+  env: Record<string, string>,
+): Promise<FailedRerun[]> {
+  const queue = [...files];
+  const failed: FailedRerun[] = [];
+  const worker = async (): Promise<void> => {
+    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+      const child = Bun.spawn([process.execPath, "test", `./${file}`], {
+        cwd: REPO,
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      const exitCode = await child.exited;
+      if (exitCode !== 0)
+        failed.push({
+          file,
+          exitCode,
+          tail: `${stdout}${stderr}`.slice(-1500),
+        });
+    }
+  };
+  await Promise.all(Array.from({ length: RERUN_WORKERS }, worker));
+  return failed.sort((a, b) => a.file.localeCompare(b.file));
+}
 
 function testFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -112,23 +168,8 @@ describe("the test suite and the ledger under the user's home", () => {
       env.USERPROFILE = scratch;
 
       const files = spawningTestFiles();
-      const child = Bun.spawn([process.execPath, "test", ...files], {
-        cwd: REPO,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-      ]);
-      const exitCode = await child.exited;
-
       // A failing inner run could have stopped short of the spawn it guards.
-      expect({ exitCode, tail: `${stdout}${stderr}`.slice(-1500) }).toEqual({
-        exitCode: 0,
-        tail: expect.any(String),
-      });
+      expect(await rerunEach(files, env)).toEqual([]);
       expect(existsSync(join(scratch, ".agent-forge"))).toBe(false);
     } finally {
       try {
