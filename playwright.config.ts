@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 import { HEALTH_ROUTE } from "./scripts/hearth/paths";
 import {
+  BUILD_STAND_IN,
   bunPath,
   DASHBOARD_PORT,
   DASHBOARD_URL,
@@ -128,6 +129,9 @@ export default defineConfig({
         // Keeps the suite from regenerating the Beads snapshot on every run;
         // whatever docs/data/beads.json holds is what gets rendered.
         DASHBOARD_NO_BUILD: "1",
+        // A rebuild (after a tracker write) runs the stand-in, which writes no
+        // snapshot and logs to the run's home, instead of build-pages.
+        DASHBOARD_BUILD_SCRIPT: BUILD_STAND_IN,
         AGENT_FORGE_HOME: HEARTH_HOME,
       },
       url: `${DASHBOARD_URL}/index.html`,

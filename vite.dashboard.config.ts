@@ -9,6 +9,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
 const docsRoot = path.join(repoRoot, "docs");
 
+// POST /__agent-forge/rebuild-pages (Refresh snapshot), the first build and
+// rebuilds on `.beads/` changes: a child process, one at a time, off the
+// server's thread. Registered before the hearth so the proxy never sees it.
+// DASHBOARD_BUILD_SCRIPT runs a script of its own in place of
+// scripts/build-pages.ts, with this runtime: the browser suite's stand-in,
+// which writes no snapshot (tests/e2e/build-stand-in.mjs).
+const buildScript = process.env["DASHBOARD_BUILD_SCRIPT"];
+const rebuildPages = rebuildPagesPlugin({
+  root: repoRoot,
+  initialBuild: process.env["DASHBOARD_NO_BUILD"] !== "1",
+  ...(buildScript
+    ? { command: { file: process.execPath, args: [buildScript] } }
+    : {}),
+});
+
 export default defineConfig({
   root: docsRoot,
   /** `data/` lives under `docs/` from build-pages; no separate `public/` copy. */
@@ -43,13 +58,12 @@ export default defineConfig({
       // labeling — preact/debug still injects in dev. See sveltejs/zimmerframe#34.
       devToolsEnabled: false,
     }),
-    // POST /__agent-forge/rebuild-pages (Refresh snapshot), the first build and
-    // rebuilds on `.beads/` changes: a child process, one at a time, off the
-    // server's thread. Registered before the hearth so the proxy never sees it.
-    rebuildPagesPlugin({
-      root: repoRoot,
-      initialBuild: process.env["DASHBOARD_NO_BUILD"] !== "1",
+    rebuildPages,
+    // A tracker write the hearth made rebuilds the snapshot too: the `.beads/`
+    // watcher does not see one in a linked worktree. A write made with `bd`
+    // outside the hearth is not seen this way.
+    hearthPlugin(repoRoot, {
+      onTrackerWrite: () => rebuildPages.api.rebuildSoon(),
     }),
-    hearthPlugin(repoRoot),
   ],
 });

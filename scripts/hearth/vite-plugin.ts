@@ -10,18 +10,30 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HttpProxy, Plugin } from "vite";
+import { followTrackerWrites } from "./follow-tracker-writes";
 import { isLoopbackAddress } from "./gate";
 import { hearthHome } from "./home";
 import { API_PREFIX } from "./paths";
 import { createSupervisor, type HearthSupervisor } from "./supervisor";
 
-/** Served by `rebuildPagesApiPlugin` in the dashboard config; never proxied. */
+/**
+ * Served by `rebuildPagesPlugin` (`scripts/dashboard/rebuild-pages.ts`), which
+ * refuses a non-loopback client itself; never proxied.
+ */
 const LOCAL_ONLY_PATH = `${API_PREFIX}/rebuild-pages`;
 
 export interface HearthPluginOptions {
   home?: string;
   /** Replace process supervision (tests attach to an in-process hearth). */
   supervisor?: HearthSupervisor;
+  /**
+   * Called after the hearth has written to the tracker, found by polling the
+   * hearth's ledger for `bead.transitioned` (`follow-tracker-writes.ts`). A
+   * write made with `bd` outside the hearth is not seen. Not polled when absent.
+   */
+  onTrackerWrite?: () => void;
+  /** How long the tracker-write follower waits between polls. */
+  trackerWritePollMs?: number;
 }
 
 function refuse(
@@ -38,7 +50,7 @@ function refuse(
  * Whether Vite's proxy would forward this path to the hearth. Matches the proxy's
  * own rule (a bare prefix, no trailing slash), so `/__agent-forgeX/../…` cannot
  * slip past a stricter-looking guard.
- * `rebuild-pages` is excluded because `rebuildPagesApiPlugin` (registered first)
+ * `rebuild-pages` is excluded because `rebuildPagesPlugin` (registered first)
  * answers it before the proxy is reached.
  */
 export function isProxiedPath(pathname: string): boolean {
@@ -163,7 +175,21 @@ export function hearthPlugin(
         );
       });
 
+      const { onTrackerWrite } = options;
+      // Each poll asks the supervisor, as a proxied request does, so it
+      // follows a hearth that was started again.
+      const follower = onTrackerWrite
+        ? followTrackerWrites({
+            port: () => supervisor.ensure(),
+            onWrite: onTrackerWrite,
+            ...(options.trackerWritePollMs !== undefined
+              ? { pollMs: options.trackerWritePollMs }
+              : {}),
+          })
+        : null;
+
       server.httpServer?.once("close", () => {
+        follower?.stop();
         void supervisor.stopIfOwner();
       });
     },
