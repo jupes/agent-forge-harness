@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
+  BEADS_ISSUE_ID,
   correlationPointer,
   createRunCorrelation,
   parseBeadsIssueId,
@@ -8,6 +11,7 @@ import {
   runCorrelationPath,
 } from "./run-correlation";
 
+const SCRIPTS = import.meta.dir;
 const CHECKOUT = "C:/work/harness/trees/dg40";
 const NOW = () => "2026-10-08T12:00:00.000Z";
 
@@ -51,6 +55,18 @@ describe("parseBeadsIssueId", () => {
     ]) {
       expect(parseBeadsIssueId(hostile)).toBeNull();
     }
+  });
+
+  test("its pattern is written in one source file of the scripts, this module", () => {
+    const copies = [...new Bun.Glob("**/*.ts").scanSync({ cwd: SCRIPTS })]
+      .filter((file) => !file.endsWith(".test.ts"))
+      .filter((file) =>
+        readFileSync(join(SCRIPTS, file), "utf8").includes(
+          BEADS_ISSUE_ID.source,
+        ),
+      )
+      .map((file) => file.replaceAll("\\", "/"));
+    expect(copies).toEqual(["run-correlation.ts"]);
   });
 });
 

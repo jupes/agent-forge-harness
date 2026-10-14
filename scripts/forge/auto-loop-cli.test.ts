@@ -434,7 +434,7 @@ describe("a verdict grades only the round it names", () => {
     ]);
   }, 120_000);
 
-  test("a schema 1 verdict for a run with no correlation is refused: it cannot name its round, and the refusal says how to correlate the run and file one", async () => {
+  test("a schema 1 verdict for a run with no correlation is not the run's: the round is recorded UNREADABLE and halts, and the error says how to correlate the run", async () => {
     const box = sandbox();
     writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
     const wrote = await run(box, PHASE_GATE, [
@@ -459,7 +459,7 @@ describe("a verdict grades only the round it names", () => {
       }),
     );
 
-    const refused = await run(box, REVIEW, [
+    const halted = await run(box, REVIEW, [
       "--slug",
       "x",
       "--phase",
@@ -467,18 +467,25 @@ describe("a verdict grades only the round it names", () => {
       "--verdict",
       legacy,
     ]);
-    expect(refused.exitCode).toBe(2);
-    expect(refused.printed.ok).toBe(false);
-    expect(refused.printed.error).toContain(
-      `${legacy} is a legacy schema 1 verdict, which cannot name a review round, but forge:review would record it as research round 1 of run "x" (research-1)`,
-    );
-    expect(refused.printed.error).toContain(
-      "bun run forge:correlate --bead <id> --run x",
-    );
-    expect(refused.printed.error).toContain(
-      "bun run forge:verdict --correlation <the pointer it prints> --review research-1",
-    );
-    expect(runState(box)?.reviews).toBeUndefined();
-    expect(reviewRows(box)).toEqual([]);
+    expect(halted.exitCode).toBe(2);
+    expect(halted.printed).toMatchObject({
+      ok: true,
+      data: {
+        round: { phase: "research", round: 1, verdict: "UNREADABLE" },
+        decision: { action: "halt" },
+        verdictError:
+          'run "x" has no run correlation, so no verdict can be checked against it (bun run forge:correlate --bead <id> --run x)',
+        comment:
+          "review: UNREADABLE — 0 blocker, 0 high, 0 medium, 0 low (research round 1)",
+      },
+    });
+    expect(runState(box)?.reviews?.map((round) => round.verdict)).toEqual([
+      "UNREADABLE",
+    ]);
+    expect(
+      reviewRows(box).map((row) =>
+        row.kind === "verdict.bound" ? row.payload : row.kind,
+      ),
+    ).toEqual([{ verdict: "unreadable" }, "review.recorded"]);
   }, 60_000);
 });
