@@ -742,7 +742,7 @@ const issues: PlanIssue[] = [
     description: `Bring CLAUDE.md, AGENTS.md scaffolds, HARNESS-GUIDE, README, knowledge/_shared.yaml and the protocols in line with the command center; remove stale references found in the survey. ${spec("f9-docs")}`,
     acceptance: [
       "README and HARNESS-GUIDE have a Command Center section covering control plane, smiths, queue/shift, council action, desktop app and mod, with every new npm script listed.",
-      "knowledge/_shared.yaml no longer references the deleted gas-town insights file; bun run agents-md validate reports zero missing files.",
+      "knowledge/_shared.yaml no longer references the deleted prior-art insights file; bun run agents-md validate reports zero missing files.",
     ],
     deps: ["f2-mcp", "f4-shift", "f8-shell"],
   },
@@ -752,10 +752,10 @@ const issues: PlanIssue[] = [
     type: "task",
     priority: 3,
     title:
-      "Fix stale references now: gas-town insights file in knowledge/_shared.yaml and molecules README; scaffold missing AGENTS.md files",
+      "Fix stale references now: deleted prior-art insights file in knowledge/_shared.yaml and molecules README; scaffold missing AGENTS.md files",
     description: `Small, independent cleanup that can run first: replace the research_notes entry with a pointer to docs/plans/command-center, fix .claude/molecules/README.md, and run bun run agents-md scaffold --write for the 8 directories the SessionStart hook reports. ${spec("f9-fix-refs")}`,
     acceptance: [
-      "bun run agents-md validate --hook reports zero missing; no file references knowledge/gas-town-harness-insights.yaml.",
+      "bun run agents-md validate --hook reports zero missing; no file references the prior-art insights YAML deleted from knowledge/ in 78dba0e.",
     ],
   },
   {
