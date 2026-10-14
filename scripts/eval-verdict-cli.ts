@@ -68,6 +68,7 @@ import {
 import { observedRankPolicy, strictEvaluatorProblem } from "./evaluator-policy";
 import type { ForgeState } from "./forge/phases";
 import { comparableCheckout } from "./forge/runs";
+import { isMain } from "./is-main";
 import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_FLAG } from "./run-correlation";
 import { pointedRunCorrelation } from "./run-correlation-store";
@@ -623,7 +624,7 @@ export function runVerdictWrite(
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   // Loaded here, not at the top: these reach Bun's SQLite and the config
   // files, which the function above is tested without.
   const { loadConfig } = await import("./config/load");

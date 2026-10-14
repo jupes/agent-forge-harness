@@ -16,6 +16,7 @@
  * lock are the harness home's, the same ones the hearth uses.
  */
 
+import { isMain } from "../is-main";
 import { reconcileQueue } from "./queue-reconcile";
 import { type CliDeps, type CliResult, cliDeps } from "./reservations-cli";
 
@@ -47,7 +48,7 @@ export async function runQueueCli(
     : failed(read.error);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const result = await runQueueCli(
     process.argv.slice(2),
     cliDeps(process.cwd()),

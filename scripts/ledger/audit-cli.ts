@@ -33,6 +33,7 @@ import {
   type LedgerEventKind,
   type OperatorEnvelope,
 } from "../../types/hearth";
+import { isMain } from "../is-main";
 import { refusedJoinValue } from "./append";
 import { backupLedger, compact } from "./backup";
 import { ledgerPath } from "./paths";
@@ -382,7 +383,7 @@ export function runAudit(
   }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const outcome = runAudit(process.argv.slice(2), {
     cwd: process.cwd(),
     env: process.env,

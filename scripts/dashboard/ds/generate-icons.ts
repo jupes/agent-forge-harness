@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isMain } from "../../is-main";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..", "..");
 const ASSETS = join(
@@ -143,4 +144,4 @@ export type IconName = keyof typeof ICON_PATHS;
   );
 }
 
-if (import.meta.main) main();
+if (isMain(import.meta)) main();

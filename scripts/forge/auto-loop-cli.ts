@@ -49,6 +49,7 @@ import {
 } from "../eval-verdict";
 import { readVerdictFileAt } from "../eval-verdict-store";
 import { strictEvaluatorProblem } from "../evaluator-policy";
+import { isMain } from "../is-main";
 import { resolveCheckout } from "../ledger/workspace";
 import { type RunCorrelation, runCorrelationPath } from "../run-correlation";
 import {
@@ -238,7 +239,7 @@ export function verdictOfRun(
   return { ok: true, value: parsed };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const parsed = parseReviewArgs(process.argv.slice(2));
   if (!parsed.ok) fail(parsed.error);
   const args = parsed.data;

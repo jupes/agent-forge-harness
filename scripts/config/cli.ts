@@ -15,6 +15,7 @@
  */
 
 import { join } from "path";
+import { isMain } from "../is-main";
 import { type LoadOptions, loadConfig } from "./load";
 import { setConfigValue, settableKeys } from "./write";
 
@@ -112,7 +113,7 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
   return fail(`unknown command "${command}" (show | get | keys | set)`);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const harnessRoot = join(import.meta.dir, "..", "..");
   const outcome = runConfigCli(process.argv.slice(2), { harnessRoot });
   if (outcome.stdout) console.log(outcome.stdout);

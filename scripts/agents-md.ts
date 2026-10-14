@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "fs";
 import { join, relative } from "path";
+import { isMain } from "./is-main";
 
 type Mode = "validate" | "scaffold";
 
@@ -175,6 +176,6 @@ export {
   shouldIgnoreDir,
 };
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   process.exit(main(process.argv.slice(2)));
 }

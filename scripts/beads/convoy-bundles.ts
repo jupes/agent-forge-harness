@@ -24,6 +24,7 @@ import type {
   SnapshotSource,
 } from "../../types/beads";
 import { issuesAndDepsFromExportRows } from "../beads-dashboard";
+import { isMain } from "../is-main";
 import {
   type BdRunner,
   FALLBACK_FILE,
@@ -173,7 +174,7 @@ export async function runBundles(options: {
   return { ok: true, data: { ...plan, source }, error: null };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const epicId = process.argv[2];
   const envelope: BundlesEnvelope = epicId
     ? await runBundles({ cwd: process.cwd(), runBd: runBdOnPath, epicId })

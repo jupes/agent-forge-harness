@@ -16,6 +16,7 @@
  * Exit code 0 when ok, 2 when not.
  */
 
+import { isMain } from "../is-main";
 import { phaseCommand, reviewCommand } from "./phase-gate";
 import type { ForgePhase, ForgeState, ReviewStatus } from "./phases";
 import { reviewGate } from "./review-rules";
@@ -110,7 +111,7 @@ function emit(result: CliResult, json: boolean, text?: string): never {
   process.exit(result.ok ? 0 : 2);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const argv = process.argv.slice(2);
   const json = argv.includes("--json");
   const flags = new Set(argv.filter((a) => a.startsWith("--")));

@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "path";
+import { isMain } from "../is-main";
 import { parseBeadsIssueId } from "../run-correlation";
 import {
   assertCouncilRunId,
@@ -445,7 +446,7 @@ export async function runCouncilCli(
   }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const controller = new AbortController();
   const onInterrupt = (): void => controller.abort();
   process.once("SIGINT", onInterrupt);
