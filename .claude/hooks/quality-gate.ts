@@ -143,12 +143,15 @@ type RepositoryRun = Extract<RunCheckSet, { kind: "repository" }>;
 export interface GateDeps {
   cwd: string;
   env: Env;
-  /** Runs one of the gate's own fixed command lines. Never given a value from outside. */
+  /**
+   * Runs one of the gate's own fixed `bun` command lines (typecheck, lint,
+   * tests). Never given a value from outside, and never git.
+   */
   run(cmd: string): { ok: boolean; output: string };
   /**
-   * Runs a program with an argument array and no shell: how `bd`, git for the
-   * test evidence, and every call for a run in a repository under `repos/`
-   * (its checks and git) are made.
+   * Runs a program with an argument array and no shell: how `bd`, every git
+   * call, and every call for a run in a repository under `repos/` (its
+   * checks) are made.
    */
   execFile: ExecFile;
   /** The checkout this gate belongs to: `repos/` is looked up in its main checkout. */
@@ -336,7 +339,8 @@ interface StrictPlaces {
 
 /**
  * Checks 1–4 for a run in the checkout the gate runs in, or an unlinked run:
- * the gate's own fixed command lines, run there.
+ * the gate's own fixed `bun` command lines, then git's status as an argument
+ * array, run there.
  */
 function gateBaseChecks(deps: GateDeps): {
   checks: CheckResult[];
@@ -395,7 +399,7 @@ function gateBaseChecks(deps: GateDeps): {
 
   // Check 4: Clean working tree
   {
-    const r = run("git status --porcelain");
+    const r = deps.execFile("git", ["status", "--porcelain"]);
     const clean = r.ok && r.output.trim() === "";
     checks.push({
       name: "clean-tree",
@@ -676,7 +680,7 @@ export function runQualityGate(input: {
 
   // The log is shared by every checkout and worktree on the machine, so record
   // which checkout this result belongs to.
-  const toplevel = deps.run("git rev-parse --show-toplevel");
+  const toplevel = deps.execFile("git", ["rev-parse", "--show-toplevel"]);
   const checkoutRoot =
     toplevel.ok && toplevel.output ? toplevel.output : deps.cwd;
   // The checkout the run builds in is the one its correlation names, which
@@ -737,12 +741,11 @@ export function runQualityGate(input: {
   );
 
   // A repository's run is logged as its checkout's, on the branch it has there.
-  const headBranch =
-    repository === null
-      ? deps.run("git rev-parse --abbrev-ref HEAD")
-      : deps.execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-          cwd: repository.checkout,
-        });
+  const headBranch = deps.execFile(
+    "git",
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    repository === null ? {} : { cwd: repository.checkout },
+  );
   const result: GateResult = {
     ...gateIdentity({
       cwd: deps.cwd,

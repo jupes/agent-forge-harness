@@ -298,11 +298,17 @@ function gate(
   const reads: string[] = [];
   const history = input.history ?? { branch: [["scripts/a.test.ts"]] };
   const answers: Record<string, { ok: boolean; output: string }> = {
-    "git rev-parse --show-toplevel": { ok: false, output: "" },
-    "git rev-parse --abbrev-ref HEAD": { ok: true, output: "feat/x" },
     ...input.answers,
   };
   const git = { ...gitAnswers(history), ...input.git };
+  // What git says where the gate runs (no cwd given), over `git`: no top
+  // level to report, a clean tree, and its own branch.
+  const here: Record<string, { ok: boolean; output: string }> = {
+    "rev-parse --show-toplevel": { ok: false, output: "" },
+    "status --porcelain": { ok: true, output: "" },
+    "rev-parse --abbrev-ref HEAD": { ok: true, output: "feat/x" },
+    ...input.git,
+  };
   const deps: GateDeps = {
     cwd: box.cwd,
     env: input.env ?? {},
@@ -318,7 +324,10 @@ function gate(
       });
       const key = args.join(" ");
       if (file === "bd") return input.bd?.[key] ?? { ok: false, output: "" };
-      if (file === "git") return git[key] ?? { ok: false, output: "" };
+      if (file === "git") {
+        const answer = opts?.cwd === undefined ? here[key] : undefined;
+        return answer ?? git[key] ?? { ok: false, output: "" };
+      }
       return input.programs?.[`${file} ${key}`] ?? { ok: true, output: "" };
     },
     harness: box.cwd,
@@ -369,11 +378,14 @@ function beads(recorded: Recorded): Array<{ file: string; args: string[] }> {
   return recorded.execs.filter((call) => call.file === "bd");
 }
 
-const BASE_COMMANDS = [
-  "bun run typecheck",
-  "bun run lint",
-  "bun run test",
-  "git status --porcelain",
+/** The gate's own command lines: the only things it hands a shell. */
+const BASE_COMMANDS = ["bun run typecheck", "bun run lint", "bun run test"];
+
+/** What the gate asks git where it runs, each as an argument array. */
+const GATE_GIT = [
+  ["rev-parse", "--show-toplevel"],
+  ["status", "--porcelain"],
+  ["rev-parse", "--abbrev-ref", "HEAD"],
 ];
 
 describe("an unbound host event", () => {
@@ -491,10 +503,11 @@ describe("an unbound host event", () => {
     for (const argv of [["--correlation", outside], ["--correlation"]]) {
       const recorded = gate(box, { argv });
       expect(recorded.outcome.kind).toBe("refused");
-      for (const command of BASE_COMMANDS) {
-        expect(recorded.commands).not.toContain(command);
-      }
-      expect(recorded.execs).toEqual([]);
+      expect(recorded.commands).toEqual([]);
+      // Only where the gate itself runs, which is where a pointer is followed from.
+      expect(recorded.execs).toEqual([
+        { file: "git", args: ["rev-parse", "--show-toplevel"] },
+      ]);
     }
     expect(gate(box, { argv: ["--correlation", outside] }).outcome).toEqual({
       kind: "refused",
@@ -878,6 +891,8 @@ describe("a run in a repository under repos/", () => {
     });
     const elsewhere = recorded.execs.filter((call) => call.file !== "bd");
     expect(elsewhere).toEqual([
+      // Where the gate itself was started: the one call made there.
+      { file: "git", args: ["rev-parse", "--show-toplevel"] },
       { file: "git", args: TRACKED, cwd: at },
       { file: "node", args: ["tsc.js", "--noEmit"], cwd: at },
       { file: "cargo", args: ["test", "--", "a b"], cwd: at },
@@ -885,8 +900,7 @@ describe("a run in a repository under repos/", () => {
       { file: "git", args: OWN_COMMITS, cwd: at },
       { file: "git", args: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: at },
     ]);
-    // The one command line is where the gate itself was started.
-    expect(recorded.commands).toEqual(["git rev-parse --show-toplevel"]);
+    expect(recorded.commands).toEqual([]);
   });
 
   test("a configured check that fails blocks, with its output in the entry", () => {
@@ -936,8 +950,10 @@ describe("a run in a repository under repos/", () => {
         kind: "refused",
         error: `${resolveCheckout(box.cwd).worktree}/repos/repos.json has no entry named "foo": add one with a "checks" list, each check { "name": ..., "argv": [program, ...arguments] }`,
       });
-      expect(recorded.execs).toEqual([]);
-      expect(recorded.commands).toEqual(["git rev-parse --show-toplevel"]);
+      expect(recorded.execs).toEqual([
+        { file: "git", args: ["rev-parse", "--show-toplevel"] },
+      ]);
+      expect(recorded.commands).toEqual([]);
     }
   });
 
@@ -958,7 +974,10 @@ describe("a run in a repository under repos/", () => {
       kind: "refused",
       error: `${at} tracks files under .tmp/work/run-correlations or .tmp/work/evaluations, and a run correlation or a verdict is never taken from a commit: untrack them, and ignore .tmp/ there`,
     });
-    expect(recorded.execs.map((call) => call.file)).toEqual(["git"]);
+    expect(recorded.execs).toEqual([
+      { file: "git", args: ["rev-parse", "--show-toplevel"] },
+      { file: "git", args: TRACKED, cwd: at },
+    ]);
   });
 
   test("strict mode reads the run's verdict in the repository's checkout", () => {
@@ -1497,7 +1516,12 @@ describe("TeammateIdle", () => {
       "tests",
       "clean-tree",
     ]);
-    expect(recorded.execs.filter((call) => call.file === "git")).toEqual([]);
+    // No commit listing: test-evidence is a TaskCompleted check.
+    expect(
+      recorded.execs.filter(
+        (call) => call.file === "git" && call.args[0] === "log",
+      ),
+    ).toEqual([]);
     expect(result.passed).toBe(true);
     expect(ran(recorded).trigger).toBe("TeammateIdle");
   });
@@ -1526,6 +1550,51 @@ describe("malformed stdin", () => {
       expect(recorded.commands).toEqual([]);
       expect(recorded.execs).toEqual([]);
     }
+  });
+});
+
+describe("git is never run through a shell", () => {
+  test("the top level, the clean tree and the branch are asked of git as argument arrays, unlinked, linked and idle, and no command line names git", () => {
+    const box = sandbox();
+    for (const recorded of [
+      gate(box),
+      gate(box, { argv: ["--correlation", correlate(box)] }),
+      gate(box, { argv: ["TeammateIdle"] }),
+    ]) {
+      expect(
+        recorded.commands.filter((command) => /^git\b/.test(command)),
+      ).toEqual([]);
+      for (const args of GATE_GIT) {
+        expect(recorded.execs).toContainEqual({ file: "git", args });
+      }
+      // What git answered is what the entry records.
+      expect(ran(recorded).result).toMatchObject({ branch: "feat/x" });
+      expect(check(recorded, "clean-tree")).toEqual({
+        name: "clean-tree",
+        passed: true,
+      });
+    }
+  });
+
+  test("a dirty tree, as git reports it, blocks clean-tree with what git printed", () => {
+    const recorded = gate(sandbox(), {
+      git: { "status --porcelain": { ok: true, output: "?? notes.txt" } },
+    });
+    expect(check(recorded, "clean-tree")).toEqual({
+      name: "clean-tree",
+      passed: false,
+      output: "?? notes.txt",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["clean-tree"]);
+  });
+
+  test("the top level git reports is the checkout the entry names", () => {
+    const box = sandbox();
+    const top = resolveCheckout(box.cwd).worktree;
+    const recorded = gate(box, {
+      git: { "rev-parse --show-toplevel": { ok: true, output: top } },
+    });
+    expect(ran(recorded).result).toMatchObject({ checkout: top });
   });
 });
 
@@ -1881,55 +1950,62 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     chmodSync(script, 0o755);
   }
 
-  /**
-   * A directory holding a stand-in `git` for the spawned gate: it does nothing
-   * but, when asked for the branch name, run `onBranch`. The gate asks for the
-   * branch after it has read and judged the verdict and before it writes its
-   * log entry and its ledger rows, so this is a way to change the file between
-   * the two without any switch in the gate.
-   */
-  function standInGit(
-    box: Box,
-    onBranch: { windows: string; posix: string },
-  ): string {
-    const bin = join(box.root, "stand-in bin");
-    standIn(bin, "git", {
-      windows: [`if "%2"=="--abbrev-ref" ${onBranch.windows}`, "exit /b 1"],
-      posix: [
-        `if [ "$2" = "--abbrev-ref" ]; then ${onBranch.posix}; fi`,
-        "exit 1",
-      ],
-    });
-    return bin;
-  }
-
-  /** The directory holding the compiled stand-in `git.exe`, once it is built. */
-  let compiledGit: string | null = null;
+  /** The directory holding the stand-in `git`, once it is made. */
+  let gitDir: string | null = null;
   afterAll(() => {
-    if (compiledGit === null) return;
+    if (gitDir === null) return;
     try {
-      rmSync(compiledGit, { recursive: true, force: true });
+      rmSync(gitDir, { recursive: true, force: true });
     } catch {
       // A child still holding the executable: the OS temp directory reclaims it.
     }
   });
 
   /**
-   * The passing `git` below, compiled to an executable: built once for this
-   * file, on Windows only. The gate lists commits through a runner that there
-   * runs only an .exe or .com (anything else goes through cmd.exe), so the
-   * .cmd stand-in is refused by it. cmd.exe, which runs the gate's other git
-   * command lines, also finds the .exe before a .cmd in the same directory.
+   * A directory holding a stand-in `git` for the spawned gate, made once for
+   * this file: a clean tree (`status`), commits that name a test file
+   * (`log`), and a failure for anything else. Asked for the branch name with
+   * SWAP_SOURCE and SWAP_TARGET set, it first copies the one file over the
+   * other: the gate asks for the branch after it has read and judged the
+   * verdict and before it writes its log entry and its ledger rows, so this
+   * changes the file between the two without any switch in the gate.
+   *
+   * The gate runs every git call with an argument array and no shell. On
+   * Windows that runner runs only an .exe or .com (anything else goes through
+   * cmd.exe), so there the stand-in is compiled to an executable; elsewhere it
+   * is a script the system runs by its first line.
    */
-  function passingGitExe(): string {
-    if (compiledGit !== null) return compiledGit;
+  function standInGit(): string {
+    if (gitDir !== null) return gitDir;
     const dir = mkdtempSync(join(tmpdir(), "quality gate git stand-in "));
+    if (process.platform !== "win32") {
+      standIn(dir, "git", {
+        windows: [],
+        posix: [
+          'case "$1" in',
+          "  status) exit 0 ;;",
+          "  log) echo a.test.ts; exit 0 ;;",
+          "esac",
+          'if [ "$1" = "rev-parse" ] && [ "$2" = "--abbrev-ref" ] && [ -n "$SWAP_SOURCE" ]; then',
+          '  cp "$SWAP_SOURCE" "$SWAP_TARGET"',
+          "fi",
+          "exit 1",
+        ],
+      });
+      gitDir = dir;
+      return dir;
+    }
     const source = join(dir, "git.ts");
     writeFileSync(
       source,
       [
-        "const [command] = process.argv.slice(2);",
+        'import { copyFileSync } from "fs";',
+        "const [command, flag] = process.argv.slice(2);",
+        "const { SWAP_SOURCE, SWAP_TARGET } = process.env;",
         'if (command === "log") console.log("a.test.ts");',
+        'if (command === "rev-parse" && flag === "--abbrev-ref" && SWAP_SOURCE && SWAP_TARGET) {',
+        "  copyFileSync(SWAP_SOURCE, SWAP_TARGET);",
+        "}",
         'process.exit(command === "status" || command === "log" ? 0 : 1);',
         "",
       ].join("\n"),
@@ -1950,36 +2026,22 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
         `the stand-in git did not compile: ${built.stderr.toString()}`,
       );
     }
-    compiledGit = dir;
+    gitDir = dir;
     return dir;
   }
 
+  const PATH_SEPARATOR = process.platform === "win32" ? ";" : ":";
+
   /**
    * Stand-ins under which every base check of the gate passes without running
-   * anything: a `bun` that succeeds at whatever it is asked, and a `git` with
-   * a clean tree whose commits name a test file. The scratch checkout has no
-   * package.json and no test files, so lint and tests are skipped.
+   * anything: a `bun` that succeeds at whatever it is asked, and the stand-in
+   * `git`. The scratch checkout has no package.json and no test files, so
+   * lint and tests are skipped.
    */
   function passingChecks(box: Box): string {
     const bin = join(box.root, "passing bin");
     standIn(bin, "bun", { windows: ["exit /b 0"], posix: ["exit 0"] });
-    standIn(bin, "git", {
-      windows: [
-        'if "%1"=="status" exit /b 0',
-        'if "%1"=="log" echo a.test.ts',
-        'if "%1"=="log" exit /b 0',
-        "exit /b 1",
-      ],
-      posix: [
-        'case "$1" in',
-        "  status) exit 0 ;;",
-        "  log) echo a.test.ts; exit 0 ;;",
-        "esac",
-        "exit 1",
-      ],
-    });
-    if (process.platform !== "win32") return `${bin}:${SHELL_ONLY_PATH}`;
-    return `${passingGitExe()};${bin};${SHELL_ONLY_PATH}`;
+    return [standInGit(), bin, SHELL_ONLY_PATH].join(PATH_SEPARATOR);
   }
 
   test(
@@ -2045,15 +2107,11 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
       );
       const source = join(box.root, "swapped.json");
       writeFileSync(source, swapped);
-      const bin = standInGit(box, {
-        windows: 'copy /Y "%SWAP_SOURCE%" "%SWAP_TARGET%" >nul',
-        posix: 'cp "$SWAP_SOURCE" "$SWAP_TARGET"',
-      });
 
       await spawnGate(box, "", {
         [RUN_CORRELATION_ENV]: pointer,
         AGENT_FORGE_EVAL_VERDICT: "strict",
-        PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${SHELL_ONLY_PATH}`,
+        PATH: [standInGit(), SHELL_ONLY_PATH].join(PATH_SEPARATOR),
         SWAP_SOURCE: source,
         SWAP_TARGET: place,
       });
