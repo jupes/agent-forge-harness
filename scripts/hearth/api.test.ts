@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -25,7 +26,7 @@ import { queueTracker } from "../scheduler/queue-fixture";
 import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
-import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
+import { HEALTH_ROUTE, OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
 import type { BdResult } from "./routes/dev-api";
 import {
   startTestHearth,
@@ -889,6 +890,95 @@ describe("every action row (iterating the table)", () => {
     expect(calls).toBe(-97);
     expect(probes.length).toBe(1);
   });
+});
+
+describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
+  /** How long an action and a GET sent during it may take to be answered, from when the action was sent. */
+  const ABOUT_A_SECOND_MS = 1500;
+
+  /**
+   * Send a valid action, and 300 ms later a GET of the health route. Each
+   * answer's status, and when it arrived, counted from when the action was
+   * sent. The hearth runs in this process, so a serving thread held by the
+   * action holds this test's timer and the GET with it.
+   */
+  async function actionAndGetWhileLocked(h: TestHearth): Promise<{
+    action: { status: number; ms: number };
+    get: { status: number; ms: number };
+  }> {
+    const sent = performance.now();
+    const action = post(h, "/dev-api/forge-run/review", REVIEW).then(
+      async (response) => {
+        await response.body?.cancel();
+        return { status: response.status, ms: performance.now() - sent };
+      },
+    );
+    await new Promise((done) => setTimeout(done, 300));
+    const health = await fetch(`${h.hearth.url}${HEALTH_ROUTE}`);
+    await health.body?.cancel();
+    const get = { status: health.status, ms: performance.now() - sent };
+    return { action: await action, get };
+  }
+
+  /** Hold the write lock on `file` from another connection until `release` is called. */
+  function holdWriteLock(file: string): { release(): void } {
+    const holder = new Database(file, { create: true });
+    holder.exec("BEGIN EXCLUSIVE");
+    return {
+      release() {
+        holder.exec("ROLLBACK");
+        holder.close();
+      },
+    };
+  }
+
+  test("on a new ledger file the hearth has not opened: 503 within 1.5 s and the effect not called, and a GET of the health route sent 300 ms after it is answered within 1.5 s of the action", async () => {
+    const { h, probes } = await probed();
+    // Nothing has opened the hearth's ledger: the file does not exist yet.
+    expect(existsSync(h.ledger)).toBe(false);
+    const lock = holdWriteLock(h.ledger);
+    let measured: Awaited<ReturnType<typeof actionAndGetWhileLocked>>;
+    try {
+      measured = await actionAndGetWhileLocked(h);
+    } finally {
+      lock.release();
+    }
+    expect({
+      action: measured.action.status,
+      get: measured.get.status,
+    }).toEqual({ action: 503, get: 200 });
+    expect(measured.action.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(measured.get.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(probes).toEqual([]);
+    // Released, the same action is recorded and done.
+    expect((await post(h, "/dev-api/forge-run/review", REVIEW)).status).toBe(
+      200,
+    );
+    expect(probes.length).toBe(1);
+  }, 60_000);
+
+  test("on a ledger file the hearth has opened before: 503 within 1.5 s and the effect not called, and a GET of the health route sent 300 ms after it is answered within 1.5 s of the action", async () => {
+    const { h, probes } = await probed();
+    // The first action opens the ledger and records its audit row.
+    expect((await post(h, "/dev-api/forge-run/review", REVIEW)).status).toBe(
+      200,
+    );
+    expect(probes.length).toBe(1);
+    const lock = holdWriteLock(h.ledger);
+    let measured: Awaited<ReturnType<typeof actionAndGetWhileLocked>>;
+    try {
+      measured = await actionAndGetWhileLocked(h);
+    } finally {
+      lock.release();
+    }
+    expect({
+      action: measured.action.status,
+      get: measured.get.status,
+    }).toEqual({ action: 503, get: 200 });
+    expect(measured.action.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(measured.get.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(probes.length).toBe(1);
+  }, 60_000);
 });
 
 describe("the operator token", () => {

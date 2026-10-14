@@ -24,6 +24,7 @@ import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { isMain } from "../is-main";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import { openLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
 import type { GitRun } from "../scheduler/worktrees";
 import { type ApiRoute, createOperatorApi } from "./api";
@@ -129,6 +130,38 @@ function reply(
   );
 }
 
+/**
+ * How long a request waits on another connection's lock while the hearth opens
+ * its ledger for the first time: not at all, because the runner's three audit
+ * attempts, 25 ms apart, are the wait. The ledger's own first open waits 2 s in
+ * each of its statements and attempts, which suits an emitter that must not
+ * lose an event; under those three attempts it held the serving thread for 12
+ * to 20 s on a new ledger file that was locked. A short wait is no cheaper than
+ * it looks on Windows: SQLite counts the sleeps it asks for, not the time they
+ * take, and a 50 ms wait took about 340 ms there (a zero wait about 30 ms).
+ * Once the file is open this is not looked at again.
+ */
+const LEDGER_FIRST_OPEN_WAIT_MS = 0;
+
+/**
+ * The ledger's `appendEvent` for `file`, opening the file with the hearth's
+ * shorter first-open wait. A file that could not be opened in time is reported
+ * as the ledger's error ("database is locked"), which the runner treats as busy.
+ */
+function hearthAppend(file: string): (event: LedgerEventInput) => AppendResult {
+  return (event) => {
+    try {
+      openLedger(file, { waitMs: LEDGER_FIRST_OPEN_WAIT_MS });
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return appendEvent(event, { path: file });
+  };
+}
+
 function reusedHearth(lock: HearthLock): ReusedHearth {
   return {
     kind: "reused",
@@ -177,9 +210,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
-  const append =
-    options.api?.appendEvent ??
-    ((event: LedgerEventInput) => appendEvent(event, { path: ledgerFile }));
+  const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
   const table = operatorRoutes({
     root,
     workspace,
