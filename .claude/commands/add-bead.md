@@ -1,6 +1,6 @@
 # /add-bead — Capture work as a Beads issue
 
-Create a tracked Beads issue from free text in one step (harness root or a registered sub-repo).
+Create a tracked Beads issue from free text in one step, in the harness tracker (for the harness or one of its sub-repos).
 
 ## Usage
 
@@ -46,10 +46,10 @@ Optional **`--labels`** only when the user names labels explicitly (comma-separa
 
 ## Repository context
 
-- **Harness workspace (this repo at root):** pass **`--repo .`** so the issue is created in the harness database with the correct repo routing (matches other harness `bd` usage).
-- **Work inside `repos/<name>/`:** pass **`--repo ./repos/<name>`** (or the path from `bd doctor` / team convention) so the issue is owned by that sub-repo.
+- **Every issue goes into the harness tracker.** Pass no `--repo`: `.` is the only repository registered with `bd`, and given any other `--repo`, `bd create` still prints an id but files the issue where no `bd show` or `bd list` run here finds it (see the multi-repo rule in `CLAUDE.md`).
+- **Work inside `repos/<name>/`:** start the title with **`[<name>]`** so the issue says which sub-repo it is for.
 
-If unsure which repo applies, infer from `git rev-parse --show-toplevel` and `repos/repos.json`; default to **`--repo .`** when the top-level is the harness checkout.
+If unsure which repo applies, infer from `git rev-parse --show-toplevel` and `repos/repos.json`; when the top-level is the harness checkout, the title needs no sub-repo prefix.
 
 ---
 
@@ -58,13 +58,13 @@ If unsure which repo applies, infer from `git rev-parse --show-toplevel` and `re
 Run non-interactively (no prompts). Prefer machine-readable output:
 
 ```bash
-bd create --json --repo <resolved-repo> --type <task|bug|feature> --title "<title>" [--description "<body>"] [--labels a,b] [--priority <n-or-Pn>]
+bd create --json --type <task|bug|feature> --title "<title>" [--description "<body>"] [--labels a,b] [--priority <n-or-Pn>]
 ```
 
 Parse the JSON **`id`** field from stdout. If `--json` is unavailable in an older `bd`, fall back to:
 
 ```bash
-bd create --silent --repo <resolved-repo> ...   # prints id only
+bd create --silent ...   # prints id only
 ```
 
 Then show the issue for the user:
@@ -73,7 +73,7 @@ Then show the issue for the user:
 bd show <id>
 ```
 
-**Report back:** new issue **id**, **title**, **type**, and **repo** path used.
+**Report back:** new issue **id**, **title**, **type**, and the sub-repo the title names, if any.
 
 ---
 

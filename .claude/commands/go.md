@@ -63,8 +63,7 @@ When input is a file path, parse the spec and create Beads tasks:
    ```bash
    bd create \
      --type <bug|feature|task|chore> \
-     --title "<derived title>" \
-     --repo <repo from spec or ask> \
+     --title "[<repo from spec or ask>] <derived title>" \
      --priority <value> \
      --acceptance "<acceptance criterion if identifiable>"
    ```

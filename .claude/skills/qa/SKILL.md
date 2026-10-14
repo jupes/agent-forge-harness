@@ -78,7 +78,7 @@ Use this body:
 Command shape:
 
 ```bash
-bd create --type bug --title "<user-facing issue title>" --description "<template markdown>" --priority <value> --repo <repo-or-.>
+bd create --type bug --title "[<repo>] <user-facing issue title>" --description "<template markdown>" --priority <value>
 ```
 
 #### Breakdown template

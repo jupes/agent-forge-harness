@@ -109,7 +109,7 @@ bd backup sync             # Push configured Dolt-native backups (not the same a
 bd federation sync         # Only if you use federation / peer sync mode
 bd ready                   # List unblocked, unclaimed tasks
 bd show <id>               # View issue details and AC
-bd create --type task --title "..." --repo <repo> [--priority <0–4|P0–P4|critical|high|medium|low>]
+bd create --type task --title "[<repo>] ..." [--priority <0–4|P0–P4|critical|high|medium|low>]   # no --repo: see Rules
 bd update <id> --claim     # Claim work
 bd update <id> --acceptance "..."  # Add acceptance criteria (flag is --acceptance, NOT --ac)
 bd close <id>              # Mark complete
@@ -151,7 +151,7 @@ nothing.
 - **Set priority on every new issue** — agents choose `--priority` when creating or triaging work (read `.claude/skills/beads-priority-assignment/SKILL.md`). Use **`P2` / `2` / `medium`** only when the rubric gives no signal; do not omit priority when your `bd` supports it.
 - Update issue status as you work (`in_progress` → `closed`)
 - Never close an issue without verified acceptance criteria
-- Multi-repo: create epics here, tasks in the owning sub-repo via `bd create --repo ./repos/<repo>`
+- Multi-repo: every issue lives in this tracker, sub-repo work included. Name the sub-repo at the start of the title (`[<repo>] <summary>`) and pass no `--repo` other than `--repo .`: `bd repo list` shows `.` as the only registered repository, and given any other `--repo`, `bd create` still prints an id but files the issue in a tracker under that path (making one if there is none), where no `bd show`, `bd list` or `bd export` run here finds it. `/add-repo` registers a sub-repo with the harness, not with `bd`.
 
 ---
 
