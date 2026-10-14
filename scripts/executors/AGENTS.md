@@ -104,8 +104,10 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   cleared before its handle closes; the watcher is killed before its pipe closes), so what a provider left running is
   left as before. `supervisor.test.ts` kills the stand-in harness with `Subprocess.kill("SIGKILL")` (TerminateProcess
   on Windows) and checks that neither the provider nor its child is left running, and that a provider that exits on
-  its own (`--fake-mode orphan`) leaves its child running. Run on Windows 11 (Bun 1.3.10) and on Linux in CI; not run
-  on macOS. Not covered: on Windows, a process the child starts before the assignment (it follows `Bun.spawn` at
+  its own (`--fake-mode orphan`) leaves its child running. `tree-guard.test.ts` kills a stand-in that holds only the
+  guard of a provider it did not start (`fixtures/guard-holder.ts`), so nothing but the guard can end it: the provider
+  ends, and its child (started before the guard) ends with it on Linux and is left running on Windows. Run on
+  Windows 11 (Bun 1.3.10) and on Linux in CI; not run on macOS. Not covered: on Windows, a process the child starts before the assignment (it follows `Bun.spawn` at
   once) or with breakaway; elsewhere, one that leaves the child's process group (for example by `setsid`). No real
   provider has been run under the guard; a `.cmd` shim's `cmd.exe` and the program it starts would both be in the
   job, which has not been observed.
