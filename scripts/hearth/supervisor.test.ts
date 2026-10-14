@@ -110,8 +110,16 @@ async function printedBy(
  * In that process: whether a plain `fetch` of the lock's health route got any
  * answer, and what `isHealthy` says of the lock.
  */
+/**
+ * The supervisor module, as the probe process loads it. Interpolated rather than
+ * written into its text: the import scan (`scripts/import-graph.ts`) reads this
+ * file's text, would take the line for a load of this file's own, and throws on
+ * a relative specifier it cannot resolve from here.
+ */
+const SUPERVISOR = JSON.stringify("./scripts/hearth/supervisor");
+
 const PROBE = `
-import { isHealthy } from "./scripts/hearth/supervisor";
+import { isHealthy } from ${SUPERVISOR};
 const lock = JSON.parse(process.env.PROBE_LOCK ?? "null");
 let fetchAnswered = true;
 try {

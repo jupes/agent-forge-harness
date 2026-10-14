@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { join, relative, sep } from "path";
 import { agentForgeHome } from "./agent-forge-home";
 import { hearthHome, lockPath, tokenPath } from "./hearth/home";
+import { runtimeSpecifiers } from "./import-graph";
 import { backupsDir, ledgerHome, ledgerPath } from "./ledger/paths";
 
 const DEFAULT = join(homedir(), ".agent-forge");
@@ -33,15 +34,12 @@ describe("the Agent Forge home", () => {
     }
   });
 
-  test("the module is a leaf: built-ins only", () => {
+  test("the module is a leaf: what it loads at runtime, in any form the import scan reads, is os and path only", () => {
     const source = readFileSync(
       join(import.meta.dir, "agent-forge-home.ts"),
       "utf8",
     );
-    const specifiers = [...source.matchAll(/from\s+"([^"]+)"/g)].map(
-      (match) => match[1],
-    );
-    expect(specifiers.sort()).toEqual(["os", "path"]);
+    expect(runtimeSpecifiers(source).sort()).toEqual(["os", "path"]);
   });
 
   test("what the ledger and the hearth keep in that directory cannot share a name", () => {

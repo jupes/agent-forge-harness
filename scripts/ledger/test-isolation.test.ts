@@ -1,26 +1,38 @@
 /**
- * Guard: the test suite cannot write the ledger under the user's home.
+ * Guard against the test suite writing the ledger under the user's home.
  *
  * Two halves. In this process, the preload has already moved the ledger to a
  * temp directory, so an emitter that names no ledger lands there. For child
  * processes — which may be handed an environment that drops the preload's
  * setting — every test file that can start a process is run again with the OS
- * home pointed at a scratch directory and no `AGENT_FORGE_HOME`: the default
- * home is then `<scratch>/.agent-forge`, and it must not appear. That
+ * home pointed at a scratch directory (`HOME` and `USERPROFILE` both) and no
+ * `AGENT_FORGE_HOME`: a child that keeps the OS home variable then has the
+ * default home `<scratch>/.agent-forge`, and it must not appear. That
  * directory is the hearth's as well as the ledger's, so a lock or token file
  * written there fails this too.
  *
  * "Can start a process" is decided by a scan, so a new test is covered without
- * being listed here: a test file is re-run when it, or any module it loads
- * (followed through relative imports), names one of the primitives in
- * `SPAWNS`. A test that starts a hearth through `scripts/hearth/supervisor.ts`
- * or an executor through `scripts/executors/` is therefore in, though the
- * test file itself spawns nothing.
+ * being listed here: a `*.test.ts` file under `scripts/` is re-run when it, or
+ * any module it loads (followed by `scripts/import-graph.ts`), names one of
+ * the primitives in `SPAWNS`. A test that starts a hearth through
+ * `scripts/hearth/supervisor.ts` or an executor through `scripts/executors/`
+ * is therefore in, though the test file itself spawns nothing.
  *
- * What this does not cover: a process started through a primitive that is not
- * in `SPAWNS`, or from inside a package other than the MCP stdio client; a
- * module reached only through an import whose specifier is computed; and a
- * child that writes somewhere other than the default home.
+ * What this does not cover:
+ * - a child whose environment has neither `AGENT_FORGE_HOME` nor the OS home
+ *   variable (`USERPROFILE` on Windows, `HOME` elsewhere). The OS home then
+ *   comes from the user's account, not the environment, so that child writes
+ *   under the real home in this re-run as in an ordinary run, and the scratch
+ *   directory never sees it.
+ * - a test file the scan does not list: only `*.test.ts` files under
+ *   `scripts/` are read, though `bun test` also runs other names (`.test.tsx`,
+ *   `.spec.ts`, `_test.ts`; there are none today). The Playwright specs under
+ *   `tests/e2e` are not run by `bun test` at all.
+ * - a process started through a primitive that is not in `SPAWNS`, or from
+ *   inside a package other than the MCP stdio client;
+ * - a module the import scan does not follow (its header lists what it cannot
+ *   see, such as a computed specifier);
+ * - a child that writes somewhere other than the default home.
  */
 
 import { Database } from "bun:sqlite";
