@@ -626,14 +626,13 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     ]);
   }, 60_000);
 
-  test("forge:review says when the evaluator would not satisfy strict completion, and still records the round", async () => {
+  test("an evaluator observed to rank below the builder grades nothing: forge:review records the round UNREADABLE and halts", async () => {
     const box = await correlatedRun([
       "--provider",
       "claude",
       "--model",
       "claude-opus-5-5",
     ]);
-    const hermetic = scratchHome(box);
     const weaker = await review(
       box,
       v2Json({
@@ -642,14 +641,56 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
           observedModel: "claude-haiku-4-5-20251001",
         },
       }),
-      hermetic,
+      scratchHome(box),
     );
-    expect(weaker.exitCode).toBe(0);
+    expect(weaker.exitCode).toBe(2);
     expect(weaker.stderr).not.toContain("smith config not readable");
     expect(weaker.data.evaluatorProblem).toBe(
       "observed evaluator claude/claude-haiku-4-5-20251001 (rank apprentice) is below the builder's rank (master)",
     );
-    expect(weaker.data.round).toMatchObject({ verdict: "PASS" });
+    expect(weaker.data.verdictError).toBe(
+      "observed evaluator claude/claude-haiku-4-5-20251001 (rank apprentice) is below the builder's rank (master), so its verdict grades no round of this run",
+    );
+    expect(weaker.data.round).toMatchObject({
+      round: 1,
+      verdict: "UNREADABLE",
+      action: "halt",
+    });
+    expect(weaker.data.decision).toMatchObject({ action: "halt" });
+    // Bound as a verdict forge:review could not use: no evaluator, no file.
+    const bound = boundRows(box).map((event) => event.payload);
+    expect(bound.map((payload) => payload.verdict)).toEqual(["unreadable"]);
+    expect("verdictArtifact" in (bound[0] ?? {})).toBe(false);
+    expect("evaluatorIdentity" in (bound[0] ?? {})).toBe(false);
+    const state = parseState(
+      readFileSync(
+        join(box.cwd, ".tmp", "work", "forge-runs", "x.json"),
+        "utf8",
+      ),
+    );
+    expect(state?.reviews?.map((round) => round.verdict)).toEqual([
+      "UNREADABLE",
+    ]);
+  }, 60_000);
+
+  test("forge:review says when the evaluator would not satisfy strict completion with no lower rank observed, and still grades the round", async () => {
+    const box = await correlatedRun([
+      "--provider",
+      "claude",
+      "--model",
+      "claude-opus-5-5",
+    ]);
+    const hermetic = scratchHome(box);
+    // Observed at the builder's rank: nothing to object to.
+    const equal = await review(
+      box,
+      v2Json({
+        evaluator: { ...MODEL_EVALUATOR, observedModel: "claude-opus-5-5" },
+      }),
+      hermetic,
+    );
+    expect(equal.exitCode).toBe(0);
+    expect("evaluatorProblem" in equal.data).toBe(false);
 
     const human = await review(
       box,
@@ -675,6 +716,10 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     expect(unranked.stderr).toContain(
       "forge:review: smith config not readable, so no evaluator has a rank:",
     );
+    // Reported, not enforced: with no rank observed, the findings decide.
+    expect(unranked.exitCode).toBe(0);
+    expect(unranked.data.verdictError).toBeUndefined();
+    expect(unranked.data.round).toMatchObject({ round: 3, verdict: "PASS" });
   }, 180_000);
 
   /**

@@ -14,6 +14,12 @@
  * is also appended to the event ledger as `verdict.bound` (the verdict file
  * as read) and `review.recorded` (the decision).
  *
+ * A verdict whose model evaluator was observed to rank below the builder is
+ * as unusable as one that is not the run's: its round is recorded
+ * `UNREADABLE` (`observedBelowBuilder`). Anything else a strict gate would
+ * object to in the evaluator is reported as `data.evaluatorProblem`, and the
+ * round is graded on its findings.
+ *
  * Three things are refused before a round is recorded: a command line that
  * cannot be read whole (`parseReviewArgs`); a verdict file whose digest a
  * round of the run was already graded from, since a verdict grades one round;
@@ -57,6 +63,7 @@ import {
   decideNext,
   haltHandoff,
   nextRoundOf,
+  observedBelowBuilder,
   recordRound,
   reviewComment,
   roundFromVerdict,
@@ -352,18 +359,12 @@ if (import.meta.main) {
       } else verdictError = mine.error;
     }
   }
-  const artifact =
-    verdict !== null && read.ok
-      ? {
-          path: recordedPath(checkout, verdictPath),
-          sha256: read.sha256,
-          bytes: read.bytes,
-          schemaVersion: verdict.schemaVersion,
-        }
-      : null;
 
-  // Whether the evaluator would satisfy strict completion. Reported, not
-  // enforced: the review loop's own rule is the verdict's findings.
+  // Whether the evaluator would satisfy strict completion. One objection is
+  // enforced, because it rests on an observation: an evaluator observed to
+  // rank below the builder grades nothing, and the round is recorded as one
+  // with no usable verdict. Every other objection is reported, and the
+  // round is graded on its findings.
   let evaluatorProblem: string | null = null;
   if (verdict?.evaluator.kind === "model") {
     let smiths: Parameters<typeof strictEvaluatorProblem>[1]["smiths"] = [];
@@ -377,11 +378,27 @@ if (import.meta.main) {
         `forge:review: smith config not readable, so no evaluator has a rank: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    evaluatorProblem = strictEvaluatorProblem(verdict.evaluator, {
+    const ranks = {
       smiths,
       ...(state.executor ? { builder: state.executor } : {}),
-    });
+    };
+    evaluatorProblem = strictEvaluatorProblem(verdict.evaluator, ranks);
+    const weaker = observedBelowBuilder(verdict.evaluator, ranks);
+    if (weaker !== null) {
+      verdict = null;
+      verdictError = weaker;
+    }
   }
+
+  const artifact =
+    verdict !== null && read.ok
+      ? {
+          path: recordedPath(checkout, verdictPath),
+          sha256: read.sha256,
+          bytes: read.bytes,
+          schemaVersion: verdict.schemaVersion,
+        }
+      : null;
 
   const graded = roundFromVerdict({
     phase,

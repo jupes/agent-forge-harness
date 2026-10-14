@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { EvaluatorIdentity } from "../../types/hearth";
+import { BUILTIN_SMITHS } from "../config/defaults";
 import { type EvalVerdict, parseEvalVerdictJson } from "../eval-verdict";
 import {
   DEFAULT_MAX_REVISIONS,
   decideNext,
   haltHandoff,
   nextRoundOf,
+  observedBelowBuilder,
   type ReviewRound,
   recordRound,
   reviewComment,
@@ -351,6 +354,87 @@ describe("exit codes let an unattended caller branch without parsing", () => {
     expect(exitCodeFor("advance")).toBe(0);
     expect(exitCodeFor("revise")).toBe(3);
     expect(exitCodeFor("halt")).toBe(2);
+  });
+});
+
+describe("observedBelowBuilder: the one evaluator problem the review loop enforces", () => {
+  const smiths = Object.values(BUILTIN_SMITHS);
+  const opus = { provider: "claude", model: "claude-opus-5-5" };
+  const sonnet = { provider: "claude", model: "claude-sonnet-5-5" };
+
+  /** A model evaluator that asked for a master and was observed as `observed`, when given. */
+  function model(
+    observed?: { provider: string; model: string },
+    own: Partial<EvaluatorIdentity> = {},
+  ): EvaluatorIdentity {
+    return {
+      kind: "model",
+      requestedProvider: "claude",
+      requestedModel: "claude-opus-5-5",
+      requestedRank: "master",
+      ...(observed
+        ? {
+            observedProvider: observed.provider,
+            observedModel: observed.model,
+            providerEvidence: "selected-direct-transport",
+            modelEvidence: "response-field",
+          }
+        : {}),
+      rankPolicyDecision: "allowed",
+      rankPolicyRule: "evaluator-at-or-above-builder",
+      ...own,
+    } as EvaluatorIdentity;
+  }
+
+  test("an evaluator observed on a model ranked below the builder's is named, with both ranks", () => {
+    expect(observedBelowBuilder(model(sonnet), { smiths, builder: opus })).toBe(
+      "observed evaluator claude/claude-sonnet-5-5 (rank journeyman) is below the builder's rank (master), so its verdict grades no round of this run",
+    );
+  });
+
+  test("an evaluator observed at or above the builder's rank is not", () => {
+    expect(
+      observedBelowBuilder(model(opus), { smiths, builder: sonnet }),
+    ).toBeNull();
+    expect(
+      observedBelowBuilder(model(sonnet), { smiths, builder: sonnet }),
+    ).toBeNull();
+  });
+
+  test("what strict completion objects to without an observed lower rank is left to be reported: nothing observed, an unranked model, no builder rank, the verdict's own rejection, a person", () => {
+    // Nothing observed: the request is no evidence of a rank.
+    expect(observedBelowBuilder(model(), { smiths, builder: opus })).toBeNull();
+    // An observed model no ranked smith uses has no rank to compare.
+    expect(
+      observedBelowBuilder(
+        model({ provider: "claude", model: "house-model" }),
+        { smiths, builder: opus },
+      ),
+    ).toBeNull();
+    // No builder on record, or one whose model has no rank.
+    expect(observedBelowBuilder(model(sonnet), { smiths })).toBeNull();
+    expect(
+      observedBelowBuilder(model(sonnet), {
+        smiths,
+        builder: { provider: "claude", model: "house-model" },
+      }),
+    ).toBeNull();
+    // The verdict recorded its own rejection, but the policy as computed passes.
+    expect(
+      observedBelowBuilder(
+        model(opus, {
+          rankPolicyDecision: "rejected",
+          rankPolicyRule: "evaluator-below-builder",
+        }),
+        { smiths, builder: sonnet },
+      ),
+    ).toBeNull();
+    expect(
+      observedBelowBuilder(
+        { kind: "human", actorKind: "reviewer" },
+        { smiths, builder: opus },
+      ),
+    ).toBeNull();
   });
 });
 

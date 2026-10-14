@@ -18,7 +18,9 @@
  * Pure functions only; `auto-loop-cli.ts` is what touches disk.
  */
 
+import type { EvaluatorIdentity, Smith } from "../../types/hearth";
 import type { EvalVerdict, EvalVerdictParsed } from "../eval-verdict";
+import { observedRankPolicy, type RankedExecutor } from "../evaluator-policy";
 import { phaseCommand } from "./phase-gate";
 import type {
   ForgePhase,
@@ -73,6 +75,41 @@ export function roundLabelProblem(
   return verdict.review === label
     ? null
     : `names review round "${verdict.review}"`;
+}
+
+/**
+ * Why a round's verdict grades nothing because of who judged it, or null.
+ *
+ * Grader >= subject is enforced here only on an observation: a model
+ * evaluator whose observed provider and model rank below the builder's, by
+ * the configured smiths. Whatever else strict completion objects to (nothing
+ * observed, an observed model with no rank, a builder with no known rank, the
+ * verdict's own recorded rejection) is reported by `forge:review`, not
+ * enforced: a machine with no session model cached for the reviewer would
+ * otherwise halt every unattended run.
+ */
+export function observedBelowBuilder(
+  evaluator: EvaluatorIdentity,
+  context: { smiths: readonly Smith[]; builder?: RankedExecutor },
+): string | null {
+  if (
+    evaluator.kind !== "model" ||
+    evaluator.observedProvider === undefined ||
+    evaluator.observedModel === undefined
+  ) {
+    return null;
+  }
+  const policy = observedRankPolicy({
+    observed: {
+      provider: evaluator.observedProvider,
+      model: evaluator.observedModel,
+    },
+    ...(context.builder ? { builder: context.builder } : {}),
+    smiths: context.smiths,
+  });
+  return policy.rule === "evaluator-below-builder"
+    ? `observed evaluator ${evaluator.observedProvider}/${evaluator.observedModel} (rank ${policy.evaluatorRank}) is below the builder's rank (${policy.builderRank}), so its verdict grades no round of this run`
+    : null;
 }
 
 /** Turn an evaluator verdict (or a failure to read one) into a review round. */

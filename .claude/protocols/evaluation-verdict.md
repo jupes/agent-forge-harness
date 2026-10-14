@@ -167,9 +167,10 @@ An unattended run reviews each phase, possibly several times, so one run has sev
 - refuses, and records nothing, a verdict of the run that does not name the round it would record (`<phase>-<round>`: the `--phase` it was given and that phase's next round number): one naming another round or another phase, and one naming none (the run's own verdict, or a round verdict filed before `forge:verdict` wrote its round into the file). The refusal names the round it expected and the `forge:verdict --review` line that files it;
 - reads the file once and records its path, digest and size in the `verdict.bound` event, and the digest on the round;
 - refuses, and records nothing, a file whose digest a round of the run was already graded from, whatever its path and whichever phase it is given for: a verdict grades one round. A round verdict names its round, so a file refused this way is an earlier round's verdict given again, never a second honest verdict that happens to have the same bytes: no `--summary` is needed to tell two rounds' verdicts apart;
-- reports, without enforcing, when the evaluator would not satisfy strict completion.
+- records the round `UNREADABLE` (a halt) when its model evaluator was **observed** on a provider and model that rank below the builder's (the rank policy's `evaluator-below-builder`, from the configured smiths and the run's recorded builder): a grader known to be weaker grades nothing. `data.verdictError` says so;
+- reports, without enforcing, anything else that would keep the evaluator from satisfying strict completion (`data.evaluatorProblem`): nothing observed, an observed model no ranked smith uses, a builder whose rank is unknown, a verdict that recorded its own rejection. That round is graded on its findings.
 
-So a `verdict.bound` event is not by itself evidence of strict completion: `forge:review` emits one for a round's verdict whatever its evaluator. Strict completion is a linked gate log entry whose `eval-verdict` check passed and which carries `evaluatorArtifact`.
+So a `verdict.bound` event is not by itself evidence of strict completion: `forge:review` emits one for a round's verdict whenever its evaluator is not observed to rank below the builder. Strict completion is a linked gate log entry whose `eval-verdict` check passed and which carries `evaluatorArtifact`.
 
 ## Legacy verdicts (schema 1)
 
