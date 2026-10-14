@@ -61,8 +61,12 @@ process spawned is git, by the registry.
   to the same state in the same call, because `bd create --parent` copies the parent's labels onto
   the child and not its metadata. A label with no such backing (inherited, or added by hand) is
   refused for every action but `propose`, which puts the bead in the queue as `proposed`. So queue
-  state is not inherited. Read only the issue's own top-level `labels` and `metadata`: `bd show` of
-  a child also prints its parent's metadata, under `dependencies`.
+  state is not inherited, and neither is approval (decision 5, amended by `x1gs.5.7`): a child of an
+  approved or queued bead reaches `approved` only by an operator's `approve` of that child.
+  `queue.test.ts` tries every move from a child of a parent in each state until nothing new is
+  reached; keep it when changing the table or the backing. Read only the issue's own top-level
+  `labels` and `metadata`: `bd show` of a child also prints its parent's metadata, under
+  `dependencies`.
 - A bead with two queue labels, or a `queue:` label that is not a state, is in no state: every
   action is refused and the message says how to take it out by hand. Any by-hand removal of a queue
   label must also unset `queue_state` and `queue_resume`, or a label put back later would count as
@@ -115,7 +119,9 @@ process spawned is git, by the registry.
 - Tests are hermetic: `queue-fixture.ts` is an in-memory tracker that answers the queue's `bd` calls
   (`show` of one id or several, label/metadata `update`, and the `list` shapes of `GET /queue` and
   eligibility, via `answerQueueList`) as bd 1.1.0 was measured to; the browser suite's `bd` stand-in
-  answers through it too, and the ledger and the lock are in temp directories.
+  answers through it too, and the ledger and the lock are in temp directories. It answers no
+  `create`: `childOf(parent, id)` makes a child as `bd create --parent` does (every label of the
+  parent, none of its metadata); build inherited children with it, not by hand.
   `queue-bd.test.ts` compares that fixture with a real `bd` and walks the machine on it; it is
   skipped unless `AGENT_FORGE_SCRATCH_TRACKER` names a scratch tracker (its own git repository, no
   remote of either kind), and is run by hand after any change to the `bd` calls or the fixture.
