@@ -3,6 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { isMain } from "../is-main";
 import { parseBeadsIssueId } from "../run-correlation";
 import { assertCouncilRunId } from "./artifacts";
 import {
@@ -421,7 +422,7 @@ export function createCouncilMcpServer(
   return server;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   // Loaded here, not at the top: the ledger needs Bun's SQLite, and this
   // module's exports are imported by callers that must not load it.
   const { councilLedger } = await import("./ledger-wiring");

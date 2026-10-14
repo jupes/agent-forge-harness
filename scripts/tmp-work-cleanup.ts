@@ -70,6 +70,7 @@ import {
   readEvaluationFile,
 } from "./eval-verdict-store";
 import { comparableCheckout } from "./forge/runs";
+import { isMain } from "./is-main";
 import { queryEvents } from "./ledger/query";
 import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATIONS_DIR } from "./run-correlation";
@@ -743,7 +744,7 @@ export async function runTmpWorkCleanup(
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const envelope = await runTmpWorkCleanup({
     cwd: process.cwd(),
     runBd: runBdOnPath,

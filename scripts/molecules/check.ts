@@ -11,6 +11,7 @@
 
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
+import { isMain } from "../is-main";
 import { parseMoleculeJson } from "./parse";
 
 const MOL_DIR = join(process.cwd(), ".claude", "molecules");
@@ -93,6 +94,6 @@ function main(): void {
   if (!allOk) process.exit(1);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   main();
 }
