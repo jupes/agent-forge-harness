@@ -1861,9 +1861,7 @@ describe("client against a real hearth", () => {
       expect(client.getState().sessions.data).toEqual(
         first.data as SessionSummary[],
       );
-      expect(names(client.getState().sessions.data)).toEqual(
-        newest(600, 100),
-      );
+      expect(names(client.getState().sessions.data)).toEqual(newest(600, 100));
 
       // Each held session speaks again or ends, and 450 new ones start.
       hearth.append({
