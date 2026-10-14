@@ -25,6 +25,7 @@ import { resolveCheckout } from "../ledger/workspace";
 import { createQueue } from "./queue";
 import {
   answerQueueList,
+  childOf,
   type QueueTracker,
   queueTracker,
   type TrackedBead,
@@ -371,7 +372,8 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(r.fake.maxLive()).toBe(1);
   });
 
-  test("only queued beads are taken: a proposed and an approved bead are not started until an operator queues them", async () => {
+  test("only queued beads are taken: a proposed bead, an approved one and the child of a queued one are not started until an operator queues them", async () => {
+    const parent = queued("t-q");
     const r = rig([
       {
         ...queued("t-p"),
@@ -383,16 +385,16 @@ describe("forge:shift — the loop, on a fake adapter", () => {
         labels: ["queue:approved"],
         metadata: { queue_state: "approved" },
       },
-      // Inherited from a parent: the label without the queue's own backing.
-      { ...queued("t-i"), metadata: {} },
-      queued("t-q"),
+      // Made as `bd create --parent` makes it: the parent's queue:queued label, none of its backing.
+      childOf(parent, "t-q.1"),
+      parent,
     ]);
     const done = await shift(r, { concurrency: 2 });
     expect(done.reason).toBe("drained");
     expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-q"]);
     expect(r.labels("t-p")).toEqual(["queue:proposed"]);
     expect(r.labels("t-a")).toEqual(["queue:approved"]);
-    expect(r.labels("t-i")).toEqual(["queue:queued"]);
+    expect(r.labels("t-q.1")).toEqual(["queue:queued"]);
     expect(r.labels("t-q")).toEqual(["queue:review"]);
   });
 
