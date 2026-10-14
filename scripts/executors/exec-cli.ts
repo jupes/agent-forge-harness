@@ -17,16 +17,28 @@
  * stops the provider: the envelope reports `recorded`, `notRecorded` and the
  * first `ledgerError`, and `ledger` names the file written.
  *
- * With --run, the run's correlation (`scripts/run-correlation.ts`) is written
- * in the worktree and its path put in the child's environment, so a quality
- * gate that runs inside the child is linked to this bead and run. The worktree
- * must be a checkout's top level for that. A run already correlated to
- * another bead is left alone. Whenever no pointer is handed on, a gate inside
- * the child runs unlinked and `data.correlationNote` says why; the run's
- * ledger events and the adapter's variables still carry --bead and --run. The
- * child never inherits a pointer from this process.
+ * A --run value that is not a Forge run id (a run's slug) is refused before
+ * anything is started or written. With --run, the run's correlation
+ * (`scripts/run-correlation.ts`) is written in the worktree and its path put
+ * in the child's environment, so a quality gate that runs inside the child is
+ * linked to this bead and run. The worktree must be a checkout's top level for
+ * that. A run already correlated to another bead is left alone. Whenever no
+ * pointer is handed on, a gate inside the child runs unlinked and
+ * `data.correlationNote` says why. The child still runs, and the run's ledger
+ * events and the adapter's variables still carry --bead and --run: a run moves
+ * from one bead to the next (`.claude/workflows/forge.md`), so they record the
+ * bead this session was launched for, while the correlation records the bead a
+ * gate in the run is checked against. The child never inherits a pointer from
+ * this process.
  *
- * Exit code 0 when the provider exits 0, 2 otherwise — whatever the ledger did.
+ * Exit code 0 when the provider exits 0 and reported no error in its stream,
+ * 2 otherwise — whatever the ledger did. A provider that exits 0 after
+ * reporting an error (one whose tool host was missing did) is not a success.
+ * `error` gives the provider's own reason after its exit code: the first
+ * error it reported, else the last line of its stderr. `data.providerErrors`
+ * and `data.stderr` (its end) hold that text, which never reaches the ledger:
+ * `session.ended` records `failed: exit <n>`, or
+ * `failed: exit 0, provider reported an error`.
  */
 
 import { existsSync, readFileSync } from "fs";
@@ -38,6 +50,7 @@ import {
 } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
+import { isValidSlug } from "../forge/runs";
 import { readSessionMirror } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
 import { resolveCheckout } from "../ledger/workspace";
@@ -48,6 +61,7 @@ import {
   type RunCorrelationReport,
 } from "../run-correlation-store";
 import { buildChildEnv } from "./env";
+import { runFailure } from "./outcome";
 import { ADAPTERS } from "./registry";
 import { ledgerSink } from "./sinks";
 import type { EventSink, ExecutorAdapter, SinkResult } from "./types";
@@ -184,6 +198,12 @@ export async function runExec(
   if (complexity && !(BENCH_NAMES as readonly string[]).includes(complexity)) {
     return failure(`--complexity must be one of ${BENCH_NAMES.join(", ")}`);
   }
+  const runId = args.get("run");
+  if (runId && !isValidSlug(runId)) {
+    return failure(
+      "--run must be a Forge run id: a letter or digit, then letters, digits, dot, dash or underscore (80 at most)",
+    );
+  }
 
   let loaded: ReturnType<typeof loadConfig>;
   try {
@@ -221,7 +241,6 @@ export async function runExec(
     return failure("--timeout-ms must be a positive number");
   }
 
-  const runId = args.get("run");
   const correlated = correlateChild({
     worktree: resolve(worktree),
     beadId,
@@ -270,7 +289,8 @@ export async function runExec(
     else ledgerError ??= stored.error;
   }
   const result = await handle.done;
-  const ok = result.exitCode === 0 && !result.timedOut;
+  const runError = runFailure(result);
+  const ok = runError === null;
   return {
     code: ok ? 0 : 2,
     body: {
@@ -287,14 +307,12 @@ export async function runExec(
         ledger: deps.sink ? null : (deps.ledgerPath ?? ledgerPath()),
         exitCode: result.exitCode,
         timedOut: result.timedOut,
+        providerErrors: result.providerErrors,
+        stderr: result.stderr,
         correlation: correlated.correlation,
         ...(correlated.note ? { correlationNote: correlated.note } : {}),
       },
-      error: ok
-        ? null
-        : result.timedOut
-          ? "timed out"
-          : `provider exited ${result.exitCode}`,
+      error: runError,
     },
   };
 }

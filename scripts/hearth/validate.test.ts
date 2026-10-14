@@ -39,7 +39,11 @@ const PAYLOADS: {
     bad: { source: 7 },
   },
   "session.ended": {
-    good: { reason: "clear", durationMs: 1200 },
+    good: {
+      reason: "clear",
+      durationMs: 1200,
+      usage: { inputTokens: 900, outputTokens: 40, costUsd: 0.02 },
+    },
     bad: { durationMs: "long" },
   },
   "tool.called": {
@@ -492,6 +496,7 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
       { action: "claim" },
       { action: "comment", hash: HASH, length: 0 },
       { action: "close", hash: HASH, length: 1000 },
+      { action: "reassign" },
     ]) {
       expect({ payload, refusal: refusal(payload) }).toEqual({
         payload,
@@ -592,6 +597,42 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
         action,
         refusal: expect.stringContaining("payload."),
       });
+    }
+  });
+});
+
+describe("session.ended — the usage a provider reported", () => {
+  const ended = (usage: unknown) =>
+    validateLedgerEventInput(
+      input("session.ended", { reason: "completed", usage }),
+    );
+
+  test("accepts every token count it names and a cost", () => {
+    expect(
+      ended({
+        inputTokens: 1,
+        outputTokens: 2,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningOutputTokens: 3,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 5,
+        costUsd: 0.01,
+      }).ok,
+    ).toBe(true);
+  });
+
+  test("refuses a count that is not a non-negative integer, a cost that is not a number, and a usage that is not an object", () => {
+    for (const usage of [
+      { inputTokens: -1 },
+      { outputTokens: 1.5 },
+      { cachedInputTokens: "3" },
+      { reasoningOutputTokens: null },
+      { costUsd: "free" },
+      "lots",
+      [1],
+    ]) {
+      expect({ usage, ok: ended(usage).ok }).toEqual({ usage, ok: false });
     }
   });
 });

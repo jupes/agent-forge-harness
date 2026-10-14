@@ -32,8 +32,9 @@ bd ready | grep -i "<keyword from task description>"
 Load knowledge first, then map affected code. **All read-only in this step.**
 
 ```bash
-# 1a. Load knowledge
-cat knowledge/repos/<repo>.yaml
+# 1a. Load knowledge. A repo has a file only after /add-repo or /sync-knowledge has been run
+# for it, and knowledge/repos/ is empty in a fresh checkout: with none, say so and map from the code.
+cat knowledge/repos/<repo>.yaml 2>/dev/null || echo "no knowledge file for <repo>"
 
 # 1b. Map affected files
 # Use Glob and Grep — do NOT open every file

@@ -16,6 +16,11 @@
  *     example. No vendor key shape known to this list looks like that.
  * Nothing else is known: the corpus test compares against `ORIGINAL` directly,
  * and is only as wide as its corpus.
+ *
+ * After them: fine-grained GitHub tokens, credentials written into a URL, and
+ * private keys, including a key with only one of its two marker lines. Every
+ * token, password and key those tests use is put together from pieces, so
+ * none of them is written out whole in this file.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -234,4 +239,281 @@ describe("sk- key patterns", () => {
     expect(originalMatches(text).length).toBe(1);
     expect(redactSecrets(text).text).toBe(text);
   });
+});
+
+const MEGABYTE = 1024 * 1024;
+
+/** `line` repeated until the text is at least `bytes` characters long. */
+function repeatedTo(line: string, bytes: number): string {
+  return line.repeat(Math.ceil(bytes / line.length));
+}
+
+/** `redactSecrets` over `text`, and how many milliseconds it took. */
+function timed(text: string): {
+  ms: number;
+  result: ReturnType<typeof redactSecrets>;
+} {
+  const started = performance.now();
+  const result = redactSecrets(text);
+  return { ms: performance.now() - started, result };
+}
+
+/** Well under a second, with room for a loaded machine. */
+const SCAN_BUDGET_MS = 250;
+
+/** Fake GitHub tokens: the classic shape and the fine-grained one. */
+const CLASSIC_TOKEN = ["ghp", "_", "Zq9".repeat(12)].join("");
+const FINE_GRAINED_TOKENS: readonly string[] = [
+  ["github_pat_", "A".repeat(82)].join(""),
+  // Laid out like a real one: 22 characters, an underscore, 59 characters.
+  ["github_pat_", "Zq9".repeat(7), "Z", "_", "Wx8".repeat(19), "Wx"].join(""),
+];
+
+/** Private key marker lines, put together so no whole one is written here. */
+const RULE = "-".repeat(5);
+const KEY_TYPES: readonly string[] = ["", "RSA ", "EC ", "OPENSSH ", "DSA "];
+const beginLine = (type: string): string =>
+  `${RULE}BEGIN ${type}PRIVATE KEY${RULE}`;
+const endLine = (type: string): string =>
+  `${RULE}END ${type}PRIVATE KEY${RULE}`;
+const KEY_BODY: readonly string[] = ["Zq9Zq8Zq7".repeat(7), "Wx8".repeat(21)];
+const keyBlock = (type: string): string =>
+  [beginLine(type), ...KEY_BODY, endLine(type)].join("\n");
+
+/** Whether any line of the fake key body is still in `text`. */
+const keepsBody = (text: string): boolean =>
+  KEY_BODY.some((line) => text.includes(line));
+
+describe("GitHub tokens", () => {
+  test("a fine-grained github_pat_ token is redacted as a github-token, alone and inside text", () => {
+    for (const token of FINE_GRAINED_TOKENS) {
+      for (const [prefix, suffix] of [
+        ["", ""],
+        ["GH_TOKEN=", "\n"],
+        ['{"token":"', '"}'],
+        ["the token is ", " and it expires soon"],
+      ]) {
+        const text = `${prefix}${token}${suffix}`;
+        const result = redactSecrets(text);
+        expect({ text, redacted: result.text }).toEqual({
+          text,
+          redacted: `${prefix}[REDACTED:github-token]${suffix}`,
+        });
+        expect(result.redactions).toEqual([{ kind: "github-token", count: 1 }]);
+      }
+    }
+  });
+
+  test("a classic ghp_ token is still redacted as a github-token", () => {
+    expect(redactSecrets(`token ${CLASSIC_TOKEN}`)).toEqual({
+      text: "token [REDACTED:github-token]",
+      redactions: [{ kind: "github-token", count: 1 }],
+    });
+  });
+
+  test("the github_pat_ prefix named in prose, or starting a snake_case name, is left alone", () => {
+    for (const text of [
+      "fine-grained tokens start with github_pat_ and expire",
+      "const github_pat_expiry_warning_days = 7;",
+    ]) {
+      expect(redactSecrets(text)).toEqual({ text, redactions: [] });
+    }
+  });
+});
+
+describe("credentials in a URL", () => {
+  const secret = "Zq9".repeat(6);
+  const url = (scheme: string, userinfo: string, rest: string): string =>
+    `${scheme}://${userinfo}@${rest}`;
+  const withCredentials: ReadonlyArray<[string, string, string]> = [
+    ["scheme", ["user", "password"].join(":"), "host"],
+    ["https", `user:${secret}`, "example.com/owner/repo.git"],
+    ["https", `x-access-token:${secret}`, "github.com/owner/repo.git"],
+    ["https", `${secret}:x-oauth-basic`, "github.com/owner/repo"],
+    ["postgres", `app:${secret}`, "db.internal:5432/app?sslmode=require"],
+    ["redis", `:${secret}`, "cache.internal:6379/0"],
+    ["https", `user:p@ss${secret}`, "example.com/"],
+    ["https", `user:a:b${secret}`, "example.com/"],
+    ["https", `user:%40${secret}`, "example.com/"],
+  ];
+
+  test("the user and password of scheme://user:password@host are redacted; the scheme and the host are kept", () => {
+    for (const [scheme, userinfo, rest] of withCredentials) {
+      const text = url(scheme, userinfo, rest);
+      const result = redactSecrets(text);
+      expect({ text, redacted: result.text }).toEqual({
+        text,
+        redacted: `${scheme}://[REDACTED:url-credentials]@${rest}`,
+      });
+      expect(result.redactions).toEqual([
+        { kind: "url-credentials", count: 1 },
+      ]);
+    }
+  });
+
+  test("a URL with credentials is redacted inside a command, a JSON string and Markdown", () => {
+    const remote = url("https", `deploy:${secret}`, "example.com/o/r.git");
+    for (const [prefix, suffix] of [
+      ["git remote set-url origin ", " && git push"],
+      ['{"remote":"', '"}'],
+      ["[the remote](", ")"],
+      ["<", ">"],
+    ]) {
+      const text = `${prefix}${remote}${suffix}`;
+      const result = redactSecrets(text);
+      expect({ text, redacted: result.text }).toEqual({
+        text,
+        redacted: `${prefix}https://[REDACTED:url-credentials]@example.com/o/r.git${suffix}`,
+      });
+    }
+  });
+
+  test("a fine-grained token used as the password of a remote URL does not survive", () => {
+    for (const token of FINE_GRAINED_TOKENS) {
+      const text = url("https", `x-access-token:${token}`, "github.com/o/r");
+      const result = redactSecrets(text);
+      expect(result.text).not.toContain(token.slice("github_pat_".length));
+      expect(result.redactions.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("an ordinary URL, an scp-style remote, a URL with a user but no password, and a colon or @ outside the userinfo are left alone", () => {
+    for (const text of [
+      "https://host/path",
+      "https://example.com:8443/a/b?x=1#frag",
+      "git@github.com:owner/repo",
+      "git@github.com:owner/repo.git",
+      "ssh://git@github.com/owner/repo.git",
+      "ssh://git@github.com:22/owner/repo.git",
+      "https://user@example.com/path",
+      "https://token@github.com/owner/repo",
+      "https://user:@example.com/path",
+      "https://example.com/login?next=a:b@c",
+      "https://example.com/people/me:work@home",
+      "https://example.com#a:b@c",
+      "http://[::1]:8080/path",
+      "mailto:someone@example.com",
+      "see https://example.com:8443, or write to someone@example.com",
+      "the form is scheme://host:port/path",
+    ]) {
+      expect(redactSecrets(text)).toEqual({ text, redactions: [] });
+    }
+  });
+
+  test("a redacted URL scanned again finds nothing more", () => {
+    for (const [scheme, userinfo, rest] of withCredentials) {
+      const once = redactSecrets(url(scheme, userinfo, rest)).text;
+      expect(redactSecrets(once)).toEqual({ text: once, redactions: [] });
+    }
+  });
+});
+
+describe("private keys", () => {
+  test("a key with its BEGIN and END lines is redacted whole, and the text around it is kept", () => {
+    for (const type of KEY_TYPES) {
+      expect(redactSecrets(`before\n${keyBlock(type)}\nafter`)).toEqual({
+        text: "before\n[REDACTED:private-key]\nafter",
+        redactions: [{ kind: "private-key", count: 1 }],
+      });
+    }
+  });
+
+  test("a key with a BEGIN line but no END line is redacted from that line to the end of the text", () => {
+    for (const type of KEY_TYPES) {
+      for (const cut of [
+        [beginLine(type), ...KEY_BODY].join("\n"),
+        [beginLine(type), KEY_BODY[0]].join("\n"),
+        beginLine(type),
+      ]) {
+        const text = `before\n${cut}`;
+        expect({ text, result: redactSecrets(text) }).toEqual({
+          text,
+          result: {
+            text: "before\n[REDACTED:private-key]",
+            redactions: [{ kind: "private-key", count: 1 }],
+          },
+        });
+      }
+    }
+  });
+
+  test("a key with an END line but no BEGIN line is redacted from the start of the text to that line", () => {
+    for (const type of KEY_TYPES) {
+      const text = [...KEY_BODY, endLine(type), "after"].join("\n");
+      expect({ type, result: redactSecrets(text) }).toEqual({
+        type,
+        result: {
+          text: "[REDACTED:private-key]\nafter",
+          redactions: [{ kind: "private-key", count: 1 }],
+        },
+      });
+    }
+  });
+
+  test("an END line after a whole key is redacted back to where that key ended", () => {
+    const text = [
+      keyBlock("RSA "),
+      "between",
+      KEY_BODY[1],
+      endLine("RSA "),
+      "after",
+    ].join("\n");
+    const result = redactSecrets(text);
+    expect(keepsBody(result.text)).toBe(false);
+    expect(result.text).not.toContain("between");
+    expect(result.text.endsWith("\nafter")).toBe(true);
+    expect(result.redactions).toEqual([{ kind: "private-key", count: 2 }]);
+  });
+
+  test("a provider variable assigned directly before a key block leaves none of the key behind", () => {
+    for (const type of KEY_TYPES) {
+      for (const assigned of ["OPENAI_API_KEY=", "ANTHROPIC_API_KEY: "]) {
+        const result = redactSecrets(`${assigned}${keyBlock(type)}\nafter`);
+        expect({ type, assigned, kept: keepsBody(result.text) }).toEqual({
+          type,
+          assigned,
+          kept: false,
+        });
+        expect(result.text).not.toContain("PRIVATE KEY");
+        expect(result.text.endsWith("\nafter")).toBe(true);
+      }
+    }
+  });
+});
+
+describe("scanning time", () => {
+  const unterminated: ReadonlyArray<[string, string]> = [
+    ["RSA BEGIN lines", `${beginLine("RSA ")}\n`],
+    [
+      "BEGIN lines each followed by a body line",
+      `${beginLine("")}\n${KEY_BODY[0]}\n`,
+    ],
+    [
+      "BEGIN lines of every key type",
+      KEY_TYPES.map((type) => `${beginLine(type)}\n`).join(""),
+    ],
+  ];
+  for (const [name, line] of unterminated) {
+    test(`a megabyte of ${name} with no END line is scanned in well under a second and redacted whole`, () => {
+      const { ms, result } = timed(repeatedTo(line, MEGABYTE));
+      expect(ms).toBeLessThan(SCAN_BUDGET_MS);
+      expect(result).toEqual({
+        text: "[REDACTED:private-key]",
+        redactions: [{ kind: "private-key", count: 1 }],
+      });
+    });
+  }
+
+  const otherShapes: ReadonlyArray<[string, string]> = [
+    ["END lines with no BEGIN line", `${endLine("RSA ")}\n`],
+    ["URLs with a user and a colon but no @", "https://user:pass"],
+    ["URLs with an empty user and a colon but no @", "a://:"],
+    ["URLs with credentials, back to back", "x://u:p@"],
+    ["github_pat_ prefixes", "github_pat_"],
+  ];
+  for (const [name, line] of otherShapes) {
+    test(`a megabyte of ${name} is scanned in well under a second`, () => {
+      expect(timed(repeatedTo(line, MEGABYTE)).ms).toBeLessThan(SCAN_BUDGET_MS);
+    });
+  }
 });

@@ -8,6 +8,7 @@
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
@@ -72,6 +73,9 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
       issue_type: write.type,
       priority: Number(write.priority),
       status: "open",
+      ...(write.description !== undefined
+        ? { description: write.description }
+        : {}),
       created_at: now,
       updated_at: now,
     };
@@ -341,4 +345,22 @@ export async function openEventStream(
     close: () => controller.abort(),
   };
   return client;
+}
+
+/**
+ * This process's environment with every proxy setting taken out, then
+ * `HTTP_PROXY` (in both spellings) naming a loopback port that nothing listens
+ * on, and no `NO_PROXY`. Bun reads these when a process starts, so it is an
+ * environment for a child process.
+ */
+export async function deadProxyEnvironment(): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env))
+    if (value !== undefined && !/proxy/i.test(name)) env[name] = value;
+  const probe = createNetServer();
+  await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
+  const { port } = probe.address() as AddressInfo;
+  await new Promise<void>((done) => probe.close(() => done()));
+  const proxy = `http://127.0.0.1:${port}`;
+  return { ...env, HTTP_PROXY: proxy, http_proxy: proxy };
 }

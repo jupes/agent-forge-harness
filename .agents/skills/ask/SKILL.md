@@ -21,10 +21,13 @@ Answers questions about the codebase using knowledge files. Flags stale knowledg
 
 ```bash
 cat knowledge/_shared.yaml
-cat knowledge/repos/<most-relevant-repo>.yaml
+cat knowledge/repos/<most-relevant-repo>.yaml 2>/dev/null || echo "no knowledge file for <most-relevant-repo>"
 ```
 
 If the question spans multiple repos: load each relevant repo's YAML.
+
+A repo has a knowledge file only after `/add-repo` or `/sync-knowledge` has been run for it;
+`knowledge/repos/` is empty in a fresh checkout, and the harness itself has none.
 
 If no knowledge files exist yet:
 - Report: "No knowledge files found. Run `/sync-knowledge <repo>` to generate them."

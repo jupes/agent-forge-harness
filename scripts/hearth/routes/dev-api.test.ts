@@ -14,6 +14,7 @@ import type { GitRun } from "../../scheduler/worktrees";
 import {
   applyReview,
   type BdResult,
+  bdRunner,
   devApiHttpHandler,
   gateLogsNewestFirst,
   readForgeRun,
@@ -160,6 +161,43 @@ describe("applyReview", () => {
     expect(added.status).toBe(502);
     expect(added.body.error).toContain("database is locked");
   });
+});
+
+describe("bdRunner", () => {
+  const NUL = String.fromCharCode(0);
+  // The stand-in for bd is this Bun: asked for `--version` it prints it and
+  // exits 0, so a call that did start would answer a status of 0.
+  const standIn = () => bdRunner(tempRoot(), process.execPath);
+
+  test("an argument holding a NUL resolves with no exit status and a reason that names the error code, not the argument", async () => {
+    const result = await standIn()(["--version", `before-nul${NUL}after-nul`]);
+    expect(result).toEqual({
+      status: null,
+      stdout: "",
+      stderr:
+        "bd could not be started: the runtime refused the call (ERR_INVALID_ARG_VALUE)",
+    });
+    expect(result.stderr).not.toContain("before-nul");
+    expect(result.stderr).not.toContain("after-nul");
+  });
+
+  test("an argument list too long to pass to a program resolves with no exit status and a reason that does not repeat it", async () => {
+    // Past every platform's limit: 32,767 characters for a whole Windows
+    // command line, 128 KiB for one Linux argument, 1 MiB for macOS.
+    const result = await standIn()(["--version", "z".repeat(3_000_000)]);
+    expect(result.status).toBeNull();
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trim()).not.toBe("");
+    expect(result.stderr).not.toContain("zzzz");
+  });
+
+  test("a program that reads standard input to its end is handed an empty, ended one: it exits 0 before the limit, having read nothing", async () => {
+    // What `bd create --description=-` does: read standard input until it ends.
+    const readsStdin =
+      'let read = ""; process.stdin.on("data", (chunk) => { read += chunk; }); process.stdin.on("end", () => { process.stdout.write(JSON.stringify(read)); });';
+    const result = await standIn()(["-e", readsStdin], { timeoutMs: 4000 });
+    expect(result).toEqual({ status: 0, stdout: '""', stderr: "" });
+  }, 15_000);
 });
 
 describe("gateLogsNewestFirst", () => {

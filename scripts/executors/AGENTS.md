@@ -12,6 +12,17 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
 - Events carry the harness's main checkout as `workspace`, so `forge:audit` finds them when the run was launched from
   a linked worktree. `session.started` says `kind: "headless"`, names the checkout the executor runs in, and names
   the launching session when one is mirrored into the directory `forge:exec` was started from.
+- A run's events are `session.started`, `prompt.submitted` (the hash and length of the prompt sent on stdin), a
+  `tool.called` per tool and `session.ended`. Their session id is the provider's, from the first stream line that
+  reports one (Claude: `session_id`; Codex: `thread_id` on `thread.started`); `session.started` waits for that
+  line, and a run that must write an event before any line has reported an id gets a minted ULID for its whole
+  run. `ExecutorHandle.sessionId` is a getter that returns the id the events carry: read it after an event.
+- While the child runs, its session is mirrored into the checkout it runs in (`.agent-forge-session`,
+  `scripts/ledger/identity.ts`), so a script the child launches attaches to it through `resolveAttach`. When the
+  child ends the mirror is removed, or the fresh mirror of another session it replaced is put back.
+- `session.ended` carries `payload.usage` when the stream reported it (Claude's `result` line, Codex's
+  `turn.completed`): each count under the provider's own field name in camelCase (`ProviderUsage` in
+  `types/hearth.ts`), compared per provider.
 - An adapter marks its child: `childEnv` (`env.ts`) adds `AGENT_FORGE_ADAPTER=1` plus the bead, smith, run and parent
   session. The harness's session and tool hooks (`session.ts`, `ledger-hook.ts`) record nothing inside such a child
   (`isAdapterChild`), so a session its adapter records is not recorded a second time. The quality-gate hook does not
@@ -20,16 +31,22 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   worktree and hands the child (`AGENT_FORGE_RUN_CORRELATION`, `scripts/run-correlation.ts`) — not from these
   variables, of which the gate reads only the smith, and only when it can otherwise resolve an executor. Without a
   correlation the gate names no bead and no run; but when one is refused (for example the run is held by another
-  bead, or the worktree is not a checkout's top level) the run's ledger events and these variables still carry
-  `--bead` and `--run`. `scripts/run-correlation-launchers.test.ts` shows the pointer reaching a fake child, and the
-  gate's own function — called in the test process with that pointer, not run as a hook inside the child — resolving
-  it to the bead and run. No gate has been run inside any `forge:exec` child, fake or real. The values come from the
-  request, never from the parent environment.
+  bead, or the worktree is not a checkout's top level) the child still runs, and the run's ledger events and these
+  variables still carry `--bead` and `--run`. That is deliberate: a run moves from one bead to the next, so they
+  record the bead the session was launched for, while the correlation records the bead a gate in the run is checked
+  against. `exec-cli.test.ts` pins it for a run held by another bead, on the fake binary. A `--run` that is not a
+  Forge run id is refused before the child starts, and nothing is written.
+  `scripts/run-correlation-launchers.test.ts` shows the pointer reaching a fake child, and the gate's own function —
+  called in the test process with that pointer, not run as a hook inside the child — resolving it to the bead and
+  run. No gate has been run inside any `forge:exec` child, fake or real. The values come from the request, never from
+  the parent environment.
 - Tests use `fixtures/fake-cli.ts` and their own ledger file (`ExecDeps.ledgerPath`). The one test of the default
   ledger path cannot pass a file, so it points `AGENT_FORGE_HOME` at its own temp home for its duration instead of
   relying on the test preload. Every temp root plants a `.git` directory: the adapter resolves checkouts, and a bare
-  temp directory resolves to whatever checkout it sits in. Pass `cwd` as well — the default launch directory is the
-  real one, which may hold a live session mirror.
+  temp directory resolves to whatever checkout it sits in — and the adapter writes its session mirror into that
+  checkout. Pass `cwd` as well — the default launch directory is the real one, which may hold a live session
+  mirror. The fake prints a new session id per run; `--fake-session-id`, `--fake-no-id` and `--fake-attach` (run
+  `resolveAttach` inside the child once its id is mirrored) are in its header.
 - The fake binary proves plumbing. What real CLIs have shown, on Windows, each binary run directly with the adapter's
   flags and an allowlisted environment (2026-10-08):
   - `claude` 2.1.293 accepts every flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
@@ -38,9 +55,26 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   - `codex` 0.159.0 and 0.160.0 accept every flag `codex.ts` passes. On 0.160.0 one shell command arrived as
     `item.started` then `item.completed` (`item.type: "command_execution"`, numeric `exit_code`), which is what the
     parser maps. Items other than a shell command have **not** been observed and are not mapped.
+  - The session ids and the usage the adapters read are fields those runs printed: `claude` put one `session_id` on
+    every line and a `usage` object and `total_cost_usd` on its `result` line (all zero, the run having failed);
+    `codex` opened with `thread.started` and its `thread_id`, and a finished turn ended with `turn.completed` and a
+    `usage` of five counts. A successful Claude `result` and a run of more than one turn have not been recorded.
   - One run through `forge:exec` itself (`codex` 0.160.0, 2026-10-09, a one-file task in a scratch repository, an
     isolated ledger home): the ledger held `session.started`, one `tool.called` (`shell`, exit code 0) and
-    `session.ended` (`completed`), each with the smith. No `forge:exec` run against a real `claude` has been made.
-  - `forge:doctor` checks `--version` only. A binary can answer that and still be unusable: not signed in, or missing
-    the helper it runs tools with (one such copy exited 0 without doing the task).
+    `session.ended` (`completed`), each with the smith. That was before the adapters took the provider's session
+    id, wrote the mirror, recorded usage or appended `prompt.submitted`; none of those has been run against a real
+    CLI. No `forge:exec` run against a real `claude` has been made.
+  - A binary can answer `--version` and still be unusable: `claude` 2.1.293 with an expired sign-in exited 1 with its
+    reason only in an error `result` line (stderr empty), and a `codex` 0.159.0 copy missing the helper it runs tools
+    with printed an `error` item and an agent message saying it could not do the task, then `turn.completed`, and
+    exited 0.
+- What the provider said goes in the command's output, never the ledger. An adapter's `parseError` picks the error a
+  stdout line reports (Claude: a `result` with `is_error`; Codex: an `error` item, `error`, `turn.failed`); the
+  supervisor keeps the end of stderr. `forge:exec`'s `error` puts the first reported error, else the last stderr line,
+  after the exit code, and a run that exits 0 after reporting an error is not a success (exit 2). `session.ended`
+  records only fixed reasons (`failed: exit <n>`, `failed: exit 0, provider reported an error`). `outcome.ts` decides.
+- `forge:doctor` answers two questions: does the binary answer `--version` (`ok`), and, with `--task`, can it run a
+  task (`task`): one `git status` through the adapter in a new git repository under the OS temp directory, passing
+  only on exit 0, no reported error and at least one tool call. Against a real provider `--task` spends a request.
+  Both are tested on the fake binary only; no `--task` run against a real CLI has been made.
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.

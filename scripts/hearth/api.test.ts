@@ -17,6 +17,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
@@ -269,12 +270,14 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { smith: "nobody" },
     },
     prepare: (h) => queued(h, "demo-reassign", "queued"),
-    // It moves no state, so it leaves no transition: the audit row is the record.
+    // It moves no state: its outcome is a tracker write, with no from or to.
+    outcome: [{ kind: "bead.transitioned", payload: { action: "reassign" } }],
     happened: async (h, data) => {
       expect(data).toEqual({
         id: "demo-reassign",
         state: "queued",
         smith: "claude-master",
+        recorded: true,
       });
       expect(h.bd.calls.slice(-2)).toEqual([
         ["show", "--readonly", "--json", "--", "demo-reassign"],
@@ -1181,6 +1184,25 @@ describe("request bounds", () => {
     expect(h.events()).toEqual([]);
     expect(probes).toEqual([]);
   });
+
+  test("a review note holding a NUL, or longer than the note limit, is 400: nothing is recorded and bd is not run", async () => {
+    const { h, probes } = await probed();
+    const NUL = String.fromCharCode(0);
+    for (const note of [
+      `before${NUL}after`,
+      "x".repeat(REVIEW_NOTE_LIMIT + 1),
+    ]) {
+      const response = await post(h, "/dev-api/forge-run/review", {
+        ...REVIEW,
+        note,
+      });
+      expect(response.status).toBe(400);
+      expect((await envelope(response)).ok).toBe(false);
+    }
+    expect(h.events()).toEqual([]);
+    expect(h.bd.calls).toEqual([]);
+    expect(probes).toEqual([]);
+  });
 });
 
 function get(
@@ -1549,6 +1571,90 @@ describe("reads over the ledger and run state", () => {
     const body = await envelope<RunDetail>(await get(h, "/runs/demo"));
     expect(body.data?.events.events.length).toBe(200);
     expect(body.data?.events.more).toBe(true);
+  });
+
+  test("/runs/:slug?events=N carries the run's newest N events; 0 carries none, and the run and its state are still answered", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++)
+      ids.push(
+        h.append({
+          kind: "gate.ran",
+          runId: "demo",
+          payload: { gate: "typecheck", passed: true },
+        }),
+      );
+    const read = async (query: string) => {
+      const response = await get(h, `/runs/demo${query}`);
+      const body = await envelope<RunDetail>(response);
+      return {
+        status: response.status,
+        slug: body.data?.run.slug,
+        feature: body.data?.state.feature,
+        ids: body.data?.events.events.map((event) => event.id),
+        cursor: body.data?.events.cursor,
+        more: body.data?.events.more,
+      };
+    };
+    const answered = { status: 200, slug: "demo", feature: "Demo run" };
+
+    expect(await read("?events=2")).toEqual({
+      ...answered,
+      ids: ids.slice(-2),
+      cursor: ids[4],
+      more: true,
+    });
+    // None carried: the cursor is where a forward page starts, and `more` says the run has events.
+    expect(await read("?events=0")).toEqual({
+      ...answered,
+      ids: [],
+      cursor: 0,
+      more: true,
+    });
+    expect(await read("?events=5")).toEqual({
+      ...answered,
+      ids,
+      cursor: ids[4],
+      more: false,
+    });
+    expect(await read("?events=200")).toEqual({
+      ...answered,
+      ids,
+      cursor: ids[4],
+      more: false,
+    });
+  });
+
+  test("/runs/:slug refuses an events value that is not a whole number from 0 to 200, a repeated one, and any other parameter", async () => {
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+    });
+    h.append({
+      kind: "gate.ran",
+      runId: "demo",
+      payload: { gate: "typecheck", passed: true },
+    });
+    const range = "events: expected a whole number from 0 to 200";
+    for (const [query, error] of [
+      ["?events=201", range],
+      ["?events=-1", range],
+      ["?events=1.5", range],
+      ["?events=ten", range],
+      ["?events=", range],
+      ["?events=1&events=2", "events: given more than once"],
+      ["?event=1", "event: unknown parameter (expected events)"],
+      ["?limit=5", "limit: unknown parameter (expected events)"],
+    ] as const) {
+      const response = await get(h, `/runs/demo${query}`);
+      const body = await envelope(response);
+      expect({ query, status: response.status, body }).toEqual({
+        query,
+        status: 400,
+        body: { ok: false, data: null, error },
+      });
+    }
   });
 });
 

@@ -285,35 +285,66 @@ export async function applyReview(
 const BD_TIMEOUT_MS = 30_000;
 const BD_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
+/** A runtime error code such as `ENAMETOOLONG`: a name, never a value the call was given. */
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * Why the runtime refused to start `bd`, without what it was given: its own
+ * message for an argument holding a NUL repeats that argument.
+ */
+function refusedBeforeStart(error: unknown): string {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? error.code
+      : undefined;
+  return typeof code === "string" && ERROR_CODE.test(code)
+    ? `bd could not be started: the runtime refused the call (${code})`
+    : "bd could not be started: the runtime refused the call";
+}
+
 /**
  * The real `bd`, run from `root`: an argument array, no shell, and not on the
  * serving thread — a slow tracker must not stall every other request and every
  * open stream. A call that cannot start, times out or prints too much resolves
  * with a null or non-zero status and the reason on stderr; it never rejects.
+ * That includes a call the runtime refuses before anything starts (an argument
+ * holding a NUL, a command line past the platform's limit): `execFile` throws
+ * for those, and the reason then names its error code, when it has one, and
+ * never the arguments.
+ * `program` is what is started: `bd`, unless a test names a stand-in so that
+ * no tracker is reached.
  */
-export function bdRunner(root: string): BdRunner {
+export function bdRunner(root: string, program = "bd"): BdRunner {
   return (args, options) =>
     new Promise<BdResult>((done) => {
-      execFile(
-        "bd",
-        args,
-        {
-          cwd: root,
-          encoding: "utf8",
-          shell: false,
-          timeout: options?.timeoutMs ?? BD_TIMEOUT_MS,
-          maxBuffer: BD_MAX_OUTPUT_BYTES,
-          windowsHide: true,
-        },
-        (error, stdout, stderr) => {
-          const code = error === null ? 0 : error.code;
-          done({
-            status: typeof code === "number" ? code : null,
-            stdout: String(stdout ?? ""),
-            stderr: String(stderr || error?.message || ""),
-          });
-        },
-      );
+      try {
+        const child = execFile(
+          program,
+          args,
+          {
+            cwd: root,
+            encoding: "utf8",
+            shell: false,
+            timeout: options?.timeoutMs ?? BD_TIMEOUT_MS,
+            maxBuffer: BD_MAX_OUTPUT_BYTES,
+            windowsHide: true,
+          },
+          (error, stdout, stderr) => {
+            const code = error === null ? 0 : error.code;
+            done({
+              status: typeof code === "number" ? code : null,
+              stdout: String(stdout ?? ""),
+              stderr: String(stderr || error?.message || ""),
+            });
+          },
+        );
+        // Nothing is ever sent on standard input. Ending it at once makes a
+        // `bd` that reads it (`create --description=-`) read nothing, instead
+        // of waiting for this runner's limit.
+        child.stdin?.end();
+      } catch (error) {
+        done({ status: null, stdout: "", stderr: refusedBeforeStart(error) });
+      }
     });
 }
 

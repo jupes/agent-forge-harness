@@ -63,7 +63,13 @@ const FORMAT_CHARACTER = /[\p{Cf}\p{Zl}\p{Zp}]/u;
 const CONTROL_CHARACTER = /\p{Cc}/u;
 const ANY_HEADING = /^(#{1,6})[ \t]+\S/;
 const CHECKPOINT_HEADING = /^(#{2,6})[ \t]+(Checkpoint\b.*)$/;
-const FENCE = /^(```|~~~)/;
+/** A line that opens a fenced block; the run of backticks or tildes is its marker. */
+const FENCE_OPEN = /^(`{3,}|~{3,})/;
+
+/** Whether `line` closes a fence opened with `marker`: only that character, at least as many. */
+function closesFence(line: string, marker: string): boolean {
+  return line.startsWith(marker) && /^(`+|~+)$/.test(line);
+}
 
 /** The glob a line holds, or why it holds none. */
 function globOf(written: string): { glob: string } | { why: string } {
@@ -182,13 +188,20 @@ export function parseFileMap(text: string): FileMap {
  * be read checkpoint by checkpoint. A heading whose text starts with
  * `Checkpoint` opens one, at whatever level it was written. It runs to the
  * next checkpoint heading, or to the next heading of its own level or above;
- * a `Files` heading of its own level or deeper is its map and not its end,
- * and a `#` line inside a fenced block is not a heading. Line numbers in a
- * refusal are lines of the plan.
+ * a `Files` heading of its own level or deeper is its map and not its end.
+ * Line numbers in a refusal are lines of the plan.
  *
- * A checkpoint heading always opens a checkpoint, fenced or not: a fence
- * that is opened oddly or never closed may stretch one checkpoint, and must
- * never hide the ones after it.
+ * A fenced block opens on a line that starts with three or more backticks or
+ * tildes, and closes only on a line of that character alone, at least as
+ * long. Inside one a line is not a heading, with two exceptions, because a
+ * fence that is opened oddly or never closed is read wrong:
+ *
+ * - A checkpoint heading always opens a checkpoint, fenced or not, so a fence
+ *   never hides the checkpoints after it.
+ * - A heading of level two or deeper that is above the checkpoint's level
+ *   always ends it, fenced or not, so the checkpoint never takes a `Files`
+ *   section that comes after such a heading, a plan-level one included. A
+ *   `#` line is not one of these: inside a fence it is a shell comment.
  */
 export function parsePlanFileMaps(plan: string): CheckpointFileMap[] {
   const lines = plan.split(/\r?\n/).map((line) => line.trim());
@@ -199,18 +212,26 @@ export function parsePlanFileMaps(plan: string): CheckpointFileMap[] {
     const level = (opened[1] as string).length;
 
     let end = at + 1;
-    let fenced = false;
+    /** The marker of the fence the line is inside, or null outside one. */
+    let fence: string | null = null;
     for (; end < lines.length; end++) {
       const next = lines[end] as string;
       if (CHECKPOINT_HEADING.test(next)) break;
-      if (FENCE.test(next)) {
-        fenced = !fenced;
+      if (fence === null) {
+        const marker = FENCE_OPEN.exec(next)?.[1];
+        if (marker !== undefined) {
+          fence = marker;
+          continue;
+        }
+      } else if (closesFence(next, fence)) {
+        fence = null;
         continue;
       }
-      if (fenced) continue;
       const depth = ANY_HEADING.exec(next)?.[1]?.length;
       if (depth === undefined) continue;
       if (FILES_HEADING.test(next) && depth >= level) continue;
+      if (depth >= 2 && depth < level) break;
+      if (fence !== null) continue;
       if (depth <= level) break;
     }
     found.push({

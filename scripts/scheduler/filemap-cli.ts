@@ -6,13 +6,16 @@
  *   bun run scripts/scheduler/filemap-cli.ts <description.md>
  *   bun run scripts/scheduler/filemap-cli.ts <plan.md> --plan
  *   bd show <task-id> --json | bun run scripts/scheduler/filemap-cli.ts - --bd-json
+ *   bun run scripts/scheduler/filemap-cli.ts <description.md> --description
  *
  * The first form reads one task description and prints its file map. The
  * second reads a plan document and prints the map of every checkpoint: the
  * parser reads only the first `Files` section of a text, so a plan has to be
  * checked checkpoint by checkpoint. The third reads what `bd show <id> --json`
  * prints and takes the map from the issue's description as it is stored
- * (plain `bd show` renders Markdown and garbles a glob that holds `*`).
+ * (plain `bd show` renders Markdown and garbles a glob that holds `*`). The
+ * fourth reads a description that carries its checkpoint heading, which the
+ * first form takes for a plan, the way the third reads it once it is stored.
  * `-` in place of the file reads standard input.
  *
  * A text given in the wrong form is refused rather than half read: a plan
@@ -31,7 +34,8 @@ export interface FileMapCliOutcome {
 }
 
 const USAGE =
-  "usage: bun run scripts/scheduler/filemap-cli.ts <description.md | - > [--plan | --bd-json]";
+  "usage: bun run scripts/scheduler/filemap-cli.ts <description.md | - > [--plan | --bd-json | --description]";
+const FORMS = ["--plan", "--bd-json", "--description"];
 
 /** The description of the issue `bd show <id> --json` printed, or null when the text is not that. */
 function storedDescription(text: string): string | null {
@@ -62,11 +66,12 @@ export function runFileMapCli(
   const path = paths[0];
   const asPlan = flags.includes("--plan");
   const asBd = flags.includes("--bd-json");
+  const asDescription = flags.includes("--description");
   if (
     path === undefined ||
     paths.length > 1 ||
-    flags.some((flag) => flag !== "--plan" && flag !== "--bd-json") ||
-    (asPlan && asBd)
+    flags.some((flag) => !FORMS.includes(flag)) ||
+    [asPlan, asBd, asDescription].filter(Boolean).length > 1
   ) {
     return refuse(USAGE);
   }
@@ -95,10 +100,11 @@ export function runFileMapCli(
 
   const checkpoints = parsePlanFileMaps(text);
   if (!asPlan) {
-    // What Beads holds is one task's description, whatever headings it carries.
-    if (!asBd && checkpoints.length > 0) {
+    // What Beads holds is one task's description, whatever headings it carries,
+    // and --description says the file is one.
+    if (!asBd && !asDescription && checkpoints.length > 0) {
       return refuse(
-        `this text has ${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}: check a plan with --plan, which reads each one`,
+        `this text has ${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}: check a plan with --plan, which reads each one, or one task's description that carries its checkpoint heading with --description`,
       );
     }
     const map = parseFileMap(text);
