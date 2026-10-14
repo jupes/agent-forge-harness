@@ -250,3 +250,67 @@ describe("buildPages: comments", () => {
     expect(warnings.join("\n")).toContain("b-1");
   });
 });
+
+describe("buildPages: the Repo column", () => {
+  const H = "agent-forge-harness";
+
+  test("each issue's repository follows repos/issue-repos.json and the names registered in repos/repos.json", async () => {
+    const cwd = checkout();
+    mkdirSync(join(cwd, "repos"));
+    writeFileSync(
+      join(cwd, "repos", "repos.json"),
+      JSON.stringify({ repos: [{ name: "game-guide-ai" }] }),
+    );
+    writeFileSync(
+      join(cwd, "repos", "issue-repos.json"),
+      JSON.stringify({ issues: { [`${H}-0im`]: "rag-chat" } }),
+    );
+    const bd = fakeBd(() =>
+      jsonl([
+        exportRow(`${H}-0im`, [], { title: "D&D epic" }),
+        exportRow(`${H}-0im.1`, [], {
+          title: "Child",
+          dependencies: [
+            {
+              issue_id: `${H}-0im.1`,
+              depends_on_id: `${H}-0im`,
+              type: "parent-child",
+            },
+          ],
+        }),
+        exportRow(`${H}-a1`, [], { title: "[game-guide-ai] Login" }),
+        exportRow(`${H}-a2`, [], { title: "[dashboard] Harness work" }),
+      ]),
+    );
+
+    await buildPages({ cwd, runBd: bd.run, ...quiet });
+
+    expect(written(cwd).issues.map((issue) => [issue.id, issue.repo])).toEqual([
+      [`${H}-0im`, "rag-chat"],
+      [`${H}-0im.1`, "rag-chat"],
+      [`${H}-a1`, "game-guide-ai"],
+      [`${H}-a2`, H],
+    ]);
+  });
+
+  test("a repository map that is not JSON is warned about, and the snapshot is still written", async () => {
+    const cwd = checkout();
+    mkdirSync(join(cwd, "repos"));
+    writeFileSync(join(cwd, "repos", "issue-repos.json"), "{ not json");
+    const bd = fakeBd(() => jsonl([exportRow(`${H}-a1`)]));
+    const warnings: string[] = [];
+
+    const result = await buildPages({
+      cwd,
+      runBd: bd.run,
+      log: () => {},
+      warn: (line) => warnings.push(line),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(written(cwd).issues.map((issue) => issue.repo)).toEqual([H]);
+    expect(warnings.join("\n")).toContain(
+      "repos/issue-repos.json is not valid JSON",
+    );
+  });
+});

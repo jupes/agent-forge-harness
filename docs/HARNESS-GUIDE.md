@@ -112,6 +112,7 @@ Think in **layers** so upgrades from upstream stay mergeable.
 ### 5. Multi-repo registry
 
 - **`repos/repos.json`** — local registry (gitignored); copy `repos/repos.json.example` to `repos/repos.json`, add entries, then `bun run repo init` (see [add-repo skill](../.claude/skills/add-repo/SKILL.md)).
+- **`repos/issue-repos.json`** — local repository map (gitignored; template `repos/issue-repos.json.example`): `"issues"` maps an issue id to the repository it belongs to, and the entry covers everything under that issue; `"titleTags"` lets a title tag such as `[api]` stand for a repository. The dashboard's Repo column takes the first of: a map entry for the issue's own id, a `repo:<name>` label, a leading `[name]` in the title that names a known repository (registered in `repos/repos.json`, named by the map or by any `repo:` label) or a mapped title tag, the export's `repo` field, the same for the parent and its ancestors, and last the host prefix of the id (`agent-forge-harness`). A bracket tag that names no known repository, such as `[dashboard]`, is an area tag. To copy the result into the tracker as labels, `bun run beads:backfill-repo-labels` prints the plan (a dry run) and `--apply` writes it; run it from the main checkout.
 
 ### 6. Claude Code wiring
 
