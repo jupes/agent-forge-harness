@@ -94,11 +94,15 @@ export function probeNodeArgs(
   return at === -1 ? [...args] : probeAt(args, at, home, platform);
 }
 
-type Probe = (args: readonly unknown[]) => unknown[];
+export type Probe = (args: readonly unknown[]) => unknown[];
 type Callable = (...args: unknown[]) => unknown;
 
-/** `fn` with its arguments probed; the `promisify` form it carries (`exec`, `execFile`) is probed too. */
-function probed(fn: unknown, self: unknown, probe: Probe): unknown {
+/**
+ * `fn`, called on `self` with its arguments passed through `probe`; the
+ * `promisify` form it carries (`exec`, `execFile`) is probed too. Anything
+ * that is not a function is returned as it is.
+ */
+export function probed(fn: unknown, self: unknown, probe: Probe): unknown {
   if (typeof fn !== "function") return fn;
   const wrap =
     (target: Callable): Callable =>

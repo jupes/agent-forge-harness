@@ -1,19 +1,53 @@
 /**
  * The isolation probe's rules, called directly: which environments name no
- * home, and where a spawn call's options are found. Installing the probe is
- * exercised by `test-isolation.test.ts`, in the guard's re-run; it is never
- * installed in this process.
+ * home, where a spawn call's options are found, and how a function is
+ * wrapped. Installing the probe is exercised by `test-isolation.test.ts`, in
+ * the guard's re-run; it is never installed in this process.
  */
 
 import { describe, expect, test } from "bun:test";
+import { promisify } from "node:util";
 import {
   homeVariable,
   namesNoHome,
+  type Probe,
   probeBunSpawnArgs,
+  probed,
   probeNodeArgs,
 } from "./isolation-probe";
 
 const HOME = "/scratch/.agent-forge";
+
+describe("probed", () => {
+  const tag: Probe = (args) => [...args, "probed"];
+
+  test("the wrapper calls the function on the given this with the probe's arguments and returns its result", () => {
+    const self = { name: "module" };
+    const calls: unknown[] = [];
+    function original(this: unknown, ...args: unknown[]): string {
+      calls.push({ self: this, args });
+      return "result";
+    }
+    const wrapper = probed(original, self, tag) as (...a: unknown[]) => unknown;
+    expect(wrapper("a", 1)).toBe("result");
+    expect(calls).toEqual([{ self, args: ["a", 1, "probed"] }]);
+  });
+
+  test("a promisify form the function carries is probed as well, and anything that is not a function is returned as it is", async () => {
+    const seen: unknown[][] = [];
+    const original = (): void => {};
+    Object.defineProperty(original, promisify.custom, {
+      value: async (...args: unknown[]) => {
+        seen.push(args);
+        return { stdout: "out", stderr: "" };
+      },
+    });
+    const wrapper = probed(original, undefined, tag) as typeof original;
+    expect(await promisify(wrapper)()).toEqual({ stdout: "out", stderr: "" });
+    expect(seen).toEqual([["probed"]]);
+    expect(probed("not a function", undefined, tag)).toBe("not a function");
+  });
+});
 
 describe("namesNoHome", () => {
   test("the OS home variable is USERPROFILE on Windows and HOME elsewhere", () => {
