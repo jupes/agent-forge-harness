@@ -1302,6 +1302,231 @@ describe("request bounds", () => {
   });
 });
 
+/** What a raw client saw: the answer, and whether the hearth closed the connection. */
+interface RawExchange {
+  /** 0 when no status line arrived. */
+  status: number;
+  body: string;
+  /** When the status line arrived, from when the head was written; null when none did. */
+  answeredMs: number | null;
+  /** When the hearth closed the connection, from when the head was written; null when it was still open after `waitMs`. */
+  closedMs: number | null;
+}
+
+/**
+ * Write `head` (header lines, without the blank line) and then `body` over a
+ * socket of its own, and read until the hearth closes the connection or
+ * `waitMs` pass. The body may be less than the head declares: that request
+ * then stalls.
+ */
+function rawExchange(
+  h: TestHearth,
+  head: string[],
+  body: Buffer,
+  waitMs: number,
+): Promise<RawExchange> {
+  return new Promise((done) => {
+    let began = 0;
+    let received = Buffer.alloc(0);
+    let answeredMs: number | null = null;
+    let closedMs: number | null = null;
+    const socket = connect(h.hearth.port, "127.0.0.1", () => {
+      began = performance.now();
+      socket.write(`${head.join("\r\n")}\r\n\r\n`);
+      if (body.byteLength > 0) socket.write(body);
+    });
+    let gaveUp = false;
+    const giveUp = setTimeout(() => {
+      gaveUp = true;
+      socket.destroy();
+    }, waitMs);
+    socket.on("data", (chunk: Buffer) => {
+      answeredMs ??= performance.now() - began;
+      received = Buffer.concat([received, chunk]);
+    });
+    // Closed by the hearth: an end, or a close this client did not cause.
+    const hearthClosed = (): void => {
+      if (!gaveUp) closedMs ??= performance.now() - began;
+    };
+    socket.on("end", hearthClosed);
+    // A reset while the body is still being written is an outcome, not a failure.
+    socket.on("error", () => {});
+    socket.on("close", () => {
+      hearthClosed();
+      clearTimeout(giveUp);
+      const text = received.toString("utf8");
+      done({
+        status: Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1] ?? 0),
+        body: text.slice(text.indexOf("\r\n\r\n") + 4),
+        answeredMs,
+        closedMs,
+      });
+    });
+  });
+}
+
+describe("request bodies (raw socket)", () => {
+  const PATH = "/__agent-forge/dev-api/forge-run/review";
+  /** Far past every row's cap, and past what was answered before when the hearth refused a body unread. */
+  const LARGE = 8 * 1024 * 1024;
+
+  function headLines(
+    h: TestHearth,
+    lines: { origin?: boolean; token?: string; framing: string },
+  ): string[] {
+    return [
+      `POST ${PATH} HTTP/1.1`,
+      `Host: 127.0.0.1:${h.hearth.port}`,
+      ...(lines.origin === false ? [] : [`Origin: ${h.hearth.url}`]),
+      "Content-Type: application/json",
+      ...(lines.token !== undefined
+        ? [`X-Agent-Forge-Operator: ${lines.token}`]
+        : []),
+      lines.framing,
+    ];
+  }
+
+  test("an 8 MB body sent with Connection: close is answered with its refusal 5 times out of 5, when the request does not declare the hearth's origin (403), presents a wrong token (403) or declares a Content-Length over the row's cap (400); nothing is recorded", async () => {
+    const { h, probes } = await probed();
+    const cases: Array<[string, string[], number]> = [
+      [
+        "no declared origin",
+        headLines(h, {
+          origin: false,
+          token: h.hearth.token,
+          framing: `Content-Length: ${LARGE}`,
+        }),
+        403,
+      ],
+      [
+        "a wrong token",
+        headLines(h, { token: "wrong", framing: `Content-Length: ${LARGE}` }),
+        403,
+      ],
+      [
+        "a Content-Length over the cap",
+        headLines(h, {
+          token: h.hearth.token,
+          framing: `Content-Length: ${LARGE}`,
+        }),
+        400,
+      ],
+    ];
+    const body = Buffer.alloc(LARGE, 0x20);
+    const answers: unknown[] = [];
+    const expected: unknown[] = [];
+    for (const [label, head, status] of cases) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const answer = await rawExchange(
+          h,
+          [...head, "Connection: close"],
+          body,
+          10_000,
+        );
+        answers.push({ label, attempt, status: answer.status });
+        expected.push({ label, attempt, status });
+      }
+    }
+    expect(answers).toEqual(expected);
+    expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+  }, 60_000);
+
+  test("an authorised request whose body stops arriving (Content-Length, chunked, and a chunked body already over the cap) is answered 408 at the body time limit and its connection closed; nothing is recorded", async () => {
+    const { h, probes } = await probed({ api: { bodyTimeoutMs: 400 } });
+    const overCap = "x".repeat(20_000);
+    const cases: Array<[string, string, Buffer]> = [
+      ["Content-Length", "Content-Length: 1000", Buffer.from('{"issueId":')],
+      [
+        "chunked",
+        "Transfer-Encoding: chunked",
+        Buffer.from('b\r\n{"issueId":\r\n'),
+      ],
+      [
+        "chunked, over the cap",
+        "Transfer-Encoding: chunked",
+        Buffer.from(`${overCap.length.toString(16)}\r\n${overCap}\r\n`),
+      ],
+    ];
+    const seen: unknown[] = [];
+    const wanted: unknown[] = [];
+    for (const [label, framing, sent] of cases) {
+      const answer = await rawExchange(
+        h,
+        headLines(h, { token: h.hearth.token, framing }),
+        sent,
+        5_000,
+      );
+      seen.push({
+        label,
+        status: answer.status,
+        timeLimit: (JSON.parse(answer.body || "{}") as { error?: string })
+          .error,
+        answeredInTime:
+          answer.answeredMs !== null &&
+          answer.answeredMs >= 300 &&
+          answer.answeredMs < 2_000,
+        closedByHearth: answer.closedMs !== null && answer.closedMs < 2_000,
+      });
+      wanted.push({
+        label,
+        status: 408,
+        timeLimit: expect.stringContaining("did not arrive within 400 ms"),
+        answeredInTime: true,
+        closedByHearth: true,
+      });
+    }
+    expect(seen).toEqual(wanted);
+    expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+  }, 30_000);
+
+  test("a request refused for its token is answered 403 once its body has been read, at once when no byte of the body has arrived, and its connection is closed at the body time limit when the body never ends", async () => {
+    const { h, probes } = await probed({ api: { bodyTimeoutMs: 1_000 } });
+    const head = headLines(h, {
+      token: "wrong",
+      framing: "Content-Length: 1000",
+    });
+    const cases: Array<[string, Buffer, "at once" | "at the time limit"]> = [
+      // A client that holds its body back until it has heard nothing, as the MCP server does.
+      ["no byte of the body sent", Buffer.alloc(0), "at once"],
+      [
+        "part of the body sent",
+        Buffer.from('{"issueId":'),
+        "at the time limit",
+      ],
+    ];
+    const seen: unknown[] = [];
+    const wanted: unknown[] = [];
+    for (const [label, sent, when] of cases) {
+      const answer = await rawExchange(h, head, sent, 5_000);
+      const answeredMs = answer.answeredMs ?? Number.POSITIVE_INFINITY;
+      seen.push({
+        label,
+        status: answer.status,
+        answered:
+          answeredMs < 500
+            ? "at once"
+            : answeredMs >= 900 && answeredMs < 3_000
+              ? "at the time limit"
+              : `after ${Math.round(answeredMs)} ms`,
+        closedAtTheTimeLimit:
+          answer.closedMs !== null &&
+          answer.closedMs >= 900 &&
+          answer.closedMs < 3_000,
+      });
+      wanted.push({
+        label,
+        status: 403,
+        answered: when,
+        closedAtTheTimeLimit: true,
+      });
+    }
+    expect(seen).toEqual(wanted);
+    expect(probes).toEqual([]);
+  }, 30_000);
+});
+
 function get(
   h: TestHearth,
   path: string,

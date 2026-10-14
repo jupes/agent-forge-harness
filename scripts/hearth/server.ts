@@ -95,6 +95,8 @@ export interface OperatorApiOverrides {
   git?: GitRun;
   /** Wrap the table before it is mounted (a test observing an effect). */
   decorate?: (routes: readonly ApiRoute[]) => readonly ApiRoute[];
+  /** How long an action's body may take to arrive; 10 s when not given. */
+  bodyTimeoutMs?: number;
 }
 
 export interface StartedHearth {
@@ -233,6 +235,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       workspace,
       expectedToken,
       appendEvent: append,
+      ...(options.api?.bodyTimeoutMs !== undefined
+        ? { bodyTimeoutMs: options.api.bodyTimeoutMs }
+        : {}),
     },
     options.api?.decorate?.(table.routes) ?? table.routes,
   );
