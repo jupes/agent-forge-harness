@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import type { BeadsPayload } from "../../types/beads";
 import { snapshotLabelFor } from "./app-state";
+import { readSnapshotAgain, useSnapshotRebuilt } from "./use-snapshot-rebuilt";
 
 const BEADS_URL = "data/beads.json";
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
@@ -46,6 +47,16 @@ export function useShellChrome(): ShellChrome {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // After a rebuild the dev server started, read the snapshot again in place.
+  const readAgain = useCallback(() => {
+    void readSnapshotAgain(BEADS_URL).then((next) => {
+      if (!next) return;
+      setPayload(next);
+      setError(null);
+    });
+  }, []);
+  useSnapshotRebuilt(readAgain);
 
   const refresh = useCallback(() => {
     setRefreshing(true);

@@ -32,6 +32,7 @@ import {
   type RouteId,
   routeForHashChange,
 } from "./router";
+import { readSnapshotAgain, useSnapshotRebuilt } from "./use-snapshot-rebuilt";
 
 const BEADS_URL = "data/beads.json";
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
@@ -107,6 +108,15 @@ function DashboardApp() {
   useEffect(() => {
     void loadSnapshot();
   }, [loadSnapshot]);
+
+  // After a rebuild the dev server started, read the snapshot again in place:
+  // the page is not reloaded, so view state and unsaved input stay.
+  const readAgain = useCallback(() => {
+    void readSnapshotAgain(BEADS_URL).then((payload) => {
+      if (payload) setSnapshot({ payload, error: null, loading: false });
+    });
+  }, []);
+  useSnapshotRebuilt(readAgain);
 
   useEffect(() => installCopyDelegation(document.body), []);
 

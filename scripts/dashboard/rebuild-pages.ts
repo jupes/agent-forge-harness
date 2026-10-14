@@ -14,6 +14,11 @@
  * made with `bd` outside the hearth reaches neither in a worktree: Refresh
  * snapshot reads the tracker then.
  *
+ * A rebuild the server started itself that succeeded is announced to open
+ * pages with `SNAPSHOT_REBUILT_EVENT` over Vite's HMR socket, never with a
+ * full reload: the page reads the snapshot again in place and keeps what it
+ * holds that is not saved.
+ *
  * Loaded by Vite under Node: imports nothing from Bun.
  */
 
@@ -24,6 +29,7 @@ import chokidar from "chokidar";
 import type { Plugin } from "vite";
 import { isLoopbackAddress, passesFrontDoor } from "../hearth/gate";
 import { createRebuildQueue, type RebuildOutcome } from "./rebuild-queue";
+import { SNAPSHOT_REBUILT_EVENT } from "./snapshot-events";
 
 export const REBUILD_PATH = "/__agent-forge/rebuild-pages";
 
@@ -126,9 +132,9 @@ export function runBuild(
 
 export interface RebuildPagesApi {
   /**
-   * Rebuild after a short pause, then tell the page to reload when the build
-   * succeeded: what a change under `.beads/` does, and debounced with those
-   * changes. Does nothing before the dev server has started or after it closed.
+   * Rebuild after a short pause, then tell open pages the snapshot was
+   * rebuilt when the build succeeded: what a change under `.beads/` does, and
+   * debounced with those changes. Does nothing before the dev server has started or after it closed.
    */
   rebuildSoon(): void;
 }
@@ -158,10 +164,14 @@ export function rebuildPagesPlugin(
       const queue = createRebuildQueue(() =>
         runBuild(command, root, timeoutMs),
       );
-      /** Rebuild, then reload the page when the build succeeded. */
-      const rebuildAndReload = (): void => {
+      /**
+       * Rebuild, then tell open pages when the build succeeded. Not a full
+       * reload: that would discard what a page holds that is not saved (a
+       * bead half written in the builder). The page reads the snapshot again.
+       */
+      const rebuildAndTell = (): void => {
         void queue.request().then((outcome) => {
-          if (outcome.ok) server.ws.send({ type: "full-reload", path: "*" });
+          if (outcome.ok) server.ws.send(SNAPSHOT_REBUILT_EVENT, {});
         });
       };
 
@@ -219,7 +229,7 @@ export function rebuildPagesPlugin(
         });
       });
 
-      if (options.initialBuild ?? true) rebuildAndReload();
+      if (options.initialBuild ?? true) rebuildAndTell();
 
       // Debounced so a burst of Dolt writes, or of tracker writes, becomes one rebuild.
       let debounce: ReturnType<typeof setTimeout> | null = null;
@@ -227,7 +237,7 @@ export function rebuildPagesPlugin(
         if (debounce) clearTimeout(debounce);
         debounce = setTimeout(() => {
           debounce = null;
-          rebuildAndReload();
+          rebuildAndTell();
         }, DEBOUNCE_MS);
       };
       rebuildSoon = schedule;

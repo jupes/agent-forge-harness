@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 
@@ -79,6 +79,24 @@ export const BD_STAND_IN_BIN = join(HEARTH_HOME, "bd-stand-in", "bin");
 export const BD_STAND_IN_STATE = join(HEARTH_HOME, "bd-stand-in", "state");
 /** Relative to the checkout, which is where the runner and its servers run. */
 export const BD_STAND_IN_SOURCE = join("tests", "e2e", "bd-stand-in.ts");
+
+// ── The stand-in for `build-pages` ──────────────────────────────────────────
+
+/**
+ * What the dashboard runs to rebuild the snapshot (`DASHBOARD_BUILD_SCRIPT`):
+ * a script that writes no snapshot and appends a line to
+ * `BUILD_STAND_IN_LOG` for each rebuild. Absolute, as the dashboard runs it.
+ */
+export const BUILD_STAND_IN = resolve("tests", "e2e", "build-stand-in.mjs");
+export const BUILD_STAND_IN_LOG = join(HEARTH_HOME, "build-stand-in.log");
+
+/** How many rebuilds the dashboard has run in this run so far. */
+export function buildStandInRuns(): number {
+  if (!existsSync(BUILD_STAND_IN_LOG)) return 0;
+  return readFileSync(BUILD_STAND_IN_LOG, "utf8")
+    .split("\n")
+    .filter((line) => line !== "").length;
+}
 
 /** The environment's own name for PATH: `Path` on Windows under node. */
 const PATH_KEY =

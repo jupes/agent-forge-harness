@@ -18,6 +18,7 @@ import { OPERATOR_HEADER } from "../hearth/paths";
 import { startTestHearth, type TestHearth } from "../hearth/testing";
 import { hearthPlugin } from "../hearth/vite-plugin";
 import { REBUILD_PATH, rebuildPagesPlugin } from "./rebuild-pages";
+import { SNAPSHOT_REBUILT_EVENT } from "./snapshot-events";
 
 /**
  * Stands in for `scripts/build-pages.ts` (no bd, no tracker): logs "start",
@@ -146,14 +147,23 @@ function pingPlugin(): Plugin {
   };
 }
 
-/** Records what the server pushes to the page over the HMR socket. */
+/**
+ * Records what the server pushes to the page over the HMR socket. A custom
+ * event (`send(name, data)`) is recorded in the shape it travels in.
+ */
 function recordPushes(pushed: unknown[]): Plugin {
   return {
     name: "record-pushes",
     configureServer(server) {
-      const send = server.ws.send.bind(server.ws);
-      server.ws.send = ((...args: Parameters<typeof send>) => {
-        pushed.push(args[0]);
+      const send = server.ws.send.bind(server.ws) as (
+        ...args: unknown[]
+      ) => void;
+      server.ws.send = ((...args: unknown[]) => {
+        pushed.push(
+          typeof args[0] === "string"
+            ? { type: "custom", event: args[0], data: args[1] }
+            : args[0],
+        );
         send(...args);
       }) as typeof server.ws.send;
     },
@@ -301,6 +311,16 @@ const reloads = (pushed: unknown[]): number =>
       typeof p === "object" &&
       p !== null &&
       (p as { type?: unknown }).type === "full-reload",
+  ).length;
+
+/** Pushes that tell the page the snapshot was rebuilt. */
+const rebuiltNotices = (pushed: unknown[]): number =>
+  pushed.filter(
+    (p) =>
+      typeof p === "object" &&
+      p !== null &&
+      (p as { type?: unknown }).type === "custom" &&
+      (p as { event?: unknown }).event === SNAPSHOT_REBUILT_EVENT,
   ).length;
 
 /**
@@ -465,7 +485,7 @@ describe("rebuild-pages endpoint", () => {
 });
 
 describe("rebuilds the dev server starts on its own", () => {
-  test("the server listens while its first build is still running, and tells the page to reload when that build finishes", async () => {
+  test("the server listens while its first build is still running, and tells the page the snapshot was rebuilt when that build finishes, without a full reload", async () => {
     const { url, box, pushed } = await fixture({ initialBuild: true });
 
     await waitFor("the first build to start", () =>
@@ -473,27 +493,35 @@ describe("rebuilds the dev server starts on its own", () => {
     );
     expect((await fetch(`${url}/__ping`)).status).toBe(200);
     expect(runs(box)).toEqual(["start"]);
-    expect(reloads(pushed)).toBe(0);
+    expect(rebuiltNotices(pushed)).toBe(0);
 
     release(box);
-    await waitFor("a full-reload push", () => reloads(pushed) === 1);
+    await waitFor(
+      "a snapshot-rebuilt push",
+      () => rebuiltNotices(pushed) === 1,
+    );
+    expect(reloads(pushed)).toBe(0);
     expect(runs(box)).toEqual(["start", "end"]);
   }, 15_000);
 
-  test("a file change under .beads/ starts a rebuild without blocking the server, and the page is told to reload after it", async () => {
+  test("a file change under .beads/ starts a rebuild without blocking the server, and the page is told the snapshot was rebuilt after it, without a full reload", async () => {
     const { url, root, box, pushed } = await fixture({ beadsDir: true });
 
     writeFileSync(join(root, ".beads", "issues.jsonl"), "{}\n");
     await waitFor("the rebuild to start", () => runs(box).includes("start"));
     expect((await fetch(`${url}/__ping`)).status).toBe(200);
-    expect(reloads(pushed)).toBe(0);
+    expect(rebuiltNotices(pushed)).toBe(0);
 
     release(box);
-    await waitFor("a full-reload push", () => reloads(pushed) === 1);
+    await waitFor(
+      "a snapshot-rebuilt push",
+      () => rebuiltNotices(pushed) === 1,
+    );
+    expect(reloads(pushed)).toBe(0);
     expect(runs(box)).toEqual(["start", "end"]);
   }, 15_000);
 
-  test("a claim sent through the dashboard's proxy to the hearth starts a rebuild with no .beads/ directory, and the page is told to reload after it", async () => {
+  test("a claim sent through the dashboard's proxy to the hearth starts a rebuild with no .beads/ directory, and the page is told the snapshot was rebuilt after it, without a full reload", async () => {
     // A hermetic hearth: its own ledger, and a bd that records and agrees.
     const hearth = await startTestHearth();
     cleanup.push(() => hearth.close());
@@ -517,10 +545,14 @@ describe("rebuilds the dev server starts on its own", () => {
 
     await waitFor("the rebuild to start", () => runs(box).includes("start"));
     expect((await fetch(`${url}/__ping`)).status).toBe(200);
-    expect(reloads(pushed)).toBe(0);
+    expect(rebuiltNotices(pushed)).toBe(0);
 
     release(box);
-    await waitFor("a full-reload push", () => reloads(pushed) === 1);
+    await waitFor(
+      "a snapshot-rebuilt push",
+      () => rebuiltNotices(pushed) === 1,
+    );
+    expect(reloads(pushed)).toBe(0);
     expect(runs(box)).toEqual(["start", "end"]);
   }, 20_000);
 
