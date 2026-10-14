@@ -11,7 +11,8 @@
  * kept here: labels are added before they are removed (so removing the label
  * being added leaves none), a remove of an absent label is silent, `labels`
  * and `metadata` are absent when empty, and a child's `show` prints its
- * parent's metadata under `dependencies`, never at the top level.
+ * parent's metadata under `dependencies`, never at the top level. It answers
+ * no `create`: `childOf` builds a child the way `bd create --parent` does.
  */
 
 import { type BdIssue, bdAnswers, bdTime } from "../hearth/bd-answers";
@@ -32,6 +33,28 @@ export interface TrackedBead {
   issueType?: string;
   /** The beads that block this one (`blocks` edges). */
   blockedBy?: string[];
+}
+
+/**
+ * A child as `bd create --parent` makes one (bd 1.1.0, compared with a real
+ * `bd` in `queue-bd.test.ts`): every label of the parent, a `queue:` label
+ * included, and none of its metadata, so none of its `queue_state`. `show`
+ * prints the parent's id and metadata under `dependencies` only. Copies: the
+ * child and the parent share nothing.
+ */
+export function childOf(parent: TrackedBead, id: string): TrackedBead {
+  return {
+    id,
+    ...(parent.labels !== undefined && parent.labels.length > 0
+      ? { labels: [...parent.labels] }
+      : {}),
+    parent: {
+      id: parent.id,
+      ...(parent.metadata !== undefined
+        ? { metadata: structuredClone(parent.metadata) }
+        : {}),
+    },
+  };
 }
 
 export interface QueueTracker {

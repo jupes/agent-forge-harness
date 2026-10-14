@@ -14,7 +14,7 @@ import {
 } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { bdAnswers } from "../hearth/bd-answers";
-import { QUEUE_LIST_ARGS } from "../hearth/routes/operator-reads";
+import { QUEUE_LIST_ARGS, queueEntries } from "../hearth/routes/operator-reads";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -34,6 +34,7 @@ import {
 } from "./queue";
 import {
   answerQueueList,
+  childOf,
   type QueueTracker,
   queueTracker,
   type TrackedBead,
@@ -560,12 +561,8 @@ describe("a label the queue did not write", () => {
     for (const action of QUEUE_ACTIONS)
       for (const by of QUEUE_ACTORS) {
         if (action === "propose") continue;
-        // As bd prints a child: the label, no metadata of its own, the parent's under dependencies.
-        const child: TrackedBead = {
-          id: `probe-child-${++serial}`,
-          labels: ["queue:queued"],
-          parent: { id: "probe-parent", metadata: { queue_state: "queued" } },
-        };
+        // As bd makes a child: the label, no metadata of its own, the parent's under dependencies.
+        const child = childOf(beadIn("queued"), `probe-child-${++serial}`);
         const { tracker, queue, events } = rig([child]);
         const result = await queue.move(child.id, action, by);
         expect({ action, by, kind: result.ok ? "ok" : result.kind }).toEqual({
@@ -581,11 +578,7 @@ describe("a label the queue did not write", () => {
         expect(events(child.id)).toEqual([]);
       }
 
-    const child: TrackedBead = {
-      id: `probe-child-${++serial}`,
-      labels: ["queue:queued"],
-      parent: { id: "probe-parent", metadata: { queue_state: "queued" } },
-    };
+    const child = childOf(beadIn("queued"), `probe-child-${++serial}`);
     const { tracker, queue, events } = rig([child]);
     const proposed = await queue.move(child.id, "propose", "scheduler");
     expect(proposed).toEqual({
@@ -619,10 +612,7 @@ describe("a label the queue did not write", () => {
   });
 
   test("an inherited queue:proposed is proposed without removing the label it adds (bd adds before it removes)", async () => {
-    const child: TrackedBead = {
-      id: `probe-child-${++serial}`,
-      labels: ["queue:proposed"],
-    };
+    const child = childOf(beadIn("proposed"), `probe-child-${++serial}`);
     const { tracker, queue, events } = rig([child]);
     const result = await queue.move(child.id, "propose", "operator");
     expect(result.ok).toBe(true);
@@ -707,6 +697,240 @@ describe("a label the queue did not write", () => {
         .filter((arg) => /status|claim|assignee/.test(arg)),
     ).toEqual([]);
   });
+});
+
+describe("a child created under a bead in the queue: approval is not inherited (decision 5)", () => {
+  test("childOf makes a child as bd create --parent does: every label of the parent, none of its metadata, which show prints under dependencies only", async () => {
+    const parent = beadIn("approved");
+    const child = childOf(parent, `${parent.id}.1`);
+    expect(child).toEqual({
+      id: `${parent.id}.1`,
+      labels: ["queue:approved", "command-center"],
+      parent: { id: parent.id, metadata: { queue_state: "approved" } },
+    });
+    // A copy: changing the child changes nothing of the parent's.
+    child.labels?.push("child-only");
+    if (child.parent?.metadata) child.parent.metadata["queue_state"] = "done";
+    expect(parent.labels).toEqual(["queue:approved", "command-center"]);
+    expect(parent.metadata).toEqual({ queue_state: "approved" });
+
+    const fresh = childOf(parent, `${parent.id}.2`);
+    const printed = JSON.parse(
+      (await queueTracker([fresh]).run(show(fresh.id))).stdout,
+    ) as Array<Record<string, unknown>>;
+    expect(printed[0]?.["labels"]).toEqual([
+      "command-center",
+      "queue:approved",
+    ]);
+    expect(printed[0]?.["metadata"]).toBeUndefined();
+    expect(JSON.stringify(printed[0]?.["dependencies"])).toContain(
+      '"queue_state":"approved"',
+    );
+    expect(queueStateOf(printed[0] ?? {})).toEqual({
+      kind: "unbacked",
+      label: "approved",
+    });
+    // A parent with no labels and no metadata: a child with neither.
+    expect(childOf({ id: "probe-bare" }, "probe-bare.1")).toEqual({
+      id: "probe-bare.1",
+      parent: { id: "probe-bare" },
+    });
+  });
+
+  /** Where a bead stands, in words a failure can show. */
+  function standingName(bead: TrackedBead): string {
+    const standing = queueStateOf(bead);
+    if (standing.kind === "none") return "none";
+    if (standing.kind === "broken") return "two queue labels";
+    if (standing.kind === "unbacked")
+      return `inherited queue:${standing.label}`;
+    return standing.state === "paused"
+      ? `paused from ${standing.resume}`
+      : standing.state;
+  }
+
+  /** One move made from a place, and where it left the child. */
+  interface Edge {
+    move: string;
+    child: TrackedBead;
+  }
+
+  /**
+   * Every move `actors` can try on the child as it stands, each on a tracker
+   * of its own that holds the parent and the child. A refusal writes nothing
+   * and records nothing; a move made records its own transition for the
+   * child, and nothing else; the parent is never written.
+   */
+  async function movesFrom(
+    parent: TrackedBead,
+    child: TrackedBead,
+    actors: readonly QueueActor[],
+  ): Promise<Edge[]> {
+    const edges: Edge[] = [];
+    for (const action of QUEUE_ACTIONS)
+      for (const by of actors) {
+        const stored: LedgerEventInput[] = [];
+        const { tracker, queue } = rig([parent, child], (event) => {
+          stored.push(event);
+          return { ok: true, id: stored.length, ulid: `u-${stored.length}` };
+        });
+        const result = await queue.move(child.id, action, by);
+        expect(tracker.beads.get(parent.id)).toEqual(parent);
+        if (!result.ok) {
+          expect({
+            action,
+            by,
+            kind: result.kind,
+            updates: tracker.updates(),
+            stored,
+          }).toEqual({ action, by, kind: "refused", updates: [], stored: [] });
+          continue;
+        }
+        expect(stored.map((event) => [event.beadId, event.payload])).toEqual([
+          [
+            child.id,
+            {
+              from: result.value.from,
+              to: result.value.to,
+              reason: `${action}:${by}`,
+            },
+          ],
+        ]);
+        const after = tracker.beads.get(child.id);
+        if (after === undefined) throw new Error(`${child.id} is gone`);
+        edges.push({ move: `${action}:${by}`, child: after });
+      }
+    return edges;
+  }
+
+  /** A place the child reached, the moves that led there, and whether an operator approved it on the way. */
+  interface Place {
+    child: TrackedBead;
+    path: string[];
+    approved: boolean;
+  }
+
+  /** Every place the child can reach by moves of `actors`, in the order they are first reached. */
+  async function reachable(
+    parent: TrackedBead,
+    child: TrackedBead,
+    actors: readonly QueueActor[],
+  ): Promise<Place[]> {
+    const where = (bead: TrackedBead): string =>
+      JSON.stringify([[...(bead.labels ?? [])].sort(), bead.metadata ?? {}]);
+    const edges = new Map<string, Edge[]>();
+    const seen = new Map<string, Place>();
+    const pending: Place[] = [{ child, path: [], approved: false }];
+    for (
+      let place = pending.shift();
+      place !== undefined;
+      place = pending.shift()
+    ) {
+      const here = where(place.child);
+      const key = `${here} ${place.approved}`;
+      if (seen.has(key)) continue;
+      seen.set(key, place);
+      let out = edges.get(here);
+      if (out === undefined) {
+        out = await movesFrom(parent, place.child, actors);
+        edges.set(here, out);
+      }
+      for (const edge of out)
+        pending.push({
+          child: edge.child,
+          path: [...place.path, edge.move],
+          approved: place.approved || edge.move === "approve:operator",
+        });
+    }
+    return [...seen.values()];
+  }
+
+  const listed = (answer: ReturnType<typeof answerQueueList>): string[] =>
+    (JSON.parse(answer?.stdout ?? "null") as Array<{ id: string }>).map(
+      (row) => row.id,
+    );
+  /** The command of x1gs.5.1's second criterion, as it was written. */
+  const LITERAL = ["list", "--label", "queue:queued", "--json", "--limit", "0"];
+
+  const parents: Array<[string, () => TrackedBead]> = [
+    ...QUEUE_STATES.filter((state) => state !== "paused").map(
+      (state): [string, () => TrackedBead] => [
+        `in ${state}`,
+        () => beadIn(state),
+      ],
+    ),
+    ...PAUSABLE.map((resume): [string, () => TrackedBead] => [
+      `paused from ${resume}`,
+      () => beadIn("paused", resume),
+    ]),
+    [
+      "with two queue labels",
+      () =>
+        beadIn("queued", undefined, {
+          labels: ["queue:approved", "queue:queued"],
+        }),
+    ],
+  ];
+
+  for (const [where, makeParent] of parents)
+    test(`under a parent ${where}: the child is in no state; the scheduler alone takes it no further than proposed; it reaches running only through the operator's approve of the child, and a shift can pick it only after that`, async () => {
+      const parent = makeParent();
+      const child = childOf(parent, `${parent.id}.1`);
+      const queueLabelsOfParent = (parent.labels ?? []).filter((label) =>
+        label.startsWith("queue:"),
+      );
+      const twoLabels = queueLabelsOfParent.length > 1;
+      const born = standingName(child);
+      expect(born).toBe(
+        twoLabels ? "two queue labels" : `inherited ${queueLabelsOfParent[0]}`,
+      );
+      // The literal listing shows a child that inherited queue:queued; the exact one never does.
+      expect(listed(answerQueueList(LITERAL, [child]))).toEqual(
+        queueLabelsOfParent.includes("queue:queued") ? [child.id] : [],
+      );
+
+      const bySchedulerOnly = await reachable(parent, child, ["scheduler"]);
+      expect(bySchedulerOnly.map((place) => standingName(place.child))).toEqual(
+        twoLabels ? [born] : [born, "proposed"],
+      );
+
+      const places = await reachable(parent, child, QUEUE_ACTORS);
+      const proposal = [born, "proposed", "paused from proposed"];
+      for (const place of places) {
+        const name = standingName(place.child);
+        if (!proposal.includes(name))
+          expect({ path: place.path, name, approved: place.approved }).toEqual({
+            path: place.path,
+            name,
+            approved: true,
+          });
+        const queued = name === "queued";
+        const entries = queueEntries(
+          answerQueueList([...QUEUE_LIST_ARGS], [place.child])?.stdout ?? "",
+        );
+        expect({
+          path: place.path,
+          exact: listed(answerQueueList([...QUEUED_EXACT_ARGS], [place.child])),
+          picked: entries.ok
+            ? pickable(entries.entries).map((entry) => entry.beadId)
+            : entries.error,
+        }).toEqual({
+          path: place.path,
+          exact: queued ? [child.id] : [],
+          picked: queued ? [child.id] : [],
+        });
+      }
+      // Not empty: unless the child carries two labels, it does reach running, and only with an approve on the way.
+      const running = places.filter(
+        (place) => standingName(place.child) === "running",
+      );
+      expect(running.map((place) => place.approved)).toEqual(
+        twoLabels ? [] : [true],
+      );
+      for (const place of running)
+        expect(place.path).toContain("approve:operator");
+      if (twoLabels) expect(places).toHaveLength(1);
+    });
 });
 
 describe("ids that are not a bead's", () => {
