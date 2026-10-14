@@ -111,4 +111,9 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   once) or with breakaway; elsewhere, one that leaves the child's process group (for example by `setsid`). No real
   provider has been run under the guard; a `.cmd` shim's `cmd.exe` and the program it starts would both be in the
   job, which has not been observed.
+- `runExec` (forge:exec's function, which `forge:shift` calls for each run) takes an `AbortSignal` in `ExecDeps`:
+  aborted before the provider starts, nothing is spawned or written (not even the run correlation); aborted while it
+  runs, the handle's `stop` kills the child's tree and the run ends `stopped: <the abort's reason>`, in `session.ended`
+  and in `error`. Its result carries `stopped` and the `usage` that `session.ended` reported (null when none), which is
+  how a caller counts what a run spent.
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.

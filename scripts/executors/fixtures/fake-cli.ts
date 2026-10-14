@@ -6,7 +6,7 @@
  *
  *   --fake-provider claude|codex   which stream dialect to print
  *   --fake-mode ok|tools|garbage|crash|hang|hang-tree|orphan|auth|model|no-tool-host|no-tools|stderr
- *   --fake-dump <file>             write { cwd, env, argv, stdin } as JSON
+ *   --fake-dump <file>             write { cwd, env, argv, stdin, pid } as JSON
  *   --fake-session-id <id>         the session id the stream reports (Claude:
  *                                  `session_id` on every line; Codex:
  *                                  `thread_id` on `thread.started`). Default:
@@ -91,7 +91,13 @@ const stdin = await new Response(Bun.stdin.stream()).text();
 if (dump) {
   writeFileSync(
     dump,
-    JSON.stringify({ cwd: process.cwd(), env: process.env, argv, stdin }),
+    JSON.stringify({
+      cwd: process.cwd(),
+      env: process.env,
+      argv,
+      stdin,
+      pid: process.pid,
+    }),
   );
 }
 
