@@ -348,7 +348,9 @@ export function pointedRunCorrelationAnywhere(input: {
 }): PointedRunCorrelation {
   const pointer = correlationPointer(input.argv, input.env);
   const elsewhere =
-    pointer === null ? null : otherHoldingCheckout(pointer.path, input.checkout);
+    pointer === null
+      ? null
+      : otherHoldingCheckout(pointer.path, input.checkout);
   if (pointer === null || elsewhere === null) {
     return pointedRunCorrelation(input);
   }
