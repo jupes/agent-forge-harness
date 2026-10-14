@@ -11,7 +11,8 @@ import { BD_STAND_IN_BIN, HEARTH_HOME, isRunHome } from "./servers";
  * over a few files in the OS temp directory. It is not called at all when a
  * server fails to start, so that case leaves the directory behind. On Windows
  * the hearth still holds its ledger open at this point, the removal fails, and
- * the directory is left for the OS as well.
+ * the directory is left as well. The next run's global setup removes such
+ * homes (`sweepFinishedRunHomes` in `run-homes.ts`).
  *
  * The stand-in for `bd` that global setup built there is removed first and on
  * its own: it is by far the largest thing in the home, nothing holds it open

@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sweepFinishedRunHomes } from "./run-homes";
 import {
   BD_STAND_IN_BIN,
   BD_STAND_IN_SOURCE,
   BD_STAND_IN_STATE,
   bunPath,
+  HEARTH_HOME,
 } from "./servers";
 
 /**
@@ -23,8 +26,18 @@ import {
  *
  * A build that fails, or a program that does not answer, stops the run: the
  * tests must not start against a `bd` nobody checked.
+ *
+ * First it removes the homes of earlier runs that are over
+ * (`sweepFinishedRunHomes`): on Windows a run's teardown cannot remove its
+ * own. That never stops the run.
  */
 export default function globalSetup(): void {
+  const swept = sweepFinishedRunHomes(HEARTH_HOME, tmpdir());
+  if (swept.length > 0)
+    console.log(
+      `[e2e] removed ${swept.length} hearth home(s) earlier runs left in ${tmpdir()}`,
+    );
+
   mkdirSync(BD_STAND_IN_BIN, { recursive: true });
   mkdirSync(BD_STAND_IN_STATE, { recursive: true });
   const program = join(
