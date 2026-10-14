@@ -50,6 +50,11 @@ export type CouncilSourceInput = {
   displayName?: string | undefined;
   /** Runs `bd`, `git` and `gh` for the bead and pr kinds; the local one when absent. */
   runner?: CommandRunner | undefined;
+  /**
+   * For a pr source: also send the acceptance criteria of the beads its body
+   * names. Off unless the operator asked (`--linked-criteria`, CLI only).
+   */
+  linkedCriteria?: boolean | undefined;
 };
 
 // CLI and jobs normalize their interface-specific input here. PR capture,
@@ -76,6 +81,7 @@ export async function prepareCouncilContext(input: CouncilSourceInput) {
     const compiled = await compilePullRequest(input.source, {
       cwd: input.workspaceRoot,
       secretPolicy: input.secretPolicy,
+      linkedCriteria: input.linkedCriteria === true,
       ...(input.runner ? { runner: input.runner } : {}),
     });
     context = {

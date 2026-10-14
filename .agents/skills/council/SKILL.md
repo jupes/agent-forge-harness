@@ -22,6 +22,10 @@ Review a PR, plan, research document, Beads issue, or supplied text using the sh
 4. Read the returned `run`, including limitations, failures, unreviewed or contested findings, and reviewer rationales. An unsuccessful envelope may still contain a preserved run and artifacts; report them.
 5. Present the chair's recommendation with evidence and disagreements. A council verdict is advisory, not permission to edit, approve, merge, or post a GitHub review.
 
+## A pull request as the source
+
+`/council pr` sends the PR's metadata, changed files and patch, and no bead. The acceptance criteria of the beads its description names are sent only with `--linked-criteria`, and only when the user asks for them: the PR description, not the user, chose those beads. With it, the dry run's listing names each bead whose criteria will be sent (`linked acceptance criteria sent: …`); show it to the user before step 3.
+
 ## A bead as the source
 
 `/council bead <id>` packs one Beads issue: its acceptance criteria (with id, title, type, priority, status, labels and dependency ids), its latest comments newest first, its description, the plan, research and report of its forge run or that it names, and the most recently mentioned pull request of this workspace's own origin repository. The evidence budget is spent in that order. The acceptance criteria and the comments take what they need first; the description is held to a tenth of the budget and each linked file to 15% until the pull request has had its turn, so under a short budget a long plan can be cut while the pull request is still packed.

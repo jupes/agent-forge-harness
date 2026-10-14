@@ -248,10 +248,11 @@ async function loadAcceptanceCriteria(
   ids: string[],
   cwd: string,
   runner: CommandRunner,
-): Promise<{ lines: string[]; omissions: string[] }> {
+): Promise<{ lines: string[]; ids: string[]; omissions: string[] }> {
   const results = await Promise.all(
     ids.map(async (id) => {
-      const command = ["bd", "show", id, "--json"];
+      // Read-only, as the bead source reads: packing a source never writes.
+      const command = ["bd", "--readonly", "show", id, "--json"];
       try {
         const result = await runner(command, cwd);
         if (result.exitCode !== 0)
@@ -260,7 +261,7 @@ async function loadAcceptanceCriteria(
         const issue = Array.isArray(parsed) ? parsed[0] : parsed;
         if (!isRecord(issue) || typeof issue.acceptance_criteria !== "string")
           return { omission: `Acceptance criteria missing for ${id}.` };
-        return { line: `${id}: ${issue.acceptance_criteria}` };
+        return { id, line: `${id}: ${issue.acceptance_criteria}` };
       } catch {
         return { omission: `Acceptance criteria unavailable for ${id}.` };
       }
@@ -268,6 +269,7 @@ async function loadAcceptanceCriteria(
   );
   return {
     lines: results.flatMap((result) => (result.line ? [result.line] : [])),
+    ids: results.flatMap((result) => (result.id ? [result.id] : [])),
     omissions: results.flatMap((result) =>
       result.omission ? [result.omission] : [],
     ),
@@ -353,9 +355,12 @@ export async function compilePullRequest(
     runner?: CommandRunner | undefined;
     secretPolicy?: SecretPolicy | undefined;
     /**
-     * False skips the lookup of the acceptance criteria of beads the PR body
-     * names. A bead source passes false: it packs the bead it was given and
-     * no other.
+     * True looks up the acceptance criteria of the beads the PR body names
+     * (at most ten) with `bd --readonly show`, and names them in the
+     * metadata's `linkedCriteriaIds`. Off unless asked for (`x1gs.7.4`): bead
+     * content is private, and a PR body is written by whoever opened the PR,
+     * so it must not choose which beads are sent. Only the CLI asks, on the
+     * operator's `--linked-criteria`; a bead source never does.
      */
     linkedCriteria?: boolean | undefined;
   } = {},
@@ -412,7 +417,7 @@ export async function compilePullRequest(
     options.secretPolicy ?? "reject",
   );
   const diff = truncateUtf8(safeDiff.text, maxDiffBytes);
-  const lookUp = options.linkedCriteria !== false;
+  const lookUp = options.linkedCriteria === true;
   const linkedIssues = lookUp
     ? linkedIssueIds(pullRequest.body)
     : { ids: [], omitted: 0 };
@@ -469,6 +474,8 @@ export async function compilePullRequest(
     deletions: pullRequest.deletions,
     includedFiles: filtered.includedFiles,
     linkedIssueIds: issueIds,
+    // The beads whose criteria the text holds, for the listing; only when asked for.
+    ...(lookUp ? { linkedCriteriaIds: criteria.ids } : {}),
     diffTruncated: diff.truncated,
     omissions,
   };
