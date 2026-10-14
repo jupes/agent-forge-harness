@@ -9,8 +9,9 @@
  *   gitignored, so what the gate runs for a repository is the operator's to
  *   say, not something a commit can change. Each check is a name and an
  *   argument array, run in the run's checkout without a shell (see
- *   `execFileNoShell`). A repository with no usable check set is refused,
- *   naming the entry to fill in.
+ *   `execFileNoShell`), and may set its own time limit (`timeoutSeconds`, at
+ *   most `MAX_CHECK_TIMEOUT_SECONDS`). A repository with no usable check set
+ *   is refused, naming the entry to fill in.
  * - A run anywhere else is somewhere this gate cannot judge.
  *
  * `repos/` and `repos/repos.json` are those of the harness's main checkout:
@@ -44,6 +45,11 @@ export const HARNESS_FILES: readonly string[] = [
 export interface RepositoryCheck {
   name: string;
   argv: string[];
+  /**
+   * How long the check may run before it is stopped, from 1 to
+   * `MAX_CHECK_TIMEOUT_SECONDS`. Absent: the runner's default.
+   */
+  timeoutSeconds?: number;
 }
 
 export type RunCheckSet =
@@ -74,6 +80,9 @@ export const GATE_CHECK_NAMES: readonly string[] = [
 ];
 
 const CHECK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
+
+/** The longest time limit a check may set for itself: one hour. */
+export const MAX_CHECK_TIMEOUT_SECONDS = 3600;
 
 const CHECK_SHAPE = '{ "name": ..., "argv": [program, ...arguments] }';
 
@@ -165,14 +174,21 @@ function repositoryChecks(
     const at = `checks[${index}]`;
     const problem = checkProblem(check, at, value);
     if (problem !== null) return refuse(`${named}: ${problem}`);
-    // justification: checkProblem has just confirmed both fields' types.
-    const { name, argv } = check as RepositoryCheck;
-    value.push({ name, argv: [...argv] });
+    // justification: checkProblem has just confirmed the fields' types.
+    const { name, argv, timeoutSeconds } = check as RepositoryCheck;
+    value.push({
+      name,
+      argv: [...argv],
+      ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+    });
   }
   return { ok: true, value };
 }
 
-/** What is wrong with one check, or null when it is a name and a non-empty argument list. */
+/**
+ * What is wrong with one check, or null when it is a name and a non-empty
+ * argument list, with a bounded time limit if it sets one.
+ */
 function checkProblem(
   check: unknown,
   at: string,
@@ -181,7 +197,11 @@ function checkProblem(
   if (typeof check !== "object" || check === null || Array.isArray(check)) {
     return `${at} must be an object`;
   }
-  const { name, argv } = check as { name?: unknown; argv?: unknown };
+  const { name, argv, timeoutSeconds } = check as {
+    name?: unknown;
+    argv?: unknown;
+    timeoutSeconds?: unknown;
+  };
   if (typeof name !== "string" || !CHECK_NAME.test(name)) {
     return `${at}.name must be letters, digits, dot, dash or underscore (40 at most)`;
   }
@@ -200,6 +220,17 @@ function checkProblem(
   }
   if ((argv[0] as string).trim().length === 0) {
     return `${at}.argv[0] must name a program`;
+  }
+  if (
+    "timeoutSeconds" in check &&
+    !(
+      typeof timeoutSeconds === "number" &&
+      Number.isInteger(timeoutSeconds) &&
+      timeoutSeconds >= 1 &&
+      timeoutSeconds <= MAX_CHECK_TIMEOUT_SECONDS
+    )
+  ) {
+    return `${at}.timeoutSeconds must be a whole number of seconds from 1 to ${MAX_CHECK_TIMEOUT_SECONDS}`;
   }
   return null;
 }
