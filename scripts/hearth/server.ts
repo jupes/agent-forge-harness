@@ -22,6 +22,7 @@ import type {
 } from "../council/ledger-events";
 import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import { isMain } from "../is-main";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
@@ -345,7 +346,7 @@ async function main(argv: string[]): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   main(process.argv.slice(2)).catch((error: unknown) => {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,

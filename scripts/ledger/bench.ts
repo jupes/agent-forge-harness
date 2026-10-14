@@ -18,6 +18,7 @@
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { isMain } from "../is-main";
 import { appendEvent } from "./append";
 import { closeLedger } from "./db";
 import { queryEvents } from "./query";
@@ -190,7 +191,7 @@ function fail(error: string): never {
   process.exit(2);
 }
 
-if (import.meta.main && process.argv[2] === "--hook") {
+if (isMain(import.meta) && process.argv[2] === "--hook") {
   const arg = process.argv[3] ?? "20";
   if (!/^\d+$/.test(arg) || Number(arg) < 1)
     fail(`--hook: expected a positive integer, got "${arg}"`);
@@ -205,7 +206,7 @@ if (import.meta.main && process.argv[2] === "--hook") {
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
-} else if (import.meta.main) {
+} else if (isMain(import.meta)) {
   const arg = process.argv[2] ?? "10000";
   if (!/^\d+$/.test(arg) || Number(arg) < 1) {
     console.log(

@@ -1,10 +1,11 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -36,9 +37,21 @@ const fake = (provider: string, mode = "ok") => [
 ];
 
 const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
+/** The scratch directories a test made, removed after it. */
+const scratch: string[] = [];
+afterEach(() => {
+  // A ledger file still open cannot be removed on Windows: close first.
+  for (const ledger of ledgers.splice(0)) closeLedger(ledger);
+  for (const dir of scratch.splice(0))
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
 });
+
+/** A new directory under the OS temp directory, removed after the test. */
+function scratchDir(prefix: string): string {
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
+  scratch.push(dir);
+  return dir;
+}
 
 /**
  * A harness root and a run directory that are each their own checkout (a bare
@@ -47,7 +60,7 @@ afterAll(() => {
  * else writes.
  */
 function setup() {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "forge exec ")));
+  const root = scratchDir("forge exec ");
   mkdirSync(join(root, ".git"));
   const worktree = join(root, "wt dir");
   mkdirSync(join(worktree, ".git"), { recursive: true });
@@ -597,9 +610,7 @@ describe("forge:doctor", () => {
     // Windows, Bun 1.3.10, it still found an installed claude), so the doctor
     // runs in a child whose PATH and working directory are a directory this
     // test has just made, with nothing in it.
-    const empty = realpathSync.native(
-      mkdtempSync(join(tmpdir(), "forge doctor path ")),
-    );
+    const empty = scratchDir("forge doctor path ");
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined && key.toUpperCase() !== "PATH") env[key] = value;

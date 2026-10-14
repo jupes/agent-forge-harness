@@ -29,6 +29,7 @@
 
 import type { SnapshotSource } from "../../types/beads";
 import type { BdExportRow } from "../beads-dashboard";
+import { isMain } from "../is-main";
 import {
   type RepoContext,
   type RepoSource,
@@ -177,7 +178,7 @@ export async function backfillRepoLabels(options: {
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const apply = process.argv.slice(2).includes("--apply");
   const result = await backfillRepoLabels({
     cwd: process.cwd(),

@@ -912,3 +912,128 @@ describe("the evaluator verdict a gate entry rests on", () => {
     }
   });
 });
+
+describe("a forge run's earlier gate runs", () => {
+  const RUN = "agent-forge-harness-dg40";
+  const snapshot = (gateLogs: Iterable<string | null>) =>
+    forgeRunSnapshot({
+      runStates: [JSON.stringify(STATE)],
+      checkout: CHECKOUT,
+      gateLogs,
+      artifactExists: () => true,
+    });
+  const at = (minute: number) =>
+    `2026-10-08T12:${String(minute).padStart(2, "0")}:00.000Z`;
+
+  test("the run carries its earlier gate runs, newest first, after its newest one, each with its checks and its task id", () => {
+    const view = snapshot([
+      // Newest day first; within a day the newest line is the last.
+      [
+        v2Line({
+          timestamp: at(3),
+          passed: false,
+          checks: [
+            { name: "typecheck", passed: true },
+            { name: "lint", passed: false, output: "Found 1 error.\nmore" },
+          ],
+        }),
+        v2Line({ timestamp: at(4) }),
+      ].join("\n"),
+      [
+        gateLine({ timestamp: at(1), forgeSlug: RUN }),
+        v2Line({
+          timestamp: at(2),
+          beadsIssueId: "agent-forge-harness-dg40.8",
+        }),
+      ].join("\n"),
+    ]);
+    const run = view.runs[0];
+    expect(run?.gate?.timestamp).toBe(at(4));
+    expect(run?.earlierGates.map((gate) => gate.timestamp)).toEqual([
+      at(3),
+      at(2),
+      at(1),
+    ]);
+    expect(run?.earlierGates[0]).toMatchObject({
+      passed: false,
+      link: "linked",
+      beadsIssueId: "agent-forge-harness-dg40.9",
+      checks: [
+        { name: "typecheck", passed: true, skipped: false, detail: null },
+        {
+          name: "lint",
+          passed: false,
+          skipped: false,
+          detail: "Found 1 error.",
+        },
+      ],
+    });
+    expect(run?.earlierGates[1]?.beadsIssueId).toBe(
+      "agent-forge-harness-dg40.8",
+    );
+    // A legacy entry keeps its old task field, and is never read as a bead.
+    expect(run?.earlierGates[2]).toMatchObject({
+      link: "legacy",
+      beadsIssueId: null,
+      taskId: "agent-forge-harness-dg40.9",
+    });
+  });
+
+  test("an entry with no checkout, from another checkout or forge run, or with no run correlation is not among them", () => {
+    const view = snapshot([
+      [
+        v2Line({ timestamp: at(1) }),
+        gateLine({ timestamp: at(2), checkout: undefined }),
+        v2Line({ timestamp: at(3), checkout: "C:/Users/dev/elsewhere" }),
+        v2Line({ timestamp: at(4), executionRunId: "another-run" }),
+        v2Line({ ...UNLINKED, timestamp: at(5) }),
+        v2Line({ timestamp: at(6) }),
+      ].join("\n"),
+    ]);
+    expect(view.runs[0]?.gate?.timestamp).toBe(at(6));
+    expect(view.runs[0]?.earlierGates.map((gate) => gate.timestamp)).toEqual([
+      at(1),
+    ]);
+  });
+
+  test("at most the ten before the newest are carried", () => {
+    const lines = Array.from({ length: 15 }, (_, n) =>
+      v2Line({ timestamp: at(n + 1) }),
+    );
+    const run = snapshot([lines.join("\n")]).runs[0];
+    expect(run?.gate?.timestamp).toBe(at(15));
+    expect(run?.earlierGates.map((gate) => gate.timestamp)).toEqual(
+      Array.from({ length: 10 }, (_, n) => at(14 - n)),
+    );
+  });
+
+  test("a run with one gate run, or none, has no earlier ones", () => {
+    expect(snapshot([v2Line()]).runs[0]?.earlierGates).toEqual([]);
+    expect(snapshot([]).runs[0]?.earlierGates).toEqual([]);
+  });
+
+  test("older logs are read only until every run has its newest gate run and ten before it", () => {
+    let readOlder = false;
+    function* logs() {
+      yield Array.from({ length: 11 }, (_, n) =>
+        v2Line({ timestamp: at(n + 1) }),
+      ).join("\n");
+      readOlder = true;
+      yield v2Line({ timestamp: "older" });
+    }
+    const run = snapshot(logs()).runs[0];
+    expect(run?.earlierGates).toHaveLength(10);
+    expect(readOlder).toBe(false);
+  });
+
+  test("reading on for a run's history does not make an older entry the checkout's unattributed gate", () => {
+    const view = snapshot([
+      [
+        v2Line({ ...UNLINKED, timestamp: at(1) }),
+        v2Line({ timestamp: at(2) }),
+      ].join("\n"),
+    ]);
+    expect(view.runs[0]?.gate?.timestamp).toBe(at(2));
+    expect(view.unattributedGate).toBeNull();
+  });
+});

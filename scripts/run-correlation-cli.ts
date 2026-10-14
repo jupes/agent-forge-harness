@@ -19,6 +19,7 @@
  * Exit code 0 when ok, 2 when not.
  */
 
+import { isMain } from "./is-main";
 import { correlationReport, initRunCorrelation } from "./run-correlation-store";
 
 export interface CorrelateOutcome {
@@ -76,7 +77,7 @@ export function runCorrelate(
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const outcome = runCorrelate(process.argv.slice(2), { cwd: process.cwd() });
   console.log(JSON.stringify(outcome.body, null, 2));
   process.exit(outcome.code);

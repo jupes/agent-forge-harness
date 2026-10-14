@@ -150,14 +150,29 @@ export function queryEvents(
     .map(toEvent);
 }
 
-/** The newest event of the given kinds for a run, or null (also when the ledger cannot be read). */
+/**
+ * The newest event of the given kinds for a run (in the workspace, when one is
+ * given: the same slug can name a run in another checkout), or null (also when
+ * the ledger cannot be read).
+ */
 export function lastEvent(
-  filter: { runId: string; kinds: readonly LedgerEventKind[] },
+  filter: {
+    runId: string;
+    kinds: readonly LedgerEventKind[];
+    workspace?: string;
+  },
   opts: { path?: string } = {},
 ): LedgerEvent | null {
   try {
     const events = queryEvents(
-      { runId: filter.runId, kinds: filter.kinds, limit: 1 },
+      {
+        runId: filter.runId,
+        kinds: filter.kinds,
+        ...(filter.workspace !== undefined
+          ? { workspace: filter.workspace }
+          : {}),
+        limit: 1,
+      },
       opts,
     );
     return events[0] ?? null;

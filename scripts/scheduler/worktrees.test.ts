@@ -1,6 +1,7 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -40,11 +41,44 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /**
+ * The limit for every test in this file (agent-forge-harness-7v3u). Most of
+ * them make real worktrees, and a git call is a process start: about 40 ms on
+ * Windows 11 with bun 1.3.10, 125 ms for a `worktree add`, 460 ms for the six
+ * calls that make a repository. Measured there: alone the slowest test takes
+ * 1.6 to 2.7 s. With 16 copies of this file running at once, every copy
+ * failed one or two tests at bun's default 5 s; with this limit no copy
+ * failed, the slowest test taking 7.1 s. `repo()` copies one prepared
+ * repository, so the git calls that make it run once per file, not per test.
+ * 60 s is the limit the other tests that spawn processes use, and
+ * `setDefaultTimeout` holds for this file only.
+ */
+setDefaultTimeout(60_000);
+
+/** The prepared repository `repo()` copies, one per `ignoreTrees` value. */
+const prepared = new Map<boolean, string>();
+
+/**
  * A scratch repository whose path has spaces, its own `git init` (the OS home
  * may itself be a repository), one commit, and `trees/` ignored as the
  * harness ignores it. The root stays short: git fails on very long paths.
+ *
+ * Each call is a copy of one repository made the first time it is asked for,
+ * so a test starts no git process to get it. No test is given the original.
  */
 function repo(ignoreTrees = true): string {
+  let source = prepared.get(ignoreTrees);
+  if (source === undefined) {
+    source = makeRepo(ignoreTrees);
+    prepared.set(ignoreTrees, source);
+  }
+  const root = mkdtempSync(join(tmpdir(), "wt "));
+  roots.push(root);
+  const dir = join(root, "repo x");
+  cpSync(source, dir, { recursive: true });
+  return dir;
+}
+
+function makeRepo(ignoreTrees: boolean): string {
   const root = mkdtempSync(join(tmpdir(), "wt "));
   roots.push(root);
   const dir = join(root, "repo x");

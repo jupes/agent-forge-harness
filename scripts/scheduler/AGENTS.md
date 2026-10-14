@@ -104,14 +104,23 @@ here starts nothing, and the only other process spawned is git, by the registry.
   have the same `from` and `to`: the move recorded twice, or a move back between them that was not
   recorded, which the ledger cannot tell apart. It only reports. It writes nothing to Beads or to
   the ledger and makes up no event for a move made earlier: Beads holds the state, and a backfilled
-  event would be history nobody recorded. Not found: a reassign the ledger missed (its event names
-  no smith), and moves `forge:audit --compact` removed (the oldest left is reported as a gap before
-  it).
+  event would be history nobody recorded. Not found: moves `forge:audit --compact` removed (the
+  oldest left is reported as a gap before it).
+- Reconcile also compares the smith on each bead the list printed with the one its newest recorded
+  reassign named, and reports a `smith` drift where they differ (`recorded` null: none recorded;
+  `found` null: the bead carries none). It reads the workspace's `operator.action` rows too: with
+  `askedEvent`, a `queue.reassign` row for the bead naming the smith found was stored after that
+  reassign, so the operator API asked for it and the ledger missed the reassign. Without it, nothing
+  asked for that smith through the operator API: set by hand, or by a writer that stores no audit
+  row, which the ledger cannot tell apart. The row is stored before the reassign is made, so a
+  request `bd` refused followed by the same smith set by hand reads as a missed reassign. Not
+  compared: a bead the list did not print, and one whose newest reassign was recorded before the
+  event named its smith.
 - `reassign` records a smith as the bead's `smith` metadata, which is where smith resolution reads
   a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state. Once `bd`
-  confirmed the write, it appends `bead.transitioned` `{ action: "reassign" }` under the lock, the
-  tracker-write form with no `from` or `to`, so that a page or a stream client that reads `/queue`
-  again on that event finds the new smith. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
+  confirmed the write, it appends `bead.transitioned` `{ action: "reassign", smith }` under the lock,
+  the tracker-write form with no `from` or `to`, so that a page or a stream client that reads `/queue`
+  again on that event finds the new smith, and reconcile can compare the smith on the bead. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
   picks the bench, and a bead without one gets `workflow.default_crew`.
 - `bd list --label queue:queued` prints the beads a shift may pick plus two kinds that `start`
   refuses, both made outside the queue: an inherited or hand-added label, and a bead with a second

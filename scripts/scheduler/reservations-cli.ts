@@ -27,6 +27,7 @@ import {
 } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
 import { parsed, refusal } from "../hearth/tracker-write";
+import { isMain } from "../is-main";
 import { ledgerPath } from "../ledger/paths";
 import { activeReservations } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
@@ -232,7 +233,7 @@ export async function runCli(
   );
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const result = await runCli(process.argv.slice(2), cliDeps(process.cwd()));
   console.log(JSON.stringify(result.out, null, 2));
   process.exit(result.exit);

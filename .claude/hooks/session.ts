@@ -22,7 +22,7 @@
  * It always exits 0: a failure here must never cost the session.
  */
 
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import { appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import {
@@ -46,16 +46,31 @@ const SESSION_HANDOFF_PATH = join(
   "session-handoff.md",
 );
 
-function run(cmd: string): string {
-  try {
-    return execSync(cmd, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-    }).trim();
-  } catch {
-    return "";
-  }
+/**
+ * Run a program with an argument array and no shell: its trimmed stdout, then
+ * its stderr when `withStderr` is set; "" when it cannot start or exits
+ * nonzero. No shell, because on Windows a command line goes through cmd.exe,
+ * where a POSIX redirect or `head` fails before the program runs
+ * (agent-forge-harness-o89v).
+ */
+function run(
+  file: string,
+  args: readonly string[],
+  withStderr = false,
+): string {
+  const result = spawnSync(file, [...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30_000,
+  });
+  if (result.error !== undefined || result.status !== 0) return "";
+  const stdout = result.stdout ?? "";
+  return (withStderr ? stdout + (result.stderr ?? "") : stdout).trim();
+}
+
+/** The first `count` lines of a program's output. */
+function firstLines(text: string, count: number): string {
+  return text.split(/\r?\n/).slice(0, count).join("\n");
 }
 
 function log(entry: Record<string, unknown>): void {
@@ -105,10 +120,10 @@ async function main(): Promise<void> {
     eventSource: source,
     timestamp: new Date().toISOString(),
     git: {
-      branch: run("git branch --show-current"),
-      commit: run("git rev-parse --short HEAD"),
-      status: run("git status --short"),
-      remote: run("git remote get-url origin"),
+      branch: run("git", ["branch", "--show-current"]),
+      commit: run("git", ["rev-parse", "--short", "HEAD"]),
+      status: run("git", ["status", "--short"]),
+      remote: run("git", ["remote", "get-url", "origin"]),
     },
     cwd: process.cwd(),
   };
@@ -116,7 +131,7 @@ async function main(): Promise<void> {
   if (event === "SessionEnd") return;
 
   // Beads / Dolt: pull at session start (non-fatal if no remote or auth)
-  const pullOut = run("bd dolt pull 2>&1");
+  const pullOut = run("bd", ["dolt", "pull"], true);
   if (pullOut) {
     console.log(`[session] bd dolt pull: ${pullOut.slice(0, 200)}`);
   }
@@ -126,7 +141,7 @@ async function main(): Promise<void> {
     );
   }
   // Print orientation info
-  const ready = run("bd ready 2>/dev/null | head -5");
+  const ready = firstLines(run("bd", ["ready"]), 5);
   if (ready) {
     console.log("\n[session] Ready work:\n" + ready);
   }

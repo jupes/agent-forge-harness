@@ -277,6 +277,11 @@ export interface BeadWriteRecord {
   hash?: string;
   /** The length of that text. */
   length?: number;
+  /**
+   * A reassign's smith: the name `bd` confirmed on the bead. Only on a
+   * reassign, and absent from one recorded before the event named it.
+   */
+  smith?: string;
   from?: never;
   to?: never;
   reason?: never;
@@ -491,7 +496,8 @@ export type OperatorEnvelope<T = unknown> =
 // stream sends. Added with the API. The types above this line are as they were
 // before it, with one later exception: `bead.transitioned` gained a second
 // payload form (`BeadWriteRecord`) with the Beads write path, whose `action`
-// later also took `reassign` (`TRACKER_WRITES`).
+// later also took `reassign` (`TRACKER_WRITES`), and a reassign later an
+// optional `smith`.
 
 /**
  * What the ledger knows about one session, folded from its events. Not a

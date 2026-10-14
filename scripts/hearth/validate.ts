@@ -228,6 +228,7 @@ const queueTransition = shape({
   reason: optional(str),
   hash: absent("a queue transition"),
   length: absent("a queue transition"),
+  smith: absent("a queue transition"),
 });
 
 const trackerWrite = shape({
@@ -243,12 +244,20 @@ const trackerWrite = shape({
  * `bead.transitioned` has two forms and a payload is exactly one of them: with
  * `action` it is a tracker write and carries no queue key, so no text can
  * travel under `reason`; without it, it is a queue transition and carries no
- * hash or length.
+ * hash, length or smith. Of the writes, only a reassign names a smith.
  */
-const beadTransitioned: Check = (v, path) =>
-  isRecord(v) && v.action !== undefined
-    ? trackerWrite(v, path)
-    : queueTransition(v, path);
+const beadTransitioned: Check = (v, path) => {
+  if (!isRecord(v) || v.action === undefined) return queueTransition(v, path);
+  return (
+    trackerWrite(v, path) ??
+    (v.action === "reassign"
+      ? optional(nonEmptyStr)(v.smith, `${path}.smith`)
+      : absent("a tracker write other than a reassign")(
+          v.smith,
+          `${path}.smith`,
+        ))
+  );
+};
 
 /** A provider's usage: whole token counts and a cost, each optional. */
 const providerUsage = shape({

@@ -58,6 +58,7 @@ import {
 import { loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
 import { isValidSlug } from "../forge/runs";
+import { isMain } from "../is-main";
 import { readSessionMirror } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
 import { setSessionModel } from "../ledger/session-models";
@@ -382,7 +383,7 @@ export async function runExec(
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const harnessRoot = join(import.meta.dir, "..", "..");
   const outcome = await runExec(process.argv.slice(2), { harnessRoot });
   console.log(JSON.stringify(outcome.body, null, 2));

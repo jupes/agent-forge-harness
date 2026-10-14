@@ -65,6 +65,7 @@ import {
 import { strictEvaluatorProblem } from "../../scripts/evaluator-policy";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { readRunState } from "../../scripts/forge/runs-store";
+import { isMain } from "../../scripts/is-main";
 import {
   EXEC_TIMEOUT_MS,
   type ExecFile,
@@ -902,7 +903,7 @@ function hasTestFiles(): boolean {
   return false;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const startedAt = performance.now();
   let stdin: HookStdin;
   try {

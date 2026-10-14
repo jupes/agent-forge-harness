@@ -34,6 +34,7 @@ import {
   issuesAndDepsFromExportRows,
   payloadFromIssuesDepsComments,
 } from "./beads-dashboard";
+import { isMain } from "./is-main";
 
 export interface BuildPagesOptions {
   /** The checkout whose `.beads/` and `docs/data/` are used. */
@@ -111,7 +112,7 @@ export async function buildPages(
   return { ok: true, payload, outputFile };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const result = await buildPages({ cwd: process.cwd(), runBd: runBdOnPath });
   if (!result.ok) process.exit(1);
 }

@@ -1,9 +1,12 @@
 /**
  * Runs one child process with a timeout, a stop(), and a guarantee that it does
  * not outlive the harness. Every live child is registered; a parent `exit`
- * (including a crash or Ctrl-C) kills the whole tree synchronously.
+ * (including a crash or Ctrl-C) kills the whole tree synchronously. A harness
+ * killed outright runs no exit hook: each child's tree is guarded for that
+ * case as it starts (`tree-guard.ts`).
  */
 
+import { guardTree } from "./tree-guard";
 import type { ChildExit } from "./types";
 
 /** How much of a child's stderr is kept: the end, where a failure says why. */
@@ -120,6 +123,8 @@ export function supervise(options: SuperviseOptions): Supervised {
     stderr: "pipe",
   });
   live.add(proc.pid);
+  // For a harness ended outright, which runs no exit hook (`tree-guard.ts`).
+  const guard = guardTree(proc.pid);
 
   let timedOut = false;
   let stopped = false;
@@ -146,6 +151,7 @@ export function supervise(options: SuperviseOptions): Supervised {
       return { exitCode, timedOut, stopped, stderr };
     } finally {
       if (timer) clearTimeout(timer);
+      guard.release();
       live.delete(proc.pid);
     }
   })();

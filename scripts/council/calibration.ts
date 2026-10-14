@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMain } from "../is-main";
 import { reserveCouncilRun, writeCouncilArtifacts } from "./artifacts";
 import { loadCouncilProfile } from "./cli";
 import { buildContextPack, hashText } from "./context";
@@ -586,7 +587,7 @@ export async function runCalibration(
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   try {
     const data = await runCalibration(process.argv.slice(2));
     const ok = data.status !== "incomplete";
