@@ -32,7 +32,7 @@ process spawned is git, by the registry.
   section. A level-one `# …` line inside a fence does not end it: there it is a shell comment.
 - `reservations.ts` and `eligibility.ts` consume file maps (below).
 
-## The queue (`queue.ts`, `queue-lock.ts`)
+## The queue (`queue.ts`, `queue-lock.ts`, `queue-reconcile.ts`)
 
 - A bead's queue state is one `queue:<state>` label on the bead. Beads is where it lives; the ledger
   records each move and is never read back to find a state. Beads `status` is read once (a closed
@@ -89,6 +89,19 @@ process spawned is git, by the registry.
 - `queue_state` and `queue_resume` are trusted as written: metadata set by hand is read as the
   queue's own. A process that ends between the `bd update` and the append leaves the move (or the
   reassign) made with no `bead.transitioned` for it.
+- `bun run forge:queue reconcile` (`queue-cli.ts` over `queue-reconcile.ts`) finds both afterwards.
+  Under the queue lock it reads the list `GET /queue` makes (`QUEUE_LIST_ARGS`) and the workspace's
+  `bead.transitioned` events, takes the moves (events without `action`), and walks each bead's moves
+  as a chain: each starts where the one before ended (the first from outside the queue), and the
+  last ends at the state the queue wrote on the bead now (`queueStateOf`; an unbacked label or two
+  labels is no state). A link that does not hold is a `gap` (`recorded`, `found`, the ledger ids
+  around it, and after the last move the bead's queue labels), or a `duplicate` when the two moves
+  have the same `from` and `to`: the move recorded twice, or a move back between them that was not
+  recorded, which the ledger cannot tell apart. It only reports. It writes nothing to Beads or to
+  the ledger and makes up no event for a move made earlier: Beads holds the state, and a backfilled
+  event would be history nobody recorded. Not found: a reassign the ledger missed (its event names
+  no smith), and moves `forge:audit --compact` removed (the oldest left is reported as a gap before
+  it).
 - `reassign` records a smith as the bead's `smith` metadata, which is where smith resolution reads
   a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state. Once `bd`
   confirmed the write, it appends `bead.transitioned` `{ action: "reassign" }` under the lock, the

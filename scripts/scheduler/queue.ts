@@ -27,6 +27,9 @@
  *   are this module (two lock files), the move is recorded twice.
  * - A process that ends between the `bd update` and the append leaves the
  *   move (or the reassign) made on the bead with no `bead.transitioned` for it.
+ *
+ * `bun run forge:queue reconcile` (`queue-reconcile.ts`) reports such moves,
+ * and a move recorded twice, afterwards. It writes nothing.
  */
 
 import {
