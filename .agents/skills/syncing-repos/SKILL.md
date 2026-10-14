@@ -24,6 +24,20 @@ bun run repo <command> [options]
 
 All commands accept `--repo <name>` to target a single repo, or operate on all repos by default.
 
+### Archived repos
+
+An entry with `"archived": true` stays registered (and cloned, if it is) but every all-repos run
+skips it: `init`, `status`, `refresh`, `reset` and the `branch` commands, and `/sync-knowledge --all`.
+The JSON output lists the ones left out under `"skipped"`. To act on one anyway:
+
+```bash
+bun run repo refresh --repo old-docs          # naming an archived repo still works
+bun run repo status --include-archived        # every repo, archived ones included
+```
+
+Archive a dormant or reference-only repo instead of removing its entry, so it keeps its clone,
+its knowledge file and its name in the Repo column (`docs/HARNESS-GUIDE.md`).
+
 ## Commands
 
 ### init
@@ -89,9 +103,12 @@ All commands return:
       "branch": "main"
     }
   ],
+  "skipped": ["old-docs"],
   "errors": []
 }
 ```
+
+`"skipped"` names the archived entries the run left out (empty when there are none).
 
 On failure:
 ```json
@@ -116,10 +133,18 @@ On failure:
         { "name": "typecheck", "argv": ["bun", "run", "typecheck"] },
         { "name": "tests", "argv": ["bun", "test"] }
       ]
+    },
+    {
+      "name": "old-docs",
+      "url": "https://github.com/org/old-docs.git",
+      "defaultBranch": "main",
+      "archived": true
     }
   ]
 }
 ```
+
+`"archived"` is optional; only `true` archives (see *Archived repos* above).
 
 `"checks"` is optional here. It is what the quality gate runs for a Forge run that builds in the
 repository, each `"argv"` without a shell; without it the gate refuses such a run. The add-repo skill
