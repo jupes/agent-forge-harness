@@ -9,7 +9,6 @@ import { Card } from "../ds/Card";
 import { EmptyState } from "../ds/EmptyState";
 import { Input, Select } from "../ds/Field";
 import { Icon } from "../ds/Icon";
-import { StatCard } from "../ds/StatCard";
 import { Table } from "../ds/Table";
 import { Tag } from "../ds/Tag";
 import { toggleExpandedState } from "../issue-detail.mjs";
@@ -20,6 +19,7 @@ import {
   typeIcon,
 } from "../issue-presentation";
 import { formatIssueDate } from "../issues-selection.mjs";
+import { BeadCounts } from "./BeadCounts";
 import { CopyIdButton } from "./CopyIdButton";
 import { InitiativeSelect } from "./InitiativeSelect";
 import { IssueDetailPanel } from "./IssueDetailPanel";
@@ -321,16 +321,10 @@ export function IssuesViewsIsland({
           />
         </div>
 
-        <div class="af-stat-row">
-          <StatCard label="Open" value={sections.stats.open} tone="accent" />
-          <StatCard
-            label="In progress"
-            value={sections.stats.inProgress}
-            tone="accent"
-          />
-          <StatCard label="Blocked" value={sections.stats.blocked} />
-          <StatCard label="Closed" value={sections.stats.closed} tone="muted" />
-        </div>
+        <BeadCounts
+          snapshot={sections.stats}
+          initiativeFilter={initiativeFilter}
+        />
 
         <LiveStats />
 

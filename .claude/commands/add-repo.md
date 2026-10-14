@@ -35,6 +35,7 @@ Do not skip steps, substitute a different clone command, or skip `repos/repos.js
 - `repos/repos.json` contains a new entry with correct `name`, `url`, and `defaultBranch`.
 - `bun run repo init --repo <name> --human` (or the skill’s equivalent) has completed successfully and `repos/<name>/` exists.
 - `/sync-knowledge <name>` has been run (or the agent performed the same exploration + `knowledge/repos/<name>.yaml` synthesis as in `.claude/commands/sync-knowledge.md`).
+- The entry has a `"checks"` list for the quality gate (skill step 6), or the report says it has none yet. Until it has one, the gate refuses a Forge run that builds in the repository.
 
 **Report back:** registry entry, clone path, and that knowledge was generated (or the path to the new YAML file).
 

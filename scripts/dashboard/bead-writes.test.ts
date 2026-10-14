@@ -382,26 +382,18 @@ describe("which actions a bead is offered", () => {
 describe("whether Create may be pressed", () => {
   const live = { available: true } as const;
 
-  test("with a control plane, no labels and the harness's own tracker: yes", () => {
-    for (const repo of [".", "", "  .  "])
-      expect(createState({ ...live, labels: "", repo })).toEqual({
-        enabled: true,
-      });
-    expect(createState({ ...live, labels: " , ", repo: "." })).toEqual({
+  test("with a control plane and no labels: yes, with no repo asked for", () => {
+    expect(createState({ ...live, labels: "" })).toEqual({ enabled: true });
+    expect(createState({ ...live, labels: " , " })).toEqual({
       enabled: true,
     });
   });
 
   test("with labels typed: no, because Create would not send them", () => {
-    expect(createState({ ...live, labels: "dashboard,ui", repo: "." })).toEqual(
-      { enabled: false, reason: expect.stringContaining("Labels") },
-    );
-  });
-
-  test("with another repo named: no, because Create files in this checkout's tracker", () => {
-    expect(
-      createState({ ...live, labels: "", repo: "./repos/elsewhere" }),
-    ).toEqual({ enabled: false, reason: expect.stringContaining("Repo") });
+    expect(createState({ ...live, labels: "dashboard,ui" })).toEqual({
+      enabled: false,
+      reason: expect.stringContaining("Labels"),
+    });
   });
 
   test("with no control plane: no, with that reason first", () => {
@@ -410,7 +402,6 @@ describe("whether Create may be pressed", () => {
         available: false,
         reason: NO_CONTROL_PLANE,
         labels: "dashboard",
-        repo: ".",
       }),
     ).toEqual({ enabled: false, reason: NO_CONTROL_PLANE });
   });

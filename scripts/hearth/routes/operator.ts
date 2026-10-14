@@ -36,6 +36,7 @@ import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
 import { applyReview } from "./dev-api";
 import {
+  beadsReads,
   fail,
   isRecord,
   ledgerReads,
@@ -250,6 +251,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { sessions, runs, run, events, reservations } = ledgerReads(deps);
   const { queue, smiths, config, worktrees, eligibility } =
     workspaceReads(deps);
+  const { counts } = beadsReads(deps);
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -262,6 +264,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     config,
     worktrees,
     eligibility,
+    counts,
   ];
 
   const ledger = { path: deps.ledgerPath };

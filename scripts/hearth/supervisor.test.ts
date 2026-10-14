@@ -1,6 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  type AddressInfo,
+  createServer as createNetServer,
+  type Socket,
+} from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { lockPath } from "./home";
@@ -105,8 +110,16 @@ async function printedBy(
  * In that process: whether a plain `fetch` of the lock's health route got any
  * answer, and what `isHealthy` says of the lock.
  */
+/**
+ * The supervisor module, as the probe process loads it. Interpolated rather than
+ * written into its text: the import scan (`scripts/import-graph.ts`) reads this
+ * file's text, would take the line for a load of this file's own, and throws on
+ * a relative specifier it cannot resolve from here.
+ */
+const SUPERVISOR = JSON.stringify("./scripts/hearth/supervisor");
+
 const PROBE = `
-import { isHealthy } from "./scripts/hearth/supervisor";
+import { isHealthy } from ${SUPERVISOR};
 const lock = JSON.parse(process.env.PROBE_LOCK ?? "null");
 let fetchAnswered = true;
 try {
@@ -131,3 +144,95 @@ test("isHealthy, in a bun process whose HTTP_PROXY names a port nothing listens 
     await printedBy(PROBE, { ...env, PROBE_LOCK: JSON.stringify(lock) }),
   ).toEqual({ fetchAnswered: false, healthy: true });
 }, 30_000);
+
+/** A process of this test's own that does nothing: a live pid that is not a hearth. */
+function idleProcess(): number {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  cleanup.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  });
+  return child.pid ?? 0;
+}
+
+/** A loopback port whose server is closed after the test; `answer` handles each connection. */
+async function portThat(answer: (socket: Socket) => void): Promise<number> {
+  const sockets = new Set<Socket>();
+  const server = createNetServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => undefined);
+    answer(socket);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  cleanup.push(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  return (server.address() as AddressInfo).port;
+}
+
+/** A temp home and root, with a lock for the root naming `pid` and `port` and owned by supervisor `id`. */
+function ownedLock(pid: number, port: number, id: string) {
+  const home = mkdtempSync(join(tmpdir(), "af-sup-home-"));
+  const root = mkdtempSync(join(tmpdir(), "af-sup-root-"));
+  cleanup.push(async () => {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  });
+  const planted: HearthLock = {
+    pid,
+    port,
+    root: resolve(root),
+    startedAt: new Date(0).toISOString(),
+    tokenFile: join(home, "tokens", "x.token"),
+    supervisor: id,
+  };
+  writeFileSync(lockPath(home, root), JSON.stringify(planted));
+  return {
+    supervisor: createSupervisor({ root, home, id }),
+    lock: () => readLock(lockPath(home, root)),
+    planted,
+  };
+}
+
+test("stopIfOwner, when its lock names a pid that is not alive, releases the lock", async () => {
+  const dead = 2 ** 22 + 12345;
+  expect(isPidAlive(dead)).toBe(false);
+  const owned = ownedLock(dead, await portThat((socket) => socket.end()), "me");
+  await owned.supervisor.stopIfOwner();
+  expect(owned.lock()).toBeNull();
+});
+
+test("stopIfOwner, when its lock names a live pid whose port answers the health route with another pid, releases the lock and leaves that process running", async () => {
+  const pid = idleProcess();
+  const port = await portThat((socket) => {
+    socket.once("data", () => {
+      const body = JSON.stringify({
+        ok: true,
+        data: { pid: pid + 1, root: "elsewhere" },
+        error: null,
+      });
+      socket.end(
+        `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      );
+    });
+  });
+  const owned = ownedLock(pid, port, "me");
+  await owned.supervisor.stopIfOwner();
+  expect(owned.lock()).toBeNull();
+  expect(isPidAlive(pid)).toBe(true);
+});
+
+test("stopIfOwner, when its lock names a live pid whose port takes the connection but answers nothing within the health probe's 2 s, leaves the lock in place and the process running", async () => {
+  const pid = idleProcess();
+  // Takes the request and never answers: a hearth too busy to reply.
+  const port = await portThat(() => undefined);
+  const owned = ownedLock(pid, port, "me");
+  const started = performance.now();
+  await owned.supervisor.stopIfOwner();
+  expect(performance.now() - started).toBeGreaterThanOrEqual(1900);
+  expect(owned.lock()).toEqual(owned.planted);
+  expect(isPidAlive(pid)).toBe(true);
+}, 15_000);

@@ -9,9 +9,11 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { BUILTIN_SMITHS } from "../config/defaults";
+import { runVerdictWrite } from "../eval-verdict-cli";
 import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
+import { getSessionModel, getSubagentModels } from "../ledger/session-models";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
 import { claudeAdapter, parseClaudeError, parseClaudeLine } from "./claude";
 import { type ExecDeps, runExec } from "./exec-cli";
@@ -109,6 +111,86 @@ describe("claude adapter through forge:exec (fake binary)", () => {
     });
     expect(data).not.toHaveProperty("eventsFile");
     expect(existsSync(join(root, ".tmp", "work", "exec-events"))).toBe(false);
+  });
+});
+
+describe("claude adapter through forge:exec: the model the stream reports (fake binary)", () => {
+  test("is cached for the run's session, and a verdict filed in that session records it as observed; the events keep the smith that was asked for", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      [
+        "--bead",
+        "b-1",
+        "--run",
+        "run-1",
+        "--worktree",
+        worktree,
+        "--prompt",
+        "review it",
+      ],
+      { ...deps, command: [...fake(), "--fake-model", "claude-sonnet-5-5"] },
+    );
+    expect(out.code).toBe(0);
+    const sessionId = (out.body.data as { sessionId: string }).sessionId;
+    expect(getSessionModel(sessionId, { path: ledger })).toEqual({
+      provider: "claude",
+      model: "claude-sonnet-5-5",
+    });
+    const smith = BUILTIN_SMITHS["claude-journeyman"];
+    for (const row of queryEvents({ beadId: "b-1" }, { path: ledger })) {
+      expect(row.executor?.model).toBe(smith?.model as string);
+    }
+
+    // forge:verdict, run in the child's worktree while the run's mirror names
+    // its session, reads that cached model.
+    const wrote = runVerdictWrite(
+      [
+        "--correlation",
+        join(RUN_CORRELATIONS_DIR, "run-1.json"),
+        "--verdict",
+        "PASS",
+        "--requested-provider",
+        "claude",
+        "--requested-model",
+        "claude-opus-5-5",
+        "--requested-rank",
+        "master",
+        "--review",
+        "implement-1",
+      ],
+      {
+        cwd: worktree,
+        env: {},
+        sessionMirror: () => sessionId,
+        sessionModel: (id) => getSessionModel(id, { path: ledger }),
+        subagentModels: (id) => getSubagentModels(id, { path: ledger }),
+        builderSessions: () => [],
+        smiths: () => Object.values(BUILTIN_SMITHS),
+        runState: () => null,
+      },
+    );
+    expect(wrote.code).toBe(0);
+    expect(wrote.body.data).toMatchObject({
+      beadsIssueId: "b-1",
+      executionRunId: "run-1",
+      evaluator: {
+        requestedModel: "claude-opus-5-5",
+        observedProvider: "claude",
+        observedModel: "claude-sonnet-5-5",
+        sessionId,
+      },
+    });
+  });
+
+  test("a stream whose responses name no model caches none", async () => {
+    const { worktree, ledger, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-1", "--worktree", worktree, "--prompt", "hi"],
+      { ...deps, command: fake() },
+    );
+    expect(out.code).toBe(0);
+    const sessionId = (out.body.data as { sessionId: string }).sessionId;
+    expect(getSessionModel(sessionId, { path: ledger })).toBeNull();
   });
 });
 
@@ -312,6 +394,40 @@ describe("parseClaudeLine", () => {
       parseClaudeLine(line({ type: "result", is_error: true, result: "no" })),
     ).toEqual(nothing);
     expect(parseClaudeLine("not json")).toEqual(nothing);
+  });
+
+  test("an assistant message reports the model its response named; a placeholder the CLI writes itself does not", () => {
+    expect(
+      parseClaudeLine(
+        line({
+          type: "assistant",
+          message: {
+            model: "claude-sonnet-5-5",
+            content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }],
+          },
+        }),
+      ),
+    ).toEqual({
+      tools: [{ tool: "Read", input: {} }],
+      model: "claude-sonnet-5-5",
+    });
+    // The shape the CLI printed for a failed sign-in.
+    expect(
+      parseClaudeLine(
+        line({
+          type: "assistant",
+          message: { model: "<synthetic>", content: [] },
+          error: "authentication_failed",
+        }),
+      ),
+    ).toEqual({ tools: [] });
+    for (const model of ["", "  ", 7]) {
+      expect(
+        parseClaudeLine(
+          line({ type: "assistant", message: { model, content: [] } }),
+        ),
+      ).toEqual({ tools: [] });
+    }
   });
 
   test("the session id is the non-empty session_id string a line carries: on the init line, or on any other line", () => {

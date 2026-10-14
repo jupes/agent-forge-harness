@@ -36,6 +36,9 @@ export interface LoopbackAnswer {
 
 export type Exchange = (request: LoopbackRequest) => Promise<LoopbackAnswer>;
 
+/** What an exchange fails with when no answer came within its `timeoutMs`. */
+export class NoAnswerInTime extends Error {}
+
 /**
  * A body up to this size is written with the head; a larger one waits
  * `EARLY_ANSWER_MS` for a refusal given on the head alone. A wait, not a
@@ -198,7 +201,8 @@ export const loopbackExchange: Exchange = (request) =>
     };
     const onAbort = (): void => finish(new Error("the request was cancelled"));
     const timer = setTimeout(
-      () => finish(new Error(`no answer within ${request.timeoutMs} ms`)),
+      () =>
+        finish(new NoAnswerInTime(`no answer within ${request.timeoutMs} ms`)),
       request.timeoutMs,
     );
     request.signal?.addEventListener("abort", onAbort, { once: true });
@@ -263,6 +267,16 @@ export interface HealthProbeOptions {
 }
 
 /**
+ * What the health probe found on the lock's port: the hearth the lock names
+ * (`problem` null), or why not. `silent` says the problem is that no answer
+ * came within the probe's time, which a hearth too busy to answer also gives.
+ */
+export interface HealthReport {
+  problem: string | null;
+  silent: boolean;
+}
+
+/**
  * Why what answers on the lock's port is not the hearth the lock names, or
  * null when it is: the health route answers 200 with an `ok` envelope whose
  * data holds the lock's pid and the very root string the lock holds. The
@@ -273,6 +287,14 @@ export async function healthProblem(
   lock: Pick<HearthLock, "pid" | "port" | "root">,
   options: HealthProbeOptions = {},
 ): Promise<string | null> {
+  return (await healthReport(lock, options)).problem;
+}
+
+/** `healthProblem`, and whether its problem is that nothing answered in time. */
+export async function healthReport(
+  lock: Pick<HearthLock, "pid" | "port" | "root">,
+  options: HealthProbeOptions = {},
+): Promise<HealthReport> {
   const exchange = options.exchange ?? loopbackExchange;
   let answer: LoopbackAnswer;
   try {
@@ -286,7 +308,10 @@ export async function healthProblem(
       ...(options.signal ? { signal: options.signal } : {}),
     });
   } catch (error) {
-    return `its port did not answer as a hearth (${(error as Error).message})`;
+    return {
+      problem: `its port did not answer as a hearth (${(error as Error).message})`,
+      silent: error instanceof NoAnswerInTime,
+    };
   }
   let health: unknown = null;
   try {
@@ -303,6 +328,9 @@ export async function healthProblem(
     data["pid"] !== lock.pid ||
     data["root"] !== lock.root
   )
-    return "what answers on its port is not that hearth";
-  return null;
+    return {
+      problem: "what answers on its port is not that hearth",
+      silent: false,
+    };
+  return { problem: null, silent: false };
 }

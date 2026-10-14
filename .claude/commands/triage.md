@@ -66,8 +66,7 @@ For each PR with failing CI:
 ```bash
 bd create \
   --type bug \
-  --title "CI failing on PR #<n>: <pr title>" \
-  --repo <repo> \
+  --title "[<repo>] CI failing on PR #<n>: <pr title>" \
   --priority 1 \
   --acceptance "CI passes on PR #<n>"
 

@@ -19,8 +19,9 @@ export interface SpawnRequest {
   worktree: string;
   /**
    * The harness root the run was launched from. Events carry its main checkout
-   * (a linked worktree resolves to the checkout it belongs to); adapter
-   * preparation such as `codex:sync` runs in the directory as given.
+   * (a linked worktree resolves to the checkout it belongs to). Codex's
+   * `codex:sync` runs in the worktree's checkout when it belongs to the same
+   * main checkout, and not at all otherwise (`codexSyncDirectory`).
    */
   workspace: string;
   smith: Smith;
@@ -37,6 +38,18 @@ export interface SpawnRequest {
   timeoutMs?: number | undefined;
   /** Replaces the resolved binary (tests point this at a fake). Adapter flags are appended. */
   command?: string[] | undefined;
+  /**
+   * Told the model the provider's stream reported its responses came from,
+   * each time that changes: what the run was observed to be, beside the smith
+   * it was asked to be. Never told the requested model.
+   */
+  onModel?:
+    | ((observed: {
+        sessionId: string;
+        provider: Provider;
+        model: string;
+      }) => void)
+    | undefined;
 }
 
 /** How a supervised child ended. */
@@ -78,6 +91,11 @@ export interface ExecutorHandle {
 
 export interface DoctorResult {
   provider: Provider;
+  /**
+   * The binary is there: the provider's on PATH, or an override's program
+   * (its first item) as `Bun.which` finds it. Found says nothing about
+   * whether it runs.
+   */
   found: boolean;
   /**
    * The binary answered `--version` with exit 0. That is all: a CLI that is

@@ -16,6 +16,7 @@
  *   (which `queue-bd.test.ts` compares with a real bd): `show` of one id or
  *   several, an `update` of labels or metadata, and the `list` shapes of
  *   `GET /queue` and of eligibility;
+ * - answers `export` (the Beads counts read) with its issues, one line each;
  * - answers any other `list` with an empty list, and exits 2 for anything
  *   else.
  *
@@ -112,10 +113,30 @@ function answerQueue(): Printed | undefined {
   return answered;
 }
 
+/**
+ * `bd export`, as the Beads counts read asks for it: one line per issue in the
+ * shape bd prints, with a `blocks` dependency for each bead that blocks it.
+ */
+function answerExport(): Printed {
+  const lines = Object.values(issues).map((issue) => {
+    const { blockedBy, ...printed } = issue;
+    return `${JSON.stringify({
+      ...printed,
+      dependencies: (blockedBy ?? []).map((blocker) => ({
+        issue_id: issue.id,
+        depends_on_id: blocker,
+        type: "blocks",
+      })),
+    })}\n`;
+  });
+  return { status: 0, stdout: lines.join(""), stderr: "" };
+}
+
 function answer(): Printed {
   const queued = answerQueue();
   if (queued !== undefined) return queued;
   if (args[0] === "list") return { status: 0, stdout: "[]\n", stderr: "" };
+  if (args[0] === "export") return answerExport();
   const write = readWrite(args);
   if (write === null)
     return {

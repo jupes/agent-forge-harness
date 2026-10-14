@@ -1,7 +1,9 @@
 import {
+  acceptanceText,
   BEAD_PRIORITIES,
   BEAD_TYPES,
   buildBdCreateCommand,
+  titleWithRepo,
 } from "@docs/bead-builder";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { parseBeadsIssueId } from "../../../scripts/run-correlation";
@@ -36,15 +38,6 @@ type ModalState =
 const DEFAULT_TYPE = "task";
 const DEFAULT_PRIORITY = "P2";
 
-/** The acceptance criteria as one text: a line each, blank lines dropped. */
-function acceptanceText(lines: string): string {
-  return lines
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
 export function BeadBuilderIsland() {
   const formRef = useRef<HTMLFormElement>(null);
   const submitRef = useRef<HTMLButtonElement>(null);
@@ -58,7 +51,6 @@ export function BeadBuilderIsland() {
   const [priority, setPriority] = useState(DEFAULT_PRIORITY);
   // What decides whether Create is offered. The inputs themselves stay the form's.
   const [labels, setLabels] = useState("");
-  const [repo, setRepo] = useState(".");
   const [parent, setParent] = useState("");
   const [creating, setCreating] = useState(false);
   // An outcome nobody knows is not held here: the page's store keeps it.
@@ -201,7 +193,9 @@ export function BeadBuilderIsland() {
     if (sending.current) return;
     const data = read();
     if (!data) return;
-    const key = applied.begin({ action: "create", title: data.title });
+    // The title the copied command has: another Repo named at its start.
+    const title = titleWithRepo(data.title, data.repo);
+    const key = applied.begin({ action: "create", title });
     if (key === null) {
       setCreateResult({ tone: "failed", message: NO_ROOM });
       return;
@@ -212,7 +206,7 @@ export function BeadBuilderIsland() {
     sentKeys.add(key);
     try {
       const outcome = await beadWrites.create({
-        title: data.title,
+        title,
         type: data.type,
         priority: data.priority,
         parent: data.parent,
@@ -223,7 +217,7 @@ export function BeadBuilderIsland() {
         applied.settle(key);
         applied.record(outcome.data, {
           created: {
-            title: data.title,
+            title,
             type: data.type,
             priority: data.priority,
             ...(data.parent ? { parent: data.parent } : {}),
@@ -261,7 +255,6 @@ export function BeadBuilderIsland() {
     setType(DEFAULT_TYPE);
     setPriority(DEFAULT_PRIORITY);
     setLabels("");
-    setRepo(".");
     setParent("");
     setCreateResult(null);
     setSubmitting(false);
@@ -282,8 +275,8 @@ export function BeadBuilderIsland() {
         ? { enabled: false, reason: "Parent is not a Beads issue id." }
         : createState(
             plane.available
-              ? { available: true, labels, repo }
-              : { available: false, reason: plane.reason, labels, repo },
+              ? { available: true, labels }
+              : { available: false, reason: plane.reason, labels },
           );
   const createReason = offer.enabled ? null : offer.reason;
 
@@ -299,7 +292,7 @@ export function BeadBuilderIsland() {
           Describe the bead you want to file. <strong>Create bead</strong> files
           it in this checkout's tracker through the local control plane and
           shows the new id. <strong>Build command &amp; copy</strong> gives you
-          a <code>bd create</code> line to paste into a terminal instead.
+          a <code>bd create</code> command to paste into a terminal instead.
         </p>
 
         <form
@@ -391,7 +384,7 @@ export function BeadBuilderIsland() {
             <Field
               label="Repo"
               id="bb-repo"
-              hint="`.` for the harness root; ./repos/<name> for a registered sub-repo. Copied command only."
+              hint="`.` for the harness itself. For a sub-repo, its name: Create and the copied command start the title with [<name>] and pass no --repo, since `.` is the only repository bd has registered."
             >
               <Input
                 id="bb-repo"
@@ -400,7 +393,6 @@ export function BeadBuilderIsland() {
                 placeholder="."
                 autocomplete="off"
                 describedBy="bb-repo-hint"
-                onInput={(event) => setRepo(event.currentTarget.value)}
               />
             </Field>
 

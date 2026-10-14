@@ -12,11 +12,13 @@ import {
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import type { BeadsIssue } from "../types/beads";
+import type { BdRunner } from "./beads/live-tracker";
 import {
   EVALUATIONS_DIR,
   evaluationDir,
   evaluatorVerdictPath,
   sha256Hex,
+  writerScratchName,
   writeVerdictOnce,
 } from "./eval-verdict-store";
 import { appendEvent } from "./ledger/append";
@@ -26,6 +28,7 @@ import {
   DEFAULT_TTL_DAYS,
   type LedgerDigest,
   ledgerHoldsVerdict,
+  runTmpWorkCleanup,
   sweepEvaluations,
 } from "./tmp-work-cleanup";
 
@@ -134,7 +137,15 @@ function agedVerdict(
   days: number,
   opts: { bead?: string; file?: string; summary?: string } = {},
 ): { relative: string; sha256: string } {
-  const content = verdictJson(run, opts.bead, opts.summary);
+  // A round's file holds a verdict that names its round.
+  const round = /^review-(.+)\.json$/.exec(opts.file ?? "")?.[1];
+  const content =
+    round === undefined
+      ? verdictJson(run, opts.bead, opts.summary)
+      : JSON.stringify({
+          ...JSON.parse(verdictJson(run, opts.bead, opts.summary)),
+          review: round,
+        });
   const wrote = writeVerdictOnce({
     checkout,
     executionRunId: run,
@@ -443,6 +454,137 @@ describe("sweepEvaluations", () => {
       deleted: [],
     });
   });
+
+  /** Leave a file as a writer killed part-way leaves its scratch file, `days` days ago. */
+  function scratch(
+    checkout: string,
+    run: string,
+    name: string,
+    days: number,
+    content = verdictJson(run).slice(0, 40),
+  ): string {
+    const relative = `${evaluationDir(run)}/${name}`;
+    const path = join(checkout, relative);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    const then = new Date(Date.now() - days * DAY_MS);
+    utimesSync(path, then, then);
+    return relative;
+  }
+
+  test("a killed writer's old scratch file is removed whatever it holds, and the run's directory with it", () => {
+    const { checkout } = sandbox();
+    const file = agedVerdict(checkout, "run-1", 30);
+    const partial = scratch(
+      checkout,
+      "run-1",
+      writerScratchName("verdict.json", 4242, 30 * DAY_MS),
+      30,
+    );
+    const round = scratch(
+      checkout,
+      "run-1",
+      writerScratchName("review-plan-1.json", 77, 31 * DAY_MS),
+      30,
+      verdictJson("run-1"),
+    );
+    const held = [{ sha256: file.sha256, executionRunId: "run-1" }];
+
+    const dry = sweep(checkout, { held });
+    const scratchReason =
+      "a writer's scratch file, never a verdict itself, age 30d ≥ TTL 14d";
+    // In name order, as the sweep reads the directory.
+    expect(dry.candidates).toEqual([
+      {
+        path: round,
+        taskId: "",
+        ageDays: 30,
+        action: "delete",
+        reason: scratchReason,
+      },
+      {
+        path: partial,
+        taskId: "",
+        ageDays: 30,
+        action: "delete",
+        reason: scratchReason,
+      },
+      {
+        path: file.relative,
+        taskId: "bead-1",
+        ageDays: 30,
+        action: "delete",
+        reason: "closed bead, age 30d ≥ TTL 14d, digest held by the ledger",
+      },
+    ]);
+    expect(dry.deleted).toEqual([]);
+
+    const applied = sweep(checkout, { held, apply: true });
+    expect(applied.deleted).toEqual([round, partial, file.relative]);
+    expect(existsSync(join(checkout, evaluationDir("run-1") ?? ""))).toBe(
+      false,
+    );
+  });
+
+  test("a scratch file is swept on its age alone: an open bead's run loses an old one and keeps a young one", () => {
+    const { checkout } = sandbox();
+    const kept = agedVerdict(checkout, "run-open", 30, { bead: "bead-open" });
+    const old = scratch(
+      checkout,
+      "run-open",
+      writerScratchName("verdict.json", 1, 0),
+      30,
+    );
+    // A writer that started an hour ago may still be about to link it in.
+    const young = scratch(
+      checkout,
+      "run-open",
+      writerScratchName("verdict.json", 2, Date.now()),
+      0,
+    );
+    const applied = sweep(checkout, {
+      issues: issues(mkOpen("bead-open")),
+      held: [{ sha256: kept.sha256, executionRunId: "run-open" }],
+      apply: true,
+    });
+    expect(applied.deleted).toEqual([old]);
+    expect(
+      applied.candidates.find((candidate) => candidate.path === young),
+    ).toEqual({
+      path: young,
+      taskId: "",
+      ageDays: 0,
+      action: "skip",
+      reason: "a writer's scratch file, age 0d < TTL 14d",
+    });
+    expect(existsSync(join(checkout, young))).toBe(true);
+    expect(existsSync(join(checkout, kept.relative))).toBe(true);
+  });
+
+  test("only the writer's own scratch names are scratch files: anything else that looks like one is left", () => {
+    const { checkout } = sandbox();
+    const lookalikes = [
+      ".verdict.json.tmp",
+      ".verdict.json.12.tmp",
+      ".notes.json.12.k3.tmp",
+      ".review-Plan.json.12.k3.tmp",
+      "verdict.json.12.k3.tmp",
+    ].map((name) => scratch(checkout, "run-1", name, 30));
+    // A directory with a scratch file's name is not a file to remove.
+    const folder = join(
+      checkout,
+      evaluationDir("run-1") ?? "",
+      writerScratchName("verdict.json", 9, 0),
+    );
+    mkdirSync(folder);
+    const applied = sweep(checkout, { apply: true });
+    expect(applied.deleted).toEqual([]);
+    expect(applied.candidates).toEqual([]);
+    for (const relative of lookalikes) {
+      expect(existsSync(join(checkout, relative))).toBe(true);
+    }
+    expect(existsSync(folder)).toBe(true);
+  });
 });
 
 describe("ledgerHoldsVerdict (the script's own lookup, scratch ledger)", () => {
@@ -519,21 +661,206 @@ describe("ledgerHoldsVerdict (the script's own lookup, scratch ledger)", () => {
   });
 });
 
+// ── Which tracker decides what is closed ────────────────────────────────────
+
+/** Stands in for `bd`: records every call; never the real tracker. */
+function fakeBd(answer: () => string | Error): {
+  run: BdRunner;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  return {
+    calls,
+    run: async (args) => {
+      calls.push(args);
+      const out = answer();
+      if (out instanceof Error) throw out;
+      return out;
+    },
+  };
+}
+
+/** One `bd export` line, in the shape bd prints and `.beads/issues.jsonl` holds. */
+function exportRow(id: string, status: string): object {
+  return {
+    _type: "issue",
+    id,
+    title: `title of ${id}`,
+    status,
+    priority: 2,
+    issue_type: "task",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-10T00:00:00Z",
+  };
+}
+
+const jsonl = (rows: object[]): string =>
+  `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+
+function writeIssuesFile(checkout: string, rows: object[]): void {
+  mkdirSync(join(checkout, ".beads"), { recursive: true });
+  writeFileSync(join(checkout, ".beads", "issues.jsonl"), jsonl(rows));
+}
+
+/** A file in the checkout's `.tmp/work`, last written `days` days ago; its path. */
+function agedWorkFile(checkout: string, name: string, days: number): string {
+  const dir = join(checkout, ".tmp", "work");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, name);
+  writeFileSync(path, "notes\n");
+  const then = new Date(Date.now() - days * DAY_MS);
+  utimesSync(path, then, then);
+  return path;
+}
+
+/** A run with `--apply`, and `--allow-fallback` when `opts.allowFallback` says so. */
+function cleanupWith(
+  checkout: string,
+  bd: BdRunner,
+  opts: {
+    allowFallback?: boolean;
+    ledgerHolds?: (digest: LedgerDigest) => boolean;
+    warn?: (line: string) => void;
+  } = {},
+) {
+  return runTmpWorkCleanup({
+    cwd: checkout,
+    runBd: bd,
+    apply: true,
+    allowFallback: opts.allowFallback ?? false,
+    ttlDays: DEFAULT_TTL_DAYS,
+    nowMs: Date.now(),
+    ledgerHolds: opts.ledgerHolds ?? (() => false),
+    warn: opts.warn ?? (() => {}),
+  });
+}
+
+describe("runTmpWorkCleanup: which tracker says a bead is closed", () => {
+  test("with --apply, a work file is kept when the live tracker has its bead open, though .beads/issues.jsonl lists it closed", async () => {
+    const { checkout } = sandbox();
+    writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
+    const work = agedWorkFile(checkout, "bead-1-plan.md", 30);
+    const bd = fakeBd(() => jsonl([exportRow("bead-1", "open")]));
+
+    const result = await cleanupWith(checkout, bd.run);
+
+    expect(existsSync(work)).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.data.deleted).toEqual([]);
+    expect(result.data.candidates).toEqual([
+      {
+        path: work,
+        taskId: "bead-1",
+        ageDays: 30,
+        action: "skip",
+        reason: "bead bead-1 status=open",
+      },
+    ]);
+    expect(result.data.source).toEqual({ kind: "tracker" });
+    expect(bd.calls).toEqual([["export", "--no-memories"]]);
+  });
+
+  test("when bd does not answer, --apply without --allow-fallback removes nothing, neither work files nor verdicts, and the envelope reports a dry run and why", async () => {
+    const { checkout } = sandbox();
+    writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
+    const work = agedWorkFile(checkout, "bead-1-plan.md", 30);
+    const verdict = agedVerdict(checkout, "run-1", 30);
+    const bd = fakeBd(() => new Error("spawn bd ENOENT"));
+    const warnings: string[] = [];
+
+    const result = await cleanupWith(checkout, bd.run, {
+      ledgerHolds: ledger({ sha256: verdict.sha256, executionRunId: "run-1" }),
+      warn: (line) => warnings.push(line),
+    });
+
+    expect(existsSync(work)).toBe(true);
+    expect(existsSync(join(checkout, verdict.relative))).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.data.apply).toBe(false);
+    expect(result.data.dryRunReason).toContain(".beads/issues.jsonl");
+    expect(result.data.dryRunReason).toContain("--allow-fallback");
+    expect(result.data.deleted).toEqual([]);
+    expect(result.data.evaluations.deleted).toEqual([]);
+    // Listed as a dry run lists them: what a run allowed to use the file would remove.
+    expect(result.data.candidates.map((c) => [c.path, c.action])).toEqual([
+      [work, "delete"],
+    ]);
+    expect(result.data.evaluations.candidates.map((c) => c.action)).toEqual([
+      "delete",
+    ]);
+    expect(result.data.source).toMatchObject({
+      kind: "file",
+      path: ".beads/issues.jsonl",
+      reason: "spawn bd ENOENT",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("--allow-fallback");
+  });
+
+  test("when bd does not answer, --apply with --allow-fallback deletes by .beads/issues.jsonl, after a warning that says so, and the envelope's source names the file", async () => {
+    const { checkout } = sandbox();
+    writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
+    const work = agedWorkFile(checkout, "bead-1-plan.md", 30);
+    const bd = fakeBd(() => new Error("spawn bd ENOENT"));
+    const warnings: { line: string; workFileThere: boolean }[] = [];
+
+    const result = await cleanupWith(checkout, bd.run, {
+      allowFallback: true,
+      warn: (line) => warnings.push({ line, workFileThere: existsSync(work) }),
+    });
+
+    expect(existsSync(work)).toBe(false);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.data.apply).toBe(true);
+    expect(result.data.dryRunReason).toBeUndefined();
+    expect(result.data.deleted).toEqual([work]);
+    expect(result.data.source).toMatchObject({
+      kind: "file",
+      path: ".beads/issues.jsonl",
+      reason: "spawn bd ENOENT",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.line).toContain(".beads/issues.jsonl");
+    expect(warnings[0]?.line).toContain("--allow-fallback");
+    expect(warnings[0]?.workFileThere).toBe(true);
+  });
+
+  test("when bd does not answer and there is no .beads/issues.jsonl, nothing is swept and the error names bd's failure and the file", async () => {
+    const { checkout } = sandbox();
+    const work = agedWorkFile(checkout, "bead-1-plan.md", 30);
+    const bd = fakeBd(() => new Error("dolt server not running"));
+
+    const result = await cleanupWith(checkout, bd.run);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toContain("dolt server not running");
+    expect(result.error).toContain(".beads/issues.jsonl");
+    expect(existsSync(work)).toBe(true);
+  });
+});
+
 describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)", () => {
   const SCRIPT = join(import.meta.dir, "tmp-work-cleanup.ts");
 
   async function cleanup(
     checkout: string,
     home: string,
+    flags: string[],
   ): Promise<{ exitCode: number; data: Record<string, unknown> }> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (value === undefined) continue;
-      if (/^(CLAUDE_|AGENT_FORGE_|FORGE_|TTL_DAYS$)/.test(key)) continue;
+      if (/^(CLAUDE_|AGENT_FORGE_|FORGE_|TTL_DAYS$|PATH$)/i.test(key)) continue;
       env[key] = value;
     }
     env.AGENT_FORGE_HOME = home;
-    const child = Bun.spawn([process.execPath, "run", SCRIPT, "--apply"], {
+    // An empty PATH directory: no `bd` is found, so the real tracker is never
+    // asked and the script falls back to the checkout's own export file.
+    const noTools = join(dirname(checkout), "no tools");
+    mkdirSync(noTools, { recursive: true });
+    env.PATH = noTools;
+    const child = Bun.spawn([process.execPath, "run", SCRIPT, ...flags], {
       cwd: checkout,
       env,
       stdout: "pipe",
@@ -546,11 +873,20 @@ describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)",
     };
   }
 
-  test("removes the verdict the ledger holds and keeps the one it does not", async () => {
+  /**
+   * A scratch checkout whose export file lists bead-1 closed, two old verdicts
+   * of bead-1, and a scratch ledger that holds the digest of the first only.
+   */
+  function heldAndUnheld(): {
+    checkout: string;
+    home: string;
+    held: { relative: string };
+    unheld: { relative: string };
+  } {
     const { checkout } = sandbox();
     const home = join(dirname(checkout), "forge home");
     mkdirSync(home, { recursive: true });
-    // The script takes its issues from the checkout's own export.
+    // With no bd on its PATH, the script takes its issues from the checkout's own export file.
     mkdirSync(join(checkout, ".beads"), { recursive: true });
     writeFileSync(
       join(checkout, ".beads", "issues.jsonl"),
@@ -578,11 +914,38 @@ describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)",
     );
     expect(stored.ok).toBe(true);
     closeLedger();
+    return { checkout, home, held, unheld };
+  }
 
-    const swept = await cleanup(checkout, home);
+  test("with --allow-fallback, removes the verdict the ledger holds and keeps the one it does not", async () => {
+    const { checkout, home, held, unheld } = heldAndUnheld();
+
+    const swept = await cleanup(checkout, home, [
+      "--apply",
+      "--allow-fallback",
+    ]);
     expect(swept.exitCode).toBe(0);
+    expect(swept.data.source).toMatchObject({
+      kind: "file",
+      path: ".beads/issues.jsonl",
+    });
+    expect(swept.data.apply).toBe(true);
     expect(swept.data.evaluations).toMatchObject({ deleted: [held.relative] });
     expect(existsSync(join(checkout, held.relative))).toBe(false);
+    expect(existsSync(join(checkout, unheld.relative))).toBe(true);
+  }, 60_000);
+
+  test("without --allow-fallback, --apply on the export file removes nothing, exits 0 and reports a dry run", async () => {
+    const { checkout, home, held, unheld } = heldAndUnheld();
+
+    const swept = await cleanup(checkout, home, ["--apply"]);
+    expect(swept.exitCode).toBe(0);
+    expect(swept.data.apply).toBe(false);
+    expect(swept.data.dryRunReason).toEqual(
+      expect.stringContaining("--allow-fallback"),
+    );
+    expect(swept.data.evaluations).toMatchObject({ deleted: [] });
+    expect(existsSync(join(checkout, held.relative))).toBe(true);
     expect(existsSync(join(checkout, unheld.relative))).toBe(true);
   }, 60_000);
 });

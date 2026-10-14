@@ -10,7 +10,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BeadsPayload } from "../types/beads";
-import { type BdRunner, buildPages } from "./build-pages";
+import type { BdRunner } from "./beads/live-tracker";
+import { buildPages } from "./build-pages";
 
 const dirs: string[] = [];
 afterEach(() => {

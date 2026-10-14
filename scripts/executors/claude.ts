@@ -5,14 +5,21 @@
  * project scripts. `--dangerously-skip-permissions` is never used.
  *
  * Checked against `claude` 2.1.293 on Windows, run directly (2026-10-08):
- * every flag below is accepted, and the stream is framed as `system` /
- * `assistant` / `result` lines, each carrying the same `session_id` (the
- * `system` / `init` line first), and the `result` line a `usage` object and
- * `total_cost_usd`. `parseClaudeLine` takes the session id and that usage
- * from those fields. That run stopped at authentication, so the shape it maps
- * to tools — an `assistant` message carrying `tool_use` content blocks, the
- * documented stream-json format — has not been observed from a real CLI, and
- * neither has a successful `result`.
+ * every flag below except `--effort` is accepted, and the stream is framed
+ * as `system` / `assistant` / `result` lines, each carrying the same
+ * `session_id` (the `system` / `init` line first), and the `result` line a
+ * `usage` object and `total_cost_usd`. `parseClaudeLine` takes the session
+ * id and that usage from those fields. That run stopped at authentication,
+ * so the shape it maps to tools — an `assistant` message carrying `tool_use`
+ * content blocks, the documented stream-json format — has not been observed
+ * from a real CLI, and neither has a successful `result`.
+ *
+ * The smith's effort goes in `--effort <level>`, the flag the CLI reference
+ * documents (levels `low`, `medium`, `high`, `xhigh`, `max`; a level the model
+ * does not support runs as the highest one below it). It was added after that
+ * run and has not been run against a real CLI. The reference does not say
+ * what a model without effort support (`claude-apprentice`'s Haiku 4.5) does
+ * with the flag.
  *
  * The CLI's help lists a `--session-id` flag that would fix the id up front.
  * The adapter does not pass it and takes the id the stream reports instead:
@@ -89,6 +96,20 @@ function usageOf(value: Record<string, unknown>): ProviderUsage | undefined {
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
+/**
+ * The model an assistant message's response named (`message.model`). Not the
+ * `system` / `init` line's `model`, which is what was configured, and not a
+ * bracketed placeholder such as the `<synthetic>` the CLI put on the message
+ * it wrote itself for a failed sign-in.
+ */
+function modelOf(value: Record<string, unknown>): string | undefined {
+  if (value.type !== "assistant" || !isRecord(value.message)) return undefined;
+  const model = value.message.model;
+  if (typeof model !== "string") return undefined;
+  const trimmed = model.trim();
+  return trimmed.length > 0 && !trimmed.startsWith("<") ? trimmed : undefined;
+}
+
 export function parseClaudeLine(line: string): ParsedLine {
   let value: unknown;
   try {
@@ -102,10 +123,12 @@ export function parseClaudeLine(line: string): ParsedLine {
       ? value.session_id
       : undefined;
   const usage = usageOf(value);
+  const model = modelOf(value);
   return {
     tools: toolsOf(value),
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(usage !== undefined ? { usage } : {}),
+    ...(model !== undefined ? { model } : {}),
   };
 }
 
@@ -141,6 +164,8 @@ export const claudeAdapter = createCliAdapter({
     "--verbose",
     "--model",
     request.smith.model,
+    "--effort",
+    request.smith.effort,
     "--permission-mode",
     "acceptEdits",
     "--allowedTools",

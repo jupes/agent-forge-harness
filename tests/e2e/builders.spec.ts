@@ -521,7 +521,7 @@ test("with no control plane the actions are disabled and say why, and copying th
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(page.locator("#bb-modal-textarea")).toHaveValue(
-    /bd create .*--parent "demo-epic" --title "Static copy"/,
+    /bd create .*--parent 'demo-epic' --title 'Static copy'/,
   );
   await closeDialog(page);
 
@@ -543,10 +543,12 @@ test("with no control plane the actions are disabled and say why, and copying th
   ).toEqual([]);
 });
 
-test("Create is not offered while Labels or another Repo is set, and is again once they are cleared", async ({
+test("Create is not offered while Labels is set, and is again once it is cleared; with another Repo it is offered and sends the title the copied command has", async ({
   page,
 }) => {
   await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
   await page.fill("#bb-title", "Labelled");
   await expect(createButton(page)).toBeEnabled();
 
@@ -556,17 +558,44 @@ test("Create is not offered while Labels or another Repo is set, and is again on
   // The copied command keeps them.
   await page.click("button[type=submit]");
   await expect(page.locator("#bb-modal-textarea")).toHaveValue(
-    /--labels "dashboard,ui"/,
+    /--labels 'dashboard,ui'/,
   );
   await closeDialog(page);
 
   await page.fill("#bb-labels", "");
   await expect(createButton(page)).toBeEnabled();
+
+  // Another Repo: the copied command and Create both start the title with its
+  // name, and neither passes --repo.
   await page.fill("#bb-repo", "./repos/elsewhere");
-  await expect(createButton(page)).toBeDisabled();
-  await expect(page.locator("#bb-create-reason")).toContainText("Repo");
+  await expect(createButton(page)).toBeEnabled();
+  await expect(page.locator("#bb-create-reason")).toHaveCount(0);
+  await page.click("button[type=submit]");
+  const copied = page.locator("#bb-modal-textarea");
+  await expect(copied).toHaveValue(/--title '\[elsewhere\] Labelled'/);
+  await expect(copied).not.toHaveValue(/--repo/);
+  await closeDialog(page);
+  await createFromBuilder(page, "Labelled");
+  await expect(page.locator("#bead-created-card")).toContainText(
+    "[elsewhere] Labelled",
+  );
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=[elsewhere] Labelled",
+      "--type=task",
+      "--priority=2",
+      "--json",
+    ],
+  ]);
 
   // Clear form resets the form without firing an input event: the rule follows.
+  await page.fill("#bb-labels", "dashboard");
+  await expect(createButton(page)).toBeDisabled();
   await page.getByRole("button", { name: "Clear form" }).click();
   await page.fill("#bb-title", "Cleared");
   await expect(createButton(page)).toBeEnabled();

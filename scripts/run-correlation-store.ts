@@ -7,7 +7,9 @@
  *
  * A correlation is honoured in exactly one place: the file named after its run
  * id in the correlations directory of the checkout it names. The directory is
- * gitignored, so a correlation never arrives through a commit.
+ * gitignored, so a correlation never arrives through a commit. For a run in
+ * another repository, which may not ignore it, the gate refuses one whose
+ * checkout tracks files there (`.claude/hooks/quality-gate.ts`).
  */
 
 import {
@@ -291,6 +293,68 @@ export function pointedRunCorrelation(input: {
     };
   }
   const loaded = loadRunCorrelation(pointer.path, input.checkout);
+  return loaded.ok
+    ? { linked: true, correlation: loaded.value, path: loaded.path }
+    : {
+        linked: false,
+        reason: `run correlation refused: ${loaded.error}`,
+        refused: pointer.source,
+      };
+}
+
+/**
+ * The checkout other than `checkout` whose correlations directory a pointer
+ * leads into, or null when it leads nowhere else. `pointer` is a path,
+ * absolute or relative to `checkout`. The directory holding the
+ * correlations directory must have a `.git` of its own.
+ */
+function otherHoldingCheckout(
+  pointer: string,
+  checkout: string,
+): { root: string; path: string } | null {
+  if (pointer.trim().length === 0) return null;
+  const root = resolveCheckout(checkout).worktree;
+  const path = isAbsolute(pointer) ? pointer : resolve(root, pointer);
+  let real: string;
+  try {
+    real = comparableCheckout(realpathSync.native(path));
+  } catch {
+    return null;
+  }
+  const suffix = `/${RUN_CORRELATIONS_DIR}`;
+  const dir = dirname(real);
+  if (!dir.endsWith(suffix)) return null;
+  const holder = dir.slice(0, -suffix.length);
+  if (holder === root || !existsSync(join(holder, ".git"))) return null;
+  return { root: holder, path };
+}
+
+/**
+ * What the quality gate was pointed at: like `pointedRunCorrelation`, except
+ * that a pointer leading into the correlations directory of another checkout
+ * is loaded against that checkout, so a gate can be started for a run that
+ * builds somewhere else. Every check `loadRunCorrelation` makes is made
+ * there: the holder must be a checkout's top level, the file named after its
+ * run, and the correlation written for that checkout. Any other pointer is
+ * loaded against `checkout`, as `pointedRunCorrelation` loads it.
+ *
+ * Only the gate follows a pointer this way. The correlation's `checkout` says
+ * where the run builds; which checks apply there is the gate's to decide.
+ */
+export function pointedRunCorrelationAnywhere(input: {
+  argv: readonly string[];
+  env: Readonly<Record<string, string | undefined>>;
+  checkout: string;
+}): PointedRunCorrelation {
+  const pointer = correlationPointer(input.argv, input.env);
+  const elsewhere =
+    pointer === null
+      ? null
+      : otherHoldingCheckout(pointer.path, input.checkout);
+  if (pointer === null || elsewhere === null) {
+    return pointedRunCorrelation(input);
+  }
+  const loaded = loadRunCorrelation(elsewhere.path, elsewhere.root);
   return loaded.ok
     ? { linked: true, correlation: loaded.value, path: loaded.path }
     : {

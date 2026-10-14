@@ -26,21 +26,31 @@ This file defines the default retention so long-running harness usage does not a
 ## Cleanup script
 
 ```bash
-bun run tmp:cleanup              # dry-run listing + JSON envelope (default)
-TTL_DAYS=30 bun run tmp:cleanup  # override retention
-bun run tmp:cleanup --apply      # actually delete (only with explicit flag)
+bun run tmp:cleanup                           # dry-run listing + JSON envelope (default)
+TTL_DAYS=30 bun run tmp:cleanup               # override retention
+bun run tmp:cleanup --apply                   # actually delete (only with explicit flag)
+bun run tmp:cleanup --apply --allow-fallback  # delete even when bd did not answer (see below)
 ```
 
 Safety:
 
 - The script only touches `.tmp/work/<ID>-*` where `<ID>` matches a **closed** Beads issue id, and evaluator
   verdicts under `.tmp/work/evaluations/`.
+- Which issues are closed comes from the live tracker (one `bd export`). Only when bd does not answer does the
+  script use `.beads/issues.jsonl`, which may be older than the tracker: it says so on stderr before anything is
+  removed, and the envelope's `data.source` names the file, when it was last written and why bd was not used.
+  With neither, nothing is swept.
+- On that file's statuses `--apply` removes nothing: the run is a dry run, `data.apply` is `false` and
+  `data.dryRunReason` says why. A bead reopened since the file was written would otherwise lose its files. Pass
+  `--allow-fallback` as well to delete by the file anyway; the warning still comes first.
 - An evaluator verdict is removed only when all of this holds: it is where the path rule puts verdicts, with no link
   on the way; its bytes are a schema 2 verdict whose run id hashes to the directory it is in; the Beads issue it names
   is closed and the file is older than the TTL; and the event ledger holds a `verdict.bound` for that run with the
-  file's SHA-256. Until the ledger holds it, the file is the only copy of that evidence. A run's directory is removed
-  only by the sweep that emptied it; anything else found there is left alone. Evaluations are swept only when the
-  script runs at the top level of a checkout.
+  file's SHA-256. Until the ledger holds it, the file is the only copy of that evidence. A scratch file a verdict
+  writer left there when it was killed (`.verdict.json.<pid>.<stamp>.tmp`, or the same for a review round) is removed
+  once it is older than the TTL, whatever it holds and whatever its bead's status: it is never a verdict (see
+  `evaluation-verdict.md`, *Limits*). A run's directory is removed only by the sweep that emptied it; anything else
+  found there is left alone. Evaluations are swept only when the script runs at the top level of a checkout.
 - Run correlation files are not swept.
 - `--apply` is required to delete. Without it, the script prints what it **would** remove.
 - `<EPIC-ID>-interfaces.md` and `session-handoff.md` are always skipped.

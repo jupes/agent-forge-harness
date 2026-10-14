@@ -5,9 +5,10 @@
  *   bun run forge:verdict --verdict <PASS|FAIL>
  *     [--blocker <n>] [--high <n>] [--medium <n>] [--low <n>]
  *     ( --human <operator|reviewer>
- *     | --requested-provider <id> --requested-model <id> --requested-rank <rank> )
+ *     | --requested-provider <id> --requested-model <id> --requested-rank <rank>
+ *       [--subagent <agent id>] )
  *     [--summary <text>] [--attest <dimension>=<0..5> ...]
- *     [--review <label>] [--correlation <pointer>] [--checkout <dir>]
+ *     [--review <phase>-<round>] [--correlation <pointer>] [--checkout <dir>]
  *
  * The only writer of schema 2 verdicts. The Beads issue and the run come from
  * the run correlation (`--correlation`, else `AGENT_FORGE_RUN_CORRELATION`)
@@ -28,15 +29,21 @@
  * leaves there). That session is not an observation of the evaluator when the
  * ledger shows it building the work (entering or completing a phase of this
  * run, or of another run whose phase events carry the same Beads id): an
- * Evaluator subagent shares its spawner's session. Nothing observed means the observed fields
+ * Evaluator subagent shares its spawner's session. Nor is it when the ledger
+ * has cached a subagent of that session on another model: the command cannot
+ * tell which of them is filing. `--subagent <agent id>` names the subagent
+ * that judged, and its own cached model (read by its hooks from its own
+ * transcript) is what is observed. Nothing observed means the observed fields
  * are absent; the request is never copied into them. The run's verdict is then
  * refused, as it is when the rank policy rejects the evaluator: the file is
  * written once, and one that can never satisfy strict completion would leave
  * the run without a verdict that can.
  *
- * `--review <label>` writes a review round's verdict for `forge:review`
- * instead: beside the run's verdict, once per label, and whatever was
- * observed.
+ * `--review <phase>-<round>` (a Forge phase and a positive round number, such
+ * as plan-2) writes a review round's verdict for `forge:review` instead:
+ * beside the run's verdict, once per round, whatever was observed, and naming
+ * its round in a `review` field, so two rounds' verdicts are never the same
+ * bytes. The run's own verdict names no round.
  *
  * Output is always a single JSON object: { ok, data, error }. `data.file` is
  * the file's full path. Exit code 0 when ok, 2 when not.
@@ -48,8 +55,10 @@ import {
   ATTESTATION_DIMENSIONS,
   EVAL_VERDICT_SCHEMA_VERSION,
   type EvalVerdict,
+  isReviewRound,
   parseEvaluatorIdentity,
   parseEvalVerdictJson,
+  verdictCountsProblem,
 } from "./eval-verdict";
 import {
   reviewVerdictFile,
@@ -73,6 +82,15 @@ export interface VerdictWriteDeps {
   sessionMirror(worktree: string): string | null;
   /** The model the ledger has cached for a session: the machine source of an observation. */
   sessionModel(sessionId: string): { provider: string; model: string } | null;
+  /**
+   * The models the ledger has cached for a session's subagents, each under
+   * its own `<session>:<agent id>`. Null when the ledger could not be asked.
+   */
+  subagentModels(sessionId: string): ReadonlyArray<{
+    sessionId: string;
+    provider: string;
+    model: string;
+  }> | null;
   /**
    * The sessions the ledger shows building this work: those that entered or
    * completed a phase of the run, or of another run whose phase events carry
@@ -106,6 +124,7 @@ const FLAGS = [
   "requested-provider",
   "requested-model",
   "requested-rank",
+  "subagent",
   "summary",
   "attest",
   "review",
@@ -117,11 +136,18 @@ type Flag = (typeof FLAGS)[number];
 
 const REPEATABLE: ReadonlySet<Flag> = new Set<Flag>(["attest"]);
 
-/** `--word` or `--word=anything`, with no space before the `=`: how a flag is written. */
-const FLAG_SHAPED = /^--[A-Za-z][A-Za-z0-9-]*(=.*)?$/s;
+/**
+ * How a flag is written, mistyped or not: two dashes, then a name of anything
+ * but whitespace and `=`, then optionally `=` and the rest. A name with an
+ * underscore, a dot, a colon or a non-ASCII letter is still a flag.
+ */
+const FLAG_SHAPED = /^--[^\s=]+(=.*)?$/su;
 
 /** A finding count: digits only, and few enough to be an exact integer. */
 const COUNT = /^\d{1,9}$/;
+
+/** An agent id as the host gives one to a subagent: one plain word. */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function refuse(error: string): VerdictWriteOutcome {
   return { code: 2, body: { ok: false, data: null, error } };
@@ -179,10 +205,52 @@ type Observation =
   | { ok: true; sessionId: string; provider: string; model: string }
   | { ok: false; reason: string };
 
+const BUILDING =
+  "(it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator";
+
+/** A cached model as plain text, or null when either part is missing. */
+function cachedText(
+  cached: { provider: string; model: string } | null,
+): { provider: string; model: string } | null {
+  const provider = cached?.provider.trim() ?? "";
+  const model = cached?.model.trim() ?? "";
+  return provider.length > 0 && model.length > 0 ? { provider, model } : null;
+}
+
+/**
+ * The model the ledger has cached for one subagent of the session working in
+ * the worktree the command runs in: its own, which its hooks read from its
+ * own transcript. Never its session's in its place.
+ */
+function observeSubagent(
+  deps: VerdictWriteDeps,
+  sessionId: string,
+  agentId: string,
+  builderSessions: ReadonlySet<string>,
+): Observation {
+  const child = `${sessionId}:${agentId}`;
+  if (builderSessions.has(child)) {
+    return {
+      ok: false,
+      reason: `subagent ${agentId} is one the ledger shows building this work ${BUILDING}`,
+    };
+  }
+  const cached = cachedText(deps.sessionModel(child));
+  if (cached === null) {
+    return {
+      ok: false,
+      reason: `the ledger has no model of its own cached for subagent ${agentId} of the session working in this worktree (its hooks cache one from its own transcript after it calls a tool)`,
+    };
+  }
+  return { ok: true, sessionId: child, ...cached };
+}
+
 /**
  * The model the ledger has cached for the session working in the worktree the
- * command runs in. A session the ledger shows building the work is not an
- * observation of who judged it.
+ * command runs in, or with `agentId` for that subagent of it. A session the
+ * ledger shows building the work is not an observation of who judged it, and
+ * neither is a session with subagents on other models than its own: one of
+ * them may be the one filing, and a subagent shares its session.
  */
 function observe(
   deps: VerdictWriteDeps,
@@ -190,6 +258,7 @@ function observe(
     sessionWorktree: string;
     /** Null when the ledger could not say who built the work. */
     builderSessions: ReadonlySet<string> | null;
+    agentId?: string;
   },
 ): Observation {
   if (input.builderSessions === null) {
@@ -207,6 +276,14 @@ function observe(
         "no session is recorded as working in the worktree this command runs in (no session mirror there, or one older than a day)",
     };
   }
+  if (input.agentId !== undefined) {
+    return observeSubagent(
+      deps,
+      sessionId,
+      input.agentId,
+      input.builderSessions,
+    );
+  }
   if (input.builderSessions.has(sessionId)) {
     return {
       ok: false,
@@ -214,17 +291,40 @@ function observe(
         "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
     };
   }
-  const cached = deps.sessionModel(sessionId);
-  const provider = cached?.provider.trim() ?? "";
-  const model = cached?.model.trim() ?? "";
-  if (provider.length === 0 || model.length === 0) {
+  const cached = cachedText(deps.sessionModel(sessionId));
+  if (cached === null) {
     return {
       ok: false,
       reason:
         "the ledger has no model cached for the session working in this worktree",
     };
   }
-  return { ok: true, sessionId, provider, model };
+  const subagents = deps.subagentModels(sessionId);
+  if (subagents === null) {
+    return {
+      ok: false,
+      reason:
+        "the ledger could not be read to see the subagents of the session working in this worktree, so no session is taken as the evaluator",
+    };
+  }
+  const others = [
+    ...new Set(
+      subagents.flatMap((entry) => {
+        const own = cachedText(entry);
+        return own !== null &&
+          (own.provider !== cached.provider || own.model !== cached.model)
+          ? [`${own.provider}/${own.model}`]
+          : [];
+      }),
+    ),
+  ].sort();
+  if (others.length > 0) {
+    return {
+      ok: false,
+      reason: `the session working in this worktree has subagents whose own model is not its own (${others.join(", ")}), and this command cannot tell whether one of them is filing: name the subagent that judged with --subagent <agent id>`,
+    };
+  }
+  return { ok: true, sessionId, ...cached };
 }
 
 /**
@@ -310,16 +410,15 @@ function bodyFrom(
     }
     findings[name] = Number(raw);
   }
-  // A verdict is one statement: it cannot say PASS and count a blocker.
-  if (verdict === "PASS" && (findings.blocker !== 0 || findings.high !== 0)) {
-    return { ok: false, error: "a PASS has no blocker or high findings" };
-  }
-  if (
-    verdict === "FAIL" &&
-    FINDING_FLAGS.every((name) => findings[name] === 0)
-  ) {
-    return { ok: false, error: "a FAIL names at least one finding" };
-  }
+  // A verdict is one statement: it cannot say PASS and count a blocker. The
+  // parser holds the same rule, so the gate refuses what this refuses.
+  const contradiction = verdictCountsProblem(verdict, {
+    blocker: findings.blocker ?? 0,
+    high: findings.high ?? 0,
+    medium: findings.medium ?? 0,
+    low: findings.low ?? 0,
+  });
+  if (contradiction !== null) return { ok: false, error: contradiction };
   const attestations = new Map<string, number>();
   for (const pair of attest) {
     const [name, score, ...rest] = pair.split("=");
@@ -381,6 +480,19 @@ export function runVerdictWrite(
   const parsedArguments = parseArguments(argv);
   if (!parsedArguments.ok) return refuse(parsedArguments.error);
   const { values, attest } = parsedArguments;
+  const agentId = values.get("subagent");
+  if (agentId !== undefined) {
+    if (!AGENT_ID.test(agentId)) {
+      return refuse(
+        "--subagent must be an agent id: letters, digits, dashes and underscores",
+      );
+    }
+    if (values.has("human")) {
+      return refuse(
+        "--subagent names a model evaluator: it does not go with --human",
+      );
+    }
+  }
 
   // Where the session is, and where the run builds: one checkout unless
   // --checkout says otherwise.
@@ -404,12 +516,18 @@ export function runVerdictWrite(
   if (!pointed.linked) return refuse(pointed.reason);
   const { correlation } = pointed;
 
+  // A round is named as its phase and its number, and the verdict carries
+  // that name: two rounds' verdicts are never the same bytes.
   const label = values.get("review");
   const file =
-    label === undefined ? STRICT_VERDICT_FILE : reviewVerdictFile(label);
+    label === undefined
+      ? STRICT_VERDICT_FILE
+      : isReviewRound(label)
+        ? reviewVerdictFile(label)
+        : null;
   if (file === null) {
     return refuse(
-      "--review <label> must be lower-case letters, digits and dashes (at most 40), such as plan-2",
+      "--review takes <phase>-<round>: phase research, plan, implement or ship, and round a positive integer, such as plan-2",
     );
   }
   const strict = file === STRICT_VERDICT_FILE;
@@ -427,7 +545,11 @@ export function runVerdictWrite(
     beadsIssueId: correlation.beadsIssueId,
   });
   const builderSessions = builders === null ? null : new Set(builders);
-  const observation = observe(deps, { sessionWorktree, builderSessions });
+  const observation = observe(deps, {
+    sessionWorktree,
+    builderSessions,
+    ...(agentId !== undefined ? { agentId } : {}),
+  });
   const evaluator = evaluatorFrom(values, {
     observation,
     smiths,
@@ -444,6 +566,7 @@ export function runVerdictWrite(
       executionRunId: correlation.executionRunId,
       ...body.value,
       evaluator: evaluator.value,
+      ...(label !== undefined ? { review: label } : {}),
     }),
   );
   if (!parsed.ok) return refuse(parsed.error);
@@ -506,7 +629,9 @@ if (import.meta.main) {
   const { loadConfig } = await import("./config/load");
   const { readRunState } = await import("./forge/runs-store");
   const { readSessionMirror } = await import("./ledger/identity");
-  const { getSessionModel } = await import("./ledger/session-models");
+  const { getSessionModel, getSubagentModels } = await import(
+    "./ledger/session-models"
+  );
   const { queryEvents } = await import("./ledger/query");
   const PHASE_EVENTS = ["run.phase.entered", "run.phase.completed"] as const;
   const outcome = runVerdictWrite(process.argv.slice(2), {
@@ -514,6 +639,7 @@ if (import.meta.main) {
     env: process.env,
     sessionMirror: (worktree) => readSessionMirror(worktree),
     sessionModel: (sessionId) => getSessionModel(sessionId),
+    subagentModels: (sessionId) => getSubagentModels(sessionId),
     builderSessions: ({ executionRunId, beadsIssueId }) => {
       try {
         const phases = [

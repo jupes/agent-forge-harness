@@ -3002,11 +3002,20 @@ describe("the server as a process, over stdio", () => {
   }, 60_000);
 });
 
+/**
+ * How the `bun -e` scripts below, run from the repository root, load the
+ * hearth's MCP module. Interpolated rather than written into their text: the
+ * import scan (`scripts/import-graph.ts`) reads this file's text, would take
+ * the line for a load of this file's own, and throws on a relative specifier
+ * it cannot resolve from here.
+ */
+const HEARTH_MCP = JSON.stringify("./scripts/hearth/mcp");
+
 /** A script for `bun -e`, run from the repository root: the real serve function with a stand-in council. */
 const standInScript = (tools: string): string => `
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { serveHearthMcp } from "./scripts/hearth/mcp";
+import { serveHearthMcp } from ${HEARTH_MCP};
 serveHearthMcp({
   root: process.env.MCP_TEST_ROOT ?? "",
   operator: false,
@@ -3288,7 +3297,7 @@ describe("a body the hearth will not read", () => {
 const backgroundScript = `
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { serveHearthMcp } from "./scripts/hearth/mcp";
+import { serveHearthMcp } from ${HEARTH_MCP};
 serveHearthMcp({
   root: process.env.MCP_TEST_ROOT ?? "",
   operator: false,
@@ -3563,8 +3572,8 @@ const markerScript = `
 import { writeFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { serveHearthMcp } from "./scripts/hearth/mcp";
-const mark = (text) => writeFileSync(process.env.MCP_TEST_MARKER ?? "", text, { flag: "a" });
+import { serveHearthMcp } from ${HEARTH_MCP};
+const mark =(text) => writeFileSync(process.env.MCP_TEST_MARKER ?? "", text, { flag: "a" });
 process.on("exit", (code) => mark("exit " + code + "\\n"));
 serveHearthMcp({
   root: process.env.MCP_TEST_ROOT ?? "",

@@ -19,7 +19,7 @@ bd ready | grep -i "<keyword from task description>"
 - **If a task exists**: claim it — `bd update <id> --claim`
 - **If no task exists** (spec-driven or trivial): create one
   ```bash
-  bd create --type bug --title "<short description>" --repo <repo> --priority <value>
+  bd create --type bug --title "[<repo>] <short description>" --priority <value>
   bd update <id> --claim
   ```
   Choose `<value>` with `.claude/skills/beads-priority-assignment/SKILL.md` (bugs are often **high** or **medium**; use **critical** only for production/security stop-ship).

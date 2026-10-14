@@ -3,6 +3,11 @@
 Adapters that drive provider CLIs headlessly and turn their output into hearth events.
 
 - `cli-adapter.ts` is the shared machinery; `claude.ts` / `codex.ts` supply flags and a line parser only.
+- Before each Codex run, `codex:sync` runs at the top level of the checkout the executor runs in, when that checkout
+  is the harness's (its main checkout or a linked worktree of it): Codex reads `.agents/skills/` from there, mirrored
+  from that checkout's own `.claude/`. For a checkout of another repository (a sub-repo, `forge:doctor --task`'s
+  directory) it does not run at all, and the harness checkout the run was launched from is not written either
+  (`codexSyncDirectory`). Tested with a planted `codex:sync` script, never the real one.
 - The prompt goes on **stdin**, never argv. Child env is built by `buildChildEnv` — never pass `process.env` through.
 - Events are metadata only (hash of tool input, never the input). Validate with `scripts/hearth/validate.ts`.
 - `EventSink` is the seam to the ledger: `sinks.ts` has `ledgerSink`, one `appendEvent` per event. A sink reports a
@@ -49,10 +54,14 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   `resolveAttach` inside the child once its id is mirrored) are in its header.
 - The fake binary proves plumbing. What real CLIs have shown, on Windows, each binary run directly with the adapter's
   flags and an allowlisted environment (2026-10-08):
-  - `claude` 2.1.293 accepts every flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
+  - The smith's effort is passed in each provider's documented flag — `claude --effort <level>`, `codex exec -c
+    model_reasoning_effort=<level>` — and neither has been run against a real CLI: both were added after the runs
+    below. The fake binary only shows the arguments arrive. Claude's reference does not say what a model without
+    effort support (`claude-apprentice`'s Haiku 4.5) does with `--effort`.
+  - `claude` 2.1.293 accepts every other flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
     `system` / `assistant` / `result` lines. That run stopped at authentication, so a `tool_use` block has **not**
     been observed from a real CLI; the tool mapping rests on the fake binary.
-  - `codex` 0.159.0 and 0.160.0 accept every flag `codex.ts` passes. On 0.160.0 one shell command arrived as
+  - `codex` 0.159.0 and 0.160.0 accept every other flag `codex.ts` passes. On 0.160.0 one shell command arrived as
     `item.started` then `item.completed` (`item.type: "command_execution"`, numeric `exit_code`), which is what the
     parser maps. Items other than a shell command have **not** been observed and are not mapped.
   - The session ids and the usage the adapters read are fields those runs printed: `claude` put one `session_id` on
@@ -76,5 +85,16 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
 - `forge:doctor` answers two questions: does the binary answer `--version` (`ok`), and, with `--task`, can it run a
   task (`task`): one `git status` through the adapter in a new git repository under the OS temp directory, passing
   only on exit 0, no reported error and at least one tool call. Against a real provider `--task` spends a request.
-  Both are tested on the fake binary only; no `--task` run against a real CLI has been made.
+  Both are tested on the fake binary only; no `--task` run against a real CLI has been made. Before either, `found`:
+  the binary is on PATH, or a command override's program is where `Bun.which` finds it. An override whose program is
+  not there is `found: false`; one that is there but fails `--version` is `found: true, ok: false` with the reason.
+- `supervisor.ts` kills each supervised child's process tree when the harness process exits: on `exit` (which an
+  uncaught error also fires), SIGINT and SIGTERM. `supervisor.test.ts` checks it in a process of its own: a stand-in
+  harness (`fixtures/supervising-parent.ts`) supervises the fake in `hang-tree` mode, and after it calls
+  `process.exit` or dies of an uncaught error, neither the provider nor the child the provider started is running.
+  SIGTERM is checked on Linux and macOS only — on Windows a signal from another process ends it outright — so it has
+  not been run on the Windows machine this was written on. Observed there (Bun 1.3.10): the provider itself did not
+  outlive the harness even with the hook removed, but a child it started detached did, unless the hook ran. A harness
+  killed outright (SIGKILL, TerminateProcess) runs no hook: on Windows that child outlived a harness terminated that
+  way, in a probe outside the suite (`agent-forge-harness-u98i`).
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.
