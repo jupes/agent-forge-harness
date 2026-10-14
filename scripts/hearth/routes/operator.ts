@@ -47,6 +47,7 @@ import {
   workspaceReads,
 } from "./operator-reads";
 import { queueRoutes } from "./queue";
+import { shiftRoutes } from "./shifts";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
 
@@ -56,6 +57,8 @@ export interface OperatorDeps extends ReadDeps {
   appendEvent(event: LedgerEventInput): AppendResult;
   /** The queue lock's file: one for every process that moves beads of this tracker. */
   queueLockFile: string;
+  /** Where shifts given this hearth's home keep their records and stop requests. */
+  shiftsDir: string;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
@@ -308,6 +311,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         lockFile: deps.queueLockFile,
         configHome: deps.configHome,
       }),
+      ...shiftRoutes({ workspace, shiftsDir: deps.shiftsDir }),
     ],
     close: () => live.close(),
   };

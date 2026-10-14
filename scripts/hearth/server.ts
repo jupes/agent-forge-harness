@@ -24,6 +24,7 @@ import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
@@ -184,6 +185,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     appendEvent: append,
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),
+    // Under the same home: a shift given it keeps its record and stop request there.
+    shiftsDir: join(home, SHIFTS_DIR),
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
     git: options.api?.git,
