@@ -11,12 +11,11 @@
  * stdin, in a scratch directory that is not a repository and has no
  * package.json, with a PATH that reaches no real `bun` or `git`: empty; or
  * system directories only (so a shell is reachable); or, for two tests, a
- * directory of stand-ins in front of those (on Windows the passing `git` is
- * also compiled to an .exe, the only kind the gate's no-shell runner runs
- * there). It therefore never runs this suite again. With no stand-ins its own
- * checks fail fast, and what is asserted is the event, the identity it logs
- * and the ledger rows; with a stand-in `bun` and `git` every base check
- * passes without running anything, and the exit code is asserted too.
+ * directory of stand-ins in front of those. It therefore never runs this
+ * suite again. With no stand-ins its own checks fail fast, and what is
+ * asserted is the event, the identity it logs and the ledger rows; with a
+ * stand-in `bun` and `git` every base check passes without running
+ * anything, and the exit code is asserted too.
  *
  * Neither proves a live host session calls the hook.
  */
