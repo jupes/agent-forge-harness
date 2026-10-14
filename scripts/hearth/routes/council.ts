@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { sanitizeContent } from "../../council/context";
+import { councilJobDelta } from "../../council/job-delta";
 import type { createCouncilService } from "../../council/service";
 import { passesFrontDoor } from "../gate";
 import { STREAM_KEEPALIVE_MS } from "../stream";
@@ -68,9 +69,21 @@ export function councilHttpHandler(
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
+      // `?deltas=1`: the whole job once, then what changed since the job
+      // this client was last sent (`job-delta.ts`). Without it, the whole
+      // job on every update.
+      const deltas = url.searchParams.get("deltas") === "1";
+      let sent: typeof job | undefined;
       const snapshot = (value: typeof job): void => {
         if (res.destroyed || res.writableEnded) return;
-        res.write(`event: snapshot\ndata: ${JSON.stringify(value)}\n\n`);
+        const delta =
+          deltas && sent !== undefined ? councilJobDelta(sent, value) : null;
+        res.write(
+          delta === null
+            ? `event: snapshot\ndata: ${JSON.stringify(value)}\n\n`
+            : `event: delta\ndata: ${JSON.stringify(delta)}\n\n`,
+        );
+        sent = value;
         if (value.status !== "running" && value.status !== "cancelling")
           res.end();
       };
