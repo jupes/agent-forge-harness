@@ -13,9 +13,12 @@
  * is also appended to the event ledger as `verdict.bound` (the verdict file
  * as read) and `review.recorded` (the decision).
  *
- * Two things are refused before a round is recorded: a command line that
- * cannot be read whole (`parseReviewArgs`), and a verdict file whose digest a
- * round of the run was already graded from, since a verdict grades one round.
+ * Three things are refused before a round is recorded: a command line that
+ * cannot be read whole (`parseReviewArgs`); a verdict file whose digest a
+ * round of the run was already graded from, since a verdict grades one round;
+ * and a verdict of the run that does not name the round this command would
+ * record (`<phase>-<round>`, `roundLabelProblem`), which a legacy schema 1
+ * verdict cannot do.
  *
  * CLI:
  *   bun run forge:review --slug <slug> --phase <phase> --verdict <path>
@@ -52,9 +55,11 @@ import {
   type AutoDecision,
   decideNext,
   haltHandoff,
+  nextRoundOf,
   recordRound,
   reviewComment,
   roundFromVerdict,
+  roundLabelProblem,
   roundRecordedFrom,
 } from "./auto-loop";
 import { type ForgeState, isForgePhase, type ReviewRound } from "./phases";
@@ -296,6 +301,18 @@ if (import.meta.main) {
           ...(state.checkout !== undefined ? { checkout: state.checkout } : {}),
         } as const);
 
+  // The round this command would record, and how its verdict is filed: the
+  // run's correlation is what `forge:verdict` needs, so a run with none is
+  // correlated first.
+  const roundNumber = nextRoundOf(phase, history);
+  const label = `${phase}-${roundNumber}`;
+  const onCheckout =
+    state.checkout !== undefined ? ` --checkout "${state.checkout}"` : "";
+  const fileRound =
+    correlation.kind === "none"
+      ? `correlate the run (bun run forge:correlate --bead <id> --run ${slug}${onCheckout}) and file this round's verdict with bun run forge:verdict --correlation <the pointer it prints> --review ${label}${onCheckout} ...`
+      : `file this round's verdict with bun run forge:verdict --correlation ${pointer} --review ${label}${onCheckout} ...`;
+
   // An unreadable or invalid verdict is recorded, not swallowed: decideNext
   // halts on it, which is the point — an auto run must not grade itself blind.
   // A verdict that is not this run's is as unusable as one that cannot be read.
@@ -311,9 +328,8 @@ if (import.meta.main) {
     ? roundRecordedFrom(history, read.sha256)
     : undefined;
   if (read.ok && replayed !== undefined) {
-    const next = history.filter((r) => r.phase === phase).length + 1;
     fail(
-      `the verdict file ${verdictPath} (sha256 ${read.sha256.slice(0, 12)}) was already recorded for run "${slug}" as ${replayed.phase} round ${replayed.round}, and a verdict grades one round, so nothing was recorded. File this round's own verdict (bun run forge:verdict ... --review ${phase}-${next}); one that would match an earlier verdict byte for byte, such as a clean PASS with no summary, needs a --summary saying what this round reviewed.`,
+      `the verdict file ${verdictPath} (sha256 ${read.sha256.slice(0, 12)}) was already recorded for run "${slug}" as ${replayed.phase} round ${replayed.round}, and a verdict grades one round, so nothing was recorded. To record ${phase} round ${roundNumber}, ${fileRound}.`,
     );
   }
   if (!read.ok) {
@@ -324,8 +340,18 @@ if (import.meta.main) {
       verdictError = parsed.error;
     } else {
       const mine = verdictOfRun(parsed.value, slug, correlation);
-      if (mine.ok) verdict = mine.value;
-      else verdictError = mine.error;
+      if (mine.ok) {
+        // A verdict of this run grades the round it names and no other: one
+        // naming another round, another phase or none (the run's own verdict)
+        // is refused, and nothing is recorded, as a replay is.
+        const problem = roundLabelProblem(mine.value, label);
+        if (problem !== null) {
+          fail(
+            `the verdict file ${verdictPath} ${problem}, but forge:review would record it as ${phase} round ${roundNumber} of run "${slug}" (${label}), and a verdict grades only the round it names, so nothing was recorded. To record that round, ${fileRound}.`,
+          );
+        }
+        verdict = mine.value;
+      } else verdictError = mine.error;
     }
   }
   const artifact =

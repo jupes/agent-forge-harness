@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { type EvalVerdictParsed, parseEvalVerdictJson } from "../eval-verdict";
 import {
   DEFAULT_MAX_REVISIONS,
   decideNext,
   haltHandoff,
+  nextRoundOf,
   type ReviewRound,
   recordRound,
   reviewComment,
   roundFromVerdict,
+  roundLabelProblem,
   roundRecordedFrom,
 } from "./auto-loop";
 import { exitCodeFor, parseReviewArgs } from "./auto-loop-cli";
@@ -236,6 +239,64 @@ describe("roundRecordedFrom", () => {
 
   test("a digest no round recorded finds nothing", () => {
     expect(roundRecordedFrom(history, "d-new")).toBeUndefined();
+  });
+});
+
+describe("nextRoundOf", () => {
+  test("is one more than the phase's rounds on the ledger, an unreadable round included, other phases not", () => {
+    const history = [
+      round({ phase: "research", round: 1 }),
+      round({ phase: "plan", round: 1, verdict: "UNREADABLE" }),
+      round({ phase: "plan", round: 2 }),
+    ];
+    expect(nextRoundOf("plan", history)).toBe(3);
+    expect(nextRoundOf("research", history)).toBe(2);
+    expect(nextRoundOf("ship", history)).toBe(1);
+    expect(nextRoundOf("plan", [])).toBe(1);
+  });
+});
+
+describe("roundLabelProblem", () => {
+  /** A schema 2 verdict as the parser reads it, naming `review` when given. */
+  function v2(review?: string): EvalVerdictParsed {
+    const parsed = parseEvalVerdictJson(
+      JSON.stringify({
+        schemaVersion: 2,
+        beadsIssueId: "b-1",
+        executionRunId: "x",
+        verdict: "PASS",
+        findings: clean,
+        evaluator: { kind: "human", actorKind: "reviewer" },
+        ...(review !== undefined ? { review } : {}),
+      }),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parsed.value;
+  }
+
+  test("a schema 2 verdict naming the round is that round's", () => {
+    expect(roundLabelProblem(v2("plan-3"), "plan-3")).toBeNull();
+  });
+
+  test("a verdict naming another round, another phase, no round, or a schema 1 verdict is not", () => {
+    expect(roundLabelProblem(v2("plan-2"), "plan-3")).toBe(
+      'names review round "plan-2"',
+    );
+    expect(roundLabelProblem(v2("research-3"), "plan-3")).toBe(
+      'names review round "research-3"',
+    );
+    expect(roundLabelProblem(v2(), "plan-3")).toBe("names no review round");
+    expect(
+      roundLabelProblem(
+        {
+          schemaVersion: 1,
+          taskId: "t-1",
+          verdict: "PASS",
+          findings: clean,
+        },
+        "plan-3",
+      ),
+    ).toBe("is a legacy schema 1 verdict, which cannot name a review round");
   });
 });
 

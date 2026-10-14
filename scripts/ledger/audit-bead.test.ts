@@ -187,6 +187,7 @@ describe("audit-cli --bead over events from every emitter (spawned scripts, scra
         verdict: "PASS",
         findings: { blocker: 0, high: 0, medium: 0, low: 0 },
         evaluator: { kind: "human", actorKind: "reviewer" },
+        review: "research-1",
       }),
     );
     const reviewed = await spawn(box, REVIEW, [

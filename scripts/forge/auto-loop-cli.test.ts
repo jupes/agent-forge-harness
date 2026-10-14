@@ -1,7 +1,8 @@
 /**
- * `forge:review` as a command: what a command line it cannot read whole, and
- * a verdict file it has already taken, leave behind. Spawned scripts, in a
- * scratch checkout with a scratch ledger and a scratch user home.
+ * `forge:review` as a command: what a command line it cannot read whole, a
+ * verdict file it has already taken, and a verdict that does not name the
+ * round it would record, leave behind. Spawned scripts, in a scratch checkout
+ * with a scratch ledger and a scratch user home.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -113,8 +114,16 @@ async function correlatedRun(box: Box): Promise<void> {
   expect(wrote.exitCode).toBe(0);
 }
 
-/** A schema 2 verdict for run `x` and bead `b-1`, from a person, at `name` in the checkout. */
-function verdictFile(box: Box, name: string, summary: string): string {
+/**
+ * A schema 2 verdict for run `x` and bead `b-1`, from a person, at `name` in
+ * the checkout, naming review round `review` when one is given.
+ */
+function verdictFile(
+  box: Box,
+  name: string,
+  summary: string,
+  review?: string,
+): string {
   const path = join(box.cwd, name);
   writeFileSync(
     path,
@@ -126,6 +135,7 @@ function verdictFile(box: Box, name: string, summary: string): string {
       findings: { blocker: 0, high: 0, medium: 0, low: 0 },
       summary,
       evaluator: { kind: "human", actorKind: "reviewer" },
+      ...(review !== undefined ? { review } : {}),
     }),
   );
   return path;
@@ -181,7 +191,12 @@ describe("forge:review refuses a command line it cannot read whole, before any r
   test("an unknown flag, a flag given twice and a flag with no value are each refused, and no round is recorded", async () => {
     const box = sandbox();
     await correlatedRun(box);
-    const file = verdictFile(box, "review-research-1.json", "research read");
+    const file = verdictFile(
+      box,
+      "review-research-1.json",
+      "research read",
+      "research-1",
+    );
 
     for (const [argv, error] of [
       [
@@ -257,6 +272,7 @@ describe("a verdict file grades one round of a run", () => {
       box,
       "review-research-1.json",
       "research read",
+      "research-1",
     );
     const taken = await run(box, REVIEW, [
       "--slug",
@@ -294,7 +310,12 @@ describe("a verdict file grades one round of a run", () => {
       );
     }
 
-    const plan = verdictFile(box, "review-plan-1-new.json", "plan read");
+    const plan = verdictFile(
+      box,
+      "review-plan-1-new.json",
+      "plan read",
+      "plan-1",
+    );
     const next = await run(box, REVIEW, [
       "--slug",
       "x",
@@ -332,4 +353,132 @@ describe("a verdict file grades one round of a run", () => {
       ),
     ).toEqual([digestOf(research), digestOf(plan)]);
   }, 120_000);
+});
+
+describe("a verdict grades only the round it names", () => {
+  test("a verdict naming another round, another phase or no round is refused and records nothing; the round's own verdict is taken, and the next round is the one after it", async () => {
+    const box = sandbox();
+    await correlatedRun(box);
+    const hint =
+      "bun run forge:verdict --correlation .tmp/work/run-correlations/x.json --review research-1";
+
+    for (const [file, problem] of [
+      [
+        verdictFile(box, "a.json", "research read", "research-2"),
+        'names review round "research-2"',
+      ],
+      [
+        verdictFile(box, "b.json", "research read", "plan-1"),
+        'names review round "plan-1"',
+      ],
+      [verdictFile(box, "c.json", "research read"), "names no review round"],
+    ] as const) {
+      const refused = await run(box, REVIEW, [
+        "--slug",
+        "x",
+        "--phase",
+        "research",
+        "--verdict",
+        file,
+      ]);
+      expect({ file, exitCode: refused.exitCode }).toEqual({
+        file,
+        exitCode: 2,
+      });
+      expect(refused.printed.ok).toBe(false);
+      expect(refused.printed.error).toContain(`${file} ${problem}`);
+      expect(refused.printed.error).toContain(
+        'would record it as research round 1 of run "x" (research-1)',
+      );
+      expect(refused.printed.error).toContain(hint);
+    }
+    expect(runState(box)?.reviews).toBeUndefined();
+    expect(reviewRows(box)).toEqual([]);
+
+    const own = verdictFile(box, "d.json", "research read", "research-1");
+    const taken = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      own,
+    ]);
+    expect(taken.exitCode).toBe(0);
+
+    // Another file naming round 1, now that round 1 is recorded: not round 2's.
+    const late = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      verdictFile(box, "e.json", "research read again", "research-1"),
+    ]);
+    expect(late.exitCode).toBe(2);
+    expect(late.printed.error).toContain(
+      'names review round "research-1", but forge:review would record it as research round 2 of run "x" (research-2)',
+    );
+    expect(late.printed.error).toContain("--review research-2");
+
+    expect(
+      runState(box)?.reviews?.map((round) => [
+        round.phase,
+        round.round,
+        round.verdictSha256,
+      ]),
+    ).toEqual([["research", 1, digestOf(own)]]);
+    expect(reviewRows(box).map((row) => row.kind)).toEqual([
+      "verdict.bound",
+      "review.recorded",
+    ]);
+  }, 120_000);
+
+  test("a schema 1 verdict for a run with no correlation is refused: it cannot name its round, and the refusal says how to correlate the run and file one", async () => {
+    const box = sandbox();
+    writeFileSync(join(box.cwd, "plans", "research", "x.md"), "x");
+    const wrote = await run(box, PHASE_GATE, [
+      "research",
+      "--slug",
+      "x",
+      "--write",
+      "--mode",
+      "auto",
+      "--epic",
+      "e-1",
+    ]);
+    expect(wrote.exitCode).toBe(0);
+    const legacy = join(box.cwd, "v.json");
+    writeFileSync(
+      legacy,
+      JSON.stringify({
+        schemaVersion: 1,
+        taskId: "t",
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+      }),
+    );
+
+    const refused = await run(box, REVIEW, [
+      "--slug",
+      "x",
+      "--phase",
+      "research",
+      "--verdict",
+      legacy,
+    ]);
+    expect(refused.exitCode).toBe(2);
+    expect(refused.printed.ok).toBe(false);
+    expect(refused.printed.error).toContain(
+      `${legacy} is a legacy schema 1 verdict, which cannot name a review round, but forge:review would record it as research round 1 of run "x" (research-1)`,
+    );
+    expect(refused.printed.error).toContain(
+      "bun run forge:correlate --bead <id> --run x",
+    );
+    expect(refused.printed.error).toContain(
+      "bun run forge:verdict --correlation <the pointer it prints> --review research-1",
+    );
+    expect(runState(box)?.reviews).toBeUndefined();
+    expect(reviewRows(box)).toEqual([]);
+  }, 60_000);
 });
