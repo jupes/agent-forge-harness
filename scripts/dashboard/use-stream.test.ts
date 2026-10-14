@@ -22,6 +22,7 @@ import {
   createStreamClient,
   fetchTransport,
   MAX_FAILURES,
+  pageTransport,
   REFETCH_WINDOW_MS,
   readOperatorRoute,
   SILENCE_MS,
@@ -1127,6 +1128,48 @@ describe("client: static fallback", () => {
     clock.advance(3_600_000);
     expect(wire.connections).toHaveLength(2);
     expect(reads.asked).toEqual([]);
+  });
+
+  test("on a static copy the page asks for no stream at all: live updates are off at once, as after a static host's answer", async () => {
+    const { requests, fetchImpl } = standInFetch(
+      () => new Response("Not found", { status: 404 }),
+    );
+    const { clock } = harness();
+    const client = createStreamClient({
+      transport: pageTransport(true, { fetch: fetchImpl }),
+      read: () => Promise.reject(new Error("unused")),
+      timers: clock.timers,
+      now: clock.now,
+    });
+    const leave = client.subscribe(() => undefined);
+    await settle();
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "no-hearth",
+      cursor: null,
+    });
+    clock.advance(3_600_000);
+    leave();
+    client.subscribe(() => undefined);
+    await settle();
+    expect(requests).toEqual([]);
+    expect(clock.waits()).toEqual([]);
+  });
+
+  test("served by the dev server, the page asks for the hearth's stream route", async () => {
+    const { requests, fetchImpl } = standInFetch(
+      () => new Response("Not found", { status: 404 }),
+    );
+    const client = createStreamClient({
+      transport: pageTransport(false, { fetch: fetchImpl }),
+      read: () => Promise.reject(new Error("unused")),
+    });
+    const leave = client.subscribe(() => undefined);
+    await settle();
+    leave();
+    expect(requests.map((request) => request.url)).toEqual([
+      "/__agent-forge/stream",
+    ]);
   });
 });
 
