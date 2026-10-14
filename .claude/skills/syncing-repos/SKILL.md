@@ -111,8 +111,16 @@ On failure:
     {
       "name": "my-api",
       "url": "https://github.com/org/my-api.git",
-      "defaultBranch": "main"
+      "defaultBranch": "main",
+      "checks": [
+        { "name": "typecheck", "argv": ["bun", "run", "typecheck"] },
+        { "name": "tests", "argv": ["bun", "test"] }
+      ]
     }
   ]
 }
 ```
+
+`"checks"` is optional here. It is what the quality gate runs for a Forge run that builds in the
+repository, each `"argv"` without a shell; without it the gate refuses such a run. The add-repo skill
+says how to write it, including the Windows limit on `.cmd` shims.

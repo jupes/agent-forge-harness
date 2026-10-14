@@ -326,15 +326,57 @@ describe("the Forge documents: the ship step gates through the run's correlation
     ).toEqual([]);
   });
 
-  test("the ship documents say what a run in another repository does instead, and that it has no linked gate entry", () => {
+  test("the ship skill says test-evidence reads the branch's own commits, and what a run with nothing to test gets", () => {
+    for (const path of skill("forge-ship")) {
+      expect(
+        missing(path, [
+          "every commit of the branch's own, the ones since `origin/HEAD`",
+          "has nothing to test: the check is skipped and its entry says so",
+          "the last five commits instead",
+        ]),
+      ).toEqual([]);
+      expect(read(path)).not.toContain("there is no way past it");
+    }
+  });
+
+  test("the ship documents gate a run in another repository through its correlation, from the harness, with the checks on its entry in repos/repos.json", () => {
     for (const path of [
       ...skill("forge-ship"),
       ".claude/commands/forge-ship.md",
       ".claude/workflows/forge.md",
+      "docs/HARNESS-GUIDE.md",
     ]) {
       expect(
-        missing(path, ["another repository", "no linked gate entry"]),
+        missing(path, [
+          "another repository",
+          "bun run quality-gate --correlation <checkout>/<pointer>",
+          "repos/repos.json",
+        ]),
       ).toEqual([]);
+      expect({
+        path,
+        limit: read(path)?.includes("no linked gate entry"),
+      }).toEqual({
+        path,
+        limit: false,
+      });
+    }
+  });
+
+  test("the add-repo skill says how to write a repository's check set, and that a Windows .cmd shim cannot be named in one", () => {
+    for (const path of skill("add-repo")) {
+      expect(
+        missing(path, [
+          '"checks"',
+          '"argv"',
+          "without a shell",
+          ".cmd",
+          "the gate refuses",
+        ]),
+      ).toEqual([]);
+    }
+    for (const path of skill("syncing-repos")) {
+      expect(missing(path, ['"checks"', '"argv"'])).toEqual([]);
     }
   });
 

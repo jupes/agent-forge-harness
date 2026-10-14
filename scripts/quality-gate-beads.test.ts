@@ -36,12 +36,11 @@ function recorder(
 }
 
 describe("readBeadsIssue", () => {
-  test("asks bd three questions, each as an argument array holding the id as one whole argument", () => {
+  test("asks bd two questions, each as an argument array holding the id as one whole argument", () => {
     const { exec, calls } = recorder();
     readBeadsIssue(bead("agent-forge-harness-0xxt"), exec);
     expect(calls).toEqual([
       { file: "bd", args: ["show", "agent-forge-harness-0xxt", "--json"] },
-      { file: "bd", args: ["show", "agent-forge-harness-0xxt"] },
       { file: "bd", args: ["comments", "agent-forge-harness-0xxt", "--json"] },
     ]);
   });
@@ -50,9 +49,10 @@ describe("readBeadsIssue", () => {
     const { exec } = recorder({
       "show b-1 --json": {
         ok: true,
-        output: JSON.stringify([{ issue_type: "Feature" }]),
+        output: JSON.stringify([
+          { issue_type: "Feature", acceptance_criteria: "It works." },
+        ]),
       },
-      "show b-1": { ok: true, output: "title\n  ac: it works\n" },
       "comments b-1 --json": {
         ok: true,
         output: JSON.stringify([
@@ -69,6 +69,63 @@ describe("readBeadsIssue", () => {
       acceptanceListed: true,
       commentBodies: ["testing: ran the suite"],
     });
+  });
+
+  test("acceptance criteria are the acceptance_criteria field of bd show --json, set with no ac: comment", () => {
+    const { exec } = recorder({
+      "show b-1 --json": {
+        ok: true,
+        output: JSON.stringify([
+          {
+            issue_type: "task",
+            acceptance_criteria: "A run passes; the docs say so.",
+          },
+        ]),
+      },
+      "comments b-1 --json": { ok: true, output: "[]" },
+    });
+    expect(readBeadsIssue(bead("b-1"), exec).acceptanceListed).toBe(true);
+  });
+
+  test("the text ac: in the issue's title, description or comments is not acceptance criteria", () => {
+    const { exec } = recorder({
+      "show b-1 --json": {
+        ok: true,
+        output: JSON.stringify([
+          {
+            issue_type: "task",
+            title: "lilac: a colour",
+            description: "ac: not a field\nmaniac: either",
+          },
+        ]),
+      },
+      // What a plain `bd show` prints for that issue.
+      "show b-1": {
+        ok: true,
+        output:
+          "lilac: a colour\n\nDESCRIPTION\n  ac: not a field\n  maniac: either",
+      },
+      "comments b-1 --json": {
+        ok: true,
+        output: JSON.stringify([{ text: "ac: changed the criterion" }]),
+      },
+    });
+    expect(readBeadsIssue(bead("b-1"), exec).acceptanceListed).toBe(false);
+  });
+
+  test("an acceptance field that is blank or not text lists no criteria", () => {
+    for (const acceptance_criteria of ["", "  \n ", 7, null, ["a"]]) {
+      const { exec } = recorder({
+        "show b-1 --json": {
+          ok: true,
+          output: JSON.stringify([{ issue_type: "task", acceptance_criteria }]),
+        },
+      });
+      expect({
+        acceptance_criteria,
+        listed: readBeadsIssue(bead("b-1"), exec).acceptanceListed,
+      }).toEqual({ acceptance_criteria, listed: false });
+    }
   });
 
   test("an issue bd cannot show is reported as not shown, with nothing listed", () => {
@@ -88,7 +145,7 @@ describe("readBeadsIssue", () => {
     // @ts-expect-error a plain string — a host task id, say — is not a BeadsIssueId
     readBeadsIssue("7; echo pwned", exec);
     // The compiler is the guard here; this call exists only to hold the directive.
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
   });
 });
 

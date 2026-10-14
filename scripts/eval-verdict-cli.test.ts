@@ -156,6 +156,8 @@ function gateCheck(box: Box, builder?: Executor) {
         ? { ok: false, output: "" }
         : { ok: true, output: cmd.startsWith("git log") ? "a.test.ts" : "" },
     execFile: () => ({ ok: false, output: "" }),
+    harness: box.cwd,
+    registry: () => null,
     hasScript: () => true,
     hasTestFiles: () => true,
     smiths: () => Object.values(BUILTIN_SMITHS),
