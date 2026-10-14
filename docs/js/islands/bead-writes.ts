@@ -401,6 +401,14 @@ type Stored = Pick<Storage, "getItem" | "setItem">;
 const STORE_KEY = "agent-forge.bead-writes.v1";
 /** How many beads are remembered; the one changed longest ago goes first. */
 const KEPT = 50;
+/** How many comments one bead keeps: the ones added last. The snapshot soon shows the rest. */
+const KEPT_COMMENTS = 20;
+/** How many labels one bead keeps: the first, in the order `bd` printed them. */
+const KEPT_LABELS = 50;
+/** As much of a comment's text as is kept: the control plane refuses a longer one (`BEAD_TEXT_LIMITS.comment`). */
+const COMMENT_KEPT = 4000;
+/** As much of any other text of a bead as is kept: a status, an assignee, a label, a time, an id, a created bead's fields. */
+const FIELD_KEPT = 200;
 /** How many writes out or kept as notices are remembered; with this many, no other is sent. */
 const KEPT_ATTEMPTS = 20;
 /** As much of a create's title as a notice shows. */
@@ -436,6 +444,44 @@ const orderOf = (value: unknown): number | null =>
     ? value
     : null;
 
+/**
+ * A bead's entry as the page keeps it: the comments added last, the first
+ * labels, and every text cut to its length. `record` keeps this and a stored
+ * entry is read back as this, so a reload reads what the page held.
+ */
+function bounded(entry: Applied): Applied {
+  const field = (value: string): string => value.slice(0, FIELD_KEPT);
+  const { status, assignee, labels, updatedAt, created } = entry;
+  return {
+    id: entry.id,
+    ...(status !== undefined ? { status: field(status) } : {}),
+    ...(assignee !== undefined ? { assignee: field(assignee) } : {}),
+    ...(labels !== undefined
+      ? { labels: labels.slice(0, KEPT_LABELS).map(field) }
+      : {}),
+    ...(updatedAt !== undefined ? { updatedAt: field(updatedAt) } : {}),
+    comments: entry.comments.slice(-KEPT_COMMENTS).map((comment) => ({
+      id: field(comment.id),
+      author: field(comment.author),
+      createdAt: field(comment.createdAt),
+      text: comment.text.slice(0, COMMENT_KEPT),
+    })),
+    ...(created !== undefined
+      ? {
+          created: {
+            title: created.title.slice(0, TITLE_SHOWN),
+            type: field(created.type),
+            priority: field(created.priority),
+            ...(created.parent !== undefined
+              ? { parent: field(created.parent) }
+              : {}),
+          },
+        }
+      : {}),
+    at: entry.at,
+  };
+}
+
 /** One entry as it was stored, or null: what storage holds is not trusted. */
 function entryOf(value: unknown): Applied | null {
   if (!isRecord(value)) return null;
@@ -449,7 +495,7 @@ function entryOf(value: unknown): Applied | null {
   const labels = Array.isArray(value["labels"])
     ? value["labels"].filter((label) => typeof label === "string")
     : undefined;
-  return {
+  return bounded({
     id,
     ...(status !== undefined ? { status } : {}),
     ...(assignee !== undefined ? { assignee } : {}),
@@ -487,7 +533,7 @@ function entryOf(value: unknown): Applied | null {
       : {}),
     // Any other order would move the clock that every later write's key is made from.
     at: orderOf(value["at"]) ?? 0,
-  };
+  });
 }
 
 /**
@@ -539,6 +585,10 @@ const folded = (value: string): string => value.replace(/\r\n?/g, "\n");
  * A storage that is absent or throws leaves a store that lasts as long as the
  * page does.
  *
+ * What storage holds is read as the page writes it, never more: the fifty
+ * beads changed last and the twenty writes sent last, each text cut to the
+ * length the page keeps (`bounded`, `attemptOf`).
+ *
  * A store is made once per page. A sent write it finds in storage with no
  * answer was sent by the page before this one, and that page is gone: its
  * outcome is not known.
@@ -553,12 +603,21 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
     const stored: unknown = JSON.parse(storage?.getItem(STORE_KEY) ?? "null");
     const entries =
       isRecord(stored) && Array.isArray(stored["beads"]) ? stored["beads"] : [];
-    for (const value of entries) {
-      const entry = entryOf(value);
-      if (entry === null) continue;
+    // Oldest change first, so a bead stored twice is read as it was changed
+    // last, and the map keeps the order of change.
+    const changes = entries
+      .map(entryOf)
+      .filter((entry): entry is Applied => entry !== null)
+      .sort((a, b) => a.at - b.at);
+    for (const entry of changes) {
+      beads.delete(entry.id);
       beads.set(entry.id, entry);
       clock = Math.max(clock, entry.at);
     }
+    // This page never keeps more than KEPT: of more, written by something
+    // else, the ones changed last are read.
+    for (const id of [...beads.keys()].slice(0, beads.size - KEPT))
+      beads.delete(id);
     const sent =
       isRecord(stored) && Array.isArray(stored["attempts"])
         ? stored["attempts"]
@@ -609,7 +668,7 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
         result.comment !== undefined && sent.text !== undefined
           ? [{ ...result.comment, text: folded(sent.text) }]
           : [];
-      const entry: Applied = {
+      const entry: Applied = bounded({
         ...before,
         id: result.id,
         ...(result.status !== undefined ? { status: result.status } : {}),
@@ -621,7 +680,7 @@ export function createAppliedStore(storage: Stored | null): AppliedStore {
         comments: [...(before?.comments ?? []), ...comment],
         ...(sent.created !== undefined ? { created: sent.created } : {}),
         at: ++clock,
-      };
+      });
       beads.set(entry.id, entry);
       if (beads.size > KEPT) {
         const oldest = [...beads.values()].sort((a, b) => a.at - b.at)[0];

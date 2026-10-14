@@ -23,8 +23,12 @@ export const RUN_CORRELATIONS_DIR = ".tmp/work/run-correlations";
 /** The variable a launcher sets to the path of the run's correlation file. */
 export const RUN_CORRELATION_ENV = "AGENT_FORGE_RUN_CORRELATION";
 
-/** A Beads id. Must start alphanumeric so `bd` can never read it as a flag. */
-const BEADS_ISSUE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+/**
+ * A Beads id. Must start alphanumeric so `bd` can never read it as a flag.
+ * The only copy: code that checks an id calls `parseBeadsIssueId`, or
+ * `isBeadId` (`hearth/tracker-write.ts`) for an id the ledger will store.
+ */
+export const BEADS_ISSUE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
 declare const beadsIssueId: unique symbol;
 

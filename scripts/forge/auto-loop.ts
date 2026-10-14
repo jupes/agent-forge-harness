@@ -18,10 +18,9 @@
  * Pure functions only; `auto-loop-cli.ts` is what touches disk.
  */
 
-import {
-  EVAL_VERDICT_SCHEMA_VERSION,
-  type EvalVerdictParsed,
-} from "../eval-verdict";
+import type { EvaluatorIdentity, Smith } from "../../types/hearth";
+import type { EvalVerdict, EvalVerdictParsed } from "../eval-verdict";
+import { observedRankPolicy, type RankedExecutor } from "../evaluator-policy";
 import { phaseCommand } from "./phase-gate";
 import type {
   ForgePhase,
@@ -66,19 +65,51 @@ export function nextRoundOf(
 /**
  * Why `verdict` is not the verdict of review round `label` (`<phase>-<round>`),
  * or null when it names that round. A round's verdict names its round, as
- * `forge:verdict --review` writes it; a legacy schema 1 verdict cannot.
+ * `forge:verdict --review` writes it.
  */
 export function roundLabelProblem(
-  verdict: EvalVerdictParsed,
+  verdict: EvalVerdict,
   label: string,
 ): string | null {
-  if (verdict.schemaVersion !== EVAL_VERDICT_SCHEMA_VERSION) {
-    return "is a legacy schema 1 verdict, which cannot name a review round";
-  }
   if (verdict.review === undefined) return "names no review round";
   return verdict.review === label
     ? null
     : `names review round "${verdict.review}"`;
+}
+
+/**
+ * Why a round's verdict grades nothing because of who judged it, or null.
+ *
+ * Grader >= subject is enforced here only on an observation: a model
+ * evaluator whose observed provider and model rank below the builder's, by
+ * the configured smiths. Whatever else strict completion objects to (nothing
+ * observed, an observed model with no rank, a builder with no known rank, the
+ * verdict's own recorded rejection) is reported by `forge:review`, not
+ * enforced: a machine with no session model cached for the reviewer would
+ * otherwise halt every unattended run.
+ */
+export function observedBelowBuilder(
+  evaluator: EvaluatorIdentity,
+  context: { smiths: readonly Smith[]; builder?: RankedExecutor },
+): string | null {
+  if (
+    evaluator.kind !== "model" ||
+    evaluator.observedProvider === undefined ||
+    evaluator.observedModel === undefined
+  ) {
+    return null;
+  }
+  const policy = observedRankPolicy({
+    observed: {
+      provider: evaluator.observedProvider,
+      model: evaluator.observedModel,
+    },
+    ...(context.builder ? { builder: context.builder } : {}),
+    smiths: context.smiths,
+  });
+  return policy.rule === "evaluator-below-builder"
+    ? `observed evaluator ${evaluator.observedProvider}/${evaluator.observedModel} (rank ${policy.evaluatorRank}) is below the builder's rank (${policy.builderRank}), so its verdict grades no round of this run`
+    : null;
 }
 
 /** Turn an evaluator verdict (or a failure to read one) into a review round. */
@@ -126,17 +157,10 @@ export function recordRound(state: ForgeState, round: ReviewRound): ForgeState {
   return { ...state, reviews: [...(state.reviews ?? []), round] };
 }
 
-/**
- * The Beads comment a round records, under the harness's `review:` prefix.
- * `legacy` marks a round graded from a schema 1 verdict, which names neither
- * the run nor the evaluator.
- */
-export function reviewComment(
-  round: ReviewRound,
-  opts: { legacy?: boolean } = {},
-): string {
+/** The Beads comment a round records, under the harness's `review:` prefix. */
+export function reviewComment(round: ReviewRound): string {
   const { blocker, high, medium, low } = round.findings;
-  return `review: ${round.verdict} — ${blocker} blocker, ${high} high, ${medium} medium, ${low} low (${round.phase} round ${round.round}${opts.legacy ? "; legacy verdict" : ""})`;
+  return `review: ${round.verdict} — ${blocker} blocker, ${high} high, ${medium} medium, ${low} low (${round.phase} round ${round.round})`;
 }
 
 /**

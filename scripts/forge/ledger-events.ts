@@ -202,8 +202,9 @@ export function emitRunEvent(
 }
 
 /**
- * Append `run.phase.entered`, unless the run's most recent phase event is
- * already that: re-running the entry check must not fill the ledger.
+ * Append `run.phase.entered`, unless the run's most recent phase event in the
+ * same workspace is already that: re-running the entry check must not fill the
+ * ledger, and a run with the same slug in another checkout is another run.
  * Returns null when nothing was appended.
  */
 export function emitPhaseEntered(
@@ -216,6 +217,7 @@ export function emitPhaseEntered(
       {
         runId: attach.runId,
         kinds: ["run.phase.entered", "run.phase.completed"],
+        workspace: attach.workspace,
       },
       opts,
     );

@@ -11,6 +11,7 @@ import {
 import { createOperatorPost } from "../../docs/js/operator";
 import type { BeadOptions, BeadWriteResult } from "../../types/hearth";
 import { OPERATOR_HEADER, SURFACE_HEADER, TOKEN_ROUTE } from "../hearth/paths";
+import { BEAD_TEXT_LIMITS } from "../hearth/routes/beads";
 
 const OPTIONS: BeadOptions = {
   types: ["task", "feature", "bug", "chore", "epic"],
@@ -1054,6 +1055,198 @@ describe("what the store reads back about writes", () => {
       `${"x".repeat(999)}y`,
       `${"x".repeat(999)}y`,
     ]);
+  });
+});
+
+describe("what the store reads back about beads", () => {
+  const stored = (beads: unknown[]) =>
+    memory({ [STORE_KEY]: JSON.stringify({ beads, attempts: [] }) });
+  /** A text of `length` whose last kept character, at `kept`, is `y`: a cut in the wrong place shows. */
+  const long = (kept: number, length = kept * 10) =>
+    `${"x".repeat(kept - 1)}y${"z".repeat(length - kept)}`;
+  const cut = (kept: number) => `${"x".repeat(kept - 1)}y`;
+  const createdEntry = (n: number) => ({
+    id: `demo-${n}`,
+    status: "open",
+    comments: [],
+    created: { title: `Bead ${n}`, type: "task", priority: "P2" },
+    at: n,
+  });
+
+  test("of more than fifty stored bead entries only the fifty changed last are read", () => {
+    const many = Array.from({ length: 5000 }, (_, n) => createdEntry(n + 1));
+    // Stored newest first: what is read does not depend on the order kept.
+    const store = createAppliedStore(stored(many.reverse()));
+    expect(store.created().map((bead) => bead.id)).toEqual(
+      Array.from({ length: 50 }, (_, n) => `demo-${5000 - n}`),
+    );
+    expect(store.get("demo-4950")).toBeUndefined();
+    expect(store.get("demo-4951")?.status).toBe("open");
+  });
+
+  test("one bead stored twice is read once, as it was changed last, and counts once toward the fifty", () => {
+    const store = createAppliedStore(
+      stored([
+        { ...createdEntry(60), status: "closed" },
+        ...Array.from({ length: 59 }, (_, n) => createdEntry(n + 1)),
+        { ...createdEntry(60), status: "in_progress", at: 5 },
+      ]),
+    );
+    expect(store.get("demo-60")?.status).toBe("closed");
+    expect(store.created()).toHaveLength(50);
+    expect(store.created()[0]?.id).toBe("demo-60");
+    expect(store.created().at(-1)?.id).toBe("demo-11");
+  });
+
+  test("a stored text longer than the page writes it is read cut as the page writes it: a comment's text at 4,000, every other text at 200", () => {
+    const store = createAppliedStore(
+      stored([
+        {
+          id: "demo-task",
+          status: long(200),
+          assignee: long(200),
+          labels: [long(200), "kept"],
+          updatedAt: long(200),
+          comments: [
+            {
+              id: long(200),
+              author: long(200),
+              createdAt: long(200),
+              text: long(4000),
+            },
+          ],
+          created: {
+            title: long(200),
+            type: long(200),
+            priority: long(200),
+            parent: long(200),
+          },
+          at: 1,
+        },
+      ]),
+    );
+    expect(store.get("demo-task")).toEqual({
+      id: "demo-task",
+      status: cut(200),
+      assignee: cut(200),
+      labels: [cut(200), "kept"],
+      updatedAt: cut(200),
+      comments: [
+        {
+          id: cut(200),
+          author: cut(200),
+          createdAt: cut(200),
+          text: cut(4000),
+        },
+      ],
+      created: {
+        title: cut(200),
+        type: cut(200),
+        priority: cut(200),
+        parent: cut(200),
+      },
+      at: 1,
+    });
+  });
+
+  test("a stored bead with more than twenty comments is read with the twenty added last; with more than fifty labels, with the first fifty", () => {
+    const comment = (n: number) => ({
+      id: `c-${n}`,
+      author: "operator",
+      createdAt: "2026-10-10T12:00:09Z",
+      text: `comment ${n}`,
+    });
+    const store = createAppliedStore(
+      stored([
+        {
+          id: "demo-task",
+          status: "open",
+          labels: Array.from({ length: 5000 }, (_, n) => `label-${n + 1}`),
+          comments: Array.from({ length: 5000 }, (_, n) => comment(n + 1)),
+          at: 1,
+        },
+      ]),
+    );
+    const entry = store.get("demo-task");
+    expect(entry?.comments.map((kept) => kept.text)).toEqual(
+      Array.from({ length: 20 }, (_, n) => `comment ${n + 4981}`),
+    );
+    expect(entry?.labels).toEqual(
+      Array.from({ length: 50 }, (_, n) => `label-${n + 1}`),
+    );
+  });
+
+  test("what an answer records is bounded as it is read back, so a reload reads what the page held", () => {
+    const storage = memory();
+    const store = createAppliedStore(storage);
+    store.record(
+      {
+        id: "demo-task",
+        action: "create",
+        status: long(200),
+        assignee: long(200),
+        labels: [
+          long(200),
+          ...Array.from({ length: 60 }, (_, n) => `label-${n + 1}`),
+        ],
+        updatedAt: long(200),
+        recorded: true,
+      },
+      {
+        created: {
+          title: long(200),
+          type: long(200),
+          priority: long(200),
+          parent: long(200),
+        },
+      },
+    );
+    for (let n = 1; n <= 21; n++)
+      store.record(
+        {
+          ...COMMENTED,
+          comment: {
+            id: n === 21 ? long(200) : `c-${n}`,
+            author: n === 21 ? long(200) : "operator",
+            createdAt: n === 21 ? long(200) : "2026-10-10T12:00:09Z",
+          },
+        },
+        { text: n === 21 ? long(4000) : `comment ${n}` },
+      );
+    const held = store.get("demo-task");
+    expect(held).toMatchObject({
+      status: cut(200),
+      assignee: cut(200),
+      updatedAt: cut(200),
+      created: {
+        title: cut(200),
+        type: cut(200),
+        priority: cut(200),
+        parent: cut(200),
+      },
+    });
+    expect(held?.labels).toEqual([
+      cut(200),
+      ...Array.from({ length: 49 }, (_, n) => `label-${n + 1}`),
+    ]);
+    expect(held?.comments.map((kept) => kept.text)).toEqual([
+      ...Array.from({ length: 19 }, (_, n) => `comment ${n + 2}`),
+      cut(4000),
+    ]);
+    expect(held?.comments.at(-1)).toEqual({
+      id: cut(200),
+      author: cut(200),
+      createdAt: cut(200),
+      text: cut(4000),
+    });
+    expect(createAppliedStore(storage).get("demo-task")).toEqual(held);
+  });
+
+  test("a comment as long as the control plane takes is kept whole", () => {
+    const store = createAppliedStore(memory());
+    const text = "c".repeat(BEAD_TEXT_LIMITS.comment);
+    store.record(COMMENTED, { text });
+    expect(store.get("demo-task")?.comments[0]?.text).toBe(text);
   });
 });
 

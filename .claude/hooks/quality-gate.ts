@@ -26,7 +26,9 @@
  * gets the gate's own command lines. A run in a repository under the
  * harness's `repos/` (or a worktree of one) gets the `checks` list on its
  * entry in `repos/repos.json`, each run in the run's checkout as an argument
- * array without a shell, then clean-tree and test-evidence there too; the
+ * array without a shell, for as long as its `timeoutSeconds` allows (a check
+ * stopped at that limit is logged `timedOut`, not merely failed), then
+ * clean-tree and test-evidence there too; the
  * entry is logged as that checkout's, with `repository` set. Such a
  * repository with no usable check set, or one that tracks files where run
  * correlations or verdicts are kept, is refused before anything runs.
@@ -63,7 +65,9 @@ import {
 import { strictEvaluatorProblem } from "../../scripts/evaluator-policy";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { readRunState } from "../../scripts/forge/runs-store";
+import { isMain } from "../../scripts/is-main";
 import {
+  EXEC_TIMEOUT_MS,
   type ExecFile,
   execFileNoShell,
   readBeadsIssue,
@@ -112,6 +116,8 @@ interface CheckResult {
   output?: string;
   skipped?: boolean;
   skipReason?: string;
+  /** A repository's check that was stopped at its time limit, rather than failing. */
+  timedOut?: true;
 }
 
 /**
@@ -143,12 +149,15 @@ type RepositoryRun = Extract<RunCheckSet, { kind: "repository" }>;
 export interface GateDeps {
   cwd: string;
   env: Env;
-  /** Runs one of the gate's own fixed command lines. Never given a value from outside. */
+  /**
+   * Runs one of the gate's own fixed `bun` command lines (typecheck, lint,
+   * tests). Never given a value from outside, and never git.
+   */
   run(cmd: string): { ok: boolean; output: string };
   /**
-   * Runs a program with an argument array and no shell: how `bd`, git for the
-   * test evidence, and every call for a run in a repository under `repos/`
-   * (its checks and git) are made.
+   * Runs a program with an argument array and no shell: how `bd`, every git
+   * call, and every call for a run in a repository under `repos/` (its
+   * checks) are made.
    */
   execFile: ExecFile;
   /** The checkout this gate belongs to: `repos/` is looked up in its main checkout. */
@@ -336,7 +345,8 @@ interface StrictPlaces {
 
 /**
  * Checks 1–4 for a run in the checkout the gate runs in, or an unlinked run:
- * the gate's own fixed command lines, run there.
+ * the gate's own fixed `bun` command lines, then git's status as an argument
+ * array, run there.
  */
 function gateBaseChecks(deps: GateDeps): {
   checks: CheckResult[];
@@ -395,7 +405,7 @@ function gateBaseChecks(deps: GateDeps): {
 
   // Check 4: Clean working tree
   {
-    const r = run("git status --porcelain");
+    const r = deps.execFile("git", ["status", "--porcelain"]);
     const clean = r.ok && r.output.trim() === "";
     checks.push({
       name: "clean-tree",
@@ -421,15 +431,38 @@ function repositoryBaseChecks(
   const cwd = repository.checkout;
   const checks: CheckResult[] = [];
   const blockingFailures: string[] = [];
-  for (const { name, argv } of repository.checks) {
+  for (const { name, argv, timeoutSeconds } of repository.checks) {
     const [program = "", ...args] = argv;
-    const r = exec(program, args, { cwd });
-    checks.push({
-      name,
-      passed: r.ok,
-      ...(r.ok ? {} : { output: r.output.slice(0, 1200) }),
+    const r = exec(program, args, {
+      cwd,
+      ...(timeoutSeconds !== undefined
+        ? { timeoutMs: timeoutSeconds * 1000 }
+        : {}),
     });
-    if (!r.ok) blockingFailures.push(name);
+    if (r.ok) {
+      checks.push({ name, passed: true });
+      continue;
+    }
+    blockingFailures.push(name);
+    if (r.timedOut) {
+      // Stopped, not failed: say after how long, and why that long.
+      const limit =
+        timeoutSeconds !== undefined
+          ? `${timeoutSeconds} seconds (the check's timeoutSeconds)`
+          : `${EXEC_TIMEOUT_MS / 1000} seconds (the default: a check sets its own with timeoutSeconds)`;
+      const said = r.output.trim();
+      checks.push({
+        name,
+        passed: false,
+        timedOut: true,
+        output: `stopped after ${limit}${said ? `\n${said}` : ""}`.slice(
+          0,
+          1200,
+        ),
+      });
+      continue;
+    }
+    checks.push({ name, passed: false, output: r.output.slice(0, 1200) });
   }
   const status = exec("git", repositoryStatusArgs(), { cwd });
   const clean = status.ok && status.output.trim() === "";
@@ -676,7 +709,7 @@ export function runQualityGate(input: {
 
   // The log is shared by every checkout and worktree on the machine, so record
   // which checkout this result belongs to.
-  const toplevel = deps.run("git rev-parse --show-toplevel");
+  const toplevel = deps.execFile("git", ["rev-parse", "--show-toplevel"]);
   const checkoutRoot =
     toplevel.ok && toplevel.output ? toplevel.output : deps.cwd;
   // The checkout the run builds in is the one its correlation names, which
@@ -737,12 +770,11 @@ export function runQualityGate(input: {
   );
 
   // A repository's run is logged as its checkout's, on the branch it has there.
-  const headBranch =
-    repository === null
-      ? deps.run("git rev-parse --abbrev-ref HEAD")
-      : deps.execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-          cwd: repository.checkout,
-        });
+  const headBranch = deps.execFile(
+    "git",
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    repository === null ? {} : { cwd: repository.checkout },
+  );
   const result: GateResult = {
     ...gateIdentity({
       cwd: deps.cwd,
@@ -871,7 +903,7 @@ function hasTestFiles(): boolean {
   return false;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const startedAt = performance.now();
   let stdin: HookStdin;
   try {

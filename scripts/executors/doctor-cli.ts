@@ -25,6 +25,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { Smith } from "../../types/hearth";
 import { type ForgeConfig, loadConfig } from "../config/load";
+import { isMain } from "../is-main";
 import { buildChildEnv } from "./env";
 import { runFailure } from "./outcome";
 import { ADAPTERS } from "./registry";
@@ -209,7 +210,7 @@ export function doctorLine(r: DoctorReport): string {
   return `${r.provider}: answers --version${version}${path}; ${taskPart(r.task)}`;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const argv = process.argv.slice(2);
   const json = argv.includes("--json");
   try {

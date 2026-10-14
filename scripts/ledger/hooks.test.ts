@@ -143,10 +143,16 @@ function sessionLog(box: Box): Array<Record<string, unknown>> {
   });
 }
 
+/** What the recording `bd` prints for `bd ready`: seven lines of work. */
+const READY_LINES = [1, 2, 3, 4, 5, 6, 7].map((n) => `ready work ${n}`);
+/** What the recording `bd` prints on stderr for `bd ready`. */
+const READY_STDERR = "ready warning on stderr";
+
 /**
  * An environment whose whole `PATH` is one directory holding one program: a
- * `bd` that appends its arguments to a file. Which `bd` commands a hook ran can
- * then be read back, and no real `bd` or `git` is reachable.
+ * `bd` that appends its arguments to a file, and for `bd ready` also prints
+ * `READY_LINES` on stdout and `READY_STDERR` on stderr. Which `bd` commands a
+ * hook ran can then be read back, and no real `bd` or `git` is reachable.
  */
 function recordingBd(box: Box): {
   env: Record<string, string>;
@@ -158,11 +164,28 @@ function recordingBd(box: Box): {
   if (process.platform === "win32") {
     writeFileSync(
       join(dir, "bd.cmd"),
-      '@echo off\r\n>>"%RECORDING_BD_FILE%" echo %*\r\n',
+      [
+        "@echo off",
+        '>>"%RECORDING_BD_FILE%" echo %*',
+        'if not "%1"=="ready" exit /b 0',
+        ...READY_LINES.map((line) => `echo ${line}`),
+        `echo ${READY_STDERR} 1>&2`,
+        "",
+      ].join("\r\n"),
     );
   } else {
     const program = join(dir, "bd");
-    writeFileSync(program, '#!/bin/sh\necho "$@" >> "$RECORDING_BD_FILE"\n');
+    writeFileSync(
+      program,
+      [
+        "#!/bin/sh",
+        'echo "$@" >> "$RECORDING_BD_FILE"',
+        '[ "$1" = ready ] || exit 0',
+        ...READY_LINES.map((line) => `echo "${line}"`),
+        `echo "${READY_STDERR}" >&2`,
+        "",
+      ].join("\n"),
+    );
     chmodSync(program, 0o755);
   }
   // The shell a Windows child runs a command line through.
@@ -543,8 +566,8 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       const fromStart = bd.calls();
       expect(fromStart).toContain("dolt pull");
       expect(readSessionMirror(box.cwd)).toBe("S");
-      // The start's call went through a shell. A second control for the other
-      // route: a child that spawns `bd` with no shell lands in the record too.
+      // A second control: a child that spawns `bd` with no shell, as the hook
+      // does, lands in the record too.
       const direct = Bun.spawnSync(
         [
           process.execPath,
@@ -602,6 +625,30 @@ describe("the hook scripts, given a hook payload on stdin", () => {
       expect(unnamed.stdout).toContain("[session] SessionStart logged.");
       expect(bd.calls()).toEqual([...before, ...fromStart]);
       expect(bd.calls().some((call) => call.includes("push"))).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "a session start reaches a recording bd with its pull and its ready call, and prints the first five lines bd ready lists without its stderr",
+    async () => {
+      const box = sandbox();
+      const bd = recordingBd(box);
+      const started = await hook(
+        box,
+        SESSION,
+        payload("SessionStart", box, { source: "startup" }),
+        bd.env,
+      );
+      expect(started.exitCode).toBe(0);
+      expect(bd.calls()).toEqual(["dolt pull", "ready"]);
+
+      const lines = started.stdout.split(/\r?\n/);
+      const header = lines.indexOf("[session] Ready work:");
+      expect(header).toBeGreaterThanOrEqual(0);
+      const end = lines.indexOf("", header);
+      expect(lines.slice(header + 1, end)).toEqual(READY_LINES.slice(0, 5));
+      expect(started.stdout).not.toContain(READY_STDERR);
     },
     SPAWN_TIMEOUT_MS,
   );

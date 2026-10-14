@@ -1,27 +1,7 @@
 import { Fragment, type JSX } from "preact";
 import { Card } from "../ds/Card";
 import { Table } from "../ds/Table";
-
-const COMMANDS: [string, string][] = [
-  ["/go [task]", "Smart router — classify scope and run the right workflow."],
-  ["/plan [idea]", "Explore codebase and produce an implementation plan."],
-  ["/ship [msg]", "Quality gates, then commit, push, and PR."],
-  ["/status", "Git state, ready work, blocked items, and PR health."],
-  [
-    "/review [branch]",
-    "Risk-tiered code review (Blocker / High / Medium / Low).",
-  ],
-  ["/triage", "Deadline management and capacity planning."],
-  ["/ask [question]", "Query domain knowledge files."],
-  [
-    "/sync-knowledge",
-    "Auto-generate knowledge YAML from the codebase (one repo by name, --all for repos.json, or current repo when inside a sub-repo).",
-  ],
-  [
-    "/add-bead <text>",
-    "Quick bd create from free text (title and optional description).",
-  ],
-];
+import { COMMANDS } from "../generated/commands";
 
 const WORKFLOWS: [string, string, string][] = [
   [
@@ -161,21 +141,20 @@ export function CommandsIsland(): JSX.Element {
       <Card title="Slash commands" headingLevel={2} kicker=".claude/commands/">
         <p class="af-prose af-muted">
           Slash command prompts live in <code>.claude/commands/</code>, and
-          orchestration playbooks live in <code>.claude/workflows/</code>.
+          orchestration playbooks live in <code>.claude/workflows/</code>. This
+          list is each command file's first heading, written by{" "}
+          <code>bun run dashboard:commands</code>.
         </p>
         <Table
           label="Slash commands"
-          rows={COMMANDS.map(([command, description]) => ({
-            command,
-            description,
-          }))}
-          rowKey={(row) => row.command}
+          rows={[...COMMANDS]}
+          rowKey={(row) => row.name}
           columns={[
             {
-              key: "command",
+              key: "name",
               header: "Command",
               class: "af-col-command",
-              cell: (row) => <code>{row.command}</code>,
+              cell: (row) => <code>{row.name}</code>,
             },
             { key: "description", header: "Description" },
           ]}

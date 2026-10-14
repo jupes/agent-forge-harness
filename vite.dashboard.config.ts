@@ -2,6 +2,7 @@ import { defineConfig, normalizePath } from "vite";
 import preact from "@preact/preset-vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { printDashboardUrlPlugin } from "./scripts/dashboard/dashboard-url";
 import { rebuildPagesPlugin } from "./scripts/dashboard/rebuild-pages";
 import { hearthPlugin } from "./scripts/hearth/vite-plugin";
 
@@ -65,5 +66,8 @@ export default defineConfig({
     hearthPlugin(repoRoot, {
       onTrackerWrite: () => rebuildPages.api.rebuildSoon(),
     }),
+    // One "Dashboard ready: http://localhost:<port>/" line once the server
+    // listens: with strictPort false the port may not be the one asked for.
+    printDashboardUrlPlugin(),
   ],
 });
