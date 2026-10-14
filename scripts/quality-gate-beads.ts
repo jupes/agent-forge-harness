@@ -17,12 +17,23 @@ import type { BeadsIssueId } from "./run-correlation";
 export type ExecFile = (
   file: string,
   args: readonly string[],
-  /** `path` replaces PATH for finding `file` (tests). */
-  opts?: { cwd?: string; path?: string },
-) => { ok: boolean; output: string };
+  /**
+   * `path` replaces PATH for finding `file` (tests). `timeoutMs` is how long
+   * the program may run before it is stopped (default `EXEC_TIMEOUT_MS`).
+   */
+  opts?: { cwd?: string; path?: string; timeoutMs?: number },
+) => {
+  ok: boolean;
+  output: string;
+  /** Set when the program was stopped for running past its time limit. */
+  timedOut?: true;
+};
 
 /** What Windows runs directly. Anything else it hands to cmd.exe. */
 const WINDOWS_EXECUTABLE = /\.(exe|com)$/i;
+
+/** How long a program runs before it is stopped, unless the call says otherwise. */
+export const EXEC_TIMEOUT_MS = 120_000;
 
 /**
  * Run a program with its arguments as given, without a shell.
@@ -49,14 +60,18 @@ export const execFileNoShell: ExecFile = (file, args, opts = {}) => {
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 120_000,
+      timeout: opts.timeoutMs ?? EXEC_TIMEOUT_MS,
     });
     return { ok: true, output: output.trim() };
   } catch (err: unknown) {
-    const e = err as { stdout?: unknown; stderr?: unknown };
+    const e = err as { stdout?: unknown; stderr?: unknown; code?: unknown };
     const part = (value: unknown): string =>
       typeof value === "string" ? value : "";
-    return { ok: false, output: part(e.stdout) + part(e.stderr) };
+    const output = part(e.stdout) + part(e.stderr);
+    // A program killed at its time limit, as against one that failed.
+    return e.code === "ETIMEDOUT"
+      ? { ok: false, output, timedOut: true }
+      : { ok: false, output };
   }
 };
 

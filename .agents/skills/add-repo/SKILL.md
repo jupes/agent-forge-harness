@@ -62,7 +62,7 @@ the entry:
   "checks": [
     { "name": "typecheck", "argv": ["bun", "run", "typecheck"] },
     { "name": "lint", "argv": ["bun", "run", "lint"] },
-    { "name": "tests", "argv": ["bun", "test"] }
+    { "name": "tests", "argv": ["bun", "test"], "timeoutSeconds": 900 }
   ]
 }
 ```
@@ -76,7 +76,11 @@ the entry:
 - A check's name is letters, digits, dot, dash or underscore, and must be unique. It may not be a
   check the gate runs itself: `clean-tree`, `ac-verify`, `close-testing-attestation`,
   `test-evidence`, `eval-verdict` or `gate-log`.
-- Each check has the gate's two-minute limit.
+- A check is stopped after two minutes unless it sets its own limit: `"timeoutSeconds"`, a whole
+  number of seconds from 1 to 3600 (one hour). Set it on a suite that takes longer. A check stopped
+  at its limit fails the gate, and its entry says it was stopped for time (`"timedOut": true`, and
+  an output that starts `stopped after <n> seconds`) rather than that it failed. When the gate runs
+  as a hook, the host's own time limit for the hook still applies.
 - Ignore `.tmp/` in the repository, in its `.gitignore` or in `.git/info/exclude`. The harness keeps
   the run's correlation and verdicts there. If the repository tracks files under
   `.tmp/work/run-correlations` or `.tmp/work/evaluations`, the gate refuses to run.

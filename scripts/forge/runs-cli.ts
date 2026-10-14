@@ -13,6 +13,10 @@
  *   bun run forge:runs remove <slug>    # delete a run's state file
  *   bun run forge:runs --json           # { ok, data, error } instead of a table
  *
+ * The command line is read strictly (`parseRunsArgs`): an unknown flag, a flag
+ * given twice and a word the command does not use are refused before anything
+ * is listed or removed.
+ *
  * Exit code 0 when ok, 2 when not.
  */
 
@@ -99,6 +103,86 @@ export function runLine(run: RunSummary): string {
   return `${run.slug} [${run.mode}]${where}\n    completed: ${done}\n    next: ${next}\n    updated: ${run.updatedAt}`;
 }
 
+const COMMANDS = ["list", "show", "remove"] as const;
+
+type RunsCommand = (typeof COMMANDS)[number];
+
+const isCommand = (word: string): word is RunsCommand =>
+  (COMMANDS as readonly string[]).includes(word);
+
+export interface RunsArgs {
+  command: RunsCommand;
+  /** The run `show` or `remove` names. */
+  slug?: string;
+  /** `--active`: list only the runs that have not shipped. */
+  active: boolean;
+  /** `--json`: print `{ ok, data, error }` instead of text. */
+  json: boolean;
+}
+
+/** The flags, none of which takes a value. */
+const SWITCHES = ["active", "json"] as const;
+
+const isSwitch = (name: string): name is (typeof SWITCHES)[number] =>
+  (SWITCHES as readonly string[]).includes(name);
+
+/**
+ * The command line, read strictly: the two switches anywhere, then the
+ * command and the run it names. A flag that is unknown, given twice or given a
+ * value is refused, and so is a word the command does not use and `--active`
+ * on a command that is not `list`: a mistyped filter must not list every run,
+ * and a slip after `remove <slug>` must not remove one.
+ */
+export function parseRunsArgs(
+  argv: readonly string[],
+):
+  | { ok: true; data: RunsArgs; error: null }
+  | { ok: false; data: null; error: string } {
+  const refuse = (error: string) => ({ ok: false, data: null, error }) as const;
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const word of argv) {
+    if (!word.startsWith("--")) {
+      words.push(word);
+      continue;
+    }
+    const equals = word.indexOf("=");
+    const name = word.slice(2, equals < 0 ? undefined : equals);
+    if (!isSwitch(name)) {
+      return refuse(
+        `unknown flag --${name}. Known flags: ${SWITCHES.map((flag) => `--${flag}`).join(", ")}.`,
+      );
+    }
+    if (seen.has(name)) return refuse(`--${name} is given twice.`);
+    if (equals >= 0) return refuse(`--${name} takes no value.`);
+    seen.add(name);
+  }
+  const active = seen.has("active");
+  const json = seen.has("json");
+
+  const [command = "list", ...rest] = words;
+  if (!isCommand(command)) {
+    return refuse(
+      `Unknown command "${command}". Use: list | show <slug> | remove <slug>.`,
+    );
+  }
+  if (command === "list") {
+    if (rest[0] !== undefined) {
+      return refuse(`unexpected argument "${rest[0]}": list takes no run.`);
+    }
+    return { ok: true, data: { command, active, json }, error: null };
+  }
+  const [slug, extra] = rest;
+  if (!slug) return refuse(`Usage: forge:runs ${command} <slug>`);
+  if (extra !== undefined) {
+    return refuse(`unexpected argument "${extra}": ${command} takes one run.`);
+  }
+  if (active) {
+    return refuse(`--active filters list; ${command} does not use it.`);
+  }
+  return { ok: true, data: { command, slug, active, json }, error: null };
+}
+
 function emit(result: CliResult, json: boolean, text?: string): never {
   if (json) {
     console.log(JSON.stringify(result, null, 2));
@@ -112,19 +196,12 @@ function emit(result: CliResult, json: boolean, text?: string): never {
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
-  const json = argv.includes("--json");
-  const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const positional = argv.filter((a) => !a.startsWith("--"));
-  const command = positional[0] ?? "list";
+  const parsed = parseRunsArgs(argv);
+  // A refused command line still answers in the form it asked for.
+  if (!parsed.ok) emit(parsed, argv.includes("--json"));
+  const { command, slug, active, json } = parsed.data;
 
   if (command === "show") {
-    const slug = positional[1];
-    if (!slug) {
-      emit(
-        { ok: false, data: null, error: "Usage: forge:runs show <slug>" },
-        json,
-      );
-    }
     const state = readRunState(slug as string);
     if (state === null) {
       emit(
@@ -140,13 +217,6 @@ if (import.meta.main) {
   }
 
   if (command === "remove") {
-    const slug = positional[1];
-    if (!slug) {
-      emit(
-        { ok: false, data: null, error: "Usage: forge:runs remove <slug>" },
-        json,
-      );
-    }
     const removed = removeRunState(slug as string);
     emit(
       removed
@@ -157,19 +227,8 @@ if (import.meta.main) {
     );
   }
 
-  if (command !== "list") {
-    emit(
-      {
-        ok: false,
-        data: null,
-        error: `Unknown command "${command}". Use: list | show <slug> | remove <slug>.`,
-      },
-      json,
-    );
-  }
-
   const all = listRuns();
-  const runs = flags.has("--active") ? activeRuns(all) : all;
+  const runs = active ? activeRuns(all) : all;
   const heading =
     runs.length === 0
       ? "No forge runs. Start one with /forgemaster <feature>."
