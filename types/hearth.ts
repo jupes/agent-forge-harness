@@ -561,6 +561,101 @@ export interface SmithsView {
 }
 
 /**
+ * Who a scoreboard row counts: an event's executor, by smith, provider and
+ * model. Its effort and session are not part of the key.
+ */
+export interface ScoreboardExecutor {
+  provider: Provider;
+  model: string;
+  /** Absent when the events named no configured smith (an interactive session). */
+  smith?: string;
+}
+
+/**
+ * What the ledger holds for one executor (`GET /scoreboard`,
+ * `forge:audit --scoreboard`). Every count is of events the ledger stored. A
+ * value the ledger does not record is `null` (unknown), never 0.
+ */
+export interface ScoreboardRow {
+  /** Null for the events that carried no executor. */
+  executor: ScoreboardExecutor | null;
+  /** Distinct Forge runs (`runId`) among the row's counted events. */
+  runs: number;
+  /**
+   * `session.started` events, and `session.ended` events by the reason the
+   * ledger stored: the fixed reasons a `forge:exec` adapter writes
+   * (`completed`, `failed: …`, `timeout`, `stopped: …`), and `other` for any
+   * other reason or none (an interactive session's end is its host's).
+   */
+  sessions: {
+    started: number;
+    ended: number;
+    completed: number;
+    failed: number;
+    timedOut: number;
+    stopped: number;
+    other: number;
+  };
+  /** `gate.ran` events. `passRate` is `passed / ran`, null when no gate ran. */
+  gates: {
+    ran: number;
+    passed: number;
+    failed: number;
+    passRate: number | null;
+  };
+  /** `verdict.bound` events by outcome. */
+  verdicts: { pass: number; fail: number; unreadable: number };
+  /** `review.recorded` rounds by verdict, and their findings summed by severity. */
+  reviews: {
+    rounds: number;
+    pass: number;
+    fail: number;
+    unreadable: number;
+    findings: ReviewFindings;
+  };
+  /**
+   * `council.run.started` and `council.run.finished` events. `costUsd` sums
+   * the finished runs that reported a cost (`runsWithCost` of them), null when
+   * none did. `findings` is always null: `council.run.finished` records an
+   * outcome, a cost and a summary, not findings by severity.
+   */
+  council: {
+    started: number;
+    finished: number;
+    pass: number;
+    fail: number;
+    unreadable: number;
+    cancelled: number;
+    costUsd: number | null;
+    runsWithCost: number;
+    findings: null;
+  };
+  /**
+   * The `usage` of `session.ended` events (`sessions` of them carried one).
+   * `costUsd` sums the sessions that reported a cost (`sessionsWithCost`),
+   * null when none did; `tokens` holds only the counts some session reported,
+   * each summed under the provider's own name.
+   */
+  usage: {
+    sessions: number;
+    costUsd: number | null;
+    sessionsWithCost: number;
+    tokens: { [K in ProviderUsageCount]?: number };
+  };
+}
+
+/** The scoreboard: one row per executor, in a fixed order, over the events it read. */
+export interface Scoreboard {
+  /** Rows with a smith by smith name, then those without by provider and model, then the row of no executor. */
+  rows: ScoreboardRow[];
+  /** How many events were read: the kinds the scoreboard counts, in scope. */
+  events: number;
+  /** ISO 8601 times of the oldest and newest event read; null when none was. */
+  from: string | null;
+  to: string | null;
+}
+
+/**
  * The first event of `GET /stream`: where the ledger stood, and each
  * collection as the envelope its own read route answers, so one that could
  * not be read carries its own error. `event: delta` messages follow, one

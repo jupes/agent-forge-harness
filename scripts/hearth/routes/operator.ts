@@ -248,7 +248,8 @@ export interface OperatorTable {
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
-  const { sessions, runs, run, events, reservations } = ledgerReads(deps);
+  const { sessions, runs, run, events, reservations, scoreboard } =
+    ledgerReads(deps);
   const { queue, smiths, config, worktrees, eligibility } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
@@ -265,6 +266,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     worktrees,
     eligibility,
     counts,
+    scoreboard,
   ];
 
   const ledger = { path: deps.ledgerPath };

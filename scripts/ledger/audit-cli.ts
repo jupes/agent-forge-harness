@@ -12,9 +12,12 @@
  *   bun run forge:audit --json                       # { ok, data, error } instead of a table
  *   bun run forge:audit --backup                     # snapshot to backups/, prune snapshots past 14 days
  *   bun run forge:audit --compact                    # fold events past 90 days into daily counts
+ *   bun run forge:audit --scoreboard [--since <iso>] # per executor: sessions, gates, verdicts, reviews, council, usage (scoreboard.ts)
  *
- * Filters combine (AND). Exit code 0 when ok; on any error the envelope is
- * printed (with or without --json) and the exit code is 2.
+ * Filters combine (AND). `--scoreboard` takes only `--since`,
+ * `--all-workspaces` and `--json`; its scope is the query's. Exit code 0 when
+ * ok; on any error the envelope is printed (with or without --json) and the
+ * exit code is 2.
  *
  * When more events match than the limit, the result is cut and one line on
  * stderr says so, with and without --json. So does one more line when the
@@ -34,12 +37,13 @@ import { refusedJoinValue } from "./append";
 import { backupLedger, compact } from "./backup";
 import { ledgerPath } from "./paths";
 import { type EventFilter, queryEventPage } from "./query";
+import { formatScoreboard, readScoreboard } from "./scoreboard";
 import { resolveCheckout } from "./workspace";
 
 export const DEFAULT_LIMIT = 500;
 
 export interface AuditArgs {
-  command: "query" | "backup" | "compact";
+  command: "query" | "backup" | "compact" | "scoreboard";
   json: boolean;
   allWorkspaces: boolean;
   /** Without `workspace`: the scope is decided when the query runs. */
@@ -68,7 +72,16 @@ const SWITCHES = [
   "--json",
   "--backup",
   "--compact",
+  "--scoreboard",
 ] as const;
+
+/** What `--scoreboard` may be given besides itself. */
+const SCOREBOARD_FLAGS: readonly string[] = [
+  "--scoreboard",
+  "--since",
+  "--all-workspaces",
+  "--json",
+];
 
 type ValueFlag = (typeof VALUE_FLAGS)[number];
 type Switch = (typeof SWITCHES)[number];
@@ -87,6 +100,18 @@ function isKind(value: string): value is LedgerEventKind {
 
 function fail(error: string): ParsedArgs {
   return { ok: false, error };
+}
+
+/** The `--since` value when it is an ISO 8601 instant, or why not. */
+function sinceOf(
+  since: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  return ISO_8601.test(since) && !Number.isNaN(Date.parse(since))
+    ? { ok: true, value: since }
+    : {
+        ok: false,
+        error: `--since: expected an ISO 8601 timestamp such as 2026-10-07T00:00:00Z, got "${since}"`,
+      };
 }
 
 /** Read the flags into a query, or say which one is wrong. */
@@ -111,6 +136,27 @@ export function parseAuditArgs(argv: readonly string[]): ParsedArgs {
   }
 
   const json = switches.has("--json");
+  if (switches.has("--scoreboard")) {
+    const other = [...values.keys(), ...switches].find(
+      (flag) => !SCOREBOARD_FLAGS.includes(flag),
+    );
+    if (other !== undefined)
+      return fail(
+        `--scoreboard takes no other flag than --since, --all-workspaces and --json (got ${other})`,
+      );
+    const given = values.get("--since");
+    const since = given === undefined ? null : sinceOf(given);
+    if (since !== null && !since.ok) return since;
+    return {
+      ok: true,
+      value: {
+        command: "scoreboard",
+        json,
+        allWorkspaces: switches.has("--all-workspaces"),
+        filter: since === null ? {} : { since: since.value },
+      },
+    };
+  }
   const upkeep = (["--backup", "--compact"] as const).filter((flag) =>
     switches.has(flag),
   );
@@ -141,13 +187,11 @@ export function parseAuditArgs(argv: readonly string[]): ParsedArgs {
   const session = values.get("--session");
   if (session !== undefined) filter.sessionId = session;
 
-  const since = values.get("--since");
-  if (since !== undefined) {
-    if (!ISO_8601.test(since) || Number.isNaN(Date.parse(since)))
-      return fail(
-        `--since: expected an ISO 8601 timestamp such as 2026-10-07T00:00:00Z, got "${since}"`,
-      );
-    filter.since = since;
+  const given = values.get("--since");
+  if (given !== undefined) {
+    const since = sinceOf(given);
+    if (!since.ok) return since;
+    filter.since = since.value;
   }
 
   const kind = values.get("--kind");
@@ -289,6 +333,23 @@ export function runAudit(
         json,
         `${result.events} event(s) from ${result.days} day(s) folded into daily summaries`,
       );
+    }
+    if (command === "scoreboard") {
+      const workspace = allWorkspaces
+        ? undefined
+        : resolveCheckout(context.cwd).workspace;
+      const board = readScoreboard(
+        {
+          ...(workspace !== undefined ? { workspace } : {}),
+          ...(filter.since !== undefined ? { since: filter.since } : {}),
+        },
+        { path },
+      );
+      const outcome = success(board, json, formatScoreboard(board));
+      const refused = refusedScopeNote(
+        workspace !== undefined ? { workspace } : {},
+      );
+      return refused === null ? outcome : { ...outcome, stderr: refused };
     }
     const limit = filter.limit ?? DEFAULT_LIMIT;
     const scope: EventFilter & { limit: number } = {
