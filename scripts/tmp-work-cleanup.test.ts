@@ -18,6 +18,7 @@ import {
   evaluationDir,
   evaluatorVerdictPath,
   sha256Hex,
+  writerScratchName,
   writeVerdictOnce,
 } from "./eval-verdict-store";
 import { appendEvent } from "./ledger/append";
@@ -136,7 +137,15 @@ function agedVerdict(
   days: number,
   opts: { bead?: string; file?: string; summary?: string } = {},
 ): { relative: string; sha256: string } {
-  const content = verdictJson(run, opts.bead, opts.summary);
+  // A round's file holds a verdict that names its round.
+  const round = /^review-(.+)\.json$/.exec(opts.file ?? "")?.[1];
+  const content =
+    round === undefined
+      ? verdictJson(run, opts.bead, opts.summary)
+      : JSON.stringify({
+          ...JSON.parse(verdictJson(run, opts.bead, opts.summary)),
+          review: round,
+        });
   const wrote = writeVerdictOnce({
     checkout,
     executionRunId: run,
@@ -444,6 +453,137 @@ describe("sweepEvaluations", () => {
       candidates: [],
       deleted: [],
     });
+  });
+
+  /** Leave a file as a writer killed part-way leaves its scratch file, `days` days ago. */
+  function scratch(
+    checkout: string,
+    run: string,
+    name: string,
+    days: number,
+    content = verdictJson(run).slice(0, 40),
+  ): string {
+    const relative = `${evaluationDir(run)}/${name}`;
+    const path = join(checkout, relative);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    const then = new Date(Date.now() - days * DAY_MS);
+    utimesSync(path, then, then);
+    return relative;
+  }
+
+  test("a killed writer's old scratch file is removed whatever it holds, and the run's directory with it", () => {
+    const { checkout } = sandbox();
+    const file = agedVerdict(checkout, "run-1", 30);
+    const partial = scratch(
+      checkout,
+      "run-1",
+      writerScratchName("verdict.json", 4242, 30 * DAY_MS),
+      30,
+    );
+    const round = scratch(
+      checkout,
+      "run-1",
+      writerScratchName("review-plan-1.json", 77, 31 * DAY_MS),
+      30,
+      verdictJson("run-1"),
+    );
+    const held = [{ sha256: file.sha256, executionRunId: "run-1" }];
+
+    const dry = sweep(checkout, { held });
+    const scratchReason =
+      "a writer's scratch file, never a verdict itself, age 30d ≥ TTL 14d";
+    // In name order, as the sweep reads the directory.
+    expect(dry.candidates).toEqual([
+      {
+        path: round,
+        taskId: "",
+        ageDays: 30,
+        action: "delete",
+        reason: scratchReason,
+      },
+      {
+        path: partial,
+        taskId: "",
+        ageDays: 30,
+        action: "delete",
+        reason: scratchReason,
+      },
+      {
+        path: file.relative,
+        taskId: "bead-1",
+        ageDays: 30,
+        action: "delete",
+        reason: "closed bead, age 30d ≥ TTL 14d, digest held by the ledger",
+      },
+    ]);
+    expect(dry.deleted).toEqual([]);
+
+    const applied = sweep(checkout, { held, apply: true });
+    expect(applied.deleted).toEqual([round, partial, file.relative]);
+    expect(existsSync(join(checkout, evaluationDir("run-1") ?? ""))).toBe(
+      false,
+    );
+  });
+
+  test("a scratch file is swept on its age alone: an open bead's run loses an old one and keeps a young one", () => {
+    const { checkout } = sandbox();
+    const kept = agedVerdict(checkout, "run-open", 30, { bead: "bead-open" });
+    const old = scratch(
+      checkout,
+      "run-open",
+      writerScratchName("verdict.json", 1, 0),
+      30,
+    );
+    // A writer that started an hour ago may still be about to link it in.
+    const young = scratch(
+      checkout,
+      "run-open",
+      writerScratchName("verdict.json", 2, Date.now()),
+      0,
+    );
+    const applied = sweep(checkout, {
+      issues: issues(mkOpen("bead-open")),
+      held: [{ sha256: kept.sha256, executionRunId: "run-open" }],
+      apply: true,
+    });
+    expect(applied.deleted).toEqual([old]);
+    expect(
+      applied.candidates.find((candidate) => candidate.path === young),
+    ).toEqual({
+      path: young,
+      taskId: "",
+      ageDays: 0,
+      action: "skip",
+      reason: "a writer's scratch file, age 0d < TTL 14d",
+    });
+    expect(existsSync(join(checkout, young))).toBe(true);
+    expect(existsSync(join(checkout, kept.relative))).toBe(true);
+  });
+
+  test("only the writer's own scratch names are scratch files: anything else that looks like one is left", () => {
+    const { checkout } = sandbox();
+    const lookalikes = [
+      ".verdict.json.tmp",
+      ".verdict.json.12.tmp",
+      ".notes.json.12.k3.tmp",
+      ".review-Plan.json.12.k3.tmp",
+      "verdict.json.12.k3.tmp",
+    ].map((name) => scratch(checkout, "run-1", name, 30));
+    // A directory with a scratch file's name is not a file to remove.
+    const folder = join(
+      checkout,
+      evaluationDir("run-1") ?? "",
+      writerScratchName("verdict.json", 9, 0),
+    );
+    mkdirSync(folder);
+    const applied = sweep(checkout, { apply: true });
+    expect(applied.deleted).toEqual([]);
+    expect(applied.candidates).toEqual([]);
+    for (const relative of lookalikes) {
+      expect(existsSync(join(checkout, relative))).toBe(true);
+    }
+    expect(existsSync(folder)).toBe(true);
   });
 });
 

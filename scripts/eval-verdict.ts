@@ -25,6 +25,7 @@ import {
   type Rank,
   type RankPolicyDecision,
 } from "../types/hearth";
+import { FORGE_PHASES } from "./forge/phases";
 import { isValidSlug } from "./forge/runs";
 import { type BeadsIssueId, parseBeadsIssueId } from "./run-correlation";
 
@@ -76,6 +77,11 @@ export type EvalVerdict = EvalVerdictBody & {
   /** The Forge run id: the run correlation's `executionRunId`. */
   executionRunId: string;
   evaluator: EvaluatorIdentity;
+  /**
+   * The review round a round's verdict was written for, `<phase>-<round>`.
+   * Absent from the run's own verdict.
+   */
+  review?: string;
 };
 
 export type EvalVerdictParsed = LegacyEvalVerdict | EvalVerdict;
@@ -111,6 +117,20 @@ function nonEmpty(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** A review round: a Forge phase, a dash, and a positive round number. */
+const REVIEW_ROUND = new RegExp(
+  `^(${FORGE_PHASES.join("|")})-[1-9][0-9]{0,8}$`,
+);
+
+/**
+ * True for a review round's label as `forge:verdict --review` takes it and a
+ * round's verdict names it: `<phase>-<round>`, the phase one of the Forge
+ * phases and the round a positive integer (at most nine digits).
+ */
+export function isReviewRound(label: unknown): label is string {
+  return typeof label === "string" && REVIEW_ROUND.test(label);
+}
+
 /** Longer than any provider, model or session id; a value over it is not one. */
 const IDENTITY_TEXT_LIMIT = 200;
 
@@ -141,6 +161,27 @@ function oneOf<T extends string>(
   return allowed.find((item) => item === value);
 }
 
+/**
+ * Why a verdict word and its counts contradict each other, or null when they
+ * agree. A verdict is one statement: a PASS counts no blocker or high finding,
+ * and a FAIL counts at least one finding.
+ */
+export function verdictCountsProblem(
+  verdict: EvalVerdictBody["verdict"],
+  findings: EvalFindings,
+): string | null {
+  if (verdict === "PASS" && (findings.blocker > 0 || findings.high > 0)) {
+    return "a PASS has no blocker or high findings";
+  }
+  if (
+    verdict === "FAIL" &&
+    findings.blocker + findings.high + findings.medium + findings.low === 0
+  ) {
+    return "a FAIL names at least one finding";
+  }
+  return null;
+}
+
 function bodyFrom(o: Fields): Parsed<EvalVerdictBody> {
   if (o.verdict !== "PASS" && o.verdict !== "FAIL") {
     return refuse('verdict must be "PASS" or "FAIL"');
@@ -166,6 +207,8 @@ function bodyFrom(o: Fields): Parsed<EvalVerdictBody> {
       low: fr.low,
     },
   };
+  const contradiction = verdictCountsProblem(value.verdict, value.findings);
+  if (contradiction !== null) return refuse(contradiction);
   if (typeof o.summary === "string") {
     value.summary = o.summary;
   } else if (o.summary !== undefined) {
@@ -357,6 +400,11 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
   if (!body.ok) return body;
   const evaluator = parseEvaluatorIdentity(raw.evaluator);
   if (!evaluator.ok) return evaluator;
+  if (raw.review !== undefined && !isReviewRound(raw.review)) {
+    return refuse(
+      "review must be a review round, <phase>-<round>: phase research, plan, implement or ship, and round a positive integer",
+    );
+  }
   return {
     ok: true,
     value: {
@@ -365,6 +413,7 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
       executionRunId,
       ...body.value,
       evaluator: evaluator.value,
+      ...(raw.review !== undefined ? { review: raw.review } : {}),
     },
   };
 }
@@ -399,6 +448,29 @@ export function verdictForRun(
 }
 
 /**
+ * Why a verdict does not belong where it is, or null when it does. `round` is
+ * the review round of the file it is in, or null for the run's own verdict:
+ * the run's verdict names no review round, and a round's verdict names that
+ * round, not another and not none.
+ */
+export function verdictReviewProblem(
+  verdict: EvalVerdict,
+  round: string | null,
+): string | null {
+  if (round === null) {
+    return verdict.review === undefined
+      ? null
+      : `the verdict names review round "${verdict.review}": a round's verdict is not the run's verdict`;
+  }
+  if (verdict.review === undefined) {
+    return `the verdict names no review round, and this file is round "${round}"'s`;
+  }
+  return verdict.review === round
+    ? null
+    : `the verdict names review round "${verdict.review}", not this file's round ("${round}")`;
+}
+
+/**
  * The model evaluator that was observed to run, as an executor. Undefined for
  * a human and for a model verdict with nothing observed: the requested
  * provider and model are never used in its place.
@@ -423,10 +495,11 @@ export function observedExecutor(
 }
 
 /**
- * When strict gate is on: FAIL with any BLOCKER or HIGH finding blocks completion hooks / ship path.
- * PASS always allowed; FAIL with only MEDIUM/LOW does not block (follow-up beads instead).
+ * When strict gate is on: any BLOCKER or HIGH finding blocks completion hooks
+ * and the ship path, whatever the verdict word says (the parser already
+ * refuses a PASS that counts one). A FAIL with only MEDIUM/LOW findings does
+ * not block (follow-up beads instead).
  */
 export function verdictBlocksShip(value: EvalVerdictBody): boolean {
-  if (value.verdict === "PASS") return false;
   return value.findings.blocker > 0 || value.findings.high > 0;
 }

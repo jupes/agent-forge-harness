@@ -35,7 +35,11 @@ import {
   writeSync,
 } from "fs";
 import { join } from "path";
-import { parseEvalVerdictJson, verdictForRun } from "./eval-verdict";
+import {
+  parseEvalVerdictJson,
+  verdictForRun,
+  verdictReviewProblem,
+} from "./eval-verdict";
 import { comparableCheckout, isValidSlug } from "./forge/runs";
 import { resolveCheckout } from "./ledger/workspace";
 
@@ -78,9 +82,40 @@ export function reviewVerdictFile(label: string): string | null {
   return REVIEW_LABEL.test(label) ? `review-${label}.json` : null;
 }
 
+/** The label in a review round's file name (`review-<label>.json`). */
+function reviewRoundOf(file: string): string {
+  return file.slice("review-".length, -".json".length);
+}
+
 /** True for the file names an evaluation directory holds: the run's verdict and its review rounds. */
 export function isManagedVerdictFile(name: string): boolean {
   return name === STRICT_VERDICT_FILE || REVIEW_FILE.test(name);
+}
+
+const WRITER_SCRATCH =
+  /^\.(verdict\.json|review-[a-z0-9][a-z0-9-]{0,39}\.json)\.\d+\.[0-9a-z]+\.tmp$/;
+
+/**
+ * The name of the scratch file a writer fills before linking it in as `file`:
+ * hidden, beside its place, and its own (the writer's pid and a time stamp).
+ */
+export function writerScratchName(
+  file: string,
+  pid: number,
+  nowMs: number,
+): string {
+  return `.${file}.${pid}.${nowMs.toString(36)}.tmp`;
+}
+
+/**
+ * True for a name `writerScratchName` makes for a managed file. Such a file is
+ * never a verdict: either its writer died before linking it in, so no verdict
+ * was filed from it, or it died after, and the verdict is the other name of
+ * the same bytes.
+ */
+export function isWriterScratchFile(name: string): boolean {
+  const match = WRITER_SCRATCH.exec(name);
+  return match !== null && isManagedVerdictFile(match[1] ?? "");
 }
 
 export type WriteVerdictResult =
@@ -278,6 +313,20 @@ export function writeVerdictOnce(input: {
       error: `the content is not a schema 2 verdict for this run: ${mine.error}`,
     };
   }
+  // The run's own file holds a verdict that names no review round; a round's
+  // file one that names that round, so no two rounds' verdicts are one byte
+  // string.
+  const file = input.file ?? STRICT_VERDICT_FILE;
+  const placed = verdictReviewProblem(
+    mine.value,
+    file === STRICT_VERDICT_FILE ? null : reviewRoundOf(file),
+  );
+  if (placed !== null) {
+    return {
+      ok: false,
+      error: `the content does not belong in ${file}: ${placed}`,
+    };
+  }
 
   let given: string;
   try {
@@ -316,7 +365,7 @@ export function writeVerdictOnce(input: {
   if (!isOwn(root, where.dir)) return linked;
 
   const path = `${root}/${where.relative}`;
-  const scratch = `${root}/${where.dir}/.${input.file ?? STRICT_VERDICT_FILE}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  const scratch = `${root}/${where.dir}/${writerScratchName(input.file ?? STRICT_VERDICT_FILE, process.pid, Date.now())}`;
   try {
     const fd = openSync(scratch, "wx");
     try {

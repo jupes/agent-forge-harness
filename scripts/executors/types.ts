@@ -38,6 +38,18 @@ export interface SpawnRequest {
   timeoutMs?: number | undefined;
   /** Replaces the resolved binary (tests point this at a fake). Adapter flags are appended. */
   command?: string[] | undefined;
+  /**
+   * Told the model the provider's stream reported its responses came from,
+   * each time that changes: what the run was observed to be, beside the smith
+   * it was asked to be. Never told the requested model.
+   */
+  onModel?:
+    | ((observed: {
+        sessionId: string;
+        provider: Provider;
+        model: string;
+      }) => void)
+    | undefined;
 }
 
 /** How a supervised child ended. */

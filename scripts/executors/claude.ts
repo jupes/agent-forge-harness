@@ -96,6 +96,20 @@ function usageOf(value: Record<string, unknown>): ProviderUsage | undefined {
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
+/**
+ * The model an assistant message's response named (`message.model`). Not the
+ * `system` / `init` line's `model`, which is what was configured, and not a
+ * bracketed placeholder such as the `<synthetic>` the CLI put on the message
+ * it wrote itself for a failed sign-in.
+ */
+function modelOf(value: Record<string, unknown>): string | undefined {
+  if (value.type !== "assistant" || !isRecord(value.message)) return undefined;
+  const model = value.message.model;
+  if (typeof model !== "string") return undefined;
+  const trimmed = model.trim();
+  return trimmed.length > 0 && !trimmed.startsWith("<") ? trimmed : undefined;
+}
+
 export function parseClaudeLine(line: string): ParsedLine {
   let value: unknown;
   try {
@@ -109,10 +123,12 @@ export function parseClaudeLine(line: string): ParsedLine {
       ? value.session_id
       : undefined;
   const usage = usageOf(value);
+  const model = modelOf(value);
   return {
     tools: toolsOf(value),
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(usage !== undefined ? { usage } : {}),
+    ...(model !== undefined ? { model } : {}),
   };
 }
 

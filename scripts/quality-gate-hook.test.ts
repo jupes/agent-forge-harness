@@ -9,7 +9,7 @@
  *
  * As a subprocess: the real `.claude/hooks/quality-gate.ts` with JSON piped on
  * stdin, in a scratch directory that is not a repository and has no
- * package.json, with a PATH that reaches no real `bun` or `git`: empty; or
+ * package.json, with a PATH that reaches no real `bun`, and no `git` that finds a repository: empty; or
  * system directories only (so a shell is reachable); or, for two tests, a
  * directory of stand-ins in front of those. It therefore never runs this
  * suite again. With no stand-ins its own checks fail fast, and what is

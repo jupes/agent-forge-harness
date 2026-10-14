@@ -6,6 +6,7 @@ import {
   rmSync,
   statSync,
   utimesSync,
+  writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -496,6 +497,108 @@ describe("subagents and teammates", () => {
         sessionId: "S:A",
       });
     expect(transcriptReads).toHaveLength(0);
+  });
+
+  /**
+   * Transcripts laid out as the host lays them out: the session's at
+   * `<dir>/<session>.jsonl`, each subagent's at
+   * `<dir>/<session>/subagents/agent-<agent id>.jsonl`.
+   */
+  function transcripts(
+    box: Box,
+    session: string,
+    agents: Record<string, string>,
+  ): string {
+    const dir = join(box.home, "projects");
+    const sessionFile = join(dir, `${session}.jsonl`);
+    mkdirSync(join(dir, session, "subagents"), { recursive: true });
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({ type: "assistant", isSidechain: false, message: { model: "m-parent" } })}\n`,
+    );
+    for (const [agentId, model] of Object.entries(agents)) {
+      writeFileSync(
+        join(dir, session, "subagents", `agent-${agentId}.jsonl`),
+        `${[
+          { type: "user", isSidechain: true, agentId, message: {} },
+          {
+            type: "assistant",
+            isSidechain: true,
+            agentId,
+            message: { model },
+          },
+        ]
+          .map((line) => JSON.stringify(line))
+          .join("\n")}\n`,
+      );
+    }
+    return sessionFile;
+  }
+
+  test("a subagent's own model is read from its own transcript and tags its events; its session's model is untouched", () => {
+    const box = sandbox();
+    const sessionFile = transcripts(box, "S", { A: "m-sub", B: "m-other" });
+    // The real reader, over real files.
+    const deps = hookDeps({ env: {}, cwd: box.cwd, path: box.path });
+    handleSessionStart(
+      { hook_event_name: "SessionStart", session_id: "S", model: "m-parent" },
+      deps,
+    );
+    handleToolUse({ ...child, transcript_path: sessionFile }, deps);
+    handleToolUse({ ...child, transcript_path: sessionFile }, deps);
+
+    expect(getSessionModel("S:A", { path: box.path })).toEqual({
+      provider: "claude",
+      model: "m-sub",
+    });
+    expect(getSessionModel("S", { path: box.path })?.model).toBe("m-parent");
+    const childEvents = events(box).filter(
+      (event) => event.sessionId === "S:A",
+    );
+    expect(childEvents.map((event) => event.kind)).toEqual([
+      "session.started",
+      "tool.called",
+      "tool.called",
+    ]);
+    for (const event of childEvents)
+      expect(event.executor).toEqual({
+        provider: "claude",
+        model: "m-sub",
+        sessionId: "S:A",
+      });
+    // Another subagent of the same session has a model of its own.
+    handleToolUse(
+      { ...child, agent_id: "B", transcript_path: sessionFile },
+      deps,
+    );
+    expect(getSessionModel("S:B", { path: box.path })?.model).toBe("m-other");
+  });
+
+  test("a transcript the payload names as the subagent's is read for that subagent's records only", () => {
+    const box = sandbox();
+    transcripts(box, "S", { A: "m-sub" });
+    const own = join(box.home, "projects", "S", "subagents", "agent-A.jsonl");
+    const deps = hookDeps({ env: {}, cwd: box.cwd, path: box.path });
+    handleToolUse({ ...child, agent_transcript_path: own }, deps);
+    expect(getSessionModel("S:A", { path: box.path })?.model).toBe("m-sub");
+
+    // Agent C has no transcript; A's file names no record of C's.
+    handleToolUse(
+      { ...child, agent_id: "C", agent_transcript_path: own },
+      deps,
+    );
+    expect(getSessionModel("S:C", { path: box.path })).toBeNull();
+  });
+
+  test("an agent id that is not one path segment is never made into a transcript path", () => {
+    const box = sandbox();
+    const { deps, transcriptReads } = harness(box);
+    const sessionFile = join(box.home, "projects", "S.jsonl");
+    for (const agent_id of ["../../outside", "a/b", "a\\b", "..", ""]) {
+      handleToolUse({ ...child, agent_id, transcript_path: sessionFile }, deps);
+    }
+    // Only the payload's own transcript path is read: no path is derived.
+    expect(new Set(transcriptReads)).toEqual(new Set([sessionFile]));
   });
 });
 

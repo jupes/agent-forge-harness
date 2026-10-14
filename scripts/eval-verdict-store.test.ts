@@ -22,10 +22,13 @@ import {
   EVALUATIONS_DIR,
   evaluationDir,
   evaluatorVerdictPath,
+  isManagedVerdictFile,
+  isWriterScratchFile,
   MAX_VERDICT_BYTES,
   readEvaluationFile,
   readVerdictOnce,
   reviewVerdictFile,
+  writerScratchName,
   writeVerdictOnce,
 } from "./eval-verdict-store";
 import { resolveCheckout } from "./ledger/workspace";
@@ -68,6 +71,11 @@ function body(run: string, summary?: string): string {
 }
 
 const BODY = body("run-1");
+
+/** A review round's verdict of `run`: the run's verdict that names the round. */
+function roundBody(run: string, review: string): string {
+  return `${JSON.stringify({ ...JSON.parse(body(run)), review })}\n`;
+}
 
 describe("evaluatorVerdictPath", () => {
   test("is .tmp/work/evaluations/<sha256 of the run id>/verdict.json", () => {
@@ -146,7 +154,7 @@ describe("writeVerdictOnce", () => {
       checkout,
       executionRunId: "run-1",
       file: reviewVerdictFile("plan-2") ?? "",
-      content: BODY,
+      content: roundBody("run-1", "plan-2"),
     });
     expect([first.ok, retried.ok, round.ok]).toEqual([true, true, true]);
     if (first.ok && retried.ok && round.ok) {
@@ -159,7 +167,7 @@ describe("writeVerdictOnce", () => {
         checkout,
         executionRunId: "run-1",
         file: reviewVerdictFile("plan-2") ?? "",
-        content: BODY,
+        content: roundBody("run-1", "plan-2"),
       }),
     ).toMatchObject({ ok: false, exists: true });
   });
@@ -266,7 +274,7 @@ describe("writeVerdictOnce", () => {
         checkout: inner.checkout,
         executionRunId: "run-1",
         file: reviewVerdictFile("plan-1") ?? "",
-        content: BODY,
+        content: roundBody("run-1", "plan-1"),
       }),
     ).toEqual({ ok: false, error: linkedMessage });
   });
@@ -348,12 +356,52 @@ describe("writeVerdictOnce", () => {
     ).toBe(true);
   });
 
+  test("a round's file takes only a verdict that names that round, and the run's file only one that names none", () => {
+    const cases: Array<[string, string, string]> = [
+      [
+        "verdict.json",
+        roundBody("run-1", "plan-1"),
+        "the verdict names review round \"plan-1\": a round's verdict is not the run's verdict",
+      ],
+      [
+        "review-plan-2.json",
+        roundBody("run-1", "plan-1"),
+        'the verdict names review round "plan-1", not this file\'s round ("plan-2")',
+      ],
+      [
+        "review-plan-2.json",
+        BODY,
+        'the verdict names no review round, and this file is round "plan-2"\'s',
+      ],
+    ];
+    for (const [file, content, reason] of cases) {
+      const { checkout } = sandbox();
+      expect(
+        writeVerdictOnce({ checkout, executionRunId: "run-1", file, content }),
+      ).toEqual({
+        ok: false,
+        error: `the content does not belong in ${file}: ${reason}`,
+      });
+      expect(existsSync(join(checkout, ".tmp"))).toBe(false);
+    }
+    const { checkout } = sandbox();
+    expect(
+      writeVerdictOnce({
+        checkout,
+        executionRunId: "run-1",
+        file: "review-plan-2.json",
+        content: roundBody("run-1", "plan-2"),
+      }).ok,
+    ).toBe(true);
+  });
+
   test("the file is whole or absent: what a killed writer leaves behind does not block the run", () => {
     const { checkout } = sandbox();
     const dir = join(checkout, evaluationDir("run-1") ?? "");
     mkdirSync(dir, { recursive: true });
     // Half a verdict in a writer's scratch file, as a kill mid-write leaves it.
-    writeFileSync(join(dir, ".verdict.json.4242.tmp"), BODY.slice(0, 40));
+    const left = writerScratchName("verdict.json", 4242, Date.now());
+    writeFileSync(join(dir, left), BODY.slice(0, 40));
 
     const wrote = writeVerdictOnce({
       checkout,
@@ -363,10 +411,31 @@ describe("writeVerdictOnce", () => {
     expect(wrote.ok).toBe(true);
     expect(readFileSync(join(dir, "verdict.json"), "utf8")).toBe(BODY);
     // This call's own scratch file is gone; the stranger's is not its to remove.
-    expect(readdirSync(dir).sort()).toEqual([
-      ".verdict.json.4242.tmp",
-      "verdict.json",
-    ]);
+    expect(readdirSync(dir).sort()).toEqual([left, "verdict.json"]);
+  });
+
+  test("a writer's scratch file has a name the sweep knows as one, and no verdict file has", () => {
+    for (const file of ["verdict.json", "review-plan-1.json"]) {
+      const name = writerScratchName(file, process.pid, Date.now());
+      expect(name).toStartWith(`.${file}.${process.pid}.`);
+      expect(isWriterScratchFile(name)).toBe(true);
+      expect(isManagedVerdictFile(name)).toBe(false);
+      expect(isWriterScratchFile(file)).toBe(false);
+    }
+    // Only the names a writer can make: a managed file, a pid, a stamp.
+    for (const name of [
+      ".verdict.json.tmp",
+      ".verdict.json.12.tmp",
+      ".notes.json.12.k3.tmp",
+      ".review-Plan.json.12.k3.tmp",
+      "verdict.json.12.k3.tmp",
+      ".verdict.json.12.k3.tmp.bak",
+    ]) {
+      expect({ name, scratch: isWriterScratchFile(name) }).toEqual({
+        name,
+        scratch: false,
+      });
+    }
   });
 
   test("says what is in the way when it is not a verdict", () => {

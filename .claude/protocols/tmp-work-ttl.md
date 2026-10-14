@@ -46,9 +46,11 @@ Safety:
 - An evaluator verdict is removed only when all of this holds: it is where the path rule puts verdicts, with no link
   on the way; its bytes are a schema 2 verdict whose run id hashes to the directory it is in; the Beads issue it names
   is closed and the file is older than the TTL; and the event ledger holds a `verdict.bound` for that run with the
-  file's SHA-256. Until the ledger holds it, the file is the only copy of that evidence. A run's directory is removed
-  only by the sweep that emptied it; anything else found there is left alone. Evaluations are swept only when the
-  script runs at the top level of a checkout.
+  file's SHA-256. Until the ledger holds it, the file is the only copy of that evidence. A scratch file a verdict
+  writer left there when it was killed (`.verdict.json.<pid>.<stamp>.tmp`, or the same for a review round) is removed
+  once it is older than the TTL, whatever it holds and whatever its bead's status: it is never a verdict (see
+  `evaluation-verdict.md`, *Limits*). A run's directory is removed only by the sweep that emptied it; anything else
+  found there is left alone. Evaluations are swept only when the script runs at the top level of a checkout.
 - Run correlation files are not swept.
 - `--apply` is required to delete. Without it, the script prints what it **would** remove.
 - `<EPIC-ID>-interfaces.md` and `session-handoff.md` are always skipped.

@@ -12,6 +12,9 @@
  *                                  `thread_id` on `thread.started`). Default:
  *                                  a new UUID per run, as the real CLIs mint
  *   --fake-no-id                   the stream reports no session id at all
+ *   --fake-model <id>              (claude) the model each assistant message
+ *                                  of a tool call names, as a response does
+ *                                  (`message.model`). Default: none
  *   --fake-attach <file>           once the line with the id is out, wait (up
  *                                  to 2 s) for the checkout this process runs
  *                                  in to mirror that id (any mirror, with
@@ -72,6 +75,7 @@ const provider = flag("--fake-provider") ?? "claude";
 const mode = flag("--fake-mode") ?? "ok";
 const dump = flag("--fake-dump");
 const attach = flag("--fake-attach");
+const responseModel = flag("--fake-model");
 const sessionId = argv.includes("--fake-no-id")
   ? undefined
   : (flag("--fake-session-id") ?? crypto.randomUUID());
@@ -119,7 +123,10 @@ function claudeTool(name: string, input: unknown) {
   emit(
     claudeLine({
       type: "assistant",
-      message: { content: [{ type: "tool_use", id: "t", name, input }] },
+      message: {
+        ...(responseModel !== undefined ? { model: responseModel } : {}),
+        content: [{ type: "tool_use", id: "t", name, input }],
+      },
     }),
   );
 }

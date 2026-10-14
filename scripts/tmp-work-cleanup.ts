@@ -21,7 +21,8 @@
  * Also sweeps evaluator verdicts under `.tmp/work/evaluations/`, by the same
  * closed-bead and age rule, and only a file it can validate (a schema 2
  * verdict in the directory its run id declares, behind no link) whose digest
- * the event ledger already holds: see `sweepEvaluations`.
+ * the event ledger already holds, and a killed writer's scratch file there on
+ * its age alone: see `sweepEvaluations`.
  *
  * Which beads are closed comes from the live tracker (one `bd export`). Only
  * when bd does not answer is `.beads/issues.jsonl` used: a warning says so on
@@ -61,6 +62,7 @@ import {
   evaluationDir,
   isEvaluationDirName,
   isManagedVerdictFile,
+  isWriterScratchFile,
   readEvaluationFile,
 } from "./eval-verdict-store";
 import { comparableCheckout } from "./forge/runs";
@@ -252,6 +254,11 @@ function isOwnDirectory(root: string, relative: string): boolean {
  * - the ledger holds a `verdict.bound` for that run with the file's digest.
  *   Until then the file is the only copy of that evidence.
  *
+ * A writer's scratch file in such a directory (`isWriterScratchFile`: what a
+ * writer killed part-way leaves) is a candidate too, and is removed once it is
+ * older than the TTL, whatever it holds and whatever its bead's status: it is
+ * never a verdict, and the age keeps a running writer's own file safe.
+ *
  * Files are unlinked one at a time; a run's directory is removed only by the
  * sweep that emptied it. Anything else found there is left as it is.
  *
@@ -304,9 +311,13 @@ export function sweepEvaluations(input: {
     }
     let removedHere = 0;
     for (const file of readdirSync(`${root}/${relativeDir}`).sort()) {
-      if (!isManagedVerdictFile(file)) continue;
+      const scratch = isWriterScratchFile(file);
+      if (!scratch && !isManagedVerdictFile(file)) continue;
       const relative = `${relativeDir}/${file}`;
-      const candidate = classifyEvaluationFile(root, dir, file, input);
+      const candidate = scratch
+        ? classifyScratchFile(`${root}/${relative}`, input)
+        : classifyEvaluationFile(root, dir, file, input);
+      if (candidate === null) continue;
       candidates.push({ ...candidate, path: relative });
       if (candidate.action !== "delete" || !input.apply) continue;
       try {
@@ -330,6 +341,40 @@ export function sweepEvaluations(input: {
     }
   }
   return { candidates, deleted };
+}
+
+/**
+ * What to do with a writer's scratch file, or null when the name is not a
+ * regular file. It is removed on its age alone: it is never a verdict and
+ * names no bead to wait for (see `isWriterScratchFile`), and a young one may
+ * belong to a writer that is about to link it in.
+ */
+function classifyScratchFile(
+  path: string,
+  input: { ttlDays: number; nowMs: number },
+): Omit<SweepCandidate, "path"> | null {
+  let modified: number;
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile()) return null;
+    modified = stat.mtimeMs;
+  } catch {
+    return null;
+  }
+  const ageDays = Math.floor((input.nowMs - modified) / 86_400_000);
+  return ageDays < input.ttlDays
+    ? {
+        taskId: "",
+        ageDays,
+        action: "skip",
+        reason: `a writer's scratch file, age ${ageDays}d < TTL ${input.ttlDays}d`,
+      }
+    : {
+        taskId: "",
+        ageDays,
+        action: "delete",
+        reason: `a writer's scratch file, never a verdict itself, age ${ageDays}d ≥ TTL ${input.ttlDays}d`,
+      };
 }
 
 /** What to do with one managed file of one evaluation directory. */
