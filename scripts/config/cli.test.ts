@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { runConfigCli } from "./cli";
+import { withProcessHomes } from "./testing";
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), "forge-config-cli-"));
@@ -125,6 +126,38 @@ describe("forge:config set", () => {
     expect(readFileSync(file, "utf8")).toBe(
       "[smiths.claude-master]\nenabled = false\n",
     );
+  });
+
+  test("with no home given, --user writes config.toml in AGENT_FORGE_HOME, and show names that file", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-config-cli-"));
+    const forgeHome = join(root, "moved forge home");
+    const osHome = join(root, "os home");
+    mkdirSync(osHome);
+    const opts = { harnessRoot: join(root, "harness"), env: {} };
+    mkdirSync(opts.harnessRoot);
+    const file = join(forgeHome, "config.toml");
+
+    const [set, show] = withProcessHomes(forgeHome, osHome, () => [
+      runConfigCli(
+        ["set", "workflow.default_crew", "claude-master", "--user", "--json"],
+        opts,
+      ),
+      runConfigCli(["show", "--json"], opts),
+    ]);
+    expect(JSON.parse(set?.stdout ?? "")).toMatchObject({
+      ok: true,
+      data: { file, created: true },
+    });
+    expect(readFileSync(file, "utf8")).toBe(
+      '[workflow]\ndefault_crew = "claude-master"\n',
+    );
+    expect(existsSync(join(osHome, ".agent-forge"))).toBe(false);
+    const body = JSON.parse(show?.stdout ?? "");
+    expect(body.data.files).toEqual([file]);
+    expect(body.data.provenance["workflow.default_crew"]).toEqual({
+      value: "claude-master",
+      source: file,
+    });
   });
 
   test("a refusal exits 2 with the reason", () => {

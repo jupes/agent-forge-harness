@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { loadConfig } from "./load";
+import { withProcessHomes } from "./testing";
 
 function sandbox() {
   const root = mkdtempSync(join(tmpdir(), "forge-config-"));
@@ -181,6 +182,102 @@ describe("loadConfig", () => {
       ).toThrow(
         `${s.workspaceFile}: smiths.${name}: "${name}" is a key every object has; name the smith something else`,
       );
+    }
+  });
+});
+
+/** A sandbox plus an Agent Forge home of its own, outside the OS home. */
+function movedHome() {
+  const s = sandbox();
+  const forgeHome = join(s.harness, "..", "moved forge home");
+  mkdirSync(forgeHome, { recursive: true });
+  return { ...s, forgeHome, movedFile: join(forgeHome, "config.toml") };
+}
+
+describe("loadConfig: the machine file follows AGENT_FORGE_HOME", () => {
+  test("with no home given, the machine file is config.toml in AGENT_FORGE_HOME, not the one under the OS home", () => {
+    const s = movedHome();
+    writeFileSync(s.movedFile, '[workflow]\ndefault_crew = "claude-master"\n');
+    writeFileSync(
+      s.userFile,
+      '[workflow]\ndefault_crew = "codex-journeyman"\n',
+    );
+    const { config, provenance, files } = withProcessHomes(
+      s.forgeHome,
+      s.home,
+      () => loadConfig({ harnessRoot: s.harness, env: {} }),
+    );
+    expect(config.workflow.defaultCrew).toBe("claude-master");
+    expect(provenance["workflow.default_crew"]?.source).toBe(s.movedFile);
+    expect(files).toEqual([s.movedFile]);
+  });
+
+  test("its execution.env.pass applies while no workspace file exists, and never once one does", () => {
+    const s = movedHome();
+    writeFileSync(s.movedFile, '[execution.env]\npass = ["HOME_SECRET"]\n');
+    const load = () =>
+      withProcessHomes(s.forgeHome, s.home, () =>
+        loadConfig({ harnessRoot: s.harness, env: {} }),
+      );
+
+    const alone = load();
+    expect(alone.config.execution.envPass).toEqual(["HOME_SECRET"]);
+    expect(alone.provenance["execution.env.pass"]?.source).toBe(s.movedFile);
+
+    writeFileSync(
+      s.workspaceFile,
+      '[workflow]\ndefault_crew = "claude-master"\n',
+    );
+    const silent = load();
+    expect(silent.config.execution.envPass).toEqual([]);
+    expect(silent.provenance["execution.env.pass"]?.source).toBe("builtin");
+
+    writeFileSync(s.workspaceFile, '[execution.env]\npass = ["WS_ONLY"]\n');
+    const own = load();
+    expect(own.config.execution.envPass).toEqual(["WS_ONLY"]);
+    expect(own.provenance["execution.env.pass"]?.source).toBe(s.workspaceFile);
+  });
+
+  test("an explicit home still names the machine file, whatever AGENT_FORGE_HOME says", () => {
+    const s = movedHome();
+    writeFileSync(s.movedFile, '[execution.env]\npass = ["HOME_SECRET"]\n');
+    writeFileSync(s.userFile, '[workflow]\ndefault_crew = "claude-master"\n');
+    const { config, files } = withProcessHomes(s.forgeHome, s.home, () =>
+      loadConfig({ harnessRoot: s.harness, home: s.home, env: {} }),
+    );
+    expect(files).toEqual([s.userFile]);
+    expect(config.workflow.defaultCrew).toBe("claude-master");
+    expect(config.execution.envPass).toEqual([]);
+  });
+
+  test("the env option does not move the machine file: the process's AGENT_FORGE_HOME does", () => {
+    const s = movedHome();
+    const elsewhere = join(s.forgeHome, "..", "named in the env option");
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(
+      join(elsewhere, "config.toml"),
+      '[execution.env]\npass = ["CHILD_SECRET"]\n',
+    );
+    writeFileSync(s.movedFile, '[workflow]\ndefault_crew = "claude-master"\n');
+    const { config, files } = withProcessHomes(s.forgeHome, s.home, () =>
+      loadConfig({
+        harnessRoot: s.harness,
+        env: { AGENT_FORGE_HOME: elsewhere },
+      }),
+    );
+    expect(files).toEqual([s.movedFile]);
+    expect(config.workflow.defaultCrew).toBe("claude-master");
+    expect(config.execution.envPass).toEqual([]);
+  });
+
+  test("with AGENT_FORGE_HOME unset or blank, the machine file is .agent-forge/config.toml under the OS home", () => {
+    for (const forgeHome of [undefined, "  "]) {
+      const s = sandbox();
+      writeFileSync(s.userFile, '[workflow]\ndefault_crew = "claude-master"\n');
+      const { files } = withProcessHomes(forgeHome, s.home, () =>
+        loadConfig({ harnessRoot: s.harness, env: {} }),
+      );
+      expect(files).toEqual([s.userFile]);
     }
   });
 });

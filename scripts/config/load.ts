@@ -1,18 +1,20 @@
 /**
  * Layered config for smiths, benches and the executor env allowlist.
  *
- * Precedence, low to high: builtin < ~/.agent-forge/config.toml <
+ * Precedence, low to high: builtin < the machine file (`config.toml` in the
+ * Agent Forge home: `AGENT_FORGE_HOME`, else `~/.agent-forge`) <
  * <harness>/agent-forge.toml < env. Every effective value carries its
  * provenance. Security keys (`execution.env.pass`) are never inherited from the
- * user file once a workspace file exists (decision #17).
+ * user file once a workspace file exists (decision #17), whichever home it was
+ * read from.
  *
  * Parsing uses the runtime's `Bun.TOML` — no dependency.
  */
 
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import { BENCH_NAMES, type BenchName, type Smith } from "../../types/hearth";
+import { agentForgeHome } from "../agent-forge-home";
 import { validateSmith } from "../hearth/validate";
 import {
   type BenchEntry,
@@ -42,7 +44,17 @@ export interface LoadedConfig {
 
 export interface LoadOptions {
   harnessRoot: string;
+  /**
+   * Stands in for the OS home: the machine file is then
+   * `<home>/.agent-forge/config.toml`, whatever `AGENT_FORGE_HOME` says.
+   * Absent, it is `config.toml` in this process's Agent Forge home.
+   */
   home?: string | undefined;
+  /**
+   * The env layer (`AGENT_FORGE_SMITH`); defaults to this process's. It does
+   * not move the machine file: `forge:exec` passes the environment it hands
+   * its child here, and the file is the launcher's own, as the OS home was.
+   */
   env?: Record<string, string | undefined> | undefined;
   /**
    * Text that stands in for a layer's file, as if the file held it (and so
@@ -52,6 +64,17 @@ export interface LoadOptions {
 }
 
 type Table = Record<string, unknown>;
+
+/**
+ * The machine (user) config file: `<home>/.agent-forge/config.toml` for an
+ * explicit `home`, else `config.toml` in the Agent Forge home of this process
+ * (`scripts/agent-forge-home.ts`), where its ledger and hearth lock live too.
+ */
+export function machineConfigFile(options: Pick<LoadOptions, "home">): string {
+  return options.home !== undefined
+    ? join(options.home, ".agent-forge", "config.toml")
+    : join(agentForgeHome(), "config.toml");
+}
 
 function isTable(v: unknown): v is Table {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -114,11 +137,7 @@ function parseBench(file: string, name: string, raw: unknown): BenchEntry[] {
 
 export function loadConfig(options: LoadOptions): LoadedConfig {
   const env = options.env ?? process.env;
-  const userFile = join(
-    options.home ?? homedir(),
-    ".agent-forge",
-    "config.toml",
-  );
+  const userFile = machineConfigFile(options);
   const workspaceFile = join(options.harnessRoot, "agent-forge.toml");
   const given = options.contents ?? {};
   const hasWorkspace =
