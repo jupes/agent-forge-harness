@@ -135,7 +135,15 @@ function agedVerdict(
   days: number,
   opts: { bead?: string; file?: string; summary?: string } = {},
 ): { relative: string; sha256: string } {
-  const content = verdictJson(run, opts.bead, opts.summary);
+  // A round's file holds a verdict that names its round.
+  const round = /^review-(.+)\.json$/.exec(opts.file ?? "")?.[1];
+  const content =
+    round === undefined
+      ? verdictJson(run, opts.bead, opts.summary)
+      : JSON.stringify({
+          ...JSON.parse(verdictJson(run, opts.bead, opts.summary)),
+          review: round,
+        });
   const wrote = writeVerdictOnce({
     checkout,
     executionRunId: run,

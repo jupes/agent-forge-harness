@@ -49,7 +49,7 @@ Every argument is one of the flags below, written `--flag value` or `--flag=valu
 | `--subagent <agent id>` | The model evaluator ran as that subagent of the session working where the command runs: its own model is what is observed. The spawning session has the id (the Agent tool gives it back); the subagent's own environment does not. Letters, digits, dashes and underscores; not with `--human`. |
 | `--summary <text>` | Optional short rationale. |
 | `--attest <dimension>=<0..5>` | Optional, repeatable: `quality`, `reliability`, `creativity`, `maintainability`, `ux`. |
-| `--review <label>` | Write a review round's verdict instead of the run's (see *Review rounds*). |
+| `--review <phase>-<round>` | Write a review round's verdict instead of the run's (see *Review rounds*). The phase is `research`, `plan`, `implement` or `ship`, and the round a positive integer: `plan-2`. Anything else is refused. |
 | `--correlation <pointer>` | The run correlation. Relative pointers are relative to the checkout the run builds in. |
 | `--checkout <dir>` | The top level of the checkout the run builds in, when that is not the checkout the command runs in. |
 
@@ -94,6 +94,7 @@ The command prints `{ ok, data, error }`: `data.path` is the file it wrote, rela
 | `evaluator` | yes | Who judged: see below. A file without one does not parse. |
 | `summary` | no | String |
 | `attestations` | no | Integer scores `0..5` for any subset of the five dimensions. Advisory: never blocks ship. Unknown keys are rejected. |
+| `review` | no | Only in a review round's verdict: its round, `<phase>-<round>`, as given to `--review`. Anything else there does not parse. The run's own verdict has none: the writer puts a verdict in a round's file only when it names that round, and in the run's file only when it names none, and the strict gate refuses a `verdict.json` that names a round. |
 
 ### Evaluator identity
 
@@ -148,7 +149,7 @@ When `AGENT_FORGE_EVAL_VERDICT=strict`, on a `TaskCompleted` run of the gate:
 
 1. The gate **must** have been given a run correlation: `bun run quality-gate --correlation <pointer>`, or `AGENT_FORGE_RUN_CORRELATION` set by a launcher. Without one the check fails: an uncorrelated run cannot satisfy strict completion.
 2. It reads the file at the path the correlation's run id declares, **once**, into one buffer. A path that is, or sits under, a link is refused, as is a file over 64 KiB.
-3. From that buffer it requires: schema 2, with a verdict word its counts agree with (see *Schema*); `beadsIssueId` and `executionRunId` equal to the correlation's; a human evaluator, or a model evaluator that was observed, whose own recorded decision is `allowed`, and whose observed provider and model pass the rank policy as the gate computes it.
+3. From that buffer it requires: schema 2, with a verdict word its counts agree with and no review round named (see *Schema*); `beadsIssueId` and `executionRunId` equal to the correlation's; a human evaluator, or a model evaluator that was observed, whose own recorded decision is `allowed`, and whose observed provider and model pass the rank policy as the gate computes it.
 4. **`verdict: "PASS"`** → the check passes. **`"FAIL"`** with `blocker > 0` or `high > 0` → it fails. **`"FAIL"`** with only medium/low → it passes (file follow-up beads). A PASS that counts a blocker or high finding, or a FAIL that counts none, never gets here: it does not parse, and the check fails with the parser's reason.
 5. A verdict that got through step 3 is **bound**: the gate log entry carries `evaluatorArtifact` (the path, the SHA-256 and byte count of that buffer, both ids and the evaluator), and one `verdict.bound` ledger event carries the same path, digest, size and evaluator. The file is not opened again.
 6. That log entry is the record of what satisfied strict completion. If it cannot be appended, a run that bound a verdict **fails**: its result gains a failing `gate-log` check, so what it prints, its `gate.ran` event and its exit code all say blocked. (The ledger events stay best-effort: a ledger that cannot be written is reported and does not block.)
@@ -157,7 +158,7 @@ When the variable is unset or not `strict`, the hook does not read the file. A `
 
 ## Review rounds (`forge:review`)
 
-An unattended run reviews each phase, possibly several times, so one run has several round verdicts. A round verdict is written with `--review <label>` (for example `--review plan-2`): the same schema, in the run's directory as `review-<label>.json`, once per label. It is written whatever was observed, and the command reports what a strict gate would object to (`data.evaluatorProblem`).
+An unattended run reviews each phase, possibly several times, so one run has several round verdicts. A round verdict is written with `--review <phase>-<round>` (for example `--review plan-2`): the same schema, naming its round in `review`, in the run's directory as `review-<phase>-<round>.json`, once per round. Because it names its round, two rounds' verdicts are never the same bytes, even two clean PASS verdicts with no summary. It is written whatever was observed, and the command reports what a strict gate would object to (`data.evaluatorProblem`).
 
 `bun run forge:review --slug <slug> --phase <phase> --verdict <data.file>` then:
 

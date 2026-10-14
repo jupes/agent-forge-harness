@@ -35,7 +35,11 @@ import {
   writeSync,
 } from "fs";
 import { join } from "path";
-import { parseEvalVerdictJson, verdictForRun } from "./eval-verdict";
+import {
+  parseEvalVerdictJson,
+  verdictForRun,
+  verdictReviewProblem,
+} from "./eval-verdict";
 import { comparableCheckout, isValidSlug } from "./forge/runs";
 import { resolveCheckout } from "./ledger/workspace";
 
@@ -76,6 +80,11 @@ export function evaluatorVerdictPath(executionRunId: string): string | null {
 /** The file name of a review round's verdict, or null when the label cannot name one. */
 export function reviewVerdictFile(label: string): string | null {
   return REVIEW_LABEL.test(label) ? `review-${label}.json` : null;
+}
+
+/** The label in a review round's file name (`review-<label>.json`). */
+function reviewRoundOf(file: string): string {
+  return file.slice("review-".length, -".json".length);
 }
 
 /** True for the file names an evaluation directory holds: the run's verdict and its review rounds. */
@@ -302,6 +311,20 @@ export function writeVerdictOnce(input: {
     return {
       ok: false,
       error: `the content is not a schema 2 verdict for this run: ${mine.error}`,
+    };
+  }
+  // The run's own file holds a verdict that names no review round; a round's
+  // file one that names that round, so no two rounds' verdicts are one byte
+  // string.
+  const file = input.file ?? STRICT_VERDICT_FILE;
+  const placed = verdictReviewProblem(
+    mine.value,
+    file === STRICT_VERDICT_FILE ? null : reviewRoundOf(file),
+  );
+  if (placed !== null) {
+    return {
+      ok: false,
+      error: `the content does not belong in ${file}: ${placed}`,
     };
   }
 

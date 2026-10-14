@@ -11,6 +11,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -134,6 +135,8 @@ function deps(box: Box, world: World = {}): VerdictWriteDeps {
 }
 
 const PASS = ["--verdict", "PASS"];
+const REVIEW_FORM =
+  "--review takes <phase>-<round>: phase research, plan, implement or ship, and round a positive integer, such as plan-2";
 const AS_REVIEWER = ["--human", "reviewer"];
 const REQUEST_MASTER = [
   "--requested-provider",
@@ -730,20 +733,32 @@ describe("forge:verdict, an Evaluator subagent", () => {
     expect(runVerdict(named)).toBeNull();
 
     // Filed as a review round it is written, with the subagent's model; put
-    // where the strict gate looks, the gate refuses it for the same reason.
+    // where the strict gate looks, without the round it names, the gate
+    // refuses it for the same reason.
     const round = sandbox();
     const filed = write(
       round,
-      [...PASS, ...REQUEST_MASTER, "--subagent", AGENT, "--review", "impl-1"],
+      [
+        ...PASS,
+        ...REQUEST_MASTER,
+        "--subagent",
+        AGENT,
+        "--review",
+        "implement-1",
+      ],
       world,
     );
     expect(filed.body.data).toMatchObject({
       evaluator: { observedModel: HAIKU.model, sessionId: CHILD },
     });
-    const bytes = readFileSync(
-      join(round.cwd, `${evaluationDir("run-1")}/review-impl-1.json`),
+    const { review: _round, ...asTheRuns } = stored(
+      round,
+      `${evaluationDir("run-1")}/review-implement-1.json`,
     );
-    writeFileSync(join(round.cwd, evaluatorVerdictPath("run-1") ?? ""), bytes);
+    writeFileSync(
+      join(round.cwd, evaluatorVerdictPath("run-1") ?? ""),
+      JSON.stringify(asTheRuns),
+    );
     expect(gateCheck(round, SONNET).check).toEqual({
       name: "eval-verdict",
       passed: false,
@@ -896,9 +911,72 @@ describe("forge:verdict --review, a review round's verdict", () => {
     ).toMatchObject({ code: 0 });
     expect(
       write(box, [...PASS, ...AS_REVIEWER, "--review", "Plan 3"]).body.error,
-    ).toBe(
-      "--review <label> must be lower-case letters, digits and dashes (at most 40), such as plan-2",
+    ).toBe(REVIEW_FORM);
+  });
+
+  test("names its round in the file: two clean PASS verdicts for different rounds are different bytes, and the run's verdict names none", () => {
+    const box = sandbox();
+    const research = write(box, [
+      ...PASS,
+      ...AS_REVIEWER,
+      "--review",
+      "research-1",
+    ]);
+    const plan = write(box, [...PASS, ...AS_REVIEWER, "--review", "plan-1"]);
+    expect([research.code, plan.code]).toEqual([0, 0]);
+    const digest = (outcome: typeof plan) =>
+      (outcome.body.data as { sha256: string }).sha256;
+    expect(digest(research)).not.toBe(digest(plan));
+    expect(
+      stored(box, `${evaluationDir("run-1")}/review-research-1.json`).review,
+    ).toBe("research-1");
+    expect(
+      stored(box, `${evaluationDir("run-1")}/review-plan-1.json`).review,
+    ).toBe("plan-1");
+
+    expect(write(box, [...PASS, ...AS_REVIEWER]).code).toBe(0);
+    expect("review" in (runVerdict(box) ?? { review: "missing" })).toBe(false);
+  });
+
+  test("takes a round only as <phase>-<round>, and writes nothing otherwise", () => {
+    for (const label of [
+      "impl-1",
+      "deploy-2",
+      "plan",
+      "plan-0",
+      "plan-01",
+      "plan-1a",
+      "Plan-1",
+      "plan-1234567890",
+    ]) {
+      const box = sandbox();
+      const wrote = write(box, [...PASS, ...AS_REVIEWER, "--review", label]);
+      expect({ label, error: wrote.body.error }).toEqual({
+        label,
+        error: REVIEW_FORM,
+      });
+      expect(existsSync(join(box.cwd, evaluationDir("run-1") ?? ""))).toBe(
+        false,
+      );
+    }
+  });
+
+  test("a round's verdict put at the run's path does not satisfy strict completion", () => {
+    const box = sandbox();
+    const round = write(box, [...PASS, ...AS_REVIEWER, "--review", "plan-1"]);
+    expect(round.code).toBe(0);
+    const bytes = readFileSync(
+      join(box.cwd, `${evaluationDir("run-1")}/review-plan-1.json`),
     );
+    writeFileSync(join(box.cwd, evaluatorVerdictPath("run-1") ?? ""), bytes);
+    const { check, artifact } = gateCheck(box);
+    expect(check).toEqual({
+      name: "eval-verdict",
+      passed: false,
+      output:
+        "the verdict names review round \"plan-1\": a round's verdict is not the run's verdict",
+    });
+    expect(artifact).toBeUndefined();
   });
 });
 
@@ -1205,7 +1283,7 @@ describe("forge:verdict, spawned against a scratch ledger", () => {
       "--subagent",
       "a1",
       "--review",
-      "impl-1",
+      "implement-1",
     ]);
     expect(named.code).toBe(0);
     expect(named.body.data.evaluator).toMatchObject({

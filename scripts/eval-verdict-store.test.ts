@@ -72,6 +72,11 @@ function body(run: string, summary?: string): string {
 
 const BODY = body("run-1");
 
+/** A review round's verdict of `run`: the run's verdict that names the round. */
+function roundBody(run: string, review: string): string {
+  return `${JSON.stringify({ ...JSON.parse(body(run)), review })}\n`;
+}
+
 describe("evaluatorVerdictPath", () => {
   test("is .tmp/work/evaluations/<sha256 of the run id>/verdict.json", () => {
     expect(evaluatorVerdictPath("run-1")).toBe(
@@ -149,7 +154,7 @@ describe("writeVerdictOnce", () => {
       checkout,
       executionRunId: "run-1",
       file: reviewVerdictFile("plan-2") ?? "",
-      content: BODY,
+      content: roundBody("run-1", "plan-2"),
     });
     expect([first.ok, retried.ok, round.ok]).toEqual([true, true, true]);
     if (first.ok && retried.ok && round.ok) {
@@ -162,7 +167,7 @@ describe("writeVerdictOnce", () => {
         checkout,
         executionRunId: "run-1",
         file: reviewVerdictFile("plan-2") ?? "",
-        content: BODY,
+        content: roundBody("run-1", "plan-2"),
       }),
     ).toMatchObject({ ok: false, exists: true });
   });
@@ -269,7 +274,7 @@ describe("writeVerdictOnce", () => {
         checkout: inner.checkout,
         executionRunId: "run-1",
         file: reviewVerdictFile("plan-1") ?? "",
-        content: BODY,
+        content: roundBody("run-1", "plan-1"),
       }),
     ).toEqual({ ok: false, error: linkedMessage });
   });
@@ -348,6 +353,45 @@ describe("writeVerdictOnce", () => {
     // The run's one place is still free for its verdict.
     expect(
       writeVerdictOnce({ checkout, executionRunId: "run-1", content: BODY }).ok,
+    ).toBe(true);
+  });
+
+  test("a round's file takes only a verdict that names that round, and the run's file only one that names none", () => {
+    const cases: Array<[string, string, string]> = [
+      [
+        "verdict.json",
+        roundBody("run-1", "plan-1"),
+        "the verdict names review round \"plan-1\": a round's verdict is not the run's verdict",
+      ],
+      [
+        "review-plan-2.json",
+        roundBody("run-1", "plan-1"),
+        'the verdict names review round "plan-1", not this file\'s round ("plan-2")',
+      ],
+      [
+        "review-plan-2.json",
+        BODY,
+        'the verdict names no review round, and this file is round "plan-2"\'s',
+      ],
+    ];
+    for (const [file, content, reason] of cases) {
+      const { checkout } = sandbox();
+      expect(
+        writeVerdictOnce({ checkout, executionRunId: "run-1", file, content }),
+      ).toEqual({
+        ok: false,
+        error: `the content does not belong in ${file}: ${reason}`,
+      });
+      expect(existsSync(join(checkout, ".tmp"))).toBe(false);
+    }
+    const { checkout } = sandbox();
+    expect(
+      writeVerdictOnce({
+        checkout,
+        executionRunId: "run-1",
+        file: "review-plan-2.json",
+        content: roundBody("run-1", "plan-2"),
+      }).ok,
     ).toBe(true);
   });
 

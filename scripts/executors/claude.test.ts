@@ -156,7 +156,7 @@ describe("claude adapter through forge:exec: the model the stream reports (fake 
         "--requested-rank",
         "master",
         "--review",
-        "exec-1",
+        "implement-1",
       ],
       {
         cwd: worktree,

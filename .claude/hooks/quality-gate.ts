@@ -43,6 +43,7 @@ import {
   parseEvalVerdictJson,
   verdictBlocksShip,
   verdictForRun,
+  verdictReviewProblem,
 } from "../../scripts/eval-verdict";
 import {
   type ReadVerdictResult,
@@ -390,6 +391,9 @@ function strictVerdictCheck(
   const mine = verdictForRun(parsed.value, correlation);
   if (!mine.ok) return refused(mine.error);
   const verdict = mine.value;
+  // A review round's verdict copied to the run's place is not the run's.
+  const round = verdictReviewProblem(verdict, null);
+  if (round !== null) return refused(round);
   const builder = strict.runState?.executor;
   const problem = strictEvaluatorProblem(verdict.evaluator, {
     // Only a model evaluator has a rank to look up.

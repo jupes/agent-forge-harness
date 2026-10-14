@@ -25,6 +25,7 @@ import {
   type Rank,
   type RankPolicyDecision,
 } from "../types/hearth";
+import { FORGE_PHASES } from "./forge/phases";
 import { isValidSlug } from "./forge/runs";
 import { type BeadsIssueId, parseBeadsIssueId } from "./run-correlation";
 
@@ -75,6 +76,11 @@ export type EvalVerdict = EvalVerdictBody & {
   /** The Forge run id: the run correlation's `executionRunId`. */
   executionRunId: string;
   evaluator: EvaluatorIdentity;
+  /**
+   * The review round a round's verdict was written for, `<phase>-<round>`.
+   * Absent from the run's own verdict.
+   */
+  review?: string;
 };
 
 export type EvalVerdictParsed = LegacyEvalVerdict | EvalVerdict;
@@ -108,6 +114,20 @@ function nonEmpty(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** A review round: a Forge phase, a dash, and a positive round number. */
+const REVIEW_ROUND = new RegExp(
+  `^(${FORGE_PHASES.join("|")})-[1-9][0-9]{0,8}$`,
+);
+
+/**
+ * True for a review round's label as `forge:verdict --review` takes it and a
+ * round's verdict names it: `<phase>-<round>`, the phase one of the Forge
+ * phases and the round a positive integer (at most nine digits).
+ */
+export function isReviewRound(label: unknown): label is string {
+  return typeof label === "string" && REVIEW_ROUND.test(label);
 }
 
 /** Longer than any provider, model or session id; a value over it is not one. */
@@ -379,6 +399,11 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
   if (!body.ok) return body;
   const evaluator = parseEvaluatorIdentity(raw.evaluator);
   if (!evaluator.ok) return evaluator;
+  if (raw.review !== undefined && !isReviewRound(raw.review)) {
+    return refuse(
+      "review must be a review round, <phase>-<round>: phase research, plan, implement or ship, and round a positive integer",
+    );
+  }
   return {
     ok: true,
     value: {
@@ -387,6 +412,7 @@ export function parseEvalVerdictJson(text: string): ParseEvalVerdictResult {
       executionRunId,
       ...body.value,
       evaluator: evaluator.value,
+      ...(raw.review !== undefined ? { review: raw.review } : {}),
     },
   };
 }
@@ -418,6 +444,29 @@ export function verdictForRun(
     );
   }
   return { ok: true, value: verdict };
+}
+
+/**
+ * Why a verdict does not belong where it is, or null when it does. `round` is
+ * the review round of the file it is in, or null for the run's own verdict:
+ * the run's verdict names no review round, and a round's verdict names that
+ * round, not another and not none.
+ */
+export function verdictReviewProblem(
+  verdict: EvalVerdict,
+  round: string | null,
+): string | null {
+  if (round === null) {
+    return verdict.review === undefined
+      ? null
+      : `the verdict names review round "${verdict.review}": a round's verdict is not the run's verdict`;
+  }
+  if (verdict.review === undefined) {
+    return `the verdict names no review round, and this file is round "${round}"'s`;
+  }
+  return verdict.review === round
+    ? null
+    : `the verdict names review round "${verdict.review}", not this file's round ("${round}")`;
 }
 
 /**

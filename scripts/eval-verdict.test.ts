@@ -4,6 +4,7 @@ import {
   parseEvalVerdictJson,
   verdictBlocksShip,
   verdictForRun,
+  verdictReviewProblem,
 } from "./eval-verdict";
 
 describe("parseEvalVerdictJson", () => {
@@ -316,6 +317,37 @@ describe("parseEvalVerdictJson, schema 2", () => {
     }
   });
 
+  test("a verdict may name the review round it was written for, as <phase>-<round>, and nothing else", () => {
+    for (const review of ["research-1", "plan-2", "implement-10", "ship-1"]) {
+      const r = parseEvalVerdictJson(v2({ review }));
+      expect(r.ok && r.value.schemaVersion === 2 && r.value.review).toBe(
+        review,
+      );
+    }
+    for (const review of [
+      "",
+      "plan",
+      "plan-0",
+      "plan-01",
+      "Plan-1",
+      "impl-1",
+      "deploy-1",
+      "plan-1a",
+      "plan-1234567890",
+      7,
+      null,
+    ]) {
+      expect(parseEvalVerdictJson(v2({ review }))).toEqual({
+        ok: false,
+        error:
+          "review must be a review round, <phase>-<round>: phase research, plan, implement or ship, and round a positive integer",
+      });
+    }
+    // A verdict that names no round has no review field at all.
+    const plain = parseEvalVerdictJson(v2());
+    expect(plain.ok && "review" in plain.value).toBe(false);
+  });
+
   test("any other schema version is refused", () => {
     expect(parseEvalVerdictJson(v2({ schemaVersion: 3 }))).toEqual({
       ok: false,
@@ -375,6 +407,35 @@ describe("verdictForRun", () => {
       error:
         "the verdict is schema 1 (legacy): it names no run and no evaluator",
     });
+  });
+});
+
+describe("verdictReviewProblem", () => {
+  function parsed(text: string) {
+    const r = parseEvalVerdictJson(text);
+    if (!r.ok || r.value.schemaVersion !== 2) throw new Error("not schema 2");
+    return r.value;
+  }
+
+  test("the run's verdict names no review round", () => {
+    expect(verdictReviewProblem(parsed(v2()), null)).toBeNull();
+    expect(verdictReviewProblem(parsed(v2({ review: "plan-1" })), null)).toBe(
+      "the verdict names review round \"plan-1\": a round's verdict is not the run's verdict",
+    );
+  });
+
+  test("a round's verdict names that round: not another, and not none", () => {
+    expect(
+      verdictReviewProblem(parsed(v2({ review: "plan-2" })), "plan-2"),
+    ).toBeNull();
+    expect(
+      verdictReviewProblem(parsed(v2({ review: "plan-1" })), "plan-2"),
+    ).toBe(
+      'the verdict names review round "plan-1", not this file\'s round ("plan-2")',
+    );
+    expect(verdictReviewProblem(parsed(v2()), "plan-2")).toBe(
+      'the verdict names no review round, and this file is round "plan-2"\'s',
+    );
   });
 });
 

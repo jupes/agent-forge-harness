@@ -8,7 +8,7 @@
  *     | --requested-provider <id> --requested-model <id> --requested-rank <rank>
  *       [--subagent <agent id>] )
  *     [--summary <text>] [--attest <dimension>=<0..5> ...]
- *     [--review <label>] [--correlation <pointer>] [--checkout <dir>]
+ *     [--review <phase>-<round>] [--correlation <pointer>] [--checkout <dir>]
  *
  * The only writer of schema 2 verdicts. The Beads issue and the run come from
  * the run correlation (`--correlation`, else `AGENT_FORGE_RUN_CORRELATION`)
@@ -39,9 +39,11 @@
  * written once, and one that can never satisfy strict completion would leave
  * the run without a verdict that can.
  *
- * `--review <label>` writes a review round's verdict for `forge:review`
- * instead: beside the run's verdict, once per label, and whatever was
- * observed.
+ * `--review <phase>-<round>` (a Forge phase and a positive round number, such
+ * as plan-2) writes a review round's verdict for `forge:review` instead:
+ * beside the run's verdict, once per round, whatever was observed, and naming
+ * its round in a `review` field, so two rounds' verdicts are never the same
+ * bytes. The run's own verdict names no round.
  *
  * Output is always a single JSON object: { ok, data, error }. `data.file` is
  * the file's full path. Exit code 0 when ok, 2 when not.
@@ -53,6 +55,7 @@ import {
   ATTESTATION_DIMENSIONS,
   EVAL_VERDICT_SCHEMA_VERSION,
   type EvalVerdict,
+  isReviewRound,
   parseEvaluatorIdentity,
   parseEvalVerdictJson,
   verdictCountsProblem,
@@ -513,12 +516,18 @@ export function runVerdictWrite(
   if (!pointed.linked) return refuse(pointed.reason);
   const { correlation } = pointed;
 
+  // A round is named as its phase and its number, and the verdict carries
+  // that name: two rounds' verdicts are never the same bytes.
   const label = values.get("review");
   const file =
-    label === undefined ? STRICT_VERDICT_FILE : reviewVerdictFile(label);
+    label === undefined
+      ? STRICT_VERDICT_FILE
+      : isReviewRound(label)
+        ? reviewVerdictFile(label)
+        : null;
   if (file === null) {
     return refuse(
-      "--review <label> must be lower-case letters, digits and dashes (at most 40), such as plan-2",
+      "--review takes <phase>-<round>: phase research, plan, implement or ship, and round a positive integer, such as plan-2",
     );
   }
   const strict = file === STRICT_VERDICT_FILE;
@@ -557,6 +566,7 @@ export function runVerdictWrite(
       executionRunId: correlation.executionRunId,
       ...body.value,
       evaluator: evaluator.value,
+      ...(label !== undefined ? { review: label } : {}),
     }),
   );
   if (!parsed.ok) return refuse(parsed.error);
