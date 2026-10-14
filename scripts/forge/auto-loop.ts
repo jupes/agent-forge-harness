@@ -18,7 +18,10 @@
  * Pure functions only; `auto-loop-cli.ts` is what touches disk.
  */
 
-import type { EvalVerdictParsed } from "../eval-verdict";
+import {
+  EVAL_VERDICT_SCHEMA_VERSION,
+  type EvalVerdictParsed,
+} from "../eval-verdict";
 import { phaseCommand } from "./phase-gate";
 import type {
   ForgePhase,
@@ -49,6 +52,35 @@ const NO_FINDINGS: ReviewFindings = {
   low: 0,
 };
 
+/**
+ * The number the next review round of `phase` gets: one more than the rounds
+ * of that phase on the run's ledger, an `UNREADABLE` round included.
+ */
+export function nextRoundOf(
+  phase: ForgePhase,
+  history: readonly ReviewRound[],
+): number {
+  return history.filter((r) => r.phase === phase).length + 1;
+}
+
+/**
+ * Why `verdict` is not the verdict of review round `label` (`<phase>-<round>`),
+ * or null when it names that round. A round's verdict names its round, as
+ * `forge:verdict --review` writes it; a legacy schema 1 verdict cannot.
+ */
+export function roundLabelProblem(
+  verdict: EvalVerdictParsed,
+  label: string,
+): string | null {
+  if (verdict.schemaVersion !== EVAL_VERDICT_SCHEMA_VERSION) {
+    return "is a legacy schema 1 verdict, which cannot name a review round";
+  }
+  if (verdict.review === undefined) return "names no review round";
+  return verdict.review === label
+    ? null
+    : `names review round "${verdict.review}"`;
+}
+
 /** Turn an evaluator verdict (or a failure to read one) into a review round. */
 export function roundFromVerdict(input: {
   phase: ForgePhase;
@@ -59,7 +91,7 @@ export function roundFromVerdict(input: {
   at: string;
   tier?: string;
 }): ReviewRound {
-  const round = input.history.filter((r) => r.phase === input.phase).length + 1;
+  const round = nextRoundOf(input.phase, input.history);
   return {
     phase: input.phase,
     round,

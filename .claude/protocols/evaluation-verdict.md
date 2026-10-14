@@ -158,14 +158,15 @@ When the variable is unset or not `strict`, the hook does not read the file. A `
 
 ## Review rounds (`forge:review`)
 
-An unattended run reviews each phase, possibly several times, so one run has several round verdicts. A round verdict is written with `--review <phase>-<round>` (for example `--review plan-2`): the same schema, naming its round in `review`, in the run's directory as `review-<phase>-<round>.json`, once per round. Because it names its round, two rounds' verdicts are never the same bytes, even two clean PASS verdicts with no summary. It is written whatever was observed, and the command reports what a strict gate would object to (`data.evaluatorProblem`).
+An unattended run reviews each phase, possibly several times, so one run has several round verdicts. A round verdict is written with `--review <phase>-<round>` (for example `--review plan-2`): the same schema, naming its round in `review`, in the run's directory as `review-<phase>-<round>.json`, once per round. `<round>` is the round `forge:review` will record: one more than the rounds of that phase the run has recorded, an `UNREADABLE` round included (`bun run forge:review --slug <slug> --ledger` lists them). Because it names its round, two rounds' verdicts are never the same bytes, even two clean PASS verdicts with no summary. It is written whatever was observed, and the command reports what a strict gate would object to (`data.evaluatorProblem`).
 
 `bun run forge:review --slug <slug> --phase <phase> --verdict <data.file>` then:
 
 - for a **correlated** run, takes only a schema 2 verdict naming the correlation's bead and run; anything else is recorded `UNREADABLE` and halts the loop;
-- for a run with **no correlation**, cannot check a schema 2 verdict against anything and refuses it; it still takes a legacy schema 1 verdict and marks the round as one;
+- for a run with **no correlation**, cannot check a schema 2 verdict against anything and records it `UNREADABLE`, with the `forge:correlate` command that correlates the run; a legacy schema 1 verdict names no round, so it is refused (next bullet). A run with no correlation has no round graded until it is correlated;
+- refuses, and records nothing, a verdict of the run that does not name the round it would record (`<phase>-<round>`: the `--phase` it was given and that phase's next round number): one naming another round or another phase, one naming none (the run's own verdict, or a round verdict filed before `forge:verdict` wrote its round into the file), and a legacy schema 1 verdict, which cannot name one. The refusal names the round it expected and the `forge:verdict --review` line that files it (for a run with no correlation, after the `forge:correlate` line);
 - reads the file once and records its path, digest and size in the `verdict.bound` event, and the digest on the round;
-- refuses, and records nothing, a file whose digest a round of the run was already graded from, whatever its path and whichever phase it is given for: a verdict grades one round. The verdict names no phase or round, so two honest verdicts that are the same bytes (a clean PASS with no summary, say) are refused the same way; give each round's verdict a `--summary` of what it reviewed;
+- refuses, and records nothing, a file whose digest a round of the run was already graded from, whatever its path and whichever phase it is given for: a verdict grades one round. A round verdict names its round, so a file refused this way is an earlier round's verdict given again, never a second honest verdict that happens to have the same bytes: no `--summary` is needed to tell two rounds' verdicts apart;
 - reports, without enforcing, when the evaluator would not satisfy strict completion.
 
 So a `verdict.bound` event is not by itself evidence of strict completion: `forge:review` emits one for a round's verdict whatever its evaluator. Strict completion is a linked gate log entry whose `eval-verdict` check passed and which carries `evaluatorArtifact`.
@@ -175,7 +176,7 @@ So a `verdict.bound` event is not by itself evidence of strict completion: `forg
 Schema 1 files (`.tmp/work/<TASK-ID>-verdict.json`, with a `taskId` and no run or evaluator) are still **read** and are labelled legacy wherever they show up:
 
 - The strict gate never reads the old path, and a schema 1 file at the declared path fails the check.
-- `forge:review` takes one only for a run with no correlation. The round on the run's state records `verdictSchemaVersion: 1`, the printed review comment ends `; legacy verdict)`, and the ledger event's file reference says schema 1. It carries no evaluator.
+- `forge:review` grades no round from one: a schema 1 verdict cannot name its review round, so for a run with no correlation it is refused and nothing is recorded, and for a correlated run it is recorded `UNREADABLE` (see *Review rounds*). A round recorded from one before that still says so: the round on the run's state records `verdictSchemaVersion: 1`, and the ledger event's file reference says schema 1. It carries no evaluator.
 - On the dashboard, a gate entry whose verdict check passed with no `evaluatorArtifact` is shown as a **legacy verdict**: not evidence that the run was evaluated.
 
 Nothing writes schema 1 any more.
