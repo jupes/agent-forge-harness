@@ -26,7 +26,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
 import { importGraph } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
@@ -43,6 +43,62 @@ const SELF = resolve(import.meta.path);
  */
 const SPAWNS =
   /Bun\.spawn|Bun\.\$|child_process|StdioClientTransport|\{[^}]*\$[^}]*\}\s*from\s*["']bun["']/;
+
+/**
+ * How many re-run files run at the same time, each in a `bun test` of its own:
+ * a quarter of the machine's threads, at least 2 and at most 4. On a 16-thread
+ * machine, with two other full runs going, the 62 files took 144 to 153 s one
+ * after another in one `bun test`, and 46 to 51 s four at a time (wwj5). One
+ * after another, the re-run went past the test's 180 s limit in full runs.
+ */
+const RERUN_WORKERS = Math.min(
+  4,
+  Math.max(2, Math.floor(availableParallelism() / 4)),
+);
+
+/** A re-run file whose `bun test` did not exit 0, with the end of its output. */
+interface FailedRerun {
+  file: string;
+  exitCode: number;
+  tail: string;
+}
+
+/**
+ * Run each file in its own `bun test` with `env`, `RERUN_WORKERS` at a time.
+ * Every file still runs with the scratch home, so a default home written by
+ * any of them is still found; running them apart also names the file that
+ * failed. The `./` makes bun take the path as a file, not a name filter.
+ */
+async function rerunEach(
+  files: string[],
+  env: Record<string, string>,
+): Promise<FailedRerun[]> {
+  const queue = [...files];
+  const failed: FailedRerun[] = [];
+  const worker = async (): Promise<void> => {
+    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+      const child = Bun.spawn([process.execPath, "test", `./${file}`], {
+        cwd: REPO,
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      const exitCode = await child.exited;
+      if (exitCode !== 0)
+        failed.push({
+          file,
+          exitCode,
+          tail: `${stdout}${stderr}`.slice(-1500),
+        });
+    }
+  };
+  await Promise.all(Array.from({ length: RERUN_WORKERS }, worker));
+  return failed.sort((a, b) => a.file.localeCompare(b.file));
+}
 
 function testFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -179,13 +235,29 @@ describe("the test suite and the ledger under the user's home", () => {
   });
 
   test("every test file that can start a process, re-run with the OS home pointed at a scratch directory and a child that names no home given <scratch>/.agent-forge as AGENT_FORGE_HOME, leaves no .agent-forge there", async () => {
-    // A failing inner run could have stopped short of the spawn it guards.
-    expect(await rerunWithScratchHome(spawningTestFiles())).toEqual({
-      exitCode: 0,
-      tail: expect.any(String),
-      home: null,
-      sessions: [],
-    });
+    const scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
+    try {
+      const home = join(scratch, ".agent-forge");
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value === undefined || key === "AGENT_FORGE_HOME") continue;
+        env[key] = value;
+      }
+      env.HOME = scratch;
+      env.USERPROFILE = scratch;
+      env[ISOLATION_HOME] = home;
+
+      const files = spawningTestFiles();
+      // A failing inner run could have stopped short of the spawn it guards.
+      expect(await rerunEach(files, env)).toEqual([]);
+      expect(existsSync(home)).toBe(false);
+    } finally {
+      try {
+        rmSync(scratch, { recursive: true, force: true });
+      } catch {
+        // A file a child still holds on Windows: the OS temp directory reclaims it.
+      }
+    }
   }, 180_000);
 
   test("a test file that starts children with no home variable and no AGENT_FORGE_HOME, through Bun.spawn and through node:child_process, and runs an emitter in each, is caught by the re-run: both emitters' events land in the scratch .agent-forge", async () => {
