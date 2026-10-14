@@ -17,6 +17,7 @@ import type { ForgeState } from "../forge/phases";
 import { FORGE_RUNS_DIR, runSlugFromFilename } from "../forge/runs";
 import { readRunState } from "../forge/runs-store";
 import { type BeadsIssueId, parseBeadsIssueId } from "../run-correlation";
+import { secretSpans } from "../secret-patterns";
 import {
   type ContextPart,
   type ContextPartsInput,
@@ -28,6 +29,7 @@ import {
   type SecretPolicy,
   sanitizeContent,
   scanNamed,
+  scanShown,
   withoutControls,
 } from "./context";
 import {
@@ -131,8 +133,35 @@ function dependencyLine(issue: Fields): string {
   )}`;
 }
 
+/**
+ * `value` cut to `max` characters, for a text that has been scanned whole.
+ *
+ * A cut can leave something that reads as a key where the whole text holds
+ * none: an ordinary slug such as `task-queue-state-machine-v2` cut just after
+ * a hyphen twenty characters past its `sk-`. The pack would refuse the bead
+ * for it, or replace part of the slug. When the cut form holds a find the
+ * whole one does not, the cut is made at the last whitespace before the limit
+ * instead; with no whitespace, or a find still there, a character at a time
+ * shorter, until there is none.
+ */
+function cutWhole(value: string, max: number): string {
+  const cut = cutChars(value, max);
+  if (
+    cut === value ||
+    secretSpans(cut).length === 0 ||
+    // A find in the whole text is the pack's to refuse or replace.
+    secretSpans(value).length > 0
+  )
+    return cut;
+  const space = cut.search(/\s\S*$/);
+  let shorter = space > 0 ? cut.slice(0, space).trimEnd() : cut;
+  while (shorter.length > 0 && secretSpans(shorter).length > 0)
+    shorter = cutChars(shorter, shorter.length - 1).trimEnd();
+  return shorter;
+}
+
 function shownTitle(safe: BeadText): string {
-  return cutChars(safe.title, TITLE_MAX_CHARS) || "(untitled)";
+  return cutWhole(safe.title, TITLE_MAX_CHARS) || "(untitled)";
 }
 
 function acceptancePart(
@@ -141,7 +170,7 @@ function acceptancePart(
   safe: BeadText,
 ): ContextPart {
   const labels = safe.labels
-    .map((label) => cutChars(label, LABEL_MAX_CHARS))
+    .map((label) => cutWhole(label, LABEL_MAX_CHARS))
     .filter((label) => label.length > 0);
   const lines = [
     `Bead: ${id}`,
@@ -768,10 +797,16 @@ export async function compileBead(
   const found = new Map<string, number>();
   const clean = (value: unknown, where: string): string =>
     scanNamed(text(value), policy, where, found);
-  // A title or a label is shown on one line and cut short. Making it one
-  // line can put a secret together, so that form is scanned as well, whole.
+  // A title or a label is shown on one line and cut short. It is read as
+  // written and as shown at once (`scanShown`), and then in its one-line form,
+  // whole: folding the spaces can put a secret together too.
   const cleanLine = (value: unknown, where: string): string =>
-    scanNamed(oneLine(clean(value, where)), policy, where, found);
+    scanNamed(
+      oneLine(scanShown(text(value), policy, where, found)),
+      policy,
+      where,
+      found,
+    );
   const safe: BeadText = {
     title: cleanLine(issue.title, "the title"),
     labels: (Array.isArray(issue.labels) ? issue.labels : []).map((label) =>
