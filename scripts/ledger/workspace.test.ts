@@ -37,8 +37,17 @@ function mainCheckout(root: string): string {
   return checkout;
 }
 
-/** A linked worktree of `main`: a `.git` file pointing into the main `.git`. */
-function linkedWorktree(root: string, main: string, relative = false): string {
+/**
+ * A linked worktree of `main`: a `.git` file pointing into the main `.git`.
+ * An absolute pointer spells the main checkout as `spelledAs` (another path
+ * to the same directory, such as a link to it).
+ */
+function linkedWorktree(
+  root: string,
+  main: string,
+  relative = false,
+  spelledAs = main,
+): string {
   const worktree = join(root, "linked trees", "feature one");
   const gitDir = join(main, ".git", "worktrees", "feature one");
   mkdirSync(worktree, { recursive: true });
@@ -46,7 +55,7 @@ function linkedWorktree(root: string, main: string, relative = false): string {
   writeFileSync(join(gitDir, "commondir"), "../..\n");
   const pointer = relative
     ? "../../main repo/.git/worktrees/feature one"
-    : gitDir.replaceAll("\\", "/");
+    : join(spelledAs, ".git", "worktrees", "feature one").replaceAll("\\", "/");
   writeFileSync(join(worktree, ".git"), `gitdir: ${pointer}\n`);
   return worktree;
 }
@@ -108,6 +117,20 @@ describe("resolveCheckout", () => {
     expect(resolveCheckout(join(alias, "scripts"))).toEqual({
       workspace: comparableCheckout(main),
       worktree: comparableCheckout(main),
+    });
+  });
+
+  test("a linked worktree whose gitdir pointer reaches the main checkout through a link resolves to the main checkout's real path", () => {
+    const root = scratch();
+    const main = mainCheckout(root);
+    const alias = join(root, "alias of main");
+    symlinkSync(main, alias, "junction");
+    expect(comparableCheckout(alias)).not.toBe(comparableCheckout(main));
+    // The pointer, and so the commondir it leads to, spell the main checkout as the alias.
+    const worktree = linkedWorktree(root, main, false, alias);
+    expect(resolveCheckout(worktree)).toEqual({
+      workspace: comparableCheckout(main),
+      worktree: comparableCheckout(worktree),
     });
   });
 

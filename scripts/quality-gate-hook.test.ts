@@ -9,7 +9,7 @@
  *
  * As a subprocess: the real `.claude/hooks/quality-gate.ts` with JSON piped on
  * stdin, in a scratch directory that is not a repository and has no
- * package.json, with a PATH that reaches no real `bun` or `git`: empty; or
+ * package.json, with a PATH that reaches no real `bun`, and no `git` that finds a repository: empty; or
  * system directories only (so a shell is reachable); or, for two tests, a
  * directory of stand-ins in front of those. It therefore never runs this
  * suite again. With no stand-ins its own checks fail fast, and what is
@@ -20,7 +20,7 @@
  * Neither proves a live host session calls the hook.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "crypto";
 import {
   chmodSync,
@@ -52,6 +52,7 @@ import {
 } from "./eval-verdict-store";
 import { closeLedger } from "./ledger/db";
 import { queryEvents } from "./ledger/query";
+import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_ENV } from "./run-correlation";
 import { initRunCorrelation } from "./run-correlation-store";
 
@@ -176,14 +177,95 @@ const payload = (input: Record<string, unknown>): HookStdin => ({
 });
 const BY_HAND: HookStdin = { kind: "none", reason: "terminal" };
 
-const GIT_LOG = "git log --oneline --name-only -5";
+/** What the gate asks git for the branch's own commits: every commit since origin/HEAD. */
+const OWN_COMMITS = [
+  "log",
+  "--format=%x00%H",
+  "--name-only",
+  "origin/HEAD..HEAD",
+];
+/** What it asks instead when there is no origin/HEAD. */
+const LAST_FIVE = ["log", "--format=%x00%H", "--name-only", "-5"];
+
+/** clean-tree in a repository's checkout: its status, without the files the harness keeps there. */
+const REPOSITORY_STATUS = [
+  "status",
+  "--porcelain",
+  "--",
+  ".",
+  ":(exclude).tmp/work/run-correlations",
+  ":(exclude).tmp/work/evaluations",
+  ":(exclude).agent-forge-session",
+];
+/** Whether a repository tracks files where run correlations and verdicts are kept. */
+const TRACKED = [
+  "ls-files",
+  "--",
+  ".tmp/work/run-correlations",
+  ".tmp/work/evaluations",
+];
+
+/** A commit, as the paths it changes. */
+type Commit = string[];
+
+/** `git log --format=%x00%H --name-only` over `commits`, newest first. */
+function gitLog(commits: readonly Commit[]): string {
+  return commits
+    .map((files, at) => {
+      const hash = String(at + 1).padStart(40, "0");
+      return files.length > 0
+        ? `\0${hash}\n\n${files.join("\n")}`
+        : `\0${hash}`;
+    })
+    .join("\n");
+}
+
+/**
+ * A repository's history as git reports it: the branch's own commits, the
+ * commits on origin/HEAD below them, and whether origin/HEAD is there at all.
+ */
+interface History {
+  /** The branch's commits since origin/HEAD, newest first. */
+  branch: Commit[];
+  /** origin/HEAD's commits, newest first. */
+  base?: Commit[];
+  /** False when the repository has no origin/HEAD. */
+  originHead?: boolean;
+}
+
+function gitAnswers(
+  history: History,
+): Record<string, { ok: boolean; output: string }> {
+  const all = [...history.branch, ...(history.base ?? [])];
+  return {
+    [OWN_COMMITS.join(" ")]:
+      history.originHead === false
+        ? {
+            ok: false,
+            output:
+              "fatal: ambiguous argument 'origin/HEAD..HEAD': unknown revision or path not in the working tree.",
+          }
+        : { ok: true, output: gitLog(history.branch) },
+    [LAST_FIVE.join(" ")]: { ok: true, output: gitLog(all.slice(0, 5)) },
+    [REPOSITORY_STATUS.join(" ")]: { ok: true, output: "" },
+    [TRACKED.join(" ")]: { ok: true, output: "" },
+    "rev-parse --abbrev-ref HEAD": { ok: true, output: "feat/in-foo" },
+  };
+}
+
+/** A program run with an argument array, and the directory it was run in when one was given. */
+interface Exec {
+  file: string;
+  args: string[];
+  cwd?: string;
+}
 
 interface Recorded {
   outcome: GateOutcome;
   /** Every command line handed to a shell. */
   commands: string[];
   /** Every program run with an argument array. */
-  execs: Array<{ file: string; args: string[] }>;
+  execs: Exec[];
   /** Every run id whose verdict file the gate read. */
   reads: string[];
 }
@@ -197,6 +279,14 @@ function gate(
     env?: Record<string, string>;
     answers?: Record<string, { ok: boolean; output: string }>;
     bd?: Record<string, { ok: boolean; output: string }>;
+    /** The repository's history. By default one commit of the branch's own, holding a test file. */
+    history?: History;
+    /** Answers to git argument arrays, over what `history` gives. */
+    git?: Record<string, { ok: boolean; output: string }>;
+    /** Answers to any other program, by `<program> <arguments>`. Unanswered, a program succeeds. */
+    programs?: Record<string, { ok: boolean; output: string }>;
+    /** The text of `repos/repos.json`. Absent, it cannot be read. */
+    registry?: string;
     /** Who the run's state says built the work. */
     builder?: Executor;
     /** Runs right after the gate has read a verdict file, before it uses it. */
@@ -204,14 +294,15 @@ function gate(
   } = {},
 ): Recorded {
   const commands: string[] = [];
-  const execs: Array<{ file: string; args: string[] }> = [];
+  const execs: Exec[] = [];
   const reads: string[] = [];
+  const history = input.history ?? { branch: [["scripts/a.test.ts"]] };
   const answers: Record<string, { ok: boolean; output: string }> = {
-    [GIT_LOG]: { ok: true, output: "abc1234 a change\nscripts/a.test.ts" },
     "git rev-parse --show-toplevel": { ok: false, output: "" },
     "git rev-parse --abbrev-ref HEAD": { ok: true, output: "feat/x" },
     ...input.answers,
   };
+  const git = { ...gitAnswers(history), ...input.git };
   const deps: GateDeps = {
     cwd: box.cwd,
     env: input.env ?? {},
@@ -219,10 +310,19 @@ function gate(
       commands.push(cmd);
       return answers[cmd] ?? { ok: true, output: "" };
     },
-    execFile: (file, args) => {
-      execs.push({ file, args: [...args] });
-      return input.bd?.[args.join(" ")] ?? { ok: false, output: "" };
+    execFile: (file, args, opts) => {
+      execs.push({
+        file,
+        args: [...args],
+        ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      });
+      const key = args.join(" ");
+      if (file === "bd") return input.bd?.[key] ?? { ok: false, output: "" };
+      if (file === "git") return git[key] ?? { ok: false, output: "" };
+      return input.programs?.[`${file} ${key}`] ?? { ok: true, output: "" };
     },
+    harness: box.cwd,
+    registry: () => input.registry ?? null,
     hasScript: () => true,
     hasTestFiles: () => true,
     smiths: () => Object.values(BUILTIN_SMITHS),
@@ -262,6 +362,11 @@ function ran(recorded: Recorded): Extract<GateOutcome, { kind: "ran" }> {
 
 function check(recorded: Recorded, name: string) {
   return ran(recorded).result.checks.find((entry) => entry.name === name);
+}
+
+/** The calls the gate made to `bd`: what it asked Beads. */
+function beads(recorded: Recorded): Array<{ file: string; args: string[] }> {
+  return recorded.execs.filter((call) => call.file === "bd");
 }
 
 const BASE_COMMANDS = [
@@ -305,7 +410,7 @@ describe("an unbound host event", () => {
       expect(recorded.commands).toContain(command);
     }
     // Nothing about the issue is asked of Beads: there is no Beads id to ask with.
-    expect(recorded.execs).toEqual([]);
+    expect(beads(recorded)).toEqual([]);
     for (const name of ["ac-verify", "close-testing-attestation"]) {
       expect(check(recorded, name)).toMatchObject({
         skipped: true,
@@ -355,7 +460,7 @@ describe("an unbound host event", () => {
     expect(result.beadsIssueId).toBeNull();
     expect(result.executionRunId).toBeNull();
     expect("forgeSlug" in result).toBe(false);
-    expect(recorded.execs).toEqual([]);
+    expect(beads(recorded)).toEqual([]);
     expect(result.blockingFailures).toEqual(["eval-verdict"]);
   });
 
@@ -375,7 +480,7 @@ describe("an unbound host event", () => {
       "run correlation refused: the file is outside this checkout",
     );
     expect(result.passed).toBe(true);
-    expect(recorded.execs).toEqual([]);
+    expect(beads(recorded)).toEqual([]);
   });
 
   test("a --correlation flag that does not validate is refused before any check runs", () => {
@@ -406,9 +511,10 @@ describe("a correlated run", () => {
       bd: {
         "show bead-1 --json": {
           ok: true,
-          output: JSON.stringify([{ issue_type: "task" }]),
+          output: JSON.stringify([
+            { issue_type: "task", acceptance_criteria: "It works." },
+          ]),
         },
-        "show bead-1": { ok: true, output: "ac: it works" },
       },
     });
     const { result, correlation } = ran(recorded);
@@ -421,14 +527,70 @@ describe("a correlated run", () => {
     });
     expect("unlinkedReason" in result).toBe(false);
     expect(String(correlation?.beadsIssueId)).toBe("bead-1");
-    expect(recorded.execs).toEqual([
+    expect(beads(recorded)).toEqual([
       { file: "bd", args: ["show", "bead-1", "--json"] },
-      { file: "bd", args: ["show", "bead-1"] },
       { file: "bd", args: ["comments", "bead-1", "--json"] },
     ]);
     expect(check(recorded, "ac-verify")).toMatchObject({
       passed: true,
       output: "AC found — verify before closing task",
+    });
+  });
+
+  test("ac-verify finds the criteria an issue has in its acceptance field, with no ac: comment and no ac: anywhere in it", () => {
+    const box = sandbox();
+    const issue = {
+      id: "bead-1",
+      title: "A task",
+      description: "What to do.",
+      issue_type: "task",
+      acceptance_criteria: "A run passes; the docs say so.",
+    };
+    const recorded = gate(box, {
+      argv: ["--correlation", correlate(box)],
+      bd: {
+        "show bead-1 --json": { ok: true, output: JSON.stringify([issue]) },
+        "comments bead-1 --json": {
+          ok: true,
+          output: JSON.stringify([{ text: "worklog: started" }]),
+        },
+      },
+    });
+    expect(JSON.stringify(issue)).not.toContain("ac:");
+    expect(check(recorded, "ac-verify")).toEqual({
+      name: "ac-verify",
+      passed: true,
+      output: "AC found — verify before closing task",
+    });
+  });
+
+  test("ac-verify finds no criteria in an issue whose only ac: is text in its description and comments", () => {
+    const box = sandbox();
+    const recorded = gate(box, {
+      argv: ["--correlation", correlate(box)],
+      bd: {
+        "show bead-1 --json": {
+          ok: true,
+          output: JSON.stringify([
+            { issue_type: "task", description: "ac: lilac: maniac:" },
+          ]),
+        },
+        // What a plain `bd show` prints for that issue.
+        "show bead-1": {
+          ok: true,
+          output: "DESCRIPTION\n  ac: lilac: maniac:",
+        },
+        "comments bead-1 --json": {
+          ok: true,
+          output: JSON.stringify([{ text: "ac: changed the criterion" }]),
+        },
+      },
+    });
+    expect(check(recorded, "ac-verify")).toEqual({
+      name: "ac-verify",
+      passed: true,
+      skipped: true,
+      skipReason: "no AC found or Beads not configured",
     });
   });
 
@@ -498,6 +660,357 @@ describe("a correlated run", () => {
       executionRunId: "run-1",
       verdict: "PASS",
       evaluator: { kind: "human", actorKind: "reviewer" },
+    });
+  });
+});
+
+describe("test-evidence: the branch's own commits", () => {
+  /** A correlated run's TaskCompleted gate over `history`. */
+  const evidence = (history: History, git = {}): Recorded => {
+    const box = sandbox();
+    return gate(box, {
+      argv: ["--correlation", correlate(box)],
+      history,
+      git,
+    });
+  };
+
+  test("a test file committed further back than five commits passes: every commit since origin/HEAD is read", () => {
+    const history: History = {
+      branch: [
+        ["README.md"],
+        ["scripts/a.ts"],
+        [".agents/skills/forge-ship/SKILL.md"],
+        ["scripts/a.ts", "docs/guide.md"],
+        [".claude/skills/forge-ship/SKILL.md"],
+        ["scripts/b.ts"],
+        ["scripts/a.ts", "scripts/a.test.ts"],
+      ],
+      base: [["scripts/older.test.ts"]],
+    };
+    const recorded = evidence(history);
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: true,
+      output:
+        "test file among this branch's 7 commits since origin/HEAD: scripts/a.test.ts",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual([]);
+  });
+
+  test("git is given the range as an argument array, never on a shell command line", () => {
+    const recorded = evidence({ branch: [["scripts/a.test.ts"]] });
+    expect(recorded.execs).toContainEqual({ file: "git", args: OWN_COMMITS });
+    for (const command of recorded.commands) {
+      expect(command.startsWith("git log")).toBe(false);
+    }
+  });
+
+  test("a branch whose commits change documentation only has nothing to test, and the check says so", () => {
+    const recorded = evidence({
+      branch: [
+        ["README.md", ".claude/skills/forge-ship/SKILL.md"],
+        ['"docs/caf\\303\\251.md"', "docs/guide.mdx", "notes.txt"],
+      ],
+      base: [["scripts/a.ts"], ["scripts/b.ts"], ["scripts/c.ts"]],
+    });
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: true,
+      skipped: true,
+      skipReason:
+        "only documentation changed in this branch's 2 commits since origin/HEAD (.md, .mdx, .markdown, .txt, .rst, .adoc): nothing to test",
+    });
+    expect(ran(recorded).result.passed).toBe(true);
+  });
+
+  test("a branch with no commits of its own has nothing to test, and the check says so", () => {
+    const recorded = evidence({
+      branch: [],
+      base: [["scripts/a.ts"], ["scripts/b.ts"]],
+    });
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: true,
+      skipped: true,
+      skipReason:
+        "this branch has no commits since origin/HEAD: nothing to test",
+    });
+    expect(ran(recorded).result.passed).toBe(true);
+  });
+
+  test("a branch whose own commits change no files (merges only) has nothing to test, and the check says so", () => {
+    const recorded = evidence({
+      branch: [[], []],
+      base: [["scripts/a.ts"]],
+    });
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: true,
+      skipped: true,
+      skipReason:
+        "no files changed in this branch's 2 commits since origin/HEAD: nothing to test",
+    });
+  });
+
+  test("a branch whose own commits change code with no test file fails, and says which commits were read", () => {
+    const recorded = evidence({
+      branch: [["README.md"], ["scripts/a.ts"]],
+      base: [["scripts/a.test.ts"]],
+    });
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: false,
+      output:
+        "No test file among this branch's 2 commits since origin/HEAD, and more than documentation changed: commit the tests with the work",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["test-evidence"]);
+
+    const one = evidence({ branch: [["scripts/a.ts"]] });
+    expect(check(one, "test-evidence")?.output).toBe(
+      "No test file among this branch's 1 commit since origin/HEAD, and more than documentation changed: commit the tests with the work",
+    );
+  });
+
+  test("with no origin/HEAD the last five commits are read instead, and the check says so", () => {
+    const tested = evidence({
+      branch: [["scripts/a.ts"], ["scripts/a.test.ts"]],
+      originHead: false,
+    });
+    expect(tested.execs).toContainEqual({ file: "git", args: LAST_FIVE });
+    expect(check(tested, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: true,
+      output:
+        "no origin/HEAD to find this branch's own commits from, so the last five commits were read: test file scripts/a.test.ts",
+    });
+
+    // Documentation only is not "nothing to test" here: the last five
+    // commits need not be this branch's.
+    const untested = evidence({
+      branch: [["README.md"]],
+      base: [["scripts/a.ts"]],
+      originHead: false,
+    });
+    expect(check(untested, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: false,
+      output:
+        "No test file in the last five commits. There is no origin/HEAD to find this branch's own commits from (`git remote set-head origin --auto` sets it)",
+    });
+  });
+
+  test("git that cannot list the commits at all fails the check with what git said", () => {
+    const recorded = evidence(
+      { branch: [], originHead: false },
+      {
+        [LAST_FIVE.join(" ")]: {
+          ok: false,
+          output: "fatal: not a git repository",
+        },
+      },
+    );
+    expect(check(recorded, "test-evidence")).toEqual({
+      name: "test-evidence",
+      passed: false,
+      output: "git could not list the commits: fatal: not a git repository",
+    });
+  });
+});
+
+describe("a run in a repository under repos/", () => {
+  /** repos/foo inside the scratch checkout, which stands for the harness, and its run's pointer. */
+  function repositoryRun(box: Box): {
+    dir: string;
+    at: string;
+    pointer: string;
+  } {
+    const dir = join(box.cwd, "repos", "foo");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    const made = initRunCorrelation({
+      checkout: dir,
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+    });
+    if (!made.ok) throw new Error(made.error);
+    return { dir, at: made.correlation.checkout, pointer: made.path };
+  }
+
+  const FOO = JSON.stringify({
+    repos: [
+      {
+        name: "foo",
+        url: "https://example.invalid/foo.git",
+        defaultBranch: "main",
+        checks: [
+          { name: "typecheck", argv: ["node", "tsc.js", "--noEmit"] },
+          { name: "unit", argv: ["cargo", "test", "--", "a b"] },
+        ],
+      },
+    ],
+  });
+
+  test("runs the checks on its entry in repos/repos.json, each an argument array in the run's checkout, and none of the gate's own commands", () => {
+    const box = sandbox();
+    const { at, pointer } = repositoryRun(box);
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      registry: FOO,
+    });
+    const { result } = ran(recorded);
+
+    expect(result.checks.map((entry) => entry.name)).toEqual([
+      "typecheck",
+      "unit",
+      "clean-tree",
+      "ac-verify",
+      "close-testing-attestation",
+      "test-evidence",
+      "eval-verdict",
+    ]);
+    expect<unknown>(result).toMatchObject({
+      checkout: at,
+      branch: "feat/in-foo",
+      repository: "foo",
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+      passed: true,
+    });
+    const elsewhere = recorded.execs.filter((call) => call.file !== "bd");
+    expect(elsewhere).toEqual([
+      { file: "git", args: TRACKED, cwd: at },
+      { file: "node", args: ["tsc.js", "--noEmit"], cwd: at },
+      { file: "cargo", args: ["test", "--", "a b"], cwd: at },
+      { file: "git", args: REPOSITORY_STATUS, cwd: at },
+      { file: "git", args: OWN_COMMITS, cwd: at },
+      { file: "git", args: ["rev-parse", "--abbrev-ref", "HEAD"], cwd: at },
+    ]);
+    // The one command line is where the gate itself was started.
+    expect(recorded.commands).toEqual(["git rev-parse --show-toplevel"]);
+  });
+
+  test("a configured check that fails blocks, with its output in the entry", () => {
+    const box = sandbox();
+    const recorded = gate(box, {
+      argv: ["--correlation", repositoryRun(box).pointer],
+      registry: FOO,
+      programs: {
+        "cargo test -- a b": { ok: false, output: "test result: FAILED" },
+      },
+    });
+    expect(check(recorded, "unit")).toEqual({
+      name: "unit",
+      passed: false,
+      output: "test result: FAILED",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["unit"]);
+  });
+
+  test("a dirty tree in the run's checkout blocks clean-tree", () => {
+    const box = sandbox();
+    const recorded = gate(box, {
+      argv: ["--correlation", repositoryRun(box).pointer],
+      registry: FOO,
+      git: {
+        [REPOSITORY_STATUS.join(" ")]: { ok: true, output: "?? notes.txt" },
+      },
+    });
+    expect(check(recorded, "clean-tree")).toEqual({
+      name: "clean-tree",
+      passed: false,
+      output: "?? notes.txt",
+    });
+    expect(ran(recorded).result.blockingFailures).toEqual(["clean-tree"]);
+  });
+
+  test("a repository with no check set is refused before anything runs, naming the entry, whichever way the pointer came", () => {
+    const box = sandbox();
+    const { pointer } = repositoryRun(box);
+    const noEntry = JSON.stringify({ repos: [{ name: "bar", checks: [] }] });
+    for (const how of [
+      { argv: ["--correlation", pointer] },
+      { env: { [RUN_CORRELATION_ENV]: pointer } },
+    ]) {
+      const recorded = gate(box, { ...how, registry: noEntry });
+      expect(recorded.outcome).toEqual({
+        kind: "refused",
+        error: `${resolveCheckout(box.cwd).worktree}/repos/repos.json has no entry named "foo": add one with a "checks" list, each check { "name": ..., "argv": [program, ...arguments] }`,
+      });
+      expect(recorded.execs).toEqual([]);
+      expect(recorded.commands).toEqual(["git rev-parse --show-toplevel"]);
+    }
+  });
+
+  test("a repository that tracks files where run correlations or verdicts are kept is refused", () => {
+    const box = sandbox();
+    const { at, pointer } = repositoryRun(box);
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      registry: FOO,
+      git: {
+        [TRACKED.join(" ")]: {
+          ok: true,
+          output: ".tmp/work/run-correlations/run-1.json",
+        },
+      },
+    });
+    expect(recorded.outcome).toEqual({
+      kind: "refused",
+      error: `${at} tracks files under .tmp/work/run-correlations or .tmp/work/evaluations, and a run correlation or a verdict is never taken from a commit: untrack them, and ignore .tmp/ there`,
+    });
+    expect(recorded.execs.map((call) => call.file)).toEqual(["git"]);
+  });
+
+  test("strict mode reads the run's verdict in the repository's checkout", () => {
+    const box = sandbox();
+    const { dir, pointer } = repositoryRun(box);
+    // A failing verdict for the same run where the gate was started.
+    verdict(
+      box,
+      "run-1",
+      v2({
+        verdict: "FAIL",
+        findings: { blocker: 1, high: 0, medium: 0, low: 0 },
+      }),
+    );
+    const file = join(dir, evaluatorVerdictPath("run-1") ?? "");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(v2({ summary: "in foo" })));
+    const recorded = gate(box, {
+      argv: ["--correlation", pointer],
+      env: { AGENT_FORGE_EVAL_VERDICT: "strict" },
+      registry: FOO,
+    });
+    expect(check(recorded, "eval-verdict")).toEqual({
+      name: "eval-verdict",
+      passed: true,
+      output: "PASS B=0 H=0; evaluator: human reviewer",
+    });
+    expect(ran(recorded).boundVerdict?.summary).toBe("in foo");
+  });
+
+  test("a pointer into a checkout that is neither this one nor a repository under repos/ is refused from the flag, and leaves an environment pointer unlinked", () => {
+    const box = sandbox();
+    const other = join(box.root, "other");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    const made = initRunCorrelation({
+      checkout: other,
+      beadsIssueId: "bead-1",
+      executionRunId: "run-1",
+    });
+    if (!made.ok) throw new Error(made.error);
+    const reason = `run correlation refused: the run builds in ${made.correlation.checkout}, which is neither this checkout nor a repository under ${resolveCheckout(box.cwd).worktree}/repos: run the gate in that checkout`;
+
+    const flagged = gate(box, { argv: ["--correlation", made.path] });
+    expect(flagged.outcome).toEqual({ kind: "refused", error: reason });
+
+    const viaEnv = ran(
+      gate(box, { env: { [RUN_CORRELATION_ENV]: made.path } }),
+    );
+    expect(viaEnv.notice).toBe(reason);
+    expect(viaEnv.result).toMatchObject({
+      beadsIssueId: null,
+      unlinkedReason: reason,
     });
   });
 });
@@ -900,14 +1413,13 @@ describe("hostile stdin", () => {
         expect(command).not.toContain(MARK);
       }
       for (const call of recorded.execs) {
-        expect(call.file).toBe("bd");
+        expect(["bd", "git"]).toContain(call.file);
         expect(call.args.join(" ")).not.toContain(MARK);
       }
     }
-    expect(unlinked.execs).toEqual([]);
-    expect(linked.execs.map((call) => call.args)).toEqual([
+    expect(beads(unlinked)).toEqual([]);
+    expect(beads(linked).map((call) => call.args)).toEqual([
       ["show", "bead-1", "--json"],
-      ["show", "bead-1"],
       ["comments", "bead-1", "--json"],
     ]);
   });
@@ -985,7 +1497,7 @@ describe("TeammateIdle", () => {
       "tests",
       "clean-tree",
     ]);
-    expect(recorded.commands).not.toContain(GIT_LOG);
+    expect(recorded.execs.filter((call) => call.file === "git")).toEqual([]);
     expect(result.passed).toBe(true);
     expect(ran(recorded).trigger).toBe("TeammateIdle");
   });
@@ -1391,11 +1903,62 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
     return bin;
   }
 
+  /** The directory holding the compiled stand-in `git.exe`, once it is built. */
+  let compiledGit: string | null = null;
+  afterAll(() => {
+    if (compiledGit === null) return;
+    try {
+      rmSync(compiledGit, { recursive: true, force: true });
+    } catch {
+      // A child still holding the executable: the OS temp directory reclaims it.
+    }
+  });
+
+  /**
+   * The passing `git` below, compiled to an executable: built once for this
+   * file, on Windows only. The gate lists commits through a runner that there
+   * runs only an .exe or .com (anything else goes through cmd.exe), so the
+   * .cmd stand-in is refused by it. cmd.exe, which runs the gate's other git
+   * command lines, also finds the .exe before a .cmd in the same directory.
+   */
+  function passingGitExe(): string {
+    if (compiledGit !== null) return compiledGit;
+    const dir = mkdtempSync(join(tmpdir(), "quality gate git stand-in "));
+    const source = join(dir, "git.ts");
+    writeFileSync(
+      source,
+      [
+        "const [command] = process.argv.slice(2);",
+        'if (command === "log") console.log("a.test.ts");',
+        'process.exit(command === "status" || command === "log" ? 0 : 1);',
+        "",
+      ].join("\n"),
+    );
+    const built = Bun.spawnSync(
+      [
+        process.execPath,
+        "build",
+        "--compile",
+        source,
+        "--outfile",
+        join(dir, "git.exe"),
+      ],
+      { cwd: dir, stdout: "pipe", stderr: "pipe" },
+    );
+    if (built.exitCode !== 0) {
+      throw new Error(
+        `the stand-in git did not compile: ${built.stderr.toString()}`,
+      );
+    }
+    compiledGit = dir;
+    return dir;
+  }
+
   /**
    * Stand-ins under which every base check of the gate passes without running
    * anything: a `bun` that succeeds at whatever it is asked, and a `git` with
-   * a clean tree whose recent commits name a test file. The scratch checkout
-   * has no package.json and no test files, so lint and tests are skipped.
+   * a clean tree whose commits name a test file. The scratch checkout has no
+   * package.json and no test files, so lint and tests are skipped.
    */
   function passingChecks(box: Box): string {
     const bin = join(box.root, "passing bin");
@@ -1415,7 +1978,8 @@ describe("the gate entrypoint, spawned with stdin piped", () => {
         "exit 1",
       ],
     });
-    return `${bin}${process.platform === "win32" ? ";" : ":"}${SHELL_ONLY_PATH}`;
+    if (process.platform !== "win32") return `${bin}:${SHELL_ONLY_PATH}`;
+    return `${passingGitExe()};${bin};${SHELL_ONLY_PATH}`;
   }
 
   test(

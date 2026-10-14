@@ -51,7 +51,7 @@ Score mentally; **the highest axis that applies** usually wins (then downgrade o
 ## Commands (non-interactive)
 
 ```bash
-bd create --type task --title "..." --repo <repo> --priority <value>
+bd create --type task --title "[<repo>] ..." --priority <value>
 bd update <id> --priority <value>
 ```
 

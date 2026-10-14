@@ -94,6 +94,14 @@ async function relayTo(target: number): Promise<Relay> {
   };
 }
 
+/**
+ * The time limit of a test that builds a fixture: a hearth and a Vite server,
+ * both in this process. The first fixture in the file takes about 0.2 s on its
+ * own, and 7.6 to 10.3 s while 32 busy-looping processes share this
+ * 16-thread machine, past bun's 5 s default (wwj5).
+ */
+const FIXTURE_TIMEOUT_MS = 30_000;
+
 interface Fixture {
   vite: ViteDevServer;
   /** The dashboard's origin: what a browser on it would send as `Origin`. */
@@ -129,23 +137,16 @@ async function fixture(options: { relay?: boolean } = {}): Promise<Fixture> {
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   const relay = options.relay ? await relayTo(hearth.port) : null;
   const upstream = relay?.port ?? hearth.port;
-  const vite = await createServer({
-    root,
-    configFile: false,
-    logLevel: "silent",
-    server: { host: "127.0.0.1", port: freePort(), strictPort: false },
-    plugins: [
-      rebuildStub(),
-      hearthPlugin(root, {
-        home,
-        supervisor: {
-          ensure: async () => upstream,
-          stopIfOwner: async () => {},
-        },
-      }),
-    ],
-  });
-  await vite.listen();
+  const vite = await listeningVite(root, () => [
+    rebuildStub(),
+    hearthPlugin(root, {
+      home,
+      supervisor: {
+        ensure: async () => upstream,
+        stopIfOwner: async () => {},
+      },
+    }),
+  ]);
   const address = vite.httpServer?.address();
   if (!address || typeof address === "string") throw new Error("no address");
   cleanup.push(async () => {
@@ -216,108 +217,141 @@ function pageClient(url: string): {
   return { client, statuses };
 }
 
-test("proxies a read route through Vite to the hearth", async () => {
-  const { url } = await fixture();
-  const res = await fetch(`${url}/__agent-forge/dev-api/forge-run`);
-  expect(res.status).toBe(200);
-  expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
-});
+test(
+  "proxies a read route through Vite to the hearth",
+  async () => {
+    const { url } = await fixture();
+    const res = await fetch(`${url}/__agent-forge/dev-api/forge-run`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
-test("starts a council run through the proxy with the operator token, and streams its snapshot", async () => {
-  const { url, token } = await fixture();
-  const api = `${url}/__agent-forge/council-api`;
-  const start = (headers: Record<string, string>): Promise<Response> =>
-    fetch(`${api}/runs`, {
-      method: "POST",
-      // Behind the proxy the hearth sees the dashboard's Host, so the
-      // dashboard's origin is the one a request has to declare.
-      headers: { "Content-Type": "application/json", Origin: url, ...headers },
-      body: JSON.stringify({
-        sourceType: "text",
-        source: "Evaluate this plan and record any missing evidence.",
-        runId: "proxied-review",
-      }),
-    });
-  expect((await start({})).status).toBe(403);
-  const started = await start({ [OPERATOR_HEADER]: token });
-  expect(started.status).toBe(202);
-  let body = "";
-  for (let attempt = 0; attempt < 50; attempt++) {
+test(
+  "starts a council run through the proxy with the operator token, and streams the finished run's snapshot",
+  async () => {
+    const { url, token } = await fixture();
+    const api = `${url}/__agent-forge/council-api`;
+    const start = (headers: Record<string, string>): Promise<Response> =>
+      fetch(`${api}/runs`, {
+        method: "POST",
+        // Behind the proxy the hearth sees the dashboard's Host, so the
+        // dashboard's origin is the one a request has to declare.
+        headers: {
+          "Content-Type": "application/json",
+          Origin: url,
+          ...headers,
+        },
+        body: JSON.stringify({
+          sourceType: "text",
+          source: "Evaluate this plan and record any missing evidence.",
+          runId: "proxied-review",
+        }),
+      });
+    expect((await start({})).status).toBe(403);
+    const started = await start({ [OPERATOR_HEADER]: token });
+    expect(started.status).toBe(202);
+    // The stream is read once the run has finished: then it holds one snapshot
+    // and ends. While a run is going, its stream sends the whole job again on
+    // every event, 0.2 to 0.6 MB for this run. Read live through the proxy in
+    // this process, under load, that stream stopped part way and never ended
+    // in 26 of 1136 runs; read after the run had finished, in none of 396
+    // (wwj5). The dashboard runs Vite under Node, in a process of its own.
+    let status = "running";
+    for (let attempt = 0; attempt < 100 && status === "running"; attempt++) {
+      const job = (await (
+        await fetch(`${api}/runs/proxied-review`)
+      ).json()) as OperatorEnvelope<{ status: string }>;
+      status = job.data?.status ?? `no run: ${job.error}`;
+      if (status === "running")
+        await new Promise((done) => setTimeout(done, 100));
+    }
+    expect(status).toBe("completed");
     const stream = await fetch(`${api}/runs/proxied-review/events`);
     expect(stream.headers.get("content-type")).toBe("text/event-stream");
-    body = await stream.text();
-    if (body.includes('"status":"completed"')) break;
-    await new Promise((done) => setTimeout(done, 100));
-  }
-  expect(body).toContain("event: snapshot");
-  expect(body).toContain('"status":"completed"');
-}, 20_000);
+    const body = await stream.text();
+    expect(body).toContain("event: snapshot");
+    expect(body).toContain('"status":"completed"');
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
-test("the hearth stream stays open through the proxy: a snapshot, then a delta as it happens", async () => {
-  const { url, ledger, root } = await fixture();
-  const client = await openEventStream(`${url}/__agent-forge/stream`, {
-    Origin: url,
-  });
-  cleanup.push(async () => client.close());
-  expect(client.response.status).toBe(200);
-  expect(client.response.headers.get("content-type")).toBe("text/event-stream");
+test(
+  "the hearth stream stays open through the proxy: a snapshot, then a delta as it happens",
+  async () => {
+    const { url, ledger, root } = await fixture();
+    const client = await openEventStream(`${url}/__agent-forge/stream`, {
+      Origin: url,
+    });
+    cleanup.push(async () => client.close());
+    expect(client.response.status).toBe(200);
+    expect(client.response.headers.get("content-type")).toBe(
+      "text/event-stream",
+    );
 
-  // Read while the stream is open: a proxy that buffered would deliver nothing yet.
-  const first = await client.next(5000);
-  expect(first?.event).toBe("snapshot");
-  const snapshot = JSON.parse(first?.data ?? "{}") as StreamSnapshot;
-  expect(snapshot.queue).toEqual({ ok: true, data: [], error: null });
+    // Read while the stream is open: a proxy that buffered would deliver nothing yet.
+    const first = await client.next(5000);
+    expect(first?.event).toBe("snapshot");
+    const snapshot = JSON.parse(first?.data ?? "{}") as StreamSnapshot;
+    expect(snapshot.queue).toEqual({ ok: true, data: [], error: null });
 
-  const stored = appendEvent(
-    {
-      kind: "gate.ran",
-      workspace: resolveCheckout(root).workspace,
-      payload: { gate: "typecheck", passed: true },
-    },
-    { path: ledger },
-  );
-  if (!stored.ok || !("id" in stored)) throw new Error("event not stored");
-  const appended = performance.now();
-  const delta = await client.next(1000);
-  expect(performance.now() - appended).toBeLessThan(1000);
-  expect(delta).toMatchObject({ event: "delta", id: String(stored.id) });
-  expect(stored.id).toBeGreaterThan(snapshot.cursor);
-}, 20_000);
+    const stored = appendEvent(
+      {
+        kind: "gate.ran",
+        workspace: resolveCheckout(root).workspace,
+        payload: { gate: "typecheck", passed: true },
+      },
+      { path: ledger },
+    );
+    if (!stored.ok || !("id" in stored)) throw new Error("event not stored");
+    const appended = performance.now();
+    const delta = await client.next(1000);
+    expect(performance.now() - appended).toBeLessThan(1000);
+    expect(delta).toMatchObject({ event: "delta", id: String(stored.id) });
+    expect(stored.id).toBeGreaterThan(snapshot.cursor);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
-test("when the hearth's connections close mid-stream, the page's stream client behind the proxy leaves live within 2 s and shows an event written after the cut within 3 s", async () => {
-  const { url, ledger, root, relay } = await relayedFixture();
-  const { client, statuses } = pageClient(url);
-  await eventually("live", () => client.getState().status === "live", 5000);
+test(
+  "when the hearth's connections close mid-stream, the page's stream client behind the proxy leaves live within 2 s and shows an event written after the cut within 3 s",
+  async () => {
+    const { url, ledger, root, relay } = await relayedFixture();
+    const { client, statuses } = pageClient(url);
+    await eventually("live", () => client.getState().status === "live", 5000);
 
-  relay.cut();
-  const cutAt = performance.now();
-  // Written while the page is cut off, so only a new connection can bring it.
-  const stored = appendEvent(
-    {
-      kind: "gate.ran",
-      workspace: resolveCheckout(root).workspace,
-      payload: { gate: "typecheck", passed: true },
-    },
-    { path: ledger },
-  );
-  if (!stored.ok || !("id" in stored)) throw new Error("event not stored");
+    relay.cut();
+    const cutAt = performance.now();
+    // Written while the page is cut off, so only a new connection can bring it.
+    const stored = appendEvent(
+      {
+        kind: "gate.ran",
+        workspace: resolveCheckout(root).workspace,
+        payload: { gate: "typecheck", passed: true },
+      },
+      { path: ledger },
+    );
+    if (!stored.ok || !("id" in stored)) throw new Error("event not stored");
 
-  await eventually(
-    "the page leaves live",
-    () => client.getState().status !== "live",
-    2000,
-  );
-  const left = statuses.find(
-    (entry) => entry.at >= cutAt && entry.status !== "live",
-  );
-  expect(left?.status).toBe("reconnecting");
-  await eventually(
-    "the event written after the cut is shown",
-    () => (client.getState().cursor ?? 0) >= stored.id,
-    3000 - (performance.now() - cutAt),
-  );
-  expect(client.getState().status).toBe("live");
-}, 20_000);
+    await eventually(
+      "the page leaves live",
+      () => client.getState().status !== "live",
+      2000,
+    );
+    const left = statuses.find(
+      (entry) => entry.at >= cutAt && entry.status !== "live",
+    );
+    expect(left?.status).toBe("reconnecting");
+    await eventually(
+      "the event written after the cut is shown",
+      () => (client.getState().cursor ?? 0) >= stored.id,
+      3000 - (performance.now() - cutAt),
+    );
+    expect(client.getState().status).toBe("live");
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
 test("when nothing answers for the hearth after its connections close, the page's stream client behind the proxy turns live updates off", async () => {
   const { url, relay } = await relayedFixture();
@@ -334,28 +368,67 @@ test("when nothing answers for the hearth after its connections close, the page'
   expect(client.getState().offReason).toBe("lost");
 }, 30_000);
 
-test("refuses a foreign Origin through the proxy", async () => {
-  const { url } = await fixture();
-  const headers = { Origin: "https://evil.example" };
-  expect(
-    (await fetch(`${url}/__agent-forge/dev-api/forge-run`, { headers })).status,
-  ).toBe(403);
-  expect(
-    (
-      await fetch(`${url}/__agent-forge/council-api/runs`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: "{}",
-      })
-    ).status,
-  ).toBe(403);
-});
+test(
+  "refuses a foreign Origin through the proxy",
+  async () => {
+    const { url } = await fixture();
+    const headers = { Origin: "https://evil.example" };
+    expect(
+      (await fetch(`${url}/__agent-forge/dev-api/forge-run`, { headers }))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${url}/__agent-forge/council-api/runs`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+    ).toBe(403);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
-test("rebuild-pages is answered by Vite and never forwarded to the hearth", async () => {
-  const { url } = await fixture();
-  const res = await fetch(`${url}/__agent-forge/rebuild-pages`);
-  expect(((await res.json()) as { via?: string }).via).toBe("vite");
-});
+test(
+  "rebuild-pages is answered by Vite and never forwarded to the hearth",
+  async () => {
+    const { url } = await fixture();
+    const res = await fetch(`${url}/__agent-forge/rebuild-pages`);
+    expect(((await res.json()) as { via?: string }).via).toBe("vite");
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+/**
+ * A Vite server for `root`, listening on a port that was free a moment before.
+ * Another process can take the port in between. Vite then retries on the same
+ * server, and under bun that retry never settles: the fixture hung until the
+ * test's limit (wwj5). With `strictPort` the taken port is refused at once,
+ * and the server is built again on another port.
+ */
+async function listeningVite(
+  root: string,
+  plugins: () => Plugin[],
+): Promise<ViteDevServer> {
+  for (let attempt = 1; ; attempt++) {
+    const vite = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: freePort(), strictPort: true },
+      plugins: plugins(),
+    });
+    try {
+      await vite.listen();
+      return vite;
+    } catch (error) {
+      await vite.close();
+      if (attempt === 5 || !String(error).includes("is already in use"))
+        throw error;
+    }
+  }
+}
 
 /**
  * A port nothing listened on a moment ago. Vite given port 0 starts at 5173,
@@ -449,99 +522,110 @@ const PROXIED_GETS: Array<[string, number]> = [
 const REPEAT_REFUSAL =
   "The control-plane APIs refuse a request that sends Host, Origin or Sec-Fetch-Site more than once";
 
-test("through the proxy, a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is refused by the guard on the token, health, dev-api, council-api and sessions paths, and is not served the token", async () => {
-  const { url, token } = await fixture();
-  const host = `Host: ${new URL(url).host}`;
-  const origin = `Origin: ${url}`;
-  const site = "Sec-Fetch-Site: same-origin";
-  const foreignOrigin = "Origin: https://evil.example";
-  const crossSite = "Sec-Fetch-Site: cross-site";
-  const foreignHost = "Host: evil.example";
-  const repeats: Array<[string, string[]]> = [
-    [
-      "a foreign Origin then the dashboard's",
-      [host, foreignOrigin, origin, site],
-    ],
-    [
-      "the dashboard's Origin then a foreign one",
-      [host, origin, foreignOrigin, site],
-    ],
-    [
-      "the dashboard's Origin twice, once in lower case",
-      [host, origin, origin.replace("Origin", "origin"), site],
-    ],
-    ["cross-site then same-origin", [host, origin, crossSite, site]],
-    ["same-origin then cross-site", [host, origin, site, crossSite]],
-    ["same-origin twice", [host, origin, site, site]],
-    ["a foreign Host then the dashboard's", [foreignHost, host, origin, site]],
-    [
-      "the dashboard's Host then a foreign one",
-      [host, foreignHost, origin, site],
-    ],
-    ["the dashboard's Host twice", [host, host, origin, site]],
-  ];
-  const answers: unknown[] = [];
-  const refusals: unknown[] = [];
-  for (const [path] of PROXIED_GETS) {
-    for (const [label, lines] of repeats) {
-      const answer = await rawGet(url, path, lines);
-      let error: unknown = null;
-      try {
-        error = (JSON.parse(answer.body) as { error: unknown }).error;
-      } catch {
-        error = `not JSON: ${answer.body.slice(0, 80)}`;
+test(
+  "through the proxy, a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is refused by the guard on the token, health, dev-api, council-api and sessions paths, and is not served the token",
+  async () => {
+    const { url, token } = await fixture();
+    const host = `Host: ${new URL(url).host}`;
+    const origin = `Origin: ${url}`;
+    const site = "Sec-Fetch-Site: same-origin";
+    const foreignOrigin = "Origin: https://evil.example";
+    const crossSite = "Sec-Fetch-Site: cross-site";
+    const foreignHost = "Host: evil.example";
+    const repeats: Array<[string, string[]]> = [
+      [
+        "a foreign Origin then the dashboard's",
+        [host, foreignOrigin, origin, site],
+      ],
+      [
+        "the dashboard's Origin then a foreign one",
+        [host, origin, foreignOrigin, site],
+      ],
+      [
+        "the dashboard's Origin twice, once in lower case",
+        [host, origin, origin.replace("Origin", "origin"), site],
+      ],
+      ["cross-site then same-origin", [host, origin, crossSite, site]],
+      ["same-origin then cross-site", [host, origin, site, crossSite]],
+      ["same-origin twice", [host, origin, site, site]],
+      [
+        "a foreign Host then the dashboard's",
+        [foreignHost, host, origin, site],
+      ],
+      [
+        "the dashboard's Host then a foreign one",
+        [host, foreignHost, origin, site],
+      ],
+      ["the dashboard's Host twice", [host, host, origin, site]],
+    ];
+    const answers: unknown[] = [];
+    const refusals: unknown[] = [];
+    for (const [path] of PROXIED_GETS) {
+      for (const [label, lines] of repeats) {
+        const answer = await rawGet(url, path, lines);
+        let error: unknown = null;
+        try {
+          error = (JSON.parse(answer.body) as { error: unknown }).error;
+        } catch {
+          error = `not JSON: ${answer.body.slice(0, 80)}`;
+        }
+        answers.push({
+          path,
+          label,
+          status: answer.status,
+          error,
+          token: answer.body.includes(token),
+        });
+        refusals.push({
+          path,
+          label,
+          status: 403,
+          error: REPEAT_REFUSAL,
+          token: false,
+        });
       }
-      answers.push({
-        path,
-        label,
-        status: answer.status,
-        error,
-        token: answer.body.includes(token),
-      });
-      refusals.push({
-        path,
-        label,
-        status: 403,
-        error: REPEAT_REFUSAL,
-        token: false,
-      });
     }
-  }
-  expect(answers).toEqual(refusals);
-}, 20_000);
+    expect(answers).toEqual(refusals);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
-test("through the proxy, a GET with Host, Origin and Sec-Fetch-Site each sent once keeps its answer on the same paths, also when Accept is sent twice", async () => {
-  const { url, token } = await fixture();
-  const once = [
-    `Host: ${new URL(url).host}`,
-    `Origin: ${url}`,
-    "Sec-Fetch-Site: same-origin",
-  ];
-  const variants: Array<[string, string[]]> = [
-    ["each once", once],
-    ["each once, Accept twice", [...once, "Accept: */*", "Accept: */*"]],
-  ];
-  const answers: unknown[] = [];
-  const expected: unknown[] = [];
-  for (const [path, answered] of PROXIED_GETS) {
-    for (const [label, lines] of variants) {
-      const answer = await rawGet(url, path, lines);
-      answers.push({
-        path,
-        label,
-        status: answer.status,
-        token: answer.body.includes(token),
-      });
-      expected.push({
-        path,
-        label,
-        status: answered,
-        token: path === "/__agent-forge/token",
-      });
+test(
+  "through the proxy, a GET with Host, Origin and Sec-Fetch-Site each sent once keeps its answer on the same paths, also when Accept is sent twice",
+  async () => {
+    const { url, token } = await fixture();
+    const once = [
+      `Host: ${new URL(url).host}`,
+      `Origin: ${url}`,
+      "Sec-Fetch-Site: same-origin",
+    ];
+    const variants: Array<[string, string[]]> = [
+      ["each once", once],
+      ["each once, Accept twice", [...once, "Accept: */*", "Accept: */*"]],
+    ];
+    const answers: unknown[] = [];
+    const expected: unknown[] = [];
+    for (const [path, answered] of PROXIED_GETS) {
+      for (const [label, lines] of variants) {
+        const answer = await rawGet(url, path, lines);
+        answers.push({
+          path,
+          label,
+          status: answer.status,
+          token: answer.body.includes(token),
+        });
+        expected.push({
+          path,
+          label,
+          status: answered,
+          token: path === "/__agent-forge/token",
+        });
+      }
     }
-  }
-  expect(answers).toEqual(expected);
-}, 20_000);
+    expect(answers).toEqual(expected);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
 
 function fakeRequest(
   remoteAddress: string,

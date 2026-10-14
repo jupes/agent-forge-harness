@@ -7,8 +7,9 @@ import {
   recordRound,
   reviewComment,
   roundFromVerdict,
+  roundRecordedFrom,
 } from "./auto-loop";
-import { exitCodeFor } from "./auto-loop-cli";
+import { exitCodeFor, parseReviewArgs } from "./auto-loop-cli";
 import type { ForgeState } from "./phases";
 
 const AT = "2026-06-04T00:00:00.000Z";
@@ -189,6 +190,53 @@ describe("roundFromVerdict", () => {
     expect(second.verdict).toBe("UNREADABLE");
     expect(second.tier).toBe("opus");
   });
+
+  test("a round graded from a verdict file carries the file's digest; a round with no verdict carries none", () => {
+    const taken = roundFromVerdict({
+      phase: "plan",
+      history: [],
+      verdict: {
+        schemaVersion: 1,
+        taskId: "t-1",
+        verdict: "PASS",
+        findings: clean,
+      },
+      verdictSha256: "a".repeat(64),
+      at: AT,
+    });
+    expect(taken.verdictSha256).toBe("a".repeat(64));
+    const unreadable = roundFromVerdict({
+      phase: "plan",
+      history: [],
+      verdict: null,
+      verdictSha256: "b".repeat(64),
+      at: AT,
+    });
+    expect("verdictSha256" in unreadable).toBe(false);
+  });
+});
+
+describe("roundRecordedFrom", () => {
+  const history = [
+    round({ phase: "research", round: 1, verdictSha256: "d-research-1" }),
+    round({ phase: "plan", round: 1, verdict: "UNREADABLE" }),
+    round({ phase: "plan", round: 2, verdictSha256: "d-plan-2" }),
+  ];
+
+  test("finds the round, in any phase, that was graded from a file with this digest", () => {
+    expect(roundRecordedFrom(history, "d-research-1")).toMatchObject({
+      phase: "research",
+      round: 1,
+    });
+    expect(roundRecordedFrom(history, "d-plan-2")).toMatchObject({
+      phase: "plan",
+      round: 2,
+    });
+  });
+
+  test("a digest no round recorded finds nothing", () => {
+    expect(roundRecordedFrom(history, "d-new")).toBeUndefined();
+  });
 });
 
 describe("recordRound", () => {
@@ -252,5 +300,134 @@ describe("exit codes let an unattended caller branch without parsing", () => {
     expect(exitCodeFor("advance")).toBe(0);
     expect(exitCodeFor("revise")).toBe(3);
     expect(exitCodeFor("halt")).toBe(2);
+  });
+});
+
+describe("the forge:review command line, read strictly", () => {
+  test("the value flags are read in either form, and the two switches", () => {
+    expect(
+      parseReviewArgs([
+        "--slug",
+        "demo",
+        "--phase=plan",
+        "--verdict",
+        "C:/check out/review-plan-1.json",
+        "--tier=master",
+        "--max-revisions",
+        "1",
+      ]),
+    ).toEqual({
+      ok: true,
+      data: {
+        values: {
+          slug: "demo",
+          phase: "plan",
+          verdict: "C:/check out/review-plan-1.json",
+          tier: "master",
+          "max-revisions": "1",
+        },
+        decisionOnly: false,
+        ledger: false,
+      },
+      error: null,
+    });
+    expect(
+      parseReviewArgs(["--slug", "demo", "--phase", "plan", "--decision-only"])
+        .data,
+    ).toMatchObject({ decisionOnly: true, ledger: false });
+    expect(parseReviewArgs(["--slug", "demo", "--ledger"]).data).toMatchObject({
+      decisionOnly: false,
+      ledger: true,
+    });
+  });
+
+  test("a flag with no value is refused, rather than fed the next flag", () => {
+    for (const argv of [
+      // The walk's line, with the verdict path left empty.
+      ["--slug", "demo", "--phase", "research", "--verdict", "--tier", "human"],
+      ["--slug", "demo", "--phase", "research", "--verdict"],
+      ["--slug", "demo", "--phase", "research", "--verdict="],
+      ["--slug", "demo", "--phase", "research", "--verdict", ""],
+      ["--slug", "demo", "--phase", "research", "--verdict", "  "],
+    ]) {
+      const refused = parseReviewArgs(argv);
+      expect({ argv, refused }).toEqual({
+        argv,
+        refused: { ok: false, data: null, error: "--verdict needs a value." },
+      });
+    }
+    expect(parseReviewArgs(["--slug", "--phase", "plan"]).error).toBe(
+      "--slug needs a value.",
+    );
+    expect(
+      parseReviewArgs(["--slug", "demo", "--max-revisions", "--ledger"]).error,
+    ).toBe("--max-revisions needs a value.");
+  });
+
+  test("an unknown flag is refused with the known ones", () => {
+    for (const flag of [
+      "--verdikt",
+      "--max-revision",
+      "--decision_only",
+      "--tier-x=1",
+      "--",
+    ]) {
+      const refused = parseReviewArgs(["--slug", "demo", flag, "x"]);
+      expect({ flag, ok: refused.ok }).toEqual({ flag, ok: false });
+      expect(refused.error).toContain(`unknown flag ${flag.split("=")[0]}`);
+      expect(refused.error).toContain("--verdict");
+      expect(refused.error).toContain("--decision-only");
+    }
+  });
+
+  test("a flag given twice is refused, in either form and for a switch", () => {
+    expect(
+      parseReviewArgs(["--slug", "demo", "--phase", "plan", "--phase=ship"])
+        .error,
+    ).toBe("--phase is given twice.");
+    expect(
+      parseReviewArgs(["--slug", "demo", "--verdict", "a", "--verdict", "b"])
+        .error,
+    ).toBe("--verdict is given twice.");
+    expect(
+      parseReviewArgs(["--slug", "demo", "--ledger", "--ledger"]).error,
+    ).toBe("--ledger is given twice.");
+  });
+
+  test("a value on a switch, a word that is no flag's value and a placeholder are refused", () => {
+    expect(parseReviewArgs(["--slug", "demo", "--ledger=yes"]).error).toBe(
+      "--ledger takes no value.",
+    );
+    // An unquoted path with a space in it: the rest is not dropped.
+    expect(
+      parseReviewArgs([
+        "--slug",
+        "demo",
+        "--phase",
+        "plan",
+        "--verdict",
+        "C:/check",
+        "out/review-plan-1.json",
+      ]).error,
+    ).toBe('unexpected argument "out/review-plan-1.json".');
+    for (const argv of [
+      ["--slug", "<slug>"],
+      ["--slug", "demo", "--verdict", "<path>"],
+      ["--slug", "demo", "--tier=<tier>"],
+    ]) {
+      expect(parseReviewArgs(argv).error).toContain("is a placeholder");
+    }
+  });
+
+  test("what the values mean is not this function's to judge: it returns them as typed", () => {
+    expect(parseReviewArgs([])).toEqual({
+      ok: true,
+      data: { values: {}, decisionOnly: false, ledger: false },
+      error: null,
+    });
+    expect(
+      parseReviewArgs(["--phase", "nonsense", "--max-revisions", "-1"]).data
+        ?.values,
+    ).toEqual({ phase: "nonsense", "max-revisions": "-1" });
   });
 });

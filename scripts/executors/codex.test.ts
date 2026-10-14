@@ -1,13 +1,25 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEvent } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
+import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
-import { claudeAdapter } from "./claude";
-import { createCodexAdapter, parseCodexError, parseCodexLine } from "./codex";
+import {
+  codexSyncDirectory,
+  createCodexAdapter,
+  parseCodexError,
+  parseCodexLine,
+} from "./codex";
 import { buildChildEnv } from "./env";
 import { type ExecDeps, runExec } from "./exec-cli";
 import type { SpawnRequest } from "./types";
@@ -44,6 +56,62 @@ function setup() {
     adapters: { codex: createCodexAdapter({ prepare: () => undefined }) },
   };
   return { root, worktree, ledger, deps };
+}
+
+/** What the planted `codex:sync` writes in the directory it runs in: that directory. */
+const SYNC_MARKER = "codex-synced.txt";
+
+/** A `codex:sync` script in `dir` that only records where it ran. */
+function plantSyncScript(dir: string): void {
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      name: "planted-harness",
+      private: true,
+      scripts: { "codex:sync": "bun mark-synced.ts" },
+    }),
+  );
+  writeFileSync(
+    join(dir, "mark-synced.ts"),
+    `require("fs").writeFileSync(${JSON.stringify(SYNC_MARKER)}, process.cwd());\n`,
+  );
+}
+
+/**
+ * A harness checkout and a linked worktree of it, laid out as git lays them
+ * out (the worktree's `.git` file names its admin directory, whose
+ * `commondir` leads back to the main checkout's `.git`), each with a planted
+ * `codex:sync`.
+ */
+function harnessWithLinkedWorktree() {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "codex sync ")));
+  const main = join(root, "harness main");
+  const admin = join(main, ".git", "worktrees", "linked");
+  mkdirSync(admin, { recursive: true });
+  writeFileSync(join(admin, "commondir"), "../..\n");
+  const linked = join(root, "harness linked");
+  mkdirSync(linked);
+  writeFileSync(join(linked, ".git"), `gitdir: ${admin}\n`);
+  plantSyncScript(main);
+  plantSyncScript(linked);
+  return { root, main, linked };
+}
+
+/** One run of the codex adapter with its default preparation; the reason its session ended. */
+async function runDefaultCodex(where: { workspace: string; worktree: string }) {
+  const handle = await createCodexAdapter().spawn({
+    beadId: "b-sync",
+    ...where,
+    smith: BUILTIN_SMITHS["codex-journeyman"] as SpawnRequest["smith"],
+    prompt: "x",
+    env: buildChildEnv(process.env, []),
+    command: fake(),
+  });
+  let reason: string | undefined;
+  for await (const event of handle.events) {
+    if (event.kind === "session.ended") reason = event.payload.reason;
+  }
+  return reason;
 }
 
 type ToolCalled = Extract<LedgerEvent, { kind: "tool.called" }>;
@@ -181,6 +249,44 @@ describe("codex adapter", () => {
       // drain
     }
     expect(prepared).toEqual([root]);
+  });
+
+  test("by default codex:sync runs in the linked worktree of the harness the executor runs in, not in the harness checkout it was launched from", async () => {
+    const { main, linked } = harnessWithLinkedWorktree();
+    const ended = await runDefaultCodex({ workspace: main, worktree: linked });
+    expect(ended).toBe("completed");
+    expect(
+      comparableCheckout(readFileSync(join(linked, SYNC_MARKER), "utf8")),
+    ).toBe(comparableCheckout(linked));
+    expect(existsSync(join(main, SYNC_MARKER))).toBe(false);
+  });
+
+  test("by default codex:sync does not run when the executor's checkout is not the harness's (a repository of its own), and the run goes ahead", async () => {
+    const { root, main } = harnessWithLinkedWorktree();
+    const own = join(root, "own repo");
+    mkdirSync(join(own, ".git"), { recursive: true });
+    plantSyncScript(own);
+    const ended = await runDefaultCodex({ workspace: main, worktree: own });
+    expect(ended).toBe("completed");
+    expect(existsSync(join(own, SYNC_MARKER))).toBe(false);
+    expect(existsSync(join(main, SYNC_MARKER))).toBe(false);
+  });
+
+  test("codexSyncDirectory: the top level of the executor's checkout when it is the harness's (from either side of a linked worktree, or a directory inside one); none for another repository", () => {
+    const { root, main, linked } = harnessWithLinkedWorktree();
+    const inside = join(linked, "src", "deep");
+    mkdirSync(inside, { recursive: true });
+    const own = join(root, "own repo");
+    mkdirSync(join(own, ".git"), { recursive: true });
+
+    const at = (workspace: string, worktree: string) =>
+      codexSyncDirectory({ workspace, worktree });
+    expect(at(main, main)).toBe(comparableCheckout(main));
+    expect(at(main, linked)).toBe(comparableCheckout(linked));
+    expect(at(linked, main)).toBe(comparableCheckout(main));
+    expect(at(main, inside)).toBe(comparableCheckout(linked));
+    expect(at(main, own)).toBeUndefined();
+    expect(at(own, main)).toBeUndefined();
   });
 
   test("maps command_execution items to tool calls with exit codes", () => {
@@ -408,17 +514,5 @@ describe("codex adapter: shapes the real CLI printed, replayed by the fake binar
       reason: "failed: exit 0, provider reported an error",
     });
     expect(JSON.stringify(rows)).not.toContain("tool host");
-  });
-});
-
-describe("doctor", () => {
-  test("a missing binary is data (found:false), not a throw", async () => {
-    const report = await claudeAdapter.doctor([
-      join(tmpdir(), "definitely-not-a-real-binary-xyz"),
-    ]);
-    expect(report.provider).toBe("claude");
-    expect(report.found).toBe(true); // override given, but it cannot run
-    expect(report.ok).toBe(false);
-    expect(report.reason).toBeTruthy();
   });
 });

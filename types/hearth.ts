@@ -603,6 +603,22 @@ export interface BeadOptions {
   };
 }
 
+/**
+ * What `GET /beads/counts` answers: the dashboard's four Beads cards, counted
+ * from the tracker by the rules the snapshot builder applies to a `bd export`
+ * (`scripts/beads-dashboard.ts`). `open` counts every issue whose stored
+ * status is not `in_progress`, `closed` or `blocked` (a deferred issue is
+ * open). `blocked` counts the issues that are not closed and wait on a
+ * `blocks` or `requires` dependency that is not closed, whatever their stored
+ * status; an issue stored as `blocked` with no such dependency is in no card.
+ */
+export interface BeadCounts {
+  open: number;
+  inProgress: number;
+  blocked: number;
+  closed: number;
+}
+
 /** What a write to the tracker (`POST /beads…`) answers once `bd` confirmed it. */
 export interface BeadWriteResult {
   /** The bead that was written, as `bd` printed it. */

@@ -202,11 +202,11 @@ using `.claude/skills/beads-priority-assignment/SKILL.md` (see [[beads-priority-
 
 ```bash
 # One feature (or epic) to group the work, unless the run was started from an issue (see below)
-bd create --json --repo <repo> --type feature --title "<feature title>" --priority <p> \
+bd create --json --type feature --title "[<repo>] <feature title>" --priority <p> \
   --description "<summary>" --acceptance "<top-level acceptance criteria>"
 
 # One task per checkpoint (or per behavior for fine-grained TDD), with its label and its file map
-bd create --json --repo <repo> --type task --title "<checkpoint/behavior>" --priority <p> \
+bd create --json --type task --title "[<repo>] <checkpoint/behavior>" --priority <p> \
   --labels "complexity:<low|medium|high>" \
   --acceptance "<the test(s) that prove this done>" \
   --body-file .tmp/work/<slug>-task-<letter>.md

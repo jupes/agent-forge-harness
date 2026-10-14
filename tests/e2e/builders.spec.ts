@@ -14,6 +14,7 @@ import {
   createFromBuilder,
   isList,
   requireStandIn,
+  seedProposed,
   standInCalls,
 } from "./stand-in";
 
@@ -377,6 +378,34 @@ test("create, claim and comment from the bead builder go through the control pla
   await expect(again).toContainText(parentId);
 });
 
+test("labels bd prints in its answer to a claim are shown in a Labels row on the builder's created card", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Labelled by bd");
+  const card = page.locator("#bead-created-card");
+  const row = (name: string) =>
+    card
+      .locator(".af-detail-row")
+      .filter({ has: page.locator("dt", { hasText: name }) });
+  // The create's answer has no labels: the card has no Labels row.
+  await expect(row("Status")).toBeVisible();
+  await expect(row("Labels")).toHaveCount(0);
+
+  // bd's issue now holds a label, put there as the queue's propose would; bd
+  // prints it with the claim.
+  seedProposed(id);
+  const actions = card.getByRole("region", { name: `Actions on ${id}` });
+  await actions.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(actions.locator('[data-outcome="done"]')).toContainText(
+    `Claimed ${id}`,
+  );
+  await expect(row("Labels").locator("dd .af-tag")).toHaveText([
+    "queue:proposed",
+  ]);
+});
+
 test("claim, comment and close from the issue detail panel; what was changed is still shown when the row is reopened and after a reload", async ({
   page,
 }) => {
@@ -492,7 +521,7 @@ test("with no control plane the actions are disabled and say why, and copying th
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(page.locator("#bb-modal-textarea")).toHaveValue(
-    /bd create .*--parent "demo-epic" --title "Static copy"/,
+    /bd create .*--parent 'demo-epic' --title 'Static copy'/,
   );
   await closeDialog(page);
 
@@ -514,10 +543,12 @@ test("with no control plane the actions are disabled and say why, and copying th
   ).toEqual([]);
 });
 
-test("Create is not offered while Labels or another Repo is set, and is again once they are cleared", async ({
+test("Create is not offered while Labels is set, and is again once it is cleared; with another Repo it is offered and sends the title the copied command has", async ({
   page,
 }) => {
   await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
   await page.fill("#bb-title", "Labelled");
   await expect(createButton(page)).toBeEnabled();
 
@@ -527,17 +558,44 @@ test("Create is not offered while Labels or another Repo is set, and is again on
   // The copied command keeps them.
   await page.click("button[type=submit]");
   await expect(page.locator("#bb-modal-textarea")).toHaveValue(
-    /--labels "dashboard,ui"/,
+    /--labels 'dashboard,ui'/,
   );
   await closeDialog(page);
 
   await page.fill("#bb-labels", "");
   await expect(createButton(page)).toBeEnabled();
+
+  // Another Repo: the copied command and Create both start the title with its
+  // name, and neither passes --repo.
   await page.fill("#bb-repo", "./repos/elsewhere");
-  await expect(createButton(page)).toBeDisabled();
-  await expect(page.locator("#bb-create-reason")).toContainText("Repo");
+  await expect(createButton(page)).toBeEnabled();
+  await expect(page.locator("#bb-create-reason")).toHaveCount(0);
+  await page.click("button[type=submit]");
+  const copied = page.locator("#bb-modal-textarea");
+  await expect(copied).toHaveValue(/--title '\[elsewhere\] Labelled'/);
+  await expect(copied).not.toHaveValue(/--repo/);
+  await closeDialog(page);
+  await createFromBuilder(page, "Labelled");
+  await expect(page.locator("#bead-created-card")).toContainText(
+    "[elsewhere] Labelled",
+  );
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=[elsewhere] Labelled",
+      "--type=task",
+      "--priority=2",
+      "--json",
+    ],
+  ]);
 
   // Clear form resets the form without firing an input event: the rule follows.
+  await page.fill("#bb-labels", "dashboard");
+  await expect(createButton(page)).toBeDisabled();
   await page.getByRole("button", { name: "Clear form" }).click();
   await page.fill("#bb-title", "Cleared");
   await expect(createButton(page)).toBeEnabled();
@@ -1071,6 +1129,88 @@ test("a page reloaded while a write is out says afterwards that its outcome is n
       .slice(callsBefore)
       .filter((call) => !isList(call)),
   ).toEqual([]);
+});
+
+/**
+ * Wait until a freshly loaded page has drawn the list's live region, which is
+ * always there and drawn from the page's store, then require the list itself
+ * to be absent: no write is listed to check.
+ */
+async function expectNothingToCheck(page: Page): Promise<void> {
+  await expect(page.locator(".af-writes-to-check-live")).toHaveCount(1);
+  await expect(writesToCheck(page)).toHaveCount(0);
+}
+
+test("a create and a claim that bd confirmed are not listed under Writes to check, then or after a reload", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const id = await createFromBuilder(page, "Confirmed, then reloaded");
+  const card = page.locator("#bead-created-card");
+  const actions = card.getByRole("region", { name: `Actions on ${id}` });
+  await actions.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(actions.locator('[data-outcome="done"]')).toContainText(
+    `Claimed ${id}`,
+  );
+  await expectNothingToCheck(page);
+
+  await reloadSettled(page);
+  // The page read what it kept: the bead and the claim's answer are shown.
+  await expect(card.locator(".issue-id-copy code").first()).toHaveText(id);
+  await expect(card).toContainText("in progress");
+  await expectNothingToCheck(page);
+});
+
+test("a create and a claim that bd refused, each shown where it was sent, are not listed under Writes to check, then or after a reload", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/bead-builder");
+  await requireStandIn(page);
+  const callsBefore = standInCalls().length;
+  await page.fill("#bb-title", "Refused where it was sent");
+  await page.fill("#bb-parent", "e2e-no-such-parent");
+  await createButton(page).click();
+  const created = page.locator("#bb-create-result");
+  await expect(created).toHaveAttribute("data-outcome", "failed");
+  await expect(created).toContainText(
+    "parent issue e2e-no-such-parent not found",
+  );
+  await expectNothingToCheck(page);
+
+  // A claim, from an open issue panel, of an id bd does not know.
+  const ghost = "e2e-999998";
+  await stubSnapshot(page, snapshotWith(ghost, "A bead bd does not know"));
+  await openIssues(page);
+  await page.locator(`[data-issue-id="${ghost}"]`).click();
+  const actions = page
+    .locator(".af-detail")
+    .getByRole("region", { name: `Actions on ${ghost}` });
+  await actions.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(actions.locator('[data-outcome="failed"]')).toContainText(
+    "no issue found",
+  );
+  await expectNothingToCheck(page);
+
+  await reloadSettled(page);
+  await expect(page.locator(`[data-issue-id="${ghost}"]`)).toBeVisible();
+  await expectNothingToCheck(page);
+  // Both reached bd, which refused them.
+  expect(
+    standInCalls()
+      .slice(callsBefore)
+      .filter((call) => !isList(call)),
+  ).toEqual([
+    [
+      "create",
+      "--title=Refused where it was sent",
+      "--type=task",
+      "--priority=2",
+      "--parent=e2e-no-such-parent",
+      "--json",
+    ],
+    ["update", "--claim", "--json", "--", ghost],
+  ]);
 });
 
 /** What a view says when the page already holds twenty writes out or to check. */

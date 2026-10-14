@@ -54,6 +54,8 @@ export function roundFromVerdict(input: {
   phase: ForgePhase;
   history: readonly ReviewRound[];
   verdict: EvalVerdictParsed | null;
+  /** The digest of the file the verdict was read from, when it was taken. */
+  verdictSha256?: string;
   at: string;
   tier?: string;
 }): ReviewRound {
@@ -67,9 +69,24 @@ export function roundFromVerdict(input: {
     ...(input.verdict
       ? { verdictSchemaVersion: input.verdict.schemaVersion }
       : {}),
+    ...(input.verdict && input.verdictSha256
+      ? { verdictSha256: input.verdictSha256 }
+      : {}),
     ...(input.verdict?.summary ? { summary: input.verdict.summary } : {}),
     at: input.at,
   };
+}
+
+/**
+ * The round, in any phase, that was graded from a verdict file with this
+ * digest, if one was. A verdict grades one round: the same bytes passed again,
+ * for a later round or for another phase, are that earlier verdict replayed.
+ */
+export function roundRecordedFrom(
+  history: readonly ReviewRound[],
+  sha256: string,
+): ReviewRound | undefined {
+  return history.find((r) => r.verdictSha256 === sha256);
 }
 
 /** The run state with one more review round on its ledger. */

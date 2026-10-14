@@ -44,6 +44,8 @@ export interface ParsedLine {
   sessionId?: string;
   /** What the run used, when this line reports it. */
   usage?: ProviderUsage;
+  /** The model a response on this line named, when it names one. */
+  model?: string;
 }
 
 /**
@@ -163,7 +165,14 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
     provider: spec.provider,
 
     async doctor(override): Promise<DoctorResult> {
-      const resolved = resolveCommand(spec, override);
+      // An override's program is found the way the binary is: as `Bun.which`
+      // finds it, which is also how `Bun.spawn` looks it up. One that is not
+      // there is not found; one that is there but fails is found and not ok.
+      const program = override?.[0];
+      const resolved =
+        program !== undefined && !Bun.which(program)
+          ? { error: `${program} not found` }
+          : resolveCommand(spec, override);
       if ("error" in resolved) {
         return {
           provider: spec.provider,
@@ -275,6 +284,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // The last usage the stream reported: one turn per run is what has
       // been seen, so a later report is taken to replace an earlier one.
       let usage: ProviderUsage | undefined;
+      // The model the stream's responses last named, handed on when it changes.
+      let observedModel: string | undefined;
 
       const child = supervise({
         command: [...resolved.command, ...spec.buildArgs(request)],
@@ -288,6 +299,18 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
           const parsed = spec.parseLine(line);
           if (!session && parsed.sessionId) begin(parsed.sessionId);
           if (parsed.usage) usage = parsed.usage;
+          if (parsed.model !== undefined && parsed.model !== observedModel) {
+            observedModel = parsed.model;
+            try {
+              request.onModel?.({
+                sessionId: current().id,
+                provider: spec.provider,
+                model: parsed.model,
+              });
+            } catch {
+              // What the run was observed to be is not worth stopping it for.
+            }
+          }
           for (const tool of parsed.tools) {
             queue.push({
               ...current().base,

@@ -34,19 +34,19 @@ describe("buildChildEnv", () => {
     const child = buildChildEnv(
       {
         PATH: "/bin",
-        USERPROFILE: "C:\Users\someone",
-        AGENT_FORGE_HOME: "C:\sandbox\forge home",
+        USERPROFILE: "C:\\Users\\someone",
+        AGENT_FORGE_HOME: "C:\\sandbox\\forge home",
         AGENT_FORGE_BEAD_ID: "bead-1",
       },
       [],
     );
     expect(child).toEqual({
       PATH: "/bin",
-      USERPROFILE: "C:\Users\someone",
-      AGENT_FORGE_HOME: "C:\sandbox\forge home",
+      USERPROFILE: "C:\\Users\\someone",
+      AGENT_FORGE_HOME: "C:\\sandbox\\forge home",
     });
     // The ledger resolves the child's home from that, not from USERPROFILE.
-    expect(ledgerHome(child)).toBe("C:\sandbox\forge home");
+    expect(ledgerHome(child)).toBe("C:\\sandbox\\forge home");
     expect(ledgerHome(buildChildEnv({ PATH: "/bin" }, []))).toBe(
       ledgerHome({}),
     );

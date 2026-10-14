@@ -5,8 +5,9 @@
  * an emitter without naming a ledger writes there and not under the user's
  * home. A child process is covered only while it inherits this environment: a
  * test that builds a child's environment itself must set `AGENT_FORGE_HOME`
- * in it (`test-isolation.test.ts` checks that). Tests that assert on ledger
- * contents create their own ledger and pass its path.
+ * in it. `test-isolation.test.ts` checks that only for a child that keeps the
+ * OS home variable; its header lists what it cannot see. Tests that assert on
+ * ledger contents create their own ledger and pass its path.
  */
 
 import { afterAll } from "bun:test";
@@ -14,9 +15,14 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeLedger } from "./db";
+import { ISOLATION_HOME, installIsolationProbe } from "./isolation-probe";
 
 const home = mkdtempSync(join(tmpdir(), "agent-forge test home "));
 process.env.AGENT_FORGE_HOME = home;
+
+// Only in the isolation guard's re-run: see `isolation-probe.ts`.
+const isolationHome = process.env[ISOLATION_HOME];
+if (isolationHome !== undefined) installIsolationProbe(isolationHome);
 
 afterAll(() => {
   closeLedger();

@@ -19,8 +19,7 @@ For each task:
 ```bash
 bd create \
   --type task \
-  --title "<verb> <object>" \
-  --repo <repo> \
+  --title "[<repo>] <verb> <object>" \
   --priority <value> \
   --acceptance "<acceptance criterion>"
 ```

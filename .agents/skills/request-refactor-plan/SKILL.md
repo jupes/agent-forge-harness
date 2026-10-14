@@ -82,7 +82,7 @@ Create the issue only after the user approves the plan:
 bd create --type feature --title "<refactor title>" --description "<full refactor plan markdown>" --priority <P0-P4> --repo .
 ```
 
-Use `--repo ./repos/<repo-name>` for a registered sub-repo. Only create or link a GitHub issue when the user explicitly asks for a mirror; the Beads issue remains the source of truth.
+For a refactor in a sub-repo, keep `--repo .` and start the title with `[<repo-name>]`: `.` is the only repository registered with `bd`, and given any other `--repo`, `bd create` files the issue where no `bd show` or `bd list` run here finds it. Only create or link a GitHub issue when the user explicitly asks for a mirror; the Beads issue remains the source of truth.
 
 ## Durable Issue Template
 

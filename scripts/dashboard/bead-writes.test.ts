@@ -382,26 +382,18 @@ describe("which actions a bead is offered", () => {
 describe("whether Create may be pressed", () => {
   const live = { available: true } as const;
 
-  test("with a control plane, no labels and the harness's own tracker: yes", () => {
-    for (const repo of [".", "", "  .  "])
-      expect(createState({ ...live, labels: "", repo })).toEqual({
-        enabled: true,
-      });
-    expect(createState({ ...live, labels: " , ", repo: "." })).toEqual({
+  test("with a control plane and no labels: yes, with no repo asked for", () => {
+    expect(createState({ ...live, labels: "" })).toEqual({ enabled: true });
+    expect(createState({ ...live, labels: " , " })).toEqual({
       enabled: true,
     });
   });
 
   test("with labels typed: no, because Create would not send them", () => {
-    expect(createState({ ...live, labels: "dashboard,ui", repo: "." })).toEqual(
-      { enabled: false, reason: expect.stringContaining("Labels") },
-    );
-  });
-
-  test("with another repo named: no, because Create files in this checkout's tracker", () => {
-    expect(
-      createState({ ...live, labels: "", repo: "./repos/elsewhere" }),
-    ).toEqual({ enabled: false, reason: expect.stringContaining("Repo") });
+    expect(createState({ ...live, labels: "dashboard,ui" })).toEqual({
+      enabled: false,
+      reason: expect.stringContaining("Labels"),
+    });
   });
 
   test("with no control plane: no, with that reason first", () => {
@@ -410,7 +402,6 @@ describe("whether Create may be pressed", () => {
         available: false,
         reason: NO_CONTROL_PLANE,
         labels: "dashboard",
-        repo: ".",
       }),
     ).toEqual({ enabled: false, reason: NO_CONTROL_PLANE });
   });
@@ -947,6 +938,22 @@ describe("a write whose answer the page does not have", () => {
       expect.any(String),
     );
   });
+
+  test("a create sent with a title longer than 200 characters is awaited, stored and listed with its first 200", () => {
+    const storage = memory();
+    const store = createAppliedStore(storage);
+    const long = `${"t".repeat(199)}uv${"w".repeat(298)}`;
+    const first = `${"t".repeat(199)}u`;
+    const key = begun(store, { action: "create", title: long });
+
+    expect(store.awaiting().map((write) => write.title)).toEqual([first]);
+    const kept = JSON.parse(storage.getItem(STORE_KEY) ?? "null") as {
+      attempts: Array<{ title?: unknown }>;
+    };
+    expect(kept.attempts.map((attempt) => attempt.title)).toEqual([first]);
+    store.unknown(key, "The request did not complete.");
+    expect(store.notices().map((notice) => notice.title)).toEqual([first]);
+  });
 });
 
 describe("what the store reads back about writes", () => {
@@ -1015,6 +1022,27 @@ describe("what the store reads back about writes", () => {
     const long = `${"x".repeat(999)}yz${"z".repeat(99_997)}`;
     const store = createAppliedStore(stored([claim(1, long)]));
     expect(store.notices()[0]?.message).toBe(`${"x".repeat(999)}y`);
+  });
+
+  test("a create stored with a title longer than 200 characters, awaited or as a notice, is listed with its first 200", () => {
+    const long = `${"t".repeat(199)}uv${"w".repeat(99_798)}`;
+    const store = createAppliedStore(
+      stored([
+        { key: "w1", action: "create", title: long, at: 1 },
+        {
+          key: "w2",
+          action: "create",
+          title: long,
+          at: 2,
+          outcome: "unknown",
+          message: "The request did not complete.",
+        },
+      ]),
+    );
+    expect(store.notices().map((notice) => notice.title)).toEqual([
+      `${"t".repeat(199)}u`,
+      `${"t".repeat(199)}u`,
+    ]);
   });
 
   test("a message longer than 1,000 characters given to unknown or refused is kept as its first 1,000", () => {

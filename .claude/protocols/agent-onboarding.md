@@ -200,7 +200,8 @@ place only: a **run correlation**, a small file a launcher writes
 - **File:** `<checkout>/.tmp/work/run-correlations/<runId>.json`, holding
   `{ schemaVersion: 1, executionRunId, beadsIssueId, checkout, createdAt }`. `executionRunId` is the Forge
   run id: the run's slug, the ledger's `runId`. The directory is gitignored. The gate accepts a file only
-  at that path, inside its own checkout, named after the run it holds.
+  at that path, named after the run it holds, in its own checkout or in the checkout of a repository
+  under `repos/` (or a worktree of one): a pointer is followed to the checkout it leads into.
 - **Who writes it:** `forge:phase-gate <phase> --slug <slug> --write --bead <id>` (for a pipeline run;
   the run's epic is never used; the file goes in the checkout the run recorded with `--checkout`, else
   the one the command ran in), `forge:exec --bead <id> --run <slug>` (in the `--worktree` it spawns its
@@ -212,6 +213,12 @@ place only: a **run correlation**, a small file a launcher writes
 - **How the gate gets it:** `bun run quality-gate --correlation <pointer>`, else
   `AGENT_FORGE_RUN_CORRELATION`. `forge:exec` puts the variable in its child's environment. Nothing else
   selects a correlation: not `FORGE_SLUG`, not `AGENT_FORGE_BEAD_ID`, not the checkout.
+- **Which checks run:** the gate's own for a run in the checkout it runs in. For a run in a repository
+  under `repos/`, started from the harness with `--correlation <checkout>/<pointer>`, the gate runs the
+  `checks` list on the repository's entry in `repos/repos.json` in the run's checkout, each without a
+  shell, then clean-tree and test-evidence there. The gate refuses a repository with no `checks`
+  list, and one that tracks files under `.tmp/work/run-correlations` or `.tmp/work/evaluations`. A
+  pointer into any other checkout is treated like one that does not validate.
 - **Without one** the gate still runs its base checks and logs the result as **unlinked**: the entry and
   its `gate.ran` event name no bead and no run, nothing is asked of Beads, and in strict mode the
   verdict check fails. A `--correlation` that does not validate fails the gate outright; a pointer from
@@ -266,8 +273,11 @@ still to be confirmed (see *Verify*).
    `kind: "teammate"` only when the payload also carries a teammate signal (`teammate_name`). Not every
    `agent_id` is a teammate.
    The child's `session.started` is offered before each of its events and the ledger keeps exactly one
-   (a unique index, so concurrent hooks cannot produce two). A child with no model of its own is tagged
-   with its parent's cached model.
+   (a unique index, so concurrent hooks cannot produce two). A child's own model is read from its own
+   assistant records (those carrying its agent id: in the transcript the payload names, or in
+   `<session>/subagents/agent-<agent id>.jsonl` beside the session's `<session>.jsonl`, the layout seen on
+   2.1.295) and cached under the child's id; until one is known, the child is tagged with its parent's
+   cached model.
 2. Tool and prompt events from that actor carry the child `sessionId`; the lead's keep the plain one.
 3. `TeammateIdle` / `TaskCompleted` are **gate** events (`gate.ran`), not session ends. The child ends on
    the lead's SessionEnd (the hook emits `session.ended` for every open child first, `reason:

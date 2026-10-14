@@ -79,6 +79,38 @@ describe("modelFromTranscriptTail", () => {
     });
   });
 
+  test("asked for one subagent, only that subagent's records count: its sidechain records, never another agent's or the session's", () => {
+    const sub = (agentId: string, model: string) => ({
+      ...assistant(model, "low"),
+      isSidechain: true,
+      agentId,
+    });
+    // A subagent's own transcript, as the host writes it beside the session's.
+    const own = transcript([
+      { type: "user", isSidechain: true, agentId: "a1", message: {} },
+      sub("a1", "model-sub"),
+      { ...sub("a1", "<synthetic>") },
+    ]);
+    expect(modelFromTranscriptTail(own, { agentId: "a1" })).toEqual({
+      model: "model-sub",
+      effort: "low",
+    });
+    // The session's own reading of the same file still skips sidechains.
+    expect(modelFromTranscriptTail(own)).toBeNull();
+    // A file that mixes the session's records and two agents' sidechains.
+    const mixed = transcript([
+      sub("a1", "model-sub"),
+      assistant("model-session"),
+      sub("a2", "model-other"),
+    ]);
+    expect(modelFromTranscriptTail(mixed, { agentId: "a1" })).toEqual({
+      model: "model-sub",
+      effort: "low",
+    });
+    expect(modelFromTranscriptTail(mixed, { agentId: "a3" })).toBeNull();
+    expect(modelFromTranscriptTail(mixed)).toEqual({ model: "model-session" });
+  });
+
   test("a missing file, a cut first line and non-JSON lines are tolerated", () => {
     expect(
       modelFromTranscriptTail(join(tmpdir(), "no such transcript.jsonl")),

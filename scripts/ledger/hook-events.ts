@@ -10,6 +10,7 @@
  * Loads `bun:sqlite` through the ledger, so only Bun entry points import it.
  */
 
+import { basename, dirname, join } from "path";
 import type {
   Executor,
   LedgerEventInput,
@@ -65,7 +66,8 @@ export interface HookDeps {
   append(event: LedgerEventInput): AppendResult;
   getModel(sessionId: string): SessionModel | null;
   setModel(entry: SessionModel & { sessionId: string }): boolean;
-  readTranscript(path: string): TranscriptModel | null;
+  /** The session's model from a transcript, or with `agentId` that subagent's. */
+  readTranscript(path: string, agentId?: string): TranscriptModel | null;
   openChildren(sessionId: string): string[];
   writeMirror(worktree: string, sessionId: string): boolean;
   removeMirror(worktree: string, ifHolds: string): boolean;
@@ -87,7 +89,8 @@ export function hookDeps(opts: {
     append: (event) => appendEvent(event, { path, ...clock }),
     getModel: (sessionId) => getSessionModel(sessionId, { path }),
     setModel: (entry) => setSessionModel(entry, { path, ...clock }),
-    readTranscript: (file) => modelFromTranscriptTail(file),
+    readTranscript: (file, agentId) =>
+      modelFromTranscriptTail(file, agentId !== undefined ? { agentId } : {}),
     openChildren: (sessionId) => openChildSessions(sessionId, { path }),
     writeMirror: writeSessionMirror,
     removeMirror: removeSessionMirror,
@@ -244,12 +247,73 @@ function startChild(
   });
 }
 
+/** An agent id that can be one segment of a file name: nothing else is made into a path. */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Where a subagent's own assistant records may be, most specific first: a
+ * transcript the payload names as the agent's, the payload's transcript (the
+ * agent's own, or the session's when an older layout keeps sidechains there),
+ * and the agent's file beside the session's transcript, as the host lays it
+ * out (`<session>.jsonl` beside `<session>/subagents/agent-<id>.jsonl`).
+ */
+function agentTranscripts(input: HookInput, agentId: string): string[] {
+  const paths: string[] = [];
+  const named = text(input.agent_transcript_path);
+  if (named !== undefined) paths.push(named);
+  const transcript = text(input.transcript_path);
+  if (transcript !== undefined) {
+    paths.push(transcript);
+    if (AGENT_ID.test(agentId) && transcript.endsWith(".jsonl")) {
+      paths.push(
+        join(
+          dirname(transcript),
+          basename(transcript, ".jsonl"),
+          "subagents",
+          `agent-${agentId}.jsonl`,
+        ),
+      );
+    }
+  }
+  return [...new Set(paths)];
+}
+
+/**
+ * Fill the cache with a subagent's own model when it has none: read from the
+ * subagent's own assistant records, the model its responses reported. Until
+ * then its events fall back to its parent's model.
+ */
+function learnAgentModel(
+  input: HookInput,
+  identity: HookIdentity,
+  deps: HookDeps,
+): void {
+  const agentId = identity.sessionId.slice(identity.hostSessionId.length + 1);
+  if (agentId.length === 0 || deps.getModel(identity.sessionId) !== null) {
+    return;
+  }
+  for (const path of agentTranscripts(input, agentId)) {
+    const found = deps.readTranscript(path, agentId);
+    if (found) {
+      deps.setModel({
+        sessionId: identity.sessionId,
+        provider: PROVIDER,
+        ...found,
+      });
+      return;
+    }
+  }
+}
+
 /** Fill the model cache from the transcript when it has nothing for this session. */
 function learnModel(
   input: HookInput,
   identity: HookIdentity,
   deps: HookDeps,
 ): void {
+  if (identity.sessionId !== identity.hostSessionId) {
+    learnAgentModel(input, identity, deps);
+  }
   if (cachedModel(identity, deps) !== null) return;
   const transcript = text(input.transcript_path);
   if (transcript === undefined) return;

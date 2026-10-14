@@ -246,9 +246,16 @@ test("one stream connection serves every page of the app", async ({ page }) => {
 test("where nothing serves a stream, the page asks once, says so once, and still works", async ({
   page,
 }) => {
-  // What a static host answers for both of the hearth's routes this page uses.
+  // What a static host answers for each of the hearth's routes these pages use.
   const streamRequests = countStreamRequests(page);
   await page.route(`**${STREAM}`, (route) =>
+    route.fulfill({
+      status: 404,
+      contentType: "text/plain",
+      body: "Not found",
+    }),
+  );
+  await page.route(`**${API}/beads/counts`, (route) =>
     route.fulfill({
       status: 404,
       contentType: "text/plain",

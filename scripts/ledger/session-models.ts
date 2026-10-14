@@ -43,6 +43,34 @@ export function getSessionModel(
 }
 
 /**
+ * The models cached for a session's subagents: each child session the hooks
+ * key `<session>:<agent id>` that has a model of its own. Null when the
+ * ledger cannot be read, which is not the same as no subagents.
+ */
+export function getSubagentModels(
+  sessionId: string,
+  opts: { path?: string } = {},
+): Array<SessionModel & { sessionId: string }> | null {
+  const prefix = `${sessionId}:`;
+  try {
+    const rows = openLedger(opts.path)
+      .query<Row & { session_id: string }, [number, string]>(
+        "SELECT session_id, provider, model, effort FROM session_models WHERE substr(session_id, 1, ?) = ? ORDER BY session_id",
+      )
+      // SQLite counts characters, not UTF-16 units.
+      .all([...prefix].length, prefix);
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      provider: row.provider,
+      model: row.model,
+      ...(row.effort !== null ? { effort: row.effort } : {}),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Record a session's current model. An absent `effort` keeps the one already
  * known: the model is reported earlier and more often than the effort.
  */
