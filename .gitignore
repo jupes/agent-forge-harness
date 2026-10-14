@@ -29,9 +29,9 @@ plans/session-context.json
 # Per-repo knowledge files describe external projects, not the harness itself.
 knowledge/repos/*.yaml
 !knowledge/repos/.gitkeep
-# Knowledge/walkthrough notes about specific external projects (not the harness).
+# Knowledge notes about specific external projects (not the harness). A one-off local note goes in
+# .git/info/exclude instead, so this file names no external project.
 knowledge/*-code-archaeology.yaml
-knowledge/walkthroughs/gitnexus.md
 
 # Beads runtime files (Dolt backend)
 .beads/*.db
