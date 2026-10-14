@@ -287,12 +287,20 @@ export const OPERATOR_SURFACES = ["ui", "cli", "mcp", "api"] as const;
 
 export type OperatorSurface = (typeof OPERATOR_SURFACES)[number];
 
+/**
+ * Why a shift ended: its time ran out (`elapsed`), an operator stopped it,
+ * the host stayed too busy (`throttle`), it could not go on (`halted`), it had
+ * nothing left to run (`drained`), it admitted its last bead (`count`), or it
+ * spent its budget (`budget`).
+ */
 export const SHIFT_STOP_REASONS = [
   "elapsed",
   "operator",
   "throttle",
   "halted",
   "drained",
+  "count",
+  "budget",
 ] as const;
 
 export type ShiftStopReason = (typeof SHIFT_STOP_REASONS)[number];
@@ -402,6 +410,10 @@ export interface LedgerPayloads {
     concurrency: number;
     durationMs?: number;
     filter?: string;
+    /** The most beads the shift admits. */
+    maxBeads?: number;
+    /** The spend, in US dollars, past which it admits no more. */
+    maxUsd?: number;
   };
   "shift.stopped": { shiftId: string; reason: ShiftStopReason };
   "council.run.started": {

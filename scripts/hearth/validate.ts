@@ -66,6 +66,11 @@ const num: Check = (v, path) =>
     ? null
     : `${path}: expected finite number, got ${describe(v)}`;
 
+const nonNegNum: Check = (v, path) =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0
+    ? null
+    : `${path}: expected non-negative number`;
+
 const nonNegInt: Check = (v, path) =>
   typeof v === "number" && Number.isInteger(v) && v >= 0
     ? null
@@ -314,6 +319,8 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     concurrency: posInt,
     durationMs: optional(nonNegInt),
     filter: optional(str),
+    maxBeads: optional(posInt),
+    maxUsd: optional(nonNegNum),
   }),
   "shift.stopped": shape({
     shiftId: nonEmptyStr,

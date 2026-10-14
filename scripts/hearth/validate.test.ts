@@ -194,6 +194,31 @@ describe("validateLedgerEventInput — what emitters append", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("a shift ends for its bead count or its spend as well: count and budget are stop reasons", () => {
+    for (const reason of ["count", "budget"])
+      expect(
+        validateLedgerEventInput(
+          input("shift.stopped", { shiftId: "shift-1", reason }),
+        ).ok,
+      ).toBe(true);
+  });
+
+  test("shift.started takes its bounds as a whole count of beads and a spend in dollars, and refuses any other", () => {
+    const started = (more: Record<string, unknown>) =>
+      validateLedgerEventInput(
+        input("shift.started", {
+          shiftId: "shift-1",
+          concurrency: 2,
+          ...more,
+        }),
+      ).ok;
+    expect(started({ maxBeads: 4, maxUsd: 10 })).toBe(true);
+    expect(started({ maxBeads: 0.5 })).toBe(false);
+    expect(started({ maxBeads: 0 })).toBe(false);
+    expect(started({ maxUsd: -1 })).toBe(false);
+    expect(started({ maxUsd: "10" })).toBe(false);
+  });
+
   test("rejects non-objects and missing workspace", () => {
     expect(validateLedgerEventInput(null).ok).toBe(false);
     expect(validateLedgerEventInput("session.started").ok).toBe(false);
