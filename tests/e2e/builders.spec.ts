@@ -492,7 +492,7 @@ test("with no control plane the actions are disabled and say why, and copying th
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(page.locator("#bb-modal-textarea")).toHaveValue(
-    /bd create .*--parent "demo-epic" --title "Static copy"/,
+    /bd create .*--parent 'demo-epic' --title 'Static copy'/,
   );
   await closeDialog(page);
 
@@ -527,7 +527,7 @@ test("Create is not offered while Labels or another Repo is set, and is again on
   // The copied command keeps them.
   await page.click("button[type=submit]");
   await expect(page.locator("#bb-modal-textarea")).toHaveValue(
-    /--labels "dashboard,ui"/,
+    /--labels 'dashboard,ui'/,
   );
   await closeDialog(page);
 

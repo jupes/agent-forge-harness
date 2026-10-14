@@ -26,13 +26,15 @@ export const BEAD_TYPES = ["task", "feature", "bug", "chore", "epic"];
 /** @type {readonly string[]} */
 export const BEAD_PRIORITIES = ["P0", "P1", "P2", "P3", "P4"];
 
-/** @param {string} s */
-function shellEscapeDoubleQuoted(s) {
-  return String(s ?? "")
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$");
+/**
+ * One value as a single-quoted shell word. Inside single quotes a POSIX shell
+ * expands nothing: no `$`, backtick, backslash or newline is special, and
+ * bash's history expansion leaves `!` alone. Only a single quote ends the
+ * text, so it is written `'\''`: close, an escaped quote, open again.
+ * @param {string} s
+ */
+function shellQuote(s) {
+  return `'${String(s ?? "").replace(/'/g, "'\\''")}'`;
 }
 
 /**
@@ -115,25 +117,24 @@ export function buildBdCreateCommand(d) {
   const parent = String(d.parent ?? "").trim();
   const acceptance = acceptanceText(d.acceptanceCriteria);
 
+  // Type and priority are words from fixed lists; every other value is quoted.
   const parts = ["bd create", `--type ${type}`, `--priority ${priority}`];
   if (parent) {
-    parts.push(`--parent "${shellEscapeDoubleQuoted(parent)}"`);
+    parts.push(`--parent ${shellQuote(parent)}`);
   }
-  parts.push(`--title "${shellEscapeDoubleQuoted(title)}"`);
+  parts.push(`--title ${shellQuote(title)}`);
   if (description) {
-    parts.push(
-      `--description "${shellEscapeDoubleQuoted(normalizeNewlines(description))}"`,
-    );
+    parts.push(`--description ${shellQuote(normalizeNewlines(description))}`);
   }
   if (labels) {
-    parts.push(`--labels ${JSON.stringify(labels)}`);
+    parts.push(`--labels ${shellQuote(labels)}`);
   }
   if (acceptance) {
     // `--acceptance`, not `--ac`: bd rejects the short form with
     // "unknown flag: --ac", so the generated command used to fail on paste.
     // One flag for every line: bd keeps only the last of a repeated
-    // `--acceptance`. A newline inside double quotes needs no escape.
-    parts.push(`--acceptance "${shellEscapeDoubleQuoted(acceptance)}"`);
+    // `--acceptance`.
+    parts.push(`--acceptance ${shellQuote(acceptance)}`);
   }
   return parts.join(" ");
 }
