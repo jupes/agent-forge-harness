@@ -665,7 +665,15 @@ export async function runShift(
     );
     if (!reserved.ok) return giveBack(`reservation: ${reserved.error}`);
 
-    const made = deps.makeWorktree({ id, branch, beadId: bead.id });
+    let made: ReturnType<ShiftDeps["makeWorktree"]>;
+    try {
+      made = deps.makeWorktree({ id, branch, beadId: bead.id });
+    } catch (error) {
+      made = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (!made.ok) {
       const freed = await release(
         { beadId: bead.id, worktree: planned },

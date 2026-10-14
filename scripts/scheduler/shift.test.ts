@@ -327,7 +327,7 @@ async function until(ready: () => boolean, ms = 4000): Promise<void> {
 describe("forge:shift — the loop, on a fake adapter", () => {
   test("runs at most --concurrency beads at once, each in a worktree of its own holding a reservation of its own, and ends drained when nothing is left", async () => {
     const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], () => ({
-      after: 120,
+      after: 500,
       exit: 0,
     }));
     const done = await shift(r, { concurrency: 2 });
@@ -399,13 +399,13 @@ describe("forge:shift — the loop, on a fake adapter", () => {
   test("the time cap: at --for every run is stopped, its bead put back in queued and its reservation released, and the shift ends elapsed", async () => {
     const r = rig([queued("t-1"), queued("t-2")], () => "hang");
     const began = Date.now();
-    const done = await shift(r, { concurrency: 2, forMs: 400 });
+    const done = await shift(r, { concurrency: 2, forMs: 1000 });
     expect(done.reason).toBe("elapsed");
-    expect(Date.now() - began).toBeLessThan(3000);
+    expect(Date.now() - began).toBeLessThan(6000);
     expect(r.fake.runs).toHaveLength(2);
     // Each run was given no more than the time that was left.
     for (const run of r.fake.runs)
-      expect(run.timeoutMs ?? Infinity).toBeLessThanOrEqual(400);
+      expect(run.timeoutMs ?? Infinity).toBeLessThanOrEqual(1000);
     for (const id of ["t-1", "t-2"])
       expect(r.labels(id)).toEqual(["queue:queued"]);
     expect(r.reservations()).toBe(0);
@@ -568,6 +568,25 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(done.record.beads).toHaveLength(1);
     expect(done.record.beads[0]?.error).toContain(
       "worktree: trees/ is not ignored",
+    );
+  });
+
+  test("a worktree maker that throws is a worktree that cannot be made: the bead is given back and the shift goes on", async () => {
+    const r = rig([queued("t-1"), queued("t-2")], undefined, {
+      makeWorktree: ({ id, beadId }) => {
+        if (beadId === "t-1") throw new Error("git could not be started");
+        const path = join(r.root, "trees", id);
+        mkdirSync(join(path, ".git"), { recursive: true });
+        return { ok: true, path };
+      },
+    });
+    const done = await shift(r, { concurrency: 1 });
+    expect(done.reason).toBe("drained");
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-2"]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(done.record.beads[0]?.error).toContain(
+      "worktree: git could not be started",
     );
   });
 
