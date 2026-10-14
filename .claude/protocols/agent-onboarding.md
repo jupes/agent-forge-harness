@@ -266,8 +266,11 @@ still to be confirmed (see *Verify*).
    `kind: "teammate"` only when the payload also carries a teammate signal (`teammate_name`). Not every
    `agent_id` is a teammate.
    The child's `session.started` is offered before each of its events and the ledger keeps exactly one
-   (a unique index, so concurrent hooks cannot produce two). A child with no model of its own is tagged
-   with its parent's cached model.
+   (a unique index, so concurrent hooks cannot produce two). A child's own model is read from its own
+   assistant records (those carrying its agent id: in the transcript the payload names, or in
+   `<session>/subagents/agent-<agent id>.jsonl` beside the session's `<session>.jsonl`, the layout seen on
+   2.1.295) and cached under the child's id; until one is known, the child is tagged with its parent's
+   cached model.
 2. Tool and prompt events from that actor carry the child `sessionId`; the lead's keep the plain one.
 3. `TeammateIdle` / `TaskCompleted` are **gate** events (`gate.ran`), not session ends. The child ends on
    the lead's SessionEnd (the hook emits `session.ended` for every open child first, `reason:

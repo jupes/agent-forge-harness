@@ -29,6 +29,11 @@ bun run forge:verdict --correlation <pointer> --verdict PASS --medium 2 \
 # A model Evaluator: say what was requested; what ran is read, not typed
 bun run forge:verdict --correlation <pointer> --verdict FAIL --high 1 \
   --requested-provider claude --requested-model claude-opus-5-5 --requested-rank master
+
+# A model Evaluator that ran as a subagent, filed by the session that spawned it
+bun run forge:verdict --correlation <pointer> --verdict PASS --low 1 \
+  --requested-provider claude --requested-model claude-opus-5-5 --requested-rank master \
+  --subagent <agent id>
 ```
 
 `<pointer>` is the run correlation's pointer: `data.correlation.pointer` from `forge:phase-gate … --write --bead <TASK-ID>`, or from `bun run forge:correlate --bead <TASK-ID> [--run <slug>]`. A launcher can set `AGENT_FORGE_RUN_CORRELATION` instead. The Beads id and the run id in the file are the correlation's; there is no flag for either, and none for what was observed.
@@ -41,6 +46,7 @@ Every argument is one of the flags below, written `--flag value` or `--flag=valu
 | `--blocker` `--high` `--medium` `--low` | Finding counts; each defaults to 0. They must match the verdict narrative. |
 | `--human operator\|reviewer` | The evaluator is a person, acting as that. |
 | `--requested-provider` `--requested-model` `--requested-rank` | The evaluator is a model: what was asked for. All three, or `--human`, never both. |
+| `--subagent <agent id>` | The model evaluator ran as that subagent of the session working where the command runs: its own model is what is observed. The spawning session has the id (the Agent tool gives it back); the subagent's own environment does not. Letters, digits, dashes and underscores; not with `--human`. |
 | `--summary <text>` | Optional short rationale. |
 | `--attest <dimension>=<0..5>` | Optional, repeatable: `quality`, `reliability`, `creativity`, `maintainability`, `ux`. |
 | `--review <label>` | Write a review round's verdict instead of the run's (see *Review rounds*). |
@@ -49,7 +55,7 @@ Every argument is one of the flags below, written `--flag value` or `--flag=valu
 
 The command prints `{ ok, data, error }`: `data.path` is the file it wrote, relative to the run's checkout, and `data.file` is its full path (what to hand another command), with its SHA-256 and size.
 
-**The run's verdict is refused, and nothing is written, when it could never satisfy strict completion:** a model evaluator with nothing observed, or one the rank policy rejects. The refusal says which, and when nothing was observed, why. The file is written once, so a verdict that cannot pass would leave the run without one that can. Have a person file it (`--human`), run the Evaluator as a session of its own, or re-run it at a rank at or above the builder's.
+**The run's verdict is refused, and nothing is written, when it could never satisfy strict completion:** a model evaluator with nothing observed, or one the rank policy rejects. The refusal says which, and when nothing was observed, why. The file is written once, so a verdict that cannot pass would leave the run without one that can. Have a person file it (`--human`), name the subagent that judged (`--subagent`), run the Evaluator as a session of its own, or re-run it at a rank at or above the builder's.
 
 ## Schema (version 2)
 
@@ -102,18 +108,25 @@ A **model** evaluator keeps what was requested apart from what ran:
 | `providerEvidence` | `selected-direct-transport` (the session or CLI that ran the evaluator) or `gateway-routing`. |
 | `modelEvidence` | `response-field` (the model the responses reported) or `gateway-routing`. |
 | `rankPolicyDecision`, `rankPolicyRule` | `allowed` or `rejected`, and the name of the rule that decided it (lower-case letters, digits and dashes; never free text). |
-| `sessionId` | The session the observation was read for. |
+| `sessionId` | The session the observation was read for: for a subagent, `<session>:<agent id>`, as the hooks key it. |
 
 Provider, model and session values are short plain text: at most 200 characters, no control characters. They are copied into the gate log and the ledger.
 
 The four observed fields are all present or all absent. When nothing was observed they are absent: a value is never copied from the request.
 
-**Where an observation comes from today:** the model the event ledger has cached for the session working in the worktree `forge:verdict` runs in (the session mirror the SessionStart hook leaves there; the cache is filled from the host's session start and the session's transcript). There is no observation, and the fields are absent, when:
+**Where an observation comes from today:** the model the event ledger has cached for the session working in the worktree `forge:verdict` runs in (the session mirror the SessionStart hook, or `forge:exec` for its child, leaves there), or with `--subagent` for that subagent of it. The cache is filled from machine sources only:
+
+- for a session, the host's session start and the session's transcript;
+- for a subagent, its own assistant records: the hooks read the ones carrying its agent id, in its own transcript (`<session>/subagents/agent-<agent id>.jsonl` beside the session's `<session>.jsonl`, the layout seen on Claude Code 2.1.295) or in the transcript the hook payload names, from its first tool call on;
+- for a `forge:exec` run, the model the provider's stream says its responses came from: the Claude adapter reads an assistant message's `message.model`. The Codex stream, as recorded, names no model, so a Codex run has none.
+
+There is no observation, and the fields are absent, when:
 
 - that worktree has no session mirror, or one older than a day;
-- the ledger has no model cached for that session;
-- the ledger shows that session building the work: it entered or completed a phase of this run, or of another run whose phase events carry the same Beads id (`forge:phase-gate` records both events). A phase event carries the `--bead` of its own write; without one, the `AGENT_FORGE_BEAD_ID` of the environment it ran in (`forge:exec` sets it for its child); without that, the Beads id the run kept from its last `--bead`; and until any is named, the run's `--epic`. The session that built the work is not an observation of who judged it, and an Evaluator subagent shares its spawner's session;
-- the ledger cannot be read to see who built the work.
+- the ledger has no model cached for that session, or with `--subagent` none of that subagent's own (its session's model is never taken in its place);
+- without `--subagent`, the ledger has cached a subagent of that session on another model than the session's own: the command cannot tell whether that subagent is the one filing;
+- the ledger shows that session building the work: it entered or completed a phase of this run, or of another run whose phase events carry the same Beads id (`forge:phase-gate` records both events). A phase event carries the `--bead` of its own write; without one, the `AGENT_FORGE_BEAD_ID` of the environment it ran in (`forge:exec` sets it for its child); without that, the Beads id the run kept from its last `--bead`; and until any is named, the run's `--epic`. The session that built the work is not an observation of who judged it, and an Evaluator subagent shares its spawner's session. With `--subagent` it is the subagent's own key the ledger is asked about: its session building the work does not stop it being observed;
+- the ledger cannot be read to see who built the work, or which subagents the session ran.
 
 `gateway-routing` is named by the schema and produced by nothing here.
 
@@ -169,7 +182,8 @@ Nothing writes schema 1 any more.
 
 - **The gate checks what the verdict declares; it does not observe the evaluator itself.** The observation is made by `forge:verdict`. A hand-written file can declare anything, like every other file under `.tmp/work`: the directory is the working tree's own and is not protected from the session that works in it. The same goes for the run correlation, the run's state and the smith config the rank check reads.
 - **A verdict can call itself human.** The gate takes a human verdict on its actor kind alone. The log entry and the ledger event record that it was a human verdict, so it can be seen.
-- **The observation is of a session, never of a subagent.** An Evaluator subagent shares its session with whoever spawned it. When the ledger shows that session building the work, nothing is recorded as observed and strict completion needs a person's verdict or an Evaluator running as a session of its own. When the ledger shows no builder for the work, the writer cannot tell who it is talking to: the filing session's model is recorded as the evaluator's. That is the case for a run with no phase gate, such as one made by `forge:correlate` alone, **including the re-evaluation run this protocol tells you to mint**, unless an earlier run's phase events carry this same Beads id (from a write's `--bead`, the `AGENT_FORGE_BEAD_ID` it ran with, the id its run kept, or its run's `--epic`: see the list above). The documented workflows name the run's issue on their phase-gate writes (`.claude/workflows/forge.md`, *Which bead a phase names*), so the re-evaluation of a documented Forge run is in this case only when it is minted for an issue none of that run's phase events carry: a task in the middle of a multi-task run, for example. There the building session can file a model verdict for its own work and be recorded as a master evaluator of it, and a subagent on a weaker model is recorded as its session's model. Tracked in `agent-forge-harness-5eqw`.
+- **A subagent is observed only when it is named, and only once it has called a tool.** An Evaluator subagent shares its session with whoever spawned it, and its environment carries that session's id and no agent id of its own, so it cannot name itself: its spawner files for it with `--subagent <agent id>`, and the subagent's own model is recorded. `--subagent` is typed: the spawner can name any subagent of its session that has a cached model, and the ledger cannot show which one judged, nor which one built the work (a phase gate run from a subagent is recorded under the session it shares). Without `--subagent`, a session is not taken as the evaluator once the ledger has cached a subagent of it on another model; but a subagent's model is cached only after its first tool call, so a subagent whose first tool call files the verdict is not seen, and is recorded as its session's model when the ledger shows no builder. Tracked in `agent-forge-harness-kxjr`.
+- **Without `--subagent`, the observation is of a session.** When the ledger shows that session building the work, nothing is recorded as observed and strict completion needs `--subagent`, a person's verdict or an Evaluator running as a session of its own. When the ledger shows no builder for the work, the writer cannot tell who it is talking to: the filing session's model is recorded as the evaluator's. That is the case for a run with no phase gate, such as one made by `forge:correlate` alone, **including the re-evaluation run this protocol tells you to mint**, unless an earlier run's phase events carry this same Beads id (from a write's `--bead`, the `AGENT_FORGE_BEAD_ID` it ran with, the id its run kept, or its run's `--epic`: see the list above). The documented workflows name the run's issue on their phase-gate writes (`.claude/workflows/forge.md`, *Which bead a phase names*), so the re-evaluation of a documented Forge run is in this case only when it is minted for an issue none of that run's phase events carry: a task in the middle of a multi-task run, for example. There the building session can file a model verdict for its own work and be recorded as a master evaluator of it, and a subagent on a weaker model that the ledger has not seen yet is recorded as its session's model.
 - **The session observed is whichever one's mirror is where the command runs.** The mirror is a file: it can name a session that has ended (it is trusted for a day), and anyone who can write the worktree can put another session's id in it. Without touching it, a command run from another worktree (with `--checkout`) records that worktree's session.
 - **The gate looks for the builder where it runs.** When a run builds in another checkout than the one its phase gates ran in, the run's state is not in the checkout the gate runs in, so the gate sees no builder and accepts only a master evaluator or a person. The writer applies the policy the same way.
 - **A hard link is not seen as a link.** The reader refuses symbolic links and junctions anywhere on the path. A `verdict.json` that is a hard link to another file is read like any file; what is recorded is still the digest of the bytes read.

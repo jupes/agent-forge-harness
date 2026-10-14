@@ -87,6 +87,8 @@ interface World {
   builder?: Executor;
   /** The sessions the ledger shows building this run's work; null when it cannot be read. */
   builderSessions?: string[] | null;
+  /** True when the ledger cannot say which subagents a session ran. */
+  subagentsUnreadable?: true;
   env?: Record<string, string>;
   /** Where the command runs, when that is not the run's checkout. */
   cwd?: string;
@@ -102,6 +104,13 @@ function deps(box: Box, world: World = {}): VerdictWriteDeps {
         ? (world.session ?? null)
         : null,
     sessionModel: (sessionId) => world.models?.[sessionId] ?? null,
+    // A subagent's session is `<session>:<agent id>`, as the hooks key it.
+    subagentModels: (sessionId) =>
+      world.subagentsUnreadable
+        ? null
+        : Object.entries(world.models ?? {})
+            .filter(([key]) => key.startsWith(`${sessionId}:`))
+            .map(([key, model]) => ({ sessionId: key, ...model })),
     builderSessions: (run) =>
       run.executionRunId === "run-1" && run.beadsIssueId === "bead-1"
         ? world.builderSessions === undefined
@@ -673,6 +682,174 @@ describe("forge:verdict, a model verdict", () => {
   });
 });
 
+describe("forge:verdict, an Evaluator subagent", () => {
+  const AGENT = "a4f4140979e02bd84";
+  const CHILD = `session-9:${AGENT}`;
+  const NOT_WRITTEN =
+    "not written: this verdict could never satisfy strict completion, and a run's verdict is written once.";
+
+  test("--subagent records that subagent's own model, as its hooks cached it, and the session it ran in", () => {
+    const box = sandbox();
+    const world: World = {
+      session: "session-9",
+      models: { "session-9": SONNET, [CHILD]: OPUS },
+      builder: SONNET,
+    };
+    const wrote = write(
+      box,
+      [...PASS, ...REQUEST_MASTER, "--subagent", AGENT],
+      world,
+    );
+    expect(wrote.code).toBe(0);
+    expect(runVerdict(box)).toMatchObject({
+      evaluator: {
+        observedProvider: "claude",
+        observedModel: "claude-opus-5-5",
+        rankPolicyDecision: "allowed",
+        sessionId: CHILD,
+      },
+    });
+    expect(gateCheck(box, SONNET).check).toMatchObject({ passed: true });
+  });
+
+  test("a subagent on a weaker model than its session fails strict completion: its own model is what is recorded", () => {
+    const world: World = {
+      session: "session-9",
+      models: { "session-9": OPUS, [CHILD]: HAIKU },
+      builder: SONNET,
+    };
+    const below =
+      "observed evaluator claude/claude-haiku-4-5-20251001 (rank apprentice) is below the builder's rank (journeyman)";
+
+    // Named, the run's verdict is refused: it could never pass.
+    const named = sandbox();
+    expect(
+      write(named, [...PASS, ...REQUEST_MASTER, "--subagent", AGENT], world)
+        .body.error,
+    ).toBe(`${NOT_WRITTEN} ${below}`);
+    expect(runVerdict(named)).toBeNull();
+
+    // Filed as a review round it is written, with the subagent's model; put
+    // where the strict gate looks, the gate refuses it for the same reason.
+    const round = sandbox();
+    const filed = write(
+      round,
+      [...PASS, ...REQUEST_MASTER, "--subagent", AGENT, "--review", "impl-1"],
+      world,
+    );
+    expect(filed.body.data).toMatchObject({
+      evaluator: { observedModel: HAIKU.model, sessionId: CHILD },
+    });
+    const bytes = readFileSync(
+      join(round.cwd, `${evaluationDir("run-1")}/review-impl-1.json`),
+    );
+    writeFileSync(join(round.cwd, evaluatorVerdictPath("run-1") ?? ""), bytes);
+    expect(gateCheck(round, SONNET).check).toEqual({
+      name: "eval-verdict",
+      passed: false,
+      output: below,
+    });
+
+    // Not named, the session's stronger model is not recorded in its place.
+    const unnamed = sandbox();
+    expect(
+      write(unnamed, [...PASS, ...REQUEST_MASTER], world).body.error,
+    ).toEndWith(
+      "Nothing was observed: the session working in this worktree has subagents whose own model is not its own (claude/claude-haiku-4-5-20251001), and this command cannot tell whether one of them is filing: name the subagent that judged with --subagent <agent id>",
+    );
+    expect(runVerdict(unnamed)).toBeNull();
+  });
+
+  test("a session whose subagents ran on its own model is observed as itself", () => {
+    const box = sandbox();
+    const wrote = write(box, [...PASS, ...REQUEST_MASTER], {
+      session: "session-9",
+      models: { "session-9": OPUS, [CHILD]: OPUS },
+    });
+    expect(wrote.code).toBe(0);
+    expect(runVerdict(box)).toMatchObject({
+      evaluator: { observedModel: OPUS.model, sessionId: "session-9" },
+    });
+  });
+
+  test("with nothing to tell it which model a subagent ran on, nothing is observed: never its session's model", () => {
+    const cases: Array<[World, string[], string]> = [
+      [
+        { session: "session-9", models: { "session-9": OPUS } },
+        ["--subagent", AGENT],
+        `the ledger has no model of its own cached for subagent ${AGENT} of the session working in this worktree (its hooks cache one from its own transcript after it calls a tool)`,
+      ],
+      [
+        {
+          session: "session-9",
+          models: { "session-9": OPUS },
+          subagentsUnreadable: true,
+        },
+        [],
+        "the ledger could not be read to see the subagents of the session working in this worktree, so no session is taken as the evaluator",
+      ],
+    ];
+    for (const [world, extra, reason] of cases) {
+      const box = sandbox();
+      const wrote = write(box, [...PASS, ...REQUEST_MASTER, ...extra], world);
+      expect(wrote.body.error).toEndWith(`Nothing was observed: ${reason}`);
+      expect(runVerdict(box)).toBeNull();
+    }
+  });
+
+  test("a subagent the ledger shows building the work is not observed; its session building it does not stop the subagent from being observed", () => {
+    const models = { "session-9": OPUS, [CHILD]: OPUS };
+    const built = sandbox();
+    expect(
+      write(built, [...PASS, ...REQUEST_MASTER, "--subagent", AGENT], {
+        session: "session-9",
+        models,
+        builderSessions: [CHILD],
+      }).body.error,
+    ).toEndWith(
+      `Nothing was observed: subagent ${AGENT} is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator`,
+    );
+
+    const spawned = sandbox();
+    expect(
+      write(spawned, [...PASS, ...REQUEST_MASTER, "--subagent", AGENT], {
+        session: "session-9",
+        models,
+        builderSessions: ["session-9"],
+      }).code,
+    ).toBe(0);
+    expect(runVerdict(spawned)).toMatchObject({
+      evaluator: { sessionId: CHILD },
+    });
+  });
+
+  test("--subagent takes one agent id, for a model evaluator", () => {
+    const cases: Array<[string[], string]> = [
+      [
+        [...PASS, ...REQUEST_MASTER, "--subagent", "../a1"],
+        "--subagent must be an agent id: letters, digits, dashes and underscores",
+      ],
+      [
+        [...PASS, ...AS_REVIEWER, "--subagent", AGENT],
+        "--subagent names a model evaluator: it does not go with --human",
+      ],
+      [
+        [...PASS, ...REQUEST_MASTER, "--subagent", AGENT, "--subagent", AGENT],
+        "--subagent was given more than once",
+      ],
+    ];
+    for (const [argv, error] of cases) {
+      const box = sandbox();
+      const wrote = write(box, argv, {
+        session: "session-9",
+        models: { "session-9": OPUS, [CHILD]: OPUS },
+      });
+      expect({ argv, error: wrote.body.error }).toEqual({ argv, error });
+      expect(runVerdict(box)).toBeNull();
+    }
+  });
+});
+
 describe("forge:verdict --review, a review round's verdict", () => {
   test("is written once per label beside the run's verdict, even when nothing was observed, and says what a strict gate would object to", () => {
     const box = sandbox();
@@ -994,6 +1171,56 @@ describe("forge:verdict, spawned against a scratch ledger", () => {
       printed.data.evaluator,
     );
   }, 60_000);
+
+  test("reads a subagent's own model for --subagent, and takes no observation from a session one of whose subagents ran on another model", async () => {
+    const box = sandbox();
+    const ledger = join(box.home, "ledger.db");
+    mkdirSync(box.home, { recursive: true });
+    expect(writeSessionMirror(box.cwd, "session-live")).toBe(true);
+    setSessionModel({ sessionId: "session-live", ...OPUS }, { path: ledger });
+    // What the hooks cache for a subagent from its own transcript.
+    setSessionModel(
+      { sessionId: "session-live:a1", ...HAIKU },
+      { path: ledger },
+    );
+    // A session whose id starts the same is not this one's subagent.
+    setSessionModel(
+      { sessionId: "session-live2:a9", ...SONNET },
+      { path: ledger },
+    );
+    closeLedger();
+
+    const spawn = async (argv: string[]) => {
+      const child = Bun.spawn(
+        [process.execPath, "run", CLI, "--correlation", box.pointer, ...argv],
+        { cwd: box.cwd, env: scratchEnv(box), stdout: "pipe", stderr: "pipe" },
+      );
+      const stdout = await new Response(child.stdout).text();
+      return { code: await child.exited, body: JSON.parse(stdout) };
+    };
+
+    const named = await spawn([
+      ...PASS,
+      ...REQUEST_MASTER,
+      "--subagent",
+      "a1",
+      "--review",
+      "impl-1",
+    ]);
+    expect(named.code).toBe(0);
+    expect(named.body.data.evaluator).toMatchObject({
+      observedModel: HAIKU.model,
+      sessionId: "session-live:a1",
+      rankPolicyDecision: "rejected",
+    });
+
+    const unnamed = await spawn([...PASS, ...REQUEST_MASTER]);
+    expect(unnamed.code).toBe(2);
+    expect(unnamed.body.error).toEndWith(
+      "Nothing was observed: the session working in this worktree has subagents whose own model is not its own (claude/claude-haiku-4-5-20251001), and this command cannot tell whether one of them is filing: name the subagent that judged with --subagent <agent id>",
+    );
+    expect(runVerdict(box)).toBeNull();
+  }, 120_000);
 
   test("takes no observation from a session the ledger shows entering or completing a phase of the run, or of another run recorded under the same bead", async () => {
     for (const built of [

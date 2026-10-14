@@ -39,6 +39,12 @@
  * and `data.stderr` (its end) hold that text, which never reaches the ledger:
  * `session.ended` records `failed: exit <n>`, or
  * `failed: exit 0, provider reported an error`.
+ *
+ * When the provider's stream names the model its responses came from (the
+ * Claude adapter reads an assistant message's `message.model`), that model is
+ * cached in the same ledger for the run's session, as the hooks cache an
+ * interactive session's: it is what `forge:verdict`, run inside the child,
+ * records as observed. The run's events keep the smith that was asked for.
  */
 
 import { existsSync, readFileSync } from "fs";
@@ -53,6 +59,7 @@ import { resolveSmith } from "../config/resolve";
 import { isValidSlug } from "../forge/runs";
 import { readSessionMirror } from "../ledger/identity";
 import { ledgerPath } from "../ledger/paths";
+import { setSessionModel } from "../ledger/session-models";
 import { resolveCheckout } from "../ledger/workspace";
 import { RUN_CORRELATION_ENV } from "../run-correlation";
 import {
@@ -80,7 +87,7 @@ export interface ExecDeps {
   command?: string[];
   /** The ledger file to write (tests). Default: the ledger of the process environment. */
   ledgerPath?: string;
-  /** Replaces the ledger sink altogether. */
+  /** Replaces the ledger sink altogether; no model is cached then. */
   sink?: EventSink;
 }
 
@@ -272,6 +279,21 @@ export async function runExec(
       parentSessionId: launchingSession(deps.cwd ?? process.cwd()),
       timeoutMs,
       command: deps.command,
+      // The observed model goes where the run's events go: the ledger.
+      ...(deps.sink
+        ? {}
+        : {
+            onModel: (observed: {
+              sessionId: string;
+              provider: string;
+              model: string;
+            }) => {
+              setSessionModel(
+                observed,
+                deps.ledgerPath === undefined ? {} : { path: deps.ledgerPath },
+              );
+            },
+          }),
     });
   } catch (error) {
     return failure(error instanceof Error ? error.message : String(error));

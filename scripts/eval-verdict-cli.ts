@@ -5,7 +5,8 @@
  *   bun run forge:verdict --verdict <PASS|FAIL>
  *     [--blocker <n>] [--high <n>] [--medium <n>] [--low <n>]
  *     ( --human <operator|reviewer>
- *     | --requested-provider <id> --requested-model <id> --requested-rank <rank> )
+ *     | --requested-provider <id> --requested-model <id> --requested-rank <rank>
+ *       [--subagent <agent id>] )
  *     [--summary <text>] [--attest <dimension>=<0..5> ...]
  *     [--review <label>] [--correlation <pointer>] [--checkout <dir>]
  *
@@ -28,7 +29,11 @@
  * leaves there). That session is not an observation of the evaluator when the
  * ledger shows it building the work (entering or completing a phase of this
  * run, or of another run whose phase events carry the same Beads id): an
- * Evaluator subagent shares its spawner's session. Nothing observed means the observed fields
+ * Evaluator subagent shares its spawner's session. Nor is it when the ledger
+ * has cached a subagent of that session on another model: the command cannot
+ * tell which of them is filing. `--subagent <agent id>` names the subagent
+ * that judged, and its own cached model (read by its hooks from its own
+ * transcript) is what is observed. Nothing observed means the observed fields
  * are absent; the request is never copied into them. The run's verdict is then
  * refused, as it is when the rank policy rejects the evaluator: the file is
  * written once, and one that can never satisfy strict completion would leave
@@ -75,6 +80,15 @@ export interface VerdictWriteDeps {
   /** The model the ledger has cached for a session: the machine source of an observation. */
   sessionModel(sessionId: string): { provider: string; model: string } | null;
   /**
+   * The models the ledger has cached for a session's subagents, each under
+   * its own `<session>:<agent id>`. Null when the ledger could not be asked.
+   */
+  subagentModels(sessionId: string): ReadonlyArray<{
+    sessionId: string;
+    provider: string;
+    model: string;
+  }> | null;
+  /**
    * The sessions the ledger shows building this work: those that entered or
    * completed a phase of the run, or of another run whose phase events carry
    * the same Beads id. Null when the ledger could not be asked.
@@ -107,6 +121,7 @@ const FLAGS = [
   "requested-provider",
   "requested-model",
   "requested-rank",
+  "subagent",
   "summary",
   "attest",
   "review",
@@ -127,6 +142,9 @@ const FLAG_SHAPED = /^--[^\s=]+(=.*)?$/su;
 
 /** A finding count: digits only, and few enough to be an exact integer. */
 const COUNT = /^\d{1,9}$/;
+
+/** An agent id as the host gives one to a subagent: one plain word. */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function refuse(error: string): VerdictWriteOutcome {
   return { code: 2, body: { ok: false, data: null, error } };
@@ -184,10 +202,52 @@ type Observation =
   | { ok: true; sessionId: string; provider: string; model: string }
   | { ok: false; reason: string };
 
+const BUILDING =
+  "(it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator";
+
+/** A cached model as plain text, or null when either part is missing. */
+function cachedText(
+  cached: { provider: string; model: string } | null,
+): { provider: string; model: string } | null {
+  const provider = cached?.provider.trim() ?? "";
+  const model = cached?.model.trim() ?? "";
+  return provider.length > 0 && model.length > 0 ? { provider, model } : null;
+}
+
+/**
+ * The model the ledger has cached for one subagent of the session working in
+ * the worktree the command runs in: its own, which its hooks read from its
+ * own transcript. Never its session's in its place.
+ */
+function observeSubagent(
+  deps: VerdictWriteDeps,
+  sessionId: string,
+  agentId: string,
+  builderSessions: ReadonlySet<string>,
+): Observation {
+  const child = `${sessionId}:${agentId}`;
+  if (builderSessions.has(child)) {
+    return {
+      ok: false,
+      reason: `subagent ${agentId} is one the ledger shows building this work ${BUILDING}`,
+    };
+  }
+  const cached = cachedText(deps.sessionModel(child));
+  if (cached === null) {
+    return {
+      ok: false,
+      reason: `the ledger has no model of its own cached for subagent ${agentId} of the session working in this worktree (its hooks cache one from its own transcript after it calls a tool)`,
+    };
+  }
+  return { ok: true, sessionId: child, ...cached };
+}
+
 /**
  * The model the ledger has cached for the session working in the worktree the
- * command runs in. A session the ledger shows building the work is not an
- * observation of who judged it.
+ * command runs in, or with `agentId` for that subagent of it. A session the
+ * ledger shows building the work is not an observation of who judged it, and
+ * neither is a session with subagents on other models than its own: one of
+ * them may be the one filing, and a subagent shares its session.
  */
 function observe(
   deps: VerdictWriteDeps,
@@ -195,6 +255,7 @@ function observe(
     sessionWorktree: string;
     /** Null when the ledger could not say who built the work. */
     builderSessions: ReadonlySet<string> | null;
+    agentId?: string;
   },
 ): Observation {
   if (input.builderSessions === null) {
@@ -212,6 +273,14 @@ function observe(
         "no session is recorded as working in the worktree this command runs in (no session mirror there, or one older than a day)",
     };
   }
+  if (input.agentId !== undefined) {
+    return observeSubagent(
+      deps,
+      sessionId,
+      input.agentId,
+      input.builderSessions,
+    );
+  }
   if (input.builderSessions.has(sessionId)) {
     return {
       ok: false,
@@ -219,17 +288,40 @@ function observe(
         "the session filing this verdict is one the ledger shows building this work (it entered or completed a phase of this run, or of another run recorded under the same Beads id), so its model is not an observation of the evaluator (an Evaluator subagent shares its spawner's session)",
     };
   }
-  const cached = deps.sessionModel(sessionId);
-  const provider = cached?.provider.trim() ?? "";
-  const model = cached?.model.trim() ?? "";
-  if (provider.length === 0 || model.length === 0) {
+  const cached = cachedText(deps.sessionModel(sessionId));
+  if (cached === null) {
     return {
       ok: false,
       reason:
         "the ledger has no model cached for the session working in this worktree",
     };
   }
-  return { ok: true, sessionId, provider, model };
+  const subagents = deps.subagentModels(sessionId);
+  if (subagents === null) {
+    return {
+      ok: false,
+      reason:
+        "the ledger could not be read to see the subagents of the session working in this worktree, so no session is taken as the evaluator",
+    };
+  }
+  const others = [
+    ...new Set(
+      subagents.flatMap((entry) => {
+        const own = cachedText(entry);
+        return own !== null &&
+          (own.provider !== cached.provider || own.model !== cached.model)
+          ? [`${own.provider}/${own.model}`]
+          : [];
+      }),
+    ),
+  ].sort();
+  if (others.length > 0) {
+    return {
+      ok: false,
+      reason: `the session working in this worktree has subagents whose own model is not its own (${others.join(", ")}), and this command cannot tell whether one of them is filing: name the subagent that judged with --subagent <agent id>`,
+    };
+  }
+  return { ok: true, sessionId, ...cached };
 }
 
 /**
@@ -385,6 +477,19 @@ export function runVerdictWrite(
   const parsedArguments = parseArguments(argv);
   if (!parsedArguments.ok) return refuse(parsedArguments.error);
   const { values, attest } = parsedArguments;
+  const agentId = values.get("subagent");
+  if (agentId !== undefined) {
+    if (!AGENT_ID.test(agentId)) {
+      return refuse(
+        "--subagent must be an agent id: letters, digits, dashes and underscores",
+      );
+    }
+    if (values.has("human")) {
+      return refuse(
+        "--subagent names a model evaluator: it does not go with --human",
+      );
+    }
+  }
 
   // Where the session is, and where the run builds: one checkout unless
   // --checkout says otherwise.
@@ -431,7 +536,11 @@ export function runVerdictWrite(
     beadsIssueId: correlation.beadsIssueId,
   });
   const builderSessions = builders === null ? null : new Set(builders);
-  const observation = observe(deps, { sessionWorktree, builderSessions });
+  const observation = observe(deps, {
+    sessionWorktree,
+    builderSessions,
+    ...(agentId !== undefined ? { agentId } : {}),
+  });
   const evaluator = evaluatorFrom(values, {
     observation,
     smiths,
@@ -510,7 +619,9 @@ if (import.meta.main) {
   const { loadConfig } = await import("./config/load");
   const { readRunState } = await import("./forge/runs-store");
   const { readSessionMirror } = await import("./ledger/identity");
-  const { getSessionModel } = await import("./ledger/session-models");
+  const { getSessionModel, getSubagentModels } = await import(
+    "./ledger/session-models"
+  );
   const { queryEvents } = await import("./ledger/query");
   const PHASE_EVENTS = ["run.phase.entered", "run.phase.completed"] as const;
   const outcome = runVerdictWrite(process.argv.slice(2), {
@@ -518,6 +629,7 @@ if (import.meta.main) {
     env: process.env,
     sessionMirror: (worktree) => readSessionMirror(worktree),
     sessionModel: (sessionId) => getSessionModel(sessionId),
+    subagentModels: (sessionId) => getSubagentModels(sessionId),
     builderSessions: ({ executionRunId, beadsIssueId }) => {
       try {
         const phases = [

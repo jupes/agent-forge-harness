@@ -66,7 +66,12 @@ export function effortOf(value: unknown): string | undefined {
   return nonEmptyString(value);
 }
 
-function modelOfLine(line: string): TranscriptModel | null {
+/**
+ * The model of one assistant record. With no `agentId` it is the session's
+ * own: a sidechain record (a subagent's) is skipped. With one it is that
+ * subagent's: only a record carrying that `agentId` counts.
+ */
+function modelOfLine(line: string, agentId?: string): TranscriptModel | null {
   let record: unknown;
   try {
     record = JSON.parse(line);
@@ -74,7 +79,11 @@ function modelOfLine(line: string): TranscriptModel | null {
     return null;
   }
   if (!isRecord(record) || record.type !== "assistant") return null;
-  if (record.isSidechain === true) return null;
+  if (agentId === undefined) {
+    if (record.isSidechain === true) return null;
+  } else if (record.agentId !== agentId) {
+    return null;
+  }
   const message = record.message;
   if (!isRecord(message)) return null;
   const model = nonEmptyString(message.model);
@@ -87,12 +96,17 @@ function modelOfLine(line: string): TranscriptModel | null {
 /**
  * The model and effort of the last assistant record in the transcript's tail,
  * or null when there is none (no reply yet, file missing, format changed).
+ * `agentId` asks for one subagent's records instead of the session's: the
+ * host writes a subagent's assistant records with its `agentId`, in a
+ * transcript of its own (`<session>/subagents/agent-<agent id>.jsonl` beside
+ * the session's, seen on 2.1.295) or, in older layouts, among the session's.
  */
 export function modelFromTranscriptTail(
   path: string,
   opts: {
     maxBytes?: number;
     read?: (path: string, maxBytes: number) => Tail | null;
+    agentId?: string;
   } = {},
 ): TranscriptModel | null {
   try {
@@ -106,7 +120,7 @@ export function modelFromTranscriptTail(
     for (let i = lines.length - 1; i >= first; i--) {
       const line = lines[i]?.trim();
       if (!line) continue;
-      const found = modelOfLine(line);
+      const found = modelOfLine(line, opts.agentId);
       if (found) return found;
     }
     return null;
