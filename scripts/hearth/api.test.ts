@@ -271,7 +271,12 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     prepare: (h) => queued(h, "demo-reassign", "queued"),
     // It moves no state: its outcome is a tracker write, with no from or to.
-    outcome: [{ kind: "bead.transitioned", payload: { action: "reassign" } }],
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: { action: "reassign", smith: "claude-master" },
+      },
+    ],
     happened: async (h, data) => {
       expect(data).toEqual({
         id: "demo-reassign",

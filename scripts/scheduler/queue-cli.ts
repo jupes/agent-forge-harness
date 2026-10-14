@@ -7,8 +7,10 @@
  *
  * `reconcile` compares each bead's queue state on Beads with the moves the
  * ledger recorded for it (`queue-reconcile.ts`) and prints where they part: a
- * `gap`, a move made on the bead with no `bead.transitioned` for it, and a
- * `duplicate`, one move recorded twice in a row. It writes nothing, to Beads
+ * `gap`, a move made on the bead with no `bead.transitioned` for it, a
+ * `duplicate`, one move recorded twice in a row, and a `smith` on the bead
+ * that its newest recorded reassign does not name (with `askedEvent` when the
+ * operator API asked for it: a reassign the ledger missed). It writes nothing, to Beads
  * or to the ledger, and reads under the queue lock, so a move waits for it.
  *
  * Prints `{ ok, data, error }` and exits 1 when `ok` is false; drift found is
