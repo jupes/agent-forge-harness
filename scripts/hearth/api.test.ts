@@ -485,6 +485,7 @@ const READS: Record<string, string> = {
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
+  "GET /scoreboard": "/scoreboard",
 };
 
 function fixture(route: ApiRoute): ActionFixture {

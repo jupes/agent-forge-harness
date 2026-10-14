@@ -38,6 +38,7 @@ import {
   listSessions,
   queryEventPage,
 } from "../../ledger/query";
+import { readScoreboard, type ScoreboardFilter } from "../../ledger/scoreboard";
 import { type Eligibility, readEligibility } from "../../scheduler/eligibility";
 import { PAUSABLE } from "../../scheduler/queue-table";
 import { type GitRun, listWorktrees } from "../../scheduler/worktrees";
@@ -240,6 +241,35 @@ function eventsQuery(request: RouteRequest): ValidationResult<EventsQuery> {
   return { ok: true, value: { ...parsed.value.filter, limit } };
 }
 
+type ScoreboardQuery = Omit<ScoreboardFilter, "workspace">;
+
+/**
+ * The scoreboard's one filter, by the rules of `forge:audit --scoreboard`:
+ * `since` becomes that command's `--since` and its own parser judges it, so
+ * the route and the CLI read the same scope for the same request.
+ */
+function scoreboardQuery(
+  request: RouteRequest,
+): ValidationResult<ScoreboardQuery> {
+  const given = parameters(request, ["since"]);
+  if (!given.ok) return given;
+  const since = given.value.get("since");
+  if (
+    since !== undefined &&
+    (since.length === 0 || since.length > MAX_ID_LENGTH)
+  )
+    return fail(`since: expected 1 to ${MAX_ID_LENGTH} characters`);
+  const parsed = parseAuditArgs([
+    "--scoreboard",
+    ...(since !== undefined ? ["--since", since] : []),
+  ]);
+  if (!parsed.ok) return fail(parsed.error.replace(/^--/, ""));
+  if (parsed.value.command !== "scoreboard" || parsed.value.allWorkspaces)
+    return fail("Only the scoreboard of this workspace can be asked for");
+  const { since: from } = parsed.value.filter;
+  return { ok: true, value: from !== undefined ? { since: from } : {} };
+}
+
 interface RunQuery {
   slug: string;
   /** How many of the run's newest events to carry; 0 for none. */
@@ -340,7 +370,22 @@ export function ledgerReads(deps: ReadDeps) {
       data: activeReservations({ workspace }, ledger),
     }),
   };
-  return { sessions, runs, run, events, reservations };
+  /**
+   * What `forge:audit --scoreboard` answers from this checkout
+   * (`scripts/ledger/scoreboard.ts`). Not a stream collection: it folds the
+   * workspace's session, gate, review and council events on every read.
+   */
+  const scoreboard: ReadRoute<ScoreboardQuery> = {
+    kind: "read",
+    method: "GET",
+    path: "/scoreboard",
+    validate: scoreboardQuery,
+    read: (query) => ({
+      status: 200,
+      data: readScoreboard({ ...query, workspace }, ledger),
+    }),
+  };
+  return { sessions, runs, run, events, reservations, scoreboard };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
