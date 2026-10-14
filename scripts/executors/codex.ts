@@ -134,8 +134,9 @@ export function parseCodexError(line: string): string | undefined {
  * Where `codex:sync` runs for a request: the top level of the checkout the
  * executor runs in, when that checkout is the harness's — its main checkout
  * or a linked worktree of it. Codex looks for `.agents/skills/` from the
- * directory it runs in up to its repository's top level, and a linked
- * worktree has a copy of its own, mirrored from its own `.claude/`.
+ * directory it runs in up to its repository's top level
+ * (`.agents/CODEX-NOTES.md`; not observed with a real Codex here), and a
+ * linked worktree has a copy of its own, mirrored from its own `.claude/`.
  * Undefined for a checkout of any other repository (a sub-repo, the
  * directory `forge:doctor --task` makes): it holds no `.claude/` of the
  * harness to mirror, and a sync anywhere else is not where Codex looks.

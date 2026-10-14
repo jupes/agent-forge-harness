@@ -95,5 +95,6 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   SIGTERM is checked on Linux and macOS only — on Windows a signal from another process ends it outright — so it has
   not been run on the Windows machine this was written on. Observed there (Bun 1.3.10): the provider itself did not
   outlive the harness even with the hook removed, but a child it started detached did, unless the hook ran. A harness
-  killed outright (SIGKILL, TerminateProcess) runs no hook: that child outlives it (`agent-forge-harness-u98i`).
+  killed outright (SIGKILL, TerminateProcess) runs no hook: on Windows that child outlived a harness terminated that
+  way, in a probe outside the suite (`agent-forge-harness-u98i`).
 - Adding an adapter: implement the spec, register in `registry.ts`, add it to `contract.test.ts`.

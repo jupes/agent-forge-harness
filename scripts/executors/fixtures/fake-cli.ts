@@ -47,9 +47,11 @@
  *   stderr        one line on stderr and nothing on stdout, exit 2
  *   hang-tree     start a child of its own that hangs, print its pid as one
  *                 line (`{ "childPid": <n> }`), then hang. On Windows the
- *                 child is started detached, outside the job Bun puts its
- *                 own children in (as a process a `.cmd` shim starts can
- *                 be); elsewhere it stays in this process's group
+ *                 child is started detached, elsewhere it stays in this
+ *                 process's group. On Windows (Bun 1.3.10) a fake the
+ *                 harness supervised did not outlive the harness even with
+ *                 its exit hook removed, and a detached child of that fake
+ *                 did (`supervisor.test.ts`)
  */
 
 import { existsSync, writeFileSync } from "fs";
