@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loopbackProxyVariable } from "../../scripts/hearth/loopback";
 import { sweepFinishedRunHomes } from "./run-homes";
 import {
   BD_STAND_IN_BIN,
@@ -32,6 +33,14 @@ import {
  * own. That never stops the run.
  */
 export default function globalSetup(): void {
+  // The helpers ask the hearth on 127.0.0.1 with Node's fetch, which sends
+  // that to HTTP_PROXY when NODE_USE_ENV_PROXY is on: the operator token with it.
+  const proxied = loopbackProxyVariable(process.env, "node");
+  if (proxied !== null)
+    throw new Error(
+      `The browser suite was started with NODE_USE_ENV_PROXY on, ${proxied} set and no NO_PROXY entry of 127.0.0.1 or *: its requests to the hearth would go to that proxy. Start it with NO_PROXY=127.0.0.1, or without NODE_USE_ENV_PROXY.`,
+    );
+
   const swept = sweepFinishedRunHomes(HEARTH_HOME, tmpdir());
   if (swept.length > 0)
     console.log(

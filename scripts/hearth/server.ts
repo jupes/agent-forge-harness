@@ -24,6 +24,7 @@ import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { isMain } from "../is-main";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import { openLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
@@ -34,7 +35,13 @@ import {
   isDeclaredSameOrigin,
 } from "./gate";
 import { hearthHome, lockPath, tokenPath } from "./home";
-import { acquireLock, type HearthLock, readLock, releaseLock } from "./lock";
+import {
+  type AcquireResult,
+  acquireLock,
+  type HearthLock,
+  readLock,
+  releaseLock,
+} from "./lock";
 import { API_PREFIX, HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
 import { councilHttpHandler } from "./routes/council";
 import {
@@ -69,6 +76,12 @@ export interface HearthOptions {
   };
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
+  /**
+   * Awaited once the server listens and before the lock is taken and the
+   * token file written, with the port. A test holds the start there to ask
+   * the hearth while it is still starting; a throw fails the start.
+   */
+  onListening?: (port: number) => void | Promise<void>;
 }
 
 export interface OperatorApiOverrides {
@@ -89,6 +102,8 @@ export interface OperatorApiOverrides {
   git?: GitRun;
   /** Wrap the table before it is mounted (a test observing an effect). */
   decorate?: (routes: readonly ApiRoute[]) => readonly ApiRoute[];
+  /** How long an action's body may take to arrive; 10 s when not given. */
+  bodyTimeoutMs?: number;
 }
 
 export interface StartedHearth {
@@ -122,6 +137,38 @@ function reply(
   res.end(
     JSON.stringify({ ok: error === null, data: error ? null : data, error }),
   );
+}
+
+/**
+ * How long a request waits on another connection's lock while the hearth opens
+ * its ledger for the first time: not at all, because the runner's three audit
+ * attempts, 25 ms apart, are the wait. The ledger's own first open waits 2 s in
+ * each of its statements and attempts, which suits an emitter that must not
+ * lose an event; under those three attempts it held the serving thread for 12
+ * to 20 s on a new ledger file that was locked. A short wait is no cheaper than
+ * it looks on Windows: SQLite counts the sleeps it asks for, not the time they
+ * take, and a 50 ms wait took about 340 ms there (a zero wait about 30 ms).
+ * Once the file is open this is not looked at again.
+ */
+const LEDGER_FIRST_OPEN_WAIT_MS = 0;
+
+/**
+ * The ledger's `appendEvent` for `file`, opening the file with the hearth's
+ * shorter first-open wait. A file that could not be opened in time is reported
+ * as the ledger's error ("database is locked"), which the runner treats as busy.
+ */
+function hearthAppend(file: string): (event: LedgerEventInput) => AppendResult {
+  return (event) => {
+    try {
+      openLedger(file, { waitMs: LEDGER_FIRST_OPEN_WAIT_MS });
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return appendEvent(event, { path: file });
+  };
 }
 
 function reusedHearth(lock: HearthLock): ReusedHearth {
@@ -172,9 +219,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
-  const append =
-    options.api?.appendEvent ??
-    ((event: LedgerEventInput) => appendEvent(event, { path: ledgerFile }));
+  const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
   const table = operatorRoutes({
     root,
     workspace,
@@ -199,6 +244,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       workspace,
       expectedToken,
       appendEvent: append,
+      ...(options.api?.bodyTimeoutMs !== undefined
+        ? { bodyTimeoutMs: options.api.bodyTimeoutMs }
+        : {}),
     },
     options.api?.decorate?.(table.routes) ?? table.routes,
   );
@@ -269,27 +317,47 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     });
   });
 
-  await new Promise<void>((done, fail) => {
-    server.once("error", fail);
-    server.listen(options.port ?? 0, "127.0.0.1", done);
-  });
-  const port = (server.address() as AddressInfo).port;
-
-  const lock: HearthLock = {
-    pid: process.pid,
-    port,
-    root,
-    startedAt: new Date().toISOString(),
-    tokenFile,
-  };
-  const claimed = acquireLock(lockFile, lock);
-
   const stop = async (): Promise<void> => {
     table.close();
     await service.close();
     server.closeAllConnections();
+    // Called back with an error, which changes nothing here, when it never listened.
     await new Promise<void>((done) => server.close(() => done()));
   };
+
+  let lockTaken = false;
+  const begin = async (): Promise<{ port: number; claimed: AcquireResult }> => {
+    await new Promise<void>((done, fail) => {
+      server.once("error", fail);
+      server.listen(options.port ?? 0, "127.0.0.1", done);
+    });
+    const port = (server.address() as AddressInfo).port;
+    await options.onListening?.(port);
+    const claimed = acquireLock(lockFile, {
+      pid: process.pid,
+      port,
+      root,
+      startedAt: new Date().toISOString(),
+      tokenFile,
+    });
+    lockTaken = claimed.kind === "acquired";
+    // Written only once the lock is ours, so a losing racer never overwrites the
+    // winner's token file.
+    if (lockTaken) token = createToken(tokenFile);
+    return { port, claimed };
+  };
+  let begun: { port: number; claimed: AcquireResult };
+  try {
+    begun = await begin();
+  } catch (error) {
+    // A start that fails leaves nothing behind: a server still listening would
+    // answer the health route for a lock that names it, and its token route
+    // would say "still starting" for as long as this process lived.
+    if (lockTaken) releaseLock(lockFile, process.pid);
+    await stop();
+    throw error;
+  }
+  const { port, claimed } = begun;
 
   if (claimed.kind === "held") {
     // Lost a start-up race to another hearth for this root: defer to it, once
@@ -300,10 +368,6 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       `The hearth lock ${lockFile} names pid ${claimed.lock.pid}, which does not answer as a hearth for ${claimed.lock.root}`,
     );
   }
-
-  // Written only once the lock is ours, so a losing racer never overwrites the
-  // winner's token file.
-  token = createToken(tokenFile);
 
   return {
     kind: "started",

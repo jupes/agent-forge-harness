@@ -98,6 +98,8 @@ export interface OperatorApiDeps {
   expectedToken(): string | null;
   /** The ledger's `appendEvent`, bound to this hearth's ledger. */
   appendEvent(event: LedgerEventInput): AppendResult;
+  /** How long an action's body may take to arrive in full; `BODY_TIMEOUT_MS` when not given. */
+  bodyTimeoutMs?: number;
 }
 
 export interface OperatorApi {
@@ -114,6 +116,17 @@ export interface OperatorApi {
 }
 
 const DEFAULT_BODY_BYTES = 16_000;
+/**
+ * How long an action's body may take to arrive in full. Past it the request
+ * is answered (408, or the refusal it already had) and its connection closed.
+ */
+export const BODY_TIMEOUT_MS = 10_000;
+/**
+ * A refusal whose body has not begun to arrive this long after the refusal was
+ * decided is sent without waiting for it (see `serveAction`). Under the MCP
+ * server's 100 ms hold-back.
+ */
+const HELD_BODY_MS = 50;
 /** A busy ledger is tried this many times, this far apart, before the action is refused. */
 const AUDIT_ATTEMPTS = 3;
 const AUDIT_RETRY_MS = 25;
@@ -151,6 +164,9 @@ const refuse = (status: number, error: string): RouteReply => ({
   status,
   error,
 });
+
+const NOT_THIS_ORIGIN =
+  "The operator API answers only a request from this control plane's own origin";
 
 interface Compiled {
   route: ApiRoute;
@@ -230,36 +246,110 @@ function declaredSurface(
       };
 }
 
+/** How reading a request's body ended. */
+interface BodyRead {
+  /** False when the body had not ended by the time limit, or its client went first. */
+  ended: boolean;
+  /** The body, when it ended at no more than the bytes the reader kept; otherwise null. */
+  bytes: Buffer | null;
+}
+
+/** An action's body, read at most once, by its deadline. */
+interface RequestBody {
+  /**
+   * Read to the end of the body or to the deadline, whichever comes first,
+   * keeping at most `keep` bytes: past that what arrives is read and dropped.
+   * Every call after the first answers what the first read.
+   */
+  read(keep: number): Promise<BodyRead>;
+  /** Whether any byte of the body has been read yet. */
+  started(): boolean;
+}
+
+/**
+ * Not read with `for await`: under Bun, leaving that loop before the body ends
+ * makes the runtime end the response itself (an empty 200), so a reader that
+ * stops at a deadline would never send its answer. Listeners are taken off
+ * when the read stops, and the request is paused if its body had not ended.
+ */
+function requestBody(req: IncomingMessage, timeoutMs: number): RequestBody {
+  const deadline = Date.now() + timeoutMs;
+  // An error after the read has stopped (the connection closed under it) must not be thrown as unhandled.
+  req.on("error", () => {});
+  let reading: Promise<BodyRead> | null = null;
+  let started = false;
+  const readTo = (keep: number): Promise<BodyRead> =>
+    new Promise((done) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      const stop = (ended: boolean): void => {
+        clearTimeout(timer);
+        req.off("data", onData);
+        req.off("end", onEnd);
+        req.off("close", onClose);
+        if (!ended) req.pause();
+        done({
+          ended,
+          bytes: ended && size <= keep ? Buffer.concat(chunks) : null,
+        });
+      };
+      const onData = (chunk: Buffer | string): void => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        started = true;
+        size += buffer.byteLength;
+        if (size <= keep) chunks.push(buffer);
+        else chunks.length = 0;
+      };
+      const onEnd = (): void => stop(true);
+      // Its client went before the body ended: under Bun `close` follows `end` otherwise.
+      const onClose = (): void => stop(false);
+      const timer = setTimeout(
+        () => stop(false),
+        Math.max(0, deadline - Date.now()),
+      );
+      if (req.readableEnded) return stop(true);
+      req.on("data", onData);
+      req.once("end", onEnd);
+      req.once("close", onClose);
+    });
+  return {
+    read(keep) {
+      reading ??= readTo(keep);
+      return reading;
+    },
+    started: () => started,
+  };
+}
+
 async function readJsonBody(
   req: IncomingMessage,
+  body: RequestBody,
   maxBytes: number,
-): Promise<ValidationResult<unknown>> {
+  timeoutMs: number,
+): Promise<{ ok: true; value: unknown } | { ok: false; refusal: RouteReply }> {
   if (!req.headers["content-type"]?.startsWith("application/json"))
-    return { ok: false, error: "Use application/json" };
-  const tooLarge = `Request body exceeds ${maxBytes} bytes`;
+    return { ok: false, refusal: refuse(400, "Use application/json") };
+  const tooLarge = refuse(400, `Request body exceeds ${maxBytes} bytes`);
   if (Number(req.headers["content-length"] ?? 0) > maxBytes)
-    return { ok: false, error: tooLarge };
-  const chunks: Buffer[] = [];
-  let size = 0;
-  let over = false;
-  for await (const chunk of req) {
-    // Past the cap the rest is read and dropped, not abandoned: under Bun,
-    // leaving this loop early makes the runtime end the response itself (an
-    // empty 200), and the refusal below would never be sent.
-    if (over) continue;
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.byteLength;
-    if (size > maxBytes) {
-      over = true;
-      chunks.length = 0;
-    } else chunks.push(buffer);
-  }
-  if (over) return { ok: false, error: tooLarge };
+    return { ok: false, refusal: tooLarge };
+  const read = await body.read(maxBytes);
+  if (!read.ended)
+    return {
+      ok: false,
+      refusal: refuse(
+        408,
+        `The request body did not arrive within ${timeoutMs} ms`,
+      ),
+    };
+  if (read.bytes === null) return { ok: false, refusal: tooLarge };
   try {
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const value: unknown = JSON.parse(read.bytes.toString("utf8"));
     return { ok: true, value };
   } catch {
-    return { ok: false, error: "Request body must be valid JSON" };
+    return {
+      ok: false,
+      refusal: refuse(400, "Request body must be valid JSON"),
+    };
   }
 }
 
@@ -316,11 +406,16 @@ export function createOperatorApi(
     }
   }
 
+  const bodyTimeoutMs = deps.bodyTimeoutMs ?? BODY_TIMEOUT_MS;
+
   async function act(
     route: ActionRoute,
     pending: PendingRequest,
     req: IncomingMessage,
+    incoming: RequestBody,
   ): Promise<RouteReply> {
+    if (repeatsSingleHeader(req) || !isDeclaredSameOrigin(req))
+      return refuse(403, NOT_THIS_ORIGIN);
     if (!tokenMatches(deps.expectedToken(), req.headers[OPERATOR_HEADER]))
       return refuse(
         403,
@@ -332,9 +427,11 @@ export function createOperatorApi(
     if (!params.ok) return refuse(400, params.error);
     const body = await readJsonBody(
       req,
+      incoming,
       route.maxBodyBytes ?? DEFAULT_BODY_BYTES,
+      bodyTimeoutMs,
     );
-    if (!body.ok) return refuse(400, body.error);
+    if (!body.ok) return body.refusal;
     const input = route.validate({
       params: params.value,
       query: pending.query,
@@ -362,22 +459,62 @@ export function createOperatorApi(
     return route.effect(input.value);
   }
 
+  /**
+   * An action's answer is sent once its body has been read: a refusal given
+   * before that (the origin, the token, a declared length over the cap) first
+   * reads the body and drops it. Answered while its client was still writing,
+   * the answer could be lost with the connection: under Bun a client that sent
+   * `Connection: close` with a body of 2 MB or more received nothing.
+   *
+   * Two exceptions. A body that has not ended by the time limit is not waited
+   * for longer: the answer is sent and the connection closed once it is
+   * written. And a refusal whose body has not begun to arrive within
+   * `HELD_BODY_MS` is sent then, as the refusal of a client that holds its
+   * body back until it has heard nothing (the MCP server does, for a body over
+   * 64 kB); the body is still read and dropped after it, and the connection
+   * closed if the body has not ended by the time limit.
+   */
+  async function serveAction(
+    route: ActionRoute,
+    pending: PendingRequest,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    const incoming = requestBody(req, bodyTimeoutMs);
+    const reply = await act(route, pending, req, incoming);
+    const reading = incoming.read(0);
+    let held: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      reading,
+      new Promise<"held back">((done) => {
+        held = setTimeout(() => {
+          if (!incoming.started()) done("held back");
+        }, HELD_BODY_MS);
+      }),
+    ]);
+    clearTimeout(held);
+    if (outcome === "held back") {
+      send(res, reply);
+      const read = await reading;
+      if (!read.ended) req.socket.destroy();
+      return;
+    }
+    if (!outcome.ended) {
+      res.setHeader("Connection", "close");
+      res.once("finish", () => req.socket.destroy());
+    }
+    send(res, reply);
+  }
+
   async function serve(
     route: ApiRoute,
     pending: PendingRequest,
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
+    if (route.kind === "action") return serveAction(route, pending, req, res);
     if (repeatsSingleHeader(req) || !isDeclaredSameOrigin(req))
-      return send(
-        res,
-        refuse(
-          403,
-          "The operator API answers only a request from this control plane's own origin",
-        ),
-      );
-    if (route.kind === "action")
-      return send(res, await act(route, pending, req));
+      return send(res, refuse(403, NOT_THIS_ORIGIN));
 
     const params = decode(pending.params);
     if (!params.ok) return send(res, refuse(400, params.error));
