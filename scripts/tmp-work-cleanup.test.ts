@@ -573,19 +573,25 @@ function agedWorkFile(checkout: string, name: string, days: number): string {
   return path;
 }
 
+/** A run with `--apply`, and `--allow-fallback` when `opts.allowFallback` says so. */
 function cleanupWith(
   checkout: string,
   bd: BdRunner,
-  warn: (line: string) => void = () => {},
+  opts: {
+    allowFallback?: boolean;
+    ledgerHolds?: (digest: LedgerDigest) => boolean;
+    warn?: (line: string) => void;
+  } = {},
 ) {
   return runTmpWorkCleanup({
     cwd: checkout,
     runBd: bd,
     apply: true,
+    allowFallback: opts.allowFallback ?? false,
     ttlDays: DEFAULT_TTL_DAYS,
     nowMs: Date.now(),
-    ledgerHolds: () => false,
-    warn,
+    ledgerHolds: opts.ledgerHolds ?? (() => false),
+    warn: opts.warn ?? (() => {}),
   });
 }
 
@@ -614,19 +620,59 @@ describe("runTmpWorkCleanup: which tracker says a bead is closed", () => {
     expect(bd.calls).toEqual([["export", "--no-memories"]]);
   });
 
-  test("when bd does not answer, --apply goes by .beads/issues.jsonl and says so: a warning before anything is deleted, and the envelope's source", async () => {
+  test("when bd does not answer, --apply without --allow-fallback removes nothing, neither work files nor verdicts, and the envelope reports a dry run and why", async () => {
+    const { checkout } = sandbox();
+    writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
+    const work = agedWorkFile(checkout, "bead-1-plan.md", 30);
+    const verdict = agedVerdict(checkout, "run-1", 30);
+    const bd = fakeBd(() => new Error("spawn bd ENOENT"));
+    const warnings: string[] = [];
+
+    const result = await cleanupWith(checkout, bd.run, {
+      ledgerHolds: ledger({ sha256: verdict.sha256, executionRunId: "run-1" }),
+      warn: (line) => warnings.push(line),
+    });
+
+    expect(existsSync(work)).toBe(true);
+    expect(existsSync(join(checkout, verdict.relative))).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.data.apply).toBe(false);
+    expect(result.data.dryRunReason).toContain(".beads/issues.jsonl");
+    expect(result.data.dryRunReason).toContain("--allow-fallback");
+    expect(result.data.deleted).toEqual([]);
+    expect(result.data.evaluations.deleted).toEqual([]);
+    // Listed as a dry run lists them: what a run allowed to use the file would remove.
+    expect(result.data.candidates.map((c) => [c.path, c.action])).toEqual([
+      [work, "delete"],
+    ]);
+    expect(result.data.evaluations.candidates.map((c) => c.action)).toEqual([
+      "delete",
+    ]);
+    expect(result.data.source).toMatchObject({
+      kind: "file",
+      path: ".beads/issues.jsonl",
+      reason: "spawn bd ENOENT",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("--allow-fallback");
+  });
+
+  test("when bd does not answer, --apply with --allow-fallback deletes by .beads/issues.jsonl, after a warning that says so, and the envelope's source names the file", async () => {
     const { checkout } = sandbox();
     writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
     const work = agedWorkFile(checkout, "bead-1-plan.md", 30);
     const bd = fakeBd(() => new Error("spawn bd ENOENT"));
     const warnings: { line: string; workFileThere: boolean }[] = [];
 
-    const result = await cleanupWith(checkout, bd.run, (line) =>
-      warnings.push({ line, workFileThere: existsSync(work) }),
-    );
+    const result = await cleanupWith(checkout, bd.run, {
+      allowFallback: true,
+      warn: (line) => warnings.push({ line, workFileThere: existsSync(work) }),
+    });
 
     expect(existsSync(work)).toBe(false);
     if (!result.ok) throw new Error(result.error);
+    expect(result.data.apply).toBe(true);
+    expect(result.data.dryRunReason).toBeUndefined();
     expect(result.data.deleted).toEqual([work]);
     expect(result.data.source).toMatchObject({
       kind: "file",
@@ -635,7 +681,7 @@ describe("runTmpWorkCleanup: which tracker says a bead is closed", () => {
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.line).toContain(".beads/issues.jsonl");
-    expect(warnings[0]?.line).toContain("--apply");
+    expect(warnings[0]?.line).toContain("--allow-fallback");
     expect(warnings[0]?.workFileThere).toBe(true);
   });
 
@@ -660,6 +706,7 @@ describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)",
   async function cleanup(
     checkout: string,
     home: string,
+    flags: string[],
   ): Promise<{ exitCode: number; data: Record<string, unknown> }> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
@@ -673,7 +720,7 @@ describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)",
     const noTools = join(dirname(checkout), "no tools");
     mkdirSync(noTools, { recursive: true });
     env.PATH = noTools;
-    const child = Bun.spawn([process.execPath, "run", SCRIPT, "--apply"], {
+    const child = Bun.spawn([process.execPath, "run", SCRIPT, ...flags], {
       cwd: checkout,
       env,
       stdout: "pipe",
@@ -686,7 +733,16 @@ describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)",
     };
   }
 
-  test("removes the verdict the ledger holds and keeps the one it does not", async () => {
+  /**
+   * A scratch checkout whose export file lists bead-1 closed, two old verdicts
+   * of bead-1, and a scratch ledger that holds the digest of the first only.
+   */
+  function heldAndUnheld(): {
+    checkout: string;
+    home: string;
+    held: { relative: string };
+    unheld: { relative: string };
+  } {
     const { checkout } = sandbox();
     const home = join(dirname(checkout), "forge home");
     mkdirSync(home, { recursive: true });
@@ -718,15 +774,38 @@ describe("tmp:cleanup, spawned with --apply (scratch checkout, scratch ledger)",
     );
     expect(stored.ok).toBe(true);
     closeLedger();
+    return { checkout, home, held, unheld };
+  }
 
-    const swept = await cleanup(checkout, home);
+  test("with --allow-fallback, removes the verdict the ledger holds and keeps the one it does not", async () => {
+    const { checkout, home, held, unheld } = heldAndUnheld();
+
+    const swept = await cleanup(checkout, home, [
+      "--apply",
+      "--allow-fallback",
+    ]);
     expect(swept.exitCode).toBe(0);
     expect(swept.data.source).toMatchObject({
       kind: "file",
       path: ".beads/issues.jsonl",
     });
+    expect(swept.data.apply).toBe(true);
     expect(swept.data.evaluations).toMatchObject({ deleted: [held.relative] });
     expect(existsSync(join(checkout, held.relative))).toBe(false);
+    expect(existsSync(join(checkout, unheld.relative))).toBe(true);
+  }, 60_000);
+
+  test("without --allow-fallback, --apply on the export file removes nothing, exits 0 and reports a dry run", async () => {
+    const { checkout, home, held, unheld } = heldAndUnheld();
+
+    const swept = await cleanup(checkout, home, ["--apply"]);
+    expect(swept.exitCode).toBe(0);
+    expect(swept.data.apply).toBe(false);
+    expect(swept.data.dryRunReason).toEqual(
+      expect.stringContaining("--allow-fallback"),
+    );
+    expect(swept.data.evaluations).toMatchObject({ deleted: [] });
+    expect(existsSync(join(checkout, held.relative))).toBe(true);
     expect(existsSync(join(checkout, unheld.relative))).toBe(true);
   }, 60_000);
 });

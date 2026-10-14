@@ -2,7 +2,12 @@
 
 /**
  * Sweep `.tmp/work/<TASK-ID>-*` files for **closed** Beads issues older than TTL.
- * Default: dry-run (lists candidates). Pass `--apply` to actually delete.
+ *
+ * Usage:
+ *   bun run tmp:cleanup                            dry run: lists what would be removed
+ *   bun run tmp:cleanup --apply                    removes it, when the live tracker answered
+ *   bun run tmp:cleanup --apply --allow-fallback   removes it even when the statuses come
+ *                                                  from `.beads/issues.jsonl` (bd did not answer)
  *
  * Env:
  *   TTL_DAYS — retention days (default 14).
@@ -21,8 +26,10 @@
  * Which beads are closed comes from the live tracker (one `bd export`). Only
  * when bd does not answer is `.beads/issues.jsonl` used: a warning says so on
  * stderr before anything is removed, and the envelope's `data.source` names
- * the file, when it was last written and why bd was not used. With neither,
- * nothing is swept.
+ * the file, when it was last written and why bd was not used. On that file's
+ * statuses `--apply` removes nothing unless `--allow-fallback` is passed too:
+ * the run is a dry run, `data.apply` is false and `data.dryRunReason` says
+ * why. With neither bd nor the file, nothing is swept.
  *
  * Emits `{ ok, data, error }` JSON envelope.
  */
@@ -403,7 +410,14 @@ export interface TmpWorkCleanupOptions {
   /** The checkout whose `.tmp/work` is swept. */
   cwd: string;
   runBd: BdRunner;
+  /** `--apply`: remove what the sweep finds. */
   apply: boolean;
+  /**
+   * `--allow-fallback`: let `apply` remove files when the statuses come from
+   * `.beads/issues.jsonl` because bd did not answer. Without it such a run is
+   * a dry run. Default false.
+   */
+  allowFallback?: boolean;
   ttlDays: number;
   nowMs: number;
   /** Default: the event ledger (`ledgerHoldsVerdict`). */
@@ -416,7 +430,10 @@ export type TmpWorkCleanupEnvelope =
       ok: true;
       data: {
         ttlDays: number;
+        /** Whether this run removed what it found: false on a dry run, including an `--apply` run kept dry. */
         apply: boolean;
+        /** Set when `--apply` was given but the run was kept dry, and why. */
+        dryRunReason?: string;
         /** Where the bead statuses came from: the live tracker, or the fallback file. */
         source: SnapshotSource;
         scanned: number;
@@ -432,17 +449,28 @@ export type TmpWorkCleanupEnvelope =
 export async function runTmpWorkCleanup(
   options: TmpWorkCleanupOptions,
 ): Promise<TmpWorkCleanupEnvelope> {
-  const { apply, ttlDays, nowMs } = options;
+  const { ttlDays, nowMs } = options;
   const warn = options.warn ?? ((line: string) => console.error(line));
   const workDir = tmpWorkOf(options.cwd);
 
   const loaded = await loadIssues(options.cwd, options.runBd);
   if (!loaded.ok) return { ok: false, data: null, error: loaded.error };
   const { issues, source } = loaded;
+  let apply = options.apply;
+  let dryRunReason: string | undefined;
   // Said before anything is removed: the statuses may be older than the tracker's.
   if (source.kind === "file") {
+    let consequence = "--apply deletes by it only with --allow-fallback.";
+    if (apply && options.allowFallback) {
+      consequence = "--allow-fallback is set, so --apply deletes by it.";
+    } else if (apply) {
+      apply = false;
+      dryRunReason = `--apply was given, but bd did not answer and the statuses come from ${source.path}, which may be older than the tracker: nothing is removed. Pass --allow-fallback as well to delete by that file.`;
+      consequence =
+        "This --apply run is a dry run: pass --allow-fallback as well to delete by it.";
+    }
     warn(
-      `tmp-work-cleanup: ${fallbackNotice(source)} Closed beads are taken from that file, and --apply deletes by it.`,
+      `tmp-work-cleanup: ${fallbackNotice(source)} Closed beads are taken from that file. ${consequence}`,
     );
   }
   const byId = new Map<string, BeadsIssue>();
@@ -503,6 +531,7 @@ export async function runTmpWorkCleanup(
     data: {
       ttlDays,
       apply,
+      ...(dryRunReason !== undefined ? { dryRunReason } : {}),
       source,
       scanned: files.length,
       candidates,
@@ -518,6 +547,7 @@ if (import.meta.main) {
     cwd: process.cwd(),
     runBd: runBdOnPath,
     apply: process.argv.includes("--apply"),
+    allowFallback: process.argv.includes("--allow-fallback"),
     ttlDays: parseTtl(),
     nowMs: Date.now(),
   });
