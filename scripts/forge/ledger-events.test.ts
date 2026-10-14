@@ -599,7 +599,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     const reviewed = await review(box, v2Json({ beadsIssueId: "b-999" }));
     expect(reviewed.exitCode).toBe(2);
     expect(reviewed.data.verdictError).toBe(
-      'run "x" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run x)',
+      'run "x" has no run correlation, so no verdict can be checked against it (bun run forge:correlate --bead <id> --run x)',
     );
     expect(boundRows(box).map((event) => event.payload)).toEqual([
       { verdict: "unreadable" },
@@ -837,7 +837,7 @@ describe("the Forge CLIs write run events to the ledger (spawned scripts, scratc
     const before = await review(box, v2Json());
     const hint = String(before.data.verdictError);
     expect(hint).toStartWith(
-      'run "x" has no run correlation, so a schema 2 verdict cannot be checked against it (bun run forge:correlate --bead <id> --run x --checkout ',
+      'run "x" has no run correlation, so no verdict can be checked against it (bun run forge:correlate --bead <id> --run x --checkout ',
     );
 
     // The hinted command, with the bead filled in.

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { nextRoundOf } from "./auto-loop";
 import { recordComplete } from "./phase-gate";
 import type { ForgeState, ReviewRound } from "./phases";
 import {
@@ -630,6 +631,15 @@ describe("run state v2", () => {
   test("a v1 state file is read as v2 without losing anything", () => {
     const parsed = parseState(JSON.stringify(v1));
     expect(parsed).toEqual({ ...v1, schemaVersion: 2 } as ForgeState);
+  });
+
+  test("a round recorded from a legacy schema 1 verdict keeps its schema version when read, and still counts as its phase's round", () => {
+    const legacyRound = { ...v1.reviews[0], verdictSchemaVersion: 1 };
+    const parsed = parseState(
+      JSON.stringify({ ...v1, reviews: [legacyRound] }),
+    );
+    expect(parsed?.reviews).toEqual([legacyRound as ReviewRound]);
+    expect(nextRoundOf("research", parsed?.reviews ?? [])).toBe(2);
   });
 
   test("an executor and bead id survive a read-modify-write", () => {

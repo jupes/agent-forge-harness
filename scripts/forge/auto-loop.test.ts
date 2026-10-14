@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type EvalVerdictParsed, parseEvalVerdictJson } from "../eval-verdict";
+import { type EvalVerdict, parseEvalVerdictJson } from "../eval-verdict";
 import {
   DEFAULT_MAX_REVISIONS,
   decideNext,
@@ -258,7 +258,7 @@ describe("nextRoundOf", () => {
 
 describe("roundLabelProblem", () => {
   /** A schema 2 verdict as the parser reads it, naming `review` when given. */
-  function v2(review?: string): EvalVerdictParsed {
+  function v2(review?: string): EvalVerdict {
     const parsed = parseEvalVerdictJson(
       JSON.stringify({
         schemaVersion: 2,
@@ -271,6 +271,7 @@ describe("roundLabelProblem", () => {
       }),
     );
     if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.value.schemaVersion !== 2) throw new Error("not schema 2");
     return parsed.value;
   }
 
@@ -278,7 +279,7 @@ describe("roundLabelProblem", () => {
     expect(roundLabelProblem(v2("plan-3"), "plan-3")).toBeNull();
   });
 
-  test("a verdict naming another round, another phase, no round, or a schema 1 verdict is not", () => {
+  test("a verdict naming another round, another phase or no round is not", () => {
     expect(roundLabelProblem(v2("plan-2"), "plan-3")).toBe(
       'names review round "plan-2"',
     );
@@ -286,17 +287,6 @@ describe("roundLabelProblem", () => {
       'names review round "research-3"',
     );
     expect(roundLabelProblem(v2(), "plan-3")).toBe("names no review round");
-    expect(
-      roundLabelProblem(
-        {
-          schemaVersion: 1,
-          taskId: "t-1",
-          verdict: "PASS",
-          findings: clean,
-        },
-        "plan-3",
-      ),
-    ).toBe("is a legacy schema 1 verdict, which cannot name a review round");
   });
 });
 
