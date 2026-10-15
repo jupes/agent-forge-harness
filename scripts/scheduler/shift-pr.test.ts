@@ -1,0 +1,460 @@
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import {
+  fetchBase,
+  isBaseBranch,
+  openDraftPr,
+  PR_FAILURES,
+  PR_SECTIONS,
+  type PullRequestDeps,
+  type PullRequestRequest,
+  prCheckRunner,
+  RUN_PR_BODY,
+  SHIFT_PR_BODY,
+  type ToolRun,
+  toolRunner,
+} from "./shift-pr";
+import { createWorktree } from "./worktrees";
+
+/**
+ * The pull request step against real git: a scratch repository whose origin
+ * is a bare repository of its own in the OS temp dir, never the real remote.
+ * gh is always a function that records what it was asked and answers as
+ * the test says; no test runs the real gh. pr:check is the real one.
+ */
+
+setDefaultTimeout(60_000);
+
+const REPO = resolve(import.meta.dir, "..", "..");
+const roots: string[] = [];
+afterAll(() => {
+  for (const root of roots)
+    rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+});
+
+function git(cwd: string, ...args: string[]): string {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0)
+    throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function identity(dir: string): void {
+  git(dir, "config", "user.email", "shift@example.invalid");
+  git(dir, "config", "user.name", "shift pr test");
+  git(dir, "config", "commit.gpgsign", "false");
+}
+
+function commit(dir: string, file: string, message: string): string {
+  writeFileSync(join(dir, file), `${message}\n`);
+  git(dir, "add", "--", file);
+  git(dir, "commit", "-q", "-m", message);
+  return git(dir, "rev-parse", "HEAD");
+}
+
+interface Scratch {
+  origin: string;
+  main: string;
+  /** origin's master, which the checkout has not fetched. */
+  originSha: string;
+}
+
+/**
+ * A checkout on a feature branch of its own, whose origin (a bare repository
+ * beside it) moved on after the checkout last fetched: neither its HEAD nor
+ * its master is origin's master.
+ */
+function scratch(): Scratch {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pr ")));
+  roots.push(root);
+  const origin = join(root, "origin.git");
+  git(root, "init", "-q", "--bare", "-b", "master", origin);
+  const main = join(root, "main repo");
+  mkdirSync(main);
+  git(main, "init", "-q", "-b", "master");
+  identity(main);
+  writeFileSync(join(main, ".gitignore"), "trees/\n.tmp/\n");
+  commit(main, "README.md", "start");
+  git(main, "remote", "add", "origin", origin);
+  git(main, "push", "-q", "origin", "master");
+  const other = join(root, "other clone");
+  git(root, "clone", "-q", origin, other);
+  identity(other);
+  const originSha = commit(other, "upstream.txt", "on origin only");
+  git(other, "push", "-q", "origin", "master");
+  git(main, "checkout", "-q", "-b", "feature");
+  commit(main, "feature.txt", "feature only");
+  return { origin, main, originSha };
+}
+
+const SHIFT = "shift-20261014-120000-0a0b";
+let worktrees = 0;
+
+/** The bead's worktree as a shift makes it: its branch from origin's master, with the run's commits. */
+function beadWorktree(
+  s: Scratch,
+  beadId = "t-1",
+  commits = 1,
+): PullRequestRequest {
+  const branch = `shift/${SHIFT}/${beadId}`;
+  // As the shift does before it makes any worktree.
+  git(s.main, "fetch", "-q", "origin");
+  const made = createWorktree(
+    s.main,
+    s.main,
+    { branch, beadId, startPoint: s.originSha },
+    { newId: () => `${SHIFT}-${++worktrees}` },
+  );
+  if (!made.ok) throw new Error(made.error);
+  const worktree = made.value.path;
+  identity(worktree);
+  for (let n = 1; n <= commits; n++)
+    commit(worktree, `work-${n}.txt`, `the run's commit ${n}`);
+  return {
+    shiftId: SHIFT,
+    beadId,
+    title: "Add the widget",
+    runId: `${beadId}-${SHIFT}`,
+    smith: "claude-master",
+    attempts: 1,
+    branch,
+    worktree,
+    base: "master",
+    baseSha: s.originSha,
+  };
+}
+
+const FILLED = [
+  "## What Changed",
+  "- Added the widget.",
+  "## Why It's Needed",
+  "The widget was missing.",
+  "## How It Was Tested",
+  "- bun test",
+  "## Test Evidence",
+  "```",
+  "1 pass",
+  "```",
+  "## Risk & Rollback",
+  "- Risk level: Low, one new file.",
+  "## Linked Issues & AC Trace",
+  "Closes: t-1",
+  "",
+].join("\n");
+
+function leaveBody(worktree: string, text = FILLED): string {
+  const path = join(worktree, RUN_PR_BODY);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+  return path;
+}
+
+interface Called {
+  args: string[];
+  cwd: string;
+}
+
+/** A gh that records what it was asked and answers as told. */
+function fakeGh(
+  answer: (args: string[]) => {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+  } = () => ({
+    status: 0,
+    stdout: "https://github.com/example/harness/pull/7\n",
+    stderr: "",
+  }),
+) {
+  const calls: Called[] = [];
+  const run: ToolRun = async (args, cwd) => {
+    calls.push({ args: [...args], cwd });
+    return answer([...args]);
+  };
+  return { calls, run };
+}
+
+/** Real git, every call recorded. */
+function recordedGit() {
+  const calls: Called[] = [];
+  const real = toolRunner("git");
+  const run: ToolRun = (args, cwd, timeoutMs) => {
+    calls.push({ args: [...args], cwd });
+    return real(args, cwd, timeoutMs);
+  };
+  return { calls, run };
+}
+
+const remoteBranches = (origin: string): string[] =>
+  git(origin, "for-each-ref", "--format=%(refname)", "refs/heads")
+    .split("\n")
+    .filter((line) => line !== "")
+    .sort();
+
+describe("isBaseBranch", () => {
+  test("a plain branch name, never a shift branch or one that reads as an option", () => {
+    for (const name of ["master", "main", "release/2.1", "team_x/feature-y"])
+      expect({ name, ok: isBaseBranch(name) }).toEqual({ name, ok: true });
+    for (const name of [
+      "",
+      "-x",
+      "--all",
+      "shift/shift-20261014-120000-0a0b/t-1",
+      "shift/x",
+      "a..b",
+      "a b",
+      "a//b",
+      "/a",
+      "a/",
+      "a.lock",
+      "HEAD",
+      "two\nlines",
+      "x".repeat(101),
+    ])
+      expect({ name, ok: isBaseBranch(name) }).toEqual({ name, ok: false });
+  });
+});
+
+describe("fetchBase", () => {
+  test("fetches the base from origin and answers its newest commit: not the checkout's HEAD, nor its stale master", async () => {
+    const s = scratch();
+    const before = git(s.main, "rev-parse", "master");
+    const fetched = await fetchBase(toolRunner("git"), s.main, "master");
+    expect(fetched).toEqual({
+      ok: true,
+      value: { ref: "refs/remotes/origin/master", sha: s.originSha },
+    });
+    expect(git(s.main, "rev-parse", "refs/remotes/origin/master")).toBe(
+      s.originSha,
+    );
+    expect(git(s.main, "rev-parse", "HEAD")).not.toBe(s.originSha);
+    expect(before).not.toBe(s.originSha);
+    // The checkout itself was not moved.
+    expect(git(s.main, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
+  });
+
+  test("a base origin does not have, a checkout with no origin, and a name that is not a base are refused", async () => {
+    const s = scratch();
+    const missing = await fetchBase(toolRunner("git"), s.main, "no-such");
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain("git fetch");
+    git(s.main, "remote", "remove", "origin");
+    const noOrigin = await fetchBase(toolRunner("git"), s.main, "master");
+    expect(noOrigin.ok).toBe(false);
+    const calls = recordedGit();
+    const bad = await fetchBase(calls.run, s.main, "--upload-pack=evil");
+    expect(bad.ok).toBe(false);
+    expect(calls.calls).toEqual([]);
+  });
+});
+
+describe("openDraftPr", () => {
+  test("pushes only the bead's shift branch to origin and opens a draft pull request with the run's body; nothing else on origin changes", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-1", 2);
+    const body = leaveBody(request.worktree);
+    const gh = fakeGh();
+    const opened = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: gh.run,
+      checkPrBody: prCheckRunner(REPO),
+    });
+    expect(opened).toEqual({
+      ok: true,
+      url: "https://github.com/example/harness/pull/7",
+      body: "run",
+    });
+    expect(remoteBranches(s.origin)).toEqual([
+      "refs/heads/master",
+      `refs/heads/${request.branch}`,
+    ]);
+    expect(git(s.origin, "rev-parse", "master")).toBe(s.originSha);
+    expect(git(s.origin, "rev-parse", request.branch)).toBe(
+      git(request.worktree, "rev-parse", "HEAD"),
+    );
+    // The branch was built on origin's master.
+    expect(git(s.origin, "merge-base", "master", request.branch)).toBe(
+      s.originSha,
+    );
+    expect(gh.calls).toEqual([
+      {
+        args: [
+          "pr",
+          "create",
+          "--draft",
+          "--base=master",
+          `--head=${request.branch}`,
+          "--title=t-1: Add the widget",
+          `--body-file=${body}`,
+        ],
+        cwd: request.worktree,
+      },
+    ]);
+    // No upstream was written to the shared config.
+    expect(
+      spawnSync("git", ["config", "--get", `branch.${request.branch}.remote`], {
+        cwd: s.main,
+        encoding: "utf8",
+      }).stdout,
+    ).toBe("");
+  });
+
+  test("when the run left no body, the shift writes one with the template's six sections; it passes the real pr:check and is the body gh is given", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-2", 1);
+    const gh = fakeGh();
+    const opened = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: gh.run,
+      checkPrBody: prCheckRunner(REPO),
+    });
+    expect(opened).toMatchObject({ ok: true, body: "shift" });
+    const path = join(request.worktree, SHIFT_PR_BODY);
+    expect(gh.calls[0]?.args.at(-1)).toBe(`--body-file=${path}`);
+    const text = readFileSync(path, "utf8");
+    const headings = (markdown: string) =>
+      [...markdown.matchAll(/^## (.+?)\s*$/gm)].map((match) => match[1]);
+    // The six sections, in the template's order and words.
+    const template = readFileSync(
+      join(
+        REPO,
+        ".claude",
+        "skills",
+        "pr-description",
+        "references",
+        "pr-template.md",
+      ),
+      "utf8",
+    );
+    expect(headings(text)).toEqual(headings(template));
+    expect(headings(text)).toEqual([...PR_SECTIONS]);
+    // It says what it is, and claims no evidence.
+    expect(text).toContain("left no PR body");
+    expect(text).toContain("No test evidence is attached");
+    expect(text).toContain("the run's commit 1");
+    expect(text).toContain(`bun run forge:audit --run ${request.runId}`);
+    expect(text).not.toContain("Closes");
+    expect(await prCheckRunner(REPO)(path)).toBeNull();
+  });
+
+  test("a branch that is not this bead's shift branch is never pushed: the base, another bead's, another shift's, a feature branch", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-3", 1);
+    leaveBody(request.worktree);
+    for (const branch of [
+      "master",
+      "feature",
+      `shift/${SHIFT}/t-other`,
+      "shift/shift-20261014-130000-0c0d/t-3",
+      `shift/${SHIFT}/t-3/more`,
+    ]) {
+      const git = recordedGit();
+      const gh = fakeGh();
+      const refused = await openDraftPr(
+        { ...request, branch },
+        { git: git.run, gh: gh.run, checkPrBody: async () => null },
+      );
+      expect({ branch, refused }).toMatchObject({
+        branch,
+        refused: { ok: false, kind: "branch" },
+      });
+      expect(git.calls).toEqual([]);
+      expect(gh.calls).toEqual([]);
+    }
+    // And a base that is the branch itself.
+    const git = recordedGit();
+    const same = await openDraftPr(
+      { ...request, base: request.branch },
+      { git: git.run, gh: fakeGh().run, checkPrBody: async () => null },
+    );
+    expect(same).toMatchObject({ ok: false, kind: "branch" });
+    expect(git.calls).toEqual([]);
+    expect(remoteBranches(s.origin)).toEqual(["refs/heads/master"]);
+  });
+
+  test("a branch with no commits of its own, and a body that fails pr:check, are not pushed and open nothing", async () => {
+    const s = scratch();
+    const empty = beadWorktree(s, "t-4", 0);
+    leaveBody(empty.worktree);
+    const gh = fakeGh();
+    const git = recordedGit();
+    const deps: PullRequestDeps = {
+      git: git.run,
+      gh: gh.run,
+      checkPrBody: prCheckRunner(REPO),
+    };
+    expect(await openDraftPr(empty, deps)).toMatchObject({
+      ok: false,
+      kind: "no-commits",
+    });
+
+    const thin = { ...beadWorktree(s, "t-5", 1) };
+    leaveBody(thin.worktree, "## What Changed\n- something\n");
+    const refused = await openDraftPr(thin, deps);
+    expect(refused).toMatchObject({ ok: false, kind: "body", body: "run" });
+    if (!refused.ok) expect(refused.error).toContain("missing sections");
+    expect(git.calls.some((call) => call.args[0] === "push")).toBe(false);
+    expect(gh.calls).toEqual([]);
+    expect(remoteBranches(s.origin)).toEqual(["refs/heads/master"]);
+  });
+
+  test("a push origin refuses is a push failure: gh is not asked; gh that fails or prints no URL is its own failure, its words redacted", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-6", 1);
+    leaveBody(request.worktree);
+    const missing = join(s.origin, "..", "gone.git");
+    git(s.main, "remote", "set-url", "origin", missing);
+    const gh = fakeGh();
+    const pushed = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: gh.run,
+      checkPrBody: async () => null,
+    });
+    expect(pushed).toMatchObject({ ok: false, kind: "push" });
+    expect(gh.calls).toEqual([]);
+    git(s.main, "remote", "set-url", "origin", s.origin);
+
+    const token = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    const failing = fakeGh(() => ({
+      status: 1,
+      stdout: "",
+      stderr: `GraphQL: could not create, token ${token}\n`,
+    }));
+    const ghFailed = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: failing.run,
+      checkPrBody: async () => null,
+    });
+    expect(ghFailed).toMatchObject({ ok: false, kind: "gh" });
+    if (!ghFailed.ok) {
+      expect(ghFailed.error).toContain("GraphQL: could not create");
+      expect(ghFailed.error).not.toContain(token);
+    }
+    const silent = fakeGh(() => ({ status: 0, stdout: "done\n", stderr: "" }));
+    expect(
+      await openDraftPr(request, {
+        git: toolRunner("git"),
+        gh: silent.run,
+        checkPrBody: async () => null,
+      }),
+    ).toMatchObject({ ok: false, kind: "url" });
+  });
+
+  test("every failure has a fixed sentence for the bead's comment", () => {
+    expect(Object.keys(PR_FAILURES).sort()).toEqual(
+      ["body", "branch", "gh", "no-commits", "push", "url"].sort(),
+    );
+    for (const sentence of Object.values(PR_FAILURES))
+      expect(sentence).toMatch(/^[a-z][^\n]*[a-z]$/);
+  });
+});

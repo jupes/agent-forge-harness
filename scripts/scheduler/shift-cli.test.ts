@@ -24,6 +24,7 @@ import {
 } from "./queue-fixture";
 import type { ShiftDeps } from "./shift";
 import { parseDuration, runShiftCli, shiftCliDeps } from "./shift-cli";
+import { RUN_PR_BODY } from "./shift-pr";
 import {
   readShiftRecord,
   type ShiftRecord,
@@ -61,13 +62,18 @@ const git = (cwd: string, ...args: string[]) => {
   return result.stdout;
 };
 
+function identity(dir: string): void {
+  git(dir, "config", "user.email", "shift@example.invalid");
+  git(dir, "config", "user.name", "shift test");
+  git(dir, "config", "commit.gpgsign", "false");
+}
+
 /** A repository of its own, with spaces in its path, that ignores trees/ and has one commit. */
 function repository(): string {
   const repo = join(scratch(), "main repo");
   mkdirSync(repo);
   git(repo, "init", "-q", "-b", "master");
-  git(repo, "config", "user.email", "shift@example.invalid");
-  git(repo, "config", "user.name", "shift test");
+  identity(repo);
   writeFileSync(
     join(repo, ".gitignore"),
     "trees/\n.tmp/\n.agent-forge-session\n",
@@ -78,10 +84,53 @@ function repository(): string {
   return repo;
 }
 
+/**
+ * `repository()` with an origin of its own (a bare repository in the OS temp
+ * dir, never the real remote) that moved on after the checkout last fetched,
+ * and the checkout on a feature branch with a commit origin does not have.
+ */
+function withOrigin(): { repo: string; origin: string; originSha: string } {
+  const repo = repository();
+  const origin = join(scratch(), "origin.git");
+  git(repo, "init", "-q", "--bare", "-b", "master", origin);
+  git(repo, "remote", "add", "origin", origin);
+  git(repo, "push", "-q", "origin", "master");
+  const other = join(scratch(), "other clone");
+  git(repo, "clone", "-q", origin, other);
+  identity(other);
+  writeFileSync(join(other, "upstream.txt"), "on origin only\n");
+  git(other, "add", ".");
+  git(other, "commit", "-q", "-m", "on origin only");
+  git(other, "push", "-q", "origin", "master");
+  git(repo, "checkout", "-q", "-b", "feature");
+  writeFileSync(join(repo, "feature.txt"), "feature only\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "feature only");
+  return { repo, origin, originSha: git(origin, "rev-parse", "master").trim() };
+}
+
+/** A filled PR body, as a run leaves it. */
+const RUN_BODY = [
+  "## What Changed",
+  "- Added work.txt.",
+  "## Why It's Needed",
+  "The bead asked for it.",
+  "## How It Was Tested",
+  "- bun test",
+  "## Test Evidence",
+  "1 pass",
+  "## Risk & Rollback",
+  "- Risk level: Low.",
+  "## Linked Issues & AC Trace",
+  "Closes: cli-1",
+  "",
+].join("\n");
+
 function trackerRunner(beads: TrackedBead[]) {
   const tracker = queueTracker(beads);
   const runBd: BdRunner = async (args) =>
     tracker.answer(args) ??
+    tracker.answerComment(args) ??
     answerQueueList(args, [...tracker.beads.values()]) ?? {
       status: 1,
       stdout: "",
@@ -92,6 +141,7 @@ function trackerRunner(beads: TrackedBead[]) {
 
 const queued = (id: string): TrackedBead => ({
   id,
+  title: `Work for ${id}`,
   labels: ["queue:queued"],
   metadata: { queue_state: "queued" },
   description: `Work.\n\n## Files\nsrc/${id}/**\n`,
@@ -107,16 +157,28 @@ const guarded: ExecutorAdapter = {
   },
 };
 
-/** CLI dependencies for a checkout, with a temp home and a test tracker. */
+/**
+ * CLI dependencies for a checkout, with a temp home, a test tracker and a gh
+ * that records what it was asked: the real git, and never the real gh.
+ */
 function cli(root: string, beads: TrackedBead[] = []) {
   const home = join(scratch(), "forge home");
   const env = { PATH: process.env["PATH"] ?? "", AGENT_FORGE_HOME: home };
   const { tracker, runBd } = trackerRunner(beads);
+  const gh: Array<{ args: string[]; cwd: string }> = [];
   const deps: ShiftDeps = {
     ...shiftCliDeps(root, env),
     runBd,
     sampleHost: async () => ({ busy: false }),
     exec: { env, home: scratch(), adapters: { claude: guarded } },
+    gh: async (args, cwd) => {
+      gh.push({ args: [...args], cwd });
+      return {
+        status: 0,
+        stdout: `https://github.com/example/harness/pull/${gh.length}\n`,
+        stderr: "",
+      };
+    },
   };
   ledgers.push(deps.ledgerPath);
   const announced: string[] = [];
@@ -125,6 +187,7 @@ function cli(root: string, beads: TrackedBead[] = []) {
     env,
     tracker,
     deps,
+    gh,
     announced,
     io: { announce: (line: string) => announced.push(line) },
   };
@@ -154,6 +217,23 @@ describe("forge:shift", () => {
     expect(comparablePath(deps.mainCheckout)).toBe(comparablePath(repo));
   });
 
+  test("shiftCliDeps makes a worktree at the start point it is given, not at the HEAD of the checkout", () => {
+    const { repo, originSha } = withOrigin();
+    git(repo, "fetch", "-q", "origin");
+    const deps = shiftCliDeps(repo, {
+      AGENT_FORGE_HOME: join(scratch(), "forge home"),
+    });
+    const made = deps.makeWorktree({
+      id: "sp-1",
+      branch: "shift/shift-20261014-120000-0a0b/sp-1",
+      beadId: "sp-1",
+      startPoint: originSha,
+    });
+    if (!made.ok) throw new Error(made.error);
+    expect(git(made.path, "rev-parse", "HEAD").trim()).toBe(originSha);
+    expect(git(repo, "rev-parse", "HEAD").trim()).not.toBe(originSha);
+  });
+
   test("run with options that are not a shift's exits 1 and writes nothing", async () => {
     const { deps, io, home } = cli(scratch());
     for (const argv of [
@@ -163,6 +243,8 @@ describe("forge:shift", () => {
       ["run", "--merge", "yes"],
       ["run", "--epic"],
       ["run", "stray"],
+      ["run", "--base", "shift/shift-20261014-120000-0a0b/t-1"],
+      ["run", "--base", "-x"],
     ]) {
       const result = await runShiftCli(argv, deps, io);
       expect({ argv, exit: result.exit, ok: result.out.ok }).toEqual({
@@ -174,12 +256,28 @@ describe("forge:shift", () => {
     expect(existsSync(join(home, "shifts"))).toBe(false);
   });
 
-  test("run, end to end on the fake binary: the bead's worktree is a git worktree on the shift's branch, the provider ran in it, and the bead ends in review with its reservation freed", async () => {
-    const repo = repository();
-    const { deps, io, tracker, env, announced } = cli(repo, [queued("cli-1")]);
+  test("run, end to end on the fake binary: the bead's worktree is a git worktree on the shift's branch from origin's master, the provider ran in it, its branch alone is pushed to origin, gh is asked for a draft pull request, and the bead ends in review with its reservation freed and two comments", async () => {
+    const { repo, origin, originSha } = withOrigin();
+    const { deps, io, tracker, env, announced, gh } = cli(repo, [
+      queued("cli-1"),
+    ]);
     const dump = join(scratch(), "fake dump.json");
+    // The run's work: a commit on its branch and its PR body, then the fake binary.
+    const working: ExecutorAdapter = {
+      ...guarded,
+      spawn: (request) => {
+        identity(request.worktree);
+        writeFileSync(join(request.worktree, "work.txt"), "the run's work\n");
+        git(request.worktree, "add", "work.txt");
+        git(request.worktree, "commit", "-q", "-m", "the run's work");
+        mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
+        writeFileSync(join(request.worktree, RUN_PR_BODY), RUN_BODY);
+        return guarded.spawn(request);
+      },
+    };
     deps.exec = {
       ...deps.exec,
+      adapters: { claude: working },
       command: [
         process.execPath,
         FAKE,
@@ -229,6 +327,7 @@ describe("forge:shift", () => {
     };
     expect(comparablePath(ran.cwd)).toBe(comparablePath(worktree));
     expect(ran.stdin.startsWith("/forgemaster-auto cli-1\n")).toBe(true);
+    expect(ran.stdin).toContain(RUN_PR_BODY);
     expect(tracker.beads.get("cli-1")?.labels).toEqual(["queue:review"]);
     expect(
       activeReservations(
@@ -237,7 +336,62 @@ describe("forge:shift", () => {
       ),
     ).toEqual([]);
     expect(env.AGENT_FORGE_HOME).toBeDefined();
-  }, 30_000);
+
+    // Built on origin's master as fetched, not on the feature branch the checkout is on.
+    const branch = `shift/${data.shiftId}/cli-1`;
+    expect(data.record.baseSha).toBe(originSha);
+    expect(git(worktree, "rev-parse", "HEAD~1").trim()).toBe(originSha);
+    expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(
+      "feature",
+    );
+    // Only the shift branch reached origin, as the worktree has it; master is untouched.
+    expect(
+      git(origin, "for-each-ref", "--format=%(refname)", "refs/heads")
+        .trim()
+        .split("\n")
+        .sort(),
+    ).toEqual(["refs/heads/master", `refs/heads/${branch}`]);
+    expect(git(origin, "rev-parse", branch).trim()).toBe(
+      git(worktree, "rev-parse", "HEAD").trim(),
+    );
+    expect(git(origin, "rev-parse", "master").trim()).toBe(originSha);
+    // gh was asked for a draft pull request into master with the run's body, once.
+    expect(gh.map((call) => call.args)).toEqual([
+      [
+        "pr",
+        "create",
+        "--draft",
+        "--base=master",
+        `--head=${branch}`,
+        "--title=cli-1: Work for cli-1",
+        `--body-file=${join(worktree, RUN_PR_BODY)}`,
+      ],
+    ]);
+    expect(bead).toMatchObject({
+      prUrl: "https://github.com/example/harness/pull/1",
+      prBody: "run",
+    });
+    expect(bead?.error).toBeUndefined();
+    const comments = tracker.beads.get("cli-1")?.comments ?? [];
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toContain(`worklog: shift ${data.shiftId} started`);
+    expect(comments[1]).toContain(
+      "Draft pull request: https://github.com/example/harness/pull/1.",
+    );
+  }, 60_000);
+
+  test("run --base names the branch fetched from origin: one origin does not have starts nothing, and nothing is written", async () => {
+    const { repo } = withOrigin();
+    const { deps, io, home, gh } = cli(repo, [queued("cli-2")]);
+    const result = await runShiftCli(["run", "--base", "release"], deps, io);
+    expect(result.exit).toBe(1);
+    expect(result.out.error).toContain(
+      "the base could not be fetched (git fetch origin release failed:",
+    );
+    expect(result.out.error).toContain("nothing was started");
+    expect(existsSync(join(home, "shifts"))).toBe(false);
+    expect(gh).toEqual([]);
+  }, 60_000);
 
   test("stop asks a running shift to stop; a second stop says it was asked already; an unknown or stopped shift exits 1", async () => {
     const { deps, io } = cli(scratch());

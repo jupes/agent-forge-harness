@@ -14,13 +14,15 @@
  * - each run is `runExec`, forge:exec's own function: the adapter, the
  *   environment allowlist, the ledger sink, the run correlation.
  *
- * What is its own: the bounds (concurrency, time, beads admitted, spend), the
- * host throttle, repairs, noticing a bead the operator paused or halted, and
- * stopping: every child is aborted (its tree killed by the supervisor) and
- * awaited, its bead put back in `queued` and its reservation released before
- * `shift.stopped` is recorded. It never merges, never pushes and opens no
- * pull request: a bead whose run succeeds ends in `review`, its work committed
- * on the shift's branch in a worktree that is kept.
+ * What is its own: the base (origin's branch, fetched once before anything
+ * else, every worktree starting at the commit it named), the bounds
+ * (concurrency, time, beads admitted, spend), the host throttle, repairs,
+ * noticing a bead the operator paused or halted, the draft pull request of a
+ * bead that reached `review` (`shift-pr.ts`), the `worklog:` comments on each
+ * bead it ran, and stopping: every child is aborted (its tree killed by the
+ * supervisor) and awaited, its bead put back in `queued` and its reservation
+ * released before `shift.stopped` is recorded. It never merges and pushes
+ * nothing but a bead's own shift branch.
  *
  * Not covered: a shift that dies (Ctrl-C, a crash, a kill) has its children
  * killed by the supervisor's exit hook, but leaves their beads `running` and
@@ -45,6 +47,15 @@ import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
 import { createQueue, queueStateOf, smithFor } from "./queue";
 import { type ReservationDeps, release, reserve } from "./reservations";
+import {
+  fetchBase,
+  isBaseBranch,
+  openDraftPr,
+  PR_FAILURES,
+  type PullRequestOutcome,
+  RUN_PR_BODY,
+  type ToolRun,
+} from "./shift-pr";
 import {
   mintShiftId,
   type ShiftBeadRecord,
@@ -76,6 +87,8 @@ export interface ShiftOptions {
   pollMs: number;
   /** The longest one run may take, below the time left. */
   runTimeoutMs?: number | undefined;
+  /** The branch on origin every worktree starts from and every pull request goes into. */
+  base: string;
 }
 
 /** Decision 8 for the first four; the count and the spend are this bead's defaults. */
@@ -87,6 +100,7 @@ export const SHIFT_DEFAULTS = {
   repairs: 3,
   tickMs: 1000,
   pollMs: 15_000,
+  base: "master",
 } as const;
 
 const LIMITS = {
@@ -140,6 +154,11 @@ export function shiftOptions(
       ok: false,
       error: "smith: expected the name of a configured smith",
     };
+  if (!isBaseBranch(options.base))
+    return {
+      ok: false,
+      error: "base: expected the name of a branch on origin, not a shift's own",
+    };
   return { ok: true, value: options };
 }
 
@@ -165,6 +184,7 @@ export function shiftPrompt(input: {
     `You are running unattended in shift ${input.shiftId}. Work on bead ${input.beadId} only, in this worktree, on its branch ${input.branch}.`,
     `Use ${input.runId} as the Forge run id.`,
     "Commit your work on this branch. Do not push, do not open a pull request and do not merge.",
+    `Leave the filled PR body at ${RUN_PR_BODY} in this worktree (the PR template; bun run pr:check must pass on it): the shift opens the draft pull request from it.`,
     "Stop once the ship phase's quality gates pass and your work is committed.",
   ];
   if (input.attempt > 1)
@@ -182,6 +202,47 @@ export function shiftRunId(beadId: string, shiftId: string, n: number): string {
   return isValidSlug(named) ? named : `${shiftId}-${n}`;
 }
 
+// ── What it says on a bead ──────────────────────────────────────────────────
+
+/**
+ * Why the shift let a bead go, as the bead's end comment says it. Fixed
+ * words: what a provider, git or gh printed stays on the shift record.
+ */
+export const SHIFT_ENDINGS = {
+  submitted: "A run succeeded and the bead was submitted for review.",
+  stopped:
+    "The shift stopped its run (its time ran out, or it was asked to stop) and put the bead back in queued.",
+  notStarted: "Its run could not be started; the bead is back in queued.",
+  failed: "The shift failed while running it and put the bead back in queued.",
+  halted:
+    "Every run failed; the bead was halted, and the operator's queue action is the way out.",
+  unmoved:
+    "A queue move after its run did not go through, so it may still be in running; the shift record says which.",
+  noStep: "the pull request step failed before it finished",
+} as const;
+
+/** The `worklog:` comment a bead gets when the shift starts it. */
+export function startedComment(input: {
+  shiftId: string;
+  runId: string;
+  smith: string;
+  worktree: string;
+  branch: string;
+}): string {
+  return `worklog: shift ${input.shiftId} started this bead: run ${input.runId}, smith ${input.smith}, worktree ${input.worktree}, branch ${input.branch}. Its events: bun run forge:audit --run ${input.runId}.`;
+}
+
+/** The `worklog:` comment a bead gets when the shift lets it go. */
+export function endedComment(input: {
+  shiftId: string;
+  attempts: number;
+  outcome: string;
+  why: string;
+}): string {
+  const runs = `${input.attempts} run${input.attempts === 1 ? "" : "s"}`;
+  return `worklog: shift ${input.shiftId} ended this bead after ${runs}: ${input.outcome}. ${input.why}`;
+}
+
 // ── Dependencies ────────────────────────────────────────────────────────────
 
 /** How one run ended, as the loop needs it. */
@@ -197,7 +258,7 @@ export interface Attempt {
 }
 
 export interface ShiftDeps {
-  /** The checkout the shift runs for: its config, its tracker, and the HEAD worktrees start from. */
+  /** The checkout the shift runs for: its config and its tracker. */
   root: string;
   /** Runs `bd` in the checkout that holds the tracker. */
   runBd: BdRunner;
@@ -210,12 +271,19 @@ export interface ShiftDeps {
   mainCheckout: string;
   /** Says whether the host is too busy to admit more. */
   sampleHost(): Promise<{ busy: boolean; reason?: string | undefined }>;
-  /** Makes `<mainCheckout>/trees/<id>` on a new branch. */
+  /** Makes `<mainCheckout>/trees/<id>` on a new branch that starts at `startPoint`. */
   makeWorktree(request: {
     id: string;
     branch: string;
     beadId: string;
+    startPoint: string;
   }): { ok: true; path: string } | { ok: false; error: string };
+  /** git, for the base (fetch, rev-parse) and the pull request (log, push). */
+  git: ToolRun;
+  /** gh, for `pr create` only. */
+  gh: ToolRun;
+  /** `bun run pr:check` on a body file: null when every section is there and filled, else why not. */
+  checkPrBody(path: string): Promise<string | null>;
   /** What `runExec` is given besides the run itself: the environment, the home, adapter and command overrides. */
   exec?: Pick<ExecDeps, "env" | "home" | "adapters" | "command"> | undefined;
   appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
@@ -244,6 +312,7 @@ export type ShiftOutcome =
 // ── Reading a bead ──────────────────────────────────────────────────────────
 
 interface Shown {
+  title: string;
   labels: string[];
   metadata: unknown;
   parent: string | null;
@@ -279,6 +348,7 @@ async function showBead(runBd: BdRunner, id: string): Promise<Checked<Shown>> {
   return {
     ok: true,
     value: {
+      title: typeof row["title"] === "string" ? row["title"] : "",
       labels,
       metadata: row["metadata"],
       parent: typeof parent?.["id"] === "string" ? parent["id"] : null,
@@ -286,15 +356,73 @@ async function showBead(runBd: BdRunner, id: string): Promise<Checked<Shown>> {
   };
 }
 
+/**
+ * One `bd comments add`, built as the hearth's tracker writes are: both
+ * values after the `--`, so a text that looks like an option stays a text.
+ * Never repeated. Null once bd printed the comment on that issue, else why
+ * not, in words that never repeat the text.
+ */
+async function postComment(
+  runBd: BdRunner,
+  id: string,
+  text: string,
+): Promise<string | null> {
+  let result: BdResult;
+  try {
+    result = await runBd(["comments", "add", "--json", "--", id, text]);
+  } catch {
+    return "bd comments add could not be run";
+  }
+  if (result.status === null)
+    return "bd comments add did not finish, or never started; the comment may have been added";
+  if (result.status !== 0) return `bd comments add failed: ${refusal(result)}`;
+  const printed = parsed(result.stdout);
+  return typeof printed === "object" &&
+    printed !== null &&
+    (printed as Record<string, unknown>)["issue_id"] === id
+    ? null
+    : "bd comments add exited 0 but printed no comment on the bead";
+}
+
 // ── The loop ────────────────────────────────────────────────────────────────
 
 interface Slot {
   entry: ShiftBeadRecord;
   controller: AbortController;
+  /** The bead's title, for its pull request. */
+  title: string;
   /** Set before the controller is aborted: why the shift let the run go. */
   stopKind?: "shift" | "left";
   leftWhy?: string;
+  /** The queue state the operator left it in, as the shift read it. */
+  leftWhere?: string;
+  /** Why it went back to queued, for its end comment. */
+  released?: "stopped" | "notStarted" | "failed";
+  /** How its pull request step ended; "failed" when the step itself threw. */
+  pr?: PullRequestOutcome | "failed";
   done?: Promise<void>;
+}
+
+/** The fixed reason a bead's end comment gives for how it ended. */
+function endWhy(slot: Slot): string {
+  const { entry, pr } = slot;
+  if (entry.outcome === "review") {
+    if (pr !== undefined && pr !== "failed" && pr.ok)
+      return `${SHIFT_ENDINGS.submitted} Draft pull request: ${pr.url}.`;
+    const why =
+      pr === undefined || pr === "failed"
+        ? SHIFT_ENDINGS.noStep
+        : PR_FAILURES[pr.kind];
+    return `${SHIFT_ENDINGS.submitted} No pull request was opened: ${why}.`;
+  }
+  if (entry.outcome === "released")
+    return SHIFT_ENDINGS[slot.released ?? "stopped"];
+  if (entry.outcome === "halted") return SHIFT_ENDINGS.halted;
+  if (entry.outcome === "left")
+    return slot.stopKind === "left" && slot.leftWhere !== undefined
+      ? `It was moved while it ran (it is ${slot.leftWhere}) and was left as it is.`
+      : SHIFT_ENDINGS.unmoved;
+  return `It ended ${entry.outcome}.`;
 }
 
 /**
@@ -328,6 +456,17 @@ export async function runShift(
     if (!explicit.ok) return { ok: false, error: explicit.error };
   }
 
+  // Every worktree starts at origin's base as it is now, fetched once: a
+  // shift run from a feature branch, or from a checkout whose base is behind,
+  // builds nothing on that.
+  const based = await fetchBase(deps.git, deps.mainCheckout, options.base);
+  if (!based.ok)
+    return {
+      ok: false,
+      error: `the base could not be fetched (${based.error}); nothing was started`,
+    };
+  const baseSha = based.value.sha;
+
   const now = deps.now ?? (() => new Date());
   const clock = () => now().getTime();
   const append =
@@ -352,9 +491,11 @@ export async function runShift(
       maxBeads: options.maxBeads,
       maxUsd: options.maxUsd,
       repairs: options.repairs,
+      base: options.base,
       ...(options.epic !== undefined ? { epic: options.epic } : {}),
       ...(options.smith !== undefined ? { smith: options.smith } : {}),
     },
+    baseSha,
     spentUsd: 0,
     unpriced: 0,
     beads: [],
@@ -467,6 +608,54 @@ export async function runShift(
     }
   }
 
+  /** Post one `worklog:` comment on the bead; one that fails is written on its entry and stops nothing. */
+  async function comment(
+    entry: ShiftBeadRecord,
+    which: "started" | "ended",
+    text: string,
+  ): Promise<void> {
+    const failure = await postComment(deps.runBd, entry.beadId, text);
+    if (failure === null) return;
+    const said = `${which} comment: ${failure}`;
+    entry.commentError =
+      entry.commentError === undefined
+        ? said
+        : `${entry.commentError}; ${said}`;
+  }
+
+  /** The draft pull request of a bead now in review; one that cannot be opened leaves it there, and says why. */
+  async function pullRequest(slot: Slot): Promise<void> {
+    const { entry } = slot;
+    try {
+      const pr = await openDraftPr(
+        {
+          shiftId,
+          beadId: entry.beadId,
+          title: slot.title,
+          runId: entry.runId,
+          smith: entry.smith,
+          attempts: entry.attempts,
+          branch: entry.branch ?? "",
+          worktree: entry.worktree ?? "",
+          base: options.base,
+          baseSha,
+        },
+        { git: deps.git, gh: deps.gh, checkPrBody: deps.checkPrBody },
+      );
+      slot.pr = pr;
+      if (pr.body !== undefined) entry.prBody = pr.body;
+      if (pr.ok) entry.prUrl = pr.url;
+      else note(entry, `pull request: ${pr.kind}: ${pr.error}`);
+    } catch (error) {
+      slot.pr = "failed";
+      note(
+        entry,
+        `pull request: the step failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    save();
+  }
+
   async function inEpic(id: string): Promise<boolean> {
     const epic = options.epic;
     if (epic === undefined || id.startsWith(`${epic}.`)) return true;
@@ -528,7 +717,10 @@ export async function runShift(
     };
   }
 
-  /** One bead from its first run to its last, then its reservation freed. */
+  /**
+   * One bead from its first run to its last (and its pull request, once in
+   * review), then its reservation freed and its end comment posted.
+   */
   async function work(slot: Slot, smith: string): Promise<void> {
     const { entry } = slot;
     let lastFailure: string | undefined;
@@ -564,6 +756,7 @@ export async function runShift(
         } else if (!run.notStarted) record.unpriced++;
         if (run.ok) {
           await settle(entry, "submit", "review");
+          if (entry.outcome === "review") await pullRequest(slot);
           return;
         }
         if (slot.controller.signal.aborted || run.stopped) break;
@@ -573,6 +766,7 @@ export async function runShift(
         }
         if (run.notStarted) {
           note(entry, `the run was not started: ${run.error ?? "no reason"}`);
+          slot.released = "notStarted";
           await settle(entry, "release", "released");
           return;
         }
@@ -597,6 +791,7 @@ export async function runShift(
         entry,
         `the shift failed while running it: ${error instanceof Error ? error.message : String(error)}`,
       );
+      slot.released = "failed";
       if (slot.stopKind !== "left")
         await settle(entry, "release", "released").catch(() => undefined);
     } finally {
@@ -609,6 +804,16 @@ export async function runShift(
         error: error instanceof Error ? error.message : String(error),
       }));
       if (!freed.ok) note(entry, `reservation: ${freed.error}`);
+      await comment(
+        entry,
+        "ended",
+        endedComment({
+          shiftId,
+          attempts: entry.attempts,
+          outcome: entry.outcome,
+          why: endWhy(slot),
+        }),
+      );
     }
   }
 
@@ -666,7 +871,12 @@ export async function runShift(
 
     let made: ReturnType<ShiftDeps["makeWorktree"]>;
     try {
-      made = deps.makeWorktree({ id, branch, beadId: bead.id });
+      made = deps.makeWorktree({
+        id,
+        branch,
+        beadId: bead.id,
+        startPoint: baseSha,
+      });
     } catch (error) {
       made = {
         ok: false,
@@ -686,7 +896,22 @@ export async function runShift(
     entry.branch = branch;
     entry.outcome = "running";
     admitted++;
-    const slot: Slot = { entry, controller: new AbortController() };
+    await comment(
+      entry,
+      "started",
+      startedComment({
+        shiftId,
+        runId: entry.runId,
+        smith: resolution.smith.name,
+        worktree: made.path,
+        branch,
+      }),
+    );
+    const slot: Slot = {
+      entry,
+      controller: new AbortController(),
+      title: shown.value.title,
+    };
     slots.set(bead.id, slot);
     save();
     slot.done = work(slot, resolution.smith.name).finally(() => {
@@ -711,6 +936,7 @@ export async function runShift(
           ? `${QUEUE_LABEL_PREFIX}${standing.state}`
           : "in none of the queue's states";
       slot.stopKind = "left";
+      slot.leftWhere = where;
       slot.leftWhy = `the bead is ${where}: it was moved while it ran, and is left as it is`;
       slot.controller.abort("bead moved by the operator");
     }

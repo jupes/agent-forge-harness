@@ -5,17 +5,22 @@
  * Usage:
  *   bun run forge:shift run [--for 2h] [--concurrency 2] [--max-beads 4]
  *       [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>]
- *       [--run-timeout <duration>]
+ *       [--run-timeout <duration>] [--base master]
  *   bun run forge:shift stop <shift-id>
  *   bun run forge:shift list
  *
  * A duration is a whole number of seconds, minutes or hours: `90s`, `30m`,
- * `2h`. `run` writes one line to stderr before it starts, the shift's id and
- * the command that stops it, then runs until the shift stops and prints the
- * shift's record. It takes only beads in `queued` (an operator approved and
- * queued them), never merges, never pushes, and opens no pull request: a bead
- * whose run succeeds ends in `review` with its work committed on the branch
- * `shift/<shift-id>/<bead>`, in a worktree under `trees/` that is kept.
+ * `2h`. `run` first fetches `--base` (default master) from origin, and every
+ * bead's worktree starts at the commit it names, whatever the checkout it
+ * runs in has checked out; a base that cannot be fetched starts nothing. It
+ * then writes one line to stderr, the shift's id and the command that stops
+ * it, runs until the shift stops and prints the shift's record. It takes only
+ * beads in `queued` (an operator approved and queued them) and never merges.
+ * A bead whose run succeeds ends in `review` with its work committed on the
+ * branch `shift/<shift-id>/<bead>`, in a worktree under `trees/` that is
+ * kept; that branch alone is pushed to origin and a draft pull request is
+ * opened into the base with `gh pr create --draft`. Each bead it ran gets a
+ * `worklog:` comment when it starts and one when it ends.
  *
  * `stop` asks a running shift to stop (the hearth's `POST /shifts/:id/stop`
  * does the same): it stops every run, puts their beads back in `queued`,
@@ -28,7 +33,7 @@
  * records are the harness home's, the same ones the hearth uses.
  */
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
 import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
@@ -37,6 +42,7 @@ import { ledgerPath } from "../ledger/paths";
 import { createHostSampler } from "./host-load";
 import type { CliResult } from "./reservations-cli";
 import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
+import { prCheckRunner, toolRunner } from "./shift-pr";
 import {
   listShiftRecords,
   mintShiftId,
@@ -46,7 +52,7 @@ import {
 import { createWorktree } from "./worktrees";
 
 const USAGE =
-  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] | stop <shift-id> | list";
+  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] | stop <shift-id> | list";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -60,10 +66,14 @@ export function parseDuration(text: string): number | null {
   return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
 }
 
+/** The checkout this file belongs to: where `bun run pr:check` is defined. */
+const HARNESS = resolve(import.meta.dir, "..", "..");
+
 /**
  * The real dependencies for `cwd`: bd in the main checkout; the ledger, the
  * queue lock and the shift records in the harness home; worktrees made by the
- * registry under the main checkout, from the HEAD of `cwd`; the host sampled
+ * registry under the main checkout, from the base commit the shift fetched;
+ * git and gh from the PATH, and this harness's `pr:check`; the host sampled
  * from this machine. Runs use the providers' own CLIs.
  */
 export function shiftCliDeps(cwd: string, env: Env = process.env): ShiftDeps {
@@ -78,17 +88,20 @@ export function shiftCliDeps(cwd: string, env: Env = process.env): ShiftDeps {
     shiftsDir: join(home, SHIFTS_DIR),
     mainCheckout: main,
     sampleHost: sampler,
-    makeWorktree: ({ id, branch, beadId }) => {
+    makeWorktree: ({ id, branch, beadId, startPoint }) => {
       const made = createWorktree(
         main,
         cwd,
-        { branch, beadId },
+        { branch, beadId, startPoint },
         { newId: () => id },
       );
       return made.ok
         ? { ok: true, path: made.value.path }
         : { ok: false, error: made.error };
     },
+    git: toolRunner("git"),
+    gh: toolRunner("gh"),
+    checkPrBody: prCheckRunner(HARNESS),
   };
 }
 
@@ -110,6 +123,7 @@ const RUN_FLAGS = {
   "--epic": "epic",
   "--smith": "smith",
   "--run-timeout": "runTimeoutMs",
+  "--base": "base",
 } as const;
 
 /** The options `run` was given, or why they are not options. */
@@ -125,7 +139,7 @@ function runOptions(
     if (value === undefined || value.startsWith("--"))
       return { ok: false, error: `${flag} needs a value` };
     const name = RUN_FLAGS[flag as keyof typeof RUN_FLAGS];
-    if (name === "epic" || name === "smith") {
+    if (name === "epic" || name === "smith" || name === "base") {
       options[name] = value;
       continue;
     }

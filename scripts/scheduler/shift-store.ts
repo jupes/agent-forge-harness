@@ -48,7 +48,8 @@ export function mintShiftId(
 /**
  * How a bead the shift took ended, so far:
  * - `running`: its run is in flight.
- * - `review`: a run succeeded and the bead was submitted.
+ * - `review`: a run succeeded and the bead was submitted; its draft pull
+ *   request is `prUrl`, or `error` says why none was opened.
  * - `released`: the shift stopped it (the deadline, a stop) and put it back in `queued`.
  * - `halted`: its runs failed past the repairs, and it was halted.
  * - `left`: the shift let it go in another state: the operator paused or
@@ -80,8 +81,17 @@ export interface ShiftBeadRecord {
   branch?: string;
   /** What its runs reported spending, when they reported it. */
   costUsd?: number;
-  /** Why it ended as it did, when that was not a success. */
+  /**
+   * Why it ended as it did, when that was not a success; for a bead in
+   * `review`, why its pull request was not opened (`pull request: <kind>: …`).
+   */
   error?: string;
+  /** Its draft pull request, once opened. */
+  prUrl?: string;
+  /** Whose body the pull request step used: the run's, or one the shift wrote. */
+  prBody?: "run" | "shift";
+  /** Its `worklog:` comments that bd did not take (they stop nothing). */
+  commentError?: string;
 }
 
 export interface ShiftOptionsRecord {
@@ -90,6 +100,8 @@ export interface ShiftOptionsRecord {
   maxBeads: number;
   maxUsd: number;
   repairs: number;
+  /** The branch on origin its worktrees start from and its pull requests go into. */
+  base?: string;
   epic?: string;
   smith?: string;
 }
@@ -109,6 +121,8 @@ export interface ShiftRecord {
   /** What stopped the shift, when it failed rather than ending as asked. */
   error?: string;
   options: ShiftOptionsRecord;
+  /** The commit origin's base named when the shift fetched it: every worktree started there. */
+  baseSha?: string;
   /** The sum of the cost its runs reported. */
   spentUsd: number;
   /** Runs that reported no cost (a provider that does not report one). */

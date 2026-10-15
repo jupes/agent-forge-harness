@@ -290,6 +290,56 @@ describe("createWorktree", () => {
     );
   });
 
+  test("a start point: the branch starts at the commit it names, not at the HEAD of the checkout it is made from", () => {
+    const dir = repo();
+    git(dir, "checkout", "-q", "-b", "elsewhere");
+    writeFileSync(join(dir, "elsewhere.txt"), "elsewhere\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-q", "-m", "on elsewhere");
+    git(dir, "checkout", "-q", "master");
+    const created = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/started", startPoint: "elsewhere" },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+    expect(git(created.value.path, "rev-parse", "HEAD")).toBe(
+      git(dir, "rev-parse", "elsewhere"),
+    );
+    expect(git(created.value.path, "rev-parse", "HEAD")).not.toBe(
+      git(dir, "rev-parse", "HEAD"),
+    );
+  });
+
+  test("a start point that names no commit, is empty or reads as an option is refused before anything is made", () => {
+    const dir = repo();
+    const tree = git(dir, "rev-parse", "HEAD^{tree}");
+    for (const startPoint of [
+      "no-such-ref",
+      "",
+      "-x",
+      "--all",
+      "HEAD~9",
+      tree,
+      "two\nlines",
+    ]) {
+      const refused = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/sp", startPoint },
+        deps(),
+      );
+      expect({ startPoint, ok: refused.ok }).toEqual({
+        startPoint,
+        ok: false,
+      });
+      if (!refused.ok) expect(refused.error).toContain("start point");
+    }
+    expect(git(dir, "branch", "--list", "feat/sp")).toBe("");
+    expect(existsSync(join(dir, "trees"))).toBe(false);
+  });
+
   test("the session defaults to the mirror of the checkout it is made from", () => {
     const dir = repo();
     writeFileSync(join(dir, ".agent-forge-session"), "session-from-mirror\n");

@@ -2,8 +2,9 @@
  * An in-memory tracker for the queue's tests and the browser suite's `bd`
  * stand-in: it answers the calls the queue, its reads and eligibility make
  * (`show --readonly --json -- <id…>`, an `update` of labels or metadata, and
- * the `list` shapes of `GET /queue` and of what a shift may pick) the way bd
- * 1.1.0 does, and nothing else.
+ * the `list` shapes of `GET /queue` and of what a shift may pick), and, in
+ * `answerComment`, the shift's `comments add --json -- <id> <text>` (kept on
+ * the bead, in `comments`), the way bd 1.1.0 does, and nothing else.
  *
  * Test support, not a second `bd`. The answers are built by
  * `../hearth/bd-answers.ts`, and `queue-bd.test.ts` compares this fixture with
@@ -33,6 +34,8 @@ export interface TrackedBead {
   issueType?: string;
   /** The beads that block this one (`blocks` edges). */
   blockedBy?: string[];
+  /** The texts `comments add` put on it, oldest first. */
+  comments?: string[];
 }
 
 /**
@@ -72,6 +75,14 @@ export interface QueueTracker {
   beforeUpdate: ((bead: TrackedBead) => void) | null;
   /** The answer to a call the queue makes, or undefined for any other call. */
   answer(args: string[]): BdResult | undefined;
+  /**
+   * The answer to the shift's `comments add --json -- <id> <text>`, or
+   * undefined for any other call. Apart from `answer`, so that the browser
+   * suite's stand-in, which answers the hearth's comments itself, is not
+   * changed by it.
+   */
+  answerComment(args: string[]): BdResult | undefined;
+  /** `answer`, else `answerComment`, else a refusal. */
   run: BdRunner;
 }
 
@@ -81,6 +92,24 @@ interface Update {
   remove: string[];
   set: Array<[string, string]>;
   unset: string[];
+}
+
+/**
+ * The comment an argument array adds, when it is the one shape the shift
+ * sends: `comments add --json -- <id> <text>`, both values after the `--`.
+ */
+function readComment(
+  args: readonly string[],
+): { id: string; text: string } | null {
+  if (
+    args.length !== 6 ||
+    args[0] !== "comments" ||
+    args[1] !== "add" ||
+    args[2] !== "--json" ||
+    args[3] !== "--"
+  )
+    return null;
+  return { id: args[4] ?? "", text: args[5] ?? "" };
 }
 
 /** The `update` an argument array asks for, when it changes labels or metadata with `--json`. */
@@ -305,8 +334,31 @@ export function queueTracker(beads: TrackedBead[] = []): QueueTracker {
       bead.metadata = metadata;
       return bdAnswers.updated(printedIssue(bead, false));
     },
+    answerComment(args) {
+      const comment = readComment(args);
+      if (comment === null) return undefined;
+      tracker.calls.push(args);
+      const given = tracker.intercept?.(args);
+      if (given !== undefined) return given;
+      const bead = tracker.beads.get(comment.id);
+      // bd says why on stdout and nothing on stderr, so the runner adds its own line.
+      if (!bead)
+        return bdAnswers.refusedOnStdout(
+          `resolving ${comment.id}: no issue found matching "${comment.id}"`,
+          args,
+        );
+      bead.comments = [...(bead.comments ?? []), comment.text];
+      return bdAnswers.commented({
+        id: `comment-${tracker.calls.length}`,
+        issueId: bead.id,
+        author: "scheduler",
+        text: comment.text,
+        createdAt: new Date().toISOString(),
+      });
+    },
     run: async (args) =>
-      tracker.answer(args) ?? {
+      tracker.answer(args) ??
+      tracker.answerComment(args) ?? {
         status: 1,
         stdout: "",
         stderr: `Error: the queue tracker does not answer: ${args[0] ?? ""}\n`,
