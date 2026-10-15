@@ -25,7 +25,7 @@ Built-in smiths: `claude-master` (highest Claude rank, effort high), `claude-jou
 
 ## Execution safety
 
-5. **Approval:** a human approves the start of every task or task family. Work minted by auto-tasks or `/forge-orchestrate` waits as `queue:proposed`; a shift only consumes `queue:approved`/`queued` beads. A `/forgemaster` or `/forgemaster-auto` run the operator launched by hand counts as approved for that feature.
+5. **Approval:** a human approves the start of every task or task family. Work minted by auto-tasks or `/forge-orchestrate` waits as `queue:proposed`; a shift only consumes `queue:approved`/`queued` beads. A `/forgemaster` or `/forgemaster-auto` run the operator launched by hand counts as approved for that feature. (Amended 2026-10-14 by `x1gs.5.7`: approval is not inherited. `bd create --parent` copies the parent's labels onto the child, a `queue:*` label included, and the queue counts a label as a state only when it wrote it, so a child created under a parent in the queue is in no state. It enters the queue by `propose` and waits for an operator's `approve` of that child before a shift may pick it, however it was created: through the hearth, by an agent, or with `bd create` by hand.)
 6. **Headless permissions:** spawned `claude -p` runs use `acceptEdits` inside their worktree with Bash allowlisted to the project's known scripts. `dangerously-skip-permissions` is never used.
 7. **PRs:** shifts open PRs with the canonical template, never merge, never push to `master`.
 8. **Shift defaults:** concurrency 2, duration 2h, admission paused above 85% CPU or memory, 3 repair attempts per bead then `queue:halted`.

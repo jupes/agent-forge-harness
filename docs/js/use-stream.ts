@@ -48,9 +48,12 @@ export const BATCH_MS = 50;
 export const BATCH_MAX = 500;
 /** A view's route is read again at most once per this window. */
 export const REFETCH_WINDOW_MS = 300;
-/** The first retry waits up to this; each later one doubles it. */
+/**
+ * The first retry waits up to this; each later one doubles it. With
+ * `MAX_FAILURES` at six there are five retries, so the longest wait is up to
+ * 8 s: the sixth failure turns live updates off instead of waiting again.
+ */
 export const RETRY_BASE_MS = 500;
-export const RETRY_MAX_MS = 15_000;
 /** This many failures in a row turn live updates off for the page. */
 export const MAX_FAILURES = 6;
 /**
@@ -484,7 +487,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       return;
     }
     setState(withStatus(state, "reconnecting"));
-    const ceiling = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (failures - 1));
+    const ceiling = RETRY_BASE_MS * 2 ** (failures - 1);
     retryTimer = timers.set(
       () => {
         retryTimer = null;
@@ -700,12 +703,39 @@ export async function readOperatorRoute<T>(
   return envelope.data as T;
 }
 
+/**
+ * A connection where nothing serves a stream: it ends at once as refused and
+ * sends no request, so live updates go off as a static host's answer turns
+ * them off, without a failed request in the console.
+ */
+const NO_STREAM: StreamTransport = (_lastEventId, handlers) => {
+  handlers.onEnd("refused");
+  return { close: () => undefined };
+};
+
+/**
+ * The page's connection to the stream. A static copy (a `vite build` of the
+ * dashboard) asks for none: only the dev server has a hearth behind
+ * `/__agent-forge`, and every page of a copy would otherwise make one request
+ * that fails.
+ */
+export function pageTransport(
+  staticCopy: boolean,
+  options: FetchTransportOptions = {},
+): StreamTransport {
+  return staticCopy
+    ? NO_STREAM
+    : fetchTransport(`${API_PREFIX}/stream`, options);
+}
+
 let page: StreamClient | null = null;
 
 /** The one client of this page, made on first use. */
 export function appStream(): StreamClient {
   page ??= createStreamClient({
-    transport: fetchTransport(`${API_PREFIX}/stream`),
+    // A build has no HMR socket: there `import.meta.hot` is undefined. The
+    // dev server, which proxies the hearth, always gives a page one.
+    transport: pageTransport(import.meta.hot === undefined),
     read: readRoute,
   });
   return page;

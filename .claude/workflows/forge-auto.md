@@ -49,6 +49,12 @@ a fresh evaluator subagent**, and the next move comes from `bun run forge:review
 | Two rounds no better than the last | **Halt** — not converging. |
 | Revision budget spent (default 2) | **Halt.** |
 | No verdict, or an unreadable one | **Halt.** A run that cannot grade itself must not advance. |
+| An evaluator observed to rank below the builder | **Halt.** The round is recorded `UNREADABLE`: a grader known to be weaker grades nothing. |
+
+Only an observation halts the loop on who judged. When `forge:review` can see the evaluator would
+not satisfy strict completion for another reason (nothing was observed of it, its observed model has
+no rank, the builder's rank is unknown), it says so in `data.evaluatorProblem` and the round is
+graded on its findings.
 
 A halt writes `.tmp/work/session-handoff.md` (or `session-handoff-<slug>.md` when one already
 exists) naming what stopped it and the command that resumes the work. The run's state is intact;

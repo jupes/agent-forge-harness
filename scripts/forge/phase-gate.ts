@@ -48,6 +48,7 @@ import type { Executor } from "../../types/hearth";
 import { type ForgeConfig, loadConfig } from "../config/load";
 import { resolveSmith } from "../config/resolve";
 import { validateExecutor } from "../hearth/validate";
+import { isMain } from "../is-main";
 import {
   artifactPath,
   FORGE_PHASES,
@@ -441,7 +442,7 @@ function emit(result: GateResult): never {
   process.exit(result.ok ? 0 : 2);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const parsed = parseGateArgs(process.argv.slice(2));
   if (!parsed.ok || !parsed.data) emit(parsed);
   const args = parsed.data as GateArgs;

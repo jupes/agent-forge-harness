@@ -7,8 +7,10 @@
  *
  * `reconcile` compares each bead's queue state on Beads with the moves the
  * ledger recorded for it (`queue-reconcile.ts`) and prints where they part: a
- * `gap`, a move made on the bead with no `bead.transitioned` for it, and a
- * `duplicate`, one move recorded twice in a row. It writes nothing, to Beads
+ * `gap`, a move made on the bead with no `bead.transitioned` for it, a
+ * `duplicate`, one move recorded twice in a row, and a `smith` on the bead
+ * that its newest recorded reassign does not name (with `askedEvent` when the
+ * operator API asked for it: a reassign the ledger missed). It writes nothing, to Beads
  * or to the ledger, and reads under the queue lock, so a move waits for it.
  *
  * Prints `{ ok, data, error }` and exits 1 when `ok` is false; drift found is
@@ -16,6 +18,7 @@
  * lock are the harness home's, the same ones the hearth uses.
  */
 
+import { isMain } from "../is-main";
 import { reconcileQueue } from "./queue-reconcile";
 import { type CliDeps, type CliResult, cliDeps } from "./reservations-cli";
 
@@ -47,7 +50,7 @@ export async function runQueueCli(
     : failed(read.error);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const result = await runQueueCli(
     process.argv.slice(2),
     cliDeps(process.cwd()),

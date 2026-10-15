@@ -24,6 +24,10 @@
  * the event ledger already holds, and a killed writer's scratch file there on
  * its age alone: see `sweepEvaluations`.
  *
+ * Then sweeps run correlations under `.tmp/work/run-correlations/`, by the same
+ * closed-bead and age rule, and only a file the correlation loader validates
+ * as this checkout's: see `sweepCorrelations`.
+ *
  * Which beads are closed comes from the live tracker (one `bd export`). Only
  * when bd does not answer is `.beads/issues.jsonl` used: a warning says so on
  * stderr before anything is removed, and the envelope's `data.source` names
@@ -66,8 +70,11 @@ import {
   readEvaluationFile,
 } from "./eval-verdict-store";
 import { comparableCheckout } from "./forge/runs";
+import { isMain } from "./is-main";
 import { queryEvents } from "./ledger/query";
 import { resolveCheckout } from "./ledger/workspace";
+import { RUN_CORRELATIONS_DIR } from "./run-correlation";
+import { loadRunCorrelation } from "./run-correlation-store";
 
 /**
  * How many days old a file must be (since it was last written) before it may
@@ -451,6 +458,136 @@ function classifyEvaluationFile(
   };
 }
 
+export interface CorrelationSweep {
+  /** Paths are relative to the checkout. */
+  candidates: SweepCandidate[];
+  deleted: string[];
+  /** Set when the whole correlations directory was left alone, and why. */
+  note?: string;
+}
+
+/**
+ * Sweep the run correlations of a checkout.
+ *
+ * A correlation outlives its run otherwise, and it is sticky: a run already
+ * correlated to one bead is not handed to another, so in a reused worktree a
+ * stale file keeps that run's children unlinked. A file is a candidate only
+ * when it is a `.json` file directly in the checkout's own correlations
+ * directory, with no link on the way and not a link itself. It is removed
+ * only when all of this holds:
+ *
+ * - the validated loader (`loadRunCorrelation`) takes it as this checkout's
+ *   correlation of the run it is named after;
+ * - the Beads issue it names is closed, and the file is older than the TTL.
+ *
+ * Anything else there (a writer's draft, a file the loader refuses) is left
+ * as it is, and nothing outside the directory is touched. `checkout` must be
+ * the top level of a checkout, as for `sweepEvaluations`.
+ */
+export function sweepCorrelations(input: {
+  /** The top level of the checkout to sweep. */
+  checkout: string;
+  issuesById: Map<string, BeadsIssue>;
+  ttlDays: number;
+  apply: boolean;
+  nowMs: number;
+}): CorrelationSweep {
+  const root = resolveCheckout(input.checkout).worktree;
+  const candidates: SweepCandidate[] = [];
+  const deleted: string[] = [];
+  let given: string;
+  try {
+    given = comparableCheckout(realpathSync.native(input.checkout));
+  } catch {
+    return { candidates, deleted };
+  }
+  if (given !== root) {
+    return {
+      candidates,
+      deleted,
+      note: "run correlations are swept from the top level of a checkout: this directory is inside one",
+    };
+  }
+  try {
+    lstatSync(`${root}/${RUN_CORRELATIONS_DIR}`);
+  } catch {
+    return { candidates, deleted };
+  }
+  if (!isOwnDirectory(root, RUN_CORRELATIONS_DIR)) {
+    return {
+      candidates,
+      deleted,
+      note: `${RUN_CORRELATIONS_DIR} is, or sits under, a link: nothing in it is swept`,
+    };
+  }
+
+  for (const file of readdirSync(`${root}/${RUN_CORRELATIONS_DIR}`).sort()) {
+    if (!file.endsWith(".json")) continue;
+    const relative = `${RUN_CORRELATIONS_DIR}/${file}`;
+    const candidate = classifyCorrelationFile(
+      `${root}/${relative}`,
+      root,
+      input,
+    );
+    if (candidate === null) continue;
+    candidates.push({ ...candidate, path: relative });
+    if (candidate.action !== "delete" || !input.apply) continue;
+    try {
+      unlinkSync(`${root}/${relative}`);
+      deleted.push(relative);
+    } catch (e) {
+      console.error(
+        `warn: could not delete ${relative}: ${(e as Error).message}`,
+      );
+    }
+  }
+  return { candidates, deleted };
+}
+
+/** What to do with one `.json` file of the correlations directory, or null when it is not a regular file. */
+function classifyCorrelationFile(
+  path: string,
+  root: string,
+  input: {
+    issuesById: Map<string, BeadsIssue>;
+    ttlDays: number;
+    nowMs: number;
+  },
+): Omit<SweepCandidate, "path"> | null {
+  let modified: number;
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile()) return null;
+    modified = stat.mtimeMs;
+  } catch {
+    return null;
+  }
+  const ageDays = Math.floor((input.nowMs - modified) / 86_400_000);
+  const skip = (reason: string, taskId = ""): Omit<SweepCandidate, "path"> => ({
+    taskId,
+    ageDays,
+    action: "skip",
+    reason,
+  });
+  const loaded = loadRunCorrelation(path, root);
+  if (!loaded.ok) return skip(loaded.error);
+  const taskId = loaded.value.beadsIssueId;
+  const issue = input.issuesById.get(taskId);
+  if (!issue) return skip(`bead ${taskId} not in ledger`, taskId);
+  if (issue.status !== "closed") {
+    return skip(`bead ${taskId} status=${issue.status}`, taskId);
+  }
+  if (ageDays < input.ttlDays) {
+    return skip(`age ${ageDays}d < TTL ${input.ttlDays}d`, taskId);
+  }
+  return {
+    taskId,
+    ageDays,
+    action: "delete",
+    reason: `closed bead, age ${ageDays}d ≥ TTL ${input.ttlDays}d`,
+  };
+}
+
 export interface TmpWorkCleanupOptions {
   /** The checkout whose `.tmp/work` is swept. */
   cwd: string;
@@ -485,6 +622,7 @@ export type TmpWorkCleanupEnvelope =
         candidates: SweepCandidate[];
         deleted: string[];
         evaluations: EvaluationSweep;
+        correlations: CorrelationSweep;
       };
       error: null;
     }
@@ -571,6 +709,24 @@ export async function runTmpWorkCleanup(
     };
   }
 
+  // Run correlations, right after, by the same statuses and the same TTL.
+  let correlations: CorrelationSweep;
+  try {
+    correlations = sweepCorrelations({
+      checkout: options.cwd,
+      issuesById: byId,
+      ttlDays,
+      apply,
+      nowMs,
+    });
+  } catch (e) {
+    correlations = {
+      candidates: [],
+      deleted: [],
+      note: `run correlations were not swept: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
   return {
     ok: true,
     data: {
@@ -582,12 +738,13 @@ export async function runTmpWorkCleanup(
       candidates,
       deleted,
       evaluations,
+      correlations,
     },
     error: null,
   };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const envelope = await runTmpWorkCleanup({
     cwd: process.cwd(),
     runBd: runBdOnPath,

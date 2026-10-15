@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -23,12 +24,15 @@ import {
 } from "./eval-verdict-store";
 import { appendEvent } from "./ledger/append";
 import { closeLedger } from "./ledger/db";
+import { RUN_CORRELATIONS_DIR } from "./run-correlation";
+import { initRunCorrelation } from "./run-correlation-store";
 import {
   classifyFile,
   DEFAULT_TTL_DAYS,
   type LedgerDigest,
   ledgerHoldsVerdict,
   runTmpWorkCleanup,
+  sweepCorrelations,
   sweepEvaluations,
 } from "./tmp-work-cleanup";
 
@@ -584,6 +588,213 @@ describe("sweepEvaluations", () => {
       expect(existsSync(join(checkout, relative))).toBe(true);
     }
     expect(existsSync(folder)).toBe(true);
+  });
+});
+
+// ── Run correlations ────────────────────────────────────────────────────────
+
+/** Correlate `run` to `bead` through the real writer and age the file `days` days; its relative path. */
+function agedCorrelation(
+  checkout: string,
+  run: string,
+  bead: string,
+  days: number,
+): string {
+  const made = initRunCorrelation({
+    checkout,
+    beadsIssueId: bead,
+    executionRunId: run,
+  });
+  if (!made.ok) throw new Error(made.error);
+  const then = new Date(Date.now() - days * DAY_MS);
+  utimesSync(made.path, then, then);
+  return `${RUN_CORRELATIONS_DIR}/${run}.json`;
+}
+
+function sweepRuns(
+  checkout: string,
+  input: {
+    issues?: Map<string, BeadsIssue>;
+    apply?: boolean;
+  } = {},
+) {
+  return sweepCorrelations({
+    checkout,
+    issuesById: input.issues ?? issues(mkClosed("bead-1")),
+    ttlDays: DEFAULT_TTL_DAYS,
+    apply: input.apply ?? false,
+    nowMs: Date.now(),
+  });
+}
+
+describe("sweepCorrelations", () => {
+  test("a closed bead's correlation older than the retention period is removed; open work's, a young one and one for a bead Beads does not know are kept", () => {
+    const { checkout } = sandbox();
+    const stale = agedCorrelation(checkout, "run-1", "bead-1", 30);
+    const open = agedCorrelation(checkout, "run-open", "bead-open", 30);
+    const young = agedCorrelation(checkout, "run-young", "bead-1", 3);
+    const unknown = agedCorrelation(checkout, "run-gone", "bead-gone", 30);
+    const known = issues(mkClosed("bead-1"), mkOpen("bead-open"));
+
+    const dry = sweepRuns(checkout, { issues: known });
+    expect(dry.deleted).toEqual([]);
+    const byPath = Object.fromEntries(
+      dry.candidates.map((candidate) => [candidate.path, candidate]),
+    );
+    expect(byPath[stale]).toEqual({
+      path: stale,
+      taskId: "bead-1",
+      ageDays: 30,
+      action: "delete",
+      reason: "closed bead, age 30d ≥ TTL 14d",
+    });
+    expect(byPath[open]).toMatchObject({
+      action: "skip",
+      reason: "bead bead-open status=open",
+    });
+    expect(byPath[young]).toMatchObject({
+      action: "skip",
+      reason: "age 3d < TTL 14d",
+    });
+    expect(byPath[unknown]).toMatchObject({
+      action: "skip",
+      reason: "bead bead-gone not in ledger",
+    });
+    expect(existsSync(join(checkout, stale))).toBe(true);
+
+    const applied = sweepRuns(checkout, { issues: known, apply: true });
+    expect(applied.deleted).toEqual([stale]);
+    expect(existsSync(join(checkout, stale))).toBe(false);
+    for (const kept of [open, young, unknown]) {
+      expect(existsSync(join(checkout, kept))).toBe(true);
+    }
+    // The directory itself stays.
+    expect(existsSync(join(checkout, RUN_CORRELATIONS_DIR))).toBe(true);
+
+    // The run is free again: correlating it to another bead now succeeds.
+    const rebound = initRunCorrelation({
+      checkout,
+      beadsIssueId: "bead-2",
+      executionRunId: "run-1",
+    });
+    expect(rebound.ok).toBe(true);
+  });
+
+  test("only a file the loader takes as this checkout's correlation is touched: one named after another run, one written for another checkout, one that is no correlation, a writer's draft", () => {
+    const { checkout } = sandbox();
+    const other = sandbox();
+    const dir = join(checkout, RUN_CORRELATIONS_DIR);
+    const plant = (name: string, content: string) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, name), content);
+      const then = new Date(Date.now() - 30 * DAY_MS);
+      utimesSync(join(dir, name), then, then);
+      return `${RUN_CORRELATIONS_DIR}/${name}`;
+    };
+    const valid = readFileSync(
+      join(
+        other.checkout,
+        agedCorrelation(other.checkout, "run-1", "bead-1", 30),
+      ),
+      "utf8",
+    );
+    const foreign = plant("run-1.json", valid);
+    const misnamed = plant(
+      "run-2.json",
+      readFileSync(
+        join(checkout, agedCorrelation(checkout, "run-3", "bead-1", 30)),
+        "utf8",
+      ),
+    );
+    const notOne = plant("notes.json", "{}");
+    const draft = plant("run-4.json.4242.tmp", valid);
+
+    const applied = sweepRuns(checkout, { apply: true });
+    const reasons = Object.fromEntries(
+      applied.candidates.map((candidate) => [candidate.path, candidate]),
+    );
+    expect(reasons[foreign]).toMatchObject({
+      action: "skip",
+      reason: "the correlation was written for another checkout",
+    });
+    expect(reasons[misnamed]).toMatchObject({
+      action: "skip",
+      reason: "the file holds run run-3 but is not named after it",
+    });
+    expect(reasons[notOne]).toMatchObject({
+      action: "skip",
+      reason: "schemaVersion must be 1",
+    });
+    expect(draft in reasons).toBe(false);
+    // Only run-3's own file, which the loader validates, is removed.
+    expect(applied.deleted).toEqual([`${RUN_CORRELATIONS_DIR}/run-3.json`]);
+    for (const kept of [foreign, misnamed, notOne, draft]) {
+      expect(existsSync(join(checkout, kept))).toBe(true);
+    }
+  });
+
+  test("nothing outside .tmp/work/run-correlations is touched: a correlations directory that is a link out of the checkout is not swept", () => {
+    const { checkout, outside } = sandbox();
+    // A correlation of this checkout's, sitting outside it.
+    const source = sandbox();
+    const relative = agedCorrelation(source.checkout, "run-1", "bead-1", 30);
+    const planted = join(outside, "run-1.json");
+    writeFileSync(planted, readFileSync(join(source.checkout, relative)));
+    const then = new Date(Date.now() - 30 * DAY_MS);
+    utimesSync(planted, then, then);
+    mkdirSync(join(checkout, ".tmp", "work"), { recursive: true });
+    symlinkSync(outside, join(checkout, RUN_CORRELATIONS_DIR), "junction");
+
+    const applied = sweepRuns(checkout, { apply: true });
+    expect(applied).toEqual({
+      candidates: [],
+      deleted: [],
+      note: `${RUN_CORRELATIONS_DIR} is, or sits under, a link: nothing in it is swept`,
+    });
+    expect(existsSync(planted)).toBe(true);
+  });
+
+  test("it sweeps a checkout from its top level only, and a checkout with no correlations has nothing to sweep", () => {
+    const { checkout } = sandbox();
+    expect(sweepRuns(checkout, { apply: true })).toEqual({
+      candidates: [],
+      deleted: [],
+    });
+    const stale = agedCorrelation(checkout, "run-1", "bead-1", 30);
+    const nested = join(checkout, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    expect(sweepRuns(nested, { apply: true })).toEqual({
+      candidates: [],
+      deleted: [],
+      note: "run correlations are swept from the top level of a checkout: this directory is inside one",
+    });
+    expect(existsSync(join(checkout, stale))).toBe(true);
+  });
+
+  test("tmp:cleanup sweeps them with the rest, and keeps them on a run kept dry", async () => {
+    const { checkout } = sandbox();
+    writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
+    const stale = agedCorrelation(checkout, "run-1", "bead-1", 30);
+
+    const dry = await cleanupWith(
+      checkout,
+      fakeBd(() => new Error("spawn bd ENOENT")).run,
+    );
+    if (!dry.ok) throw new Error(dry.error);
+    expect(dry.data.apply).toBe(false);
+    expect(dry.data.correlations.deleted).toEqual([]);
+    expect(dry.data.correlations.candidates.map((c) => c.action)).toEqual([
+      "delete",
+    ]);
+    expect(existsSync(join(checkout, stale))).toBe(true);
+
+    const applied = await cleanupWith(
+      checkout,
+      fakeBd(() => jsonl([exportRow("bead-1", "closed")])).run,
+    );
+    if (!applied.ok) throw new Error(applied.error);
+    expect(applied.data.correlations.deleted).toEqual([stale]);
+    expect(existsSync(join(checkout, stale))).toBe(false);
   });
 });
 

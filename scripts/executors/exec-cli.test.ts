@@ -1,10 +1,11 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -23,6 +24,7 @@ import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { runDoctor } from "./doctor-cli";
 import { type ExecDeps, runExec } from "./exec-cli";
+import { liveChildCount } from "./supervisor";
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const fake = (provider: string, mode = "ok") => [
@@ -35,9 +37,21 @@ const fake = (provider: string, mode = "ok") => [
 ];
 
 const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
+/** The scratch directories a test made, removed after it. */
+const scratch: string[] = [];
+afterEach(() => {
+  // A ledger file still open cannot be removed on Windows: close first.
+  for (const ledger of ledgers.splice(0)) closeLedger(ledger);
+  for (const dir of scratch.splice(0))
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
 });
+
+/** A new directory under the OS temp directory, removed after the test. */
+function scratchDir(prefix: string): string {
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
+  scratch.push(dir);
+  return dir;
+}
 
 /**
  * A harness root and a run directory that are each their own checkout (a bare
@@ -46,7 +60,7 @@ afterAll(() => {
  * else writes.
  */
 function setup() {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "forge exec ")));
+  const root = scratchDir("forge exec ");
   mkdirSync(join(root, ".git"));
   const worktree = join(root, "wt dir");
   mkdirSync(join(worktree, ".git"), { recursive: true });
@@ -378,6 +392,89 @@ describe("forge:exec", () => {
     });
   });
 
+  test("the usage session.ended carried is in the result: the provider's counts and its cost", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-usage", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude") },
+    );
+    expect(out.code).toBe(0);
+    expect((out.body.data as Record<string, unknown>).usage).toEqual({
+      inputTokens: 12,
+      outputTokens: 56,
+      cacheReadInputTokens: 4000,
+      cacheCreationInputTokens: 300,
+      costUsd: 0.0125,
+    });
+  });
+
+  test("a run that reports no usage has none in the result", async () => {
+    const { worktree, deps } = setup();
+    const out = await runExec(
+      ["--bead", "b-no-usage", "--worktree", worktree, "--prompt", "x"],
+      { ...deps, command: fake("claude", "crash") },
+    );
+    expect(out.code).toBe(2);
+    expect((out.body.data as Record<string, unknown>).usage).toBeNull();
+  });
+
+  test("aborting the signal stops a running child: the run ends stopped, session.ended names the abort's reason, and no supervised child is left", async () => {
+    const { worktree, ledger, deps } = setup();
+    const controller = new AbortController();
+    const running = runExec(
+      ["--bead", "b-abort", "--worktree", worktree, "--prompt", "x"],
+      {
+        ...deps,
+        command: fake("claude", "hang"),
+        signal: controller.signal,
+      },
+    );
+    // The child has started once its session is in the ledger.
+    const deadline = Date.now() + 4000;
+    while (
+      queryEvents({ beadId: "b-abort" }, { path: ledger }).length === 0 &&
+      Date.now() < deadline
+    )
+      await Bun.sleep(20);
+    expect(liveChildCount()).toBe(1);
+    controller.abort("shift stopped");
+    const out = await running;
+    expect(out.code).toBe(2);
+    expect(out.body.data).toMatchObject({ stopped: true, timedOut: false });
+    expect(out.body.error).toBe("stopped: shift stopped");
+    expect(liveChildCount()).toBe(0);
+    const ended = queryEvents(
+      { beadId: "b-abort", kinds: ["session.ended"] },
+      { path: ledger },
+    );
+    expect(ended.map((event) => event.payload)).toMatchObject([
+      { reason: "stopped: shift stopped" },
+    ]);
+  }, 10_000);
+
+  test("a signal aborted before the run starts the child: nothing is spawned and nothing is written", async () => {
+    const { root, worktree, ledger, deps } = setup();
+    const dump = join(root, "abort-dump.json");
+    const controller = new AbortController();
+    controller.abort("shift stopped");
+    const out = await runExec(
+      ["--bead", "b-pre-abort", "--worktree", worktree, "--prompt", "x"],
+      {
+        ...deps,
+        command: [...fake("claude"), "--fake-dump", dump],
+        signal: controller.signal,
+      },
+    );
+    expect(out.code).toBe(2);
+    expect(out.body.error).toBe(
+      "stopped before the provider was started: shift stopped",
+    );
+    expect(existsSync(dump)).toBe(false);
+    expect(queryEvents({ beadId: "b-pre-abort" }, { path: ledger })).toEqual(
+      [],
+    );
+  });
+
   test("a sink that throws does not kill the child: the run finishes and the failure is reported", async () => {
     const { worktree, deps } = setup();
     const out = await runExec(
@@ -513,9 +610,7 @@ describe("forge:doctor", () => {
     // Windows, Bun 1.3.10, it still found an installed claude), so the doctor
     // runs in a child whose PATH and working directory are a directory this
     // test has just made, with nothing in it.
-    const empty = realpathSync.native(
-      mkdtempSync(join(tmpdir(), "forge doctor path ")),
-    );
+    const empty = scratchDir("forge doctor path ");
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined && key.toUpperCase() !== "PATH") env[key] = value;

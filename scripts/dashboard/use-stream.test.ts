@@ -23,8 +23,9 @@ import {
   createStreamClient,
   fetchTransport,
   MAX_FAILURES,
+  pageTransport,
   REFETCH_WINDOW_MS,
-  RETRY_MAX_MS,
+  RETRY_BASE_MS,
   readOperatorRoute,
   SILENCE_MS,
   type SseMessage,
@@ -50,6 +51,9 @@ import { API_PREFIX, OPERATOR_HEADER } from "../hearth/paths";
 import { STREAM_KEEPALIVE_MS } from "../hearth/stream";
 import { startTestHearth } from "../hearth/testing";
 import { attrs, findAll, tag, textOf } from "./ds/vnode";
+
+/** The longest wait before a retry: the ceiling after five failures in a row (the jitter only shortens it). */
+const LONGEST_RETRY_MS = RETRY_BASE_MS * 2 ** (MAX_FAILURES - 2);
 
 /**
  * The dashboard's stream client: the state rules (`docs/js/app-state.ts`) and
@@ -953,7 +957,7 @@ describe("client: reconnect", () => {
     for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
       expect(client.getState().status).not.toBe("off");
       wire.current.end("failed");
-      clock.advance(RETRY_MAX_MS);
+      clock.advance(LONGEST_RETRY_MS);
     }
     expect(wire.connections).toHaveLength(MAX_FAILURES);
     expect(client.getState()).toMatchObject({
@@ -977,7 +981,7 @@ describe("client: reconnect", () => {
       wire.current.snapshot({ cursor: 10 });
       wire.current.keepalive();
       wire.current.end("ended");
-      clock.advance(RETRY_MAX_MS);
+      clock.advance(LONGEST_RETRY_MS);
     }
     // Bytes alone do not show a stream that works: this one never stayed open.
     expect(client.getState()).toMatchObject({
@@ -993,7 +997,7 @@ describe("client: reconnect", () => {
     page.client.subscribe(() => undefined);
     for (let attempt = 1; attempt < MAX_FAILURES; attempt++) {
       page.wire.current.end("failed");
-      page.clock.advance(RETRY_MAX_MS);
+      page.clock.advance(LONGEST_RETRY_MS);
     }
     return page;
   }
@@ -1055,7 +1059,7 @@ describe("client: reconnect", () => {
     for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
       wire.current.open();
       wire.current.end("ended");
-      clock.advance(RETRY_MAX_MS);
+      clock.advance(LONGEST_RETRY_MS);
     }
     expect(client.getState()).toMatchObject({
       status: "off",
@@ -1145,7 +1149,7 @@ describe("client: reconnect", () => {
       // Open far past STABLE_MS, and not a byte after the snapshot.
       clock.advance(SILENCE_MS);
       expect(wire.current.closed).toBe(true);
-      clock.advance(RETRY_MAX_MS);
+      clock.advance(LONGEST_RETRY_MS);
     }
     expect(client.getState()).toMatchObject({
       status: "off",
@@ -1229,6 +1233,48 @@ describe("client: static fallback", () => {
     clock.advance(3_600_000);
     expect(wire.connections).toHaveLength(2);
     expect(reads.asked).toEqual([]);
+  });
+
+  test("on a static copy the page asks for no stream at all: live updates are off at once, as after a static host's answer", async () => {
+    const { requests, fetchImpl } = standInFetch(
+      () => new Response("Not found", { status: 404 }),
+    );
+    const { clock } = harness();
+    const client = createStreamClient({
+      transport: pageTransport(true, { fetch: fetchImpl }),
+      read: () => Promise.reject(new Error("unused")),
+      timers: clock.timers,
+      now: clock.now,
+    });
+    const leave = client.subscribe(() => undefined);
+    await settle();
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "no-hearth",
+      cursor: null,
+    });
+    clock.advance(3_600_000);
+    leave();
+    client.subscribe(() => undefined);
+    await settle();
+    expect(requests).toEqual([]);
+    expect(clock.waits()).toEqual([]);
+  });
+
+  test("served by the dev server, the page asks for the hearth's stream route", async () => {
+    const { requests, fetchImpl } = standInFetch(
+      () => new Response("Not found", { status: 404 }),
+    );
+    const client = createStreamClient({
+      transport: pageTransport(false, { fetch: fetchImpl }),
+      read: () => Promise.reject(new Error("unused")),
+    });
+    const leave = client.subscribe(() => undefined);
+    await settle();
+    leave();
+    expect(requests.map((request) => request.url)).toEqual([
+      "/__agent-forge/stream",
+    ]);
   });
 });
 
@@ -1886,6 +1932,81 @@ describe("client against a real hearth", () => {
       await hearth.close();
     }
   }, 20_000);
+
+  test("with 600 sessions in the ledger: the snapshot's newest 100, then 450 new ones as deltas, equal the route's newest list entry for entry, and the client keeps 500", async () => {
+    const hearth = await startTestHearth({ api: { streamPollMs: 20 } });
+    const headers = { Origin: hearth.hearth.url };
+    const route = async (path: string): Promise<OperatorEnvelope<unknown>> =>
+      (await fetch(`${hearth.api}${path}`, { headers }).then((response) =>
+        response.json(),
+      )) as OperatorEnvelope<unknown>;
+    const start = (n: number) =>
+      hearth.append({
+        kind: "session.started",
+        sessionId: `s-${n}`,
+        executor: { provider: "claude", model: `m-${n % 7}` },
+        payload: { kind: "headless", worktree: `wt-${n}` },
+      });
+    const names = (sessions: SessionSummary[] | null | undefined) =>
+      (sessions ?? []).map((session) => session.sessionId);
+    const newest = (from: number, count: number) =>
+      Array.from({ length: count }, (_, n) => `s-${from - n}`);
+
+    for (let n = 1; n <= 600; n++) start(n);
+    const client = createStreamClient({
+      transport: fetchTransport(`${hearth.api}/stream`, { headers }),
+      read: route,
+    });
+    const leave = client.subscribe(() => undefined);
+    try {
+      await eventually(() => client.getState().status === "live");
+      // The snapshot carries what the route answers without parameters: the newest 100.
+      const first = await route("/sessions");
+      expect(first.ok).toBe(true);
+      expect(client.getState().sessions.data).toEqual(
+        first.data as SessionSummary[],
+      );
+      expect(names(client.getState().sessions.data)).toEqual(newest(600, 100));
+
+      // Each held session speaks again or ends, and 450 new ones start.
+      hearth.append({
+        kind: "tool.called",
+        sessionId: "s-520",
+        beadId: "b-1",
+        runId: "run-1",
+        payload: { tool: "Read", argsHash: "h" },
+      });
+      hearth.append({ kind: "session.ended", sessionId: "s-510", payload: {} });
+      let last = 0;
+      for (let n = 601; n <= 1050; n++) last = start(n);
+      await eventually(() => client.getState().cursor === last, 15_000);
+
+      const held = client.getState().sessions.data;
+      const answered = await route(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      expect(answered.ok).toBe(true);
+      expect(held).toHaveLength(MAX_LIVE_SESSIONS);
+      expect(held).toEqual(answered.data as SessionSummary[]);
+      // Not an empty comparison: the 450 new ones, then the two that changed, then the newest 48 of the rest.
+      expect(names(held)).toEqual([
+        ...newest(1050, 450),
+        "s-510",
+        "s-520",
+        ...newest(600, 48),
+      ]);
+      expect(held?.find((s) => s.sessionId === "s-520")).toMatchObject({
+        beadId: "b-1",
+        runId: "run-1",
+        kind: "headless",
+        worktree: "wt-520",
+      });
+      expect(held?.find((s) => s.sessionId === "s-510")?.endedAt).toEqual(
+        expect.any(String),
+      );
+    } finally {
+      leave();
+      await hearth.close();
+    }
+  }, 60_000);
 
   test("a cut connection resumes with the last id and the server sends no second snapshot", async () => {
     const hearth = await startTestHearth({ api: { streamPollMs: 20 } });

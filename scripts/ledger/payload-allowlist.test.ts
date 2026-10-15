@@ -35,3 +35,26 @@ describe("stripPayload: the usage on session.ended", () => {
     }
   });
 });
+
+describe("stripPayload: the shift events", () => {
+  test("shift.started keeps the bounds a shift ran under: its bead count and its spend", () => {
+    expect(
+      stripPayload("shift.started", {
+        shiftId: "shift-20261014-120000-abcd",
+        concurrency: 2,
+        durationMs: 60_000,
+        filter: "epic:x1gs",
+        maxBeads: 4,
+        maxUsd: 10,
+        prompt: "text that must not be stored",
+      }),
+    ).toEqual({
+      shiftId: "shift-20261014-120000-abcd",
+      concurrency: 2,
+      durationMs: 60_000,
+      filter: "epic:x1gs",
+      maxBeads: 4,
+      maxUsd: 10,
+    });
+  });
+});

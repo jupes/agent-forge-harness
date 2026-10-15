@@ -15,6 +15,7 @@ import type {
   IssueStatus,
   IssueType,
 } from "../types/beads";
+import { issueRepos, type RepoContext } from "./beads/issue-repo";
 
 /** One line from `bd export --no-memories` (issue + embedded dependencies and comments). */
 export interface BdExportRow {
@@ -148,18 +149,6 @@ export function normalizeIssueType(raw: string | undefined): IssueType {
   return "task";
 }
 
-function inferRepoFromIssueId(issueId: string): string | undefined {
-  /**
-   * Beads IDs commonly look like `<repo-slug>-<shortid>` or
-   * `<repo-slug>-<shortid>.<child>`, e.g. `agent-forge-harness-5an.65`.
-   * Infer the repo slug when `bd export` omits an explicit repo field.
-   */
-  const m = issueId.match(
-    /^([a-z0-9]+(?:-[a-z0-9]+)+)-[a-z0-9]+(?:\.[a-z0-9]+)?$/,
-  );
-  return m?.[1];
-}
-
 function asOptionalNumber(
   raw: number | string | undefined,
 ): number | undefined {
@@ -169,7 +158,15 @@ function asOptionalNumber(
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
+/**
+ * One export row as a dashboard issue. `repo` is the issue's repository as
+ * `issueRepos` gives it for the whole export; without it, the row is read on
+ * its own (`scripts/beads/issue-repo.ts` has the rule).
+ */
+export function normalizeBdExportRow(
+  raw: BdExportRow,
+  repo: string | undefined = issueRepos([raw]).get(raw.id),
+): BeadsIssue {
   let parent: string | undefined;
   for (const d of raw.dependencies ?? []) {
     if (d.type === "parent-child" && d.issue_id === raw.id) {
@@ -185,8 +182,6 @@ export function normalizeBdExportRow(raw: BdExportRow): BeadsIssue {
   const estimate = asOptionalNumber(raw.estimate);
   const spent = asOptionalNumber(raw.spent);
   const closedBy = raw.closed_by ?? raw.closedBy;
-  const inferredRepo = inferRepoFromIssueId(raw.id);
-  const repo = raw.repo ?? inferredRepo;
   /** `owner` from export is metadata (creator); only `assignee` counts as claimed for derived.ready. */
   const assignee = raw.assignee;
 
@@ -258,12 +253,20 @@ export function issueRowsOf(rows: BdExportRow[]): BdExportRow[] {
   );
 }
 
-export function issuesAndDepsFromExportRows(rows: BdExportRow[]): {
+/**
+ * The export as dashboard issues and dependencies. `context` is what the rows
+ * alone cannot say about each issue's repository (`scripts/beads/issue-repo.ts`).
+ */
+export function issuesAndDepsFromExportRows(
+  rows: BdExportRow[],
+  context: RepoContext = {},
+): {
   issues: BeadsIssue[];
   deps: BeadsDependency[];
 } {
+  const repos = issueRepos(rows, context);
   return {
-    issues: rows.map(normalizeBdExportRow),
+    issues: rows.map((row) => normalizeBdExportRow(row, repos.get(row.id))),
     deps: collectBlockDeps(rows),
   };
 }

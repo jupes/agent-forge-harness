@@ -194,6 +194,31 @@ describe("validateLedgerEventInput — what emitters append", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("a shift ends for its bead count or its spend as well: count and budget are stop reasons", () => {
+    for (const reason of ["count", "budget"])
+      expect(
+        validateLedgerEventInput(
+          input("shift.stopped", { shiftId: "shift-1", reason }),
+        ).ok,
+      ).toBe(true);
+  });
+
+  test("shift.started takes its bounds as a whole count of beads and a spend in dollars, and refuses any other", () => {
+    const started = (more: Record<string, unknown>) =>
+      validateLedgerEventInput(
+        input("shift.started", {
+          shiftId: "shift-1",
+          concurrency: 2,
+          ...more,
+        }),
+      ).ok;
+    expect(started({ maxBeads: 4, maxUsd: 10 })).toBe(true);
+    expect(started({ maxBeads: 0.5 })).toBe(false);
+    expect(started({ maxBeads: 0 })).toBe(false);
+    expect(started({ maxUsd: -1 })).toBe(false);
+    expect(started({ maxUsd: "10" })).toBe(false);
+  });
+
   test("rejects non-objects and missing workspace", () => {
     expect(validateLedgerEventInput(null).ok).toBe(false);
     expect(validateLedgerEventInput("session.started").ok).toBe(false);
@@ -490,13 +515,14 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     return result.ok ? "accepted" : result.error;
   };
 
-  test("a tracker write is accepted: its action, with or without a hash and a length", () => {
+  test("a tracker write is accepted: its action, with or without a hash and a length, and a reassign with or without the smith it recorded", () => {
     for (const payload of [
       { action: "create", hash: HASH, length: 4 },
       { action: "claim" },
       { action: "comment", hash: HASH, length: 0 },
       { action: "close", hash: HASH, length: 1000 },
       { action: "reassign" },
+      { action: "reassign", smith: "claude-master" },
     ]) {
       expect({ payload, refusal: refusal(payload) }).toEqual({
         payload,
@@ -508,7 +534,7 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     }
   });
 
-  test("a tracker write is refused for an action it does not know, a hash that is not a SHA-256, or a length that is not a count", () => {
+  test("a tracker write is refused for an action it does not know, a hash that is not a SHA-256, a length that is not a count, or a smith that is empty, not a string or on a write other than a reassign", () => {
     const refused: Array<[unknown, string]> = [
       [{ action: "delete" }, "payload.action"],
       [{ action: "" }, "payload.action"],
@@ -520,6 +546,9 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
       [{ action: "comment", hash: HASH, length: -1 }, "payload.length"],
       [{ action: "comment", hash: HASH, length: 1.5 }, "payload.length"],
       [{ action: "comment", hash: HASH, length: "12" }, "payload.length"],
+      [{ action: "reassign", smith: "" }, "payload.smith"],
+      [{ action: "reassign", smith: 7 }, "payload.smith"],
+      [{ action: "claim", smith: "claude-master" }, "payload.smith"],
     ];
     for (const [payload, where] of refused)
       expect({ payload, refusal: refusal(payload) }).toEqual({
@@ -558,12 +587,13 @@ describe("bead.transitioned — a queue transition, or a tracker write", () => {
     expect(refusal(null)).toContain("expected object");
   });
 
-  test("a queue transition may not carry a write's keys: hash and length must be absent", () => {
+  test("a queue transition may not carry a write's keys: hash, length and smith must be absent", () => {
     for (const [key, value] of [
       ["hash", "free text under a key the ledger stores"],
       ["hash", HASH],
       ["length", 12],
       ["length", "also text"],
+      ["smith", "claude-master"],
     ] as const) {
       const payload = { from: null, to: "proposed", [key]: value };
       expect({ payload, refusal: refusal(payload) }).toEqual({

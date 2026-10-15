@@ -8,6 +8,7 @@ import { resolveCheckout } from "./ledger/workspace";
 import {
   EVIDENCE_DIRS,
   HARNESS_FILES,
+  MAX_CHECK_TIMEOUT_SECONDS,
   type RunCheckSet,
   runCheckSet,
 } from "./quality-gate-repos";
@@ -275,5 +276,59 @@ describe("runCheckSet: a repository with no usable check set is refused, naming 
         }),
       ),
     ).toBe(`${ENTRY}: checks[1].name "unit" is given twice`);
+  });
+});
+
+describe("runCheckSet: a check's own time limit", () => {
+  /** The check set for repository foo with these checks. */
+  function checksOf(checks: unknown[]): RunCheckSet {
+    const { harness } = scratch();
+    const foo = checkoutAt(join(harness, "repos", "foo"));
+    return decide({
+      run: foo,
+      gate: harness,
+      harness,
+      text: registry({ name: "foo", checks }),
+    }).set;
+  }
+
+  test("a check may set timeoutSeconds, up to the bound; a check that sets none has none", () => {
+    expect(MAX_CHECK_TIMEOUT_SECONDS).toBe(3600);
+    const set = checksOf([
+      { name: "unit", argv: ["cargo", "test"], timeoutSeconds: 900 },
+      { name: "lint", argv: ["cargo", "clippy"] },
+      {
+        name: "slow",
+        argv: ["cargo", "bench"],
+        timeoutSeconds: MAX_CHECK_TIMEOUT_SECONDS,
+      },
+    ]);
+    expect(set).toMatchObject({
+      kind: "repository",
+      checks: [
+        { name: "unit", argv: ["cargo", "test"], timeoutSeconds: 900 },
+        { name: "lint", argv: ["cargo", "clippy"] },
+        { name: "slow", argv: ["cargo", "bench"], timeoutSeconds: 3600 },
+      ],
+    });
+    if (set.kind !== "repository") throw new Error("not a repository");
+    expect("timeoutSeconds" in (set.checks[1] ?? {})).toBe(false);
+  });
+
+  test("a time limit that is not a whole number of seconds from 1 to the bound is refused, naming the check", () => {
+    for (const timeoutSeconds of [0, -5, 3601, 1.5, "900", null, true]) {
+      const set = checksOf([
+        { name: "unit", argv: ["cargo", "test"], timeoutSeconds },
+      ]);
+      expect({ timeoutSeconds, set }).toMatchObject({
+        timeoutSeconds,
+        set: {
+          kind: "unconfigured",
+          error: expect.stringContaining(
+            ": checks[0].timeoutSeconds must be a whole number of seconds from 1 to 3600",
+          ),
+        },
+      });
+    }
   });
 });

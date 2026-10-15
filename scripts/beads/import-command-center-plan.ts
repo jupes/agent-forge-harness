@@ -12,6 +12,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isMain } from "../is-main";
 import { commandCenterPlan } from "./command-center-plan";
 import {
   createExecBdClient,
@@ -95,6 +96,6 @@ function main(argv: string[]): number {
   }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   process.exit(main(process.argv.slice(2)));
 }

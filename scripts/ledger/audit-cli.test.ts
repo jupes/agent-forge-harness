@@ -160,6 +160,7 @@ describe("formatTable", () => {
       "id",
       "ts",
       "kind",
+      "action",
       "session",
       "bead",
       "run",
@@ -167,6 +168,7 @@ describe("formatTable", () => {
     ]);
     expect(lines[1]?.trim().split(/\s+/).slice(2)).toEqual([
       "tool.called",
+      "-",
       "sess-1",
       "b-1",
       "r-1",
@@ -178,8 +180,67 @@ describe("formatTable", () => {
       "-",
       "-",
       "-",
+      "-",
     ]);
     expect(formatTable([])).toBe("no events");
+  });
+
+  test("the action column shows what a review round decided and the action a tracker write or an operator action names; a dash for an event without one", () => {
+    const { path } = sandbox();
+    const findings = { blocker: 0, high: 1, medium: 0, low: 0 };
+    const events: LedgerEventInput[] = [
+      {
+        kind: "review.recorded",
+        workspace: "w",
+        runId: "r-1",
+        payload: {
+          phase: "plan",
+          round: 1,
+          verdict: "FAIL",
+          findings,
+          action: "revise",
+        },
+      },
+      {
+        kind: "review.recorded",
+        workspace: "w",
+        runId: "r-1",
+        payload: { phase: "plan", round: 2, verdict: "PASS", findings },
+      },
+      {
+        kind: "bead.transitioned",
+        workspace: "w",
+        beadId: "b-1",
+        payload: { action: "claim" },
+      },
+      {
+        kind: "bead.transitioned",
+        workspace: "w",
+        beadId: "b-1",
+        payload: { from: null, to: "proposed" },
+      },
+      {
+        kind: "operator.action",
+        workspace: "w",
+        payload: { action: "queue.approve", surface: "ui" },
+      },
+      event("w"),
+    ];
+    for (const each of events)
+      expect(appendEvent(each, { path }).ok).toBe(true);
+    const [header, ...rows] = formatTable(queryEvents({}, { path }))
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/));
+    const column = header?.indexOf("action") ?? -1;
+    expect(column).toBeGreaterThan(-1);
+    expect(rows.map((row) => [row[2], row[column]])).toEqual([
+      ["review.recorded", "revise"],
+      ["review.recorded", "-"],
+      ["bead.transitioned", "claim"],
+      ["bead.transitioned", "-"],
+      ["operator.action", "queue.approve"],
+      ["tool.called", "-"],
+    ]);
   });
 });
 

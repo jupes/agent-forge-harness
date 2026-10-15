@@ -11,11 +11,12 @@ import type {
 } from "../../../types/hearth";
 import {
   answerQueueList,
+  childOf,
   type QueueTracker,
   queueTracker,
   type TrackedBead,
 } from "../../scheduler/queue-fixture";
-import { bdAnswers } from "../bd-answers";
+import { bdAnswers, bdTime, readWrite } from "../bd-answers";
 import { OPERATOR_HEADER } from "../paths";
 import {
   openEventStream,
@@ -584,7 +585,7 @@ describe("two requests at once", () => {
 });
 
 describe("POST /queue/:id/reassign", () => {
-  test("records the smith on the bead; the audit row names the bead and the smith; then one bead.transitioned that moves no state", async () => {
+  test("records the smith on the bead; the audit row names the bead and the smith; then one bead.transitioned that names the smith and moves no state", async () => {
     const { h, tracker } = await start([backed("demo-1", "queued")]);
     const answer = await post<QueueReassignResult>(
       h,
@@ -630,7 +631,7 @@ describe("POST /queue/:id/reassign", () => {
       {
         kind: "bead.transitioned",
         beadId: "demo-1",
-        payload: { action: "reassign" },
+        payload: { action: "reassign", smith: "claude-master" },
       },
     ] as never);
   });
@@ -676,7 +677,11 @@ describe("POST /queue/:id/reassign", () => {
           "demo-1",
           { action: "queue.reassign", surface: "api", target: "claude-master" },
         ],
-        ["bead.transitioned", "demo-1", { action: "reassign" }],
+        [
+          "bead.transitioned",
+          "demo-1",
+          { action: "reassign", smith: "claude-master" },
+        ],
       ]);
       expect(await smiths()).toEqual([["demo-1", "claude-master"]]);
       expect((await posted).status).toBe(200);
@@ -805,5 +810,91 @@ describe("GET /queue beside the queue's own writes", () => {
       ["demo-1", true],
       ["demo-1.1", false],
     ]);
+  });
+});
+
+describe("a child created through POST /beads under a bead in the queue", () => {
+  test("carries the queue:queued label bd copied and is in no state: GET /queue shows it unbacked, GET /eligibility offers only its parent, every operator row refuses it with nothing written, and no queue transition is recorded for it", async () => {
+    const { h, tracker } = await start([backed("demo-1", "queued")]);
+    // bd create --parent makes the child as bd 1.1.0 does (childOf); every
+    // other call is answered by the in-memory tracker.
+    h.bd.answer = (args) => {
+      const write = readWrite(args);
+      if (write?.verb !== "create" || write.parent === undefined)
+        return (
+          tracker.answer(args) ??
+          answerQueueList(args, [...tracker.beads.values()])
+        );
+      const parent = tracker.beads.get(write.parent);
+      if (parent === undefined) throw new Error(`no parent ${write.parent}`);
+      const child = childOf(parent, `${parent.id}.1`);
+      tracker.beads.set(child.id, child);
+      const now = bdTime();
+      return bdAnswers.created({
+        id: child.id,
+        title: write.title,
+        issue_type: write.type,
+        priority: Number(write.priority),
+        status: "open",
+        ...(child.labels !== undefined
+          ? { labels: [...child.labels].sort() }
+          : {}),
+        created_at: now,
+        updated_at: now,
+      });
+    };
+
+    const created = await post<{ id: string; labels?: string[] }>(h, "/beads", {
+      title: "A child of a queued bead",
+      parent: "demo-1",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.data).toMatchObject({
+      id: "demo-1.1",
+      labels: ["queue:queued"],
+    });
+
+    const queue = (await (
+      await fetch(`${h.api}/queue`, { headers: h.headers() })
+    ).json()) as OperatorEnvelope<QueueEntry[]>;
+    expect(
+      queue.data?.map((entry) => [entry.beadId, entry.state, entry.backed]),
+    ).toEqual([
+      ["demo-1", "queued", true],
+      ["demo-1.1", "queued", false],
+    ]);
+
+    const eligibility = (await (
+      await fetch(`${h.api}/eligibility`, { headers: h.headers() })
+    ).json()) as OperatorEnvelope<{
+      eligible: Array<{ id: string }>;
+      waiting: Array<{ id: string }>;
+    }>;
+    expect(eligibility.data?.eligible.map((bead) => bead.id)).toEqual([
+      "demo-1",
+    ]);
+    expect(eligibility.data?.waiting).toEqual([]);
+
+    for (const action of OPERATOR_QUEUE_ACTIONS) {
+      const answer = await post(h, `/queue/demo-1.1/${action}`);
+      expect({ action, status: answer.status }).toEqual({
+        action,
+        status: 409,
+      });
+    }
+    const reassigned = await post(h, "/queue/demo-1.1/reassign", {
+      smith: "claude-master",
+    });
+    expect(reassigned.status).toBe(409);
+    expect(tracker.updates()).toEqual([]);
+    expect(queueLabels(tracker, "demo-1.1")).toEqual(["queue:queued"]);
+    expect(tracker.beads.get("demo-1.1")?.metadata).toBeUndefined();
+
+    // The create's own event, and nothing that moves a queue state.
+    const transitions = h
+      .events(["bead.transitioned"])
+      .map((event) => event.payload as Record<string, unknown>);
+    expect(transitions.map((payload) => payload["action"])).toEqual(["create"]);
+    expect(transitions.filter((payload) => "to" in payload)).toEqual([]);
   });
 });

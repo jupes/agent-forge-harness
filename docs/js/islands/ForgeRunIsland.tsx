@@ -397,7 +397,11 @@ export function ForgeRunIsland({ payload }: ForgeRunIslandProps): JSX.Element {
       </div>
 
       <CheckpointsCard payload={payload} epicId={run.epic} />
-      <GateCard gate={run.gate} scope={run.gateScope} />
+      <GateCard
+        gate={run.gate}
+        scope={run.gateScope}
+        earlier={run.earlierGates}
+      />
       {data.unattributedGate ? (
         <GateCard
           gate={data.unattributedGate}
@@ -773,19 +777,115 @@ function GateVerdictNote({ gate }: { gate: GateRun }): JSX.Element | null {
   );
 }
 
+type CheckState = "passed" | "failed" | "skipped";
+
+function checkState(check: GateRun["checks"][number]): CheckState {
+  return check.skipped ? "skipped" : check.passed ? "passed" : "failed";
+}
+
+const CHECK_ICON: Record<CheckState, IconName> = {
+  passed: "check-circle-fill",
+  failed: "warning-circle",
+  skipped: "circle",
+};
+
+/**
+ * What a gate run was for: a linked entry's bead, or a legacy entry's old
+ * task field, which was never a reliable Beads id and is not called one.
+ */
+function GateTask({ gate }: { gate: GateRun }): JSX.Element | null {
+  if (gate.link === "linked" && gate.beadsIssueId)
+    return (
+      <span class="af-gate-history-task">
+        bead <code>{gate.beadsIssueId}</code>
+      </span>
+    );
+  if (gate.link === "legacy" && gate.taskId)
+    return (
+      <span class="af-gate-history-task">
+        task field <code>{gate.taskId}</code>
+      </span>
+    );
+  return null;
+}
+
+/**
+ * The run's gate runs before the one its card shows, newest first: when each
+ * ran, how it ended, what it was for, and each check's result. A check's
+ * first line of output or skip reason is its tooltip.
+ */
+function EarlierGateRuns({
+  earlier,
+}: {
+  earlier: readonly GateRun[];
+}): JSX.Element | null {
+  if (earlier.length === 0) return null;
+  return (
+    <section class="af-gate-history" aria-labelledby="gate-history-heading">
+      <h3 id="gate-history-heading" class="af-gate-history-heading">
+        Earlier gate runs
+      </h3>
+      <ol class="af-gate-history-list">
+        {earlier.map((gate, index) => (
+          <li
+            key={`${gate.timestamp}-${index}`}
+            class={`af-gate-history-run is-${gate.passed ? "passed" : "failed"}`}
+          >
+            <p class="af-gate-history-head">
+              <Tag tone={gate.passed ? "neutral" : "outline"}>
+                {gate.passed ? "passed" : "failed"}
+              </Tag>
+              {gate.link === "linked" ? null : (
+                <Tag tone="muted">{gate.link}</Tag>
+              )}
+              <time
+                class="af-muted"
+                dateTime={gate.timestamp || undefined}
+                title={gate.timestamp || undefined}
+              >
+                {shortTime(gate.timestamp || null)}
+              </time>
+              {gate.event ? <span class="af-muted">{gate.event}</span> : null}
+              <GateTask gate={gate} />
+            </p>
+            <ul class="af-gate-history-checks">
+              {gate.checks.map((check) => {
+                const state = checkState(check);
+                return (
+                  <li
+                    key={check.name}
+                    class={`af-gate-history-check is-${state}`}
+                    title={check.detail ?? undefined}
+                  >
+                    <Icon name={CHECK_ICON[state]} size={12} label={state} />
+                    <span class="af-gate-history-check-name">{check.name}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 /**
  * One gate run. `unattributed` is the card for a gate run of this checkout
  * that no forge run's card shows: one that was given no run correlation, or
- * one correlated to a run that has no state here.
+ * one correlated to a run that has no state here. `earlier` are the run's
+ * gate runs before this one, newest first.
  */
 function GateCard({
   gate,
   scope,
   unattributed = false,
+  earlier = [],
 }: {
   gate: GateRun | null;
   scope: GateScope;
   unattributed?: boolean;
+  earlier?: readonly GateRun[];
 }): JSX.Element {
   const scopeText = unattributed ? (
     <>
@@ -900,6 +1000,7 @@ function GateCard({
           );
         })}
       </ul>
+      <EarlierGateRuns earlier={earlier} />
     </Card>
   );
 }

@@ -206,6 +206,27 @@ describe("openLedger", () => {
     }
   });
 
+  test("a first open given waitMs 0 on a new file another connection holds the write lock on throws a busy error within 500 ms; released, the same call opens it at the current version", () => {
+    const file = join(tempHome(), "ledger.db");
+    const holder = new Database(file, { create: true });
+    holder.exec("BEGIN EXCLUSIVE");
+    let thrown: unknown;
+    const began = performance.now();
+    try {
+      openLedger(file, { waitMs: 0 });
+    } catch (error) {
+      thrown = error;
+    }
+    const waited = performance.now() - began;
+    holder.exec("ROLLBACK");
+    holder.close();
+    expect(isBusy(thrown)).toBe(true);
+    expect(waited).toBeLessThan(500);
+    expect(userVersion(openLedger(file, { waitMs: 0 }))).toBe(
+      LEDGER_SCHEMA_VERSION,
+    );
+  });
+
   test("several processes opening an empty ledger at once all succeed and the schema is created once", async () => {
     const home = tempHome();
     const children = await Promise.all(

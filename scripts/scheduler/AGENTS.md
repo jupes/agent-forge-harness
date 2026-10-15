@@ -1,8 +1,9 @@
 # AGENTS.md — scripts/scheduler
 
-What decides which work may run, and beside what. Today it holds: the file map, the approval queue,
-the worktree registry, and reservations with eligibility. Nothing here starts work: no bead is claimed, and the only
-process spawned is git, by the registry.
+What decides which work may run, and beside what, and the shift that runs it. Today it holds: the
+file map, the approval queue, the worktree registry, reservations with eligibility, and `forge:shift`.
+Only the shift starts work, and only through `runExec` (`scripts/executors/`); every other module
+here starts nothing, and the only other process spawned is git, by the registry.
 
 ## The file map
 
@@ -61,8 +62,12 @@ process spawned is git, by the registry.
   to the same state in the same call, because `bd create --parent` copies the parent's labels onto
   the child and not its metadata. A label with no such backing (inherited, or added by hand) is
   refused for every action but `propose`, which puts the bead in the queue as `proposed`. So queue
-  state is not inherited. Read only the issue's own top-level `labels` and `metadata`: `bd show` of
-  a child also prints its parent's metadata, under `dependencies`.
+  state is not inherited, and neither is approval (decision 5, amended by `x1gs.5.7`): a child of an
+  approved or queued bead reaches `approved` only by an operator's `approve` of that child.
+  `queue.test.ts` tries every move from a child of a parent in each state until nothing new is
+  reached; keep it when changing the table or the backing. Read only the issue's own top-level
+  `labels` and `metadata`: `bd show` of a child also prints its parent's metadata, under
+  `dependencies`.
 - A bead with two queue labels, or a `queue:` label that is not a state, is in no state: every
   action is refused and the message says how to take it out by hand. Any by-hand removal of a queue
   label must also unset `queue_state` and `queue_resume`, or a label put back later would count as
@@ -99,14 +104,23 @@ process spawned is git, by the registry.
   have the same `from` and `to`: the move recorded twice, or a move back between them that was not
   recorded, which the ledger cannot tell apart. It only reports. It writes nothing to Beads or to
   the ledger and makes up no event for a move made earlier: Beads holds the state, and a backfilled
-  event would be history nobody recorded. Not found: a reassign the ledger missed (its event names
-  no smith), and moves `forge:audit --compact` removed (the oldest left is reported as a gap before
-  it).
+  event would be history nobody recorded. Not found: moves `forge:audit --compact` removed (the
+  oldest left is reported as a gap before it).
+- Reconcile also compares the smith on each bead the list printed with the one its newest recorded
+  reassign named, and reports a `smith` drift where they differ (`recorded` null: none recorded;
+  `found` null: the bead carries none). It reads the workspace's `operator.action` rows too: with
+  `askedEvent`, a `queue.reassign` row for the bead naming the smith found was stored after that
+  reassign, so the operator API asked for it and the ledger missed the reassign. Without it, nothing
+  asked for that smith through the operator API: set by hand, or by a writer that stores no audit
+  row, which the ledger cannot tell apart. The row is stored before the reassign is made, so a
+  request `bd` refused followed by the same smith set by hand reads as a missed reassign. Not
+  compared: a bead the list did not print, and one whose newest reassign was recorded before the
+  event named its smith.
 - `reassign` records a smith as the bead's `smith` metadata, which is where smith resolution reads
   a bead's preference (`smithFor`, and section 9 of the architecture). It moves no state. Once `bd`
-  confirmed the write, it appends `bead.transitioned` `{ action: "reassign" }` under the lock, the
-  tracker-write form with no `from` or `to`, so that a page or a stream client that reads `/queue`
-  again on that event finds the new smith. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
+  confirmed the write, it appends `bead.transitioned` `{ action: "reassign", smith }` under the lock,
+  the tracker-write form with no `from` or `to`, so that a page or a stream client that reads `/queue`
+  again on that event finds the new smith, and reconcile can compare the smith on the bead. `complexityOf` and `smithFor` are pure: the `complexity:low|medium|high` label
   picks the bench, and a bead without one gets `workflow.default_crew`.
 - `bd list --label queue:queued` prints the beads a shift may pick plus two kinds that `start`
   refuses, both made outside the queue: an inherited or hand-added label, and a bead with a second
@@ -115,7 +129,9 @@ process spawned is git, by the registry.
 - Tests are hermetic: `queue-fixture.ts` is an in-memory tracker that answers the queue's `bd` calls
   (`show` of one id or several, label/metadata `update`, and the `list` shapes of `GET /queue` and
   eligibility, via `answerQueueList`) as bd 1.1.0 was measured to; the browser suite's `bd` stand-in
-  answers through it too, and the ledger and the lock are in temp directories.
+  answers through it too, and the ledger and the lock are in temp directories. It answers no
+  `create`: `childOf(parent, id)` makes a child as `bd create --parent` does (every label of the
+  parent, none of its metadata); build inherited children with it, not by hand.
   `queue-bd.test.ts` compares that fixture with a real `bd` and walks the machine on it; it is
   skipped unless `AGENT_FORGE_SCRATCH_TRACKER` names a scratch tracker (its own git repository, no
   remote of either kind), and is run by hand after any change to the `bd` calls or the fixture.
@@ -209,9 +225,61 @@ process spawned is git, by the registry.
   - **A deadlock that is not resolved:** a queued bead that holds a reservation but is blocked by
     another queued bead whose map overlaps it. The blocker waits on the holder (`waitsOn` names
     it) and the holder waits on its blocker in Beads. Release the holder's reservation by hand.
-  - `forge:reservations reserve` exists for by-hand use and demos. `forge:shift` (x1gs.5.4) will
-    reserve through the module function.
+  - `forge:reservations reserve` exists for by-hand use and demos. `forge:shift` reserves through
+    the module function.
   - `reserve` does not ask bd whether the bead holding a conflicting reservation is closed. Read
     `forge:eligible` first, or release the stale one.
-  - Host sampling (CPU and memory against the 85% default) belongs to `forge:shift` (x1gs.5.4);
+  - Host sampling (CPU and memory against the 85% default) is `host-load.ts`, called by the shift;
     eligibility only takes "busy".
+
+## The shift (`shift.ts`, `shift-store.ts`, `host-load.ts`, `shift-cli.ts`)
+
+- `runShift` composes the modules above and repeats none of them: `readEligibility` says what may
+  start, `createQueue(...).move(id, action, "scheduler")` moves a bead (`start` is the claim, then
+  `submit`, `release` or `halt`), `reserve` / `release` claim and free its file map, the registry
+  makes its worktree, and each run is `runExec` with an `AbortSignal`. Every outside call is a
+  dependency (`ShiftDeps`); `shiftCliDeps` builds the real ones.
+- Order for a bead: `start`, then its smith (`--smith`, else `smithFor` on the bead's own labels and
+  metadata), then `reserve` for `<main>/trees/<shift-id>-<n>`, then the worktree (branch
+  `shift/<shift-id>/<bead>`, from the HEAD of the checkout the shift runs in), then the runs. A step
+  that fails gives back what the steps before it took (the reservation, the bead to `queued`) and
+  sets the bead aside for the rest of the shift. The reservation is released in a `finally` after
+  the runs, whatever happened. The worktree is kept: it holds the work.
+- Runs: a success is `submit` (to `review`). A failure is repaired, the next run told how the one
+  before ended, up to `repairs` more runs, then `halt`. A run stopped by the shift, or timed out at
+  the shift's deadline, is `release` (back to `queued`). A run `runExec` refused before starting the
+  provider is released at once, with no repair. Each run gets `--timeout-ms` of the time left (or
+  `runTimeoutMs` when that is less), so a run never outlives the shift.
+- Bounds: concurrency, `forMs`, `maxBeads` (beads that ran, not beads set aside) and `maxUsd` (the
+  sum of `session.ended` usage `costUsd`; a run that reports no cost adds nothing and is counted in
+  `unpriced`). The count and the spend stop admission; runs in flight finish, so the spend can be
+  overshot by them. A busy host (`host-load.ts`) pauses admission and never stops the shift.
+- Stopping: the deadline (`elapsed`), the stop request file or the in-process signal (`operator`),
+  nothing running with the count reached (`count`) or the spend reached (`budget`), nothing running
+  and nothing eligible (`drained`), three failed eligibility reads in a row or a failure of the loop
+  itself (`halted`). On every one, each run is aborted and awaited, its bead released and its
+  reservation freed, before `shift.stopped`. `shift.started` comes before anything else, and a
+  ledger that does not store it starts nothing.
+- A bead the operator pauses or halts while it runs is found by reading each running bead back
+  every `pollMs`; its run is stopped, its reservation freed, and its queue state left as the
+  operator put it (`left`). Resuming a paused `running` bead returns it to `running` with nothing
+  running it; no shift picks it up again.
+- Each bead's events carry its run id (`<bead>-<shift-id>`, else `<shift-id>-<n>`): the moves and
+  reservations through an `appendEvent` that adds it, the session through `--run`. `forge:audit
+  --run <id>` shows one bead from claim to release.
+- `shift-store.ts`: the record `<home>/shifts/<id>.json` (a report, never read back to decide) and
+  the stop request `<id>.stop`, written by `requestStop` for `forge:shift stop` and
+  `POST /shifts/:id/stop`. Same home as the hearth, or the hearth cannot see or stop the shift.
+- Never merges, never pushes, opens no pull request. The run's prompt says so too, and the Claude
+  adapter's tool allowlist has no `git push` and no `gh`.
+- **Not covered:**
+  - A shift that dies (Ctrl-C, a crash, a kill): the supervisor kills its runs' process trees, but
+    their beads stay `running` and their reservations held. `forge:reservations release` and the
+    operator's queue actions are the way out; prefer `forge:shift stop`.
+  - The shift does not run `bd update --claim`; the run's own workflow does.
+  - No pull request, no `worklog:` comments, no `forge:audit --shift`, no `POST /shifts`.
+- Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
+  shapes), a temp ledger, lock and home, plain directories as worktrees, and a fake adapter whose
+  runs the test scripts. Its kill test runs the Claude adapter on the fake binary behind a guard
+  that refuses a spawn without the override. `shift-cli.test.ts` runs one shift end to end with the
+  real registry in a scratch repository and the fake binary. No test runs a real provider or `gh`.

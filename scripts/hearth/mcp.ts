@@ -35,6 +35,7 @@ import * as z from "zod/v4";
 import { type OperatorEnvelope, QUEUE_STATES } from "../../types/hearth";
 import { createCouncilMcpServer } from "../council/mcp";
 import { comparableCheckout } from "../forge/runs";
+import { isMain } from "../is-main";
 import { resolveCheckout } from "../ledger/workspace";
 import { hearthHome, lockPath, tokenPath } from "./home";
 import { type HearthLock, isPidAlive, readLock } from "./lock";
@@ -801,7 +802,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   return { ok: true, operator, root };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const args = parseArgs(process.argv.slice(2));
   if (!args.ok) {
     process.stderr.write(
