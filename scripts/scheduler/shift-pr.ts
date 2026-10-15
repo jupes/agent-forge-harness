@@ -434,6 +434,14 @@ function keepBody(
 ): { path: string } | string {
   try {
     mkdirSync(request.bodyDir, { recursive: true });
+    // A link here (a junction on Windows makes mkdtemp spin forever under
+    // Bun) is refused before anything is made in it: the directory and its
+    // parent must be plain directories.
+    for (const dir of [dirname(request.bodyDir), request.bodyDir]) {
+      const stat = lstatSync(dir);
+      if (stat.isSymbolicLink() || !stat.isDirectory())
+        return `the body was not kept: ${dir} is a link, or not a directory`;
+    }
     const dir = mkdtempSync(join(request.bodyDir, `${request.beadId}-`));
     const path = join(dir, "pr-body.md");
     writeFileSync(path, text, { flag: "wx" });
@@ -473,13 +481,25 @@ export async function openDraftPr(
   // after the checks then cannot point either at another repository.
   const main = request.mainCheckout;
 
+  // The branch is pinned to one commit here: that commit is what is listed,
+  // scanned and pushed, so a commit added to the branch later is not.
+  const tip = await call(
+    deps.git,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+    main,
+    10_000,
+  );
+  const sha = tip.stdout.trim();
+  if (tip.status !== 0 || !/^[0-9a-f]{40,64}$/.test(sha))
+    return fail("branch", `${branch} names no commit`);
+
   const log = await call(
     deps.git,
     [
       "log",
       "--format=%h %s",
       "--max-count=50",
-      `${request.baseSha}..refs/heads/${branch}`,
+      `${request.baseSha}..${sha}`,
       "--",
     ],
     main,
@@ -534,7 +554,7 @@ export async function openDraftPr(
       "--no-follow-tags",
       "--recurse-submodules=no",
       ORIGIN,
-      `refs/heads/${branch}:refs/heads/${branch}`,
+      `${sha}:refs/heads/${branch}`,
     ],
     main,
   );

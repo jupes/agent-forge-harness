@@ -836,7 +836,7 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
           "--no-follow-tags",
           "--recurse-submodules=no",
           "origin",
-          `refs/heads/${branch}:refs/heads/${branch}`,
+          `${BASE_SHA}:refs/heads/${branch}`,
         ],
         cwd: r.root,
       },
@@ -858,7 +858,7 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
   test("a pull request step that fails leaves the bead in review with the reason on its record entry and a fixed sentence in its end comment, and the shift goes on to the next bead", async () => {
     const r = rig([queued("t-1"), queued("t-2"), queued("t-3")]);
     r.gitAnswer = (args) =>
-      args[0] === "push" && (args.at(-1) ?? "").includes("/t-1:")
+      args[0] === "push" && (args.at(-1) ?? "").endsWith("/t-1")
         ? {
             status: 1,
             stdout: "",

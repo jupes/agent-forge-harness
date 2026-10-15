@@ -282,9 +282,9 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   The text is written to a fresh file the shift owns, outside every worktree
   (`<home>/shifts/<shift-id>/<bead>-XXXXXX/pr-body.md`: `mkdtemp`, then `wx`), and that one path
   is what `bun run pr:check` reads and gh posts, so nothing done to the worktree afterwards changes
-  what is checked or posted. The copies are kept beside the shift's record. Then
-  `git push --porcelain --no-follow-tags --recurse-submodules=no origin refs/heads/<branch>:refs/heads/<branch>`
-  (that one ref named in full, so no `remote.*.push` refspec applies; no tag whatever
+  what is checked or posted. The copies are kept beside the shift's record; that directory and its parent must be plain directories (a link is refused before `mkdtemp`, which spins forever under Bun on a junction). Then
+  `git push --porcelain --no-follow-tags --recurse-submodules=no origin <sha>:refs/heads/<branch>`
+  (the commit the branch named when it was listed and scanned, `rev-parse` before `git log`, so a commit added later is not pushed; the destination named in full, so no `remote.*.push` refspec applies; no tag whatever
   `push.followTags` says; no force, no upstream written to the shared config,
   `GIT_TERMINAL_PROMPT=0`) and
   `gh pr create --draft --base=<base> --head=<branch> --title=<bead>: <title> --body-file=<body>`,

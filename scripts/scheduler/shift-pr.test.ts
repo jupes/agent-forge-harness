@@ -808,6 +808,48 @@ describe("openDraftPr — what pr:check passed is what gh posts, and nothing fro
       expect(realpathSync.native(call.cwd)).toBe(realpathSync.native(s.main));
   });
 
+  test("a commit added to the branch after its commits were listed is not pushed: the push names the commit that was listed and scanned", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-r7", 1);
+    leaveBody(request.worktree);
+    const listed = git(request.worktree, "rev-parse", "HEAD");
+    const real = toolRunner("git");
+    const opened = await openDraftPr(request, {
+      git: async (args, cwd, timeoutMs) => {
+        if (args[0] === "push")
+          commit(request.worktree, "late.txt", `late ${TOKEN}`);
+        return real(args, cwd, timeoutMs);
+      },
+      gh: fakeGh().run,
+      checkPrBody: async () => null,
+    });
+    expect(opened).toMatchObject({ ok: true });
+    expect(git(s.origin, "rev-parse", request.branch)).toBe(listed);
+    expect(git(s.origin, "log", "--format=%s", request.branch)).not.toContain(
+      TOKEN,
+    );
+  });
+
+  test("a shift directory that is a junction is refused at once: nothing is kept there and the step does not hang", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-jd", 1);
+    leaveBody(request.worktree);
+    const elsewhere = join(s.root, "elsewhere bodies");
+    mkdirSync(elsewhere);
+    mkdirSync(dirname(s.bodies), { recursive: true });
+    symlinkSync(elsewhere, s.bodies, "junction");
+    const gh = fakeGh();
+    const refused = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: gh.run,
+      checkPrBody: async () => null,
+    });
+    expect(refused).toMatchObject({ ok: false, kind: "body" });
+    if (!refused.ok) expect(refused.error).toContain("link");
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(gh.calls).toEqual([]);
+  }, 20_000);
+
   const TOKEN = `ghp_${"Zx9Qw8Er7Ty6".repeat(3)}`;
 
   /** No file the shift keeps holds the token. */
