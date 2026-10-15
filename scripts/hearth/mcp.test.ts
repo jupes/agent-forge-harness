@@ -56,8 +56,10 @@ import type {
   LedgerEvent,
   OperatorEnvelope,
   RunDetail,
+  Scoreboard,
 } from "../../types/hearth";
 import { createCouncilMcpServer } from "../council/mcp";
+import type { CouncilPreview } from "../council/service";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -180,8 +182,6 @@ interface SessionOptions {
   council?: (() => CouncilServer) | null;
   requestTimeoutMs?: number;
   gone?: AbortSignal;
-  /** Hold a large body back this long instead of the exchange's own 100 ms. */
-  holdBodyMs?: number;
 }
 
 async function session(
@@ -198,11 +198,7 @@ async function session(
       headers: { ...request.headers },
       ...(request.body !== undefined ? { body: request.body } : {}),
     });
-    return loopbackExchange(
-      options.holdBodyMs === undefined
-        ? request
-        : { ...request, holdBodyMs: options.holdBodyMs },
-    );
+    return loopbackExchange(request);
   };
   const server = await createHearthMcpServer({
     root: place.root,
@@ -353,8 +349,8 @@ describe("tools/list", () => {
   });
 });
 
-/** The most the ten rows may cost in `tools/list`. Raise it on purpose, not by accident. */
-const LISTING_BUDGET = 3500;
+/** The most the twelve rows may cost in `tools/list`. Raise it on purpose, not by accident. */
+const LISTING_BUDGET = 4400;
 
 /**
  * Every path read through `node:fs` and `node:fs/promises` until `stop`,
@@ -598,13 +594,34 @@ interface BodyArrival {
   at: number;
 }
 
-/** A raw TCP peer that answers 200 once a whole request is in, and notes when each body began to arrive. */
-async function timedPeer(): Promise<{ port: number; bodies: BodyArrival[] }> {
-  const bodies: BodyArrival[] = [];
+/** What `timedPeer` saw and did. */
+interface TimedPeer {
+  port: number;
+  /** When each request's body began to arrive. */
+  bodies: BodyArrival[];
+  /** Each request's head, as it arrived. */
+  heads: string[];
+  /** `performance.now()` when each `100 Continue` was written. */
+  continued: number[];
+}
+
+/**
+ * A raw TCP peer that answers 200 once a whole request is in, and notes when
+ * each body began to arrive. A head that says `Expect: 100-continue` is
+ * answered `100 Continue` `continueAfterMs` after it arrived; at 0, in the
+ * read that brought it, with no timer.
+ */
+async function timedPeer(continueAfterMs = 0): Promise<TimedPeer> {
+  const seen: TimedPeer = { port: 0, bodies: [], heads: [], continued: [] };
   const server = createTcpServer((socket) => {
     socket.on("error", () => {});
     let received = Buffer.alloc(0);
     let reads = 0;
+    let headSeen = false;
+    const proceed = (): void => {
+      seen.continued.push(performance.now());
+      socket.write("HTTP/1.1 100 Continue\r\n\r\n");
+    };
     socket.on("data", (chunk: Buffer) => {
       reads++;
       received = Buffer.concat([received, chunk]);
@@ -615,8 +632,16 @@ async function timedPeer(): Promise<{ port: number; bodies: BodyArrival[] }> {
         received.length > bodyStart &&
         received.length - chunk.length <= bodyStart
       )
-        bodies.push({ withHead: reads === 1, at: performance.now() });
+        seen.bodies.push({ withHead: reads === 1, at: performance.now() });
       const head = received.subarray(0, headEnd).toString("latin1");
+      if (!headSeen) {
+        headSeen = true;
+        seen.heads.push(head);
+        if (/^expect: 100-continue$/im.test(head)) {
+          if (continueAfterMs === 0) proceed();
+          else setTimeout(proceed, continueAfterMs);
+        }
+      }
       const length = Number(/^content-length: (\d+)$/im.exec(head)?.[1] ?? 0);
       if (received.length === bodyStart + length)
         socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
@@ -624,19 +649,12 @@ async function timedPeer(): Promise<{ port: number; bodies: BodyArrival[] }> {
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   cleanup.push(() => new Promise<void>((done) => server.close(() => done())));
-  return { port: (server.address() as AddressInfo).port, bodies };
+  seen.port = (server.address() as AddressInfo).port;
+  return seen;
 }
 
-/**
- * `performance.now()` when a timer of `ms`, set now, fires. The exchange's
- * hold-back is a timer on the same clock, so one set after this one fires no
- * sooner, however busy the machine.
- */
-const timerFired = (ms: number): Promise<number> =>
-  new Promise((done) => setTimeout(() => done(performance.now()), ms));
-
 describe("the loopback exchange", () => {
-  test("writes one HTTP/1.1 request to the port: Host, Connection: close, the headers given, the body's length in bytes; a body of up to 65,536 bytes goes with the head, a longer one after it", async () => {
+  test("writes one HTTP/1.1 request to the port: Host, Connection: close, the headers given, the body's length in bytes; a body of up to 65,536 bytes goes with the head, a longer one is announced with Expect: 100-continue and written only once the peer answers 100 Continue", async () => {
     const echo = await peer((socket) =>
       socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"),
     );
@@ -665,17 +683,18 @@ describe("the loopback exchange", () => {
     expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(body.length);
     expect(sentBody).toBe(body);
 
-    // Told to hold a large body back 1,500 ms: a body of 65,536 bytes is in
-    // the peer's first read with the head; of one byte more, the first byte
-    // is read only once a timer of 1,500 ms set as the exchange began has
-    // fired.
-    const timed = await timedPeer();
+    // A peer that answers 100 Continue 1,500 ms after a head that asks for
+    // it. A body of 65,536 bytes is in its first read with the head, and the
+    // head asks for nothing; of one byte more, the head ends with Expect:
+    // 100-continue and the body's first byte is read only after the peer has
+    // written 100 Continue.
+    const timed = await timedPeer(1500);
     const sent = async (size: number): Promise<void> => {
       const answer = await loopbackExchange(
         ask(timed.port, {
           method: "POST",
           body: "s".repeat(size),
-          holdBodyMs: 1500,
+          timeoutMs: 10_000,
         }),
       );
       expect({ size, answer }).toEqual({
@@ -685,11 +704,20 @@ describe("the loopback exchange", () => {
     };
     await sent(65_536);
     expect(timed.bodies.map((arrival) => arrival.withHead)).toEqual([true]);
-    const held = timerFired(1500);
+    expect(timed.heads[0]?.split("\r\n").at(-1)).toBe("Content-Length: 65536");
+    expect(timed.continued).toEqual([]);
     await sent(65_537);
+    expect(timed.heads[1]?.split("\r\n").slice(-2)).toEqual([
+      "Content-Length: 65537",
+      "Expect: 100-continue",
+    ]);
     expect(timed.bodies.length).toBe(2);
-    expect(timed.bodies[1]?.at ?? 0).toBeGreaterThanOrEqual(await held);
-  });
+    expect(timed.bodies[1]?.withHead).toBe(false);
+    expect(timed.continued.length).toBe(1);
+    expect(timed.bodies[1]?.at ?? 0).toBeGreaterThanOrEqual(
+      timed.continued[0] ?? Number.POSITIVE_INFINITY,
+    );
+  }, 15_000);
 
   test("reads one answer, framed by Content-Length, by chunks or by the peer closing, also when it arrives in pieces or the peer keeps the socket open", async () => {
     const cases: Array<[string, (socket: Socket) => void, LoopbackAnswer]> = [
@@ -1062,6 +1090,7 @@ const READS: Record<
   forge_runs_list: { target: "/runs" },
   forge_run_get: { args: { slug: "demo" }, target: "/runs/demo?events=20" },
   forge_events_query: { target: "/events?limit=50" },
+  forge_scoreboard_get: { target: "/scoreboard" },
   forge_queue_list: { target: "/queue" },
   forge_reservations_list: { target: "/reservations" },
   forge_smiths_list: { target: "/smiths" },
@@ -1228,6 +1257,44 @@ describe("arguments become the request", () => {
     expect(ids(next)).toEqual(all.slice(2, 4));
   });
 
+  test("forge_scoreboard_get sends no parameter when not told, and since as given: the board is the one a direct GET of that request answers, and since narrows it", async () => {
+    const hearth = await stocked();
+    const s = await session(place(hearth));
+    const board = (answer: Answer): Scoreboard =>
+      answer.envelope.data as Scoreboard;
+
+    const whole = await s.call("forge_scoreboard_get");
+    expect(s.sent.at(-1)?.target).toBe(`${API}/scoreboard`);
+    expect(whole.envelope).toEqual(
+      await direct(hearth.hearth.url, `${API}/scoreboard`),
+    );
+    // Not an empty board: the stocked hearth's gate and session events are in it.
+    expect(board(whole).events).toBeGreaterThan(0);
+    expect(board(whole).rows.length).toBeGreaterThan(0);
+
+    // The plus of the time zone is sent as a plus, not as a space; the route reads the instant.
+    const offset = "2000-01-01T00:00:00+02:00";
+    const early = await s.call("forge_scoreboard_get", { since: offset });
+    expect(query(s.sent.at(-1))).toEqual({ since: offset });
+    expect(s.sent.at(-1)?.target).toContain(
+      "since=2000-01-01T00%3A00%3A00%2B02%3A00",
+    );
+    expect(early.envelope).toEqual(
+      await direct(
+        hearth.hearth.url,
+        `${API}/scoreboard?since=${encodeURIComponent(offset)}`,
+      ),
+    );
+    expect(board(early).events).toBe(board(whole).events);
+
+    // A since after every stored event reaches the route and empties the board.
+    const late = await s.call("forge_scoreboard_get", {
+      since: "2999-01-01T00:00:00Z",
+    });
+    expect(query(s.sent.at(-1))).toEqual({ since: "2999-01-01T00:00:00Z" });
+    expect(board(late)).toEqual({ rows: [], events: 0, from: null, to: null });
+  });
+
   test("forge_run_get asks for the run's 20 newest events when not told, and for the number given: 0 is the run with none", async () => {
     const hearth = await stocked();
     // More events than the tool asks for by default, so its bound shows.
@@ -1295,6 +1362,12 @@ describe("arguments become the request", () => {
         { since: "yesterday" },
         "/events?since=yesterday&limit=50",
       ],
+      [
+        "forge_scoreboard_get",
+        { since: "yesterday" },
+        "/scoreboard?since=yesterday",
+      ],
+      ["forge_scoreboard_get", { since: "" }, "/scoreboard?since="],
       ["forge_sessions_list", { limit: 0 }, "/sessions?limit=0"],
       ["forge_run_get", { slug: "no-such-run" }, "/runs/no-such-run?events=20"],
       ["forge_run_get", { slug: "demo", events: 201 }, "/runs/demo?events=201"],
@@ -1331,6 +1404,11 @@ describe("arguments become the request", () => {
       ["forge_queue_list", { state: ["no-such-state"] }, "state"],
       ["forge_events_query", { bead: "x".repeat(1001) }, "bead"],
       ["forge_events_query", { kind: ["tool.called"] }, "kind"],
+      ["forge_scoreboard_get", { since: 5 }, "since"],
+      ["forge_scoreboard_get", { since: "x".repeat(1001) }, "since"],
+      // The route reads this workspace only: no other scope is asked for here.
+      ["forge_scoreboard_get", { allWorkspaces: true }, "allWorkspaces"],
+      ["forge_scoreboard_get", { bead: "b-1" }, "bead"],
       ["forge_config_get", { operatorToken: "f".repeat(64) }, "operatorToken"],
     ];
     for (const [name, args, key] of cases) {
@@ -1981,6 +2059,25 @@ const OPERATOR_FIXTURES: Record<string, OperatorFixture> = {
     settle: (hearth) =>
       runFinished(hearth.hearth.url, hearth.hearth.token, "mcp-start"),
   },
+  forge_council_preview: {
+    args: {
+      sourceType: "text",
+      source: "Prüfe diesen Plan: 計画, 🙂.",
+      beadId: "demo-7",
+    },
+    action: "council.run.preview",
+    target: "demo-7",
+    request: {
+      target: `${API}/council/preview`,
+      body: {
+        sourceType: "text",
+        source: "Prüfe diesen Plan: 計画, 🙂.",
+        beadId: "demo-7",
+      },
+    },
+    // Nothing was started.
+    settle: async () => {},
+  },
   forge_council_cancel: {
     args: { id: "mcp-cancel" },
     prepare: (hearth) =>
@@ -2108,7 +2205,10 @@ describe("a governed tool in an operator session (iterating the table)", () => {
       expect(calls.length).toBe(1);
       expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
       // What the effect was handed is what was sent, byte for byte.
-      if (tool.name === "forge_council_start")
+      if (
+        tool.name === "forge_council_start" ||
+        tool.name === "forge_council_preview"
+      )
         expect((calls[0]?.input as { source: string }).source).toBe(
           String(fixture.args["source"]),
         );
@@ -2147,6 +2247,158 @@ describe("a governed tool in an operator session (iterating the table)", () => {
     }
     expect(hearth.events(["operator.action"])).toEqual([]);
     expect(effects).toEqual([]);
+  });
+});
+
+/** The ids of the council runs a hearth holds, read with its own token. A listing that is refused throws: it must not read as "no run". */
+async function councilRunIds(hearth: TestHearth): Promise<string[]> {
+  const response = await fetch(`${hearth.hearth.url}${API}/council-api/runs`, {
+    headers: { [OPERATOR_HEADER]: hearth.hearth.token },
+  });
+  if (response.status !== 200)
+    throw new Error(`the run listing answered ${response.status}`);
+  const { data } = (await response.json()) as {
+    data?: Array<{ runId: string }>;
+  };
+  return (data ?? []).map((job) => job.runId);
+}
+
+/** What the hearth answers a direct, same-origin POST that carries its own operator token. */
+async function directPost(
+  hearth: TestHearth,
+  target: string,
+  body: unknown,
+): Promise<OperatorEnvelope> {
+  const response = await fetch(`${hearth.hearth.url}${API}${target}`, {
+    method: "POST",
+    headers: hearth.headers(hearth.hearth.token),
+    body: JSON.stringify(body),
+  });
+  const checked = validateOperatorEnvelope(await response.json());
+  if (!checked.ok) throw new Error(`not an envelope: ${checked.error}`);
+  return checked.value;
+}
+
+describe("forge_council_preview", () => {
+  const body = {
+    sourceType: "text",
+    source: "Evaluate this plan and list what evidence is missing.",
+    beadId: "demo-7",
+  };
+
+  test("an operator session gets the listing a direct preview of the same body answers, audited against the bead as an mcp action, and no run starts", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    expect(await councilRunIds(hearth)).toEqual([]);
+
+    const answer = await operator.call("forge_council_preview", body);
+    expect({ isError: answer.isError, ok: answer.envelope.ok }).toEqual({
+      isError: false,
+      ok: true,
+    });
+    const preview = answer.envelope.data as CouncilPreview;
+    expect(preview.listing.length).toBeGreaterThan(0);
+    expect(preview.byteLength).toBeGreaterThan(0);
+
+    // Exactly the preview's audit row, against the bead, and nothing of a run.
+    expect(
+      hearth.events().map((event) => [event.kind, event.payload, event.beadId]),
+    ).toContainEqual([
+      "operator.action",
+      { action: "council.run.preview", surface: "mcp", target: "demo-7" },
+      "demo-7",
+    ]);
+    expect(
+      hearth
+        .events(["operator.action"])
+        .map((event) => (event.payload as { action: string }).action),
+    ).toEqual(["council.run.preview"]);
+    expect(await councilRunIds(hearth)).toEqual([]);
+    expect(hearth.commands.calls).toEqual([]);
+
+    // The same body posted straight to the route: the same answer.
+    expect(answer.envelope).toEqual(
+      await directPost(hearth, "/council/preview", body),
+    );
+
+    // The run listing is not blind: a start is in it.
+    await startRun(hearth.hearth.url, hearth.hearth.token, {
+      ...body,
+      runId: "after-preview",
+    });
+    expect(await councilRunIds(hearth)).toEqual(["after-preview"]);
+    await runFinished(hearth.hearth.url, hearth.hearth.token, "after-preview");
+  }, 30_000);
+
+  test("a source the hearth cannot pack comes back as the hearth's own refusal, and no run starts", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    const request = { sourceType: "file", source: "no-such-note.md" };
+    const answer = await operator.call("forge_council_preview", request);
+    expect(answer.isError).toBe(true);
+    expect(answer.envelope.ok).toBe(false);
+    expect(answer.envelope).toEqual(
+      await directPost(hearth, "/council/preview", request),
+    );
+    expect(await councilRunIds(hearth)).toEqual([]);
+  });
+
+  test("an agent session is refused before its arguments are read, a bead source included: nothing is sent, no token file is read, the hearth runs no command and records no action", async () => {
+    const hearth = await stocked();
+    const agent = await session(place(hearth));
+    for (const args of [
+      { sourceType: "bead", source: "demo-7" },
+      { sourceType: "bead", source: "demo-7", beadId: "demo-7" },
+      // Arguments the tool would refuse in an operator session are not looked at here.
+      { sourceType: 7, runId: "x", profile: "y" },
+      undefined,
+    ]) {
+      const answer = await agent.call("forge_council_preview", args);
+      expect({ args, answer }).toEqual({
+        args,
+        answer: {
+          isError: true,
+          texts: [expect.any(String)],
+          envelope: {
+            ok: false,
+            data: null,
+            error:
+              "forge_council_preview needs an operator session: this server was started without --operator and holds no operator token.",
+          },
+        },
+      });
+    }
+    expect(agent.sent).toEqual([]);
+    expect(agent.tokenReads).toEqual([]);
+    expect(hearth.commands.calls).toEqual([]);
+    expect(hearth.events(["operator.action"])).toEqual([]);
+  });
+
+  test("an operator session is refused what the route does not read, here: a run id, a profile or a ceiling is not a preview's, and nothing is sent", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    const base = { sourceType: "text", source: "x" };
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ ...base, runId: "r-1" }, "runId"],
+      [{ ...base, profile: "default" }, "profile"],
+      [{ ...base, maxUsd: 1 }, "maxUsd"],
+      [{ sourceType: "text" }, "source"],
+      [{ source: "x" }, "sourceType"],
+      [{ ...base, maxBytes: "10" }, "maxBytes"],
+      [{ ...base, redactSecrets: "yes" }, "redactSecrets"],
+    ];
+    for (const [args, key] of cases) {
+      const answer = await operator.call("forge_council_preview", args);
+      expect({ args, isError: answer.isError }).toEqual({
+        args,
+        isError: true,
+      });
+      expect(answer.envelope.error).toStartWith("forge_council_preview: ");
+      expect(answer.envelope.error).toContain(key);
+    }
+    expect(operator.sent).toEqual([]);
+    expect(operator.tokenReads).toEqual([]);
+    expect(hearth.events(["operator.action"])).toEqual([]);
   });
 });
 
@@ -2252,6 +2504,7 @@ const ANY_ARGS: Record<string, Record<string, unknown>> = {
     source: "x",
     runId: "which-start",
   },
+  forge_council_preview: { sourceType: "text", source: "x" },
   forge_council_cancel: { id: "which-cancel" },
 };
 
@@ -2397,6 +2650,7 @@ const SCOPE_FIXTURES: Record<
 > = {
   forge_sessions_list: {},
   forge_events_query: {},
+  forge_scoreboard_get: {},
   forge_reservations_list: {},
   forge_queue_list: {},
   forge_runs_list: {},
@@ -2406,6 +2660,10 @@ const SCOPE_FIXTURES: Record<
   forge_council_start: {
     args: { sourceType: "file", source: "note.md", runId: "scope-start" },
     settle: (own) => runFinished(own.url, own.hearth.token, "scope-start"),
+  },
+  // A file only the worktree holds: the main checkout's hearth cannot pack it.
+  forge_council_preview: {
+    args: { sourceType: "file", source: "note.md" },
   },
   forge_council_cancel: {
     args: { id: "scope-cancel" },
@@ -3611,12 +3869,7 @@ describe("a body the hearth will not read", () => {
         maxBodyBytes: limits.get(shape(tool.method, tool.path)),
       });
 
-    // A body over 64 kB is held back 3 s here, so that the hearth's refusal
-    // on the head below arrives whatever the machine's load.
-    const operator = await session(place(hearth), {
-      operator: true,
-      holdBodyMs: 3000,
-    });
+    const operator = await session(place(hearth), { operator: true });
     const answer = await operator.call("forge_council_start", {
       sourceType: "text",
       source: "x".repeat(2_200_000),
@@ -3664,13 +3917,10 @@ describe("a body the hearth will not read", () => {
 
   test("a refusal the hearth gives before it has read a large body comes back as the hearth's refusal", async () => {
     const hearth = await stocked();
-    // The hold-back is a wait, 100 ms by default. Here it is given three
-    // seconds, so that a slow machine tests the mechanism and not its own load:
-    // a refusal on the head ends the exchange at once, whatever the wait.
-    const operator = await session(place(hearth), {
-      operator: true,
-      holdBodyMs: 3000,
-    });
+    // The body is announced with Expect: 100-continue and the hearth refuses
+    // the token on the head, with no 100 Continue: the body is never written,
+    // so there is nothing for the refusal to race.
+    const operator = await session(place(hearth), { operator: true });
     const foreign = "d".repeat(64);
     tokens.add(foreign);
     writeFileSync(tokenPath(hearth.home, hearth.root), `${foreign}\n`);
@@ -3929,9 +4179,10 @@ describe("what the second review found", () => {
     await runFinished(hearth.hearth.url, hearth.hearth.token, "large-accepted");
   }, 30_000);
 
-  test("a large body is held back after the head, 100 ms when not told otherwise: a refusal on the head within that time arrives, and the timer that would write the body never fires once the exchange is over", async () => {
-    // A peer that refuses 150 ms after the head arrives and closes, whatever
-    // else it is sent; it counts what it received.
+  test("a body over 64 kB is written only once the peer answers 100 Continue: a refusal on the head from a peer that takes 1,500 ms to give it arrives with nothing of the body sent; a peer that answers 100 at once has the body with no timer of the exchange's but its time limit; an exchange over before the 100 writes nothing of the body afterwards", async () => {
+    // A peer that refuses 1,500 ms after the head arrives (fifteen times the
+    // 100 ms the exchange used to hold a body back) and closes, whatever else
+    // it is sent; it counts what it received.
     let received = 0;
     const refusing = createTcpServer((socket) => {
       socket.on("error", () => {});
@@ -3944,7 +4195,7 @@ describe("what the second review found", () => {
             socket.end(
               'HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\n"refused"',
             ),
-          150,
+          1500,
         ),
       );
     });
@@ -3953,123 +4204,211 @@ describe("what the second review found", () => {
       () => new Promise<void>((done) => refusing.close(() => done())),
     );
     const port = (refusing.address() as AddressInfo).port;
-    const body = "z".repeat(600_000);
-
-    // Held back for longer than the peer takes: the refusal is read, and the
-    // peer was sent the head and nothing of the body.
     expect(
       await outcome(
-        loopbackExchange(ask(port, { method: "POST", body, holdBodyMs: 1500 })),
+        loopbackExchange(
+          ask(port, {
+            method: "POST",
+            body: "z".repeat(600_000),
+            timeoutMs: 10_000,
+          }),
+        ),
       ),
     ).toEqual({ status: 403, body: '"refused"' });
     expect(received).toBeLessThan(1000);
 
-    // Not told how long: a timer of 100 ms set as the exchange begins has
-    // fired by the time the body's first byte is read.
-    const timed = await timedPeer();
-    const hundred = timerFired(100);
-    expect(
-      await loopbackExchange(
-        ask(timed.port, { method: "POST", body: "w".repeat(100_000) }),
-      ),
-    ).toEqual({ status: 200, body: "ok" });
-    expect(timed.bodies.length).toBe(1);
-    expect(timed.bodies[0]?.at ?? 0).toBeGreaterThanOrEqual(await hundred);
+    // A peer that answers 100 Continue in the read that brought the head: the
+    // body follows it, and the one timer the exchange sets is its time limit.
+    const prompt = await timedPeer(0);
+    const delays: Array<number | undefined> = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      delays.push(ms);
+      return realSetTimeout(callback, ms, ...args);
+    }) as unknown as typeof setTimeout);
+    let answer: unknown;
+    try {
+      answer = await outcome(
+        loopbackExchange(
+          ask(prompt.port, {
+            method: "POST",
+            body: "w".repeat(100_000),
+            timeoutMs: 4321,
+          }),
+        ),
+      );
+    } finally {
+      timers.mockRestore();
+    }
+    expect(answer).toEqual({ status: 200, body: "ok" });
+    expect(delays).toEqual([4321]);
+    expect(prompt.continued.length).toBe(1);
+    expect(prompt.bodies.length).toBe(1);
+    expect(prompt.bodies[0]?.at ?? 0).toBeGreaterThanOrEqual(
+      prompt.continued[0] ?? Number.POSITIVE_INFINITY,
+    );
 
-    // The exchange over before the body is due, in each of the ways it can
-    // end: the timer that would write the body does not fire afterwards. Each
-    // way is given a wait of its own, so that its timer can be told apart.
+    // Peers that never answer 100 Continue. The exchange over in each of the
+    // ways it can end before one: nothing of the body reaches the peer, then
+    // or in the 600 ms after it.
     const cancel = new AbortController();
     const ways: Array<{
       way: string;
-      holdBodyMs: number;
       onHead(socket: Socket): void;
       over?: Partial<LoopbackRequest>;
       expected: unknown;
     }> = [
       {
         way: "an answer on the head",
-        holdBodyMs: 1001,
         onHead: (socket) =>
           socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\n\r\nno"),
         expected: { status: 403, body: "no" },
       },
       {
         way: "the caller cancelling",
-        holdBodyMs: 1002,
         onHead: () => cancel.abort(),
         over: { signal: cancel.signal },
         expected: "rejected: the request was cancelled",
       },
       {
         way: "the time limit",
-        holdBodyMs: 1003,
         onHead: () => {},
         over: { timeoutMs: 300 },
         expected: "rejected: no answer within 300 ms",
       },
       {
         way: "the peer resetting the connection",
-        holdBodyMs: 1004,
         onHead: (socket) => socket.resetAndDestroy(),
         expected: expect.stringMatching(/^rejected: /),
       },
     ];
-    const log: string[] = [];
-    const realSetTimeout = globalThis.setTimeout;
-    const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback: (...args: unknown[]) => void,
-      ms?: number,
-      ...args: unknown[]
-    ) =>
-      realSetTimeout(() => {
-        log.push(`fired ${ms}`);
-        callback(...args);
-      }, ms)) as unknown as typeof setTimeout);
-    try {
-      const startedAt = performance.now();
-      const outcomes = await Promise.all(
-        ways.map(async ({ holdBodyMs, onHead, over }) => {
-          const server = createTcpServer((socket) => {
-            socket.on("error", () => {});
-            socket.once("data", () => onHead(socket));
+    const results = await Promise.all(
+      ways.map(async ({ way, onHead, over, expected }) => {
+        let received = Buffer.alloc(0);
+        const server = createTcpServer((socket) => {
+          socket.on("error", () => {});
+          socket.on("data", (chunk: Buffer) => {
+            received = Buffer.concat([received, chunk]);
           });
-          await new Promise<void>((done) =>
-            server.listen(0, "127.0.0.1", done),
+          socket.once("data", () => onHead(socket));
+        });
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+        cleanup.push(
+          () => new Promise<void>((done) => server.close(() => done())),
+        );
+        const result = await outcome(
+          loopbackExchange(
+            ask((server.address() as AddressInfo).port, {
+              method: "POST",
+              body: "v".repeat(100_000),
+              ...over,
+            }),
+          ),
+        );
+        await new Promise((done) => setTimeout(done, 600));
+        const headEnd = received.indexOf("\r\n\r\n");
+        return {
+          seen: {
+            way,
+            outcome: result,
+            bodyBytes: headEnd === -1 ? -1 : received.length - (headEnd + 4),
+          },
+          wanted: { way, outcome: expected, bodyBytes: 0 },
+        };
+      }),
+    );
+    expect(results.map((result) => result.seen)).toEqual(
+      results.map((result) => result.wanted),
+    );
+  }, 20_000);
+
+  test("interim answers (1xx) are read past, not taken as the answer: 100, 102 and 103, whole or a few bytes at a time, before the final answer; only 100 Continue lets a held body go; 101 is refused", async () => {
+    const interim =
+      "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 102 Processing\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n";
+    const final = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    const whole = await peer((socket) => socket.write(`${interim}${final}`));
+    expect(await outcome(loopbackExchange(ask(whole.port)))).toEqual({
+      status: 200,
+      body: "ok",
+    });
+    const pieces = await peer((socket) => {
+      const bytes = Buffer.from(`${interim}${final}`, "latin1");
+      let at = 0;
+      const next = (): void => {
+        if (socket.destroyed || at >= bytes.length) return;
+        socket.write(bytes.subarray(at, at + 7));
+        at += 7;
+        setTimeout(next, 2);
+      };
+      next();
+    });
+    expect(await outcome(loopbackExchange(ask(pieces.port)))).toEqual({
+      status: 200,
+      body: "ok",
+    });
+    const switching = await peer((socket) =>
+      socket.end("HTTP/1.1 101 Switching Protocols\r\nUpgrade: other\r\n\r\n"),
+    );
+    expect(await outcome(loopbackExchange(ask(switching.port)))).toBe(
+      "rejected: the answer switches to another protocol",
+    );
+
+    // A large body: the peer answers 102 on the head, 100 Continue 300 ms
+    // later, and 103 before its final answer once the body is in. The body's
+    // first byte arrives after the 100, not after the 102.
+    let processingAt = 0;
+    let continuedAt = 0;
+    let bodyAt = 0;
+    const careful = createTcpServer((socket) => {
+      socket.on("error", () => {});
+      let received = Buffer.alloc(0);
+      let headSeen = false;
+      socket.on("data", (chunk: Buffer) => {
+        received = Buffer.concat([received, chunk]);
+        const headEnd = received.indexOf("\r\n\r\n");
+        if (headEnd === -1) return;
+        if (!headSeen) {
+          headSeen = true;
+          processingAt = performance.now();
+          socket.write("HTTP/1.1 102 Processing\r\n\r\n");
+          setTimeout(() => {
+            continuedAt = performance.now();
+            socket.write("HTTP/1.1 100 Continue\r\n\r\n");
+          }, 300);
+        }
+        if (bodyAt === 0 && received.length > headEnd + 4)
+          bodyAt = performance.now();
+        const head = received.subarray(0, headEnd).toString("latin1");
+        const length = Number(/^content-length: (\d+)$/im.exec(head)?.[1]);
+        if (received.length === headEnd + 4 + length)
+          socket.end(
+            "HTTP/1.1 103 Early Hints\r\nLink: </b.css>\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 4\r\n\r\ndone",
           );
-          cleanup.push(
-            () => new Promise<void>((done) => server.close(() => done())),
-          );
-          const result = await outcome(
-            loopbackExchange(
-              ask((server.address() as AddressInfo).port, {
-                method: "POST",
-                body: "v".repeat(100_000),
-                holdBodyMs,
-                ...over,
-              }),
-            ),
-          );
-          log.push(`settled ${holdBodyMs}`);
-          return result;
-        }),
-      );
-      // Past every wait, with room to spare.
-      while (performance.now() - startedAt < 1500)
-        await new Promise((done) => realSetTimeout(done, 50));
-      ways.forEach(({ way, holdBodyMs, expected }, index) => {
-        const settled = log.indexOf(`settled ${holdBodyMs}`);
-        const fired = log.indexOf(`fired ${holdBodyMs}`);
-        expect({
-          way,
-          outcome: outcomes[index],
-          firedAfterwards: fired > settled,
-        }).toEqual({ way, outcome: expected, firedAfterwards: false });
       });
-    } finally {
-      timers.mockRestore();
-    }
-  }, 15_000);
+    });
+    await new Promise<void>((done) => careful.listen(0, "127.0.0.1", done));
+    cleanup.push(
+      () => new Promise<void>((done) => careful.close(() => done())),
+    );
+    expect(
+      await outcome(
+        loopbackExchange(
+          ask((careful.address() as AddressInfo).port, {
+            method: "POST",
+            body: "u".repeat(100_000),
+            timeoutMs: 10_000,
+          }),
+        ),
+      ),
+    ).toEqual({ status: 201, body: "done" });
+    expect(processingAt).toBeGreaterThan(0);
+    expect(continuedAt).toBeGreaterThan(processingAt);
+    expect(bodyAt).toBeGreaterThanOrEqual(continuedAt);
+  }, 20_000);
 });
 
 /** The real serve function, as an operator session, with a council whose own work leaves a file behind when it ends. */

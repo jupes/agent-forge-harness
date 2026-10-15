@@ -5,6 +5,7 @@
  * CLI:
  *   bun run forge:audit --bead <id> [--bead-exact]   # a bead, plus the other events of sessions that touched it
  *   bun run forge:audit --run <slug>                 # one Forge run
+ *   bun run forge:audit --shift <id>                 # one shift: its start and stop, and the events of every bead run it made
  *   bun run forge:audit --session <id>               # one session
  *   bun run forge:audit --since <iso> --kind <k>[,<k>]
  *   bun run forge:audit --limit <n> [--after-id <n>] # newest n, or the n after a cursor (default limit 500)
@@ -13,6 +14,12 @@
  *   bun run forge:audit --backup                     # snapshot to backups/, prune snapshots past 14 days
  *   bun run forge:audit --compact                    # fold events past 90 days into daily counts
  *   bun run forge:audit --scoreboard [--since <iso>] # per executor: sessions, gates, verdicts, reviews, council, usage (scoreboard.ts)
+ *
+ * `--shift` takes the id `forge:shift` printed (`shift-YYYYMMDD-HHMMSS-xxxx`)
+ * and refuses anything else. It finds the shift's runs from the ledger alone, by
+ * the run ids the shift gave its beads (`shiftClause` in `query.ts`), so it
+ * answers when the shift's record file is gone; an id no event carries answers
+ * an empty list, as an unknown `--run` does.
  *
  * Filters combine (AND). `--scoreboard` takes only `--since`,
  * `--all-workspaces` and `--json`; its scope is the query's. Exit code 0 when
@@ -34,6 +41,7 @@ import {
   type OperatorEnvelope,
 } from "../../types/hearth";
 import { isMain } from "../is-main";
+import { isShiftId } from "../scheduler/shift-store";
 import { refusedJoinValue } from "./append";
 import { backupLedger, compact } from "./backup";
 import { ledgerPath } from "./paths";
@@ -61,6 +69,7 @@ const ISO_8601 =
 const VALUE_FLAGS = [
   "--bead",
   "--run",
+  "--shift",
   "--session",
   "--since",
   "--kind",
@@ -185,6 +194,14 @@ export function parseAuditArgs(argv: readonly string[]): ParsedArgs {
   }
   const run = values.get("--run");
   if (run !== undefined) filter.runId = run;
+  const shift = values.get("--shift");
+  if (shift !== undefined) {
+    if (!isShiftId(shift))
+      return fail(
+        `--shift: expected a shift id of the form shift-YYYYMMDD-HHMMSS-xxxx (as forge:shift prints it), got "${shift}"`,
+      );
+    filter.shiftId = shift;
+  }
   const session = values.get("--session");
   if (session !== undefined) filter.sessionId = session;
 

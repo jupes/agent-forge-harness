@@ -157,7 +157,7 @@ nothing.
 
 ## Forge MCP tools (`forge_*`)
 
-`.mcp.json` registers the hearth's MCP server (`bun run hearth:mcp`), which an interactive client asks its user to approve before first use. Rule of thumb: **`bd` for your own task tracking**, **`forge_*` tools to see what the rest of the harness is doing** (sessions, runs, events, queue, reservations, smiths, config), which answer only while the operator has a hearth running (`bun run hearth`). The registered server is an agent session: it holds no operator token, so `forge_council_start`, `forge_council_cancel` and the council's acting tools `council_start`, `council_review` and `council_cancel` refuse there (an operator registers the same server name in their own local scope with `--operator`); the council's read tools answer any session.
+`.mcp.json` registers the hearth's MCP server (`bun run hearth:mcp`), which an interactive client asks its user to approve. Rule of thumb: **`bd` for your own task tracking**, **`forge_*` tools to see what the rest of the harness is doing** (sessions, runs, events, scoreboard, queue, reservations, smiths, config), which answer only while the operator has a hearth running (`bun run hearth`). The registered server is an agent session with no operator token, so `forge_council_start`, `forge_council_preview`, `forge_council_cancel` and the council's acting tools `council_start`, `council_review` and `council_cancel` refuse there (an operator registers the same server name in local scope with `--operator`); the council's read tools answer any session.
 
 ---
 

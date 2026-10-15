@@ -68,6 +68,14 @@ export interface ReviewRound {
    */
   action?: ReviewAction;
   reason?: string;
+  /**
+   * Why an `UNREADABLE` round's verdict was unusable (a file that could not be
+   * read or parsed, one that is not this run's, an evaluator observed to rank
+   * below the builder), as `storedVerdictError` cleans it. The halt reason
+   * names it. Absent on a round with a verdict and on rounds recorded before
+   * this was stored, which keep the generic reason.
+   */
+  verdictError?: string;
   at: string;
 }
 

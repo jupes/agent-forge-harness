@@ -1,6 +1,6 @@
 /**
  * The `bd` stand-in's issues, as one file both the stand-in and the suite's
- * helpers read and write.
+ * helpers read and write, and the comments it keeps, as another.
  *
  * A write goes to a temporary file that then replaces the state, so a reader
  * never sees half of one. On Windows, replacing or opening a file another
@@ -60,13 +60,43 @@ export function withRetries<T>(
 
 export const stateFile = (dir: string): string => join(dir, "issues.json");
 
-/** The stand-in's issues; none when it has written none yet. */
-export function readState(dir: string, options?: RetryOptions): StandInState {
-  const file = stateFile(dir);
-  if (!existsSync(file)) return {};
+/** A comment the stand-in keeps: what `comments add` was given, and when. */
+export interface StandInComment {
+  id: string;
+  issueId: string;
+  author: string;
+  text: string;
+  /** As `comments add` printed it: to a fraction of a second. */
+  createdAt: string;
+}
+
+/** Every comment the stand-in keeps, by issue id, oldest first. */
+export type StandInComments = Record<string, StandInComment[]>;
+
+/** Beside the issues, not in them: bd's `show` prints an issue without its comments. */
+export const commentsFile = (dir: string): string => join(dir, "comments.json");
+
+function readJson<T>(file: string, empty: T, options?: RetryOptions): T {
+  if (!existsSync(file)) return empty;
   return JSON.parse(
     withRetries(() => readFileSync(file, "utf8"), options),
-  ) as StandInState;
+  ) as T;
+}
+
+function replaceJson(file: string, value: unknown, options?: RetryOptions) {
+  const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  writeFileSync(temporary, JSON.stringify(value, null, 2));
+  try {
+    withRetries(() => renameSync(temporary, file), options);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+/** The stand-in's issues; none when it has written none yet. */
+export function readState(dir: string, options?: RetryOptions): StandInState {
+  return readJson<StandInState>(stateFile(dir), {}, options);
 }
 
 /** Replace the stand-in's issues whole. */
@@ -75,13 +105,22 @@ export function writeState(
   state: StandInState,
   options?: RetryOptions,
 ): void {
-  const file = stateFile(dir);
-  const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-  writeFileSync(temporary, JSON.stringify(state, null, 2));
-  try {
-    withRetries(() => renameSync(temporary, file), options);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
-  }
+  replaceJson(stateFile(dir), state, options);
+}
+
+/** The stand-in's comments; none when it has kept none yet. */
+export function readComments(
+  dir: string,
+  options?: RetryOptions,
+): StandInComments {
+  return readJson<StandInComments>(commentsFile(dir), {}, options);
+}
+
+/** Replace the stand-in's comments whole. */
+export function writeComments(
+  dir: string,
+  comments: StandInComments,
+  options?: RetryOptions,
+): void {
+  replaceJson(commentsFile(dir), comments, options);
 }

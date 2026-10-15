@@ -1,3 +1,7 @@
+---
+argument-hint: "[task | id | spec-path] [--epic]"
+---
+
 # /go — Adaptive Workflow Router
 
 Single entry point for all development work. Classifies scope and routes to the right workflow.
