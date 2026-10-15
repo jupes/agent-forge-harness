@@ -2964,6 +2964,21 @@ describe("a secret split by invisible characters", () => {
     ],
   ];
 
+  test("words on two lines, or either side of a tab, are not joined into a key: the line breaks and the tab stay when the invisible characters are taken out", () => {
+    const word = "abcdefghijklmnopqrstuvwxyz";
+    for (const between of ["\n", "\r\n", "\t"]) {
+      const text = `The flag reads sk-${between}${word} on the bench.`;
+      const packed = buildContextPackFromParts({
+        kind: "bead",
+        displayName: "demo",
+        locator: "demo",
+        parts: [{ label: "head", chunks: [{ text }] }],
+      });
+      expect(packed.evidence[0]?.content).toBe(text);
+      expect(packed.redactions).toEqual([]);
+    }
+  });
+
   test("in a pack, nothing of the secret survives under redact, the whole written span is replaced, and the pack is refused under reject", () => {
     const leaks: string[] = [];
     for (const [what, text, residue] of SPLIT) {
