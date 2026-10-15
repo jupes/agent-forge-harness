@@ -383,6 +383,12 @@ type Checkout = {
 type BeadRun = { slug: string; state: ForgeState; checkout: Checkout };
 
 /**
+ * A test seam (`compileBead`'s `beforeRead`): called with a file's real path
+ * once it has been located and before it is read.
+ */
+type BeforeRead = (path: string, what: "run state" | "linked file") => void;
+
+/**
  * Whether a file located in a checkout may still be read there: its real path
  * still resolves to itself. That fails when the checkout's root, or any
  * directory on the way, has been moved away and a link put in its place, so
@@ -400,6 +406,7 @@ function stillInside(realPath: string): boolean {
  */
 function runsIn(
   checkout: Checkout,
+  beforeRead: BeforeRead | undefined,
 ): Array<{ slug: string; state: ForgeState }> {
   const { root, realRoot } = checkout;
   let names: string[];
@@ -420,8 +427,11 @@ function runsIn(
         root,
         realRoot,
       );
-      if (found.ok && stillInside(found.path))
-        state = parseState(readFileSync(found.path, "utf8"));
+      if (found.ok) {
+        beforeRead?.(found.path, "run state");
+        if (stillInside(found.path))
+          state = parseState(readFileSync(found.path, "utf8"));
+      }
     } catch {
       state = null;
     }
@@ -436,10 +446,14 @@ function runsIn(
  * bead. A run that works another bead is never this bead's, whatever its
  * epic. The workspace comes first, so a tie keeps its run.
  */
-function beadRun(id: BeadsIssueId, checkouts: Checkout[]): BeadRun | null {
+function beadRun(
+  id: BeadsIssueId,
+  checkouts: Checkout[],
+  beforeRead: BeforeRead | undefined,
+): BeadRun | null {
   let newest: BeadRun | null = null;
   for (const checkout of checkouts)
-    for (const { slug, state } of runsIn(checkout)) {
+    for (const { slug, state } of runsIn(checkout, beforeRead)) {
       const owns =
         state.beadId !== undefined ? state.beadId === id : state.epic === id;
       if (!owns) continue;
@@ -725,7 +739,7 @@ function linkedFileParts(
   cwd: string,
   run: BeadRun | null,
   texts: string[],
-  beforeRead: ((path: string) => void) | undefined,
+  beforeRead: BeforeRead | undefined,
 ): LinkedFiles {
   const result: LinkedFiles = { parts: [], incomplete: false };
   type Linked = {
@@ -812,7 +826,7 @@ function linkedFileParts(
       );
       continue;
     }
-    beforeRead?.(found.path);
+    beforeRead?.(found.path, "linked file");
     const first = packed.get(sameFileKey(found.path));
     if (first !== undefined) {
       result.parts.push(
@@ -1164,12 +1178,12 @@ export async function compileBead(
     secretPolicy?: SecretPolicy | undefined;
     maxBytes?: number | undefined;
     /**
-     * A test seam: called with a linked file's real path once it has been
-     * located and held to a plan, research or report path, and before it is
-     * read, so a test can remove or swap something at exactly that moment.
-     * No caller outside the tests passes it.
+     * A test seam: called with a file's real path once it has been located
+     * (a linked file also held to a plan, research or report path) and before
+     * it is read, a run state or a linked file, so a test can remove or swap
+     * something at exactly that moment. No caller outside the tests passes it.
      */
-    beforeLinkedRead?: ((path: string) => void) | undefined;
+    beforeRead?: BeforeRead | undefined;
   } = {},
 ): Promise<CompiledBead> {
   const id = parseBeadsIssueId(reference);
@@ -1240,8 +1254,8 @@ export async function compileBead(
   const texts = mentionTexts(safe, comments);
   // After every field is scanned: a refused bead asks git for nothing.
   const searched = await runCheckouts(cwd, runner);
-  const run = beadRun(id, searched.checkouts);
-  const linked = linkedFileParts(cwd, run, texts, options.beforeLinkedRead);
+  const run = beadRun(id, searched.checkouts, options.beforeRead);
+  const linked = linkedFileParts(cwd, run, texts, options.beforeRead);
   const pullRequest = await pullRequestParts(texts, {
     cwd,
     runner,

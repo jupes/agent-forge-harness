@@ -819,20 +819,22 @@ describe("what git lists", () => {
 });
 
 describe("a checkout that changes while it is read", () => {
+  type What = "run state" | "linked file";
+
   /**
    * As `prepareCouncilContext` packs a bead, with the test seam that runs
-   * between a linked file being located and being read.
+   * between a file being located and being read.
    */
   async function packWith(
     fake: Fake,
     root: string,
-    beforeLinkedRead: (path: string) => void,
+    beforeRead: (path: string, what: What) => void,
   ): Promise<ContextPack> {
     const compiled = await compileBead(BEAD, {
       cwd: root,
       runner: fake.runner,
       secretPolicy: "reject",
-      beforeLinkedRead,
+      beforeRead,
     });
     return buildContextPackFromParts({
       kind: "bead",
@@ -841,11 +843,11 @@ describe("a checkout that changes while it is read", () => {
     });
   }
 
-  /** Calls `act` the first time only. */
-  const once = (act: (path: string) => void) => {
+  /** Calls `act` before the first read of that kind only. */
+  const once = (when: What, act: (path: string) => void) => {
     let done = false;
-    return (path: string): void => {
-      if (done) return;
+    return (path: string, what: What): void => {
+      if (done || what !== when) return;
       done = true;
       act(path);
     };
@@ -877,7 +879,7 @@ describe("a checkout that changes while it is read", () => {
     const packed = await packWith(
       fake,
       main,
-      once((path) => rmSync(path)),
+      once("linked file", (path) => rmSync(path)),
     );
     expect(linkedListing(packed)).toEqual([
       "linked plan plans/drafts/kiln-temp.md from worktree .claude/worktrees/kiln-wt: missing, not packed",
@@ -919,7 +921,7 @@ describe("a checkout that changes while it is read", () => {
     const packed = await packWith(
       fake,
       main,
-      once(() => rmSync(tree, { recursive: true, force: true })),
+      once("linked file", () => rmSync(tree, { recursive: true, force: true })),
     );
     expect(linkedListing(packed)).toEqual([
       "linked plan plans/drafts/kiln-temp.md from worktree .claude/worktrees/kiln-wt: missing, not packed",
@@ -956,7 +958,7 @@ describe("a checkout that changes while it is read", () => {
     const packed = await packWith(
       fakeRunner({ listing: listed([main, listedPath]) }),
       main,
-      once(() => {
+      once("linked file", () => {
         // After the check, the link is pointed somewhere else.
         if (process.platform === "win32") rmdirSync(listedPath);
         else unlinkSync(listedPath);
@@ -995,7 +997,7 @@ describe("a checkout that changes while it is read", () => {
     const packed = await packWith(
       fakeRunner({ listing: listed([main, tree]) }),
       main,
-      once(() => {
+      once("linked file", () => {
         // Between the plan being located and being read.
         renameSync(tree, `${tree}-moved`);
         linkDirectory(outside, tree);
@@ -1006,5 +1008,37 @@ describe("a checkout that changes while it is read", () => {
       "linked plan plans/drafts/kiln-temp.md from worktree trees/kiln: missing, not packed",
       "linked research plans/research/kiln-temp.md from worktree trees/kiln: missing, not packed",
     ]);
+  });
+
+  test("a worktree moved away and replaced by a link between a run state being located and being read: the run state is not read through it (a swap between the last check and the read itself is not covered)", async () => {
+    const main = mainCheckout();
+    const tree = linkedWorktree(
+      main,
+      join(main, "trees", "kiln"),
+      Object.fromEntries([
+        runState("kiln-temp", { beadId: BEAD }),
+        ["plans/drafts/kiln-temp.md", "TREE-PLAN"],
+      ]),
+    );
+    // Outside: a run state of the same name for the bead, and its plan.
+    const outside = scratch("council-outside-");
+    write(
+      outside,
+      Object.fromEntries([
+        runState("kiln-temp", { beadId: BEAD }),
+        ["plans/drafts/kiln-temp.md", "OUTSIDE-PLAN"],
+      ]),
+    );
+    const packed = await packWith(
+      fakeRunner({ listing: listed([main, tree]) }),
+      main,
+      once("run state", () => {
+        renameSync(tree, `${tree}-moved`);
+        linkDirectory(outside, tree);
+      }),
+    );
+    expect(packed.source.metadata?.forgeRun).toBeUndefined();
+    expect(linkedListing(packed)).toEqual([]);
+    expect(JSON.stringify(packed)).not.toContain("OUTSIDE-");
   });
 });
