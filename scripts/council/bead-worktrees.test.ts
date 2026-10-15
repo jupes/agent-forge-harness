@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -883,6 +884,24 @@ describe("a checkout that changes while it is read", () => {
       "E4 linked research plans/research/kiln-temp.md from worktree .claude/worktrees/kiln-wt: 13 bytes",
     ]);
     expect(JSON.stringify(packed)).not.toContain(basename(main));
+  });
+
+  test("locating a file under a verified root that now resolves elsewhere (moved away, a link at its path) answers missing", () => {
+    const base = scratch("council-root-");
+    const root = join(base, "kiln");
+    write(root, { "plans/drafts/kiln-temp.md": "TREE-PLAN" });
+    const verified = realpathSync(root);
+    const outside = scratch("council-outside-");
+    write(outside, { "plans/drafts/kiln-temp.md": "OUTSIDE-PLAN" });
+    renameSync(root, `${root}-moved`);
+    linkDirectory(outside, root);
+    const file = join(root, "plans", "drafts", "kiln-temp.md");
+    // Unpinned, the path leads through the link and is found.
+    expect(locateWorkspaceFile(file, root).ok).toBe(true);
+    expect(locateWorkspaceFile(file, root, verified)).toEqual({
+      ok: false,
+      reason: "missing",
+    });
   });
 
   test("locating a file under a root that is gone answers missing and throws nothing", () => {
