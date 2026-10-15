@@ -4,7 +4,9 @@
  * Nothing here reaches the real tracker, the real ledger or the user's config:
  * the root is a temp directory with a planted `.git` (so the ledger's workspace
  * is that directory, not whatever checkout the OS temp directory sits in), the
- * `bd` runner is a recorder, and the machine config is read from a temp home.
+ * `bd` runner is a recorder, the council's command runner is a recorder that
+ * refuses what its test did not arrange, and the machine config is read from a
+ * temp home.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
 import { operatorCouncilLedger } from "../council/ledger-wiring";
+import type { CommandRunner } from "../council/pr-source";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -148,12 +151,47 @@ export function fakeBd(): FakeBd {
   return bd;
 }
 
+/**
+ * The council's command runner in a test hearth: it records every command and
+ * where it was asked to run it, answers with `answer` when that returns a
+ * result, and refuses everything else, so no test starts a real `bd`, `git`
+ * or `gh` through the council by accident.
+ */
+export interface FakeCommands {
+  calls: Array<{ command: string[]; cwd: string }>;
+  answer: CommandRunner | null;
+  run: CommandRunner;
+}
+
+export function fakeCommands(): FakeCommands {
+  const commands: FakeCommands = {
+    calls: [],
+    answer: null,
+    async run(command, cwd) {
+      commands.calls.push({ command: [...command], cwd });
+      const given = await commands.answer?.(command, cwd);
+      return (
+        given ?? {
+          exitCode: 127,
+          stdout: "",
+          stderr: "the test hearth runs no command its test did not arrange",
+        }
+      );
+    },
+  };
+  return commands;
+}
+
 export interface TestHearth {
   hearth: StartedHearth;
   /** `http://127.0.0.1:<port>/__agent-forge` */
   api: string;
   home: string;
   root: string;
+  /** With `linkedWorktree`, the main checkout `root` is a worktree of. */
+  main?: string;
+  /** What the council's bead and pr sources run through this hearth. */
+  commands: FakeCommands;
   /** Stands in for the OS home: the machine config is read from `.agent-forge/config.toml` under it. */
   configHome: string;
   /** The ledger's name for `root`. */
@@ -174,6 +212,11 @@ export interface TestHearthOptions {
   councilRuns?: boolean;
   /** Files to write under the root before the hearth starts. */
   files?: Record<string, string>;
+  /**
+   * Make the root a linked worktree of another temp directory, laid out as git
+   * lays one out (a `.git` file naming `<main>/.git/worktrees/<id>`).
+   */
+  linkedWorktree?: boolean;
 }
 
 export async function startTestHearth(
@@ -182,7 +225,14 @@ export async function startTestHearth(
   const home = mkdtempSync(join(tmpdir(), "af-api-home-"));
   const root = mkdtempSync(join(tmpdir(), "af-api-root-"));
   const configHome = mkdtempSync(join(tmpdir(), "af-api-user-"));
-  mkdirSync(join(root, ".git"));
+  let main: string | undefined;
+  if (options.linkedWorktree) {
+    main = mkdtempSync(join(tmpdir(), "af-api-main-"));
+    const gitDir = join(main, ".git", "worktrees", "tree");
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, "commondir"), "../..\n");
+    writeFileSync(join(root, ".git"), `gitdir: ${gitDir}\n`);
+  } else mkdirSync(join(root, ".git"));
   mkdirSync(join(root, ".tmp", "work"), { recursive: true });
   for (const [relative, content] of Object.entries(options.files ?? {})) {
     const file = join(root, relative);
@@ -191,6 +241,7 @@ export async function startTestHearth(
   }
   const ledger = join(home, "ledger.db");
   const bd = fakeBd();
+  const commands = fakeCommands();
   const hearth = await createHearth({
     root,
     home,
@@ -199,6 +250,7 @@ export async function startTestHearth(
     ...(options.councilRuns
       ? { councilLedger: operatorCouncilLedger({ path: ledger }) }
       : {}),
+    councilRunCommand: commands.run,
     api: {
       ledgerPath: ledger,
       runBd: (args, options) => bd.run(args, options),
@@ -213,6 +265,8 @@ export async function startTestHearth(
     api: `${hearth.url}/__agent-forge`,
     home,
     root,
+    ...(main !== undefined ? { main } : {}),
+    commands,
     configHome,
     workspace,
     ledger,
@@ -242,7 +296,7 @@ export async function startTestHearth(
     async close() {
       await hearth.close();
       closeLedger(ledger);
-      for (const dir of [home, root, configHome])
+      for (const dir of [home, root, configHome, ...(main ? [main] : [])])
         rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
     },
   };

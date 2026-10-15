@@ -9,7 +9,14 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
@@ -44,8 +51,11 @@ function workspace(): string {
   return root;
 }
 
-/** An invented bead and two comments; any other command fails the test. */
-function beadRunner(title = "Teach the kiln to report its temperature"): {
+/** An invented bead and two comments (and `extra`); any other command fails the test. */
+function beadRunner(
+  title = "Teach the kiln to report its temperature",
+  extra: string[] = [],
+): {
   runner: CommandRunner;
   calls: string[][];
 } {
@@ -83,6 +93,11 @@ function beadRunner(title = "Teach the kiln to report its temperature"): {
           text: "review: PASS.",
           created_at: "2031-01-05T09:30:00Z",
         },
+        ...extra.map((text, index) => ({
+          issue_id: BEAD,
+          text,
+          created_at: `2031-01-06T0${index}:00:00Z`,
+        })),
       ]);
     throw new Error(`unexpected command: ${line}`);
   };
@@ -864,6 +879,230 @@ describe("the council service with a bead source", () => {
       ]);
     } finally {
       await service.close();
+    }
+  });
+
+  test("a preview packs the bead as a run would and lists what it would send, part by part, without reserving a run, calling a model or recording anything", async () => {
+    const root = workspace();
+    const fake = beadRunner();
+    const appended: LedgerEventInput[] = [];
+    let modelCalls = 0;
+    const service = createCouncilService({
+      workspaceRoot: root,
+      harnessRoot: process.cwd(),
+      runsRoot: join(root, "runs"),
+      runCommand: fake.runner,
+      resolveTransport: () => () =>
+        new FakeCouncilTransport({
+          delayMs: 0,
+          onRequest: () => {
+            modelCalls += 1;
+          },
+        }),
+      appendEvent: (event) => appended.push(event),
+      resolveAttach: ({ cwd, beadId }) => ({
+        workspace: cwd,
+        ...(beadId !== undefined ? { beadId } : {}),
+      }),
+    });
+    try {
+      const preview = await service.preview({
+        sourceType: "bead",
+        source: BEAD,
+      });
+      expect(preview.source).toEqual({
+        kind: "bead",
+        displayName: `${BEAD}: Teach the kiln to report its temperature`,
+        locator: BEAD,
+      });
+      expect(preview.listing).toEqual([
+        expect.stringMatching(/^E1 acceptance criteria: \d+ bytes$/),
+        expect.stringMatching(/^E2 latest comments: 2 comments, \d+ bytes$/),
+        expect.stringMatching(/^E3 description: \d+ bytes$/),
+      ]);
+      expect(preview.truncated).toBe(false);
+      expect(preview.redactions).toEqual([]);
+      expect(fake.calls.map((call) => call.slice(0, 3).join(" "))).toEqual([
+        "bd --readonly show",
+        "bd --readonly comments",
+      ]);
+      // Nothing was started: no run, no model call, no ledger event, no run directory.
+      expect(service.list()).toEqual([]);
+      expect(modelCalls).toBe(0);
+      expect(appended).toEqual([]);
+      expect(existsSync(join(root, "runs"))).toBe(false);
+
+      // What a run then sends is what the preview listed.
+      const job = await service.wait(
+        service.start({ sourceType: "bead", source: BEAD, runId: "after" })
+          .runId,
+      );
+      expect(
+        job.events.find((event) => event.type === "run.started")?.payload
+          .listing,
+      ).toEqual(preview.listing);
+
+      // The byte budget and the secret policy are the preview's too.
+      const cut = await service.preview({
+        sourceType: "bead",
+        source: BEAD,
+        maxBytes: 200,
+      });
+      expect(cut.truncated).toBe(true);
+      expect(cut.byteLength).toBeLessThanOrEqual(200);
+    } finally {
+      await service.close();
+    }
+  });
+
+  test("a preview refuses what a start refuses, and a secret under the default policy; under redact it counts what it replaced", async () => {
+    const root = workspace();
+    const key = ["sk", "ant", "abcdefghijklmnopqrstuvwxyz123456"].join("-");
+    const leaky = beadRunner(undefined, [`worklog: rotated ${key}`]);
+    const service = createCouncilService({
+      workspaceRoot: root,
+      harnessRoot: process.cwd(),
+      runsRoot: join(root, "runs"),
+      runCommand: leaky.runner,
+    });
+    try {
+      await expect(
+        service.preview({ sourceType: "bead", source: "not a bead id" }),
+      ).rejects.toThrow(
+        "source must be a Beads issue id when the source is a bead",
+      );
+      await expect(
+        service.preview({
+          sourceType: "bead",
+          source: BEAD,
+          beadId: "demo-harness-zz9",
+        }),
+      ).rejects.toThrow(
+        "beadId must name the bead under review when the source is a bead",
+      );
+      expect(leaky.calls).toEqual([]);
+      await expect(
+        service.preview({ sourceType: "bead", source: BEAD }),
+      ).rejects.toThrow("potential secrets detected in the comment of");
+      const redacted = await service.preview({
+        sourceType: "bead",
+        source: BEAD,
+        redactSecrets: true,
+      });
+      expect(redacted.redactions).toEqual([
+        { kind: "anthropic-api-key", count: 1 },
+      ]);
+      expect(JSON.stringify(redacted)).not.toContain(key);
+    } finally {
+      await service.close();
+    }
+  });
+
+  test("a job keeps the byte budget, the secret policy and the cost ceiling it was started with: the budget cuts the pack, redaction replaces a key the default refuses, and the ceiling is the run's budget", async () => {
+    const root = workspace();
+    // The simulated profile, with a chair that is estimated to cost 0.50 USD.
+    const priced = JSON.parse(
+      readFileSync(resolve("councils/default.json"), "utf8"),
+    ) as { id: string; chair: { estimatedCostUsd: number } };
+    priced.id = "priced-review";
+    priced.chair.estimatedCostUsd = 0.5;
+    writeFileSync(join(root, "priced.json"), JSON.stringify(priced));
+    // Shaped like a provider key; it opens nothing.
+    const key = ["sk", "ant", "abcdefghijklmnopqrstuvwxyz123456"].join("-");
+    const clean = beadRunner();
+    const leaky = beadRunner(undefined, [`worklog: rotated ${key}`]);
+    const appended: LedgerEventInput[] = [];
+    const service = (runner: CommandRunner) =>
+      createCouncilService({
+        workspaceRoot: root,
+        harnessRoot: process.cwd(),
+        runsRoot: join(root, "runs"),
+        runCommand: runner,
+        resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 0 }),
+        appendEvent: (event) => appended.push(event),
+        resolveAttach: ({ cwd, beadId }) => ({
+          workspace: cwd,
+          ...(beadId !== undefined ? { beadId } : {}),
+        }),
+      });
+    const plain = service(clean.runner);
+    const secret = service(leaky.runner);
+    try {
+      const whole = await plain.wait(
+        plain.start({ sourceType: "bead", source: BEAD, runId: "whole" }).runId,
+      );
+      expect(whole.run?.context.truncated).toBe(false);
+      const budgeted = await plain.wait(
+        plain.start({
+          sourceType: "bead",
+          source: BEAD,
+          runId: "budgeted",
+          maxBytes: 200,
+        }).runId,
+      );
+      expect(budgeted.status).toBe("completed");
+      expect(budgeted.run?.context.truncated).toBe(true);
+      expect(budgeted.run?.context.byteLength).toBeLessThanOrEqual(200);
+
+      const refused = await secret.wait(
+        secret.start({ sourceType: "bead", source: BEAD, runId: "refused" })
+          .runId,
+      );
+      expect(refused.status).toBe("failed");
+      expect(refused.error).toContain("potential secrets detected");
+      const redacted = await secret.wait(
+        secret.start({
+          sourceType: "bead",
+          source: BEAD,
+          runId: "redacted",
+          redactSecrets: true,
+        }).runId,
+      );
+      expect(redacted.status).toBe("completed");
+      expect(redacted.run?.context.redactions).toEqual([
+        { kind: "anthropic-api-key", count: 1 },
+      ]);
+      expect(JSON.stringify(redacted.run)).not.toContain(key);
+
+      const over = await plain.wait(
+        plain.start({
+          sourceType: "bead",
+          source: BEAD,
+          runId: "over-ceiling",
+          profile: "priced.json",
+          maxUsd: 0.25,
+        }).runId,
+      );
+      expect(over.status).toBe("failed");
+      expect(over.run?.error).toBe(
+        "estimated cost $0.5000 exceeds budget $0.2500",
+      );
+      const within = await plain.wait(
+        plain.start({
+          sourceType: "bead",
+          source: BEAD,
+          runId: "within-ceiling",
+          profile: "priced.json",
+        }).runId,
+      );
+      expect(within.status).toBe("completed");
+      // The ceiling a run was given is the budget its start records.
+      const budgets = appended
+        .filter((event) => event.kind === "council.run.started")
+        .map((event) => [
+          event.payload.councilRunId,
+          (event.payload as { budgetUsd?: number }).budgetUsd,
+        ]);
+      expect(budgets).toEqual([
+        ["whole", 1],
+        ["budgeted", 1],
+        ["redacted", 1],
+        ["over-ceiling", 0.25],
+        ["within-ceiling", 1],
+      ]);
+    } finally {
+      await plain.close();
+      await secret.close();
     }
   });
 });

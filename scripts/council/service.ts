@@ -20,11 +20,13 @@ import {
   resolveRunDirectory,
   writeCouncilJobFailure,
 } from "./artifacts";
-import { sanitizeContent } from "./context";
+import { contextListing, sanitizeContent } from "./context";
 import type { CouncilAppend, CouncilAttachResolver } from "./ledger-events";
 import type { CommandRunner } from "./pr-source";
 import { assertProvidersReady, providerReadiness } from "./providers";
 import type {
+  ContextRedaction,
+  ContextSource,
   CouncilDiscussionRound,
   CouncilEvent,
   CouncilProfile,
@@ -49,6 +51,18 @@ export type CouncilServiceInput = {
   redactSecrets?: boolean | undefined;
   /** The Beads issue the review is for; recorded on its ledger events. */
   beadId?: string | undefined;
+};
+
+/**
+ * What a run on a source would send, without starting one: the pack's summary
+ * and its listing, one line per part (`contextListing`), never the evidence.
+ */
+export type CouncilPreview = {
+  source: Pick<ContextSource, "kind" | "displayName" | "locator">;
+  byteLength: number;
+  truncated: boolean;
+  redactions: ContextRedaction[];
+  listing: string[];
 };
 
 export type CouncilServiceJob = {
@@ -156,12 +170,21 @@ export function assertCouncilInput(input: CouncilServiceInput): void {
 }
 
 /**
+ * A start request with every field named, present or not: the copy `start`
+ * makes is typed as this, so a field added to `CouncilServiceInput` and left
+ * out of the copy fails to compile instead of being dropped on the job path.
+ */
+type EveryField = {
+  [K in keyof Required<CouncilServiceInput>]: CouncilServiceInput[K];
+};
+
+/**
  * One reading of each field of a start request, whatever kind of object the
  * caller handed over: its own fields and inherited ones, plain or computed.
  * The queued job runs after `start` returns and must use what was checked,
  * not what the caller's object says by then.
  */
-function councilInputFrom(request: CouncilServiceInput): CouncilServiceInput {
+function councilInputFrom(request: CouncilServiceInput): EveryField {
   if (
     request === null ||
     (typeof request !== "object" && typeof request !== "function")
@@ -386,6 +409,42 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, 100);
   }
+  /** The source packed as a run packs it: one path for a job and a preview. */
+  function pack(input: CouncilServiceInput) {
+    return prepareCouncilContext({
+      kind: input.sourceType === "text" ? "stdin" : input.sourceType,
+      source: input.source,
+      workspaceRoot,
+      secretPolicy: input.redactSecrets ? "redact" : "reject",
+      maxBytes: input.maxBytes,
+      ...(input.sourceType === "text"
+        ? { displayName: "Pasted review text" }
+        : {}),
+      ...(options.runCommand ? { runner: options.runCommand } : {}),
+    });
+  }
+  /**
+   * What a run on this request would send, read now and listed part by part:
+   * the same checks as `start`, the same pack, and nothing more. No run is
+   * reserved, no model is called and nothing is recorded. The profile, the
+   * cost ceiling and the run id do not change a pack and are not read.
+   */
+  async function preview(
+    request: CouncilServiceInput,
+  ): Promise<CouncilPreview> {
+    if (closed) throw new Error("council service is closed");
+    const input = councilInputFrom(request);
+    assertCouncilInput(input);
+    const packed = await pack(input);
+    const { kind, displayName, locator } = packed.source;
+    return {
+      source: { kind, displayName, locator },
+      byteLength: packed.byteLength,
+      truncated: packed.truncated,
+      redactions: packed.redactions,
+      listing: contextListing(packed),
+    };
+  }
   function start(request: CouncilServiceInput): CouncilServiceJob {
     if (closed) throw new Error("council service is closed");
     // The caller's object is read here and nowhere else: `begin` checks and
@@ -435,17 +494,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     const done = Promise.resolve().then(async () => {
       try {
         if (controller.signal.aborted) throw new Error("council run cancelled");
-        const packed = await prepareCouncilContext({
-          kind: input.sourceType === "text" ? "stdin" : input.sourceType,
-          source: input.source,
-          workspaceRoot,
-          secretPolicy: input.redactSecrets ? "redact" : "reject",
-          maxBytes: input.maxBytes,
-          ...(input.sourceType === "text"
-            ? { displayName: "Pasted review text" }
-            : {}),
-          ...(options.runCommand ? { runner: options.runCommand } : {}),
-        });
+        const packed = await pack(input);
         const engineOptions: CouncilReviewOptions = {
           profile: selected,
           context: packed,
@@ -563,6 +612,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   return {
     profiles,
     readiness,
+    preview,
     start,
     get,
     list,

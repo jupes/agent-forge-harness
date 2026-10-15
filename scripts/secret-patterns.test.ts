@@ -24,7 +24,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { redactSecrets } from "./secret-patterns";
+import { redactSecrets, type SecretSpan, secretSpans } from "./secret-patterns";
 
 const ORIGINAL: readonly RegExp[] = [
   /sk-ant-[A-Za-z0-9_-]{20,}/g,
@@ -516,4 +516,119 @@ describe("scanning time", () => {
       expect(timed(repeatedTo(line, MEGABYTE)).ms).toBeLessThan(SCAN_BUDGET_MS);
     });
   }
+});
+
+describe("where the secrets are", () => {
+  /** `text` with each span written over by the marker `redactSecrets` writes for its kind. */
+  function written(text: string, spans: readonly SecretSpan[]): string {
+    let out = "";
+    let kept = 0;
+    for (const span of spans) {
+      out += `${text.slice(kept, span.start)}[REDACTED:${span.kind}]`;
+      kept = span.end;
+    }
+    return out + text.slice(kept);
+  }
+
+  /** A small seeded generator, so a failure names a text that can be made again. */
+  function seeded(seed: number): () => number {
+    let state = seed;
+    return () => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return state / 2147483648;
+    };
+  }
+
+  const PROVIDER = ["OPENAI", "API", "KEY"].join("_");
+  /** Pieces a text is put together from: keys, names, signs, markers, invisible characters. */
+  const PIECES: readonly string[] = [
+    ...KEYS,
+    CLASSIC_TOKEN,
+    ...FINE_GRAINED_TOKENS,
+    ["AKIA", "ZQ9ZQ8ZQ7ZQ6ZQ5Z"].join(""),
+    ["xoxb", "Zq9Zq8Zq7Zq6"].join("-"),
+    PROVIDER,
+    "=",
+    ": ",
+    '"',
+    " ",
+    "\n",
+    "​",
+    "﻿",
+    "-",
+    "task-",
+    SLUG_BODY,
+    "https://",
+    "user:Zq9Zq8Zq7@",
+    "example.com/",
+    beginLine("RSA "),
+    endLine("RSA "),
+    endLine(""),
+    ...KEY_BODY,
+    "[REDACTED:openai-api-key]",
+    "plain words",
+  ];
+
+  test("the spans, written over with their markers, give exactly what redactSecrets gives, in the text's own positions", () => {
+    const corpus = [
+      ...PREFIXES.flatMap(([, prefix]) =>
+        KEYS.map((key) => `${prefix}${key} trailing`),
+      ),
+      ...SLUGS,
+      ...FINE_GRAINED_TOKENS.map((token) => `GH_TOKEN=${token}\n`),
+      `token ${CLASSIC_TOKEN}`,
+      ...KEY_TYPES.map((type) => `before\n${keyBlock(type)}\nafter`),
+      [keyBlock("RSA "), "between", KEY_BODY[1], endLine("RSA "), "after"].join(
+        "\n",
+      ),
+      `${PROVIDER}=${keyBlock("")}\nafter`,
+      `https://user:${"Zq9".repeat(6)}@example.com/x`,
+    ];
+    const random = seeded(7);
+    for (let i = 0; i < 3000; i++) {
+      const count = 1 + Math.floor(random() * 8);
+      corpus.push(
+        Array.from(
+          { length: count },
+          () => PIECES[Math.floor(random() * PIECES.length)],
+        ).join(""),
+      );
+    }
+    let found = 0;
+    for (const text of corpus) {
+      const spans = secretSpans(text);
+      found += spans.length;
+      for (const [index, span] of spans.entries()) {
+        expect(span.start).toBeLessThan(span.end);
+        expect(span.start).toBeGreaterThanOrEqual(spans[index - 1]?.end ?? 0);
+        expect(span.end).toBeLessThanOrEqual(text.length);
+      }
+      expect({ text, written: written(text, spans) }).toEqual({
+        text,
+        written: redactSecrets(text).text,
+      });
+    }
+    // The corpus is not mostly clean text: most of it holds something to find.
+    expect(found).toBeGreaterThan(corpus.length);
+  });
+
+  test("a text with nothing to find has no spans; a key inside other text is found where it is", () => {
+    expect(secretSpans("nothing to see here")).toEqual([]);
+    const text = `the key is ${OPENAI} for now`;
+    expect(secretSpans(text)).toEqual([
+      {
+        kind: "openai-api-key",
+        start: "the key is ".length,
+        end: "the key is ".length + OPENAI.length,
+      },
+    ]);
+  });
+
+  test("a megabyte of keys back to back is located in well under a second", () => {
+    const text = repeatedTo(`${OPENAI} `, MEGABYTE);
+    const started = performance.now();
+    const spans = secretSpans(text);
+    expect(performance.now() - started).toBeLessThan(SCAN_BUDGET_MS * 4);
+    expect(spans.length).toBe(Math.ceil(MEGABYTE / (OPENAI.length + 1)));
+  });
 });
