@@ -53,6 +53,12 @@ import {
 import { operatorRoutes } from "./routes/operator";
 import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
+import {
+  createShiftStarts,
+  endLiveShifts,
+  type ShiftLauncher,
+  superviseShift,
+} from "./shift-launcher";
 import { isHealthy } from "./supervisor";
 import { createToken, readToken } from "./token";
 
@@ -125,6 +131,14 @@ export interface OperatorApiOverrides {
   git?: GitRun;
   /** Wrap the table before it is mounted (a test observing an effect). */
   decorate?: (routes: readonly ApiRoute[]) => readonly ApiRoute[];
+  /** Starts a shift's child (`POST /shifts`); `superviseShift` by default. A test hands in a stand-in. */
+  launchShift?: ShiftLauncher;
+  /** Mints the id of a shift `POST /shifts` starts; one at the current second by default. */
+  mintShiftId?: () => string;
+  /** How long `close()` waits for the shifts it started to stop; `SHIFT_STOP_GRACE_MS` by default. */
+  shiftStopGraceMs?: number;
+  /** The clock a start's `startedAt` (and a minted id) is read from; the system's by default. */
+  shiftNow?: () => Date;
   /** How long an action's body may take to arrive; 10 s when not given. */
   bodyTimeoutMs?: number;
 }
@@ -235,6 +249,21 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
   const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
+  // Under the same home: a shift given it keeps its record and stop request there.
+  const shiftsDir = join(home, SHIFTS_DIR);
+  // A shift this hearth starts runs in its root with its home, so it takes
+  // the same queue lock and writes the same ledger and shifts directory.
+  const shiftStarts = createShiftStarts({
+    root,
+    home,
+    shiftsDir,
+    workspace,
+    environment: process.env,
+    launch: options.api?.launchShift ?? superviseShift,
+    mintShiftId: options.api?.mintShiftId,
+    stopGraceMs: options.api?.shiftStopGraceMs,
+    now: options.api?.shiftNow,
+  });
   const table = operatorRoutes({
     root,
     workspace,
@@ -246,8 +275,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     appendEvent: append,
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),
-    // Under the same home: a shift given it keeps its record and stop request there.
-    shiftsDir: join(home, SHIFTS_DIR),
+    shiftsDir,
+    shiftStarts,
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
     git: options.api?.git,
@@ -342,11 +371,17 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
 
   const stop = async (): Promise<void> => {
-    table.close();
-    await service.close();
-    server.closeAllConnections();
-    // Called back with an error, which changes nothing here, when it never listened.
-    await new Promise<void>((done) => server.close(() => done()));
+    try {
+      table.close();
+      await service.close();
+      server.closeAllConnections();
+      // Called back with an error, which changes nothing here, when it never listened.
+      await new Promise<void>((done) => server.close(() => done()));
+    } finally {
+      // Last, with nothing answering any more: each shift this hearth started
+      // is asked to stop and given time to put its beads back, then ended.
+      await shiftStarts.close();
+    }
   };
 
   let lockTaken = false;
@@ -427,8 +462,37 @@ async function main(argv: string[]): Promise<void> {
     `hearth ${hearth.kind === "started" ? "listening" : "already running"} on ${hearth.url}\n`,
   );
   if (hearth.kind === "reused") return;
+  closeOnSignal(hearth);
+}
+
+/** The exit code of a hearth whose close was cut short by a second signal. */
+export const INTERRUPTED_EXIT = 130;
+
+/**
+ * End a started hearth on `SIGINT` or `SIGTERM`: its whole `close()`, the
+ * shifts it started asked to stop and waited for, then `exit(0)`. A second
+ * signal while that runs does not wait: the tree of every shift still running
+ * is ended at once (`endLiveShifts`) and the hearth exits
+ * `INTERRUPTED_EXIT` (130, as an interrupted command does). A shift ended so
+ * needs `forge:shift recover`. Nothing else in the hearth may listen for those
+ * signals and exit first: the shift launcher does not use `supervise()`, whose
+ * handler would (`shift-launcher.ts`). A hearth ended with no chance to run
+ * code (`SIGKILL`; on Windows, `TerminateProcess`, which is how the dashboard
+ * ends it) never gets here.
+ */
+export function closeOnSignal(
+  hearth: StartedHearth,
+  exit: (code: number) => void = (code) => process.exit(code),
+): void {
+  let closing = false;
   const shutdown = (): void => {
-    void hearth.close().finally(() => process.exit(0));
+    if (closing) {
+      endLiveShifts();
+      exit(INTERRUPTED_EXIT);
+      return;
+    }
+    closing = true;
+    void hearth.close().finally(() => exit(0));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

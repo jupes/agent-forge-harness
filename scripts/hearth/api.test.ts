@@ -434,6 +434,34 @@ const ACTIONS: Record<string, ActionFixture> = {
       ]);
     },
   },
+  // The test hearth's launcher starts nothing and mints its ids in order: the
+  // first start in a hearth names the first id.
+  "POST /shifts": {
+    valid: {
+      path: "/shifts",
+      body: { for: "30m", concurrency: 1 },
+      status: 202,
+      target: "shift-20261015-120000-0001",
+    },
+    invalid: { path: "/shifts", body: { filter: { epic: "demo-epic" } } },
+    // The shift records shift.started itself, once it runs; the row only starts it.
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        shiftId: "shift-20261015-120000-0001",
+        state: "starting",
+      });
+      expect(h.shifts.launches.at(-1)?.spec.argv.slice(2)).toEqual([
+        "run",
+        "--id",
+        "shift-20261015-120000-0001",
+        "--for",
+        "30m",
+        "--concurrency",
+        "1",
+      ]);
+    },
+  },
   "POST /shifts/:id/stop": {
     valid: {
       path: "/shifts/shift-20261014-120000-f1a0/stop",
@@ -1113,10 +1141,11 @@ describe("every action row (iterating the table)", () => {
         expect(body.error).toContain("nothing was done");
       }
       expect(probes).toEqual([]);
-      // Nothing reached the real effects either: no run was started, bd was not called.
+      // Nothing reached the real effects either: no run or shift was started, bd was not called.
       const runs = await readRuns(h);
       expect((await envelope<unknown[]>(runs)).data).toEqual([]);
       expect(h.bd.calls).toEqual([]);
+      expect(h.shifts.launches).toEqual([]);
     });
   }
 
@@ -1672,10 +1701,13 @@ describe("the paths that existed before the table", () => {
     expect(posted.status).toBe(405);
     expect(posted.headers.get("allow")).toBe("GET");
 
-    // The shifts can be listed, stopped and recovered, not started: POST /shifts is not mounted.
-    const startShift = await post(h, "/shifts", {});
-    expect(startShift.status).toBe(405);
-    expect(startShift.headers.get("allow")).toBe("GET");
+    // The shifts are listed and started at one path, and nothing else is served there.
+    const removeShifts = await fetch(`${h.api}/shifts`, {
+      method: "DELETE",
+      headers: h.headers(h.hearth.token),
+    });
+    expect(removeShifts.status).toBe(405);
+    expect(removeShifts.headers.get("allow")).toBe("GET, POST");
 
     const unmounted = [
       // The scheduler's moves are not the operator API's.

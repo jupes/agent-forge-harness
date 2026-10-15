@@ -5,8 +5,9 @@
  * the root is a temp directory with a planted `.git` (so the ledger's workspace
  * is that directory, not whatever checkout the OS temp directory sits in), the
  * `bd` runner is a recorder, the council's command runner is a recorder that
- * refuses what its test did not arrange, and the machine config is read from a
- * temp home.
+ * refuses what its test did not arrange, the shift launcher records what
+ * `POST /shifts` would start and starts nothing, and the machine config is
+ * read from a temp home.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -29,6 +30,11 @@ import {
   type OperatorApiOverrides,
   type StartedHearth,
 } from "./server";
+import type {
+  ShiftChildExit,
+  ShiftLauncher,
+  ShiftLaunchSpec,
+} from "./shift-launcher";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 
@@ -203,6 +209,87 @@ export function fakeCommands(): FakeCommands {
   return commands;
 }
 
+/** A child the test hearth's stand-in launcher "started": nothing runs. */
+export interface FakeShiftChild {
+  spec: ShiftLaunchSpec;
+  pid: number;
+  /** Whether the hearth ended it (`stop()`, at its close). */
+  stopped: boolean;
+  /** Let it exit, as a shift would, with this exit code and what it printed. */
+  exit(exit?: Partial<ShiftChildExit>): void;
+  /** Settles when it has exited. */
+  done: Promise<ShiftChildExit>;
+}
+
+/**
+ * The test hearth's shift launcher: it records what it was asked to start and
+ * starts nothing, so no test hearth runs `forge:shift` (whose real
+ * dependencies run `bd` in the main checkout and `git fetch` against origin).
+ * Its children run until the test lets them exit or the hearth ends them.
+ * Its ids are minted in order, so a test knows the id a start will name.
+ */
+export interface FakeShifts {
+  launches: FakeShiftChild[];
+  /** Called with each child as it is started; a throw is a child that could not be started. */
+  onLaunch: ((child: FakeShiftChild) => void) | null;
+  launch: ShiftLauncher;
+  /** The ids minted so far, in order. */
+  minted: string[];
+  /** The id the next mint gives. */
+  next(): string;
+  mint(): string;
+}
+
+/** No process has an id this large on the platforms the harness runs on. */
+const FAKE_PID = 2_000_000_000;
+
+export function fakeShifts(): FakeShifts {
+  const shifts: FakeShifts = {
+    launches: [],
+    onLaunch: null,
+    minted: [],
+    next: () =>
+      `shift-20261015-120000-${(shifts.minted.length + 1).toString(16).padStart(4, "0")}`,
+    mint() {
+      const id = shifts.next();
+      shifts.minted.push(id);
+      return id;
+    },
+    launch(spec) {
+      let finish = (_exit: ShiftChildExit): void => undefined;
+      const done = new Promise<ShiftChildExit>((settle) => {
+        finish = settle;
+      });
+      let exited = false;
+      const end = (exit: ShiftChildExit): void => {
+        if (exited) return;
+        exited = true;
+        finish(exit);
+      };
+      const child: FakeShiftChild = {
+        spec,
+        pid: FAKE_PID + shifts.launches.length,
+        stopped: false,
+        done,
+        exit: (exit = {}) =>
+          end({ exitCode: 1, stdout: "", stderr: "", ...exit }),
+      };
+      shifts.onLaunch?.(child);
+      shifts.launches.push(child);
+      return {
+        pid: child.pid,
+        done,
+        stop: async () => {
+          child.stopped = true;
+          end({ exitCode: null, stdout: "", stderr: "" });
+          await done;
+        },
+      };
+    },
+  };
+  return shifts;
+}
+
 export interface TestHearth {
   hearth: StartedHearth;
   /** `http://127.0.0.1:<port>/__agent-forge` */
@@ -219,6 +306,8 @@ export interface TestHearth {
   workspace: string;
   ledger: string;
   bd: FakeBd;
+  /** What `POST /shifts` started, unless the test handed the hearth a launcher of its own. */
+  shifts: FakeShifts;
   /** Headers of a same-origin request, with the operator token when asked. */
   headers(token?: string | null): Record<string, string>;
   /** Append to this hearth's ledger, as another emitter would. */
@@ -263,6 +352,7 @@ export async function startTestHearth(
   const ledger = join(home, "ledger.db");
   const bd = fakeBd();
   const commands = fakeCommands();
+  const shifts = fakeShifts();
   const hearth = await createHearth({
     root,
     home,
@@ -276,6 +366,10 @@ export async function startTestHearth(
       ledgerPath: ledger,
       runBd: (args, options) => bd.run(args, options),
       configHome,
+      launchShift: shifts.launch,
+      mintShiftId: () => shifts.mint(),
+      // Its children never stop on their own; a test that waits on a close sets its own.
+      shiftStopGraceMs: 200,
       ...options.api,
     },
   });
@@ -292,6 +386,7 @@ export async function startTestHearth(
     workspace,
     ledger,
     bd,
+    shifts,
     headers(token) {
       return {
         Origin: hearth.url,

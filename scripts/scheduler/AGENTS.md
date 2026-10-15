@@ -341,7 +341,18 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
 - `shift-store.ts`: the record `<home>/shifts/<id>.json` (a report, never read back by the shift
   to decide) and the stop request `<id>.stop`, written by `requestStop` for `forge:shift stop` and
   `POST /shifts/:id/stop`. Same home as the hearth, or the hearth cannot see, stop or recover the
-  shift.
+  shift. `shiftIdInUse`: an id that is not a shift id, or that a record (readable or not) or a stop
+  request already has, may not be given to a new shift.
+- `run --id <shift-id>` runs the shift under that id instead of one minted at its start. It is
+  refused (exit 1, nothing announced, fetched or written) for a value that is not a shift id and
+  for an id `shiftIdInUse` says is taken: a new shift would overwrite the old record, or stop at
+  its first tick on a stop request left for another. Checked once, before the fetch; a second
+  start with the same id between that check and the record is not prevented. The hearth's
+  `POST /shifts` mints the id (so its audit row names the shift) and starts `run --id <id>` with
+  only the flags its body gave, in the hearth's root with the hearth's home (see
+  `scripts/hearth/AGENTS.md`); it parses those flags with `runOptions` and checks them with
+  `shiftOptions` first, so a start it accepts is one the CLI accepts. A shift it started is a
+  shift like any other: its record, its stop and its recovery are the ones above.
 - Recovery (`shift-recover.ts`, `recoverShift`, called by `forge:shift recover <id>` and
   `POST /shifts/:id/recover`): the way back for a shift whose process ended without stopping it
   (Ctrl-C, a crash, a kill). Its runs died with it (the supervisor's exit hook, the tree guard),
@@ -418,7 +429,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - Uncommitted changes in a worktree are not in its pull request, and nothing says so.
   - The secret scan covers the PR title and body only: the branch's files and its full commit
     messages are pushed without one (the shift's own body lists only the first 50 subjects).
-  - No `POST /shifts`.
+  - A shift the hearth started is asked to stop when the hearth closes (its `close()`, which
+    `SIGINT` and `SIGTERM` run), but dies at once with a hearth killed outright: on Windows that
+    is how the dashboard ends the hearth (`TerminateProcess`, which runs no code), and the tree
+    guard then ends the shift. Such a shift, and one ended by a console Ctrl-C on Windows (which
+    reaches the shift too), needs `forge:shift recover`.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
   shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record
   their calls and answer as the test says, and a fake adapter whose runs the test scripts. Its kill

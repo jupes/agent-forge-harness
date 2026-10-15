@@ -264,3 +264,17 @@ export function requestStop(dir: string, id: string): StopOutcome {
 export function stopRequested(dir: string, id: string): boolean {
   return isShiftId(id) && existsSync(stopPath(dir, id));
 }
+
+/**
+ * Whether a shift may not be given this id: it is not a shift id, or a record
+ * (readable or not) or a stop request already has it. A new shift with the id
+ * of an old one would overwrite its record, and would stop at its first tick
+ * on a stop request left for another.
+ */
+export function shiftIdInUse(dir: string, id: string): boolean {
+  return (
+    !isShiftId(id) ||
+    existsSync(recordPath(dir, id)) ||
+    existsSync(stopPath(dir, id))
+  );
+}
