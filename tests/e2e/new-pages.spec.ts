@@ -626,7 +626,7 @@ test.describe("Repos & knowledge", () => {
     const repos = page
       .getByRole("region", { name: "Registered repositories" })
       .locator("tbody tr");
-    await expect(repos).toHaveCount(4);
+    await expect(repos).toHaveCount(5);
     // Branches come from defaultBranch, the canonical repos.json field.
     const webClient = repos.filter({ hasText: "web-client" });
     await expect(webClient).toContainText("master");
@@ -634,6 +634,23 @@ test.describe("Repos & knowledge", () => {
     const mobileApp = repos.filter({ hasText: "mobile-app" });
     await expect(mobileApp).toContainText("develop");
     await expect(mobileApp).toContainText("22d old");
+    // A stale knowledge file carries the warning icon...
+    const legacyWorker = repos.filter({ hasText: "legacy-worker" });
+    await expect(legacyWorker).toContainText("45d old");
+    await expect(legacyWorker.locator(".af-tag svg")).toHaveCount(1);
+    await expect(legacyWorker).not.toContainText("archived");
+    // ...an archived repository is tagged as archived, keeps its age, and has
+    // no warning however old the file is.
+    const retiredDocs = repos.filter({ hasText: "retired-docs" });
+    await expect(retiredDocs).toContainText("archived");
+    await expect(retiredDocs).toContainText("120d old");
+    // Why, in visible text rather than a tooltip.
+    await expect(retiredDocs).toContainText(
+      "skipped by bun run repo and /sync-knowledge --all",
+    );
+    await expect(legacyWorker).not.toContainText("skipped by");
+    await expect(retiredDocs.locator(".af-tag svg")).toHaveCount(0);
+    await expect(repos.filter({ hasText: "archived" })).toHaveCount(1);
 
     const conventions = page.getByRole("region", {
       name: "Shared conventions",
