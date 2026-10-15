@@ -68,6 +68,8 @@ export interface ReadDeps {
   configHome?: string | undefined;
   /** Runs git for the worktree registry; defaults to the real one. */
   git?: GitRun | undefined;
+  /** The shift records (`<home>/shifts`): eligibility reads how a shift whose worktree holds a queued bead's reservation stands. */
+  shiftsDir?: string | undefined;
 }
 
 /**
@@ -693,6 +695,7 @@ export function workspaceReads(deps: ReadDeps) {
       runBd: deps.runBd,
       ledgerPath: deps.ledgerPath,
       host: { busy: false },
+      shiftsDir: deps.shiftsDir,
     });
   });
   const eligibility: ReadRoute<null> = {

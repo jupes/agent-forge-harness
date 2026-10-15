@@ -12,8 +12,10 @@ import {
   eligibility,
   type QueuedBead,
   readEligibility,
+  type ShiftWorktree,
 } from "./eligibility";
 import { QUEUED_EXACT_ARGS } from "./queue";
+import { type ShiftStanding, writeShiftRecord } from "./shift-store";
 
 const files = (...globs: string[]) => `## Files\n${globs.join("\n")}\n`;
 
@@ -433,6 +435,149 @@ describe("eligibility: what holds a bead back", () => {
   });
 });
 
+describe("eligibility: a queued bead whose reservation a shift's worktree still holds (x1gs.5.4.13)", () => {
+  const SHIFT = "shift-20261015-120000-0a0b";
+  const TREE = `c:/repo/trees/${SHIFT}-1`;
+  const inShift = (beadId: string, globs: string[]): Reservation => ({
+    ...reservation(beadId, globs),
+    worktree: TREE,
+  });
+  const standing = (state: ShiftStanding): ReadonlyMap<string, ShiftWorktree> =>
+    new Map([[TREE, { shiftId: SHIFT, standing: state }]]);
+
+  test("in a live shift's worktree it waits for that run, naming the worktree and the shift, and is eligible once the reservation is released", () => {
+    const one = bead("t-1", { description: files("src/**") });
+    const answer = eligibility(
+      input([one], {
+        active: [inShift("t-1", ["src/**"])],
+        shiftWorktrees: standing("live"),
+      }),
+    );
+    expect(answer.eligible).toEqual([]);
+    expect(answer.waiting).toEqual([
+      {
+        id: "t-1",
+        why: `its earlier run in ${TREE} (shift ${SHIFT}) has not ended: it starts again once that run releases its reservation`,
+        waitsOnShift: SHIFT,
+        globs: ["src/**"],
+        conservative: false,
+      },
+    ]);
+    const released = eligibility(
+      input([one], { active: [], shiftWorktrees: standing("live") }),
+    );
+    expect(ids(released.eligible)).toEqual(["t-1"]);
+  });
+
+  test("in a dead shift's worktree it waits too, and the reason says forge:shift recover frees it", () => {
+    const answer = eligibility(
+      input([bead("t-1", { description: files("src/**") })], {
+        active: [inShift("t-1", ["src/**"])],
+        shiftWorktrees: standing("dead"),
+      }),
+    );
+    expect(answer.eligible).toEqual([]);
+    expect(answer.waiting[0]).toMatchObject({ id: "t-1", waitsOnShift: SHIFT });
+    expect(answer.waiting[0]?.why).toContain("process has ended");
+    expect(answer.waiting[0]?.why).toContain(
+      `bun run forge:shift recover ${SHIFT} frees it`,
+    );
+  });
+
+  test("in the worktree of a shift whose record was not read it waits, and says how the reservation is freed", () => {
+    const answer = eligibility(
+      input([bead("t-1", { description: files("src/**") })], {
+        active: [inShift("t-1", ["src/**"])],
+        shiftWorktrees: standing("unknown"),
+      }),
+    );
+    expect(answer.eligible).toEqual([]);
+    expect(answer.waiting[0]).toMatchObject({ id: "t-1", waitsOnShift: SHIFT });
+    expect(answer.waiting[0]?.why).toContain("whose record was not read here");
+    expect(answer.waiting[0]?.why).toContain("forge:reservations release");
+  });
+
+  test("a reservation in a stopped shift's worktree, or in one made outside any shift (by hand), holds its bead back no more than before: it is eligible", () => {
+    const one = bead("t-1", { description: files("src/**") });
+    for (const [active, shiftWorktrees] of [
+      [[inShift("t-1", ["src/**"])], standing("stopped")],
+      [[reservation("t-1", ["src/**"])], standing("live")],
+      [[reservation("t-1", ["src/**"])], undefined],
+    ] as const) {
+      const answer = eligibility(
+        input([one], {
+          active,
+          ...(shiftWorktrees !== undefined ? { shiftWorktrees } : {}),
+        }),
+      );
+      expect(ids(answer.eligible)).toEqual(["t-1"]);
+      expect(answer.waiting).toEqual([]);
+    }
+  });
+
+  test("it keeps its place while it waits: what it holds still claims, so an overlapping bead waits on it and one that does not overlap is eligible", () => {
+    const answer = eligibility(
+      input(
+        [
+          bead("t-1", { description: files("src/**") }),
+          bead("t-2", { description: files("src/a.ts") }),
+          bead("t-3", { description: files("docs/x.md") }),
+        ],
+        {
+          active: [inShift("t-1", ["src/**"])],
+          shiftWorktrees: standing("live"),
+        },
+      ),
+    );
+    expect(ids(answer.eligible)).toEqual(["t-3"]);
+    expect(
+      answer.waiting.map((w) => [w.id, w.waitsOn ?? null, w.waitsOnShift]),
+    ).toEqual([
+      ["t-1", null, SHIFT],
+      ["t-2", "t-1", undefined],
+    ]);
+  });
+
+  test("an in-progress queued bead that waits for its earlier run still claims its current map, beside what it holds", () => {
+    const answer = eligibility(
+      input(
+        [
+          bead("t-1", { status: "in_progress", description: files("lib/**") }),
+          bead("t-2", { description: files("lib/c.ts") }),
+        ],
+        {
+          readyIds: new Set(["t-2"]),
+          active: [inShift("t-1", ["src/**"])],
+          shiftWorktrees: standing("live"),
+        },
+      ),
+    );
+    expect(answer.eligible).toEqual([]);
+    expect(answer.waiting).toEqual([
+      expect.objectContaining({
+        id: "t-1",
+        waitsOnShift: SHIFT,
+        globs: ["lib/**"],
+      }),
+      expect.objectContaining({ id: "t-2", waitsOn: "t-1" }),
+    ]);
+  });
+
+  test("a running bead's reservation in a live shift's worktree (that shift's own run, not queued) is a claim as before: an overlapping queued bead waits on it, naming no shift", () => {
+    const answer = eligibility(
+      input([bead("t-2", { description: files("src/a.ts") })], {
+        active: [inShift("t-1", ["src/**"])],
+        shiftWorktrees: standing("live"),
+      }),
+    );
+    expect(answer.eligible).toEqual([]);
+    expect(answer.waiting).toEqual([
+      expect.objectContaining({ id: "t-2", waitsOn: "t-1" }),
+    ]);
+    expect(answer.waiting[0]?.waitsOnShift).toBeUndefined();
+  });
+});
+
 describe("readEligibility: from bd and the ledger", () => {
   const home = mkdtempSync(join(tmpdir(), "af-eligibility-"));
   const root = join(home, "checkout");
@@ -594,6 +739,108 @@ describe("readEligibility: from bd and the ledger", () => {
     if (!answer.ok) throw new Error(answer.error);
     expect(ids(answer.value.eligible)).toEqual(["t-1"]);
     expect(answer.value.waiting).toEqual([]);
+  });
+
+  test("a queued bead's reservation in a shift's worktree is read against that shift's record: a live, a dead or an unrecorded shift's worktree holds its bead back, a stopped shift's and a by-hand one do not; without the records every shift's worktree does", async () => {
+    const checkout = join(home, "shifts checkout");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    const space = resolveCheckout(checkout).workspace;
+    const shiftsDir = join(home, "shifts");
+    const shiftIds = {
+      live: "shift-20261015-120000-0001",
+      dead: "shift-20261015-120000-0002",
+      stopped: "shift-20261015-120000-0003",
+      none: "shift-20261015-120000-0004",
+    } as const;
+    const record = (shiftId: string, pid: number, stopped = false) =>
+      writeShiftRecord(shiftsDir, {
+        shiftId,
+        pid,
+        workspace: space,
+        startedAt: "2026-10-15T12:00:00.000Z",
+        deadline: "2026-10-15T14:00:00.000Z",
+        state: stopped ? "stopped" : "running",
+        options: {
+          concurrency: 2,
+          forMs: 7_200_000,
+          maxBeads: 4,
+          maxUsd: 10,
+          repairs: 0,
+        },
+        spentUsd: 0,
+        unpriced: 0,
+        beads: [],
+      });
+    record(shiftIds.live, process.pid);
+    // No process has this id (shift-recover.test.ts uses it as dead too).
+    record(shiftIds.dead, 2_000_000_000);
+    record(shiftIds.stopped, process.pid, true);
+    const held: Array<[string, string]> = [
+      ["t-live", `${space}/trees/${shiftIds.live}-1`],
+      ["t-dead", `${space}/trees/${shiftIds.dead}-2`],
+      ["t-stopped", `${space}/trees/${shiftIds.stopped}-1`],
+      ["t-none", `${space}/trees/${shiftIds.none}-1`],
+      // Made by hand: not a shift's name, and not under trees/ either.
+      ["t-hand", `${space}/trees/t-hand`],
+      ["t-odd", `${space}/elsewhere/${shiftIds.live}-1`],
+    ];
+    for (const [beadId, worktree] of held)
+      appendEvent(
+        {
+          kind: "reservation.acquired",
+          workspace: space,
+          beadId,
+          payload: { worktree, globs: [`src/${beadId}/**`] },
+        },
+        { path: ledger },
+      );
+    const queued = held.map(([id]) =>
+      bead(id, { description: files(`src/${id}/**`) }),
+    );
+    const bd = stubBd({ queued, ready: queued.map((b) => b.id) });
+
+    const read = await readEligibility({
+      root: checkout,
+      runBd: bd.run,
+      ledgerPath: ledger,
+      host: { busy: false },
+      shiftsDir,
+    });
+    if (!read.ok) throw new Error(read.error);
+    expect(ids(read.value.eligible).sort()).toEqual([
+      "t-hand",
+      "t-odd",
+      "t-stopped",
+    ]);
+    const waits = new Map(read.value.waiting.map((w) => [w.id, w]));
+    expect(waits.get("t-live")).toMatchObject({ waitsOnShift: shiftIds.live });
+    expect(waits.get("t-live")?.why).toContain("has not ended");
+    expect(waits.get("t-dead")).toMatchObject({ waitsOnShift: shiftIds.dead });
+    expect(waits.get("t-dead")?.why).toContain(
+      `forge:shift recover ${shiftIds.dead}`,
+    );
+    expect(waits.get("t-none")).toMatchObject({ waitsOnShift: shiftIds.none });
+    expect(waits.get("t-none")?.why).toContain("record was not read here");
+
+    // Without the records, nothing tells a stopped shift from a live one.
+    const blind = await readEligibility({
+      root: checkout,
+      runBd: bd.run,
+      ledgerPath: ledger,
+      host: { busy: false },
+    });
+    if (!blind.ok) throw new Error(blind.error);
+    expect(ids(blind.value.eligible).sort()).toEqual(["t-hand", "t-odd"]);
+    expect(
+      blind.value.waiting.map((w) => [w.id, w.waitsOnShift]).sort(),
+    ).toEqual([
+      ["t-dead", shiftIds.dead],
+      ["t-live", shiftIds.live],
+      ["t-none", shiftIds.none],
+      ["t-stopped", shiftIds.stopped],
+    ]);
+    for (const wait of blind.value.waiting)
+      expect(wait.why).toContain("record was not read here");
   });
 
   test("any other bd failure is an error, not an empty queue", async () => {

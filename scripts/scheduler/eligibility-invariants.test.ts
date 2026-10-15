@@ -4,13 +4,23 @@
  * (cycles included), reservations and host, no two eligible beads overlap,
  * no eligible bead overlaps another bead's live reservation, no two beads
  * wait on each other, and only ready, non-epic beads on a quiet host are
- * eligible.
+ * eligible. Some reservations are put in shifts' worktrees (from a second
+ * seed, so the queues themselves are the same as without them): no eligible
+ * bead holds one whose shift has not stopped, and every other bead is
+ * answered exactly as it is without the shifts.
  */
 
 import { expect, test } from "bun:test";
 import type { Reservation } from "../../types/hearth";
-import { eligibility, type QueuedBead, type StaleWhy } from "./eligibility";
+import {
+  type Eligibility,
+  eligibility,
+  type QueuedBead,
+  type ShiftWorktree,
+  type StaleWhy,
+} from "./eligibility";
 import { mapsOverlap } from "./reservations";
+import type { ShiftStanding } from "./shift-store";
 
 /** A small deterministic generator (mulberry32). */
 function random(seed: number): () => number {
@@ -36,11 +46,33 @@ const GLOBS = [
   "**",
 ];
 
+const STANDINGS: readonly ShiftStanding[] = [
+  "live",
+  "dead",
+  "stopped",
+  "unknown",
+];
+
+/** Each bead's answer, in the walk's order within eligible and within waiting. */
+function answers(answer: Eligibility): Array<[string, string]> {
+  return [
+    ...answer.eligible.map(
+      (e) => [e.id, JSON.stringify(e)] as [string, string],
+    ),
+    ...answer.waiting.map((w) => [w.id, JSON.stringify(w)] as [string, string]),
+  ];
+}
+
 test("3000 random queues keep every invariant", () => {
   const next = random(20261012);
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)] as T;
+  // A second generator decides the shifts: the first one's sequence, and so
+  // every queue, is the same as before shifts were added.
+  const nextShift = random(20261015);
   const problems: string[] = [];
+  /** Beads that waited on a shift, over all rounds: the shift invariants are not vacuous. */
+  let shiftWaits = 0;
 
   for (let round = 0; round < 3000; round++) {
     const count = 1 + Math.floor(next() * 6);
@@ -92,15 +124,78 @@ test("3000 random queues keep every invariant", () => {
     const host =
       next() < 0.1 ? { busy: true, reason: "load" } : { busy: false };
 
+    // Some reservations sit in one of three shifts' worktrees, each shift in
+    // a standing of its own this round.
+    const standingOf = [0, 1, 2].map(
+      () =>
+        STANDINGS[Math.floor(nextShift() * STANDINGS.length)] as ShiftStanding,
+    );
+    const shiftWorktrees = new Map<string, ShiftWorktree>();
+    const placed = active.map((reservation) => {
+      if (nextShift() >= 0.4) return reservation;
+      const k = Math.floor(nextShift() * 3);
+      const shiftId = `shift-20261015-120000-000${k}`;
+      const worktree = `c:/repo/trees/${shiftId}-${1 + Math.floor(nextShift() * 2)}`;
+      shiftWorktrees.set(worktree, {
+        shiftId,
+        standing: standingOf[k] as ShiftStanding,
+      });
+      return { ...reservation, worktree };
+    });
+
     const answer = eligibility({
       candidates,
       readyIds,
-      active,
+      active: placed,
+      staleIds,
+      host,
+      shiftWorktrees,
+    });
+    const without = eligibility({
+      candidates,
+      readyIds,
+      active: placed,
       staleIds,
       host,
     });
     const where = `round ${round}`;
-    const live = active.filter((r) => !staleIds.has(r.beadId));
+    const live = placed.filter((r) => !staleIds.has(r.beadId));
+
+    // A reservation in the worktree of a shift that has not stopped holds its bead.
+    const inShift = (id: string, shiftId?: string) =>
+      live.some((r) => {
+        const shift = shiftWorktrees.get(r.worktree);
+        return (
+          r.beadId === id &&
+          shift !== undefined &&
+          shift.standing !== "stopped" &&
+          (shiftId === undefined || shift.shiftId === shiftId)
+        );
+      });
+    for (const e of answer.eligible)
+      if (inShift(e.id))
+        problems.push(
+          `${where}: ${e.id} eligible while a shift's worktree holds its reservation`,
+        );
+    const onShift = new Set<string>();
+    for (const w of answer.waiting) {
+      if (w.waitsOnShift === undefined) continue;
+      onShift.add(w.id);
+      shiftWaits++;
+      if (w.waitsOn !== undefined)
+        problems.push(`${where}: ${w.id} waits on a shift and on a bead`);
+      if (!inShift(w.id, w.waitsOnShift))
+        problems.push(
+          `${where}: ${w.id} waits on ${w.waitsOnShift}, whose worktree holds nothing of it`,
+        );
+    }
+    // Every other bead is answered as it is without the shifts, in the same order.
+    const rest = (list: Array<[string, string]>) =>
+      JSON.stringify(list.filter(([id]) => !onShift.has(id)));
+    if (rest(answers(answer)) !== rest(answers(without)))
+      problems.push(
+        `${where}: a bead that waits on no shift is answered otherwise than without the shifts`,
+      );
 
     for (let i = 0; i < answer.eligible.length; i++)
       for (let j = i + 1; j < answer.eligible.length; j++) {
@@ -145,4 +240,5 @@ test("3000 random queues keep every invariant", () => {
       problems.push(`${where}: not every candidate was answered`);
   }
   expect(problems.slice(0, 10)).toEqual([]);
+  expect(shiftWaits).toBeGreaterThan(100);
 });
