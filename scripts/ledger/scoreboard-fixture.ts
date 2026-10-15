@@ -1,7 +1,10 @@
 /**
  * A ledger for the scoreboard's tests: two smiths, an interactive session
  * that names no smith, events that carry no executor, a tool call (which the
- * scoreboard does not read) and one event from another checkout. Shared by
+ * scoreboard does not read) and one event from another checkout. Council runs
+ * cover each way findings can be (not) reported: a smith with two runs that
+ * reported them and one that did not, a smith with one, an interactive
+ * session with no council run, and a cancelled run with no executor. Shared by
  * `scoreboard.test.ts` and the hearth route's test, so the CLI and the route
  * are compared over the same events.
  */
@@ -157,7 +160,46 @@ export const SCOREBOARD_EVENTS: readonly FixtureEvent[] = [
     ts: day10("09:50"),
     runId: "run-b",
     executor: JOURNEYMAN,
-    payload: { councilRunId: "c-1", outcome: "pass", costUsd: 0.1 },
+    payload: {
+      councilRunId: "c-1",
+      outcome: "pass",
+      costUsd: 0.1,
+      findings: { blocker: 0, high: 1, medium: 1, low: 2 },
+    },
+  },
+  // Two more finished runs of the same smith: one with findings, and one
+  // written before the event carried any (its payload has no `findings`).
+  {
+    kind: "council.run.started",
+    ts: day10("09:52"),
+    runId: "run-b",
+    executor: JOURNEYMAN,
+    payload: { councilRunId: "c-3", profile: "default-review" },
+  },
+  {
+    kind: "council.run.finished",
+    ts: day10("09:55"),
+    runId: "run-b",
+    executor: JOURNEYMAN,
+    payload: {
+      councilRunId: "c-3",
+      outcome: "fail",
+      findings: { blocker: 1, high: 0, medium: 2, low: 0 },
+    },
+  },
+  {
+    kind: "council.run.started",
+    ts: day10("09:56"),
+    runId: "run-b",
+    executor: JOURNEYMAN,
+    payload: { councilRunId: "c-4", profile: "default-review" },
+  },
+  {
+    kind: "council.run.finished",
+    ts: day10("09:58"),
+    runId: "run-b",
+    executor: JOURNEYMAN,
+    payload: { councilRunId: "c-4", outcome: "pass" },
   },
   // A tool call names a run of its own; the scoreboard reads no tool calls.
   {
@@ -215,6 +257,24 @@ export const SCOREBOARD_EVENTS: readonly FixtureEvent[] = [
     runId: "run-c",
     executor: CODEX,
     payload: { verdict: "unreadable" },
+  },
+  {
+    kind: "council.run.started",
+    ts: day10("11:30"),
+    runId: "run-c",
+    executor: CODEX,
+    payload: { councilRunId: "c-5", profile: "default-review" },
+  },
+  {
+    kind: "council.run.finished",
+    ts: day10("11:40"),
+    runId: "run-c",
+    executor: CODEX,
+    payload: {
+      councilRunId: "c-5",
+      outcome: "fail",
+      findings: { blocker: 0, high: 0, medium: 0, low: 4 },
+    },
   },
   // An interactive session that entered a run's phase; its end reason is its host's.
   {

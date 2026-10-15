@@ -1,3 +1,7 @@
+---
+argument-hint: "<pr | plan | file | bead> <source> | <text> [--profile <path>]"
+---
+
 # /council — Deliberative multi-provider review
 
 Review a PR, plan, research document, Beads issue, or supplied text using the shared council engine.

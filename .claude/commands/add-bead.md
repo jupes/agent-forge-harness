@@ -1,3 +1,7 @@
+---
+argument-hint: "<text>"
+---
+
 # /add-bead — Capture work as a Beads issue
 
 Create a tracked Beads issue from free text in one step, in the harness tracker (for the harness or one of its sub-repos).

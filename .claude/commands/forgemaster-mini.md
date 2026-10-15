@@ -1,3 +1,7 @@
+---
+argument-hint: "<task | BEADS-ID | JIRA-KEY> [--smith <name>]"
+---
+
 # /forgemaster-mini — Trimmed Forge pipeline for small tasks
 
 Run the **low-ceremony** Forge path for small, clear-scope work (bugs, chores, config, single-file
