@@ -21,6 +21,7 @@ import {
   SURFACE_HEADER,
   TOKEN_ROUTE,
 } from "../../scripts/hearth/paths";
+import { STATIC_COPY_ERROR, servedStatically } from "./hearth-read";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -61,9 +62,15 @@ async function fetchToken(fetchImpl: Fetch): Promise<string> {
   return token;
 }
 
+export interface OperatorClientOptions {
+  /** A static copy: no token is asked for and nothing is sent; every request fails as `NotSent`. */
+  staticCopy?: boolean;
+}
+
 /** A poster and a reader with one token cache of their own; `fetchImpl` is replaced in tests. */
 export function createOperatorClient(
   fetchImpl: Fetch = (input, init) => fetch(input, init),
+  options: OperatorClientOptions = {},
 ): OperatorClient {
   let token: Promise<string> | null = null;
 
@@ -80,6 +87,7 @@ export function createOperatorClient(
   };
 
   const heldToken = async (): Promise<string> => {
+    if (options.staticCopy) throw new NotSent(STATIC_COPY_ERROR);
     try {
       return await currentToken();
     } catch (error) {
@@ -133,7 +141,12 @@ export function createOperatorPost(
   return createOperatorClient(fetchImpl).post;
 }
 
-/** The page's client: one token cache for every island, posts and reads alike. */
-const pageClient = createOperatorClient();
+/**
+ * The page's client: one token cache for every island, posts and reads alike.
+ * On a static copy it asks for nothing: no hearth is behind it.
+ */
+const pageClient = createOperatorClient(undefined, {
+  staticCopy: servedStatically(),
+});
 export const operatorPost: OperatorPost = pageClient.post;
 export const operatorRead: OperatorRead = pageClient.read;

@@ -1,19 +1,18 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   writeFileSync,
 } from "fs";
-import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEvent } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
+import { scratchDirs } from "../test-scratch";
 import {
   codexSyncDirectory,
   createCodexAdapter,
@@ -35,13 +34,16 @@ const fake = (mode = "ok") => [
 ];
 
 const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
+const scratch = scratchDirs();
+afterEach(() => {
+  // A ledger file still open cannot be removed on Windows: close first.
+  for (const ledger of ledgers.splice(0)) closeLedger(ledger);
+  scratch.cleanup();
 });
 
 /** A harness root and a run directory that are each their own checkout, and a ledger file nothing else writes. */
 function setup() {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "forge codex ")));
+  const root = realpathSync.native(scratch.make("forge codex "));
   mkdirSync(join(root, ".git"));
   const worktree = join(root, "wt dir");
   mkdirSync(join(worktree, ".git"), { recursive: true });
@@ -84,7 +86,7 @@ function plantSyncScript(dir: string): void {
  * `codex:sync`.
  */
 function harnessWithLinkedWorktree() {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "codex sync ")));
+  const root = realpathSync.native(scratch.make("codex sync "));
   const main = join(root, "harness main");
   const admin = join(main, ".git", "worktrees", "linked");
   mkdirSync(admin, { recursive: true });
@@ -234,7 +236,7 @@ describe("codex adapter", () => {
         prepared.push(request.workspace);
       },
     });
-    const root = mkdtempSync(join(tmpdir(), "codex prep "));
+    const root = scratch.make("codex prep ");
     mkdirSync(join(root, ".git"));
     const handle = await adapter.spawn({
       beadId: "b",

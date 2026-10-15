@@ -109,6 +109,16 @@
   color: var(--color-neutral-600);
 }
 
+/* An archived repository's tag: neutral-500 on the surface is 5.2:1 at 11px; the muted tone is 3.5:1. */
+.af-tag-archived {
+  border-color: var(--color-neutral-700);
+  color: var(--color-neutral-500);
+}
+
+.af-archived-note {
+  color: var(--color-neutral-500);
+}
+
 /* ─── cards ────────────────────────────────────────────────────────────── */
 
 .af-card {

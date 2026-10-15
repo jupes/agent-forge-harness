@@ -11,10 +11,15 @@ import {
   withStatus,
 } from "../../docs/js/app-state";
 import {
+  type HearthReadOptions,
+  READ_TIMEOUT_MS,
+  STATIC_COPY_ERROR,
+} from "../../docs/js/hearth-read";
+import {
   LiveBannerView,
   LiveStatsView,
 } from "../../docs/js/islands/LiveStatus";
-import type { DevApiState } from "../../docs/js/use-dev-api";
+import { type DevApiState, fetchDevApi } from "../../docs/js/use-dev-api";
 import {
   BATCH_MAX,
   BATCH_MS,
@@ -2328,22 +2333,276 @@ describe("a view that reads an operator route, and reloads after its own change"
       async () =>
         new Response(JSON.stringify(body), { status });
     expect(
-      await readOperatorRoute<number[]>(
-        "/queue",
-        answering({ ok: true, data: [1, 2], error: null }),
-      ),
+      await readOperatorRoute<number[]>("/queue", {
+        fetch: answering({ ok: true, data: [1, 2], error: null }),
+      }),
     ).toEqual([1, 2]);
     await expect(
-      readOperatorRoute(
-        "/eligibility",
-        answering(
+      readOperatorRoute("/eligibility", {
+        fetch: answering(
           { ok: false, data: null, error: "bd list failed: locked" },
           502,
         ),
-      ),
+      }),
     ).rejects.toThrow("bd list failed: locked");
     await expect(
-      readOperatorRoute("/queue", answering("<html>", 404)),
+      readOperatorRoute("/queue", { fetch: answering("<html>", 404) }),
     ).rejects.toThrow("HTTP 404");
+  });
+});
+
+// ── A view's read of a hearth that hangs ────────────────────────────────────
+
+/**
+ * A stand-in hearth for reads, on a loopback port, that never answers in
+ * full. `silent`: it accepts each connection and reads nothing. `headers`: it
+ * answers each request with its headers and the start of a JSON body, then
+ * writes nothing more and never ends. It keeps every connection and notes
+ * each one's close. `fetch` sends the page's relative paths to it.
+ */
+async function hungReads(mode: "silent" | "headers") {
+  const sockets: Socket[] = [];
+  const closed = new Set<Socket>();
+  const server = createNetServer((socket) => {
+    sockets.push(socket);
+    socket.once("close", () => closed.add(socket));
+    socket.on("error", () => undefined);
+    if (mode === "silent") return;
+    socket.once("data", () => {
+      socket.write(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
+          '9\r\n{"ok":tru\r\n',
+      );
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  let answered = 0;
+  return {
+    sockets,
+    closed,
+    /** How many requests got their response headers. */
+    answered: () => answered,
+    fetch: async (input: string, init?: RequestInit): Promise<Response> => {
+      const response = await fetch(`${origin}${input}`, init);
+      answered += 1;
+      return response;
+    },
+    close: () =>
+      new Promise<void>((done) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => done());
+      }),
+  };
+}
+
+/** A stream client that only watches: `tell` stands for an event of the watched kinds. */
+function watchedOnly(): { client: StreamClient; tell(): void } {
+  const callbacks: Array<(reason: WatchReason) => void> = [];
+  return {
+    client: {
+      getState: () => INITIAL_LIVE_STATE,
+      subscribe: () => () => undefined,
+      watch: (_kinds, callback) => {
+        callbacks.push(callback);
+        return () => undefined;
+      },
+    },
+    tell() {
+      for (const callback of callbacks) callback("events");
+    },
+  };
+}
+
+const NO_ANSWER = `The control plane did not answer within ${READ_TIMEOUT_MS / 1000} s.`;
+
+describe("a view's read of a hearth that hangs", () => {
+  for (const [route, read] of [
+    [
+      "an operator read route (useOperatorRead)",
+      (options: HearthReadOptions) =>
+        readOperatorRoute<unknown>("/queue", options),
+    ],
+    [
+      "a dev-only route (useLiveRead)",
+      (options: HearthReadOptions) =>
+        fetchDevApi<unknown>("/forge-run", options),
+    ],
+  ] as const) {
+    test(`${route}: a first read that gets no answer shows an error once READ_TIMEOUT_MS has passed, its connection is closed, and the next event reads again`, async () => {
+      const hearth = await hungReads("silent");
+      const clock = standInClock();
+      const watched = watchedOnly();
+      let state: DevApiState<unknown> = {
+        data: null,
+        error: null,
+        loading: true,
+      };
+      const stop = startLiveRead<unknown>({
+        client: watched.client,
+        kinds: ["run.phase.completed"],
+        timers: clock.timers,
+        now: clock.now,
+        load: () => read({ fetch: hearth.fetch, timers: clock.timers }),
+        onChange: (update) => {
+          state = update(state);
+        },
+      });
+      try {
+        await eventually(() => hearth.sockets.length === 1);
+        clock.advance(READ_TIMEOUT_MS - 1);
+        await new Promise((done) => setTimeout(done, 50));
+        expect(state.loading).toBe(true);
+        expect(hearth.closed.size).toBe(0);
+
+        clock.advance(1);
+        await eventually(() => !state.loading);
+        expect(state).toEqual({ data: null, error: NO_ANSWER, loading: false });
+        // The request was dropped: the stand-in sees its connection close.
+        await eventually(() => hearth.closed.size === 1);
+
+        // The refetcher holds no dead read: the next event reads again.
+        watched.tell();
+        await eventually(() => hearth.sockets.length === 2);
+      } finally {
+        stop();
+        await hearth.close();
+      }
+    }, 20_000);
+  }
+
+  test("a hearth that sends its headers and never ends the body is given up at the same limit", async () => {
+    const hearth = await hungReads("headers");
+    const clock = standInClock();
+    let outcome: unknown = "pending";
+    void readOperatorRoute("/queue", {
+      fetch: hearth.fetch,
+      timers: clock.timers,
+    }).then(
+      (data) => {
+        outcome = data;
+      },
+      (error: Error) => {
+        outcome = error.message;
+      },
+    );
+    try {
+      // The answer has begun: only its body is missing.
+      await eventually(() => hearth.answered() === 1);
+      clock.advance(READ_TIMEOUT_MS - 1);
+      await new Promise((done) => setTimeout(done, 50));
+      expect(outcome).toBe("pending");
+      clock.advance(1);
+      await eventually(() => outcome !== "pending");
+      expect(outcome).toBe(NO_ANSWER);
+      await eventually(() => hearth.closed.size === 1);
+    } finally {
+      await hearth.close();
+    }
+  }, 20_000);
+
+  test("an answer that comes just inside the limit is read", async () => {
+    const clock = standInClock();
+    const held: Array<(response: Response) => void> = [];
+    const reading = readOperatorRoute<number[]>("/queue", {
+      fetch: (_input, init) =>
+        new Promise<Response>((done, refuse) => {
+          held.push(done);
+          init?.signal?.addEventListener("abort", () =>
+            refuse(new Error("aborted")),
+          );
+        }),
+      timers: clock.timers,
+    });
+    clock.advance(READ_TIMEOUT_MS - 1);
+    expect(held).toHaveLength(1);
+    held[0]?.(Response.json({ ok: true, data: [7], error: null }));
+    expect(await reading).toEqual([7]);
+    // Nothing is left to fire once the read is over.
+    expect(clock.waits()).toEqual([]);
+  });
+});
+
+describe("a read on a static copy", () => {
+  /** A `fetch` stand-in that records every request and answers as the hearth would. */
+  function recorded() {
+    const asked: string[] = [];
+    return {
+      asked,
+      fetch: async (input: string): Promise<Response> => {
+        asked.push(input);
+        return Response.json({ ok: true, data: "live", error: null });
+      },
+    };
+  }
+
+  test("an operator read route is not asked for: the read fails at once, saying live data is not available there", async () => {
+    const hearth = recorded();
+    await expect(
+      readOperatorRoute("/beads/counts", {
+        fetch: hearth.fetch,
+        staticCopy: true,
+      }),
+    ).rejects.toThrow(STATIC_COPY_ERROR);
+    expect(hearth.asked).toEqual([]);
+  });
+
+  test("a dev-only route is not asked for either", async () => {
+    const hearth = recorded();
+    await expect(
+      fetchDevApi("/repos-knowledge", {
+        fetch: hearth.fetch,
+        staticCopy: true,
+      }),
+    ).rejects.toThrow(STATIC_COPY_ERROR);
+    expect(hearth.asked).toEqual([]);
+  });
+
+  test("a view on a static copy shows that error and keeps it: its next read asks for nothing either", async () => {
+    const hearth = recorded();
+    const watched = watchedOnly();
+    let state: DevApiState<unknown> = {
+      data: null,
+      error: null,
+      loading: true,
+    };
+    const stop = startLiveRead<unknown>({
+      client: watched.client,
+      kinds: ["bead.transitioned"],
+      load: () =>
+        readOperatorRoute("/queue", { fetch: hearth.fetch, staticCopy: true }),
+      onChange: (update) => {
+        state = update(state);
+      },
+    });
+    await settle();
+    expect(state).toEqual({
+      data: null,
+      error: STATIC_COPY_ERROR,
+      loading: false,
+    });
+    watched.tell();
+    await settle();
+    expect(hearth.asked).toEqual([]);
+    stop();
+  });
+
+  test("served by the dev server, the same reads ask the hearth", async () => {
+    const hearth = recorded();
+    expect(
+      await readOperatorRoute<string>("/beads/counts", {
+        fetch: hearth.fetch,
+        staticCopy: false,
+      }),
+    ).toBe("live");
+    expect(
+      await fetchDevApi<string>("/repos-knowledge", { fetch: hearth.fetch }),
+    ).toBe("live");
+    expect(hearth.asked).toEqual([
+      `${API_PREFIX}/beads/counts`,
+      `${API_PREFIX}/dev-api/repos-knowledge`,
+    ]);
   });
 });
