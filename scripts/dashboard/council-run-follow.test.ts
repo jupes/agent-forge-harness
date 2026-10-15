@@ -247,6 +247,22 @@ describe("followCouncilRun over a stand-in stream", () => {
     expect(h.errors).toEqual([]);
   });
 
+  test("a delta that comes before the new connection's whole job is not applied to the job the last connection was sent", async () => {
+    const h = follow(async () => jobOf(3));
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.end(0);
+    await flush();
+    h.clock.fire();
+    expect(h.stream.connections).toHaveLength(2);
+    expect(h.reads()).toBe(1);
+
+    // Made from a job of three events, and the last connection's job has two.
+    h.stream.send(1, deltaOf(jobOf(3), jobOf(4)));
+    expect(h.jobs.map((job) => job.events.length)).toEqual([2, 3]);
+    expect(h.stream.connections[1]?.closed).toBe(true);
+    expect(h.reads()).toBe(2);
+  });
+
   describe("a delta that cannot be applied reads the run again", () => {
     const base = jobOf(2);
     const fine = councilJobDelta(base, jobOf(3));
