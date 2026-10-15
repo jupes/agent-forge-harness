@@ -371,7 +371,7 @@ type Checkout = {
   root: string;
   /**
    * For another worktree, the real path that was verified (the root itself):
-   * a file is read there only while the root still resolves to it. Absent
+   * a file is located there only while the root still resolves to it. Absent
    * for the workspace.
    */
   realRoot?: string;
@@ -384,12 +384,13 @@ type BeadRun = { slug: string; state: ForgeState; checkout: Checkout };
 
 /**
  * Whether a file located in a checkout may still be read there: its real path
- * still resolves to itself, and a verified root still to its real path.
- * Checked just before the read; a change between this and the read itself is
- * not seen.
+ * still resolves to itself. That fails when the checkout's root, or any
+ * directory on the way, has been moved away and a link put in its place, so
+ * it holds the root too. Checked just before the read; a change between this
+ * and the read itself is not seen.
  */
-function stillInside(realPath: string, realRoot: string | undefined): boolean {
-  return (realRoot === undefined || stillAt(realRoot)) && stillAt(realPath);
+function stillInside(realPath: string): boolean {
+  return stillAt(realPath);
 }
 
 /**
@@ -419,7 +420,7 @@ function runsIn(
         root,
         realRoot,
       );
-      if (found.ok && stillInside(found.path, realRoot))
+      if (found.ok && stillInside(found.path))
         state = parseState(readFileSync(found.path, "utf8"));
     } catch {
       state = null;
@@ -662,8 +663,8 @@ async function runCheckouts(
     if (!hasRunsDirectory(path)) continue;
     // The real path, resolved once, here, is what is verified and what every
     // read below is held to: a file is located there only while the root
-    // still resolves to it, and read only while it and its file still
-    // resolve to themselves (checked just before the read; a change between
+    // still resolves to it, and read only while the file's real path still
+    // resolves to itself (checked just before the read; a change between
     // that check and the read itself is not seen). It is resolved by the
     // function `locateWorkspaceFile` resolves each file with, so the two
     // compare spelling for spelling (a Windows short name, a drive letter's
@@ -843,7 +844,7 @@ function linkedFileParts(
     // Just before the read: the file, and a verified root, still where they
     // were found. A directory moved away and a link put in its place since
     // the file was located would otherwise be read through.
-    if (!stillInside(found.path, realRoot)) {
+    if (!stillInside(found.path)) {
       result.parts.push(note(label, unreadable("missing", where)));
       continue;
     }
