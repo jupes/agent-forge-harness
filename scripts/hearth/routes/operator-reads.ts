@@ -31,6 +31,7 @@ import { type LoadedConfig, loadConfig } from "../../config/load";
 import { isValidSlug, summarizeRun } from "../../forge/runs";
 import { listRuns, readRunState } from "../../forge/runs-store";
 import { parseAuditArgs } from "../../ledger/audit-cli";
+import { openLedger } from "../../ledger/db";
 import {
   activeReservations,
   type EventFilter,
@@ -67,6 +68,32 @@ export interface ReadDeps {
   configHome?: string | undefined;
   /** Runs git for the worktree registry; defaults to the real one. */
   git?: GitRun | undefined;
+}
+
+/**
+ * How long the hearth waits on another connection's lock when it opens its
+ * ledger file for the first time, for a read row, the stream or an append: not
+ * at all. The ledger's own first open waits 2 s in each of its statements and
+ * attempts, synchronously, which suits an emitter that must not lose an event
+ * but holds the serving thread: on a new ledger file another connection had
+ * locked, a read row or the stream took 3 to 6 s and an action, under the
+ * runner's three audit attempts, 12 to 20 s. A short wait is no cheaper than it
+ * looks on Windows: SQLite counts the sleeps it asks for, not the time they
+ * take, and a 50 ms wait took about 340 ms there (a zero wait about 30 ms).
+ * Once the file is open its connection is reused and this is not looked at.
+ */
+export const LEDGER_FIRST_OPEN_WAIT_MS = 0;
+
+/**
+ * The hearth's ledger file, opened first with the hearth's first-open wait
+ * when this process has not opened it yet, as the `{ path }` the ledger's
+ * reads and `appendEvent` take: they then find the connection open and do not
+ * wait on their own. Throws the ledger's busy error ("database is locked")
+ * when another connection holds the lock on a file not yet open.
+ */
+export function hearthLedger(file: string): { path: string } {
+  openLedger(file, { waitMs: LEDGER_FIRST_OPEN_WAIT_MS });
+  return { path: file };
 }
 
 export const fail = <T>(error: string): ValidationResult<T> => ({
@@ -302,7 +329,7 @@ function eventsPage(page: EventPage, after: number | undefined): EventsPage {
 
 /** The reads over the ledger and the run state. */
 export function ledgerReads(deps: ReadDeps) {
-  const ledger = { path: deps.ledgerPath };
+  const ledger = (): { path: string } => hearthLedger(deps.ledgerPath);
   const { workspace } = deps;
   const sessions: ReadRoute<SessionsQuery> = {
     kind: "read",
@@ -312,7 +339,7 @@ export function ledgerReads(deps: ReadDeps) {
     validate: sessionsQuery,
     read: (query) => ({
       status: 200,
-      data: listSessions({ workspace, ...query }, ledger),
+      data: listSessions({ workspace, ...query }, ledger()),
     }),
   };
   const run: ReadRoute<RunQuery> = {
@@ -331,7 +358,7 @@ export function ledgerReads(deps: ReadDeps) {
         run: summarizeRun(state),
         state,
         events: eventsPage(
-          queryEventPage({ workspace, runId: slug, limit: events }, ledger),
+          queryEventPage({ workspace, runId: slug, limit: events }, ledger()),
           undefined,
         ),
       };
@@ -346,7 +373,7 @@ export function ledgerReads(deps: ReadDeps) {
     read: (filter) => ({
       status: 200,
       data: eventsPage(
-        queryEventPage({ ...filter, workspace }, ledger),
+        queryEventPage({ ...filter, workspace }, ledger()),
         filter.afterId,
       ),
     }),
@@ -367,7 +394,7 @@ export function ledgerReads(deps: ReadDeps) {
     validate: noParameters,
     read: () => ({
       status: 200,
-      data: activeReservations({ workspace }, ledger),
+      data: activeReservations({ workspace }, ledger()),
     }),
   };
   /**
@@ -382,7 +409,7 @@ export function ledgerReads(deps: ReadDeps) {
     validate: scoreboardQuery,
     read: (query) => ({
       status: 200,
-      data: readScoreboard({ ...query, workspace }, ledger),
+      data: readScoreboard({ ...query, workspace }, ledger()),
     }),
   };
   return { sessions, runs, run, events, reservations, scoreboard };
@@ -657,14 +684,17 @@ export function workspaceReads(deps: ReadDeps) {
    * Not a stream collection: it costs three bd calls, and is read when a page
    * asks for it.
    */
-  const readEligible = coalesced(() =>
-    readEligibility({
+  const readEligible = coalesced(async () => {
+    // Opened here first: `readEligibility` reads the reservations with the
+    // ledger's own first-open wait.
+    hearthLedger(deps.ledgerPath);
+    return readEligibility({
       root: deps.root,
       runBd: deps.runBd,
       ledgerPath: deps.ledgerPath,
       host: { busy: false },
-    }),
-  );
+    });
+  });
   const eligibility: ReadRoute<null> = {
     kind: "read",
     method: "GET",
