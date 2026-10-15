@@ -211,6 +211,30 @@ const phase = oneOf(["research", "plan", "implement", "ship"]);
 const queueState = oneOf(QUEUE_STATES);
 const verdictOutcome = oneOf(["pass", "fail", "unreadable"]);
 
+/**
+ * The most findings of one severity a ledger row may carry. Far more than any
+ * review produces, and small enough that the scoreboard's sums over many rows
+ * stay exact whole numbers: an unbounded count would let two rows add up to
+ * Infinity, which JSON writes as null.
+ */
+const MAX_FINDING_COUNT = 1_000_000;
+
+const findingCount: Check = (v, path) =>
+  typeof v === "number" &&
+  Number.isSafeInteger(v) &&
+  v >= 0 &&
+  v <= MAX_FINDING_COUNT
+    ? null
+    : `${path}: expected a whole number from 0 to ${MAX_FINDING_COUNT}`;
+
+/** Findings by severity (`ReviewFindings`): a bounded whole count for each of the four, numbers only. */
+const findingCounts = shape({
+  blocker: findingCount,
+  high: findingCount,
+  medium: findingCount,
+  low: findingCount,
+});
+
 const sha256Hex: Check = (v, path) =>
   typeof v === "string" && /^[0-9a-f]{64}$/.test(v)
     ? null
@@ -293,12 +317,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     phase,
     round: posInt,
     verdict: oneOf(["PASS", "FAIL", "UNREADABLE"]),
-    findings: shape({
-      blocker: nonNegInt,
-      high: nonNegInt,
-      medium: nonNegInt,
-      low: nonNegInt,
-    }),
+    findings: findingCounts,
     action: optional(oneOf(["advance", "revise", "halt"])),
   }),
   "gate.ran": shape({
@@ -345,6 +364,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     outcome: oneOf(["pass", "fail", "unreadable", "cancelled"]),
     costUsd: optional(num),
     summary: optional(str),
+    findings: optional(findingCounts),
   }),
   "friction.recorded": shape({
     frictionBeadId: nonEmptyStr,
