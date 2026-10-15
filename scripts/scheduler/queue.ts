@@ -210,6 +210,12 @@ const label = (state: QueueState): string => `${QUEUE_LABEL_PREFIX}${state}`;
  * made outside this module and both refused by `start`: a bead whose label
  * was inherited from its parent or added by hand, and a bead that carries a
  * second queue label.
+ *
+ * What the arguments cannot exclude: a second `queue:` label that is not a
+ * state (`queue:teleported`, added by hand). `bd` matches `--exclude-label`
+ * literally, and only the seven other states can be named. So whoever reads
+ * this listing keeps only the rows `pickableRow` keeps (`readEligibility`
+ * does), and `start` refuses such a bead in any case.
  */
 export const QUEUED_EXACT_ARGS: readonly string[] = [
   "list",
@@ -229,8 +235,26 @@ export const QUEUED_EXACT_ARGS: readonly string[] = [
 ];
 
 /**
- * The same set, from the whole answer of `GET /queue` (not one filtered by
- * `?state=`: a bead's other entry would be missing).
+ * Whether a row of the `QUEUED_EXACT_ARGS` listing may be picked, for what
+ * the arguments cannot say: false for a row whose own labels make it a bead
+ * in no state (`queueStateOf` calls it broken), which `start` refuses. A row
+ * of that listing already carries `queue:queued`, so that is a second
+ * `queue:` label that names no state.
+ */
+export function pickableRow(row: {
+  labels?: unknown;
+  metadata?: unknown;
+}): boolean {
+  return queueStateOf(row).kind !== "broken";
+}
+
+/**
+ * The set `QUEUED_EXACT_ARGS` prints, from the whole answer of `GET /queue`
+ * (not one filtered by `?state=`: a bead's other entry would be missing).
+ * Like the listing, it keeps a bead whose second `queue:` label is not a
+ * state: `GET /queue` makes entries only for state labels, so its answer does
+ * not show that label. `readEligibility` drops such a bead (`pickableRow`),
+ * and `start` refuses it.
  */
 export function pickable(entries: readonly QueueEntry[]): QueueEntry[] {
   const count = new Map<string, number>();

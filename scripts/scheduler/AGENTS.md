@@ -129,8 +129,13 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   picks the bench, and a bead without one gets `workflow.default_crew`.
 - `bd list --label queue:queued` prints the beads a shift may pick plus two kinds that `start`
   refuses, both made outside the queue: an inherited or hand-added label, and a bead with a second
-  queue label. `QUEUED_EXACT_ARGS` is the `bd list` that prints exactly the pickable set, and
-  `pickable` is the same rule over the whole answer of `GET /queue`.
+  queue label. `QUEUED_EXACT_ARGS` is the `bd list` that prints the pickable set, and
+  `pickable` is the same rule over the whole answer of `GET /queue`. Neither can leave out a bead
+  whose second `queue:` label is not a state (`queue:teleported`, added by hand): `bd` matches
+  `--exclude-label` literally, and `GET /queue` makes entries only for state labels. `start`
+  refuses such a bead, so `readEligibility` (`GET /eligibility` and every shift) drops it from the
+  listing's rows with `pickableRow` (`x1gs.5.9`); a reservation it holds then counts as one outside
+  the queue. Any other reader of the listing must do the same.
 - Tests are hermetic: `queue-fixture.ts` is an in-memory tracker that answers the queue's `bd` calls
   (`show` of one id or several, label/metadata `update`, and the `list` shapes of `GET /queue` and
   eligibility, via `answerQueueList`) as bd 1.1.0 was measured to; the browser suite's `bd` stand-in
@@ -139,7 +144,9 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   stand-in (which answers the hearth's comments itself) is not changed by it; the text is kept on
   the bead (`comments`). It answers no `create`: `childOf(parent, id)` makes a child as
   `bd create --parent` does (every label of the parent, none of its metadata); build inherited
-  children with it, not by hand.
+  children with it, not by hand. The two stand-ins that answer `create` use it too (`x1gs.5.8`):
+  the hermetic hearth's `fakeBd` (`scripts/hearth/testing.ts`, for a parent in its `issues`) and
+  the browser suite's stand-in.
   `queue-bd.test.ts` compares that fixture with a real `bd` and walks the machine on it; it is
   skipped unless `AGENT_FORGE_SCRATCH_TRACKER` names a scratch tracker (its own git repository, no
   remote of either kind), and is run by hand after any change to the `bd` calls or the fixture.

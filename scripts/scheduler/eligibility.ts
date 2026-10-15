@@ -26,7 +26,7 @@ import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { parsed, refusal } from "../hearth/tracker-write";
 import { activeReservations } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
-import { QUEUED_EXACT_ARGS } from "./queue";
+import { pickableRow, QUEUED_EXACT_ARGS } from "./queue";
 import {
   type BeadReservation,
   overlapOf,
@@ -47,6 +47,9 @@ export interface QueuedBead {
     depends_on_id: string;
     type: string;
   }>;
+  /** Read only to drop a bead the queue would refuse (`pickableRow`). */
+  labels?: unknown;
+  metadata?: unknown;
 }
 
 export type StaleWhy = "closed" | "gone";
@@ -333,17 +336,22 @@ export async function staleOf(
  * which of it is ready, the reservations of the checkout's workspace, and
  * which reserved beads outside the queue are closed or gone. A `bd` failure
  * is an error, not an empty queue. Writes nothing.
+ *
+ * A listed bead that also carries a `queue:` label that is not a state is
+ * dropped (`pickableRow`): the listing cannot exclude it and `start` refuses
+ * it. A reservation it holds then counts as one outside the queue.
  */
 export async function readEligibility(
   deps: EligibilityDeps,
 ): Promise<Read<Eligibility>> {
-  const queued = await listed(deps.runBd, [...QUEUED_EXACT_ARGS]);
-  if (!queued.ok) return queued;
+  const listedQueued = await listed(deps.runBd, [...QUEUED_EXACT_ARGS]);
+  if (!listedQueued.ok) return listedQueued;
+  const candidates = listedQueued.value.filter(pickableRow);
   const ready = await listed(deps.runBd, [...QUEUED_EXACT_ARGS, "--ready"]);
   if (!ready.ok) return ready;
   const { workspace } = resolveCheckout(deps.root);
   const active = activeReservations({ workspace }, { path: deps.ledgerPath });
-  const queuedIds = new Set(queued.value.map((bead) => bead.id));
+  const queuedIds = new Set(candidates.map((bead) => bead.id));
   const outside = [
     ...new Set(
       active
@@ -356,7 +364,7 @@ export async function readEligibility(
   return {
     ok: true,
     value: eligibility({
-      candidates: queued.value,
+      candidates,
       readyIds: new Set(ready.value.map((bead) => bead.id)),
       active,
       staleIds: stale.value,

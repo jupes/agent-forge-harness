@@ -18,7 +18,12 @@ import { readState, writeState } from "./bd-stand-in-state";
 import { openSettled, reloadSettled } from "./fixtures";
 import { collectErrors } from "./routes";
 import { BD_STAND_IN_STATE } from "./servers";
-import { requireStandIn, seedProposed, standInCalls } from "./stand-in";
+import {
+  createFromBuilder,
+  requireStandIn,
+  seedProposed,
+  standInCalls,
+} from "./stand-in";
 
 const API = "/__agent-forge";
 
@@ -359,4 +364,37 @@ test("when the eligibility read fails, the board says so instead of showing no r
   await expect(page.locator(".af-notice[role=status]")).toContainText(
     "the eligibility read failed (bd list failed: database is locked)",
   );
+});
+
+test("a child created in the bead builder under a proposed bead carries the queue label bd copied from its parent, and the board shows it as a label the queue did not write", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  const parent = await createBead(page, `Workbench parent ${Date.now()}`);
+  seedProposed(parent);
+
+  await page.getByRole("button", { name: "Clear form" }).click();
+  await page.fill("#bb-parent", parent);
+  const child = await createFromBuilder(page, `Workbench child ${Date.now()}`);
+  expect(child).toBe(`${parent}.1`);
+  // The created card shows the labels bd printed for the child.
+  await expect(
+    page
+      .locator("#bead-created-card .af-detail-row")
+      .filter({ has: page.locator("dt", { hasText: "Labels" }) })
+      .locator("dd .af-tag"),
+  ).toHaveText(["queue:proposed"]);
+
+  await openSettled(page, "/index.html#/workbench");
+  await expect(cardIn(page, "proposed", parent)).toBeVisible();
+  const card = cardIn(page, "proposed", child);
+  await expect(card).toBeVisible();
+  await expect(card.locator(".af-workbench-note")).toContainText(
+    "The queue did not write this label",
+  );
+  // Approval is not inherited: the child is offered no approve.
+  await expect(
+    page.getByRole("button", { name: `Approve ${child}` }),
+  ).toHaveCount(0);
+  expect(errors).toEqual([]);
 });

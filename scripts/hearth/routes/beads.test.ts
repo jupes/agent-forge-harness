@@ -1619,30 +1619,40 @@ describe("what a refusal says", () => {
 });
 
 describe("what a confirmed write answers", () => {
-  test("the labels bd printed, for a create and for a claim: a child inherits its parent's", async () => {
+  test("the labels bd printed, for a create and for a claim: a child inherits its parent's labels and none of its metadata", async () => {
     const h = await start();
-    h.bd.answer = (args) =>
-      args[0] === "create"
-        ? bdAnswers.created(
-            anIssue({ id: "demo-epic.1", labels: ["area", "queue:approved"] }),
-          )
-        : bdAnswers.claimed(
-            anIssue({
-              id: "demo-epic.1",
-              status: "in_progress",
-              assignee: "operator",
-              labels: ["area", "queue:approved"],
-            }),
-          );
+    // A parent the hearth's stand-in for bd knows; its create copies the
+    // parent's labels onto the child, as bd create --parent does.
+    h.bd.issues.set(
+      "demo-epic",
+      anIssue({
+        id: "demo-epic",
+        issue_type: "epic",
+        labels: ["area", "queue:approved"],
+        metadata: { queue_state: "approved" },
+      }),
+    );
     const created = await post(h, "/beads", {
       title: "A child",
       parent: "demo-epic",
     });
+    expect(created.body.data?.id).toBe("demo-epic.1");
     expect(created.body.data?.labels).toEqual(["area", "queue:approved"]);
+    expect(h.bd.issues.get("demo-epic.1")?.metadata).toBeUndefined();
     const claimed = await post(h, "/beads/demo-epic.1/claim", {});
     expect(claimed.body.data?.labels).toEqual(["area", "queue:approved"]);
     // The answer shows them; the ledger does not take them.
     expect(JSON.stringify(h.events())).not.toContain("queue:approved");
+  });
+
+  test("a child of a parent the stand-in does not know is made with no labels", async () => {
+    const h = await start();
+    const created = await post(h, "/beads", {
+      title: "An orphan",
+      parent: "demo-unknown",
+    });
+    expect(created.body.data?.id).toBe("demo-unknown.1");
+    expect(created.body.data?.labels).toBeUndefined();
   });
 
   test("the length on the outcome event counts the text as the limits do, in UTF-16 units", async () => {
