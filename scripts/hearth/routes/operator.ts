@@ -36,7 +36,7 @@ import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
 import { postCouncilVerdict } from "./council-verdict";
-import { applyReview } from "./dev-api";
+import { applyReview, localStateRoot } from "./dev-api";
 import {
   beadsReads,
   fail,
@@ -397,7 +397,16 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         lockFile: deps.queueLockFile,
         configHome: deps.configHome,
       }),
-      ...shiftRoutes({ workspace, shiftsDir: deps.shiftsDir }),
+      ...shiftRoutes({
+        workspace,
+        shiftsDir: deps.shiftsDir,
+        runBd: deps.runBd,
+        ledgerPath: deps.ledgerPath,
+        appendEvent: deps.appendEvent,
+        lockFile: deps.queueLockFile,
+        // A shift's worktrees are under the main checkout, as forge:shift makes them.
+        mainCheckout: localStateRoot(deps.root),
+      }),
     ],
     close: () => live.close(),
   };
