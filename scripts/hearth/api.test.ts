@@ -1165,9 +1165,28 @@ describe("a read row or the stream while another connection holds the write lock
   }
 
   test("every read row and the stream are answered within 1.5 s, a row that reads the ledger with an error envelope, and a GET of the health route sent 300 ms after each is answered within 1.5 s of it; released, every one answers 200", async () => {
+    // The worktree row's git is a stand-in listing the root alone: this test
+    // is about the ledger, and a real git on a loaded machine can fail it.
+    let root = "";
+    const git: GitRun = (args) => {
+      const top = root.replaceAll("\\", "/");
+      if (args[0] === "rev-parse")
+        return { status: 0, stdout: `${top}\n`, stderr: "" };
+      if (args[0] === "worktree")
+        return {
+          status: 0,
+          stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+            .concat("", "")
+            .join("\0"),
+          stderr: "",
+        };
+      return { status: 1, stdout: "", stderr: "" };
+    };
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git },
     });
+    root = h.root;
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
