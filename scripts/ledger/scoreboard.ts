@@ -14,8 +14,10 @@
  *   payload's `builder` and `evaluator` are not read. An event with no
  *   executor counts in the row whose executor is null.
  * - A value no event recorded is null, never 0: a pass rate with no gate run,
- *   a cost nobody reported. Council findings by severity are always null,
- *   because `council.run.finished` records none.
+ *   a cost nobody reported. Council findings by severity are the sum of the
+ *   `findings` counts on the finished runs that recorded them, and null where
+ *   none did (a failed or cancelled run records none, and neither does a run
+ *   written before the field existed); `runsWithFindings` says how many did.
  * - Only events still in the ledger are read. Days folded by `compact` keep a
  *   count per kind and nothing per executor, so they are not in it.
  */

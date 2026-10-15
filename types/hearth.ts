@@ -434,7 +434,8 @@ export interface LedgerPayloads {
     summary?: string;
     /**
      * The run's findings counted by severity, numbers only (the shape
-     * `review.recorded` uses). Present for a completed run, with explicit
+     * `review.recorded` uses; each count a whole number from 0 to 1,000,000,
+     * which the ledger's validator enforces). Present for a completed run, with explicit
      * zeros when it found nothing; absent for a failed or cancelled run, one
      * that produced no run, and any row written before this field existed.
      */

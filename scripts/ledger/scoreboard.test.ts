@@ -369,6 +369,54 @@ describe("readScoreboard over a fixture ledger with two smiths", () => {
     });
   });
 
+  test("a findings count too large to sum is refused when appended, so the scoreboard never adds up to Infinity", () => {
+    const { path } = sandbox();
+    const huge = (councilRunId: string): LedgerEventInput => ({
+      kind: "council.run.finished",
+      workspace: FIXTURE_WORKSPACE,
+      ts: "2026-10-10T09:00:00Z",
+      executor: { provider: "claude", model: "claude-sonnet-4-5" },
+      payload: {
+        councilRunId,
+        outcome: "fail",
+        findings: { blocker: 1e308, high: 0, medium: 0, low: 0 },
+      },
+    });
+    for (const id of ["huge-1", "huge-2"])
+      expect(appendEvent(huge(id), { path }).ok).toBe(false);
+    const board = readScoreboard({ workspace: FIXTURE_WORKSPACE }, { path });
+    expect(board.events).toBe(0);
+    expect(board.rows).toEqual([]);
+
+    // Counts at the bound are stored, and two of them sum to a finite number.
+    seed(path, FIXTURE_WORKSPACE, [
+      {
+        kind: "council.run.finished",
+        ts: "2026-10-10T09:00:00Z",
+        executor: { provider: "claude", model: "claude-sonnet-4-5" },
+        payload: {
+          councilRunId: "max-1",
+          outcome: "fail",
+          findings: { blocker: 1_000_000, high: 0, medium: 0, low: 0 },
+        },
+      },
+      {
+        kind: "council.run.finished",
+        ts: "2026-10-10T09:01:00Z",
+        executor: { provider: "claude", model: "claude-sonnet-4-5" },
+        payload: {
+          councilRunId: "max-2",
+          outcome: "fail",
+          findings: { blocker: 1_000_000, high: 0, medium: 0, low: 0 },
+        },
+      },
+    ]);
+    expect(
+      readScoreboard({ workspace: FIXTURE_WORKSPACE }, { path }).rows[0]
+        ?.council.findings,
+    ).toEqual({ blocker: 2_000_000, high: 0, medium: 0, low: 0 });
+  });
+
   test("a ledger with no events answers an empty scoreboard", () => {
     const { path } = sandbox();
     expect(readScoreboard({}, { path })).toEqual({

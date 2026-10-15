@@ -244,6 +244,36 @@ describe("validateLedgerEventInput — what emitters append", () => {
     expect(finished([1, 0, 2, 3])).toBe(false);
   });
 
+  test("a findings count is bounded: a whole number up to a million is accepted, a larger one is refused on both events that carry findings", () => {
+    const counts = { blocker: 1, high: 0, medium: 2, low: 3 };
+    const finished = (findings: unknown) =>
+      validateLedgerEventInput(
+        input("council.run.finished", {
+          councilRunId: "run-1",
+          outcome: "fail",
+          findings,
+        }),
+      ).ok;
+    const reviewed = (findings: unknown) =>
+      validateLedgerEventInput(
+        input("review.recorded", {
+          phase: "plan",
+          round: 1,
+          verdict: "FAIL",
+          findings,
+        }),
+      ).ok;
+    for (const accepts of [finished, reviewed])
+      expect(accepts({ ...counts, blocker: 1_000_000 })).toBe(true);
+    // Past the bound, up to and beyond what a double holds exactly (two such counts would sum to Infinity).
+    for (const tooMany of [1_000_001, 2 ** 53, 1e308])
+      for (const accepts of [finished, reviewed])
+        expect({ tooMany, ok: accepts({ ...counts, low: tooMany }) }).toEqual({
+          tooMany,
+          ok: false,
+        });
+  });
+
   test("rejects non-objects and missing workspace", () => {
     expect(validateLedgerEventInput(null).ok).toBe(false);
     expect(validateLedgerEventInput("session.started").ok).toBe(false);
