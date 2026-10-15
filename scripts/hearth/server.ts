@@ -25,7 +25,6 @@ import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { isMain } from "../is-main";
 import { type AppendResult, appendEvent } from "../ledger/append";
-import { openLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
@@ -52,6 +51,7 @@ import {
   localStateRoot,
 } from "./routes/dev-api";
 import { operatorRoutes } from "./routes/operator";
+import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
 import { isHealthy } from "./supervisor";
 import { createToken, readToken } from "./token";
@@ -163,34 +163,24 @@ function reply(
 }
 
 /**
- * How long a request waits on another connection's lock while the hearth opens
- * its ledger for the first time: not at all, because the runner's three audit
- * attempts, 25 ms apart, are the wait. The ledger's own first open waits 2 s in
- * each of its statements and attempts, which suits an emitter that must not
- * lose an event; under those three attempts it held the serving thread for 12
- * to 20 s on a new ledger file that was locked. A short wait is no cheaper than
- * it looks on Windows: SQLite counts the sleeps it asks for, not the time they
- * take, and a 50 ms wait took about 340 ms there (a zero wait about 30 ms).
- * Once the file is open this is not looked at again.
- */
-const LEDGER_FIRST_OPEN_WAIT_MS = 0;
-
-/**
  * The ledger's `appendEvent` for `file`, opening the file with the hearth's
- * shorter first-open wait. A file that could not be opened in time is reported
- * as the ledger's error ("database is locked"), which the runner treats as busy.
+ * first-open wait (`LEDGER_FIRST_OPEN_WAIT_MS`, none: the runner's three audit
+ * attempts, 25 ms apart, are the wait). A file that could not be opened in
+ * time is reported as the ledger's error ("database is locked"), which the
+ * runner treats as busy.
  */
 function hearthAppend(file: string): (event: LedgerEventInput) => AppendResult {
   return (event) => {
+    let ledger: { path: string };
     try {
-      openLedger(file, { waitMs: LEDGER_FIRST_OPEN_WAIT_MS });
+      ledger = hearthLedger(file);
     } catch (error) {
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       };
     }
-    return appendEvent(event, { path: file });
+    return appendEvent(event, ledger);
   };
 }
 
@@ -340,6 +330,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         { git: options.api?.git },
       );
     });
+  });
+  // A request that says `Expect: 100-continue` is handled like any other, and
+  // nothing is sent for it here: with no listener the runtime would answer
+  // `100 Continue` at once, before anything had looked at the request. The
+  // runner sends it when it begins to read a body it will use (`requestBody`
+  // in `api.ts`), so a refusal decided on the head goes out with the body
+  // never asked for. Nothing else here reads a body.
+  server.on("checkContinue", (req, res) => {
+    server.emit("request", req, res);
   });
 
   const stop = async (): Promise<void> => {

@@ -1049,10 +1049,22 @@ describe("every action row (iterating the table)", () => {
   });
 });
 
-describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
-  /** How long an action and a GET sent during it may take to be answered, from when the action was sent. */
-  const ABOUT_A_SECOND_MS = 1500;
+/** How long a request and a GET sent during it may take to be answered, from when the request was sent. */
+const ABOUT_A_SECOND_MS = 1500;
 
+/** Hold the write lock on `file` from another connection until `release` is called. */
+function holdWriteLock(file: string): { release(): void } {
+  const holder = new Database(file, { create: true });
+  holder.exec("BEGIN EXCLUSIVE");
+  return {
+    release() {
+      holder.exec("ROLLBACK");
+      holder.close();
+    },
+  };
+}
+
+describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
   /**
    * Send a valid action, and 300 ms later a GET of the health route. Each
    * answer's status, and when it arrived, counted from when the action was
@@ -1075,18 +1087,6 @@ describe("an action while another connection holds the write lock on the hearth'
     await health.body?.cancel();
     const get = { status: health.status, ms: performance.now() - sent };
     return { action: await action, get };
-  }
-
-  /** Hold the write lock on `file` from another connection until `release` is called. */
-  function holdWriteLock(file: string): { release(): void } {
-    const holder = new Database(file, { create: true });
-    holder.exec("BEGIN EXCLUSIVE");
-    return {
-      release() {
-        holder.exec("ROLLBACK");
-        holder.close();
-      },
-    };
   }
 
   test("on a new ledger file the hearth has not opened: 503 within 1.5 s and the effect not called, and a GET of the health route sent 300 ms after it is answered within 1.5 s of the action", async () => {
@@ -1136,6 +1136,134 @@ describe("an action while another connection holds the write lock on the hearth'
     expect(measured.get.ms).toBeLessThan(ABOUT_A_SECOND_MS);
     expect(probes.length).toBe(1);
   }, 60_000);
+});
+
+describe("a read row or the stream while another connection holds the write lock on a new ledger file the hearth has not opened", () => {
+  /** The rows that read the ledger, by name, and the status each answers while it cannot be opened. */
+  const LEDGER_ROWS: ReadonlyArray<[string, number]> = [
+    ["GET /eligibility", 502],
+    ["GET /events", 500],
+    ["GET /reservations", 500],
+    ["GET /runs/:slug", 500],
+    ["GET /scoreboard", 500],
+    ["GET /sessions", 500],
+    ["GET /stream", 503],
+  ];
+
+  /** The status, whether the answer was an `ok` envelope (a stream that opened counts as one), and when it arrived. */
+  async function answered(
+    response: Response,
+    sent: number,
+  ): Promise<{ status: number; ok: boolean; ms: number }> {
+    const ms = performance.now() - sent;
+    if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
+      await response.body?.cancel();
+      return { status: response.status, ok: true, ms };
+    }
+    const body = await envelope(response);
+    return { status: response.status, ok: body.ok, ms };
+  }
+
+  test("every read row and the stream are answered within 1.5 s, a row that reads the ledger with an error envelope, and a GET of the health route sent 300 ms after each is answered within 1.5 s of it; released, every one answers 200", async () => {
+    // The worktree row's git is a stand-in listing the root alone: this test
+    // is about the ledger, and a real git on a loaded machine can fail it.
+    let root = "";
+    const git: GitRun = (args) => {
+      const top = root.replaceAll("\\", "/");
+      if (args[0] === "rev-parse")
+        return { status: 0, stdout: `${top}\n`, stderr: "" };
+      if (args[0] === "worktree")
+        return {
+          status: 0,
+          stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+            .concat("", "")
+            .join("\0"),
+          stderr: "",
+        };
+      return { status: 1, stdout: "", stderr: "" };
+    };
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git },
+    });
+    root = h.root;
+    const rows = h.hearth.routes.filter(
+      (route) => route.kind === "read" || route.kind === "stream",
+    );
+    const pathOf = (row: ApiRoute): string => {
+      if (row.kind === "stream") return row.path;
+      const path = READS[key(row)];
+      if (path === undefined)
+        throw new Error(`no fixture for read row ${key(row)}`);
+      return path;
+    };
+    if (!rows.some((row) => row.kind === "stream"))
+      throw new Error("the table has no stream row");
+    // Nothing has opened the hearth's ledger: the file does not exist yet.
+    expect(existsSync(h.ledger)).toBe(false);
+
+    const lock = holdWriteLock(h.ledger);
+    const measured: Array<{
+      row: string;
+      status: number;
+      ok: boolean;
+      ms: number;
+      get: { status: number; ms: number };
+    }> = [];
+    try {
+      for (const row of rows) {
+        // The hearth runs in this process: a serving thread held by the read
+        // holds this timer and the GET with it.
+        const sent = performance.now();
+        const asked = get(h, pathOf(row)).then((response) =>
+          answered(response, sent),
+        );
+        await new Promise((done) => setTimeout(done, 300));
+        const health = await fetch(`${h.hearth.url}${HEALTH_ROUTE}`);
+        await health.body?.cancel();
+        const getMs = performance.now() - sent;
+        measured.push({
+          row: key(row),
+          ...(await asked),
+          get: { status: health.status, ms: getMs },
+        });
+      }
+    } finally {
+      lock.release();
+    }
+
+    expect(
+      measured
+        .filter(
+          (m) =>
+            m.ms >= ABOUT_A_SECOND_MS ||
+            m.get.ms >= ABOUT_A_SECOND_MS ||
+            m.get.status !== 200,
+        )
+        .map(
+          (m) =>
+            `${m.row}: answered in ${Math.round(m.ms)} ms; the GET sent 300 ms after it: ${m.get.status} in ${Math.round(m.get.ms)} ms`,
+        ),
+    ).toEqual([]);
+    expect(
+      measured
+        .filter((m) => m.status !== 200 || !m.ok)
+        .map((m) => ({ row: m.row, status: m.status, ok: m.ok }))
+        .sort((a, b) => a.row.localeCompare(b.row)),
+    ).toEqual(LEDGER_ROWS.map(([row, status]) => ({ row, status, ok: false })));
+
+    // Released, the next read opens the file and every row answers.
+    for (const row of rows) {
+      const response = await answered(
+        await get(h, pathOf(row)),
+        performance.now(),
+      );
+      expect({ row: key(row), status: response.status }).toEqual({
+        row: key(row),
+        status: 200,
+      });
+    }
+  }, 120_000);
 });
 
 describe("the operator token", () => {
@@ -1612,6 +1740,79 @@ function rawExchange(
   });
 }
 
+/** What a client that sends `Expect: 100-continue`, and writes its body only on `100 Continue`, was told. */
+interface ExpectingExchange {
+  /** The status line of each interim (1xx) answer, in order. */
+  interim: string[];
+  /** The final answer's status and body: 0 and "" when none came within the wait. */
+  status: number;
+  body: string;
+  /** Whether the body was written, which this client does only after `100 Continue`. */
+  bodySent: boolean;
+}
+
+/**
+ * Send `head` with `Expect: 100-continue` and `Connection: close`, write
+ * `body` only when the hearth answers `100 Continue`, and read up to the final
+ * answer (framed by Content-Length, as the hearth frames every answer here).
+ */
+function expectingExchange(
+  h: TestHearth,
+  head: string[],
+  body: Buffer,
+  waitMs = 10_000,
+): Promise<ExpectingExchange> {
+  return new Promise((done) => {
+    let received = Buffer.alloc(0);
+    let bodySent = false;
+    let settled = false;
+    const interim: string[] = [];
+    const socket = connect(h.hearth.port, "127.0.0.1", () => {
+      socket.write(
+        `${[...head, "Expect: 100-continue", "Connection: close"].join("\r\n")}\r\n\r\n`,
+      );
+    });
+    const finish = (status: number, text: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(giveUp);
+      socket.destroy();
+      done({ interim, status, body: text, bodySent });
+    };
+    const giveUp = setTimeout(() => finish(0, ""), waitMs);
+    socket.on("error", () => {});
+    socket.on("close", () => finish(0, ""));
+    socket.on("data", (chunk: Buffer) => {
+      received = Buffer.concat([received, chunk]);
+      for (;;) {
+        const end = received.indexOf("\r\n\r\n");
+        if (end === -1) return;
+        const lines = received
+          .subarray(0, end)
+          .toString("latin1")
+          .split("\r\n");
+        const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(lines[0] ?? "")?.[1]);
+        if (status >= 100 && status < 200) {
+          interim.push(lines[0] ?? "");
+          received = received.subarray(end + 4);
+          if (status === 100 && !bodySent) {
+            bodySent = true;
+            socket.write(body);
+          }
+          continue;
+        }
+        const declared = lines.find((line) => /^content-length:/i.test(line));
+        const length = Number(declared?.slice(declared.indexOf(":") + 1) ?? 0);
+        if (received.length < end + 4 + length) return;
+        return finish(
+          status,
+          received.subarray(end + 4, end + 4 + length).toString("utf8"),
+        );
+      }
+    });
+  });
+}
+
 describe("request bodies (raw socket)", () => {
   const PATH = "/__agent-forge/dev-api/forge-run/review";
   /** Far past every row's cap, and past what was answered before when the hearth refused a body unread. */
@@ -1771,6 +1972,78 @@ describe("request bodies (raw socket)", () => {
     }
     expect(seen).toEqual(wanted);
     expect(probes).toEqual([]);
+  }, 30_000);
+
+  test("a request that says Expect: 100-continue is answered on its head, with no 100 Continue and its body never asked for, when it does not declare the hearth's origin, presents a wrong token, declares a Content-Length over the row's cap, is not JSON, comes from another origin or names no route; authorised, it is sent 100 Continue and its body is read and acted on", async () => {
+    const { h, probes } = await probed();
+    const body = Buffer.from(JSON.stringify(REVIEW));
+    const framing = `Content-Length: ${body.byteLength}`;
+    const authorised = headLines(h, { token: h.hearth.token, framing });
+    const replaced = (from: string, to: string): string[] =>
+      authorised.map((line) => (line === from ? to : line));
+    const cases: Array<[string, string[], number]> = [
+      [
+        "no declared origin",
+        headLines(h, { origin: false, token: h.hearth.token, framing }),
+        403,
+      ],
+      ["a wrong token", headLines(h, { token: "wrong", framing }), 403],
+      [
+        "a Content-Length over the cap",
+        headLines(h, {
+          token: h.hearth.token,
+          framing: `Content-Length: ${LARGE}`,
+        }),
+        400,
+      ],
+      [
+        "not JSON",
+        replaced("Content-Type: application/json", "Content-Type: text/plain"),
+        400,
+      ],
+      [
+        "another origin (the front door)",
+        replaced(`Origin: ${h.hearth.url}`, "Origin: http://127.0.0.1:1"),
+        403,
+      ],
+      [
+        "no route",
+        replaced(
+          `POST ${PATH} HTTP/1.1`,
+          "POST /__agent-forge/no-such-route HTTP/1.1",
+        ),
+        404,
+      ],
+    ];
+    const seen: unknown[] = [];
+    const wanted: unknown[] = [];
+    for (const [label, head, status] of cases) {
+      const answer = await expectingExchange(h, head, body);
+      seen.push({
+        label,
+        status: answer.status,
+        interim: answer.interim,
+        bodySent: answer.bodySent,
+      });
+      wanted.push({ label, status, interim: [], bodySent: false });
+    }
+    expect(seen).toEqual(wanted);
+    expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+
+    const accepted = await expectingExchange(h, authorised, body);
+    expect({
+      interim: accepted.interim,
+      bodySent: accepted.bodySent,
+      status: accepted.status,
+    }).toEqual({
+      interim: ["HTTP/1.1 100 Continue"],
+      bodySent: true,
+      status: 200,
+    });
+    expect(probes.map((probe) => probe.input)).toEqual([
+      expect.objectContaining({ issueId: "demo-1" }),
+    ]);
   }, 30_000);
 });
 
@@ -2887,8 +3160,12 @@ describe("a bead as the source of a council run started through the hearth", () 
     expect(
       h.commands.calls.map(({ command }) => command.slice(0, 3).join(" ")),
     ).toEqual(["bd --readonly show", "bd --readonly comments"]);
-    // The API's own bd is not the council's: the job never reached it.
-    expect(h.bd.calls).toEqual([]);
+    // The API's own bd is not the council's: the job's reads never reached it.
+    // The one call it was given is the verdict posted back to the bead
+    // (`routes/council-verdict.test.ts` holds what each end of a run posts).
+    expect(h.bd.calls.map((call) => call.slice(0, 5))).toEqual([
+      ["comments", "add", "--json", "--", "demo-7"],
+    ]);
     const audit = h.events(["operator.action"]);
     expect(
       [...audit, ...recorded].map((event) => [event.kind, event.beadId]),
@@ -2935,12 +3212,15 @@ describe("a bead as the source of a council run started through the hearth", () 
       command.slice(0, 2).join(" "),
       resolve(cwd),
     ]);
-    expect(where.slice(0, 3)).toEqual([
+    // The bead's forge run is looked for in every worktree git lists
+    // (x1gs.7.5): that listing is asked for in the root too.
+    expect(where.slice(0, 4)).toEqual([
       ["bd --readonly", resolve(h.main ?? "")],
       ["bd --readonly", resolve(h.main ?? "")],
+      ["git worktree", resolve(h.root)],
       ["git remote", resolve(h.root)],
     ]);
-    for (const [command, cwd] of where.slice(3))
+    for (const [command, cwd] of where.slice(4))
       expect({ command, cwd }).toEqual({ command, cwd: resolve(h.root) });
   }, 20_000);
 

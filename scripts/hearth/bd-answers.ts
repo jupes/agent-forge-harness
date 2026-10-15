@@ -9,7 +9,7 @@
  * - `create` prints the issue as an object, with the description it was
  *   given as `description`, absent when it was given none;
  * - `update --claim` and `close` print a one-element array;
- * - `comments add` prints the comment;
+ * - `comments add` prints the comment; `comments <id>` lists them;
  * - `show` and an `update` of labels or metadata print a one-element array;
  *   `labels` and `metadata` are absent when empty, labels are sorted, and
  *   the `show` of a child prints its parent, metadata included, under
@@ -176,6 +176,29 @@ export const bdAnswers = {
       schema_version: 1,
       text: comment.text,
     }),
+  /**
+   * How `comments <id> --json` lists an issue's comments: an array, oldest
+   * first, each with these fields in this order and timed to the second.
+   * Checked against bd 1.1.0 on 2026-10-14 (`--readonly comments`, read only).
+   */
+  listedComments: (
+    comments: ReadonlyArray<{
+      id: string;
+      issueId: string;
+      author: string;
+      text: string;
+      createdAt: string;
+    }>,
+  ): BdResult =>
+    printed(
+      comments.map((comment) => ({
+        id: comment.id,
+        issue_id: comment.issueId,
+        author: comment.author,
+        text: comment.text,
+        created_at: bdTime(new Date(comment.createdAt)),
+      })),
+    ),
   /** How `create` and `update --claim` refuse: `Error: …` on stderr. */
   refusedOnStderr: (message: string): BdResult => ({
     status: 1,

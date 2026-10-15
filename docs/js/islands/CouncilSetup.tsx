@@ -50,10 +50,13 @@ type Props = {
  */
 function evidencePreview({
   state,
+  bead,
   disabled,
   onPreview,
 }: {
   state: CouncilPreviewState;
+  /** The bead in the source field, as typed. */
+  bead: string;
   disabled: boolean;
   onPreview: () => Promise<void>;
 }) {
@@ -65,6 +68,13 @@ function evidencePreview({
           {loading ? "Reading the bead…" : "Preview evidence"}
         </Button>
       </div>
+      {bead ? (
+        <p class="af-muted">
+          When the run completes, its verdict is posted to {bead} as a{" "}
+          <code>review:</code> comment. A run that fails or is stopped posts
+          nothing.
+        </p>
+      ) : null}
       {state.status === "ready" ? (
         <>
           <p class="af-muted">
@@ -212,6 +222,7 @@ export function CouncilSetup({
           <div class="af-form-wide">
             {evidencePreview({
               state: shown,
+              bead: source.trim(),
               disabled: active || !source.trim(),
               onPreview,
             })}

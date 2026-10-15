@@ -35,10 +35,12 @@ import { createLedgerStream } from "../stream";
 import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
+import { postCouncilVerdict } from "./council-verdict";
 import { applyReview } from "./dev-api";
 import {
   beadsReads,
   fail,
+  hearthLedger,
   isRecord,
   ledgerReads,
   looksLikeSecret,
@@ -208,6 +210,12 @@ function councilReply(status: number, call: () => unknown): RouteReply {
  * and at the path the dashboard has always posted to.
  */
 function actions(deps: OperatorDeps): ApiRoute[] {
+  const verdicts = {
+    workspace: deps.workspace,
+    runBd: deps.runBd,
+    appendEvent: deps.appendEvent,
+    council: deps.council,
+  };
   const start: Omit<ActionRoute<CouncilStart>, "path"> = {
     kind: "action",
     method: "POST",
@@ -218,7 +226,14 @@ function actions(deps: OperatorDeps): ApiRoute[] {
       target: input.runId,
       ...(input.beadId !== undefined ? { beadId: input.beadId } : {}),
     }),
-    effect: (input) => councilReply(202, () => deps.council.start(input)),
+    // A run on a bead posts its verdict back to the bead when it completes
+    // (`council-verdict.ts`); the answer does not wait for it.
+    effect: (input) => {
+      const reply = councilReply(202, () => deps.council.start(input));
+      if (reply.status === 202)
+        void postCouncilVerdict(verdicts, input, input.runId);
+      return reply;
+    },
   };
   // What a run would send, read now and listed part by part, with nothing
   // started. An action, though it changes nothing: a bead source reads private
@@ -338,10 +353,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     scoreboard,
   ];
 
-  const ledger = { path: deps.ledgerPath };
+  // Opened with the hearth's first-open wait, as the read rows are.
+  const ledger = (): { path: string } => hearthLedger(deps.ledgerPath);
   const { workspace } = deps;
   const live = createLedgerStream({
-    cursor: () => latestEventId({ workspace }, ledger),
+    cursor: () => latestEventId({ workspace }, ledger()),
     // Every collection row, whatever a later bead adds to the table.
     collections: async () => {
       const rows = reads.filter((row) => row.collection !== undefined);
@@ -351,7 +367,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       );
     },
     eventsAfter: (afterId, limit) =>
-      queryEvents({ workspace, afterId, limit }, ledger),
+      queryEvents({ workspace, afterId, limit }, ledger()),
     pollMs: deps.streamPollMs,
     keepaliveMs: deps.streamKeepaliveMs,
   });
