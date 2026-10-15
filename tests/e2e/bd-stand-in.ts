@@ -12,6 +12,8 @@
  * - refuses what bd refuses: a parent or an id it does not know, a claim of a
  *   closed issue; and leaves an issue that is already closed, or already
  *   claimed, as it was, exiting 0;
+ * - makes a child as `bd create --parent` does: every label of the parent, a
+ *   `queue:` label included, and none of its metadata (`childOf`);
  * - answers the queue's calls as `scripts/scheduler/queue-fixture.ts` does
  *   (which `queue-bd.test.ts` compares with a real bd): `show` of one id or
  *   several, an `update` of labels or metadata, and the `list` shapes of
@@ -41,6 +43,7 @@ import {
 } from "../../scripts/hearth/bd-answers";
 import {
   answerQueueList,
+  childOf,
   queueTracker,
   type TrackedBead,
 } from "../../scripts/scheduler/queue-fixture";
@@ -188,7 +191,9 @@ function answer(): Printed {
   const now = bdTime();
 
   if (write.verb === "create") {
-    if (write.parent !== undefined && issues[write.parent] === undefined)
+    const parent =
+      write.parent === undefined ? undefined : issues[write.parent];
+    if (write.parent !== undefined && parent === undefined)
       return bdAnswers.refusedOnStderr(
         `parent issue ${write.parent} not found`,
       );
@@ -196,9 +201,13 @@ function answer(): Printed {
     const siblings = Object.keys(issues).filter(
       (id) => id.startsWith(prefix) && !id.slice(prefix.length).includes("."),
     ).length;
+    const id = `${prefix}${siblings + 1}`;
+    // bd create --parent copies every label of the parent, and none of its metadata.
+    const labels =
+      parent === undefined ? undefined : childOf(asTracked(parent), id).labels;
     return bdAnswers.created(
       save({
-        id: `${prefix}${siblings + 1}`,
+        id,
         title: write.title,
         issue_type: write.type,
         priority: Number(write.priority),
@@ -206,6 +215,7 @@ function answer(): Printed {
         ...(write.description !== undefined
           ? { description: write.description }
           : {}),
+        ...(labels !== undefined ? { labels: [...labels].sort() } : {}),
         created_at: now,
         updated_at: now,
       }),

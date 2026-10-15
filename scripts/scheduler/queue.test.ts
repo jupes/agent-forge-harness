@@ -26,6 +26,7 @@ import {
   decide,
   legalMoves,
   pickable,
+  pickableRow,
   QUEUE_TABLE,
   QUEUED_EXACT_ARGS,
   type Queue,
@@ -1877,6 +1878,49 @@ describe("what a shift may pick", () => {
       "probe-ok",
       "probe-progress",
     ]);
+  });
+
+  test("a bead whose second queue label is not a state: the listing prints it and pickable keeps it, neither can tell; pickableRow drops it, as start refuses it", async () => {
+    const teleported: TrackedBead = {
+      id: "probe-teleported",
+      labels: ["queue:queued", "queue:teleported"],
+      metadata: { queue_state: "queued" },
+    };
+    const ok = beadIn("queued");
+    const { tracker, queue } = rig([teleported, ok]);
+    const beads = [...tracker.beads.values()];
+
+    // bd matches --exclude-label literally: it cannot exclude a label it is not told.
+    const rows = JSON.parse(
+      answerQueueList(QUEUED_EXACT_ARGS, beads)?.stdout ?? "[]",
+    ) as Array<{ id: string; labels?: unknown; metadata?: unknown }>;
+    expect(rows.map((row) => row.id)).toEqual([teleported.id, ok.id]);
+    // GET /queue makes entries only for state labels: one entry, which pickable keeps.
+    const read = queueEntries(
+      answerQueueList(QUEUE_LIST_ARGS, beads)?.stdout ?? "",
+    );
+    if (!read.ok) throw new Error(read.error);
+    expect(pickable(read.entries).map((entry) => entry.beadId)).toEqual([
+      teleported.id,
+      ok.id,
+    ]);
+
+    // What the listing's consumer keeps: the rows start would not refuse.
+    expect(rows.filter(pickableRow).map((row) => row.id)).toEqual([ok.id]);
+    const started = await queue.move(teleported.id, "start", "scheduler");
+    expect(started.ok ? "" : started.kind).toBe("refused");
+    expect(tracker.updates()).toEqual([]);
+  });
+
+  test("pickableRow keeps a row that carries no queue label besides its state, and a row that prints none", () => {
+    expect(
+      pickableRow({
+        labels: ["queue:queued", "command-center"],
+        metadata: { queue_state: "queued" },
+      }),
+    ).toBe(true);
+    expect(pickableRow({})).toBe(true);
+    expect(pickableRow({ labels: ["queue:queued", "queue:"] })).toBe(false);
   });
 
   test("the bd arguments that print exactly that set", () => {

@@ -20,6 +20,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { childOf } from "../scheduler/queue-fixture";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
 import { OPERATOR_HEADER } from "./paths";
 import type { BdResult } from "./routes/dev-api";
@@ -55,7 +56,10 @@ export interface FakeBd {
  * What the fake answers to a write the Beads routes make (`--json`), in bd's
  * own shapes. It records and agrees; it does not refuse what bd would refuse
  * (an unknown parent, a closed issue): a test that needs a refusal sets
- * `answer`.
+ * `answer`. A create under a parent the fake knows (in `issues`) copies the
+ * parent's labels onto the child and none of its metadata, as
+ * `bd create --parent` does (`childOf`); under a parent it does not know,
+ * the child has no labels.
  */
 function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
   const write = readWrite(args);
@@ -67,11 +71,27 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
         ? !id.includes(".")
         : id.startsWith(`${write.parent}.`),
     ).length;
+    const id =
+      write.parent === undefined
+        ? `made-${siblings + 1}`
+        : `${write.parent}.${siblings + 1}`;
+    const parent =
+      write.parent === undefined ? undefined : bd.issues.get(write.parent);
+    const inherited =
+      parent === undefined
+        ? undefined
+        : childOf(
+            {
+              id: parent.id,
+              ...(parent.labels !== undefined ? { labels: parent.labels } : {}),
+              ...(parent.metadata !== undefined
+                ? { metadata: parent.metadata }
+                : {}),
+            },
+            id,
+          ).labels;
     const issue: BdIssue = {
-      id:
-        write.parent === undefined
-          ? `made-${siblings + 1}`
-          : `${write.parent}.${siblings + 1}`,
+      id,
       title: write.title,
       issue_type: write.type,
       priority: Number(write.priority),
@@ -79,6 +99,7 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
       ...(write.description !== undefined
         ? { description: write.description }
         : {}),
+      ...(inherited !== undefined ? { labels: [...inherited].sort() } : {}),
       created_at: now,
       updated_at: now,
     };

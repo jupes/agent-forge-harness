@@ -142,7 +142,7 @@ describe("readState and writeState", () => {
   }, 30_000);
 });
 
-describe("the stand-in's comments", () => {
+describe("the stand-in's comments, and its create under a parent", () => {
   const STAND_IN = join(
     import.meta.dir,
     "..",
@@ -224,6 +224,47 @@ describe("the stand-in's comments", () => {
       JSON.parse(bd(dir, ["--readonly", "comments", "e2e-2", "--json"]).stdout),
     ).toEqual([]);
     expect(readState(dir)).toEqual(issues);
+  }, 30_000);
+
+  test("create --parent copies every label of the parent onto the child, a queue label included, and none of its metadata, as bd does", () => {
+    const dir = scratch();
+    writeState(dir, {
+      "e2e-1": {
+        ...issue("e2e-1"),
+        labels: ["queue:queued", "area"],
+        metadata: { queue_state: "queued" },
+      },
+      "e2e-2": issue("e2e-2"),
+    });
+    const created = bd(dir, [
+      "create",
+      "--title=A child",
+      "--type=task",
+      "--priority=2",
+      "--parent=e2e-1",
+      "--json",
+    ]);
+    expect(created.status).toBe(0);
+    expect(JSON.parse(created.stdout)).toMatchObject({
+      id: "e2e-1.1",
+      labels: ["area", "queue:queued"],
+    });
+    expect(JSON.parse(created.stdout)).not.toHaveProperty("metadata");
+    const kept = readState(dir)["e2e-1.1"];
+    expect(kept?.labels).toEqual(["area", "queue:queued"]);
+    expect(kept).not.toHaveProperty("metadata");
+
+    // A parent with no labels gives a child with none.
+    const plain = bd(dir, [
+      "create",
+      "--title=Another child",
+      "--type=task",
+      "--priority=2",
+      "--parent=e2e-2",
+      "--json",
+    ]);
+    expect(plain.status).toBe(0);
+    expect(JSON.parse(plain.stdout)).not.toHaveProperty("labels");
   }, 30_000);
 
   test("a comment on an issue the stand-in does not know is refused as bd refuses it, and nothing is kept", () => {

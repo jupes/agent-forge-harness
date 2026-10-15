@@ -566,6 +566,36 @@ describe("readEligibility: from bd and the ledger", () => {
     expect(answer.value.stale.map((s) => s.why)).toEqual(["gone"]);
   });
 
+  test("a listed bead that also carries a queue label that is not a state is no candidate: neither eligible nor waiting, since start would refuse it", async () => {
+    const other = join(home, "teleported");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    const queued = { queue_state: "queued" };
+    const bd = stubBd({
+      queued: [
+        bead("t-1", { labels: ["queue:queued"], metadata: queued }),
+        bead("t-2", {
+          labels: ["queue:queued", "queue:teleported"],
+          metadata: queued,
+        }),
+        bead("t-3", {
+          labels: ["queue:queued", "queue:teleported"],
+          metadata: queued,
+          status: "in_progress",
+        }),
+      ],
+      ready: ["t-1", "t-2"],
+    });
+    const answer = await readEligibility({
+      root: other,
+      runBd: bd.run,
+      ledgerPath: ledger,
+      host: { busy: false },
+    });
+    if (!answer.ok) throw new Error(answer.error);
+    expect(ids(answer.value.eligible)).toEqual(["t-1"]);
+    expect(answer.value.waiting).toEqual([]);
+  });
+
   test("any other bd failure is an error, not an empty queue", async () => {
     const refused: BdRunner = () => ({
       status: 1,
