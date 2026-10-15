@@ -463,6 +463,12 @@ export function createQueue(deps: QueueDeps): Queue {
         "refused",
         `${id} is ${from === null ? "not in the queue" : label(from)} and its Beads status is closed: a closed bead is not started.`,
       );
+    // A closed bead is not work to approve: it does not enter the queue.
+    if (action === "propose" && shown.value["status"] === "closed")
+      return no(
+        "refused",
+        `${id} is ${standing.kind === "unbacked" ? `carrying ${label(standing.label)}, which the queue did not write,` : "not in the queue"} and its Beads status is closed: a closed bead is not proposed.`,
+      );
 
     // The label the bead carries now, which the write replaces. Never the one
     // it adds: bd adds before it removes, and would leave the bead with none.
