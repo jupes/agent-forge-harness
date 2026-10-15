@@ -20,6 +20,7 @@ import type {
   CouncilAppend,
   CouncilAttachResolver,
 } from "../council/ledger-events";
+import { type CommandRunner, runLocalCommand } from "../council/pr-source";
 import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { isMain } from "../is-main";
@@ -74,6 +75,14 @@ export interface HearthOptions {
     appendEvent: CouncilAppend;
     resolveAttach: CouncilAttachResolver;
   };
+  /**
+   * Runs `bd`, `git` and `gh` for the council's bead and pr sources; the real
+   * one by default. A test hands in a fake (`testing.ts` does, one that refuses
+   * what the test did not arrange), because the `runBd` of `api` is the
+   * operator API's runner and does not reach the council. Either way `bd` runs
+   * where the hearth's own `bd` runs (`hearthCouncilRunner`).
+   */
+  councilRunCommand?: CommandRunner;
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
   /**
@@ -82,6 +91,20 @@ export interface HearthOptions {
    * the hearth while it is still starting; a throw fails the start.
    */
   onListening?: (port: number) => void | Promise<void>;
+}
+
+/**
+ * The council's command runner as this hearth runs it: `bd` in the checkout
+ * that holds the tracker (`localStateRoot`, the directory the hearth's own `bd`
+ * runner uses — from a linked worktree, `bd` may find no tracker), and `git`
+ * and `gh` where the council asked, the hearth's root.
+ */
+export function hearthCouncilRunner(
+  root: string,
+  run: CommandRunner = runLocalCommand,
+): CommandRunner {
+  const tracker = localStateRoot(root);
+  return (command, cwd) => run(command, command[0] === "bd" ? tracker : cwd);
 }
 
 export interface OperatorApiOverrides {
@@ -204,6 +227,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
           resolveAttach: options.councilLedger.resolveAttach,
         }
       : {}),
+    runCommand: hearthCouncilRunner(root, options.councilRunCommand),
   });
   const tokenFile = tokenPath(home, root);
   let token = "";

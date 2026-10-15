@@ -1,5 +1,6 @@
 # Copy to agent-forge.toml (gitignored) to override the built-in smiths.
-# Precedence: builtin < ~/.agent-forge/config.toml < this file < env (AGENT_FORGE_SMITH).
+# Precedence: builtin < the machine file < this file < env (AGENT_FORGE_SMITH).
+# The machine file is config.toml in AGENT_FORGE_HOME when that is set, else ~/.agent-forge/config.toml.
 # Inspect the result: bun run forge:config show
 # Change one value without editing by hand: bun run forge:config set <key> <value> --workspace
 #   (lists are comma-separated: bun run forge:config set benches.low "claude-apprentice:70,codex-journeyman:30" --workspace)
@@ -22,6 +23,6 @@ low = ["claude-apprentice:70", "codex-journeyman:30"]
 
 # Variables passed to spawned executors ON TOP of the always-passed base set
 # (PATH, SystemRoot, USERPROFILE, ...). Everything else is dropped.
-# Once this file exists, the same key in ~/.agent-forge/config.toml is ignored.
+# Once this file exists, the same key in the machine file is ignored.
 [execution.env]
 pass = []

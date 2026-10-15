@@ -1,7 +1,11 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { basename, extname, isAbsolute, relative, resolve, sep } from "path";
 import { hashText } from "../hash-text";
-import { redactSecrets } from "../secret-patterns";
+import {
+  redactSecrets,
+  type SecretSpan,
+  secretSpans,
+} from "../secret-patterns";
 import { type PromptFence, promptFence, promptJson } from "./prompt-fence";
 import {
   COUNCIL_SCHEMA_VERSION,
@@ -374,6 +378,76 @@ function secretSummary(redactions: ContextRedaction[]): string {
 }
 
 /**
+ * `value` as it is shown — every control and invisible formatting character
+ * replaced by a space — with every secret the scanner finds in it as written,
+ * or as shown, replaced.
+ *
+ * Scanning the two forms one after the other is not enough: a key written
+ * directly against a provider variable name, an invisible character between
+ * the name and its sign, is taken with the name by the first scan, and the
+ * second then finds no assignment and leaves the value. The two forms have the
+ * same length, character for character (every character replaced is one code
+ * unit), so what each scan finds is a place in both, and the union of the two
+ * is replaced. Overlapping finds become one marker, named by the first.
+ */
+export function redactShown(value: string): {
+  text: string;
+  redactions: ContextRedaction[];
+} {
+  const shown = withoutControls(value);
+  const found =
+    shown.length === value.length
+      ? [...secretSpans(value), ...secretSpans(shown)]
+      : // Never the case, by construction; were it, the shown form alone is read.
+        secretSpans(shown);
+  if (found.length === 0) return { text: shown, redactions: [] };
+  found.sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged: Array<SecretSpan & { kinds: Set<string> }> = [];
+  for (const span of found) {
+    const last = merged.at(-1);
+    if (last && span.start < last.end) {
+      last.end = Math.max(last.end, span.end);
+      last.kinds.add(span.kind);
+    } else merged.push({ ...span, kinds: new Set([span.kind]) });
+  }
+  const counts = new Map<string, number>();
+  let text = "";
+  let kept = 0;
+  for (const span of merged) {
+    text += `${shown.slice(kept, span.start)}[REDACTED:${span.kind}]`;
+    kept = span.end;
+    for (const kind of span.kinds)
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  text += shown.slice(kept);
+  return {
+    text,
+    redactions: [...counts].map(([kind, count]) => ({ kind, count })),
+  };
+}
+
+function refusedIn(
+  where: string,
+  redactions: ContextRedaction[],
+): ContextSecurityError {
+  // The name of the place is caller text too: it is never echoed raw.
+  return new ContextSecurityError(
+    `potential secrets detected in ${withoutControls(redactSecrets(where).text)}; context was not sent (${secretSummary(redactions)})`,
+  );
+}
+
+function counted(
+  found: Map<string, number>,
+  redactions: ContextRedaction[],
+): void {
+  for (const redaction of redactions)
+    found.set(
+      redaction.kind,
+      (found.get(redaction.kind) ?? 0) + redaction.count,
+    );
+}
+
+/**
  * `value` scanned under `policy`. Reject: a hit throws, naming `where` and
  * never the match. Redact: the hit is replaced and counted in `found`.
  */
@@ -385,16 +459,26 @@ export function scanNamed(
 ): string {
   const { text, redactions } = redactSecrets(value);
   if (redactions.length === 0) return value;
-  if (policy === "reject")
-    // The name of the place is caller text too: it is never echoed raw.
-    throw new ContextSecurityError(
-      `potential secrets detected in ${withoutControls(redactSecrets(where).text)}; context was not sent (${secretSummary(redactions)})`,
-    );
-  for (const redaction of redactions)
-    found.set(
-      redaction.kind,
-      (found.get(redaction.kind) ?? 0) + redaction.count,
-    );
+  if (policy === "reject") throw refusedIn(where, redactions);
+  counted(found, redactions);
+  return text;
+}
+
+/**
+ * `value` as it will be shown (`redactShown`), scanned under `policy` as
+ * written and as shown at once. Reject: a hit in either form throws, naming
+ * `where`. Redact: what either form holds is replaced and counted in `found`.
+ */
+export function scanShown(
+  value: string,
+  policy: SecretPolicy,
+  where: string,
+  found: Map<string, number>,
+): string {
+  const { text, redactions } = redactShown(value);
+  if (redactions.length === 0) return text;
+  if (policy === "reject") throw refusedIn(where, redactions);
+  counted(found, redactions);
   return text;
 }
 
@@ -550,11 +634,15 @@ export function buildContextPackFromParts(
   const reversed = secretsIn(segments("reversed"));
   if (reversed.length > 0) throw refuseSpan(segments("reversed"), reversed);
 
-  // What is shown is scanned twice: as written, and again as it will be
-  // shown. Replacing control characters can put a secret together that the
-  // first scan could not see, and can take one apart that it could.
+  // What is shown is read as written and as it will be shown, at once
+  // (`scanShown`): replacing control characters can put a secret together that
+  // the written form hides, and can take one apart that it shows. Then the two
+  // scans of what is left, as before.
   const shown = (value: string, where: string): string =>
-    scan(withoutControls(scan(value, where)), where);
+    scan(
+      withoutControls(scan(scanShown(value, policy, where, found), where)),
+      where,
+    );
   const displayName = cutChars(
     shown(input.displayName, "the source name"),
     TITLE_MAX_CHARS,

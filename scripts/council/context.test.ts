@@ -2498,6 +2498,150 @@ describe("a bead source under attack, fourth pass", () => {
   });
 });
 
+describe("a bead source under attack, sixth pass", () => {
+  /**
+   * A key written directly against a provider variable name, an invisible
+   * character between the name and the sign. As written the key pattern takes
+   * the key and the name together and the sign is left with nothing in front
+   * of it; as shown the name is assigned the value. Only reading both forms
+   * together finds the value.
+   */
+  const KEY = ["sk", "Zq9Zq8Zq7Zq6Zq5Zq4Zq3Zq2"].join("-");
+  const VALUE = "Wx8Wx7Wx6Wx5Wx4Wx3";
+  const AGAINST_NAME = `${KEY}${["OPENAI", "API", "KEY"].join("_")}​=${VALUE}`;
+  /**
+   * The same against a key block's END line, with no BEGIN line before it: as
+   * written the key takes the start of the END line, so nothing ends a block;
+   * as shown the END line is whole, and everything before it is the key.
+   */
+  const AGAINST_END = `${KEY_BODY} ${KEY}${KEY_RULE}END​PRIVATE KEY${KEY_RULE}`;
+  const attacks: Array<[string, string, string]> = [
+    ["a provider variable name", AGAINST_NAME, VALUE],
+    ["a key block's END line", AGAINST_END, KEY_BODY.slice(0, 30)],
+  ];
+  const linked = [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)];
+
+  /** The bead's own part, which shows its title and its labels. */
+  const head = (packed: ContextPack): string[] => [
+    evidenceTitled(packed, "acceptance criteria").content,
+  ];
+
+  test("a key written against a provider variable name or a key block's END line, with an invisible character beside it, leaves nothing in the title, the labels, an evidence title or a command error, under either policy", async () => {
+    const leaks: string[] = [];
+    let checked = 0;
+    for (const [against, attack, residue] of attacks) {
+      // Each case: the bead, and where what it carries is shown when it packs.
+      // A refusal shows its message.
+      const cases: Array<
+        [string, () => Fake, (packed: ContextPack) => string[]]
+      > = [
+        [
+          "the title",
+          () => fakeRunner({ issue: issue({ title: `Rotate ${attack}` }) }),
+          (packed) => [packed.source.displayName, ...head(packed)],
+        ],
+        [
+          "the labels",
+          () => fakeRunner({ issue: issue({ labels: ["kiln", attack] }) }),
+          head,
+        ],
+        [
+          "an evidence title",
+          () =>
+            fakeRunner({
+              comments: linked,
+              extra: withPullRequest({ title: `Rotate ${attack}` }),
+            }),
+          (packed) => packed.evidence.map((item) => item.title),
+        ],
+        [
+          "a command error",
+          () =>
+            fakeRunner({
+              comments: linked,
+              extra: withPullRequest({
+                view: { exitCode: 1, stdout: "", stderr: `error: ${attack}` },
+              }),
+            }),
+          listingOf,
+        ],
+        [
+          "the error of a read that failed",
+          () =>
+            fakeRunner({
+              extra: (command) =>
+                command[2] === "show"
+                  ? { exitCode: 1, stdout: "", stderr: `error: ${attack}` }
+                  : undefined,
+            }),
+          () => [],
+        ],
+      ];
+      for (const [where, fake, shownIn] of cases)
+        for (const secretPolicy of ["reject", "redact"] as const) {
+          let shown: string;
+          try {
+            shown = shownIn(
+              await pack(fake(), workspace(), { secretPolicy }),
+            ).join("\n");
+          } catch (error) {
+            shown = error instanceof Error ? error.message : String(error);
+          }
+          if (shown.includes(residue))
+            leaks.push(`${against}, in ${where}, ${secretPolicy}`);
+          checked += 1;
+        }
+    }
+    expect(checked).toBe(20);
+    expect(leaks).toEqual([]);
+  });
+
+  /**
+   * An ordinary slug: `sk-` inside the word `task`, short lowercase segments
+   * after it. Cut just after the hyphen that ends `machine-`, twenty
+   * characters past the `sk-`, what is left reads as a key.
+   */
+  const SLUG = "task-queue-state-machine-for-workbench-and-more";
+
+  test("a 300-character title and an 80-character label cut inside a slug that holds sk- pack under the default policy, with nothing redacted", async () => {
+    const title = `${"word ".repeat(55)}${SLUG}`;
+    const label = `${"abcd ".repeat(11)}${SLUG}`;
+    // The fixture's own claim: both cuts land just after that hyphen.
+    expect(title.slice(0, 300).endsWith(" task-queue-state-machine-")).toBe(
+      true,
+    );
+    expect(label.slice(0, 80).endsWith(" task-queue-state-machine-")).toBe(
+      true,
+    );
+
+    const packed = await pack(
+      fakeRunner({ issue: issue({ title, labels: ["kiln", label] }) }),
+      workspace(),
+    );
+    expect(packed.redactions).toEqual([]);
+    const [shown] = head(packed);
+    expect(shown).not.toContain("REDACTED");
+    // Cut at the last space before the limit instead: whole words only.
+    expect(shown).toContain(`Title: ${"word ".repeat(55).trim()}\n`);
+    expect(shown).toContain(`Labels: kiln, ${"abcd ".repeat(11).trim()}\n`);
+    expect(packed.source.displayName).toBe(
+      `${BEAD}: ${"word ".repeat(55).trim()}`.slice(0, 200),
+    );
+  });
+
+  test("a title that is one slug, with no space to cut at, is cut short of the shape instead of refused", async () => {
+    // Hyphens at 13, then every 11 characters: one at 299, the last kept.
+    const title = `task-${"b".repeat(8)}-${"abcdefghij-".repeat(30)}end`;
+    expect(title.charAt(299)).toBe("-");
+    const packed = await pack(
+      fakeRunner({ issue: issue({ title }) }),
+      workspace(),
+    );
+    expect(packed.redactions).toEqual([]);
+    expect(head(packed)[0]).toContain(`Title: ${title.slice(0, 299)}\n`);
+  });
+});
+
 describe("a bead source under attack, fifth pass", () => {
   test("a run state whose timestamp is not text does not stop the pack: the run with a real one is the newer", async () => {
     const root = workspace(

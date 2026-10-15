@@ -3,6 +3,8 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join, relative, sep } from "path";
 import { agentForgeHome } from "./agent-forge-home";
+import { machineConfigFile } from "./config/load";
+import { withProcessHomes } from "./config/testing";
 import { hearthHome, lockPath, tokenPath } from "./hearth/home";
 import { runtimeSpecifiers } from "./import-graph";
 import { backupsDir, ledgerHome, ledgerPath } from "./ledger/paths";
@@ -42,7 +44,7 @@ describe("the Agent Forge home", () => {
     expect(runtimeSpecifiers(source).sort()).toEqual(["os", "path"]);
   });
 
-  test("what the ledger and the hearth keep in that directory cannot share a name", () => {
+  test("what the ledger, the hearth and the machine config keep in that directory cannot share a name", () => {
     const home = join("some", "home");
     const top = (path: string): string =>
       relative(home, path).split(sep)[0] ?? "";
@@ -66,5 +68,13 @@ describe("the Agent Forge home", () => {
       ).toBe(true);
       expect(ledgerOwned(name)).toBe(false);
     }
+
+    const config = top(
+      withProcessHomes(home, join("some", "os home"), () =>
+        machineConfigFile({}),
+      ),
+    );
+    expect(config).toBe("config.toml");
+    expect(ledgerOwned(config) || hearth.includes(config)).toBe(false);
   });
 });

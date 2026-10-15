@@ -20,7 +20,6 @@ import {
   rmSync,
   writeFileSync,
 } from "fs";
-import { homedir } from "os";
 import { dirname, join } from "path";
 import { BENCH_NAMES } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "./defaults";
@@ -28,6 +27,7 @@ import {
   type ForgeConfig,
   type LoadOptions,
   loadConfig,
+  machineConfigFile,
   readConfigText,
 } from "./load";
 
@@ -416,11 +416,7 @@ export function setConfigValue(request: {
   options: LoadOptions;
 }): SetOutcome {
   const { key, raw, target, options } = request;
-  const userFile = join(
-    options.home ?? homedir(),
-    ".agent-forge",
-    "config.toml",
-  );
+  const userFile = machineConfigFile(options);
   const workspaceFile = join(options.harnessRoot, "agent-forge.toml");
   const file = target === "user" ? userFile : workspaceFile;
   const fail = (error: string): SetOutcome => ({ ok: false, error });

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import {
   isSensitivePath,
+  redactShown,
   type SecretPolicy,
   sanitizeContent,
   truncateUtf8,
@@ -139,10 +140,13 @@ function shownStderr(stderr: string): string {
     stderr.length > STDERR_SCAN_CHARS
       ? stderr.slice(0, STDERR_SCAN_CHARS).replace(/\S*$/, "")
       : stderr;
-  // Scanned twice: as written, and again as it will be shown. Replacing
-  // control characters and folding whitespace can put a secret together that
-  // the first scan could not see, and can take one apart that it could.
-  const shown = withoutControls(sanitizeContent(read, "redact").text)
+  // Read as written and as shown at once (`redactShown`): replacing control
+  // characters can put a secret together that the written form hides, and can
+  // take one apart that it shows. Then scanned twice more, as before: as it
+  // stands, and once whitespace is folded, which can put one together too.
+  const shown = withoutControls(
+    sanitizeContent(redactShown(read).text, "redact").text,
+  )
     .replace(/\s+/g, " ")
     .trim();
   return (

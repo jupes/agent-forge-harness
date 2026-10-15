@@ -13,6 +13,7 @@ import { join } from "path";
 import { comparableCheckout } from "../forge/runs";
 import { closeLedger } from "../ledger/db";
 import { SESSION_MIRROR_FILE } from "../ledger/identity";
+import { homeVariable } from "../ledger/isolation-probe";
 import { ledgerPath } from "../ledger/paths";
 import { queryEvents } from "../ledger/query";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
@@ -313,6 +314,72 @@ describe("forge:exec", () => {
     const seen = JSON.parse(readFileSync(dump, "utf8")).env;
     expect(seen.DATABASE_URL).toBeUndefined();
     expect(seen.EXTRA_OK).toBe("yes");
+  });
+
+  test("with no home injected, the pass list comes from the process's AGENT_FORGE_HOME file, not the child's, and only while no workspace file exists", async () => {
+    const { root, worktree, deps } = setup();
+    const { home: _injected, ...withoutHome } = deps;
+    const processHome = join(root, "process forge home");
+    const childHome = join(root, "child forge home");
+    const osHome = join(root, "os home");
+    for (const [dir, name] of [
+      [processHome, "HOME_PASS"],
+      [childHome, "CHILD_PASS"],
+      [join(osHome, ".agent-forge"), "OS_PASS"],
+    ] as const) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "config.toml"),
+        `[execution.env]\npass = ["${name}"]\n`,
+      );
+    }
+    const childSees = async (bead: string): Promise<Record<string, string>> => {
+      const dump = join(root, `${bead}.json`);
+      const out = await runExec(
+        ["--bead", bead, "--worktree", worktree, "--prompt", "x"],
+        {
+          ...withoutHome,
+          env: {
+            ...deps.env,
+            AGENT_FORGE_HOME: childHome,
+            HOME_PASS: "h",
+            CHILD_PASS: "c",
+            OS_PASS: "o",
+          },
+          command: [...fake("claude"), "--fake-dump", dump],
+        },
+      );
+      expect(out.code).toBe(0);
+      return JSON.parse(readFileSync(dump, "utf8")).env;
+    };
+
+    // The process's homes are moved for the whole test, so no step can read
+    // the real user file; both are put back at the end.
+    const osVariable = homeVariable();
+    const saved = {
+      forge: process.env.AGENT_FORGE_HOME,
+      os: process.env[osVariable],
+    };
+    process.env.AGENT_FORGE_HOME = processHome;
+    process.env[osVariable] = osHome;
+    try {
+      const alone = await childSees("b-home-pass");
+      expect(alone.HOME_PASS).toBe("h");
+      expect(alone.CHILD_PASS).toBeUndefined();
+      expect(alone.OS_PASS).toBeUndefined();
+      expect(alone.DATABASE_URL).toBeUndefined();
+
+      writeFileSync(join(root, "agent-forge.toml"), "");
+      const withWorkspace = await childSees("b-home-pass-ws");
+      expect(withWorkspace.HOME_PASS).toBeUndefined();
+      expect(withWorkspace.CHILD_PASS).toBeUndefined();
+      expect(withWorkspace.OS_PASS).toBeUndefined();
+    } finally {
+      if (saved.forge === undefined) delete process.env.AGENT_FORGE_HOME;
+      else process.env.AGENT_FORGE_HOME = saved.forge;
+      if (saved.os === undefined) delete process.env[osVariable];
+      else process.env[osVariable] = saved.os;
+    }
   });
 
   test("a non-numeric --timeout-ms is rejected instead of killing the task at once", async () => {

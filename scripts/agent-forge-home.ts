@@ -2,9 +2,10 @@
  * The machine-local Agent Forge directory: `AGENT_FORGE_HOME`, else
  * `~/.agent-forge`.
  *
- * The one place that rule is written. The ledger (`scripts/ledger/paths.ts`)
- * and the hearth (`scripts/hearth/home.ts`) both resolve their directory here,
- * so a moved home moves both. A leaf module — two built-ins and nothing of the
+ * The one place that rule is written. The ledger (`scripts/ledger/paths.ts`),
+ * the hearth (`scripts/hearth/home.ts`) and the machine config file
+ * (`scripts/config/load.ts`) all resolve their directory here, so a moved home
+ * moves all three. A leaf module — two built-ins and nothing of the
  * harness — because the hooks load it on every tool call and Vite loads it
  * under Node.
  */
