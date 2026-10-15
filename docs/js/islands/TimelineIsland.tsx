@@ -25,7 +25,7 @@ import {
   startTimelineRead,
   type TimelineView,
 } from "../timeline-reader";
-import { appStream, readOperatorRoute } from "../use-stream";
+import { appStream, pageReads, readOperatorRoute } from "../use-stream";
 
 /** The list's height when the page has not measured it yet. */
 const DEFAULT_VIEWPORT_PX = 480;
@@ -72,7 +72,7 @@ function useTimelineRead(
     return startTimelineRead({
       scope: { by, id },
       kinds,
-      read: (path) => readOperatorRoute<EventsPage>(path),
+      read: (path) => readOperatorRoute<EventsPage>(path, pageReads()),
       client: appStream(),
       onChange: (view) => setHeld({ key: `${by}:${id}:${readKey}`, view }),
     });

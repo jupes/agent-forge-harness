@@ -1,19 +1,21 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
+import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
+import { scratchDirs } from "../test-scratch";
 import { ledgerSink } from "./sinks";
 
 const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
+const dirs = scratchDirs();
+afterEach(() => {
+  // A ledger file still open cannot be removed on Windows: close first.
+  for (const ledger of ledgers.splice(0)) closeLedger(ledger);
+  dirs.cleanup();
 });
 
 function scratch(): { root: string; ledger: string } {
-  const root = mkdtempSync(join(tmpdir(), "forge sink "));
+  const root = dirs.make("forge sink ");
   const ledger = join(root, "forge home", "ledger.db");
   ledgers.push(ledger);
   return { root, ledger };

@@ -11,9 +11,8 @@
  *
  * The tracker's counts are of the whole tracker, so with an initiative chosen
  * the cards show the snapshot's counts for it, as the tables below them do.
- * Where no hearth answers (a static copy), the read fails (one failed request
- * each time the dashboard is shown) and the cards show the snapshot's counts,
- * as they always have.
+ * Where no hearth answers, or on a static copy (where nothing is asked), the
+ * read fails and the cards show the snapshot's counts, as they always have.
  *
  * A pure view and a thin wrapper that calls the hook, so the view is testable
  * as a plain function.

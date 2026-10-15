@@ -78,6 +78,11 @@ export const BD_STAND_IN_BIN = join(HEARTH_HOME, "bd-stand-in", "bin");
 export const BD_STAND_IN_STATE = join(HEARTH_HOME, "bd-stand-in", "state");
 /** Relative to the checkout, which is where the runner and its servers run. */
 export const BD_STAND_IN_SOURCE = join("tests", "e2e", "bd-stand-in.ts");
+/**
+ * The stand-in for `git` (`git-stand-in.ts`), compiled into the same
+ * directory: it answers the bead source's worktree listing and nothing else.
+ */
+export const GIT_STAND_IN_SOURCE = join("tests", "e2e", "git-stand-in.ts");
 
 // ── The stand-in for `build-pages` ──────────────────────────────────────────
 

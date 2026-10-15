@@ -22,7 +22,17 @@ export interface RepoEntry {
   knowledgeFile: string | null;
   /** Age of that YAML in days, or null when there is none. */
   knowledgeAgeDays: number | null;
-  freshness: "current" | "aging" | "stale" | "missing";
+  /**
+   * `archived: true` in repos.json. `bun run repo` and `/sync-knowledge --all`
+   * skip such a repository, so nothing refreshes its knowledge file.
+   */
+  archived: boolean;
+  /**
+   * How current the knowledge YAML is. `archived` stands for a file that exists
+   * for an archived repository: its age is not banded, since no sync is
+   * overdue; `knowledgeAgeDays` still says how old it is.
+   */
+  freshness: "current" | "aging" | "stale" | "missing" | "archived";
 }
 
 /** Freshness bands for knowledge YAML, in days since last modification. */
@@ -40,12 +50,14 @@ export function ageInDays(mtimeMs: number | null, now: number): number | null {
 
 /**
  * One entry of `repos/repos.json`, as `scripts/setup.ts` writes it and the
- * syncing-repos skill reads it: `{ name, url, defaultBranch }`.
+ * syncing-repos skill reads it: `{ name, url, defaultBranch }`, and
+ * `archived: true` once the repository is retired.
  */
 interface RepoConfigEntry {
   name?: unknown;
   url?: unknown;
   defaultBranch?: unknown;
+  archived?: unknown;
 }
 
 /** Parse `repos/repos.json` (`{ "repos": [...] }`). */
@@ -91,6 +103,10 @@ export function buildRepoEntries(input: BuildReposInput): RepoEntry[] {
     names.add(name);
     const hasKnowledge = input.knowledge.has(name);
     const ageDays = hasKnowledge ? (input.knowledge.get(name) ?? null) : null;
+    // Only the boolean true archives, as in scripts/syncing-repos: a missing,
+    // false or non-boolean flag is an active repository.
+    const archived = config?.archived === true;
+    const banded = hasKnowledge ? freshnessFor(ageDays) : "missing";
     entries.push({
       name,
       path: `repos/${name}`,
@@ -99,7 +115,8 @@ export function buildRepoEntries(input: BuildReposInput): RepoEntry[] {
       cloned: input.clonedDirs.includes(name),
       knowledgeFile: hasKnowledge ? `knowledge/repos/${name}.yaml` : null,
       knowledgeAgeDays: ageDays,
-      freshness: hasKnowledge ? freshnessFor(ageDays) : "missing",
+      archived,
+      freshness: archived && banded !== "missing" ? "archived" : banded,
     });
   };
 

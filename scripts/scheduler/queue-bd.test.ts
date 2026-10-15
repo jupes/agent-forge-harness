@@ -212,6 +212,44 @@ describe.skipIf(scratch === "")("the queue and a real bd", () => {
     }
   }, 120_000);
 
+  test("the shift's comments add is answered alike by bd and by the in-memory tracker: the comment on the issue, and an id no issue has refused on stdout", async () => {
+    const id = await create("queue contract: comments");
+    const tracker = queueTracker([{ id }]);
+    // A text that looks like an option: after the --, it stays a text.
+    const text = "--help worklog: shift shift-20261014-120000-0a0b started";
+    const args = ["comments", "add", "--json", "--", id, text];
+    const comment = (result: BdResult) => {
+      const printed = parsed(result.stdout) as Record<string, unknown> | null;
+      return {
+        status: result.status,
+        issueId: printed?.["issue_id"],
+        text: printed?.["text"],
+        keys: Object.keys(printed ?? {}).sort(),
+      };
+    };
+    const real = await bd(args);
+    const fake = tracker.answerComment(args);
+    if (fake === undefined) throw new Error("the tracker did not answer");
+    expect(comment(fake)).toEqual(comment(real));
+    expect(comment(real)).toMatchObject({ status: 0, issueId: id, text });
+    expect(tracker.beads.get(id)?.comments).toEqual([text]);
+
+    const unknown = [
+      "comments",
+      "add",
+      "--json",
+      "--",
+      "probe-no-such-bead",
+      "worklog: nothing",
+    ];
+    const realMissing = await bd(unknown);
+    const fakeMissing = tracker.answerComment(unknown);
+    expect(fakeMissing?.status).toBe(realMissing.status);
+    expect(realMissing.status).toBe(1);
+    expect(refusal(realMissing)).toMatch(/no issues? found/i);
+    expect(refusal(fakeMissing ?? realMissing)).toBe(refusal(realMissing));
+  }, 120_000);
+
   test("a child gets its parent's queue label and none of its metadata; the parent's metadata is printed under dependencies only", async () => {
     const parent = await create("queue contract: parent");
     await bd([

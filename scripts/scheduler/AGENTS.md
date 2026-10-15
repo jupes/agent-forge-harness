@@ -3,7 +3,8 @@
 What decides which work may run, and beside what, and the shift that runs it. Today it holds: the
 file map, the approval queue, the worktree registry, reservations with eligibility, and `forge:shift`.
 Only the shift starts work, and only through `runExec` (`scripts/executors/`); every other module
-here starts nothing, and the only other process spawned is git, by the registry.
+here starts nothing. The other processes spawned are git (the registry, and the shift's base and
+pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
 
 ## The file map
 
@@ -133,9 +134,12 @@ here starts nothing, and the only other process spawned is git, by the registry.
 - Tests are hermetic: `queue-fixture.ts` is an in-memory tracker that answers the queue's `bd` calls
   (`show` of one id or several, label/metadata `update`, and the `list` shapes of `GET /queue` and
   eligibility, via `answerQueueList`) as bd 1.1.0 was measured to; the browser suite's `bd` stand-in
-  answers through it too, and the ledger and the lock are in temp directories. It answers no
-  `create`: `childOf(parent, id)` makes a child as `bd create --parent` does (every label of the
-  parent, none of its metadata); build inherited children with it, not by hand.
+  answers through it too, and the ledger and the lock are in temp directories. The shift's
+  `comments add --json -- <id> <text>` is answered by `answerComment`, apart from `answer`, so the
+  stand-in (which answers the hearth's comments itself) is not changed by it; the text is kept on
+  the bead (`comments`). It answers no `create`: `childOf(parent, id)` makes a child as
+  `bd create --parent` does (every label of the parent, none of its metadata); build inherited
+  children with it, not by hand.
   `queue-bd.test.ts` compares that fixture with a real `bd` and walks the machine on it; it is
   skipped unless `AGENT_FORGE_SCRATCH_TRACKER` names a scratch tracker (its own git repository, no
   remote of either kind), and is run by hand after any change to the `bd` calls or the fixture.
@@ -168,8 +172,11 @@ here starts nothing, and the only other process spawned is git, by the registry.
 - `create`:
   - Refuses before anything is made: a name that is not a new branch (`check-ref-format --branch`
     must print the name back, and `@` and a leading `-` are refused), a bead or session id that is
-    not one, a repository whose own ignore rules do not cover `trees/<id>`, and the OS home.
-  - Branches from the HEAD of the checkout it runs in.
+    not one, a start point that names no commit (empty, a leading `-`, whitespace, or
+    `rev-parse --verify --quiet <ref>^{commit}` in the main checkout fails), a repository whose own
+    ignore rules do not cover `trees/<id>`, and the OS home.
+  - Branches from the request's `startPoint` when it has one (the shift gives the base commit it
+    fetched), else from the HEAD of the checkout it runs in (`bun run worktree`).
   - If git made the branch and then failed, the branch is deleted. No `git worktree prune`: it would
     touch other sessions' worktrees.
 - `remove`:
@@ -236,24 +243,70 @@ here starts nothing, and the only other process spawned is git, by the registry.
   - Host sampling (CPU and memory against the 85% default) is `host-load.ts`, called by the shift;
     eligibility only takes "busy".
 
-## The shift (`shift.ts`, `shift-store.ts`, `host-load.ts`, `shift-cli.ts`)
+## The shift (`shift.ts`, `shift-pr.ts`, `shift-store.ts`, `host-load.ts`, `shift-cli.ts`)
 
 - `runShift` composes the modules above and repeats none of them: `readEligibility` says what may
   start, `createQueue(...).move(id, action, "scheduler")` moves a bead (`start` is the claim, then
   `submit`, `release` or `halt`), `reserve` / `release` claim and free its file map, the registry
   makes its worktree, and each run is `runExec` with an `AbortSignal`. Every outside call is a
-  dependency (`ShiftDeps`); `shiftCliDeps` builds the real ones.
+  dependency (`ShiftDeps`: bd, git, gh, `pr:check`, the worktree maker, the host sampler);
+  `shiftCliDeps` builds the real ones.
+- The base: before anything else (no record, no event, no bd call) `fetchBase` runs
+  `git fetch --no-tags origin +refs/heads/<base>:refs/remotes/origin/<base>` in the main checkout
+  and resolves that ref to a commit. `base` is `--base`, default `master`: plain branch name parts,
+  never `HEAD` and never a `shift/` branch (`isBaseBranch`). A base that cannot be fetched starts
+  nothing (exit 1). The commit is pinned for the whole shift (`baseSha` on the record): every
+  worktree starts there, whatever the checkout the shift runs in has checked out.
 - Order for a bead: `start`, then its smith (`--smith`, else `smithFor` on the bead's own labels and
   metadata), then `reserve` for `<main>/trees/<shift-id>-<n>`, then the worktree (branch
-  `shift/<shift-id>/<bead>`, from the HEAD of the checkout the shift runs in), then the runs. A step
+  `shift/<shift-id>/<bead>`, from the base commit), then the started comment, then the runs. A step
   that fails gives back what the steps before it took (the reservation, the bead to `queued`) and
   sets the bead aside for the rest of the shift. The reservation is released in a `finally` after
-  the runs, whatever happened. The worktree is kept: it holds the work.
-- Runs: a success is `submit` (to `review`). A failure is repaired, the next run told how the one
-  before ended, up to `repairs` more runs, then `halt`. A run stopped by the shift, or timed out at
-  the shift's deadline, is `release` (back to `queued`). A run `runExec` refused before starting the
-  provider is released at once, with no repair. Each run gets `--timeout-ms` of the time left (or
-  `runTimeoutMs` when that is less), so a run never outlives the shift.
+  the runs (and the pull request step), whatever happened, and the end comment is posted after it.
+  The worktree is kept: it holds the work.
+- Runs: a success is `submit` (to `review`), then the pull request step. A failure is repaired, the
+  next run told how the one before ended, up to `repairs` more runs, then `halt`. A run stopped by
+  the shift, or timed out at the shift's deadline, is `release` (back to `queued`). A run `runExec`
+  refused before starting the provider is released at once, with no repair. Each run gets
+  `--timeout-ms` of the time left (or `runTimeoutMs` when that is less), so a run never outlives the
+  shift. The pull request step is not bounded by the deadline; git and gh each have a 2 minute
+  limit.
+- The pull request step (`openDraftPr`, decision 7), only for a bead `submit` moved to `review`,
+  each check a refusal before the next: the bead id is one (`isBeadId`) and the branch is exactly
+  `shift/<shift-id>/<bead>` and not the base; the worktree is the directory the registry made, a
+  plain directory (not a link) whose real path is exactly `<main>/trees/<id>` (kind `worktree`);
+  it has commits after the base commit (`git log <baseSha>..refs/heads/<branch>`). The body is the
+  run's `.tmp/work/pr-body.md` in the worktree (the prompt asks for it), else one the shift builds
+  with the template's six sections, which says the run left no body and claims no test evidence.
+  The run's body must be a file of the worktree's own: a symbolic link, a hard link (more than one
+  name), a path whose real path leaves the worktree (a junction on `.tmp` or `.tmp/work`), or a
+  file swapped between the check and the open (device and file id compared) is refused, never
+  read. It is read once, into memory. The title and the body are then scanned with
+  `redactSecrets`; anything found refuses the step as a `body` failure that names only the kinds.
+  The text is written to a fresh file the shift owns, outside every worktree
+  (`<home>/shifts/<shift-id>/<bead>-XXXXXX/pr-body.md`: `mkdtemp`, then `wx`), and that one path
+  is what `bun run pr:check` reads and gh posts, so nothing done to the worktree afterwards changes
+  what is checked or posted. The copies are kept beside the shift's record; that directory and its parent must be plain directories (a link is refused before `mkdtemp`, which spins forever under Bun on a junction). Then
+  `git push --porcelain --no-follow-tags --recurse-submodules=no origin <sha>:refs/heads/<branch>`
+  (the commit the branch named when it was listed and scanned, `rev-parse` before `git log`, so a commit added later is not pushed; the destination named in full, so no `remote.*.push` refspec applies; no tag whatever
+  `push.followTags` says; no force, no upstream written to the shared config,
+  `GIT_TERMINAL_PROMPT=0`) and
+  `gh pr create --draft --base=<base> --head=<branch> --title=<bead>: <title> --body-file=<body>`,
+  both run, like the `git log`, in the main checkout and never in the worktree: the branch is a ref
+  of the repository they share, so a worktree swapped for a link after the checks cannot point git
+  or gh at another repository. The worktree is only checked and its body read. The URL gh prints
+  goes on the record entry (`prUrl`, and `prBody`: `run` or `shift`). Never merged, never marked
+  ready, no step retried.
+- A pull request step that fails leaves the bead in `review` and the shift going: `error` on its
+  entry says `pull request: <kind>: <what git or gh said>` (secrets redacted, at most 300
+  characters), and its end comment gives the fixed sentence `PR_FAILURES[kind]`.
+- Comments: one `worklog:` comment when a bead starts (shift, run id, smith, worktree, branch) and
+  one when it ends (`after <n> run(s): <outcome>.` and a fixed reason from `SHIFT_ENDINGS`, the PR
+  link or `PR_FAILURES`, or the queue state the operator left it in). Each is one
+  `bd comments add --json -- <id> <text>`, never repeated, confirmed by the comment bd prints on the
+  issue. A comment that fails is written on the entry (`commentError`) and stops nothing. A bead set
+  aside before its worktree was made never started and gets none. What a provider, git or gh printed
+  never goes in a comment; it stays on the record.
 - Bounds: concurrency, `forMs`, `maxBeads` (beads that ran, not beads set aside) and `maxUsd` (the
   sum of `session.ended` usage `costUsd`; a run that reports no cost adds nothing and is counted in
   `unpriced`). The count and the spend stop admission; runs in flight finish, so the spend can be
@@ -281,16 +334,25 @@ here starts nothing, and the only other process spawned is git, by the registry.
 - `shift-store.ts`: the record `<home>/shifts/<id>.json` (a report, never read back to decide) and
   the stop request `<id>.stop`, written by `requestStop` for `forge:shift stop` and
   `POST /shifts/:id/stop`. Same home as the hearth, or the hearth cannot see or stop the shift.
-- Never merges, never pushes, opens no pull request. The run's prompt says so too, and the Claude
-  adapter's tool allowlist has no `git push` and no `gh`.
+- Never merges, and pushes nothing but a bead's own shift branch, by the shift itself. The run's
+  prompt tells it not to push, open a pull request or merge, and the Claude adapter's tool
+  allowlist has no `git push` and no `gh`.
 - **Not covered:**
   - A shift that dies (Ctrl-C, a crash, a kill): the supervisor kills its runs' process trees, but
     their beads stay `running` and their reservations held. `forge:reservations release` and the
     operator's queue actions are the way out; prefer `forge:shift stop`.
   - The shift does not run `bd update --claim`; the run's own workflow does.
-  - No pull request, no `worklog:` comments, no `POST /shifts`.
+  - A base that moves during a shift is not fetched again; a remote other than `origin`.
+  - Uncommitted changes in a worktree are not in its pull request, and nothing says so.
+  - The secret scan covers the PR title and body only: the branch's files and its full commit
+    messages are pushed without one (the shift's own body lists only the first 50 subjects).
+  - No `POST /shifts`.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
-  shapes), a temp ledger, lock and home, plain directories as worktrees, and a fake adapter whose
-  runs the test scripts. Its kill test runs the Claude adapter on the fake binary behind a guard
-  that refuses a spawn without the override. `shift-cli.test.ts` runs one shift end to end with the
-  real registry in a scratch repository and the fake binary. No test runs a real provider or `gh`.
+  shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record
+  their calls and answer as the test says, and a fake adapter whose runs the test scripts. Its kill
+  test runs the Claude adapter on the fake binary behind a guard that refuses a spawn without the
+  override. `shift-pr.test.ts` runs the base and the pull request step with real git on a scratch
+  repository whose origin is a bare repository in the OS temp dir, and the real `pr:check`.
+  `shift-cli.test.ts` runs one shift end to end with the real registry and real git in such a
+  repository (the checkout on a feature branch, origin ahead of it) and the fake binary. No test
+  runs a real provider or the real `gh`, or reaches the real remote: every test's gh is a function.
