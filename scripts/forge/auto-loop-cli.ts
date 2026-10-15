@@ -20,6 +20,13 @@
  * object to in the evaluator is reported as `data.evaluatorProblem`, and the
  * round is graded on its findings.
  *
+ * A round recorded `UNREADABLE` also stores why its verdict was unusable
+ * (`verdictError`, cleaned by `storedVerdictError`), and the halt reason it
+ * decides names it, so the run's state, `forge:runs`, the Stop reminder and
+ * the halt handoff say what to fix: a file that could not be read or parsed, a
+ * run with no correlation, a verdict that is not this run's, or an evaluator
+ * that ranks below the builder (a re-review with a stronger one).
+ *
  * Three things are refused before a round is recorded: a command line that
  * cannot be read whole (`parseReviewArgs`); a verdict file whose digest a
  * round of the run was already graded from, since a verdict grades one round;
@@ -406,6 +413,8 @@ if (isMain(import.meta)) {
     history,
     verdict,
     ...(artifact ? { verdictSha256: artifact.sha256 } : {}),
+    // Why there is no verdict, so the halt reason names it.
+    ...(verdictError !== null ? { verdictError } : {}),
     at: new Date().toISOString(),
     ...(args.values.tier !== undefined ? { tier: args.values.tier } : {}),
   });
