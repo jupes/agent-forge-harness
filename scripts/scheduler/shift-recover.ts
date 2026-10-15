@@ -67,6 +67,7 @@ import {
   SHIFT_BEAD_OUTCOMES,
   type ShiftBeadRecord,
   type ShiftRecord,
+  shiftOfWorktree,
   writeShiftRecord,
 } from "./shift-store";
 import { comparablePath } from "./worktrees";
@@ -281,10 +282,15 @@ export async function recoverShift(
     : no("failed", "the recovery lock could not be taken; nothing was done.");
 }
 
-/** Ownership of a bead, as the ledger says it: `final` is false when the ledger could not be read. */
-type Ownership =
+/**
+ * Ownership of a bead, as the ledger says it: `final` is false when the
+ * ledger could not be read. `startedBy` is set when the newest move is
+ * another run's start: a move into `running` carrying a run id that is not
+ * the one asked about.
+ */
+export type Ownership =
   | { owned: true }
-  | { owned: false; final: boolean; why: string };
+  | { owned: false; final: boolean; why: string; startedBy?: string };
 
 type Move = LedgerEventOf<"bead.transitioned"> & {
   payload: { from: string | null; to: string; reason?: string };
@@ -296,6 +302,82 @@ function isMove(event: LedgerEvent): event is Move {
     !("action" in event.payload) &&
     typeof event.payload.to === "string"
   );
+}
+
+/**
+ * Whether the run `runId` owns the bead: its newest recorded queue move (a
+ * `bead.transitioned` with `to`, in `workspace`) is a move into `running`
+ * carrying that run id. Recovery releases only a bead its shift owns; a
+ * running shift's pause watch stops its own run when another run's start is
+ * newer than its own (`startedBy`). An empty run id owns nothing: it would
+ * match a start that names no run, such as an operator's by hand. One ledger
+ * read; a read that fails is `final: false`, never a throw.
+ */
+export function runOwnership(
+  read: {
+    workspace: string;
+    ledgerPath: string;
+    queryEvents?: typeof queryEvents | undefined;
+  },
+  beadId: string,
+  runId: string,
+): Ownership {
+  // A start that names no run (an operator's, made by hand) is no run's:
+  // an entry with no run id would match it.
+  if (runId === "")
+    return {
+      owned: false,
+      final: true,
+      why: "its record entry names no run id, so it is not known to be this shift's; left as it is",
+    };
+  const query = read.queryEvents ?? queryEvents;
+  let newest: Move | undefined;
+  try {
+    newest = query(
+      {
+        workspace: read.workspace,
+        beadId,
+        beadExact: true,
+        kinds: ["bead.transitioned"],
+      },
+      { path: read.ledgerPath },
+    )
+      .filter(isMove)
+      .at(-1);
+  } catch (error) {
+    return {
+      owned: false,
+      final: false,
+      why: `the ledger could not be read to tell whose it is (${message(error)})`,
+    };
+  }
+  if (newest === undefined)
+    return {
+      owned: false,
+      final: true,
+      why: "the ledger holds no queue move of it, so it is not known to be this shift's; left as it is",
+    };
+  if (newest.runId === runId && newest.payload.to === "running")
+    return { owned: true };
+  const move = `${newest.payload.from ?? "outside the queue"} to ${newest.payload.to} (${newest.payload.reason ?? "no reason recorded"}${newest.runId !== undefined ? `, run ${newest.runId}` : ""})`;
+  const startedBy =
+    newest.payload.to === "running" &&
+    newest.runId !== undefined &&
+    newest.runId !== runId
+      ? newest.runId
+      : undefined;
+  return {
+    owned: false,
+    final: true,
+    // Its own run id on a move that is not a start: the shift moved it on
+    // before its process ended, or a recovery did before it could write
+    // the record.
+    why:
+      newest.runId === runId
+        ? `its newest recorded move is this shift's own and not its start: ${move}; left as it is`
+        : `it was moved after this shift started it: ${move}; left as it is`,
+    ...(startedBy !== undefined ? { startedBy } : {}),
+  };
 }
 
 async function recoverLocked(
@@ -346,51 +428,12 @@ async function recoverLocked(
   }
 
   /** Who moved the bead last, and whether that was this run's start. */
-  function ownership(beadId: string, runId: string): Ownership {
-    // A start that names no run (an operator's, made by hand) is no run's:
-    // an entry with no run id would match it.
-    if (runId === "")
-      return {
-        owned: false,
-        final: true,
-        why: "its record entry names no run id, so it is not known to be this shift's; left as it is",
-      };
-    let newest: Move | undefined;
-    try {
-      newest = query(
-        { workspace, beadId, beadExact: true, kinds: ["bead.transitioned"] },
-        ledger,
-      )
-        .filter(isMove)
-        .at(-1);
-    } catch (error) {
-      return {
-        owned: false,
-        final: false,
-        why: `the ledger could not be read to tell whose it is (${message(error)})`,
-      };
-    }
-    if (newest === undefined)
-      return {
-        owned: false,
-        final: true,
-        why: "the ledger holds no queue move of it, so it is not known to be this shift's; left as it is",
-      };
-    if (newest.runId === runId && newest.payload.to === "running")
-      return { owned: true };
-    const move = `${newest.payload.from ?? "outside the queue"} to ${newest.payload.to} (${newest.payload.reason ?? "no reason recorded"}${newest.runId !== undefined ? `, run ${newest.runId}` : ""})`;
-    return {
-      owned: false,
-      final: true,
-      // Its own run id on a move that is not a start: the shift moved it on
-      // before its process ended, or a recovery did before it could write
-      // the record.
-      why:
-        newest.runId === runId
-          ? `its newest recorded move is this shift's own and not its start: ${move}; left as it is`
-          : `it was moved after this shift started it: ${move}; left as it is`,
-    };
-  }
+  const ownership = (beadId: string, runId: string): Ownership =>
+    runOwnership(
+      { workspace, ledgerPath: deps.ledgerPath, queryEvents: query },
+      beadId,
+      runId,
+    );
 
   interface Candidate {
     beadId: string;
@@ -543,15 +586,9 @@ async function recoverLocked(
   } catch (error) {
     unfinished.push(`the reservations could not be read: ${message(error)}`);
   }
-  const trees = `${comparablePath(join(deps.mainCheckout, "trees"))}/`;
-  const ownTree = (worktree: string): boolean => {
-    const path = comparablePath(worktree);
-    if (!path.startsWith(trees)) return false;
-    const name = path.slice(trees.length);
-    return (
-      name.startsWith(`${id}-`) && /^[0-9]+$/.test(name.slice(id.length + 1))
-    );
-  };
+  const trees = comparablePath(join(deps.mainCheckout, "trees"));
+  const ownTree = (worktree: string): boolean =>
+    shiftOfWorktree(trees, comparablePath(worktree)) === id;
   for (const reservation of held) {
     if (!ownTree(reservation.worktree)) continue;
     const runId =

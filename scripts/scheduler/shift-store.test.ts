@@ -17,6 +17,8 @@ import {
   requestStop,
   type ShiftRecord,
   shiftIdInUse,
+  shiftOfWorktree,
+  shiftStanding,
   stopRequested,
   writeShiftRecord,
 } from "./shift-store";
@@ -191,5 +193,51 @@ describe("stop requests", () => {
     });
     expect(existsSync(join(shifts, `${stopped}.stop`))).toBe(false);
     expect(readdirSync(shifts)).toEqual([`${stopped}.json`]);
+  });
+});
+
+describe("a shift's worktrees, as eligibility reads them (x1gs.5.4.13)", () => {
+  const id = "shift-20261015-120000-0a0b";
+
+  test("a worktree is a shift's only as <trees>/<shift-id>-<n>, nothing after the digits", () => {
+    const trees = "c:/work/harness/trees";
+    expect(shiftOfWorktree(trees, `${trees}/${id}-1`)).toBe(id);
+    expect(shiftOfWorktree(trees, `${trees}/${id}-12`)).toBe(id);
+    for (const other of [
+      `${trees}/${id}`,
+      `${trees}/${id}-1x`,
+      `${trees}/${id}-1/sub`,
+      `${trees}/t-1`,
+      `${trees}/shift-1-1`,
+      `c:/work/harness/elsewhere/${id}-1`,
+      `c:/work/harness/trees-old/${id}-1`,
+    ])
+      expect({ other, shift: shiftOfWorktree(trees, other) }).toEqual({
+        other,
+        shift: null,
+      });
+  });
+
+  test("a shift stands live, dead or stopped by its record of this workspace; no record, another workspace's or a pid that is no process id is unknown", () => {
+    const shifts = dir();
+    const workspace = "c:/work/harness";
+    const ids = [1, 2, 3, 4, 5].map((n) => `shift-20261015-120000-000${n}`);
+    const at = (n: number, more: Partial<ShiftRecord>) =>
+      writeShiftRecord(shifts, record(ids[n] ?? "", more));
+    at(0, { pid: process.pid });
+    // No process has this id (shift-recover.test.ts uses it as dead too).
+    at(1, { pid: 2_000_000_000 });
+    at(2, { state: "stopped", reason: "operator" });
+    at(3, { workspace: "c:/work/other" });
+    at(4, { pid: 0 });
+    expect(
+      [...ids, "shift-20261015-120000-0006"].map((shiftId) =>
+        shiftStanding(shifts, shiftId, workspace),
+      ),
+    ).toEqual(["live", "dead", "stopped", "unknown", "unknown", "unknown"]);
+    // The workspace in any spelling.
+    expect(shiftStanding(shifts, ids[0] ?? "", "C:\\work\\harness\\")).toBe(
+      "live",
+    );
   });
 });
