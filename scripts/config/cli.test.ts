@@ -65,6 +65,55 @@ describe("forge:config", () => {
     expect(keys).toContain("benches.low");
   });
 
+  test("show and get print each [shift] key with where it came from, and keys lists them", () => {
+    const opts = setup();
+    const file = join(opts.harnessRoot, "agent-forge.toml");
+    writeFileSync(file, "[shift]\nmax_usd = 5\n");
+    const shown = runConfigCli(["show"], opts);
+    expect(shown.code).toBe(0);
+    expect(shown.stdout.split("\n")).toContain(`shift.max_usd = 5  (${file})`);
+    expect(shown.stdout.split("\n")).toContain('shift.for = "2h"  (builtin)');
+    expect(runConfigCli(["get", "shift.for"], opts).stdout).toBe(
+      "2h  (from builtin)",
+    );
+    const got = runConfigCli(["get", "shift.max_usd", "--json"], opts);
+    expect(JSON.parse(got.stdout).data).toEqual({
+      key: "shift.max_usd",
+      value: 5,
+      source: file,
+    });
+    const shownJson = JSON.parse(runConfigCli(["show", "--json"], opts).stdout);
+    expect(shownJson.data.config.shift.maxUsd).toBe(5);
+    const { keys } = JSON.parse(runConfigCli(["keys", "--json"], opts).stdout)
+      .data as { keys: string[] };
+    expect(keys.filter((key) => key.startsWith("shift."))).toEqual([
+      "shift.concurrency",
+      "shift.for",
+      "shift.max_beads",
+      "shift.max_usd",
+      "shift.repairs",
+      "shift.throttle",
+    ]);
+  });
+
+  test("set shift.max_usd 5 --workspace writes it, and get then reports it from the workspace file", () => {
+    const opts = setup();
+    const file = join(opts.harnessRoot, "agent-forge.toml");
+    const out = runConfigCli(
+      ["set", "shift.max_usd", "5", "--workspace"],
+      opts,
+    );
+    expect(out).toEqual({
+      code: 0,
+      stdout: `shift.max_usd = 5  (written to ${file})`,
+      stderr: "",
+    });
+    expect(readFileSync(file, "utf8")).toBe("[shift]\nmax_usd = 5\n");
+    expect(runConfigCli(["get", "shift.max_usd"], opts).stdout).toBe(
+      `5  (from ${file})`,
+    );
+  });
+
   test("a broken config exits 2 with the file in the message", () => {
     const opts = setup();
     writeFileSync(join(opts.harnessRoot, "agent-forge.toml"), "a = = 1");
@@ -217,17 +266,23 @@ describe("forge:config keys and set agree", () => {
     expect(keys).not.toContain("smiths.my-codex.colour");
 
     const sample = (key: string): string =>
-      key.endsWith(".enabled")
-        ? "true"
-        : key.endsWith(".tags") || key === "execution.env.pass"
-          ? "a,b"
-          : key.startsWith("benches.")
-            ? "claude-master:1"
-            : key === "workflow.default_crew"
-              ? "claude-master"
-              : key.endsWith(".provider")
-                ? "claude"
-                : "value";
+      key === "shift.for"
+        ? "90m"
+        : key === "shift.throttle"
+          ? "0.5"
+          : key.startsWith("shift.")
+            ? "1"
+            : key.endsWith(".enabled")
+              ? "true"
+              : key.endsWith(".tags") || key === "execution.env.pass"
+                ? "a,b"
+                : key.startsWith("benches.")
+                  ? "claude-master:1"
+                  : key === "workflow.default_crew"
+                    ? "claude-master"
+                    : key.endsWith(".provider")
+                      ? "claude"
+                      : "value";
     for (const key of keys) {
       const out = runConfigCli(
         ["set", key, sample(key), "--workspace", "--json"],
