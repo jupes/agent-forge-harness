@@ -32,6 +32,58 @@ export interface AutoDecision {
   fileFollowUps: boolean;
 }
 
+/** The most characters of an unusable verdict's cause a round stores. */
+export const VERDICT_ERROR_LIMIT = 500;
+
+/**
+ * The one parser message that repeats text the verdict file supplied: the
+ * attestations key it refused, which an evaluator chose.
+ */
+const ATTESTATION_KEY_ECHO =
+  /attestations\.[\s\S]* is not a known dimension \(/;
+
+/**
+ * Why a verdict was unusable, as a round stores it, or null when nothing is
+ * left to say.
+ *
+ * The cause is what `forge:review` prints as `data.verdictError`, and it is
+ * read back by the Stop reminder and written into the halt handoff, so it is
+ * kept to one short line of the harness's own wording. The verdict file is
+ * written by an evaluator, so the one parser message that echoes text from it
+ * (an unknown attestations key) is stored without that text here, and the
+ * caller stores a verdict of another run or bead as "names another run" or
+ * "another bead" (`verdictOfRun`'s `cause`) rather than with the ids it names.
+ * What else reaches a cause: the harness's own wording, the run's and its
+ * correlation's own ids, provider and model names that matched a configured
+ * smith, ranks, and the path the caller typed. Control characters and white
+ * space of any kind become single spaces, a closing full stop is dropped (the
+ * reason adds its own), and the text is cut to `VERDICT_ERROR_LIMIT`
+ * characters.
+ */
+export function storedVerdictError(error: string): string | null {
+  const neutral = error.replace(
+    ATTESTATION_KEY_ECHO,
+    "attestations has a key that is not a known dimension (",
+  );
+  const line = Array.from(neutral)
+    .map((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : character;
+    })
+    .join("")
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+    .join(" ");
+  let end = line.length;
+  while (end > 0 && line[end - 1] === ".") end--;
+  const text = line.slice(0, end);
+  if (text.length === 0) return null;
+  const characters = Array.from(text);
+  return characters.length > VERDICT_ERROR_LIMIT
+    ? `${characters.slice(0, VERDICT_ERROR_LIMIT - 1).join("")}…`
+    : text;
+}
+
 const blocking = (findings: ReviewFindings): number =>
   findings.blocker + findings.high;
 
@@ -67,9 +119,14 @@ export function decideNext(input: {
   }
 
   if (latest.verdict === "UNREADABLE") {
+    // A round that stored why its verdict was unusable says so; one recorded
+    // before that was stored keeps the generic reason.
     return {
       action: "halt",
-      reason: `The review of "${input.phase}" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.`,
+      reason:
+        latest.verdictError === undefined
+          ? `The review of "${input.phase}" returned no usable verdict, so the run cannot grade itself. Check the evaluator output.`
+          : `The review of "${input.phase}" returned no usable verdict, so the run cannot grade itself: ${latest.verdictError}.`,
       fileFollowUps: false,
     };
   }
