@@ -1049,10 +1049,22 @@ describe("every action row (iterating the table)", () => {
   });
 });
 
-describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
-  /** How long an action and a GET sent during it may take to be answered, from when the action was sent. */
-  const ABOUT_A_SECOND_MS = 1500;
+/** How long a request and a GET sent during it may take to be answered, from when the request was sent. */
+const ABOUT_A_SECOND_MS = 1500;
 
+/** Hold the write lock on `file` from another connection until `release` is called. */
+function holdWriteLock(file: string): { release(): void } {
+  const holder = new Database(file, { create: true });
+  holder.exec("BEGIN EXCLUSIVE");
+  return {
+    release() {
+      holder.exec("ROLLBACK");
+      holder.close();
+    },
+  };
+}
+
+describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
   /**
    * Send a valid action, and 300 ms later a GET of the health route. Each
    * answer's status, and when it arrived, counted from when the action was
@@ -1075,18 +1087,6 @@ describe("an action while another connection holds the write lock on the hearth'
     await health.body?.cancel();
     const get = { status: health.status, ms: performance.now() - sent };
     return { action: await action, get };
-  }
-
-  /** Hold the write lock on `file` from another connection until `release` is called. */
-  function holdWriteLock(file: string): { release(): void } {
-    const holder = new Database(file, { create: true });
-    holder.exec("BEGIN EXCLUSIVE");
-    return {
-      release() {
-        holder.exec("ROLLBACK");
-        holder.close();
-      },
-    };
   }
 
   test("on a new ledger file the hearth has not opened: 503 within 1.5 s and the effect not called, and a GET of the health route sent 300 ms after it is answered within 1.5 s of the action", async () => {
@@ -1136,6 +1136,134 @@ describe("an action while another connection holds the write lock on the hearth'
     expect(measured.get.ms).toBeLessThan(ABOUT_A_SECOND_MS);
     expect(probes.length).toBe(1);
   }, 60_000);
+});
+
+describe("a read row or the stream while another connection holds the write lock on a new ledger file the hearth has not opened", () => {
+  /** The rows that read the ledger, by name, and the status each answers while it cannot be opened. */
+  const LEDGER_ROWS: ReadonlyArray<[string, number]> = [
+    ["GET /eligibility", 502],
+    ["GET /events", 500],
+    ["GET /reservations", 500],
+    ["GET /runs/:slug", 500],
+    ["GET /scoreboard", 500],
+    ["GET /sessions", 500],
+    ["GET /stream", 503],
+  ];
+
+  /** The status, whether the answer was an `ok` envelope (a stream that opened counts as one), and when it arrived. */
+  async function answered(
+    response: Response,
+    sent: number,
+  ): Promise<{ status: number; ok: boolean; ms: number }> {
+    const ms = performance.now() - sent;
+    if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
+      await response.body?.cancel();
+      return { status: response.status, ok: true, ms };
+    }
+    const body = await envelope(response);
+    return { status: response.status, ok: body.ok, ms };
+  }
+
+  test("every read row and the stream are answered within 1.5 s, a row that reads the ledger with an error envelope, and a GET of the health route sent 300 ms after each is answered within 1.5 s of it; released, every one answers 200", async () => {
+    // The worktree row's git is a stand-in listing the root alone: this test
+    // is about the ledger, and a real git on a loaded machine can fail it.
+    let root = "";
+    const git: GitRun = (args) => {
+      const top = root.replaceAll("\\", "/");
+      if (args[0] === "rev-parse")
+        return { status: 0, stdout: `${top}\n`, stderr: "" };
+      if (args[0] === "worktree")
+        return {
+          status: 0,
+          stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+            .concat("", "")
+            .join("\0"),
+          stderr: "",
+        };
+      return { status: 1, stdout: "", stderr: "" };
+    };
+    const h = await start({
+      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git },
+    });
+    root = h.root;
+    const rows = h.hearth.routes.filter(
+      (route) => route.kind === "read" || route.kind === "stream",
+    );
+    const pathOf = (row: ApiRoute): string => {
+      if (row.kind === "stream") return row.path;
+      const path = READS[key(row)];
+      if (path === undefined)
+        throw new Error(`no fixture for read row ${key(row)}`);
+      return path;
+    };
+    if (!rows.some((row) => row.kind === "stream"))
+      throw new Error("the table has no stream row");
+    // Nothing has opened the hearth's ledger: the file does not exist yet.
+    expect(existsSync(h.ledger)).toBe(false);
+
+    const lock = holdWriteLock(h.ledger);
+    const measured: Array<{
+      row: string;
+      status: number;
+      ok: boolean;
+      ms: number;
+      get: { status: number; ms: number };
+    }> = [];
+    try {
+      for (const row of rows) {
+        // The hearth runs in this process: a serving thread held by the read
+        // holds this timer and the GET with it.
+        const sent = performance.now();
+        const asked = get(h, pathOf(row)).then((response) =>
+          answered(response, sent),
+        );
+        await new Promise((done) => setTimeout(done, 300));
+        const health = await fetch(`${h.hearth.url}${HEALTH_ROUTE}`);
+        await health.body?.cancel();
+        const getMs = performance.now() - sent;
+        measured.push({
+          row: key(row),
+          ...(await asked),
+          get: { status: health.status, ms: getMs },
+        });
+      }
+    } finally {
+      lock.release();
+    }
+
+    expect(
+      measured
+        .filter(
+          (m) =>
+            m.ms >= ABOUT_A_SECOND_MS ||
+            m.get.ms >= ABOUT_A_SECOND_MS ||
+            m.get.status !== 200,
+        )
+        .map(
+          (m) =>
+            `${m.row}: answered in ${Math.round(m.ms)} ms; the GET sent 300 ms after it: ${m.get.status} in ${Math.round(m.get.ms)} ms`,
+        ),
+    ).toEqual([]);
+    expect(
+      measured
+        .filter((m) => m.status !== 200 || !m.ok)
+        .map((m) => ({ row: m.row, status: m.status, ok: m.ok }))
+        .sort((a, b) => a.row.localeCompare(b.row)),
+    ).toEqual(LEDGER_ROWS.map(([row, status]) => ({ row, status, ok: false })));
+
+    // Released, the next read opens the file and every row answers.
+    for (const row of rows) {
+      const response = await answered(
+        await get(h, pathOf(row)),
+        performance.now(),
+      );
+      expect({ row: key(row), status: response.status }).toEqual({
+        row: key(row),
+        status: 200,
+      });
+    }
+  }, 120_000);
 });
 
 describe("the operator token", () => {
