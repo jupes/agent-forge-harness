@@ -6,6 +6,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -154,7 +155,7 @@ describe("track refuses what is not a directory directly under the OS temp direc
     const sneaky = `${tmpdir()}${sep}..${sep}${basename(tmpdir())}${sep}${basename(decoy)}`;
     expect(existsSync(join(sneaky, "keep.txt"))).toBe(true);
 
-    expect(() => scratch.track(sneaky)).toThrow(". or .. segment");
+    expect(() => scratch.track(sneaky)).toThrow("made only of dots and spaces");
     scratch.cleanup();
     expect(existsSync(join(decoy, "keep.txt"))).toBe(true);
   });
@@ -194,5 +195,117 @@ describe("track refuses what is not a directory directly under the OS temp direc
       "prefix",
     );
     expect(readdirSync(parent)).toEqual(["keep.txt"]);
+  });
+});
+
+/**
+ * Windows strips trailing dots and spaces from the last segment of a path, so
+ * `<temp>\...` and `<temp>\ ` name the temp directory itself, and `cleanup`
+ * would remove all of it. These tests run against a fake temp directory (made
+ * under the real one, with a sentinel file inside) given to `scratchDirs`, so
+ * what a regression gets wrong is removed from the fake and never from the
+ * real temp directory.
+ */
+describe("track refuses a last segment Windows reads as another directory", () => {
+  function fakeTemp(): string {
+    const dir = realpathSync.native(
+      mkdtempSync(join(tmpdir(), "scratch fake temp ")),
+    );
+    others.push(dir);
+    writeFileSync(join(dir, "sentinel.txt"), "kept");
+    return dir;
+  }
+
+  const names = [
+    "...",
+    "....",
+    " ",
+    "  ",
+    ". ",
+    ".. ",
+    ". .",
+    `...${sep}`,
+    ` ${sep}`,
+  ];
+
+  test("nine names made of dots and spaces, with or without a trailing separator, are each refused, and the fake temp directory keeps its sentinel", () => {
+    expect(names).toHaveLength(9);
+    const temp = fakeTemp();
+    const scratch = scratchDirs({ tempDir: temp });
+    const taken = names.filter((name) => {
+      try {
+        scratch.track(`${temp}${sep}${name}`);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    expect(taken).toEqual([]);
+
+    scratch.cleanup();
+    expect(existsSync(join(temp, "sentinel.txt"))).toBe(true);
+  });
+
+  test("the refusal says why: the name ends in a dot or a space", () => {
+    const temp = fakeTemp();
+    const scratch = scratchDirs({ tempDir: temp });
+    expect(() => scratch.track(`${temp}${sep}...`)).toThrow(
+      "ends in a dot or a space",
+    );
+    expect(() => scratch.track(`${temp}${sep}name.`)).toThrow(
+      "ends in a dot or a space",
+    );
+    expect(() => scratch.track(`${temp}${sep}name `)).toThrow(
+      "ends in a dot or a space",
+    );
+  });
+
+  test("a segment before the last that is only dots and spaces is refused too", () => {
+    const temp = fakeTemp();
+    const scratch = scratchDirs({ tempDir: temp });
+    mkdirSync(join(temp, "inner"));
+    expect(() =>
+      scratch.track(`${temp}${sep}inner${sep}.. ${sep}inner`),
+    ).toThrow("made only of dots and spaces");
+    expect(() => scratch.track(`${temp}${sep}...${sep}inner`)).toThrow(
+      "made only of dots and spaces",
+    );
+  });
+
+  test("a link in the temp directory that leads back to it, or out of it, is refused: only a real directory directly under it is taken", () => {
+    const temp = fakeTemp();
+    const scratch = scratchDirs({ tempDir: temp });
+    const outside = join(import.meta.dir, "..", ".tmp");
+    mkdirSync(outside, { recursive: true });
+    const victim = mkdtempSync(join(outside, "scratch-victim-"));
+    others.push(victim);
+    writeFileSync(join(victim, "keep.txt"), "kept");
+    symlinkSync(temp, join(temp, "back"), "junction");
+    symlinkSync(victim, join(temp, "out"), "junction");
+
+    expect(() => scratch.track(join(temp, "back"))).toThrow(
+      "not directly under the OS temp directory",
+    );
+    expect(() => scratch.track(join(temp, "out"))).toThrow(
+      "not directly under the OS temp directory",
+    );
+    scratch.cleanup();
+    expect(existsSync(join(temp, "sentinel.txt"))).toBe(true);
+    expect(existsSync(join(victim, "keep.txt"))).toBe(true);
+  });
+
+  test("a real directory made in the fake temp directory is still taken and removed, and a name with a dot or a space inside is fine", () => {
+    const temp = fakeTemp();
+    const scratch = scratchDirs({ tempDir: temp });
+    const made = scratch.make("scratch fake ");
+    const dotted = join(temp, "a.b c");
+    mkdirSync(dotted);
+    scratch.track(dotted);
+    expect(dirname(made)).toBe(temp);
+
+    scratch.cleanup();
+    expect(existsSync(made)).toBe(false);
+    expect(existsSync(dotted)).toBe(false);
+    expect(existsSync(join(temp, "sentinel.txt"))).toBe(true);
   });
 });

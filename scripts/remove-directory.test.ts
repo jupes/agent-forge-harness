@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, parse, sep } from "path";
 import { removeDirectory, sleepSync } from "./remove-directory";
 
 /** An error the way Node reports a failed system call. */
@@ -93,6 +100,76 @@ describe("removeDirectory", () => {
     ).toThrow("EACCES");
     expect(calls).toBe(1);
     expect(waited).toBe(false);
+  });
+});
+
+/**
+ * Every case below hands `removeDirectory` a recording `remove`, never the real
+ * one: a target that is refused must not reach it, and one that is not refused
+ * would otherwise remove a directory these tests must not touch.
+ */
+describe("removeDirectory refuses a target it must not remove", () => {
+  /** Dots and spaces that Windows strips from the end of a name, so each can name the directory above. */
+  const names = [
+    "...",
+    "....",
+    " ",
+    "  ",
+    ". ",
+    ".. ",
+    ". .",
+    `...${sep}`,
+    ` ${sep}`,
+  ];
+
+  function attempt(path: string): { refused: boolean; removed: string[] } {
+    const removed: string[] = [];
+    let refused = false;
+    try {
+      removeDirectory(path, { remove: (p) => removed.push(p) });
+    } catch {
+      refused = true;
+    }
+    return { refused, removed };
+  }
+
+  test("a last segment that is empty or ends in a dot or a space is refused before anything is removed", () => {
+    const parent = join(tmpdir(), "remove directory parent");
+    const outcomes = names.map((name) => ({
+      name,
+      ...attempt(`${parent}${sep}${name}`),
+    }));
+    expect(outcomes.filter((o) => !o.refused || o.removed.length > 0)).toEqual(
+      [],
+    );
+    expect(attempt(`${parent}${sep}.`).refused).toBe(true);
+    expect(attempt(`${parent}${sep}..`).refused).toBe(true);
+    expect(attempt("").refused).toBe(true);
+    expect(attempt(parse(parent).root).refused).toBe(true);
+  });
+
+  test("the refusal says why", () => {
+    expect(() =>
+      removeDirectory(`${tmpdir()}${sep}...`, { remove: () => undefined }),
+    ).toThrow("ends in a dot or a space");
+  });
+
+  test("the OS temp directory itself, in either spelling, is refused", () => {
+    for (const spelling of [tmpdir(), realpathSync.native(tmpdir())]) {
+      const { refused, removed } = attempt(spelling);
+      expect({ spelling, refused, removed }).toEqual({
+        spelling,
+        refused: true,
+        removed: [],
+      });
+    }
+  });
+
+  test("a name with a dot or a space inside, or a directory in the temp directory, is passed on to remove", () => {
+    expect(attempt(join(tmpdir(), "a.b c"))).toEqual({
+      refused: false,
+      removed: [join(tmpdir(), "a.b c")],
+    });
   });
 });
 

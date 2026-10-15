@@ -10,7 +10,9 @@
  * not for a path that serves requests.
  */
 
-import { rmSync } from "fs";
+import { realpathSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { basename } from "path";
 
 export interface RemoveOptions {
   /** Attempts in all, the first included. Default 5. */
@@ -48,14 +50,53 @@ export function sleepSync(ms: number): void {
 }
 
 /**
+ * Why `name`, the last segment of a path, cannot be taken for the directory it
+ * seems to name, or null when it can. Windows strips trailing dots and spaces
+ * from it, so `...` and `. ` and `x.` are read as the directory above, `x` and
+ * `x`: a remove of `<dir>\...` removes `<dir>`. The same rule is applied on
+ * every platform, so a test on Linux shows what Windows would do.
+ */
+export function nameProblem(name: string): string | null {
+  if (name === "") return "is empty";
+  if (/[. ]$/.test(name)) return "ends in a dot or a space";
+  return null;
+}
+
+/** Whether `path` is, once links are resolved, the OS temp directory itself. */
+function isOsTempDirectory(path: string): boolean {
+  try {
+    return realpathSync.native(path) === realpathSync.native(tmpdir());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Remove `path` and everything under it, by that exact path. A path that is
  * already gone is no error. Throws the last error when a lock outlasts the
  * attempts, and at once for an error that is not a lock.
+ *
+ * Refused, with nothing removed and no attempt made: a path whose last segment
+ * is empty or ends in a dot or a space (`nameProblem`), which on Windows can
+ * name the directory above it; and the OS temp directory itself. Beyond that
+ * it removes what it is given: a caller that takes paths from elsewhere checks
+ * them first (`scripts/test-scratch.ts`).
  */
 export function removeDirectory(
   path: string,
   options: RemoveOptions = {},
 ): void {
+  const problem = nameProblem(basename(path));
+  if (problem !== null) {
+    throw new Error(
+      `remove-directory: refusing to remove ${JSON.stringify(path)}: its last segment ${problem}`,
+    );
+  }
+  if (isOsTempDirectory(path)) {
+    throw new Error(
+      `remove-directory: refusing to remove ${JSON.stringify(path)}: it is the OS temp directory`,
+    );
+  }
   const attempts = Math.max(1, options.attempts ?? 5);
   const delayMs = options.delayMs ?? 100;
   const remove =
