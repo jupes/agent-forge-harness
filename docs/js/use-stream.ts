@@ -28,6 +28,7 @@ import type {
   LedgerEvent,
   LedgerEventKind,
   OperatorEnvelope,
+  SessionSummary,
   StreamSnapshot,
 } from "../../types/hearth";
 import {
@@ -35,7 +36,10 @@ import {
   applySnapshot,
   INITIAL_LIVE_STATE,
   type LiveState,
+  MAX_LIVE_SESSIONS,
+  sessionsWithoutRow,
   withCollection,
+  withSessionRows,
   withStatus,
 } from "./app-state";
 import { type DevApiState, fetchDevApi } from "./use-dev-api";
@@ -405,6 +409,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   let afterAGap = false;
   let failures = 0;
   let waiting: LedgerEvent[] = [];
+  /** Sessions whose row came from deltas alone and is still to be completed from the sessions route. */
+  const rowless = new Set<string>();
   let batchTimer: unknown = null;
   let retryTimer: unknown = null;
   let silenceTimer: unknown = null;
@@ -436,12 +442,19 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     const batch = waiting;
     waiting = [];
     const before = state.cursor;
+    // Asked before the batch is applied: afterwards the list holds them all.
+    const unrowed = sessionsWithoutRow(state, batch);
     const next = applyDeltas(state, batch);
     if (next === state || before === null) return;
     const kinds = new Set<LedgerEventKind>();
     for (const event of batch) if (event.id > before) kinds.add(event.kind);
     setState(next);
     tell(kinds);
+    // After the update, so the delta is shown without waiting for the read.
+    if (unrowed.length > 0) {
+      for (const id of unrowed) rowless.add(id);
+      sessionRows.request();
+    }
   };
 
   const receive = (message: SseMessage): void => {
@@ -455,6 +468,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     if (message.event === "snapshot" && isSnapshot(data)) {
       // A snapshot replaces everything, so nothing older is worth applying.
       waiting = [];
+      rowless.clear();
       batchTimer = stop(batchTimer);
       setState(applySnapshot(state, data));
     } else if (message.event === "delta" && isLedgerEvent(data)) {
@@ -604,6 +618,34 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   watchers.add({
     kinds: new Set(QUEUE_KINDS),
     callback: () => queue.request(),
+  });
+
+  // Sessions are folded from events, so the route is never swapped in for the
+  // list: it only completes the rows that deltas alone could not (see
+  // `withSessionRows`). A rejected read keeps the ids for the next one.
+  const sessionRows = createRefetcher({
+    timers,
+    now,
+    async run() {
+      if (rowless.size === 0) return;
+      const asked = [...rowless];
+      const envelope = await deps.read(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      if (holders === 0 || state.cursor === null || state.status === "off")
+        return;
+      if (!envelope.ok || !Array.isArray(envelope.data)) {
+        for (const id of asked) rowless.delete(id);
+        return;
+      }
+      // justification: the sessions route answers a list of session summaries.
+      const rows = envelope.data as SessionSummary[];
+      const ids = new Set(rowless);
+      const next = withSessionRows(state, rows, ids);
+      // Answered: asked about before the read, or listed by it. A session that
+      // spoke after the answer was made is not listed and stays for the next read.
+      for (const id of asked) rowless.delete(id);
+      for (const row of rows) rowless.delete(row.sessionId);
+      setState(next);
+    },
   });
 
   return {
