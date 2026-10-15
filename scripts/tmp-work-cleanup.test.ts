@@ -680,7 +680,7 @@ describe("sweepCorrelations", () => {
     expect(rebound.ok).toBe(true);
   });
 
-  test("only a file the loader takes as this checkout's correlation is touched: one named after another run, one written for another checkout, one that is no correlation, a writer's draft", () => {
+  test("only a file the loader takes as this checkout's correlation is touched: one named after another run, one written for another checkout, one that is no correlation", () => {
     const { checkout } = sandbox();
     const other = sandbox();
     const dir = join(checkout, RUN_CORRELATIONS_DIR);
@@ -707,7 +707,6 @@ describe("sweepCorrelations", () => {
       ),
     );
     const notOne = plant("notes.json", "{}");
-    const draft = plant("run-4.json.4242.tmp", valid);
 
     const applied = sweepRuns(checkout, { apply: true });
     const reasons = Object.fromEntries(
@@ -725,12 +724,128 @@ describe("sweepCorrelations", () => {
       action: "skip",
       reason: "schemaVersion must be 1",
     });
-    expect(draft in reasons).toBe(false);
     // Only run-3's own file, which the loader validates, is removed.
     expect(applied.deleted).toEqual([`${RUN_CORRELATIONS_DIR}/run-3.json`]);
-    for (const kept of [foreign, misnamed, notOne, draft]) {
+    for (const kept of [foreign, misnamed, notOne]) {
       expect(existsSync(join(checkout, kept))).toBe(true);
     }
+  });
+
+  /** Leave a file in the correlations directory as a writer killed part-way leaves a draft, `days` days ago; its relative path. */
+  function draftFile(checkout: string, name: string, days: number): string {
+    const dir = join(checkout, RUN_CORRELATIONS_DIR);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, name), '{\n  "schemaVersion": 1,\n');
+    const then = new Date(Date.now() - days * DAY_MS);
+    utimesSync(join(dir, name), then, then);
+    return `${RUN_CORRELATIONS_DIR}/${name}`;
+  }
+
+  test("the draft the real writer leaves when it dies before the rename is removed on its age alone: a young one is kept, an old one goes whatever its bead's status", () => {
+    const { checkout } = sandbox();
+    const dir = join(checkout, RUN_CORRELATIONS_DIR);
+    // A directory where the file goes: the writer fills its draft and then
+    // cannot rename it into place, which is the state a writer killed between
+    // the two steps leaves behind.
+    mkdirSync(join(dir, "run-1.json"), { recursive: true });
+    const failed = initRunCorrelation({
+      checkout,
+      beadsIssueId: "bead-open",
+      executionRunId: "run-1",
+    });
+    expect(failed.ok).toBe(false);
+    const left = readdirSync(dir).filter((name) => name.endsWith(".tmp"));
+    expect(left).toHaveLength(1);
+    const draft = `${RUN_CORRELATIONS_DIR}/${left[0]}`;
+    const open = issues(mkOpen("bead-open"));
+
+    // A writer that started a moment ago may be about to rename it.
+    const young = sweepRuns(checkout, { issues: open, apply: true });
+    expect(young.deleted).toEqual([]);
+    expect(young.candidates).toEqual([
+      {
+        path: draft,
+        taskId: "",
+        ageDays: 0,
+        action: "skip",
+        reason: "a writer's draft, age 0d < TTL 14d",
+      },
+    ]);
+    expect(existsSync(join(checkout, draft))).toBe(true);
+
+    const then = new Date(Date.now() - 30 * DAY_MS);
+    utimesSync(join(checkout, draft), then, then);
+    const reason =
+      "a writer's draft, never a correlation itself, age 30d ≥ TTL 14d";
+    const dry = sweepRuns(checkout, { issues: open });
+    expect(dry.candidates).toEqual([
+      { path: draft, taskId: "", ageDays: 30, action: "delete", reason },
+    ]);
+    expect(dry.deleted).toEqual([]);
+    expect(existsSync(join(checkout, draft))).toBe(true);
+
+    const applied = sweepRuns(checkout, { issues: open, apply: true });
+    expect(applied.deleted).toEqual([draft]);
+    expect(existsSync(join(checkout, draft))).toBe(false);
+    // The directory in the file's place is not a file, and stays.
+    expect(existsSync(join(dir, "run-1.json"))).toBe(true);
+  });
+
+  test("a draft is swept beside the correlation it was for: the draft goes on its age, the correlation waits for its bead to close", () => {
+    const { checkout } = sandbox();
+    const held = agedCorrelation(checkout, "run-1", "bead-open", 30);
+    const draft = draftFile(checkout, "run-1.json.4242.tmp", 30);
+    const applied = sweepRuns(checkout, {
+      issues: issues(mkOpen("bead-open")),
+      apply: true,
+    });
+    expect(applied.deleted).toEqual([draft]);
+    expect(existsSync(join(checkout, held))).toBe(true);
+  });
+
+  test("only the writer's own draft names are drafts: a near miss is left, however old", () => {
+    const { checkout } = sandbox();
+    const own = [
+      "run-1.json.4242.tmp",
+      "Run.With_Dots-1.json.1.tmp",
+      `${"a".repeat(80)}.json.7.tmp`,
+    ].map((name) => draftFile(checkout, name, 30));
+    const nearMisses = [
+      "run-1.json.tmp",
+      "run-1.json..tmp",
+      "run-1.json.abc.tmp",
+      "run-1.json.12a.tmp",
+      "run-1.json.-12.tmp",
+      "run-1.json.12.34.tmp",
+      "run-1.json.12.tmp.bak",
+      "run-1.json.12.tmpx",
+      "run-1.json.12.temp",
+      "run-1.JSON.12.tmp",
+      "run-1.jsn.12.tmp",
+      "run-1.12.tmp",
+      ".json.12.tmp",
+      ".run-1.json.12.tmp",
+      "-run-1.json.12.tmp",
+      "run 1.json.12.tmp",
+      "run..1.json.12.tmp",
+      `${"a".repeat(81)}.json.12.tmp`,
+      "run-1.txt.12.tmp",
+      "notes.12.tmp",
+      "readme.tmp",
+    ].map((name) => draftFile(checkout, name, 30));
+    // A directory with a draft's name is not a file to remove.
+    const folder = join(checkout, RUN_CORRELATIONS_DIR, "run-2.json.9.tmp");
+    mkdirSync(folder);
+
+    const applied = sweepRuns(checkout, { apply: true });
+    expect(applied.deleted.sort()).toEqual([...own].sort());
+    expect(
+      applied.candidates.map((candidate) => candidate.path).sort(),
+    ).toEqual([...own].sort());
+    for (const relative of nearMisses) {
+      expect(existsSync(join(checkout, relative))).toBe(true);
+    }
+    expect(existsSync(folder)).toBe(true);
   });
 
   test("nothing outside .tmp/work/run-correlations is touched: a correlations directory that is a link out of the checkout is not swept", () => {
@@ -775,6 +890,7 @@ describe("sweepCorrelations", () => {
     const { checkout } = sandbox();
     writeIssuesFile(checkout, [exportRow("bead-1", "closed")]);
     const stale = agedCorrelation(checkout, "run-1", "bead-1", 30);
+    const draft = draftFile(checkout, "run-2.json.4242.tmp", 30);
 
     const dry = await cleanupWith(
       checkout,
@@ -785,16 +901,19 @@ describe("sweepCorrelations", () => {
     expect(dry.data.correlations.deleted).toEqual([]);
     expect(dry.data.correlations.candidates.map((c) => c.action)).toEqual([
       "delete",
+      "delete",
     ]);
     expect(existsSync(join(checkout, stale))).toBe(true);
+    expect(existsSync(join(checkout, draft))).toBe(true);
 
     const applied = await cleanupWith(
       checkout,
       fakeBd(() => jsonl([exportRow("bead-1", "closed")])).run,
     );
     if (!applied.ok) throw new Error(applied.error);
-    expect(applied.data.correlations.deleted).toEqual([stale]);
+    expect(applied.data.correlations.deleted).toEqual([stale, draft]);
     expect(existsSync(join(checkout, stale))).toBe(false);
+    expect(existsSync(join(checkout, draft))).toBe(false);
   });
 });
 
