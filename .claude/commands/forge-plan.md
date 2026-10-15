@@ -1,3 +1,7 @@
+---
+argument-hint: "<slug> [--smith <name>]"
+---
+
 # /forge-plan — Forge Phase 2: Plan
 
 Turn a research document into a TDD- and Beads-shaped implementation plan with demo-able checkpoints.

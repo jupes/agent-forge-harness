@@ -152,7 +152,7 @@ describe("council outcome", () => {
       expect<string>(councilOutcome(input)).toBe(expected);
   });
 
-  test("a finished event carries the cost and the chair's summary; one with no run is unreadable", () => {
+  test("a finished event carries the cost, the chair's summary and the findings counts; one with no run is unreadable", () => {
     expect(
       councilFinished("c-1", run("completed", { chair: chair("pass") })),
     ).toEqual({
@@ -162,12 +162,64 @@ describe("council outcome", () => {
         outcome: "pass",
         costUsd: 0.25,
         summary: "the chair's summary",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
       },
     });
     expect(councilFinished("c-1", null)).toEqual({
       kind: "council.run.finished",
       payload: { councilRunId: "c-1", outcome: "unreadable" },
     });
+  });
+
+  test("a completed run's finished event counts its findings by severity, every one of them, and a run that found nothing says so with zeros", () => {
+    const found = (
+      severity: AggregatedFinding["severity"],
+      resolution: AggregatedFinding["resolution"] = "consensus",
+    ) =>
+      // justification: the count reads only the severity of a finding.
+      ({ severity, resolution }) as AggregatedFinding;
+    expect(
+      councilFinished(
+        "c-1",
+        run("completed", {
+          chair: chair("needs_changes"),
+          aggregatedFindings: [
+            found("blocker"),
+            found("high"),
+            found("high", "contested"),
+            found("medium"),
+            found("medium", "rejected"),
+            found("medium", "unreviewed"),
+            found("low"),
+          ],
+        }),
+      ).payload,
+    ).toMatchObject({
+      outcome: "fail",
+      findings: { blocker: 1, high: 2, medium: 3, low: 1 },
+    });
+    expect(
+      councilFinished("c-1", run("completed", { chair: chair("pass") }))
+        .payload,
+    ).toMatchObject({
+      outcome: "pass",
+      findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+    });
+  });
+
+  test("a failed or cancelled run, and a run that produced none, report no findings, whatever the run had aggregated before it ended", () => {
+    const aggregatedFindings = [
+      // justification: the count reads only the severity of a finding.
+      { severity: "blocker" } as AggregatedFinding,
+    ];
+    for (const status of ["failed", "cancelled"] as const) {
+      const { payload } = councilFinished(
+        "c-1",
+        run(status, { aggregatedFindings }),
+      );
+      expect(payload).not.toHaveProperty("findings");
+    }
+    expect(councilFinished("c-1", null).payload).not.toHaveProperty("findings");
   });
 
   test("an event with no known bead, run, session or executor leaves those keys out", () => {
@@ -217,7 +269,20 @@ describe("executeCouncilReview with an injected appender (fake transport, scratc
       outcome: "fail",
       costUsd: result.run.accountedCostUsd,
       summary: "The fake council completed a deterministic review.",
+      // The fake seats propose medium findings only; the row counts the run's own.
+      findings: {
+        blocker: 0,
+        high: 0,
+        medium: result.run.aggregatedFindings.length,
+        low: 0,
+      },
     });
+    expect(result.run.aggregatedFindings.length).toBeGreaterThan(0);
+    expect(
+      result.run.aggregatedFindings.every(
+        (finding) => finding.severity === "medium",
+      ),
+    ).toBe(true);
   });
 
   test("a cancelled run finishes as cancelled", async () => {
@@ -241,6 +306,8 @@ describe("executeCouncilReview with an injected appender (fake transport, scratc
       councilRunId: "c-1",
       outcome: "cancelled",
     });
+    // It reached no verdict: its row reports no findings, not zero of them.
+    expect(events[1]?.payload).not.toHaveProperty("findings");
   });
 
   test("a run whose artifacts cannot be written still records a finished event", async () => {

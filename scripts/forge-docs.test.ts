@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, statSync } from "fs";
 import { join, posix } from "path";
 import { parse as parseYaml } from "yaml";
+import { splitFrontmatter } from "./frontmatter";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -841,7 +842,7 @@ describe("the generated mirror carries what its source says", () => {
     );
   });
 
-  test("each Forge command's skill ends with the command's text, unchanged", () => {
+  test("each Forge command's skill ends with the command's text, unchanged: what follows its frontmatter", () => {
     for (const name of [
       "forgemaster",
       "forgemaster-auto",
@@ -849,7 +850,9 @@ describe("the generated mirror carries what its source says", () => {
       "ship",
     ]) {
       const [source, copy] = command(name);
-      const body = (read(source) ?? "missing source").trimStart();
+      const body = splitFrontmatter(
+        read(source) ?? "missing source",
+      ).body.trimStart();
       expect({
         name,
         carried: (read(copy) ?? "").endsWith(body),

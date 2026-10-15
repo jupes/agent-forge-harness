@@ -12,7 +12,7 @@ import type {
   LedgerEventInput,
   LedgerPayloads,
 } from "../../types/hearth";
-import type { CouncilRun } from "./types";
+import type { AggregatedFinding, CouncilRun, FindingSeverity } from "./types";
 
 /** Who a council run's events belong to, resolved by the caller. Plain data. */
 export type CouncilAttach = {
@@ -70,6 +70,26 @@ export function councilOutcome(
     : "pass";
 }
 
+/**
+ * A run's findings counted by severity, every one of them whatever its
+ * resolution, as the run's report lists them. `FindingSeverity` is the four
+ * severities `review.recorded` counts under the same names, so no severity is
+ * mapped; the `Record` makes a severity added later a compile error here until
+ * it is. Numbers only: no finding text is read.
+ */
+export function countFindingsBySeverity(
+  findings: ReadonlyArray<Pick<AggregatedFinding, "severity">>,
+): Record<FindingSeverity, number> {
+  const counts: Record<FindingSeverity, number> = {
+    blocker: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+  };
+  for (const finding of findings) counts[finding.severity]++;
+  return counts;
+}
+
 export function councilStarted(
   councilRunId: string,
   profileId: string,
@@ -90,7 +110,10 @@ export function councilStarted(
 /**
  * The end of a run. `run` is null when execution threw before producing one:
  * there is no verdict to read, so the outcome is `unreadable`. The chair's
- * summary is the one body stored; seat outputs and findings never are.
+ * summary is the one body stored; seat outputs and finding text never are.
+ * A completed run also records its findings counted by severity (zeros when
+ * it found nothing); a failed or cancelled run reached no verdict, so it
+ * records none, which the scoreboard reads as "not recorded" and not as zero.
  */
 export function councilFinished(
   councilRunId: string,
@@ -114,6 +137,9 @@ export function councilFinished(
         ? { costUsd: run.accountedCostUsd }
         : {}),
       ...(run.chair?.summary ? { summary: run.chair.summary } : {}),
+      ...(run.status === "completed"
+        ? { findings: countFindingsBySeverity(run.aggregatedFindings) }
+        : {}),
     },
   };
 }

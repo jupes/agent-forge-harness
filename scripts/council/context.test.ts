@@ -18,9 +18,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  buildContextPack,
   buildContextPackFromParts,
   type ContextPart,
   ContextSecurityError,
+  withoutControls,
 } from "./context";
 import type { CommandResult, CommandRunner } from "./pr-source";
 import type { ContextPack } from "./types";
@@ -2204,14 +2206,20 @@ describe("a bead source under attack, second pass", () => {
         comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
         extra: withPullRequest({ title: masked }),
       });
+    // The title is in the pull request's text too, and content is read as
+    // written and as shown at once and before any title: the refusal names
+    // the part that holds it.
     expect(await refusalOf(pack(arrange(), workspace()))).toContain(
-      "potential secrets detected in an evidence title",
+      "potential secrets detected in pull request #12",
     );
     const packed = await pack(arrange(), workspace(), {
       secretPolicy: "redact",
     });
     expect(packed.evidence.at(-1)?.title).toBe(
       "PR #12: [REDACTED:private-key]",
+    );
+    expect(packed.evidence.at(-1)?.content).toContain(
+      "Pull request #12: [REDACTED:private-key]\n",
     );
   });
 
@@ -2655,5 +2663,473 @@ describe("a bead source under attack, fifth pass", () => {
     const packed = await pack(fakeRunner(), root);
     expect(packed.source.metadata?.forgeRun).toBe("kiln-temp");
     expect(JSON.stringify(packed.evidence)).toContain("REAL-PLAN");
+  });
+});
+
+describe("a key glued to a provider variable name, an invisible character before the sign", () => {
+  /**
+   * A key written directly against a provider variable name. As written, the
+   * key pattern takes the key and the name together and leaves the sign with
+   * nothing in front of it; as shown, the name is assigned the value.
+   */
+  const KEY = ["sk", "Zq9Zq8Zq7Zq6Zq5Zq4Zq3Zq2"].join("-");
+  const NAME = ["OPENAI", "API", "KEY"].join("_");
+  const VALUE = "Wx8Wx7Wx6Wx5Wx4Wx3";
+  /** No two characters of the value in a row may survive. */
+  const RESIDUE = "Wx";
+  /** Each built from its code units: none is written literally in this file. */
+  const INVISIBLE: Array<[string, string]> = [
+    ["zero-width space", String.fromCharCode(0x200b)],
+    ["zero-width non-joiner", String.fromCharCode(0x200c)],
+    ["zero-width joiner", String.fromCharCode(0x200d)],
+    ["word joiner", String.fromCharCode(0x2060)],
+    ["byte order mark", String.fromCharCode(0xfeff)],
+    ["soft hyphen", String.fromCharCode(0x00ad)],
+    ["combining grapheme joiner", String.fromCharCode(0x034f)],
+    ["Mongolian vowel separator", String.fromCharCode(0x180e)],
+    ["variation selector 16", String.fromCharCode(0xfe0f)],
+    ["tag space (two code units)", String.fromCharCode(0xdb40, 0xdc20)],
+  ];
+  const ATTACKS: Array<[string, (hidden: string) => string]> = [
+    ["glued to a key", (hidden) => `${KEY}${NAME}${hidden}=${VALUE}`],
+    ["on its own", (hidden) => `${NAME}${hidden}=${VALUE}`],
+  ];
+
+  test("the pack's content scan leaves no part of the value under redact, keeps the written form around it, and refuses under reject", () => {
+    const leaks: string[] = [];
+    let checked = 0;
+    for (const [character, hidden] of INVISIBLE)
+      for (const [how, attack] of ATTACKS) {
+        // Alone in its part, and as the second chunk of a part of several.
+        const layouts: Array<[string, ContextPart[]]> = [
+          [
+            "one chunk",
+            [
+              {
+                label: "head",
+                chunks: [{ text: `Rotate${hidden}now ${attack(hidden)}` }],
+              },
+            ],
+          ],
+          [
+            "a later chunk",
+            [
+              {
+                label: "comments",
+                unit: "comment",
+                chunks: [
+                  { text: "first" },
+                  { text: `Rotate${hidden}now ${attack(hidden)}` },
+                ],
+              },
+            ],
+          ],
+        ];
+        for (const [layout, parts] of layouts) {
+          const where = `${character}, ${how}, ${layout}`;
+          const packed = buildContextPackFromParts({
+            kind: "bead",
+            displayName: "demo",
+            locator: "demo",
+            secretPolicy: "redact",
+            parts,
+          });
+          if (JSON.stringify(packed).includes(RESIDUE))
+            leaks.push(`${where}: value kept under redact`);
+          // Content is sent as written: the invisible character before the
+          // secret is still there.
+          if (!JSON.stringify(packed.evidence).includes(`Rotate${hidden}now`))
+            leaks.push(`${where}: written form not kept`);
+          try {
+            buildContextPackFromParts({
+              kind: "bead",
+              displayName: "demo",
+              locator: "demo",
+              parts,
+            });
+            leaks.push(`${where}: sent under reject`);
+          } catch (error) {
+            if (!(error instanceof ContextSecurityError)) throw error;
+            if (error.message.includes(RESIDUE))
+              leaks.push(`${where}: value in the refusal`);
+          }
+          checked += 1;
+        }
+      }
+    expect(checked).toBe(40);
+    expect(leaks).toEqual([]);
+  });
+
+  test("the shown form replaces each invisible character, one space per code unit, and leaves visible characters and lone surrogates alone", () => {
+    const fromCode = (code: number): string =>
+      code > 0xffff
+        ? String.fromCharCode(
+            0xd800 + ((code - 0x10000) >> 10),
+            0xdc00 + ((code - 0x10000) & 0x3ff),
+          )
+        : String.fromCharCode(code);
+    // The first and last of each kind, two of them outside the first plane.
+    const hidden = [
+      0x00, 0x1f, 0x7f, 0x9f, 0xad, 0x34f, 0x61c, 0x115f, 0x1160, 0x17b4,
+      0x180e, 0x200b, 0x200f, 0x202a, 0x202e, 0x2060, 0x206f, 0x3164, 0xfe00,
+      0xfe0f, 0xfeff, 0xffa0, 0x1bca0, 0x1d173, 0xe0001, 0xe0020, 0xe0fff,
+    ];
+    for (const code of hidden) {
+      const char = fromCode(code);
+      expect({ code, shown: withoutControls(`a${char}b`) }).toEqual({
+        code,
+        shown: `a${" ".repeat(char.length)}b`,
+      });
+    }
+    // An emoji outside the first plane, a lone surrogate, a non-breaking
+    // space and a letter beside the ranges stay.
+    const kept = [
+      fromCode(0x1f600),
+      String.fromCharCode(0xd800),
+      String.fromCharCode(0xa0),
+      String.fromCharCode(0x2070),
+      String.fromCharCode(0xfe10),
+    ].join("");
+    expect(withoutControls(kept)).toBe(kept);
+  });
+
+  test("a single-source pack (stdin) leaves no part of the value under redact and refuses under reject", () => {
+    const leaks: string[] = [];
+    for (const [character, hidden] of INVISIBLE)
+      for (const [how, attack] of ATTACKS) {
+        const text = `Rotate ${attack(hidden)}`;
+        const redacted = buildContextPack({
+          kind: "stdin",
+          text,
+          secretPolicy: "redact",
+        });
+        if (JSON.stringify(redacted).includes(RESIDUE))
+          leaks.push(`${character}, ${how}: value kept under redact`);
+        try {
+          buildContextPack({ kind: "stdin", text });
+          leaks.push(`${character}, ${how}: sent under reject`);
+        } catch (error) {
+          if (!(error instanceof ContextSecurityError)) throw error;
+        }
+      }
+    expect(leaks).toEqual([]);
+  });
+
+  test("through a bead source (a comment, the description, a pull request's title and patch, a linked plan) no part of the value is sent under redact, and the bead is refused under reject", async () => {
+    const linked = [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)];
+    const places: Array<
+      [string, (attack: string) => { fake: Fake; root: string }]
+    > = [
+      [
+        "a comment",
+        (attack) => ({
+          fake: fakeRunner({
+            comments: [comment("2031-01-06T10:00:00Z", `Rotate ${attack}`)],
+          }),
+          root: workspace(),
+        }),
+      ],
+      [
+        "the description",
+        (attack) => ({
+          fake: fakeRunner({
+            issue: issue({ description: `Rotate ${attack}` }),
+          }),
+          root: workspace(),
+        }),
+      ],
+      [
+        "a pull request's title",
+        (attack) => ({
+          fake: fakeRunner({
+            comments: linked,
+            extra: withPullRequest({ title: `Rotate ${attack}` }),
+          }),
+          root: workspace(),
+        }),
+      ],
+      [
+        "a pull request's patch",
+        (attack) => ({
+          fake: fakeRunner({
+            comments: linked,
+            extra: withPullRequest({
+              patch: PATCH.replace(
+                "+export const celsius = true;",
+                `+export const rotated = "${attack}";`,
+              ),
+            }),
+          }),
+          root: workspace(),
+        }),
+      ],
+      [
+        "a linked plan",
+        (attack) => ({
+          fake: fakeRunner(),
+          root: workspace(
+            Object.fromEntries([
+              runState("kiln-temp", { beadId: BEAD }),
+              ["plans/drafts/kiln-temp.md", `# Plan\nRotate ${attack}\n`],
+            ]),
+          ),
+        }),
+      ],
+    ];
+    const leaks: string[] = [];
+    let checked = 0;
+    for (const [character, hidden] of INVISIBLE)
+      for (const [how, attack] of ATTACKS)
+        for (const [place, arrange] of places) {
+          const where = `${character}, ${how}, in ${place}`;
+          const redact = arrange(attack(hidden));
+          const packed = await pack(redact.fake, redact.root, {
+            secretPolicy: "redact",
+          });
+          if (JSON.stringify(packed).includes(RESIDUE))
+            leaks.push(`${where}: value kept under redact`);
+          const reject = arrange(attack(hidden));
+          const message = await refusalOf(pack(reject.fake, reject.root));
+          if (!message.startsWith("potential secrets detected"))
+            leaks.push(`${where}: not refused under reject`);
+          if (message.includes(RESIDUE))
+            leaks.push(`${where}: value in the refusal`);
+          checked += 1;
+        }
+    expect(checked).toBe(100);
+    expect(leaks).toEqual([]);
+  });
+});
+
+describe("a secret split by invisible characters", () => {
+  /**
+   * Invisible characters inside a value, a variable name or a key: read as
+   * written they break the match, read as shown (each one a space) they break
+   * it too. Only the text with them taken out holds the secret whole.
+   */
+  const KEY = ["sk", "Zq9Zq8Zq7Zq6Zq5Zq4Zq3Zq2"].join("-");
+  const ANTHROPIC = ["sk", "ant", "Zq9Zq8Zq7Zq6Zq5Zq4Zq3Zq2"].join("-");
+  const NAME = ["OPENAI", "API", "KEY"].join("_");
+  const VALUE = "Wx8Wx7Wx6Wx5Wx4Wx3";
+  const ZWSP = String.fromCharCode(0x200b);
+  const SHY = String.fromCharCode(0x00ad);
+  const WORD_JOINER = String.fromCharCode(0x2060);
+  const TAG_A = String.fromCharCode(0xdb40, 0xdc41);
+  const VS1 = String.fromCharCode(0xfe00);
+  /** `text` with `between` after every `every` characters. */
+  const spread = (text: string, between: string, every = 4): string =>
+    (text.match(new RegExp(`.{1,${every}}`, "g")) ?? []).join(between);
+
+  /** [what, the text, a fragment of the secret that must not survive] */
+  const SPLIT: Array<[string, string, string]> = [
+    [
+      "a glued key, a zero-width space before the sign, the value split by more",
+      `${KEY}${NAME}${ZWSP}=${spread(VALUE, ZWSP)}`,
+      "Wx",
+    ],
+    [
+      "the value split by zero-width spaces, nothing glued",
+      `${NAME}${ZWSP}=${spread(VALUE, ZWSP)}`,
+      "Wx",
+    ],
+    [
+      "the variable name split by a zero-width space",
+      `OPENAI${ZWSP}_API_KEY=${VALUE}`,
+      "Wx",
+    ],
+    [
+      "the variable name split by a soft hyphen",
+      `OPENAI${SHY}_API_KEY=${VALUE}`,
+      "Wx",
+    ],
+    [
+      "a key split by a zero-width space",
+      `${ANTHROPIC.slice(0, 17)}${ZWSP}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    // Line tabulation, form feed and a carriage return with no line feed
+    // after it are not the separators a reader sees between words: only a
+    // tab, a line feed and CR LF are kept apart.
+    [
+      "a key split by a line tabulation (U+000B)",
+      `${ANTHROPIC.slice(0, 17)}${String.fromCharCode(0x0b)}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    [
+      "a key split by a form feed (U+000C)",
+      `${ANTHROPIC.slice(0, 17)}${String.fromCharCode(0x0c)}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    [
+      "a key split by a carriage return with no line feed after it",
+      `${ANTHROPIC.slice(0, 17)}${String.fromCharCode(0x0d)}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    [
+      "a glued key, the value split by soft hyphens",
+      `${KEY}${NAME}${SHY}=${spread(VALUE, SHY)}`,
+      "Wx",
+    ],
+    [
+      "the value split by tag characters (two code units each)",
+      `${NAME}=${spread(VALUE, TAG_A, 3)}`,
+      "Wx",
+    ],
+    [
+      "the name split by a word joiner, the value by variation selectors",
+      `OPENAI_API${WORD_JOINER}_KEY=${spread(VALUE, VS1, 2)}`,
+      "Wx",
+    ],
+  ];
+
+  test("words on two lines, or either side of a tab, are not joined into a key: a line feed, CR LF and a tab stay when the invisible characters are taken out", () => {
+    const word = "abcdefghijklmnopqrstuvwxyz";
+    for (const between of ["\n", "\r\n", "\t"]) {
+      const text = `The flag reads sk-${between}${word} on the bench.`;
+      const packed = buildContextPackFromParts({
+        kind: "bead",
+        displayName: "demo",
+        locator: "demo",
+        parts: [{ label: "head", chunks: [{ text }] }],
+      });
+      expect(packed.evidence[0]?.content).toBe(text);
+      expect(packed.redactions).toEqual([]);
+    }
+  });
+
+  test("in a pack, nothing of the secret survives under redact, the whole written span is replaced, and the pack is refused under reject", () => {
+    const leaks: string[] = [];
+    for (const [what, text, residue] of SPLIT) {
+      const parts: ContextPart[] = [
+        { label: "head", chunks: [{ text: `Rotate ${text}` }] },
+      ];
+      const packed = buildContextPackFromParts({
+        kind: "bead",
+        displayName: "demo",
+        locator: "demo",
+        secretPolicy: "redact",
+        parts,
+      });
+      if (JSON.stringify(packed).includes(residue))
+        leaks.push(`${what}: kept under redact`);
+      // Every invisible character inside the secret goes with it.
+      if (
+        !/^Rotate \[REDACTED:[a-z-]+\]$/.test(packed.evidence[0]?.content ?? "")
+      )
+        leaks.push(`${what}: not one marker over the written span`);
+      try {
+        buildContextPackFromParts({
+          kind: "bead",
+          displayName: "demo",
+          locator: "demo",
+          parts,
+        });
+        leaks.push(`${what}: sent under reject`);
+      } catch (error) {
+        if (!(error instanceof ContextSecurityError)) throw error;
+      }
+      const stdin = buildContextPack({
+        kind: "stdin",
+        text: `Rotate ${text}`,
+        secretPolicy: "redact",
+      });
+      if (JSON.stringify(stdin).includes(residue))
+        leaks.push(`${what}: kept in a stdin pack under redact`);
+    }
+    expect(leaks).toEqual([]);
+  });
+
+  test("through a bead source, in a comment or a pull request's title, nothing of the secret is sent under redact and the bead is refused under reject", async () => {
+    const leaks: string[] = [];
+    for (const [what, text, residue] of SPLIT) {
+      const arrangements: Array<[string, () => Fake]> = [
+        [
+          "a comment",
+          () =>
+            fakeRunner({
+              comments: [comment("2031-01-06T10:00:00Z", `Rotate ${text}`)],
+            }),
+        ],
+        [
+          "a pull request's title",
+          () =>
+            fakeRunner({
+              comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+              extra: withPullRequest({ title: `Rotate ${text}` }),
+            }),
+        ],
+      ];
+      for (const [place, arrange] of arrangements) {
+        const packed = await pack(arrange(), workspace(), {
+          secretPolicy: "redact",
+        });
+        if (JSON.stringify(packed).includes(residue))
+          leaks.push(`${what}, in ${place}: kept under redact`);
+        const message = await refusalOf(pack(arrange(), workspace()));
+        if (!message.startsWith("potential secrets detected"))
+          leaks.push(`${what}, in ${place}: not refused under reject`);
+      }
+    }
+    expect(leaks).toEqual([]);
+  });
+
+  test("one invisible character, or several, beside the sign of a glued or bare assignment, or on both sides of it", () => {
+    const INVISIBLE: Array<[string, string]> = [
+      ["word joiner", WORD_JOINER],
+      ["byte order mark", String.fromCharCode(0xfeff)],
+      ["soft hyphen", SHY],
+      ["Mongolian vowel separator", String.fromCharCode(0x180e)],
+      ["variation selector 1", VS1],
+      ["variation selector 16", String.fromCharCode(0xfe0f)],
+      ["variation selector 17", String.fromCharCode(0xdb40, 0xdd00)],
+      ["tag A", TAG_A],
+      ["cancel tag", String.fromCharCode(0xdb40, 0xdc7f)],
+      ["three zero-width spaces", ZWSP.repeat(3)],
+      ["soft hyphen, word joiner and a tag", `${SHY}${WORD_JOINER}${TAG_A}`],
+      ["a zero-width space and a space", `${ZWSP} `],
+      ["Hangul filler", String.fromCharCode(0x3164)],
+      ["right-to-left override", String.fromCharCode(0x202e)],
+    ];
+    const FORMS: Array<[string, (hidden: string) => string]> = [
+      ["glued to a key", (hidden) => `${KEY}${NAME}${hidden}=${VALUE}`],
+      [
+        "glued to an anthropic key",
+        (hidden) => `${ANTHROPIC}${NAME}${hidden}=${VALUE}`,
+      ],
+      ["bare", (hidden) => `${NAME}${hidden}=${VALUE}`],
+      [
+        "on both sides of the sign",
+        (hidden) => `${KEY}${NAME}${hidden}=${hidden}${VALUE}`,
+      ],
+      ["before a colon", (hidden) => `${KEY}${NAME}${hidden}: ${VALUE}`],
+    ];
+    const leaks: string[] = [];
+    for (const [character, hidden] of INVISIBLE)
+      for (const [form, make] of FORMS) {
+        const parts: ContextPart[] = [
+          { label: "head", chunks: [{ text: `Rotate ${make(hidden)}` }] },
+        ];
+        const packed = buildContextPackFromParts({
+          kind: "bead",
+          displayName: "demo",
+          locator: "demo",
+          secretPolicy: "redact",
+          parts,
+        });
+        if (JSON.stringify(packed).includes("Wx"))
+          leaks.push(`${character}, ${form}: kept under redact`);
+        try {
+          buildContextPackFromParts({
+            kind: "bead",
+            displayName: "demo",
+            locator: "demo",
+            parts,
+          });
+          leaks.push(`${character}, ${form}: sent under reject`);
+        } catch (error) {
+          if (!(error instanceof ContextSecurityError)) throw error;
+        }
+      }
+    expect(leaks).toEqual([]);
   });
 });

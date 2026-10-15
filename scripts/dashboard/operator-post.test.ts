@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { STATIC_COPY_ERROR } from "../../docs/js/hearth-read";
 import {
   createOperatorClient,
   createOperatorPost,
@@ -126,6 +127,24 @@ describe("operatorRead", () => {
     );
     expect(error).toBeInstanceOf(NotSent);
     expect(calls).toEqual([`GET ${TOKEN_ROUTE}`]);
+  });
+});
+
+describe("on a static copy", () => {
+  test("nothing is asked for: no token, no read, no post; each fails as not sent, saying live data is not available there", async () => {
+    const hearth = fakeHearth(["t-1"]);
+    const { read, post } = createOperatorClient(hearth.fetchImpl, {
+      staticCopy: true,
+    });
+    for (const attempt of [
+      () => read("/__agent-forge/council-api/profiles"),
+      () => post("/__agent-forge/council-api/runs", { source: "x" }),
+    ]) {
+      const error = await attempt().catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(NotSent);
+      expect((error as Error).message).toBe(STATIC_COPY_ERROR);
+    }
+    expect(hearth.calls).toEqual([]);
   });
 });
 

@@ -43,11 +43,16 @@ const envelope = (data: unknown, status = 200): Response =>
 const refusal = (error: string, status: number): Response =>
   Response.json({ ok: false, data: null, error }, { status });
 
-/** A stand-in control plane: a token (or what the test says the token route answers), the options, and whatever the test says a write answers. */
+/**
+ * A stand-in control plane: a token (or what the test says the token route
+ * answers), the options, and whatever the test says a write answers. `reads`
+ * is how the writes read the options (a static copy, a time limit).
+ */
 function plane(
   write: Reply = () => envelope({}),
   options: Reply | null = null,
   token: Reply | null = null,
+  reads: { staticCopy?: boolean; timeoutMs?: number } = {},
 ) {
   const calls: Call[] = [];
   const fetchImpl = async (
@@ -73,7 +78,7 @@ function plane(
   };
   return {
     calls,
-    writes: createBeadWrites(createOperatorPost(fetchImpl), fetchImpl),
+    writes: createBeadWrites(createOperatorPost(fetchImpl), fetchImpl, reads),
     posts: () => calls.filter((call) => call.method === "POST"),
     optionReads: () =>
       calls.filter((call) => call.url === "/__agent-forge/beads/options")
@@ -332,6 +337,39 @@ describe("whether a control plane is there", () => {
       error: NO_CONTROL_PLANE,
     });
     expect(hearth.posts()).toEqual([]);
+  });
+
+  test("an options read that gets no answer is given up at its time limit: the page says there is no control plane, and the next look asks again", async () => {
+    let hang = true;
+    const hearth = plane(
+      () => envelope(CLAIMED),
+      () => (hang ? new Promise<Response>(() => undefined) : envelope(OPTIONS)),
+      null,
+      { timeoutMs: 20 },
+    );
+    expect(await hearth.writes.options()).toEqual({
+      available: false,
+      reason: NO_CONTROL_PLANE,
+    });
+    hang = false;
+    expect(await hearth.writes.options()).toMatchObject({ available: true });
+    expect(hearth.optionReads()).toBe(2);
+  });
+
+  test("on a static copy nothing is asked: the page says there is no control plane, and a write is neither read for nor posted", async () => {
+    const hearth = plane(() => envelope(CLAIMED), null, null, {
+      staticCopy: true,
+    });
+    expect(await hearth.writes.options()).toEqual({
+      available: false,
+      reason: NO_CONTROL_PLANE,
+    });
+    expect(await hearth.writes.claim("demo-task")).toEqual({
+      ok: false,
+      unknown: false,
+      error: NO_CONTROL_PLANE,
+    });
+    expect(hearth.calls).toEqual([]);
   });
 });
 
