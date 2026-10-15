@@ -84,8 +84,10 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   records only fixed reasons (`failed: exit <n>`, `failed: exit 0, provider reported an error`). `outcome.ts` decides.
 - `forge:doctor` answers two questions: does the binary answer `--version` (`ok`), and, with `--task`, can it run a
   task (`task`): one `git status` through the adapter in a new git repository under the OS temp directory, passing
-  only on exit 0, no reported error and at least one tool call. The repository is removed once the task passed; a task
-  that failed keeps it, and `--json` names it as `task.directory`. Against a real provider `--task` spends a request.
+  only on exit 0, no reported error and at least one tool call. The repository is removed once the task passed (a few
+  attempts, `scripts/remove-directory.ts`); a task that failed, a directory `git init` failed in and one that could
+  not be removed are kept, and `--json` names them as `task.directory`. Against a real provider `--task` spends a
+  request.
   Both are tested on the fake binary only; no `--task` run against a real CLI has been made. Before either, `found`:
   the binary is on PATH, or a command override's program is where `Bun.which` finds it. An override whose program is
   not there is `found: false`; one that is there but fails `--version` is `found: true, ok: false` with the reason.

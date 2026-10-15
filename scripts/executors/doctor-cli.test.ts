@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import type { Smith } from "../../types/hearth";
 import { BUILTIN_BENCHES, BUILTIN_SMITHS } from "../config/defaults";
 import type { ForgeConfig } from "../config/load";
@@ -13,6 +19,7 @@ import {
   makeTaskDirectory,
   runDoctor,
   TASK_PROMPT,
+  type TaskCheck,
   type TaskCheckOptions,
   taskSmiths,
 } from "./doctor-cli";
@@ -211,11 +218,95 @@ describe("forge:doctor --task (fake binary)", () => {
     );
     expect(report?.task).toMatchObject({ ok: true, tools: 2 });
     expect(report?.task).not.toHaveProperty("directory");
-    const ran = scratch.track(
-      String(JSON.parse(readFileSync(dump, "utf8")).cwd),
+    // The directory is checked to be a task directory under the temp directory
+    // before it is tracked: a cwd that is something else (the checkout, say)
+    // must fail the test, not be handed to a cleanup that removes it.
+    const cwd = String(JSON.parse(readFileSync(dump, "utf8")).cwd);
+    expect(basename(cwd)).toStartWith("forge-doctor-task-");
+    expect(realpathSync.native(dirname(cwd))).toBe(
+      realpathSync.native(tmpdir()),
     );
-    expect(basename(ran)).toStartWith("forge-doctor-task-");
+    const ran = scratch.track(cwd);
     expect(existsSync(ran)).toBe(false);
+  });
+
+  test("a task that passed but whose directory cannot be removed keeps it, and the report names it", async () => {
+    const { made, options } = taskSetup();
+    const removing: string[] = [];
+    const [report] = await runDoctor(
+      { claude: claudeAdapter },
+      { claude: fake("claude") },
+      {
+        ...options,
+        remove: (directory) => {
+          removing.push(directory);
+          throw new Error("EBUSY: resource busy or locked (test)");
+        },
+      },
+    );
+    expect(report?.task).toMatchObject({ ok: true, tools: 2 });
+    expect(made).toHaveLength(1);
+    expect(removing).toEqual(made);
+    expect(report?.task?.directory).toBe(made[0]);
+    expect(existsSync(String(made[0]))).toBe(true);
+  });
+
+  describe("when the task directory's git repository cannot be made", () => {
+    /** Git's global config is read by `git init`; one that does not parse makes it exit 128. */
+    function brokenGit(root: string): Record<string, string | undefined> {
+      const config = join(root, "broken-gitconfig");
+      writeFileSync(config, "[[[\n");
+      return { ...process.env, GIT_CONFIG_GLOBAL: config };
+    }
+
+    /** The kept directory, tracked for removal; a path that is not a task directory under the temp directory is refused by `track`. */
+    function keptDirectory(report: { task: TaskCheck | null } | undefined) {
+      const kept = report?.task?.directory;
+      if (kept !== undefined) scratch.track(kept);
+      return kept;
+    }
+
+    test("git init exits non-zero: the directory that was made is kept, and the report names it", async () => {
+      const { root, options } = taskSetup();
+      const env = brokenGit(root);
+      const [report] = await runDoctor(
+        { claude: claudeAdapter },
+        { claude: fake("claude") },
+        { ...options, makeDirectory: () => makeTaskDirectory({ env }) },
+      );
+      const kept = keptDirectory(report);
+      expect(report?.task).toMatchObject({
+        ok: false,
+        smith: "claude-journeyman",
+        tools: 0,
+      });
+      expect(kept).toBeString();
+      expect(basename(String(kept))).toStartWith("forge-doctor-task-");
+      expect(existsSync(String(kept))).toBe(true);
+      expect(
+        report?.task && !report.task.ok ? report.task.reason : "",
+      ).toStartWith(`git init failed in ${kept}: `);
+    });
+
+    test("git cannot be started at all: the directory that was made is kept, and the report names it", async () => {
+      const { options } = taskSetup();
+      const [report] = await runDoctor(
+        { claude: claudeAdapter },
+        { claude: fake("claude") },
+        {
+          ...options,
+          makeDirectory: () => makeTaskDirectory({ env: { PATH: "" } }),
+        },
+      );
+      const kept = keptDirectory(report);
+      expect(report?.task).toMatchObject({ ok: false, tools: 0 });
+      expect(kept).toBeString();
+      expect(basename(String(kept))).toStartWith("forge-doctor-task-");
+      expect(existsSync(String(kept))).toBe(true);
+      expect(
+        report?.task && !report.task.ok ? report.task.reason : "",
+      ).toContain(String(kept));
+    });
   });
 
   test("a binary that does not answer --version is not given a task", async () => {

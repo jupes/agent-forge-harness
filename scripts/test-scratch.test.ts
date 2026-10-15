@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
-import { basename, dirname, join } from "path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "path";
 import { scratchDirs } from "./test-scratch";
 
 /** What this file made by hand, to prove the helper leaves what it did not make. */
@@ -67,5 +75,124 @@ describe("scratchDirs", () => {
 
     expect(() => scratch.cleanup()).not.toThrow();
     expect(existsSync(made)).toBe(false);
+  });
+});
+
+/**
+ * `cleanup` removes a whole tree, so `track` takes only a directory directly
+ * under the OS temp directory. Every decoy below is made by this file, with a
+ * file inside that must survive the `cleanup` that follows a refusal. A decoy
+ * outside the temp directory goes in this checkout's gitignored `.tmp`.
+ */
+describe("track refuses what is not a directory directly under the OS temp directory", () => {
+  function decoyOutsideTemp(): string {
+    const parent = join(import.meta.dir, "..", ".tmp");
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, "scratch-guard-"));
+    others.push(dir);
+    writeFileSync(join(dir, "keep.txt"), "kept");
+    return dir;
+  }
+
+  function decoyInTemp(): string {
+    const dir = mkdtempSync(join(tmpdir(), "scratch guard "));
+    others.push(dir);
+    writeFileSync(join(dir, "keep.txt"), "kept");
+    return dir;
+  }
+
+  test("a relative path, even one that names a real directory", () => {
+    const scratch = scratchDirs();
+    const decoy = decoyOutsideTemp();
+    const relativePath = relative(process.cwd(), decoy);
+    expect(isAbsolute(relativePath)).toBe(false);
+
+    expect(() => scratch.track(relativePath)).toThrow("not an absolute path");
+    scratch.cleanup();
+    expect(existsSync(join(decoy, "keep.txt"))).toBe(true);
+  });
+
+  test("the OS temp directory itself, in either spelling", () => {
+    const scratch = scratchDirs();
+    expect(() => scratch.track(tmpdir())).toThrow(
+      "not directly under the OS temp directory",
+    );
+    expect(() => scratch.track(realpathSync.native(tmpdir()))).toThrow(
+      "not directly under the OS temp directory",
+    );
+  });
+
+  test("a directory outside the OS temp directory", () => {
+    const scratch = scratchDirs();
+    const decoy = decoyOutsideTemp();
+    expect(isAbsolute(decoy)).toBe(true);
+
+    expect(() => scratch.track(decoy)).toThrow(
+      "not directly under the OS temp directory",
+    );
+    scratch.cleanup();
+    expect(existsSync(join(decoy, "keep.txt"))).toBe(true);
+  });
+
+  test("a directory inside a directory under the OS temp directory", () => {
+    const scratch = scratchDirs();
+    const parent = decoyInTemp();
+    const nested = join(parent, "nested");
+    mkdirSync(nested);
+    writeFileSync(join(nested, "keep.txt"), "kept");
+
+    expect(() => scratch.track(nested)).toThrow(
+      "not directly under the OS temp directory",
+    );
+    scratch.cleanup();
+    expect(existsSync(join(nested, "keep.txt"))).toBe(true);
+  });
+
+  test("a path with a .. segment, even one that leads back into the temp directory", () => {
+    const scratch = scratchDirs();
+    const decoy = decoyInTemp();
+    const sneaky = `${tmpdir()}${sep}..${sep}${basename(tmpdir())}${sep}${basename(decoy)}`;
+    expect(existsSync(join(sneaky, "keep.txt"))).toBe(true);
+
+    expect(() => scratch.track(sneaky)).toThrow(". or .. segment");
+    scratch.cleanup();
+    expect(existsSync(join(decoy, "keep.txt"))).toBe(true);
+  });
+
+  test("a directory with the real path of the temp directory is taken, as is one with the spelling os.tmpdir() gives", () => {
+    const scratch = scratchDirs();
+    const viaReal = mkdtempSync(
+      join(realpathSync.native(tmpdir()), "scratch guard "),
+    );
+    const viaTmpdir = mkdtempSync(join(tmpdir(), "scratch guard "));
+    others.push(viaReal, viaTmpdir);
+
+    expect(scratch.track(viaReal)).toBe(viaReal);
+    expect(scratch.track(viaTmpdir)).toBe(viaTmpdir);
+    scratch.cleanup();
+    expect(existsSync(viaReal)).toBe(false);
+    expect(existsSync(viaTmpdir)).toBe(false);
+  });
+
+  test("a refusal tracks nothing: the directories tracked before it are still removed, and nothing else", () => {
+    const scratch = scratchDirs();
+    const mine = scratch.make("scratch guard ");
+    others.push(mine);
+    const decoy = decoyOutsideTemp();
+
+    expect(() => scratch.track(decoy)).toThrow();
+    scratch.cleanup();
+    expect(existsSync(mine)).toBe(false);
+    expect(existsSync(join(decoy, "keep.txt"))).toBe(true);
+  });
+
+  test("make takes a prefix, not a path: one with a separator is refused before anything is made", () => {
+    const scratch = scratchDirs();
+    const parent = decoyInTemp();
+
+    expect(() => scratch.make(`${basename(parent)}${sep}inner-`)).toThrow(
+      "prefix",
+    );
+    expect(readdirSync(parent)).toEqual(["keep.txt"]);
   });
 });

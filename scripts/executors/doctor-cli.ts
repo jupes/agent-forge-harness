@@ -14,20 +14,23 @@
  * The task asks for one shell command, `git status`, in a new git repository
  * under the OS temp directory. It passes when the provider exits 0 on its own,
  * reports no error and calls at least one tool. The directory is removed once
- * the task passed; one that failed keeps its directory, and the report's
- * `directory` (in `--json`) names it, so a failure can be looked into.
+ * the task passed (tried a few times, for a lock Windows lets go of late); a
+ * task that failed, or a directory that could not be made a repository or
+ * removed, keeps its directory, and the report's `directory` (in `--json`)
+ * names it, so a failure can be looked into.
  * Against a real provider it spends a request. Nothing goes to the ledger.
  *
  * A missing CLI, or one that cannot run a task, is data, not failure: exit 0
  * unless the doctor itself breaks.
  */
 
-import { mkdtempSync, realpathSync, rmSync } from "fs";
+import { mkdtempSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Smith } from "../../types/hearth";
 import { type ForgeConfig, loadConfig } from "../config/load";
 import { isMain } from "../is-main";
+import { removeDirectory } from "../remove-directory";
 import { buildChildEnv } from "./env";
 import { runFailure } from "./outcome";
 import { ADAPTERS } from "./registry";
@@ -57,6 +60,11 @@ export interface TaskCheckOptions {
   timeoutMs: number;
   /** Makes the directory a task runs in. Default: `makeTaskDirectory`. */
   makeDirectory?: () => string;
+  /**
+   * Removes the directory of a task that passed, or throws. Default:
+   * `removeDirectory` (a few attempts, for a lock Windows lets go of late).
+   */
+  remove?: (directory: string) => void;
 }
 
 interface TaskRun {
@@ -104,36 +112,60 @@ export function taskSmiths(config: ForgeConfig): Record<string, Smith> {
 }
 
 /**
+ * `makeTaskDirectory` made its directory and then failed. The directory is
+ * kept, and `directory` names it, so the report can point at it.
+ */
+export class TaskDirectoryError extends Error {
+  constructor(
+    message: string,
+    readonly directory: string,
+  ) {
+    super(message);
+    this.name = "TaskDirectoryError";
+  }
+}
+
+/**
  * A new git repository under the OS temp directory: the task runs in a
  * checkout of its own, as a forge:exec worktree is one, and nowhere near the
- * harness.
+ * harness. When `git init` fails, or git cannot be started, the directory made
+ * so far is kept and the error is a `TaskDirectoryError` that names it.
+ * `env` is the environment `git init` runs with; default: the process's own.
  */
-export function makeTaskDirectory(): string {
+export function makeTaskDirectory(
+  options: { env?: Record<string, string | undefined> } = {},
+): string {
   const directory = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-doctor-task-")),
   );
-  const init = Bun.spawnSync(["git", "init", "--quiet"], {
-    cwd: directory,
-    stdout: "ignore",
-    stderr: "pipe",
-  });
-  if (init.exitCode !== 0) {
-    throw new Error(
-      `git init failed in ${directory}: ${init.stderr.toString().trim()}`,
+  let failure: string | null = null;
+  try {
+    const init = Bun.spawnSync(["git", "init", "--quiet"], {
+      cwd: directory,
+      stdout: "ignore",
+      stderr: "pipe",
+      ...(options.env === undefined ? {} : { env: options.env }),
+    });
+    if (init.exitCode !== 0) failure = init.stderr.toString().trim();
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  }
+  if (failure !== null) {
+    throw new TaskDirectoryError(
+      `git init failed in ${directory}: ${failure}`,
+      directory,
     );
   }
   return directory;
 }
 
 /** Remove a task's directory, by its exact path; false when it could not be removed. */
-function removeTaskDirectory(directory: string): boolean {
+function removeTaskDirectory(
+  directory: string,
+  remove: (directory: string) => void,
+): boolean {
   try {
-    rmSync(directory, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    });
+    remove(directory);
     return true;
   } catch {
     return false;
@@ -177,14 +209,19 @@ async function checkTask(
     if (reason !== null) return { ok: false, ...run, reason };
     // A task that passed leaves nothing to look at. If its directory will not
     // go, the report still says where it is.
-    return removeTaskDirectory(directory)
+    return removeTaskDirectory(directory, options.remove ?? removeDirectory)
       ? { ok: true, smith: smith.name, tools }
       : { ok: true, ...run };
   } catch (error) {
+    // The directory of a task that did not run, or failed, is kept: the one a
+    // failed `makeDirectory` made is named by its error.
+    const kept =
+      directory ??
+      (error instanceof TaskDirectoryError ? error.directory : undefined);
     return {
       ok: false,
       smith: smith.name,
-      ...(directory === undefined ? {} : { directory }),
+      ...(kept === undefined ? {} : { directory: kept }),
       tools,
       reason: error instanceof Error ? error.message : String(error),
     };
