@@ -38,6 +38,17 @@ export const PAUSABLE: readonly QueueState[] = [
 ];
 
 /**
+ * Where `resume` takes a bead paused from `pausedFrom`: back there, except
+ * a bead paused while running, which goes to `queued`. After a pause nothing
+ * is running it (a shift stops the run of a bead the operator paused), and
+ * `queued` is where a shift starts it again (`x1gs.5.4.4`). The pause still
+ * records `running` as where the bead was.
+ */
+export function resumeTarget(pausedFrom: QueueState): QueueState {
+  return pausedFrom === "running" ? "queued" : pausedFrom;
+}
+
+/**
  * The states that can be halted. Not `proposed`: the way out of `halted` is
  * `queue`, and that would take a proposal past its approval.
  */
@@ -55,7 +66,9 @@ export const HALTABLE: readonly QueueState[] = [
  * enters as `proposed`; only an operator's `approve` moves it on; only
  * approved or queued work becomes `running`, and the scheduler starts only
  * what is `queued` (an operator may start approved work by hand). `done` is
- * final. A paused bead returns only to the state it was paused from.
+ * final. A paused bead returns only to the state it was paused from, or to
+ * `queued` when that was `running` (`resumeTarget`): only `start` leads into
+ * `running`.
  */
 export const QUEUE_TABLE: readonly QueueRule[] = [
   { action: "propose", from: null, to: "proposed", by: ANYONE },
@@ -76,7 +89,7 @@ export const QUEUE_TABLE: readonly QueueRule[] = [
       by: OPERATOR,
     }),
   ),
-  ...PAUSABLE.map(
+  ...[...new Set(PAUSABLE.map(resumeTarget))].map(
     (to): QueueRule => ({ action: "resume", from: "paused", to, by: OPERATOR }),
   ),
   ...HALTABLE.map(
@@ -93,7 +106,7 @@ export const REASSIGNABLE: readonly QueueState[] = [
   "halted",
 ];
 
-/** Where a bead stands for the table: its state, and for a paused bead where it returns to. */
+/** Where a bead stands for the table: its state, and for a paused bead the state it was paused from. */
 export interface QueuePosition {
   state: QueueState | null;
   resume?: QueueState | undefined;
@@ -101,7 +114,8 @@ export interface QueuePosition {
 
 /**
  * The moves allowed from a state. A paused bead has one: back to the state it
- * was paused from, and none when that is not known.
+ * was paused from (`resume`; to `queued` when that was `running`), and none
+ * when that is not known.
  */
 export function legalMoves(
   state: QueueState | null,
@@ -109,7 +123,9 @@ export function legalMoves(
 ): QueueRule[] {
   return QUEUE_TABLE.filter(
     (rule) =>
-      rule.from === state && (rule.action !== "resume" || rule.to === resume),
+      rule.from === state &&
+      (rule.action !== "resume" ||
+        (resume !== undefined && rule.to === resumeTarget(resume))),
   );
 }
 
@@ -168,6 +184,7 @@ export function decide(
 
 /** The moves an operator makes through the API (`POST /queue/:id/<move>`). */
 export type OperatorMove =
+  | "propose"
   | "approve"
   | "queue"
   | "pause"
@@ -175,31 +192,40 @@ export type OperatorMove =
   | "reassign";
 
 const OPERATOR_ACTIONS: readonly QueueAction[] = [
+  "propose",
   "approve",
   "queue",
   "pause",
   "resume",
 ];
 
-/**
- * The operator moves the table allows from an entry's state, and `reassign`
- * where a smith may still be changed. An entry whose label the queue did not
- * write, or a bead with two queue labels, offers nothing: the hearth would
- * refuse every move. A paused bead offers `resume` only when it knows the
- * state it returns to.
- */
-export function operatorMoves(
-  entry: Pick<QueueEntry, "state" | "backed" | "resume">,
-  options: { twoLabels?: boolean } = {},
-): OperatorMove[] {
-  if (entry.backed !== true || options.twoLabels === true) return [];
+/** The operator's moves among `rules`, in the table's order, each once. */
+function operatorActions(rules: readonly QueueRule[]): OperatorMove[] {
   const moves: OperatorMove[] = [];
-  for (const rule of legalMoves(entry.state, entry.resume)) {
+  for (const rule of rules) {
     if (!rule.by.includes("operator")) continue;
     const action = OPERATOR_ACTIONS.find((known) => known === rule.action);
     if (action !== undefined && !moves.includes(action as OperatorMove))
       moves.push(action as OperatorMove);
   }
+  return moves;
+}
+
+/**
+ * The operator moves the table allows from an entry's state, and `reassign`
+ * where a smith may still be changed. An entry whose label the queue did not
+ * write is in no state: it offers what the table allows from outside the
+ * queue, which is `propose` (`x1gs.5.10`). A bead with two queue labels
+ * offers nothing: the hearth would refuse every move. A paused bead offers
+ * `resume` only when it knows the state it returns to.
+ */
+export function operatorMoves(
+  entry: Pick<QueueEntry, "state" | "backed" | "resume">,
+  options: { twoLabels?: boolean } = {},
+): OperatorMove[] {
+  if (options.twoLabels === true) return [];
+  if (entry.backed !== true) return operatorActions(legalMoves(null));
+  const moves = operatorActions(legalMoves(entry.state, entry.resume));
   if (REASSIGNABLE.includes(entry.state)) moves.push("reassign");
   return moves;
 }

@@ -84,7 +84,7 @@ const EXPECTED: Record<
   halted: { queued: ["queue", OPERATOR] },
 };
 
-/** The states a bead can be paused from, and so resumed to. */
+/** The states a bead can be paused from. */
 const PAUSABLE: QueueState[] = [
   "proposed",
   "approved",
@@ -92,6 +92,20 @@ const PAUSABLE: QueueState[] = [
   "running",
   "review",
 ];
+
+/**
+ * Where `resume` takes a bead paused from each of them: back where it was,
+ * except a bead paused while running, which goes to queued. After a pause
+ * nothing is running it, and a shift starts it again from queued
+ * (`x1gs.5.4.4`).
+ */
+const RESUMES_TO: Record<string, QueueState> = {
+  proposed: "proposed",
+  approved: "approved",
+  queued: "queued",
+  running: "queued",
+  review: "review",
+};
 
 const FROMS: Array<QueueState | null> = [null, ...QUEUE_STATES];
 const name = (state: QueueState | null): string => state ?? "none";
@@ -103,7 +117,9 @@ function expected(
   resume?: QueueState,
 ): [QueueAction, QueueActor[]] | undefined {
   if (from === "paused")
-    return to === resume ? ["resume", OPERATOR] : undefined;
+    return resume !== undefined && to === RESUMES_TO[resume]
+      ? ["resume", OPERATOR]
+      : undefined;
   return EXPECTED[name(from)]?.[to];
 }
 
@@ -207,14 +223,21 @@ describe("the table", () => {
           want ? [want] : [],
         );
       }
-    // Leaving paused: one resume row per state a bead can be paused from.
+    // Leaving paused: one resume row per state a paused bead can return to.
+    // None into running: a bead paused while running takes the row to queued.
     expect(
       QUEUE_TABLE.filter((row) => row.from === "paused").map((row) => [
         row.action,
         row.to,
         [...row.by],
       ]),
-    ).toEqual(PAUSABLE.map((to) => ["resume", to, OPERATOR]));
+    ).toEqual(
+      (["proposed", "approved", "queued", "review"] as const).map((to) => [
+        "resume" as const,
+        to,
+        OPERATOR,
+      ]),
+    );
   });
 
   test("decide allows exactly the table's rows, for every state, action and actor", () => {
@@ -250,8 +273,12 @@ describe("the table", () => {
             seen.has(row.from) &&
             !seen.has(row.to) &&
             allowed(row) &&
-            // A paused bead returns only to where it came from.
-            (row.action !== "resume" || seen.has(row.to))
+            // A paused bead returns only to where it came from (queued, when that was running).
+            (row.action !== "resume" ||
+              PAUSABLE.some(
+                (pausedFrom) =>
+                  seen.has(pausedFrom) && RESUMES_TO[pausedFrom] === row.to,
+              ))
           ) {
             seen.add(row.to);
             grew = true;
@@ -270,7 +297,7 @@ describe("the table", () => {
         (row) => row.to === "running" && row.by.includes("scheduler"),
       ).map((row) => row.from),
     ).toEqual(["queued"]);
-    // The one other row into running is the resume of a bead that was paused while running.
+    // Only start leads into running: a bead paused while running resumes to queued.
     expect(
       QUEUE_TABLE.filter((row) => row.to === "running").map((row) => [
         row.action,
@@ -279,7 +306,6 @@ describe("the table", () => {
     ).toEqual([
       ["start", "approved"],
       ["start", "queued"],
-      ["resume", "paused"],
     ]);
   });
 
@@ -490,23 +516,83 @@ describe("moving a bead: every pair of states", () => {
         }
       }
 
-  test("pause and resume return a bead to the state it was paused from, for each such state", async () => {
+  test("pause and resume return a bead to the state it was paused from, for each such state but running, which resumes to queued", async () => {
     for (const state of PAUSABLE) {
+      const back = state === "running" ? "queued" : state;
       const bead = beadIn(state);
       const { tracker, queue, events } = rig([bead]);
       expect((await queue.move(bead.id, "pause", "operator")).ok).toBe(true);
       expect(queueLabels(tracker, bead.id)).toEqual(["queue:paused"]);
-      const resumed = await queue.move(bead.id, "resume", "operator");
-      expect(resumed.ok && resumed.value.to).toBe(state);
-      expect(queueLabels(tracker, bead.id)).toEqual([`queue:${state}`]);
+      // The pause records where the bead was, running included.
       expect(tracker.beads.get(bead.id)?.metadata).toEqual({
-        queue_state: state,
+        queue_state: "paused",
+        queue_resume: state,
+      });
+      const resumed = await queue.move(bead.id, "resume", "operator");
+      expect(resumed.ok && resumed.value.to).toBe(back);
+      expect(queueLabels(tracker, bead.id)).toEqual([`queue:${back}`]);
+      expect(tracker.beads.get(bead.id)?.metadata).toEqual({
+        queue_state: back,
       });
       expect(events(bead.id)).toEqual([
         { from: state, to: "paused", reason: "pause:operator" },
-        { from: "paused", to: state, reason: "resume:operator" },
+        { from: "paused", to: back, reason: "resume:operator" },
       ]);
     }
+  });
+
+  test("a bead paused while running is not left running with nothing running it: resume puts it in queued, the exact queued listing prints it, and the scheduler's start takes it from there", async () => {
+    const bead = beadIn("queued");
+    const { tracker, queue, events } = rig([bead]);
+    expect((await queue.move(bead.id, "start", "scheduler")).ok).toBe(true);
+    expect((await queue.move(bead.id, "pause", "operator")).ok).toBe(true);
+    // The refusal names the one way back, and where it leads.
+    const early = await queue.move(bead.id, "start", "scheduler");
+    expect(early.ok ? "" : early.error).toBe(
+      `${bead.id} is queue:paused: "start" is not a move from there. From paused: resume to queued (operator).`,
+    );
+    expect(await queue.move(bead.id, "resume", "operator")).toEqual({
+      ok: true,
+      value: {
+        id: bead.id,
+        action: "resume",
+        from: "paused",
+        to: "queued",
+        recorded: true,
+      },
+    });
+    expect(queueLabels(tracker, bead.id)).toEqual(["queue:queued"]);
+    expect(tracker.beads.get(bead.id)?.metadata).toEqual({
+      queue_state: "queued",
+    });
+    // What a shift lists to pick from, and then its normal start.
+    const listed = answerQueueList(
+      [...QUEUED_EXACT_ARGS],
+      [...tracker.beads.values()],
+    );
+    expect(
+      (JSON.parse(listed?.stdout ?? "[]") as Array<{ id: string }>).map(
+        (row) => row.id,
+      ),
+    ).toEqual([bead.id]);
+    expect((await queue.move(bead.id, "start", "scheduler")).ok).toBe(true);
+    expect(events(bead.id)).toEqual([
+      { from: "queued", to: "running", reason: "start:scheduler" },
+      { from: "running", to: "paused", reason: "pause:operator" },
+      { from: "paused", to: "queued", reason: "resume:operator" },
+      { from: "queued", to: "running", reason: "start:scheduler" },
+    ]);
+  });
+
+  test("a bead that already carries queue_resume=running resumes to queued too: the value is read as it was written", async () => {
+    const bead = beadIn("paused", "running");
+    const { tracker, queue } = rig([bead]);
+    expect(legalMoves("paused", "running").map((row) => row.to)).toEqual([
+      "queued",
+    ]);
+    const resumed = await queue.move(bead.id, "resume", "operator");
+    expect(resumed.ok && resumed.value.to).toBe("queued");
+    expect(queueLabels(tracker, bead.id)).toEqual(["queue:queued"]);
   });
 
   test("a paused bead with no usable state to return to is refused, with how to repair it", async () => {

@@ -1,7 +1,10 @@
 /**
  * The Workbench against the suite's real hearth and its `bd` stand-in: a bead
- * is created through the bead builder, put in the queue as proposed (as the
- * scheduler's propose would; no route proposes), and moved on the board.
+ * is created through the bead builder, put in the queue as proposed (written
+ * to the stand-in, as the queue's propose would), and moved on the board. Two
+ * tests start from labels written by hand instead: one the queue did not
+ * write, which the board's Propose takes in, and a bead paused while running,
+ * which Resume puts in Queued.
  */
 
 import { expect, type Page, test } from "@playwright/test";
@@ -11,8 +14,10 @@ import type {
   OperatorEnvelope,
   SmithsView,
 } from "../../types/hearth";
+import { readState, writeState } from "./bd-stand-in-state";
 import { openSettled, reloadSettled } from "./fixtures";
 import { collectErrors } from "./routes";
+import { BD_STAND_IN_STATE } from "./servers";
 import {
   createFromBuilder,
   requireStandIn,
@@ -21,6 +26,41 @@ import {
 } from "./stand-in";
 
 const API = "/__agent-forge";
+
+/**
+ * Give a bead the test created these queue labels and this metadata, written
+ * to the stand-in's issues by hand: no route writes a label the queue would
+ * not, or pauses a bead from running without a shift.
+ */
+function seedQueue(
+  id: string,
+  labels: string[],
+  metadata?: Record<string, string>,
+): void {
+  const issues = readState(BD_STAND_IN_STATE);
+  const issue = issues[id];
+  if (issue === undefined)
+    throw new Error(`the stand-in has no issue ${id} to label`);
+  issues[id] = {
+    ...issue,
+    labels: [...(issue.labels ?? []), ...labels],
+    ...(metadata !== undefined
+      ? { metadata: { ...(issue.metadata ?? {}), ...metadata } }
+      : {}),
+  };
+  writeState(BD_STAND_IN_STATE, issues);
+}
+
+/** The queue actions recorded for a bead, as `operator.action` rows name them. */
+async function operatorActions(page: Page, id: string): Promise<string[]> {
+  const events = await readApi<EventsPage>(
+    page,
+    `/events?kind=operator.action&bead=${encodeURIComponent(id)}&beadExact=1`,
+  );
+  return events.events
+    .map((event) => (event.payload as { action?: string }).action ?? "")
+    .sort();
+}
 
 /** A read of the operator API, made from the page as the API requires. */
 async function readApi<T>(page: Page, path: string): Promise<T> {
@@ -122,6 +162,79 @@ test("a proposed bead approved on the Workbench moves columns; queue, pause and 
     .filter((call) => call[0] === "update" && call.at(-1) === id);
   expect(writes.length).toBe(5);
   expect(writes.at(-1)).toContain(`--set-metadata=smith=${smith}`);
+  expect(errors).toEqual([]);
+});
+
+test("a queue label the queue did not write offers Propose alone and says why; Propose puts the bead in Proposed, where Approve is offered, with one write and one operator.action", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  const id = await createBead(page, `Workbench unbacked ${Date.now()}`);
+  // A queue:queued label and no queue_state: as a child inherits it, or a hand adds it.
+  seedQueue(id, ["queue:queued"]);
+  const callsBefore = standInCalls().length;
+
+  await openSettled(page, "/index.html#/workbench");
+  const card = cardIn(page, "queued", id);
+  await expect(card).toBeVisible();
+  await expect(card.locator(".af-workbench-note")).toContainText(
+    "Propose puts it in the queue as proposed",
+  );
+  await expect(card.getByRole("button")).toHaveText(["Propose"]);
+
+  await page.getByRole("button", { name: `Propose ${id}` }).click();
+  await expect(cardIn(page, "proposed", id)).toBeVisible();
+  await expect(cardIn(page, "queued", id)).toHaveCount(0);
+  await expect(
+    cardIn(page, "proposed", id).locator('[data-outcome="done"]'),
+  ).toContainText(`Proposed ${id}.`);
+  await expect(
+    page.getByRole("button", { name: `Approve ${id}` }),
+  ).toBeVisible();
+
+  const writes = standInCalls()
+    .slice(callsBefore)
+    .filter((call) => call[0] === "update" && call.at(-1) === id);
+  expect(writes).toEqual([
+    [
+      "update",
+      "--remove-label=queue:queued",
+      "--add-label=queue:proposed",
+      "--set-metadata=queue_state=proposed",
+      "--json",
+      "--",
+      id,
+    ],
+  ]);
+  expect(await operatorActions(page, id)).toEqual(["queue.propose"]);
+  expect(errors).toEqual([]);
+});
+
+test("a bead paused while running says Resume puts it in Queued, and Resume does: it never goes back to Running", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  const id = await createBead(page, `Workbench paused running ${Date.now()}`);
+  seedQueue(id, ["queue:paused"], {
+    queue_state: "paused",
+    queue_resume: "running",
+  });
+
+  await openSettled(page, "/index.html#/workbench");
+  const card = cardIn(page, "paused", id);
+  await expect(card).toBeVisible();
+  await expect(card.locator('[data-resume-to="queued"]')).toHaveText(
+    "Resume puts it in Queued, where a shift starts it. A bead paused while it was running goes there too: nothing runs it after a pause.",
+  );
+
+  await page.getByRole("button", { name: `Resume ${id}` }).click();
+  await expect(cardIn(page, "queued", id)).toBeVisible();
+  await expect(
+    cardIn(page, "queued", id).locator('[data-outcome="done"]'),
+  ).toContainText(`Resumed ${id} to Queued.`);
+  await expect(cardIn(page, "running", id)).toHaveCount(0);
+  await expect(cardIn(page, "paused", id)).toHaveCount(0);
+  expect(await operatorActions(page, id)).toEqual(["queue.resume"]);
   expect(errors).toEqual([]);
 });
 

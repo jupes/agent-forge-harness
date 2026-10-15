@@ -33,6 +33,7 @@ const WORKBENCH_KINDS: readonly LedgerEventKind[] = [
 const NO_KINDS: readonly LedgerEventKind[] = [];
 
 const MOVE_LABEL: Record<OperatorMove, string> = {
+  propose: "Propose",
   approve: "Approve",
   queue: "Queue",
   pause: "Pause",
@@ -142,6 +143,11 @@ function CardView({
         )
       ) : null}
       {card.note ? <p class="af-muted af-workbench-note">{card.note}</p> : null}
+      {card.resumes ? (
+        <p class="af-muted af-workbench-note" data-resume-to={card.resumes.to}>
+          {card.resumes.says}
+        </p>
+      ) : null}
       {card.moves.length > 0 ? (
         <div class="af-button-row">
           {card.moves
@@ -149,7 +155,11 @@ function CardView({
             .map((move) => (
               <Button
                 key={move}
-                variant={move === "approve" ? "primary" : "secondary"}
+                variant={
+                  move === "approve" || move === "propose"
+                    ? "primary"
+                    : "secondary"
+                }
                 disabled={busy}
                 aria-label={`${MOVE_LABEL[move]} ${card.id}`}
                 onClick={() => onMove(card.id, move)}

@@ -105,8 +105,15 @@ const queueLabels = (tracker: QueueTracker, id: string): string[] =>
   );
 
 describe("the queue rows", () => {
-  test("the operator API offers approve, queue, pause, resume and reassign, and no other queue action", async () => {
+  test("the operator API offers propose, approve, queue, pause, resume and reassign, and no other queue action", async () => {
     const { h } = await start([]);
+    expect([...OPERATOR_QUEUE_ACTIONS]).toEqual([
+      "propose",
+      "approve",
+      "queue",
+      "pause",
+      "resume",
+    ]);
     expect(
       h.hearth.routes
         .filter((route) => route.path.startsWith("/queue/"))
@@ -183,13 +190,23 @@ describe("the queue rows", () => {
     ] as never);
   });
 
-  test("the operator cannot reach running through the API: no route starts work, and resume goes only where the bead was paused from", async () => {
+  test("the operator cannot reach running through the API: no route starts work, resume goes where the bead was paused from, and a bead paused while running resumes to queued", async () => {
     const { h, tracker } = await start([
       backed("demo-1", "paused", { queue_resume: "proposed" }),
+      backed("demo-2", "paused", { queue_resume: "running" }),
     ]);
     const resumed = await post(h, "/queue/demo-1/resume");
     expect(resumed.body.data?.to).toBe("proposed");
-    for (const action of ["start", "propose", "submit", "complete", "halt"]) {
+    const fromRunning = await post(h, "/queue/demo-2/resume");
+    expect(fromRunning.status).toBe(200);
+    expect(fromRunning.body.data).toEqual({
+      id: "demo-2",
+      action: "resume",
+      from: "paused",
+      to: "queued",
+      recorded: true,
+    });
+    for (const action of ["start", "submit", "complete", "halt"]) {
       const response = await fetch(`${h.api}/queue/demo-1/${action}`, {
         method: "POST",
         headers: h.headers(h.hearth.token),
@@ -201,6 +218,10 @@ describe("the queue rows", () => {
       });
     }
     expect(queueLabels(tracker, "demo-1")).toEqual(["queue:proposed"]);
+    expect(queueLabels(tracker, "demo-2")).toEqual(["queue:queued"]);
+    expect(tracker.beads.get("demo-2")?.metadata).toEqual({
+      queue_state: "queued",
+    });
   });
 
   test("each way a move can fail has its status: 404, 409, 502, 504, and never 403", async () => {
@@ -779,6 +800,114 @@ describe("POST /queue/:id/reassign", () => {
   });
 });
 
+describe("POST /queue/:id/propose", () => {
+  test("a bead carrying a queue label the queue did not write is put in the queue as proposed: an audit row, one read and one write, then the transition from outside the queue", async () => {
+    const { h, tracker } = await start([
+      { id: "demo-1", labels: ["queue:queued", "command-center"] },
+    ]);
+    const answer = await post(h, "/queue/demo-1/propose");
+    expect(answer).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        data: {
+          id: "demo-1",
+          action: "propose",
+          from: null,
+          to: "proposed",
+          recorded: true,
+        },
+        error: null,
+      },
+    });
+    expect(tracker.calls).toEqual([
+      ["show", "--readonly", "--json", "--", "demo-1"],
+      [
+        "update",
+        "--remove-label=queue:queued",
+        "--add-label=queue:proposed",
+        "--set-metadata=queue_state=proposed",
+        "--json",
+        "--",
+        "demo-1",
+      ],
+    ]);
+    expect(tracker.beads.get("demo-1")?.labels?.sort()).toEqual([
+      "command-center",
+      "queue:proposed",
+    ]);
+    expect(tracker.beads.get("demo-1")?.metadata).toEqual({
+      queue_state: "proposed",
+    });
+    expect(recorded(h)).toEqual([
+      {
+        kind: "operator.action",
+        beadId: "demo-1",
+        payload: { action: "queue.propose", surface: "api", target: "demo-1" },
+      },
+      {
+        kind: "bead.transitioned",
+        beadId: "demo-1",
+        payload: { from: null, to: "proposed", reason: "propose:operator" },
+      },
+    ] as never);
+    // Approval is not inherited: the next move is the operator's approve.
+    expect((await post(h, "/queue/demo-1/queue")).status).toBe(409);
+    expect((await post(h, "/queue/demo-1/approve")).body.data?.to).toBe(
+      "approved",
+    );
+  });
+
+  test("a closed bead is refused 409, with or without a queue label: audited, nothing written, no transition", async () => {
+    for (const bead of [
+      { id: "demo-1", status: "closed", labels: ["queue:queued"] },
+      { id: "demo-1", status: "closed" },
+    ] as TrackedBead[]) {
+      const { h, tracker } = await start([bead]);
+      const answer = await post(h, "/queue/demo-1/propose");
+      expect(answer.status).toBe(409);
+      expect(answer.body.error ?? "").toContain("closed");
+      expect(tracker.updates()).toEqual([]);
+      expect(recorded(h).map((event) => event.kind)).toEqual([
+        "operator.action",
+      ]);
+    }
+  });
+
+  test("a bead outside the queue is proposed too", async () => {
+    const { h, tracker } = await start([{ id: "demo-1" }]);
+    const answer = await post(h, "/queue/demo-1/propose");
+    expect(answer.status).toBe(200);
+    expect(answer.body.data?.to).toBe("proposed");
+    expect(queueLabels(tracker, "demo-1")).toEqual(["queue:proposed"]);
+  });
+
+  test("a bead in a state the queue wrote, or with two queue labels, is refused 409: audited, nothing written, no transition", async () => {
+    const cases: Array<[TrackedBead, string]> = [
+      [backed("demo-1", "queued"), "From queued: start"],
+      [backed("demo-1", "proposed"), "From proposed: approve"],
+      [
+        {
+          id: "demo-1",
+          labels: ["queue:queued", "queue:paused"],
+          metadata: { queue_state: "queued" },
+        },
+        "queue:paused and queue:queued",
+      ],
+    ];
+    for (const [bead, says] of cases) {
+      const { h, tracker } = await start([bead]);
+      const answer = await post(h, "/queue/demo-1/propose");
+      expect({ says, status: answer.status }).toEqual({ says, status: 409 });
+      expect(answer.body.error ?? "").toContain(says);
+      expect(tracker.updates()).toEqual([]);
+      expect(recorded(h).map((event) => event.kind)).toEqual([
+        "operator.action",
+      ]);
+    }
+  });
+});
+
 describe("GET /queue beside the queue's own writes", () => {
   test("an entry says whether the queue wrote its label", async () => {
     const { h } = await start([]);
@@ -814,7 +943,7 @@ describe("GET /queue beside the queue's own writes", () => {
 });
 
 describe("a child created through POST /beads under a bead in the queue", () => {
-  test("carries the queue:queued label bd copied and is in no state: GET /queue shows it unbacked, GET /eligibility offers only its parent, every operator row refuses it with nothing written, and no queue transition is recorded for it", async () => {
+  test("carries the queue:queued label bd copied and is in no state: GET /queue shows it unbacked, GET /eligibility offers only its parent, every operator row but propose refuses it with nothing written, and propose puts it in the queue as proposed", async () => {
     const { h, tracker } = await start([backed("demo-1", "queued")]);
     // bd create --parent makes the child as bd 1.1.0 does (childOf); every
     // other call is answered by the in-memory tracker.
@@ -875,7 +1004,9 @@ describe("a child created through POST /beads under a bead in the queue", () => 
     ]);
     expect(eligibility.data?.waiting).toEqual([]);
 
-    for (const action of OPERATOR_QUEUE_ACTIONS) {
+    for (const action of OPERATOR_QUEUE_ACTIONS.filter(
+      (each) => each !== "propose",
+    )) {
       const answer = await post(h, `/queue/demo-1.1/${action}`);
       expect({ action, status: answer.status }).toEqual({
         action,
@@ -896,5 +1027,25 @@ describe("a child created through POST /beads under a bead in the queue", () => 
       .map((event) => event.payload as Record<string, unknown>);
     expect(transitions.map((payload) => payload["action"])).toEqual(["create"]);
     expect(transitions.filter((payload) => "to" in payload)).toEqual([]);
+
+    // Propose is the way in: the child is then proposed, by the queue's own
+    // writing, and waits for its own approval.
+    const proposed = await post(h, "/queue/demo-1.1/propose");
+    expect(proposed.body.data).toEqual({
+      id: "demo-1.1",
+      action: "propose",
+      from: null,
+      to: "proposed",
+      recorded: true,
+    });
+    const after = (await (
+      await fetch(`${h.api}/queue`, { headers: h.headers() })
+    ).json()) as OperatorEnvelope<QueueEntry[]>;
+    expect(
+      after.data?.map((entry) => [entry.beadId, entry.state, entry.backed]),
+    ).toEqual([
+      ["demo-1", "queued", true],
+      ["demo-1.1", "proposed", true],
+    ]);
   });
 });

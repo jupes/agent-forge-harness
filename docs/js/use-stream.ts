@@ -28,6 +28,7 @@ import type {
   LedgerEvent,
   LedgerEventKind,
   OperatorEnvelope,
+  SessionSummary,
   StreamSnapshot,
 } from "../../types/hearth";
 import {
@@ -35,10 +36,22 @@ import {
   applySnapshot,
   INITIAL_LIVE_STATE,
   type LiveState,
+  MAX_LIVE_SESSIONS,
+  sessionsWithoutRow,
   withCollection,
+  withSessionRows,
   withStatus,
 } from "./app-state";
+import {
+  type HearthReadOptions,
+  REAL_TIMERS,
+  readHearth,
+  servedStatically,
+  type Timers,
+} from "./hearth-read";
 import { type DevApiState, fetchDevApi } from "./use-dev-api";
+
+export type { Timers };
 
 // ── Limits ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +61,8 @@ export const BATCH_MS = 50;
 export const BATCH_MAX = 500;
 /** A view's route is read again at most once per this window. */
 export const REFETCH_WINDOW_MS = 300;
+/** How many times the sessions route is tried again, on its own, after a read that got no answer. */
+export const SESSION_ROW_RETRIES = 3;
 /**
  * The first retry waits up to this; each later one doubles it. With
  * `MAX_FAILURES` at six there are five retries, so the longest wait is up to
@@ -235,17 +250,6 @@ export function fetchTransport(
 
 // ── Reading a route again ───────────────────────────────────────────────────
 
-export interface Timers {
-  set(run: () => void, ms: number): unknown;
-  clear(handle: unknown): void;
-}
-
-const REAL_TIMERS: Timers = {
-  set: (run, ms) => setTimeout(run, ms),
-  // justification: the handle is whatever `set` above returned.
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
-
 export interface Refetcher {
   /** Ask for a read. Many asks in a burst become one read now and at most one after it. */
   request(): void;
@@ -405,6 +409,10 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   let afterAGap = false;
   let failures = 0;
   let waiting: LedgerEvent[] = [];
+  /** Sessions whose row came from deltas alone and is still to be completed from the sessions route. */
+  const rowless = new Set<string>();
+  /** Reads of the sessions route that failed in a row. */
+  let rowFailures = 0;
   let batchTimer: unknown = null;
   let retryTimer: unknown = null;
   let silenceTimer: unknown = null;
@@ -436,12 +444,19 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     const batch = waiting;
     waiting = [];
     const before = state.cursor;
+    // Asked before the batch is applied: afterwards the list holds them all.
+    const unrowed = sessionsWithoutRow(state, batch);
     const next = applyDeltas(state, batch);
     if (next === state || before === null) return;
     const kinds = new Set<LedgerEventKind>();
     for (const event of batch) if (event.id > before) kinds.add(event.kind);
     setState(next);
     tell(kinds);
+    // After the update, so the delta is shown without waiting for the read.
+    if (unrowed.length > 0) {
+      for (const id of unrowed) rowless.add(id);
+      sessionRows.request();
+    }
   };
 
   const receive = (message: SseMessage): void => {
@@ -455,6 +470,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     if (message.event === "snapshot" && isSnapshot(data)) {
       // A snapshot replaces everything, so nothing older is worth applying.
       waiting = [];
+      rowless.clear();
+      rowFailures = 0;
       batchTimer = stop(batchTimer);
       setState(applySnapshot(state, data));
     } else if (message.event === "delta" && isLedgerEvent(data)) {
@@ -606,6 +623,44 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     callback: () => queue.request(),
   });
 
+  // Sessions are folded from events, so the route is never swapped in for the
+  // list: it only completes the rows that deltas alone could not (see
+  // `withSessionRows`). A rejected read keeps the ids for the next one.
+  const sessionRows = createRefetcher({
+    timers,
+    now,
+    async run() {
+      if (rowless.size === 0) return;
+      const asked = [...rowless];
+      let envelope: OperatorEnvelope<unknown>;
+      try {
+        envelope = await deps.read(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      } catch (cause) {
+        // Nothing answered: the ids stay, and a few more tries follow on their
+        // own, so one waiting session is not left bare until the next snapshot.
+        rowFailures += 1;
+        if (rowFailures <= SESSION_ROW_RETRIES) sessionRows.request();
+        throw cause;
+      }
+      rowFailures = 0;
+      if (holders === 0 || state.cursor === null || state.status === "off")
+        return;
+      if (!envelope.ok || !Array.isArray(envelope.data)) {
+        for (const id of asked) rowless.delete(id);
+        return;
+      }
+      // justification: the sessions route answers a list of session summaries.
+      const rows = envelope.data as SessionSummary[];
+      const ids = new Set(rowless);
+      const next = withSessionRows(state, rows, ids);
+      // Answered: asked about before the read, or listed by it. A session that
+      // spoke after the answer was made is not listed and stays for the next read.
+      for (const id of asked) rowless.delete(id);
+      for (const row of rows) rowless.delete(row.sessionId);
+      setState(next);
+    },
+  });
+
   return {
     getState: () => state,
     subscribe(listener) {
@@ -677,27 +732,34 @@ export function startLiveRead<T>(options: LiveReadOptions<T>): LiveRead {
 
 // ── The page's client and its hooks ─────────────────────────────────────────
 
-async function readRoute(
+/** One read of an operator API read route, under the rules of `readHearth`. */
+function readRoute(
   path: string,
-  fetchImpl: (input: string) => Promise<Response> = (input) => fetch(input),
+  options: HearthReadOptions = {},
 ): Promise<OperatorEnvelope<unknown>> {
-  const response = await fetchImpl(`${API_PREFIX}${path}`);
-  const envelope: unknown = await response.json();
-  if (!isRecord(envelope) || typeof envelope["ok"] !== "boolean")
-    throw new Error(`HTTP ${response.status}`);
-  // justification: checked above to be an envelope; its data is read by the route's own type.
-  return envelope as OperatorEnvelope<unknown>;
+  return readHearth(
+    `${API_PREFIX}${path}`,
+    async (response) => {
+      const envelope: unknown = await response.json();
+      if (!isRecord(envelope) || typeof envelope["ok"] !== "boolean")
+        throw new Error(`HTTP ${response.status}`);
+      // justification: checked above to be an envelope; its data is read by the route's own type.
+      return envelope as OperatorEnvelope<unknown>;
+    },
+    options,
+  );
 }
 
 /**
  * An operator API read route's data, or an error with the hearth's own words
- * when it answered `ok: false`.
+ * when it answered `ok: false`. It fails when the hearth does not answer
+ * within `READ_TIMEOUT_MS`, and at once on a static copy.
  */
 export async function readOperatorRoute<T>(
   path: string,
-  fetchImpl?: (input: string) => Promise<Response>,
+  options: HearthReadOptions = {},
 ): Promise<T> {
-  const envelope = await readRoute(path, fetchImpl);
+  const envelope = await readRoute(path, options);
   if (!envelope.ok)
     throw new Error(envelope.error ?? "the control plane refused the read");
   // justification: the route named `path` answers data of the caller's `T`.
@@ -734,12 +796,15 @@ let page: StreamClient | null = null;
 /** The one client of this page, made on first use. */
 export function appStream(): StreamClient {
   page ??= createStreamClient({
-    // A build has no HMR socket: there `import.meta.hot` is undefined. The
-    // dev server, which proxies the hearth, always gives a page one.
-    transport: pageTransport(import.meta.hot === undefined),
-    read: readRoute,
+    transport: pageTransport(servedStatically()),
+    read: (path) => readRoute(path, pageReads()),
   });
   return page;
+}
+
+/** What the page's own reads are made with: none at all on a static copy. */
+export function pageReads(): HearthReadOptions {
+  return { staticCopy: servedStatically() };
 }
 
 /**
@@ -789,7 +854,7 @@ export function useLiveRead<T>(
   useEffect(
     () =>
       startLiveRead<T>({
-        load: () => fetchDevApi<T>(route),
+        load: () => fetchDevApi<T>(route, pageReads()),
         client: appStream(),
         kinds,
         onChange: setState,
@@ -819,7 +884,7 @@ export function useOperatorRead<T>(
 
   useEffect(() => {
     const read = startLiveRead<T>({
-      load: () => readOperatorRoute<T>(path),
+      load: () => readOperatorRoute<T>(path, pageReads()),
       client: appStream(),
       kinds,
       onChange: setState,

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { QueueEntry, QueueState } from "../../types/hearth";
-import { type OperatorMove, operatorMoves } from "./queue-table";
+import {
+  legalMoves,
+  type OperatorMove,
+  operatorMoves,
+  resumeTarget,
+} from "./queue-table";
 
 const entry = (
   state: QueueState,
@@ -13,6 +18,17 @@ const entry = (
   backed: true,
   ...more,
 });
+
+const STATES = [
+  "proposed",
+  "approved",
+  "queued",
+  "running",
+  "review",
+  "done",
+  "paused",
+  "halted",
+] as const;
 
 describe("operatorMoves: what the page may offer an operator", () => {
   test("from each state, the operator moves the table allows, and reassign where a smith may be changed", () => {
@@ -41,24 +57,32 @@ describe("operatorMoves: what the page may offer an operator", () => {
     expect(operatorMoves(entry("paused"))).toEqual(["reassign"]);
   });
 
-  test("a label the queue did not write, or a bead with two queue labels, offers nothing", () => {
-    expect(operatorMoves(entry("approved", { backed: false }))).toEqual([]);
-    expect(operatorMoves(entry("approved"), { twoLabels: true })).toEqual([]);
+  test("a bead paused while running offers resume, and that resume leads to queued", () => {
+    expect(operatorMoves(entry("paused", { resume: "running" }))).toEqual([
+      "resume",
+      "reassign",
+    ]);
+    expect(
+      legalMoves("paused", "running").map((rule) => [rule.action, rule.to]),
+    ).toEqual([["resume", "queued"]]);
   });
 
-  test("start, submit, complete, rework, release, halt and propose are never offered: the operator API has no route for them", () => {
-    const all = (
-      [
-        "proposed",
-        "approved",
-        "queued",
-        "running",
-        "review",
-        "done",
-        "paused",
-        "halted",
-      ] as const
-    ).flatMap((state) => operatorMoves(entry(state, { resume: "queued" })));
+  test("a label the queue did not write offers propose and nothing else; a bead with two queue labels offers nothing", () => {
+    for (const state of STATES)
+      expect({
+        state,
+        moves: operatorMoves(entry(state, { backed: false })),
+      }).toEqual({ state, moves: ["propose"] });
+    expect(operatorMoves(entry("approved"), { twoLabels: true })).toEqual([]);
+    expect(
+      operatorMoves(entry("approved", { backed: false }), { twoLabels: true }),
+    ).toEqual([]);
+  });
+
+  test("start, submit, complete, rework, release and halt are never offered (the operator API has no route for them), and propose never for a label the queue wrote", () => {
+    const all = STATES.flatMap((state) =>
+      operatorMoves(entry(state, { resume: "queued" })),
+    );
     for (const move of [
       "start",
       "submit",
@@ -69,5 +93,21 @@ describe("operatorMoves: what the page may offer an operator", () => {
       "propose",
     ])
       expect(all).not.toContain(move);
+  });
+});
+
+describe("resumeTarget: where resume takes a paused bead", () => {
+  test("back to the state it was paused from, except running, which goes to queued", () => {
+    expect(
+      (["proposed", "approved", "queued", "running", "review"] as const).map(
+        (pausedFrom) => [pausedFrom, resumeTarget(pausedFrom)],
+      ),
+    ).toEqual([
+      ["proposed", "proposed"],
+      ["approved", "approved"],
+      ["queued", "queued"],
+      ["running", "queued"],
+      ["review", "review"],
+    ]);
   });
 });

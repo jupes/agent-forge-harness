@@ -7,14 +7,21 @@ import {
   type LiveState,
   liveStats,
   MAX_LIVE_SESSIONS,
+  sessionsWithoutRow,
   withCollection,
+  withSessionRows,
   withStatus,
 } from "../../docs/js/app-state";
+import {
+  type HearthReadOptions,
+  READ_TIMEOUT_MS,
+  STATIC_COPY_ERROR,
+} from "../../docs/js/hearth-read";
 import {
   LiveBannerView,
   LiveStatsView,
 } from "../../docs/js/islands/LiveStatus";
-import type { DevApiState } from "../../docs/js/use-dev-api";
+import { type DevApiState, fetchDevApi } from "../../docs/js/use-dev-api";
 import {
   BATCH_MAX,
   BATCH_MS,
@@ -419,6 +426,141 @@ describe("state: deltas", () => {
     expect(state.sessions.data?.at(-1)?.sessionId).toBe(
       `s-${MAX_LIVE_SESSIONS - 2}`,
     );
+  });
+});
+
+describe("state: sessions the list holds no row for", () => {
+  const spoke = (id: number, sessionId: string | undefined) =>
+    event(id, {
+      kind: "prompt.submitted",
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      payload: { hash: "h", length: 1 },
+    });
+  const started = (id: number, sessionId: string) =>
+    event(id, {
+      kind: "session.started",
+      sessionId,
+      payload: { kind: "headless", worktree: "wt" },
+    });
+
+  test("a session that speaks and is not in the list is one to look up, once however often it speaks", () => {
+    const state = live({ sessions: ok([session("held")]) });
+    expect(
+      sessionsWithoutRow(state, [
+        spoke(11, "held"),
+        spoke(12, "old-b"),
+        spoke(13, "old-a"),
+        spoke(14, "old-b"),
+      ]),
+    ).toEqual(["old-b", "old-a"]);
+  });
+
+  test("a session whose session.started is in the batch has its whole row from it, so it is not looked up", () => {
+    const state = live({ sessions: ok([]) });
+    expect(
+      sessionsWithoutRow(state, [started(11, "new"), spoke(12, "new")]),
+    ).toEqual([]);
+  });
+
+  test("events already applied, events with no session, and a list not yet known name nobody", () => {
+    const state = live({ cursor: 20, sessions: ok([]) });
+    expect(
+      sessionsWithoutRow(state, [spoke(20, "seen"), spoke(21, undefined)]),
+    ).toEqual([]);
+    expect(
+      sessionsWithoutRow(live({ sessions: failed("no ledger") }), [
+        spoke(11, "x"),
+      ]),
+    ).toEqual([]);
+    expect(sessionsWithoutRow(INITIAL_LIVE_STATE, [spoke(11, "x")])).toEqual(
+      [],
+    );
+  });
+
+  describe("a row read from the route", () => {
+    const listed = (id: string): SessionSummary =>
+      session(id, {
+        kind: "headless",
+        worktree: "wt-old",
+        parentSessionId: "parent",
+        startedAt: "2026-10-01T08:00:00.000Z",
+        lastEventAt: "2026-10-11T11:30:00.000Z",
+        endedAt: "2026-10-11T11:30:00.000Z",
+        executor: { provider: "claude", model: "m-old", sessionId: id },
+        beadId: "b-old",
+        runId: "run-old",
+      });
+    /** What the delta alone made of a session older than the list. */
+    const bare = (id: string, over: Partial<SessionSummary> = {}) =>
+      session(id, { lastEventAt: "2026-10-11T12:00:30.000Z", ...over });
+
+    test("fills what the delta could not know, and keeps the held row's own times", () => {
+      const state = live({ sessions: ok([bare("old"), session("other")]) });
+      const next = withSessionRows(state, [listed("old")], new Set(["old"]));
+      expect(next.sessions.data?.[0]).toEqual({
+        sessionId: "old",
+        workspace: WORKSPACE,
+        kind: "headless",
+        worktree: "wt-old",
+        parentSessionId: "parent",
+        startedAt: "2026-10-01T08:00:00.000Z",
+        // The held row is newer than the read: it keeps its time, and it was not ended by what it said since.
+        lastEventAt: "2026-10-11T12:00:30.000Z",
+        executor: { provider: "claude", model: "m-old", sessionId: "old" },
+        beadId: "b-old",
+        runId: "run-old",
+      });
+      expect(next.sessions.data?.[1]).toBe(state.sessions.data?.[1]);
+      expect(next.cursor).toBe(state.cursor);
+    });
+
+    test("never replaces a field the held row has: what the events said since is newer", () => {
+      const held = bare("old", {
+        executor: { provider: "codex", model: "m-new", sessionId: "old" },
+        beadId: "b-new",
+      });
+      const next = withSessionRows(
+        live({ sessions: ok([held]) }),
+        [listed("old")],
+        new Set(["old"]),
+      );
+      expect(next.sessions.data?.[0]).toMatchObject({
+        executor: { provider: "codex", model: "m-new" },
+        beadId: "b-new",
+        runId: "run-old",
+      });
+    });
+
+    test("fills only the sessions asked about, keeps the list's order, and ignores a row the list does not hold", () => {
+      const state = live({
+        sessions: ok([bare("a"), bare("b"), bare("c")]),
+      });
+      const next = withSessionRows(
+        state,
+        [listed("c"), listed("b"), listed("gone")],
+        new Set(["a", "c", "gone"]),
+      );
+      expect(next.sessions.data?.map((s) => s.sessionId)).toEqual([
+        "a",
+        "b",
+        "c",
+      ]);
+      // "a" was asked about but not listed, "b" was listed but not asked about.
+      expect(next.sessions.data?.[0]).toBe(state.sessions.data?.[0]);
+      expect(next.sessions.data?.[1]).toBe(state.sessions.data?.[1]);
+      expect(next.sessions.data?.[2]).toMatchObject({ worktree: "wt-old" });
+    });
+
+    test("changes nothing, and returns the same object, when there is nothing to fill or no list", () => {
+      const full = live({ sessions: ok([listed("old")]) });
+      expect(withSessionRows(full, [listed("old")], new Set(["old"]))).toBe(
+        full,
+      );
+      const unknown = live({ sessions: failed("no ledger") });
+      expect(withSessionRows(unknown, [listed("old")], new Set(["old"]))).toBe(
+        unknown,
+      );
+    });
   });
 });
 
@@ -1448,6 +1590,275 @@ describe("client: watchers and the routes read again", () => {
     expect(client.getState().runs.data).toHaveLength(1);
   });
 
+  describe("a session the list holds no row for", () => {
+    const SESSIONS = `/sessions?limit=${MAX_LIVE_SESSIONS}`;
+    const spoke = (id: number, sessionId: string) =>
+      event(id, {
+        kind: "prompt.submitted",
+        sessionId,
+        payload: { hash: "h", length: 1 },
+      });
+    const row = (id: string): SessionSummary =>
+      session(id, {
+        kind: "headless",
+        worktree: `wt-${id}`,
+        startedAt: "2026-10-01T08:00:00.000Z",
+        executor: { provider: "claude", model: "m-1", sessionId: id },
+      });
+
+    test("the delta is shown at once, the sessions route is read after it, and the answer fills the row in", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([session("held")]) });
+
+      wire.current.delta(spoke(11, "old"));
+      clock.advance(BATCH_MS);
+      // Not held up by the read: the session is listed, newest first, with what the event carried.
+      expect(client.getState().sessions.data?.map((s) => s.sessionId)).toEqual([
+        "old",
+        "held",
+      ]);
+      expect(client.getState().sessions.data?.[0]).not.toHaveProperty("kind");
+      expect(reads.asked).toEqual([SESSIONS]);
+
+      await reads.answer(ok([row("old"), session("held")]));
+      expect(client.getState().sessions.data?.[0]).toMatchObject({
+        sessionId: "old",
+        kind: "headless",
+        worktree: "wt-old",
+        startedAt: "2026-10-01T08:00:00.000Z",
+        lastEventAt: "2026-10-11T12:00:11.000Z",
+      });
+      expect(client.getState().cursor).toBe(11);
+    });
+
+    test("a session already held, and one that starts in the batch, are not looked up", () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([session("held")]) });
+      wire.current.delta(
+        spoke(11, "held"),
+        event(12, {
+          kind: "session.started",
+          sessionId: "new",
+          payload: { kind: "headless", worktree: "wt-new" },
+        }),
+        spoke(13, "new"),
+      );
+      clock.advance(BATCH_MS);
+      expect(reads.asked).toEqual([]);
+    });
+
+    test("a burst is one read: its answer fills every session that spoke meanwhile, and nothing more is asked", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(BATCH_MS);
+      wire.current.delta(spoke(13, "c"));
+      clock.advance(BATCH_MS);
+      expect(reads.asked).toEqual([SESSIONS]);
+
+      await reads.answer(ok([row("c"), row("b"), row("a")]));
+      expect(
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]),
+      ).toEqual([
+        ["c", "headless"],
+        ["b", "headless"],
+        ["a", "headless"],
+      ]);
+      // The read that was due after the first finds nothing left to ask for.
+      clock.advance(REFETCH_WINDOW_MS);
+      await settle();
+      expect(reads.asked).toEqual([SESSIONS]);
+    });
+
+    test("a session that spoke after the answer was made is asked for again by the one read that follows", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(BATCH_MS);
+      expect(reads.asked).toEqual([SESSIONS]);
+
+      // The answer was made before "b" spoke, so it does not list it.
+      await reads.answer(ok([row("a")]));
+      const kinds = () =>
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]);
+      expect(kinds()).toEqual([
+        ["b", undefined],
+        ["a", "headless"],
+      ]);
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toEqual([SESSIONS, SESSIONS]);
+      await reads.answer(ok([row("b"), row("a")]));
+      expect(kinds()).toEqual([
+        ["b", "headless"],
+        ["a", "headless"],
+      ]);
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toHaveLength(2);
+    });
+
+    test("a read that fails is tried again for the one session waiting, a few times and no more", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      // No other session speaks: the retry comes on its own, past the window.
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toEqual([SESSIONS, SESSIONS]);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toHaveLength(3);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toHaveLength(4);
+      // A hearth that keeps failing is not asked every window for ever.
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toHaveLength(4);
+    });
+
+    test("a retry that is answered fills the row", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(REFETCH_WINDOW_MS);
+      await reads.answer(ok([row("a")]));
+      expect(client.getState().sessions.data?.[0]).toMatchObject({
+        kind: "headless",
+      });
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toHaveLength(2);
+    });
+
+    test("a new snapshot ends the wait for the sessions it replaced: no retry follows", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      wire.current.snapshot({ cursor: 20, sessions: ok([session("a")]) });
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toEqual([SESSIONS]);
+    });
+
+    test("an answer that says the sessions cannot be read ends the wait for the sessions asked about", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      await reads.answer(failed("ledger unreadable"));
+      clock.advance(10_000);
+      await settle();
+      expect(reads.asked).toEqual([SESSIONS]);
+
+      // Another session speaks; "a" is not asked about again, so its row stays as it was.
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(REFETCH_WINDOW_MS);
+      await reads.answer(ok([row("b"), row("a")]));
+      expect(
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]),
+      ).toEqual([
+        ["b", "headless"],
+        ["a", undefined],
+      ]);
+    });
+
+    test("a session the route did not list is not asked about again", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      await reads.answer(ok([]));
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(REFETCH_WINDOW_MS);
+      await reads.answer(ok([row("b"), row("a")]));
+      expect(
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]),
+      ).toEqual([
+        ["b", "headless"],
+        ["a", undefined],
+      ]);
+    });
+
+    test("a read that fails keeps the row, and the next read carries the session again", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      expect(client.getState().sessions.data?.[0]).not.toHaveProperty("kind");
+
+      // Past the window of the first read, another session that is not held speaks.
+      clock.advance(REFETCH_WINDOW_MS);
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(BATCH_MS);
+      expect(reads.asked).toEqual([SESSIONS, SESSIONS]);
+      await reads.answer(ok([row("b"), row("a")]));
+      expect(
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]),
+      ).toEqual([
+        ["b", "headless"],
+        ["a", "headless"],
+      ]);
+    });
+
+    test("an answer that comes after a new snapshot fills only the sessions the new list holds, and does not bring the old list back", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "old"));
+      clock.advance(BATCH_MS);
+
+      // A new snapshot replaces the list, and the answer then fills only what is in it.
+      wire.current.snapshot({ cursor: 20, sessions: ok([session("fresh")]) });
+      await reads.answer(ok([row("old"), row("fresh")]));
+      expect(client.getState().sessions.data?.map((s) => s.sessionId)).toEqual([
+        "fresh",
+      ]);
+      expect(client.getState().sessions.data?.[0]).not.toHaveProperty("kind");
+    });
+  });
+
   test("the stream reopening reads both routes again", () => {
     const { wire, client, clock, reads } = harness(() => 0);
     client.subscribe(() => undefined);
@@ -2008,6 +2419,81 @@ describe("client against a real hearth", () => {
     }
   }, 60_000);
 
+  test("a session older than the snapshot's newest 100 that speaks again is listed as the route lists it, with its start, kind, worktree and executor", async () => {
+    const hearth = await startTestHearth({ api: { streamPollMs: 20 } });
+    const headers = { Origin: hearth.hearth.url };
+    const route = async (path: string): Promise<OperatorEnvelope<unknown>> =>
+      (await fetch(`${hearth.api}${path}`, { headers }).then((response) =>
+        response.json(),
+      )) as OperatorEnvelope<unknown>;
+    for (let n = 1; n <= 150; n++)
+      hearth.append({
+        kind: "session.started",
+        sessionId: `s-${n}`,
+        executor: { provider: "claude", model: `m-${n % 7}` },
+        payload: { kind: "headless", worktree: `wt-${n}` },
+      });
+
+    const client = createStreamClient({
+      transport: fetchTransport(`${hearth.api}/stream`, { headers }),
+      read: route,
+    });
+    const leave = client.subscribe(() => undefined);
+    const held = (id: string) =>
+      client.getState().sessions.data?.find((s) => s.sessionId === id);
+    try {
+      await eventually(() => client.getState().status === "live");
+      // The snapshot carries the newest 100 only: s-1 is not among them.
+      expect(client.getState().sessions.data).toHaveLength(100);
+      expect(held("s-1")).toBeUndefined();
+
+      // s-1 speaks again, and then s-2 does, and s-1 once more.
+      hearth.append({
+        kind: "prompt.submitted",
+        sessionId: "s-1",
+        payload: { hash: "h", length: 1 },
+      });
+      hearth.append({
+        kind: "prompt.submitted",
+        sessionId: "s-2",
+        payload: { hash: "h", length: 1 },
+      });
+      const last = hearth.append({
+        kind: "prompt.submitted",
+        sessionId: "s-1",
+        payload: { hash: "h", length: 1 },
+      });
+      await eventually(() => client.getState().cursor === last);
+      // The rows come with a read that follows the deltas. Wait for it, but
+      // compare either way, so that a row that never filled shows its difference.
+      await eventually(() => held("s-1")?.startedAt !== undefined, 3000).catch(
+        () => undefined,
+      );
+
+      const answered = await route(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      expect(answered.ok).toBe(true);
+      const listed = answered.data as SessionSummary[];
+      expect(held("s-1")).toEqual(listed.find((s) => s.sessionId === "s-1"));
+      expect(held("s-2")).toEqual(listed.find((s) => s.sessionId === "s-2"));
+      // Not an empty comparison.
+      expect(held("s-1")).toMatchObject({
+        kind: "headless",
+        worktree: "wt-1",
+        startedAt: expect.any(String),
+        executor: { provider: "claude", model: "m-1", sessionId: "s-1" },
+      });
+      // Newest first, the 100 of the snapshot kept behind the two that spoke.
+      expect(client.getState().sessions.data?.map((s) => s.sessionId)).toEqual([
+        "s-1",
+        "s-2",
+        ...Array.from({ length: 100 }, (_, n) => `s-${150 - n}`),
+      ]);
+    } finally {
+      leave();
+      await hearth.close();
+    }
+  }, 30_000);
+
   test("a cut connection resumes with the last id and the server sends no second snapshot", async () => {
     const hearth = await startTestHearth({ api: { streamPollMs: 20 } });
     const cuts: AbortController[] = [];
@@ -2328,22 +2814,276 @@ describe("a view that reads an operator route, and reloads after its own change"
       async () =>
         new Response(JSON.stringify(body), { status });
     expect(
-      await readOperatorRoute<number[]>(
-        "/queue",
-        answering({ ok: true, data: [1, 2], error: null }),
-      ),
+      await readOperatorRoute<number[]>("/queue", {
+        fetch: answering({ ok: true, data: [1, 2], error: null }),
+      }),
     ).toEqual([1, 2]);
     await expect(
-      readOperatorRoute(
-        "/eligibility",
-        answering(
+      readOperatorRoute("/eligibility", {
+        fetch: answering(
           { ok: false, data: null, error: "bd list failed: locked" },
           502,
         ),
-      ),
+      }),
     ).rejects.toThrow("bd list failed: locked");
     await expect(
-      readOperatorRoute("/queue", answering("<html>", 404)),
+      readOperatorRoute("/queue", { fetch: answering("<html>", 404) }),
     ).rejects.toThrow("HTTP 404");
+  });
+});
+
+// ── A view's read of a hearth that hangs ────────────────────────────────────
+
+/**
+ * A stand-in hearth for reads, on a loopback port, that never answers in
+ * full. `silent`: it accepts each connection and reads nothing. `headers`: it
+ * answers each request with its headers and the start of a JSON body, then
+ * writes nothing more and never ends. It keeps every connection and notes
+ * each one's close. `fetch` sends the page's relative paths to it.
+ */
+async function hungReads(mode: "silent" | "headers") {
+  const sockets: Socket[] = [];
+  const closed = new Set<Socket>();
+  const server = createNetServer((socket) => {
+    sockets.push(socket);
+    socket.once("close", () => closed.add(socket));
+    socket.on("error", () => undefined);
+    if (mode === "silent") return;
+    socket.once("data", () => {
+      socket.write(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
+          '9\r\n{"ok":tru\r\n',
+      );
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  let answered = 0;
+  return {
+    sockets,
+    closed,
+    /** How many requests got their response headers. */
+    answered: () => answered,
+    fetch: async (input: string, init?: RequestInit): Promise<Response> => {
+      const response = await fetch(`${origin}${input}`, init);
+      answered += 1;
+      return response;
+    },
+    close: () =>
+      new Promise<void>((done) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => done());
+      }),
+  };
+}
+
+/** A stream client that only watches: `tell` stands for an event of the watched kinds. */
+function watchedOnly(): { client: StreamClient; tell(): void } {
+  const callbacks: Array<(reason: WatchReason) => void> = [];
+  return {
+    client: {
+      getState: () => INITIAL_LIVE_STATE,
+      subscribe: () => () => undefined,
+      watch: (_kinds, callback) => {
+        callbacks.push(callback);
+        return () => undefined;
+      },
+    },
+    tell() {
+      for (const callback of callbacks) callback("events");
+    },
+  };
+}
+
+const NO_ANSWER = `The control plane did not answer within ${READ_TIMEOUT_MS / 1000} s.`;
+
+describe("a view's read of a hearth that hangs", () => {
+  for (const [route, read] of [
+    [
+      "an operator read route (useOperatorRead)",
+      (options: HearthReadOptions) =>
+        readOperatorRoute<unknown>("/queue", options),
+    ],
+    [
+      "a dev-only route (useLiveRead)",
+      (options: HearthReadOptions) =>
+        fetchDevApi<unknown>("/forge-run", options),
+    ],
+  ] as const) {
+    test(`${route}: a first read that gets no answer shows an error once READ_TIMEOUT_MS has passed, its connection is closed, and the next event reads again`, async () => {
+      const hearth = await hungReads("silent");
+      const clock = standInClock();
+      const watched = watchedOnly();
+      let state: DevApiState<unknown> = {
+        data: null,
+        error: null,
+        loading: true,
+      };
+      const stop = startLiveRead<unknown>({
+        client: watched.client,
+        kinds: ["run.phase.completed"],
+        timers: clock.timers,
+        now: clock.now,
+        load: () => read({ fetch: hearth.fetch, timers: clock.timers }),
+        onChange: (update) => {
+          state = update(state);
+        },
+      });
+      try {
+        await eventually(() => hearth.sockets.length === 1);
+        clock.advance(READ_TIMEOUT_MS - 1);
+        await new Promise((done) => setTimeout(done, 50));
+        expect(state.loading).toBe(true);
+        expect(hearth.closed.size).toBe(0);
+
+        clock.advance(1);
+        await eventually(() => !state.loading);
+        expect(state).toEqual({ data: null, error: NO_ANSWER, loading: false });
+        // The request was dropped: the stand-in sees its connection close.
+        await eventually(() => hearth.closed.size === 1);
+
+        // The refetcher holds no dead read: the next event reads again.
+        watched.tell();
+        await eventually(() => hearth.sockets.length === 2);
+      } finally {
+        stop();
+        await hearth.close();
+      }
+    }, 20_000);
+  }
+
+  test("a hearth that sends its headers and never ends the body is given up at the same limit", async () => {
+    const hearth = await hungReads("headers");
+    const clock = standInClock();
+    let outcome: unknown = "pending";
+    void readOperatorRoute("/queue", {
+      fetch: hearth.fetch,
+      timers: clock.timers,
+    }).then(
+      (data) => {
+        outcome = data;
+      },
+      (error: Error) => {
+        outcome = error.message;
+      },
+    );
+    try {
+      // The answer has begun: only its body is missing.
+      await eventually(() => hearth.answered() === 1);
+      clock.advance(READ_TIMEOUT_MS - 1);
+      await new Promise((done) => setTimeout(done, 50));
+      expect(outcome).toBe("pending");
+      clock.advance(1);
+      await eventually(() => outcome !== "pending");
+      expect(outcome).toBe(NO_ANSWER);
+      await eventually(() => hearth.closed.size === 1);
+    } finally {
+      await hearth.close();
+    }
+  }, 20_000);
+
+  test("an answer that comes just inside the limit is read", async () => {
+    const clock = standInClock();
+    const held: Array<(response: Response) => void> = [];
+    const reading = readOperatorRoute<number[]>("/queue", {
+      fetch: (_input, init) =>
+        new Promise<Response>((done, refuse) => {
+          held.push(done);
+          init?.signal?.addEventListener("abort", () =>
+            refuse(new Error("aborted")),
+          );
+        }),
+      timers: clock.timers,
+    });
+    clock.advance(READ_TIMEOUT_MS - 1);
+    expect(held).toHaveLength(1);
+    held[0]?.(Response.json({ ok: true, data: [7], error: null }));
+    expect(await reading).toEqual([7]);
+    // Nothing is left to fire once the read is over.
+    expect(clock.waits()).toEqual([]);
+  });
+});
+
+describe("a read on a static copy", () => {
+  /** A `fetch` stand-in that records every request and answers as the hearth would. */
+  function recorded() {
+    const asked: string[] = [];
+    return {
+      asked,
+      fetch: async (input: string): Promise<Response> => {
+        asked.push(input);
+        return Response.json({ ok: true, data: "live", error: null });
+      },
+    };
+  }
+
+  test("an operator read route is not asked for: the read fails at once, saying live data is not available there", async () => {
+    const hearth = recorded();
+    await expect(
+      readOperatorRoute("/beads/counts", {
+        fetch: hearth.fetch,
+        staticCopy: true,
+      }),
+    ).rejects.toThrow(STATIC_COPY_ERROR);
+    expect(hearth.asked).toEqual([]);
+  });
+
+  test("a dev-only route is not asked for either", async () => {
+    const hearth = recorded();
+    await expect(
+      fetchDevApi("/repos-knowledge", {
+        fetch: hearth.fetch,
+        staticCopy: true,
+      }),
+    ).rejects.toThrow(STATIC_COPY_ERROR);
+    expect(hearth.asked).toEqual([]);
+  });
+
+  test("a view on a static copy shows that error and keeps it: its next read asks for nothing either", async () => {
+    const hearth = recorded();
+    const watched = watchedOnly();
+    let state: DevApiState<unknown> = {
+      data: null,
+      error: null,
+      loading: true,
+    };
+    const stop = startLiveRead<unknown>({
+      client: watched.client,
+      kinds: ["bead.transitioned"],
+      load: () =>
+        readOperatorRoute("/queue", { fetch: hearth.fetch, staticCopy: true }),
+      onChange: (update) => {
+        state = update(state);
+      },
+    });
+    await settle();
+    expect(state).toEqual({
+      data: null,
+      error: STATIC_COPY_ERROR,
+      loading: false,
+    });
+    watched.tell();
+    await settle();
+    expect(hearth.asked).toEqual([]);
+    stop();
+  });
+
+  test("served by the dev server, the same reads ask the hearth", async () => {
+    const hearth = recorded();
+    expect(
+      await readOperatorRoute<string>("/beads/counts", {
+        fetch: hearth.fetch,
+        staticCopy: false,
+      }),
+    ).toBe("live");
+    expect(
+      await fetchDevApi<string>("/repos-knowledge", { fetch: hearth.fetch }),
+    ).toBe("live");
+    expect(hearth.asked).toEqual([
+      `${API_PREFIX}/beads/counts`,
+      `${API_PREFIX}/dev-api/repos-knowledge`,
+    ]);
   });
 });
