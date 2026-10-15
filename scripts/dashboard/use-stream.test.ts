@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createServer as createNetServer, type Socket } from "node:net";
 import {
   applyDeltas,
   applySnapshot,
@@ -24,10 +25,12 @@ import {
   MAX_FAILURES,
   pageTransport,
   REFETCH_WINDOW_MS,
+  RETRY_BASE_MS,
   readOperatorRoute,
   SILENCE_MS,
   type SseMessage,
   STABLE_MS,
+  type StreamClient,
   type StreamEnd,
   type StreamHandlers,
   type StreamTransport,
@@ -44,9 +47,13 @@ import type {
   StreamSnapshot,
 } from "../../types/hearth";
 import { activeRuns, type RunSummary } from "../forge/runs";
-import { OPERATOR_HEADER } from "../hearth/paths";
+import { API_PREFIX, OPERATOR_HEADER } from "../hearth/paths";
+import { STREAM_KEEPALIVE_MS } from "../hearth/stream";
 import { startTestHearth } from "../hearth/testing";
 import { attrs, findAll, tag, textOf } from "./ds/vnode";
+
+/** The longest wait before a retry: the ceiling after five failures in a row (the jitter only shortens it). */
+const LONGEST_RETRY_MS = RETRY_BASE_MS * 2 ** (MAX_FAILURES - 2);
 
 /**
  * The dashboard's stream client: the state rules (`docs/js/app-state.ts`) and
@@ -55,7 +62,9 @@ import { attrs, findAll, tag, textOf } from "./ds/vnode";
  * The client is driven by a stand-in transport and stand-in timers, so every
  * test decides what arrives and when. Two tests at the end use the real
  * transport against a real hearth: what a stand-in cannot show is that the
- * server skips the snapshot on a resume.
+ * server skips the snapshot on a resume. Two more use it against a stand-in
+ * hearth that hangs, with stand-in timers: they show that a request the
+ * hearth never answers is given up and its connection closed.
  */
 
 const WORKSPACE = "c:/work/harness";
@@ -948,7 +957,7 @@ describe("client: reconnect", () => {
     for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
       expect(client.getState().status).not.toBe("off");
       wire.current.end("failed");
-      clock.advance(60_000);
+      clock.advance(LONGEST_RETRY_MS);
     }
     expect(wire.connections).toHaveLength(MAX_FAILURES);
     expect(client.getState()).toMatchObject({
@@ -972,7 +981,7 @@ describe("client: reconnect", () => {
       wire.current.snapshot({ cursor: 10 });
       wire.current.keepalive();
       wire.current.end("ended");
-      clock.advance(60_000);
+      clock.advance(LONGEST_RETRY_MS);
     }
     // Bytes alone do not show a stream that works: this one never stayed open.
     expect(client.getState()).toMatchObject({
@@ -982,31 +991,57 @@ describe("client: reconnect", () => {
     expect(wire.connections).toHaveLength(MAX_FAILURES);
   });
 
-  test("a quiet resumed stream that stays open resets the count before any byte arrives", () => {
-    const { wire, client, clock } = harness(() => 0);
-    client.subscribe(() => undefined);
+  /** Five failures in a row: one more turns live updates off. */
+  function oneFailureFromOff(random?: () => number) {
+    const page = harness(random ?? (() => 0));
+    page.client.subscribe(() => undefined);
     for (let attempt = 1; attempt < MAX_FAILURES; attempt++) {
-      wire.current.end("failed");
-      clock.advance(60_000);
+      page.wire.current.end("failed");
+      page.clock.advance(LONGEST_RETRY_MS);
     }
-    // One more failure would turn it off. A stream opens and says nothing yet.
+    return page;
+  }
+
+  test("a quiet resumed stream that stays open past STABLE_MS without a byte does not reset the count", () => {
+    const { wire, client, clock } = oneFailureFromOff();
+    // A stream opens and says nothing, until just before a live hearth's first keepalive.
     wire.current.open();
-    clock.advance(STABLE_MS - 1);
-    expect(clock.waits()).toContain(1);
-    clock.advance(1);
+    clock.advance(STREAM_KEEPALIVE_MS - 1);
+    wire.current.end("ended");
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "lost",
+    });
+  });
+
+  test("a quiet resumed stream resets the count when its first keepalive arrives, after STABLE_MS", () => {
+    const { wire, client, clock } = oneFailureFromOff();
+    wire.current.open();
+    // Measured on a real hearth: a resumed stream's first byte is its keepalive, 15 s after it opens.
+    clock.advance(STREAM_KEEPALIVE_MS);
+    wire.current.keepalive();
     wire.current.end("ended");
     expect(client.getState().status).toBe("reconnecting");
     // Back to the shortest wait: the count started again.
     expect(clock.waits()).toEqual([250]);
   });
 
+  test("a byte that arrives before the stream has been open STABLE_MS does not reset the count, though the stream stays open after it", () => {
+    const { wire, client, clock } = oneFailureFromOff();
+    wire.current.open();
+    wire.current.snapshot({ cursor: 10 });
+    clock.advance(STABLE_MS - 1);
+    wire.current.keepalive();
+    clock.advance(SILENCE_MS - 1);
+    wire.current.end("ended");
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "lost",
+    });
+  });
+
   test("a stream that ends before it has stayed open long enough does not reset the count", () => {
-    const { wire, client, clock } = harness(() => 0);
-    client.subscribe(() => undefined);
-    for (let attempt = 1; attempt < MAX_FAILURES; attempt++) {
-      wire.current.end("failed");
-      clock.advance(60_000);
-    }
+    const { wire, client, clock } = oneFailureFromOff();
     wire.current.open();
     clock.advance(STABLE_MS - 1);
     wire.current.end("ended");
@@ -1014,7 +1049,7 @@ describe("client: reconnect", () => {
       status: "off",
       offReason: "lost",
     });
-    // The cancelled timer never fires.
+    // Off: nothing is left waiting.
     expect(clock.waits()).toEqual([]);
   });
 
@@ -1024,7 +1059,7 @@ describe("client: reconnect", () => {
     for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
       wire.current.open();
       wire.current.end("ended");
-      clock.advance(60_000);
+      clock.advance(LONGEST_RETRY_MS);
     }
     expect(client.getState()).toMatchObject({
       status: "off",
@@ -1051,6 +1086,76 @@ describe("client: reconnect", () => {
     clock.advance(250);
     expect(wire.connections).toHaveLength(2);
     expect(wire.current.lastEventId).toBe(10);
+  });
+
+  test("a request that gets no answer for three keepalives is given up and asked for again", () => {
+    const { wire, client, clock } = harness(() => 0);
+    client.subscribe(() => undefined);
+    // Nothing answers: no open, no byte, no end.
+    clock.advance(SILENCE_MS - 1);
+    expect(wire.current.closed).toBe(false);
+    expect(client.getState().status).toBe("connecting");
+
+    clock.advance(1);
+    expect(wire.connections[0]?.closed).toBe(true);
+    expect(client.getState().status).toBe("reconnecting");
+    clock.advance(250);
+    expect(wire.connections).toHaveLength(2);
+    expect(wire.current.lastEventId).toBeNull();
+  });
+
+  test("an answer that comes just inside the limit is not given up", () => {
+    const { wire, client, clock } = harness(() => 0);
+    client.subscribe(() => undefined);
+    clock.advance(SILENCE_MS - 1);
+    wire.current.open();
+    wire.current.snapshot({ cursor: 10 });
+    clock.advance(SILENCE_MS - 1);
+    expect(wire.connections).toHaveLength(1);
+    expect(wire.current.closed).toBe(false);
+    expect(client.getState().status).toBe("live");
+  });
+
+  test("requests that never answer turn live updates off after six, within six limits and the longest waits between them", () => {
+    const { wire, client, clock } = harness(() => 0.999999);
+    client.subscribe(() => undefined);
+    // Time moves only to the next timer, so the clock stops where the client gave up.
+    for (;;) {
+      const [next] = clock.waits();
+      if (next === undefined || client.getState().status === "off") break;
+      clock.advance(next);
+    }
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "lost",
+    });
+    expect(wire.connections).toHaveLength(MAX_FAILURES);
+    expect(wire.connections.every((connection) => connection.closed)).toBe(
+      true,
+    );
+    // Six limits, and the five waits at their ceilings: 0.5, 1, 2, 4 and 8 s.
+    expect(clock.now()).toBeLessThanOrEqual(MAX_FAILURES * SILENCE_MS + 15_500);
+    expect(clock.waits()).toEqual([]);
+  });
+
+  test("a stream that opens, sends its snapshot and then stays silent, over and over, runs out", () => {
+    const { wire, client, clock } = harness(() => 0);
+    client.subscribe(() => undefined);
+    for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
+      expect(client.getState().status).not.toBe("off");
+      expect(wire.connections).toHaveLength(attempt);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10 });
+      // Open far past STABLE_MS, and not a byte after the snapshot.
+      clock.advance(SILENCE_MS);
+      expect(wire.current.closed).toBe(true);
+      clock.advance(LONGEST_RETRY_MS);
+    }
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "lost",
+    });
+    expect(wire.connections).toHaveLength(MAX_FAILURES);
   });
 
   test("leaving while a retry is waiting cancels it", () => {
@@ -1999,6 +2104,132 @@ describe("client against a real hearth", () => {
       expect(client.getState().offReason).toBe("no-hearth");
       await new Promise((done) => setTimeout(done, 700));
       expect(asked).toBe(1);
+    } finally {
+      leave();
+      await hearth.close();
+    }
+  }, 20_000);
+});
+
+// ── Against a stand-in hearth that hangs ────────────────────────────────────
+
+/**
+ * A stand-in hearth on a loopback port that never dies and stops answering.
+ * `silent`: it accepts each connection and reads nothing, as a hung process
+ * whose port still accepts. `snapshot`: it answers each stream request with
+ * its headers and one snapshot, then writes nothing more and never ends. It
+ * keeps every connection and notes each one's close.
+ */
+async function hungHearth(mode: "silent" | "snapshot") {
+  const sockets: Socket[] = [];
+  const closed = new Set<Socket>();
+  const body = `event: snapshot\nid: 10\ndata: ${JSON.stringify(snapshot({ cursor: 10 }))}\n\n`;
+  const server = createNetServer((socket) => {
+    sockets.push(socket);
+    socket.once("close", () => closed.add(socket));
+    socket.on("error", () => undefined);
+    if (mode === "silent") return;
+    socket.once("data", () => {
+      socket.write(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nTransfer-Encoding: chunked\r\n\r\n" +
+          `${Buffer.byteLength(body).toString(16)}\r\n${body}\r\n`,
+      );
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  return {
+    url: `http://127.0.0.1:${address.port}${API_PREFIX}/stream`,
+    sockets,
+    closed,
+    close: () =>
+      new Promise<void>((done) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => done());
+      }),
+  };
+}
+
+/** The page's client on the real fetch transport, its timers moved by hand. */
+function clientOf(url: string) {
+  const clock = standInClock();
+  const client = createStreamClient({
+    transport: fetchTransport(url),
+    read: () => Promise.reject(new Error("unused")),
+    timers: clock.timers,
+    now: clock.now,
+    // The longest waits, so the bound below holds for any draw.
+    random: () => 0.999999,
+  });
+  return { clock, client };
+}
+
+/** The notice the page shows for this state. */
+function noticeOf(client: StreamClient): string {
+  const { status, offReason } = client.getState();
+  const banner = LiveBannerView({ status, reason: offReason });
+  return banner === null ? "" : textOf(banner);
+}
+
+/** Six limits, and the five waits at their ceilings: 0.5, 1, 2, 4 and 8 s. */
+const GIVE_UP_BOUND_MS = MAX_FAILURES * SILENCE_MS + 15_500;
+
+describe("client against a stand-in hearth that hangs", () => {
+  test("one that accepts connections and never answers: each request is given up after three keepalives and its connection closed, and after six the page shows its lost notice", async () => {
+    const hearth = await hungHearth("silent");
+    const { clock, client } = clientOf(hearth.url);
+    const leave = client.subscribe(() => undefined);
+    try {
+      for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
+        await eventually(() => hearth.sockets.length === attempt);
+        expect(client.getState().status).not.toBe("off");
+        expect(noticeOf(client)).toBe("");
+        clock.advance(SILENCE_MS);
+        // The request was dropped: the stand-in sees its connection close.
+        await eventually(() => hearth.closed.size === attempt);
+        const [wait] = clock.waits();
+        if (wait !== undefined) clock.advance(wait);
+      }
+      expect(client.getState()).toMatchObject({
+        status: "off",
+        offReason: "lost",
+      });
+      expect(noticeOf(client)).toContain("Live updates stopped");
+      expect(clock.now()).toBeLessThanOrEqual(GIVE_UP_BOUND_MS);
+      // Nothing more is asked for.
+      await new Promise((done) => setTimeout(done, 200));
+      expect(hearth.sockets).toHaveLength(MAX_FAILURES);
+      expect(clock.waits()).toEqual([]);
+    } finally {
+      leave();
+      await hearth.close();
+    }
+  }, 20_000);
+
+  test("one that answers each stream with its snapshot and then hangs: the page runs out after six silences and shows its lost notice", async () => {
+    const hearth = await hungHearth("snapshot");
+    const { clock, client } = clientOf(hearth.url);
+    const leave = client.subscribe(() => undefined);
+    try {
+      for (let attempt = 1; attempt <= MAX_FAILURES; attempt++) {
+        await eventually(() => client.getState().status === "live");
+        expect(hearth.sockets).toHaveLength(attempt);
+        // Open far past STABLE_MS, and not a byte after the snapshot.
+        clock.advance(SILENCE_MS);
+        expect(client.getState().status).not.toBe("live");
+        await eventually(() => hearth.closed.size === attempt);
+        const [wait] = clock.waits();
+        if (wait !== undefined) clock.advance(wait);
+      }
+      expect(client.getState()).toMatchObject({
+        status: "off",
+        offReason: "lost",
+      });
+      expect(noticeOf(client)).toContain("Live updates stopped");
+      expect(clock.now()).toBeLessThanOrEqual(GIVE_UP_BOUND_MS);
+      // What the page had is kept.
+      expect(client.getState().cursor).toBe(10);
     } finally {
       leave();
       await hearth.close();

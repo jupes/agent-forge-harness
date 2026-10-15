@@ -56,9 +56,19 @@ export const REFETCH_WINDOW_MS = 300;
 export const RETRY_BASE_MS = 500;
 /** This many failures in a row turn live updates off for the page. */
 export const MAX_FAILURES = 6;
-/** Three missed keepalives: the hearth sends one every 15 s. */
+/**
+ * Three missed keepalives: the hearth sends one every 15 s. A connection that
+ * sends nothing for this long, not even its answer, is given up. The answer
+ * counts too because a hearth that hangs never sends one, and the limit is no
+ * shorter because, behind the dashboard's proxy, the answer arrives only with
+ * its first byte: a resumed stream's keepalive, 15 s after the request.
+ */
 export const SILENCE_MS = 45_000;
-/** An opened stream that has stayed open this long works; only then do earlier failures stop counting. */
+/**
+ * A stream that has been open this long and is then heard from works; only
+ * then do earlier failures stop counting. A live hearth sends a byte at least
+ * every 15 s, so a stream that stays silent never resets the count.
+ */
 export const STABLE_MS = 5_000;
 /**
  * The most text held while waiting for a message to end. Far above any real
@@ -397,7 +407,6 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   let batchTimer: unknown = null;
   let retryTimer: unknown = null;
   let silenceTimer: unknown = null;
-  let stableTimer: unknown = null;
 
   const setState = (next: LiveState): void => {
     if (next === state) return;
@@ -459,7 +468,6 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     afterAGap = true;
     connection?.close();
     connection = null;
-    stableTimer = stop(stableTimer);
     silenceTimer = stop(silenceTimer);
     // What was received is applied now, so the next request resumes after it.
     flush();
@@ -494,17 +502,27 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     generation += 1;
     const mine = generation;
     const current = (): boolean => mine === generation;
+    let openedAt: number | null = null;
+    let works = false;
+    /**
+     * Bytes arrived. Staying open and still being heard from is what shows a
+     * stream that works. Neither the bare open nor a first message is: a
+     * stream that opens, sends its snapshot and ends, or then says nothing,
+     * over and over, must still run out.
+     */
+    const heard = (): void => {
+      watchSilence();
+      if (works || openedAt === null || now() - openedAt < STABLE_MS) return;
+      works = true;
+      failures = 0;
+    };
+    // Timed from the request: a hearth that hangs never answers it.
+    watchSilence();
     const handle = deps.transport(state.cursor, {
       onOpen() {
         if (!current()) return;
+        openedAt = now();
         watchSilence();
-        // Staying open is what shows a stream that works. Neither the bare open
-        // nor a first message is: a stream that opens, sends its snapshot and
-        // ends, over and over, must still run out.
-        stableTimer = timers.set(() => {
-          stableTimer = null;
-          failures = 0;
-        }, STABLE_MS);
         // A resume shows what the page already has; a first open waits for its snapshot.
         if (state.cursor !== null) setState(withStatus(state, "live"));
         // Anything but the first connection of the page follows a gap, in which a
@@ -515,11 +533,11 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       },
       onActivity() {
         if (!current()) return;
-        watchSilence();
+        heard();
       },
       onMessage(message) {
         if (!current()) return;
-        watchSilence();
+        heard();
         receive(message);
       },
       onEnd(outcome) {
