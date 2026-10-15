@@ -638,7 +638,21 @@ async function runCheckouts(
       continue;
     }
     if (!hasRunsDirectory(path)) continue;
-    const real = realDirectory(path);
+    // The real path, resolved once, here, is what is verified and what every
+    // read below stays inside: a link swapped in for the listed path later
+    // cannot move it. It is resolved by the function `locateWorkspaceFile`
+    // resolves each file with, so the two compare spelling for spelling (a
+    // Windows short name, a drive letter's case).
+    let root: string;
+    try {
+      root = realpathSync(path);
+    } catch {
+      skipped.push(
+        note(`worktree ${name}`, "listed by git but gone, not searched"),
+      );
+      continue;
+    }
+    const real = realDirectory(root);
     if (real === null || !isCheckoutOf(real, common)) {
       refused(name);
       continue;
@@ -649,13 +663,7 @@ async function runCheckouts(
       beyond += 1;
       continue;
     }
-    // The root as listed: `locateWorkspaceFile` resolves it with the same
-    // function it resolves each file with, so the two compare spelling for
-    // spelling (a Windows short name, a drive letter's case).
-    checkouts.push({
-      root: resolve(path),
-      worktree: worktreeName(workspace, real),
-    });
+    checkouts.push({ root, worktree: worktreeName(workspace, real) });
   }
   const notes = skipped.slice(0, MAX_WORKTREE_NOTES);
   const more = skipped.length - notes.length;
@@ -687,6 +695,7 @@ function linkedFileParts(
   cwd: string,
   run: BeadRun | null,
   texts: string[],
+  beforeRead: ((path: string) => void) | undefined,
 ): LinkedFiles {
   const result: LinkedFiles = { parts: [], incomplete: false };
   type Linked = {
@@ -768,6 +777,7 @@ function linkedFileParts(
       );
       continue;
     }
+    beforeRead?.(found.path);
     const first = packed.get(sameFileKey(found.path));
     if (first !== undefined) {
       result.parts.push(
@@ -775,7 +785,17 @@ function linkedFileParts(
       );
       continue;
     }
-    if (statSync(found.path).size > MAX_LINKED_FILE_BYTES) {
+    // A checkout another agent works in can lose a file, or all of itself,
+    // between here and the read: that is a note, and an error from the file
+    // system, which names a local path, goes no further.
+    let size: number;
+    try {
+      size = statSync(found.path).size;
+    } catch {
+      result.parts.push(note(label, unreadable("missing", where)));
+      continue;
+    }
+    if (size > MAX_LINKED_FILE_BYTES) {
       // It exists and is not sent: the pack is not the whole picture.
       result.incomplete = true;
       result.parts.push(
@@ -788,7 +808,14 @@ function linkedFileParts(
     }
     const body = readUtf8Text(found.path);
     if (body === null) {
-      result.parts.push(note(label, "not packed, not UTF-8 text"));
+      result.parts.push(
+        note(
+          label,
+          existsSync(found.path)
+            ? "not packed, not UTF-8 text"
+            : unreadable("missing", where),
+        ),
+      );
       continue;
     }
     if (body.trim().length === 0) {
@@ -1094,6 +1121,13 @@ export async function compileBead(
     runner?: CommandRunner | undefined;
     secretPolicy?: SecretPolicy | undefined;
     maxBytes?: number | undefined;
+    /**
+     * A test seam: called with a linked file's real path once it has been
+     * located and held to a plan, research or report path, and before it is
+     * read, so a test can remove or swap something at exactly that moment.
+     * No caller outside the tests passes it.
+     */
+    beforeLinkedRead?: ((path: string) => void) | undefined;
   } = {},
 ): Promise<CompiledBead> {
   const id = parseBeadsIssueId(reference);
@@ -1165,7 +1199,7 @@ export async function compileBead(
   // After every field is scanned: a refused bead asks git for nothing.
   const searched = await runCheckouts(cwd, runner);
   const run = beadRun(id, searched.checkouts);
-  const linked = linkedFileParts(cwd, run, texts);
+  const linked = linkedFileParts(cwd, run, texts, options.beforeLinkedRead);
   const pullRequest = await pullRequestParts(texts, {
     cwd,
     runner,

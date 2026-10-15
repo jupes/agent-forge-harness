@@ -118,16 +118,26 @@ export type WorkspaceFile =
 /**
  * Where `path` really is, when a source may read it: a regular file whose real
  * path is inside the workspace and whose name is not a credential file's.
+ * Never throws: whatever cannot be resolved, a file or a root removed while it
+ * is looked at included, is `missing`, so no error naming a local path
+ * escapes from here.
  */
 export function locateWorkspaceFile(path: string, root: string): WorkspaceFile {
   if (!existsSync(path)) return { ok: false, reason: "missing" };
-  const resolvedRoot = realpathSync(root);
-  const resolvedPath = realpathSync(path);
+  let resolvedRoot: string;
+  let resolvedPath: string;
+  let isFile: boolean;
+  try {
+    resolvedRoot = realpathSync(root);
+    resolvedPath = realpathSync(path);
+    isFile = statSync(resolvedPath).isFile();
+  } catch {
+    return { ok: false, reason: "missing" };
+  }
   const rel = relative(resolvedRoot, resolvedPath);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
     return { ok: false, reason: "outside" };
-  if (!statSync(resolvedPath).isFile())
-    return { ok: false, reason: "not-a-file" };
+  if (!isFile) return { ok: false, reason: "not-a-file" };
   if (isSensitivePath(resolvedPath)) return { ok: false, reason: "sensitive" };
   return { ok: true, path: resolvedPath, locator: rel.replaceAll("\\", "/") };
 }

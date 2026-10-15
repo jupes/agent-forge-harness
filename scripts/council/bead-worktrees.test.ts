@@ -16,13 +16,20 @@ import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { ContextSecurityError } from "./context";
+import { compileBead } from "./bead-source";
+import {
+  buildContextPackFromParts,
+  ContextSecurityError,
+  locateWorkspaceFile,
+} from "./context";
 import type { CommandResult, CommandRunner } from "./pr-source";
 import type { ContextPack } from "./types";
 import { prepareCouncilContext } from "./workflow";
@@ -806,5 +813,139 @@ describe("what git lists", () => {
       ContextSecurityError,
     );
     expect(leaky.calls.map((call) => call[0])).toEqual(["bd", "bd"]);
+  });
+});
+
+describe("a checkout that changes while it is read", () => {
+  /**
+   * As `prepareCouncilContext` packs a bead, with the test seam that runs
+   * between a linked file being located and being read.
+   */
+  async function packWith(
+    fake: Fake,
+    root: string,
+    beforeLinkedRead: (path: string) => void,
+  ): Promise<ContextPack> {
+    const compiled = await compileBead(BEAD, {
+      cwd: root,
+      runner: fake.runner,
+      secretPolicy: "reject",
+      beforeLinkedRead,
+    });
+    return buildContextPackFromParts({
+      kind: "bead",
+      ...compiled,
+      secretPolicy: "reject",
+    });
+  }
+
+  /** Calls `act` the first time only. */
+  const once = (act: (path: string) => void) => {
+    let done = false;
+    return (path: string): void => {
+      if (done) return;
+      done = true;
+      act(path);
+    };
+  };
+
+  /** A main checkout and a worktree in it whose run has a plan and research. */
+  function arrange(): { main: string; tree: string; fake: Fake } {
+    const main = mainCheckout();
+    const tree = linkedWorktree(
+      main,
+      join(main, ".claude", "worktrees", "kiln-wt"),
+      Object.fromEntries([
+        runState("kiln-temp", {
+          beadId: BEAD,
+          artifacts: {
+            plan: "plans/drafts/kiln-temp.md",
+            research: "plans/research/kiln-temp.md",
+          },
+        }),
+        ["plans/drafts/kiln-temp.md", "TREE-PLAN"],
+        ["plans/research/kiln-temp.md", "TREE-RESEARCH"],
+      ]),
+    );
+    return { main, tree, fake: fakeRunner({ listing: listed([main, tree]) }) };
+  }
+
+  test("a linked file removed after it is located and before it is read is a note, not an error, and no local path is shown", async () => {
+    const { main, fake } = arrange();
+    const packed = await packWith(
+      fake,
+      main,
+      once((path) => rmSync(path)),
+    );
+    expect(linkedListing(packed)).toEqual([
+      "linked plan plans/drafts/kiln-temp.md from worktree .claude/worktrees/kiln-wt: missing, not packed",
+      "E4 linked research plans/research/kiln-temp.md from worktree .claude/worktrees/kiln-wt: 13 bytes",
+    ]);
+    expect(JSON.stringify(packed)).not.toContain(basename(main));
+  });
+
+  test("locating a file under a root that is gone answers missing and throws nothing", () => {
+    const file = join(scratch("council-file-"), "plan.md");
+    writeFileSync(file, "a plan");
+    const gone = join(scratch("council-gone-"), "removed-root");
+    expect(locateWorkspaceFile(file, gone)).toEqual({
+      ok: false,
+      reason: "missing",
+    });
+  });
+
+  test("a worktree removed while its files are read leaves a note for each file not yet read, and the pack is still made", async () => {
+    const { main, tree, fake } = arrange();
+    const packed = await packWith(
+      fake,
+      main,
+      once(() => rmSync(tree, { recursive: true, force: true })),
+    );
+    expect(linkedListing(packed)).toEqual([
+      "linked plan plans/drafts/kiln-temp.md from worktree .claude/worktrees/kiln-wt: missing, not packed",
+      "linked research plans/research/kiln-temp.md from worktree .claude/worktrees/kiln-wt: missing, not packed",
+    ]);
+    expect(JSON.stringify(packed)).not.toContain(basename(main));
+  });
+
+  test("the reads stay in the real path that was verified: a link swapped in for the listed path afterwards does not move them", async () => {
+    const main = mainCheckout();
+    const tree = linkedWorktree(
+      main,
+      join(main, "trees", "kiln"),
+      Object.fromEntries([
+        runState("kiln-temp", {
+          beadId: BEAD,
+          artifacts: {
+            plan: "plans/drafts/kiln-temp.md",
+            research: "plans/research/kiln-temp.md",
+          },
+        }),
+        ["plans/drafts/kiln-temp.md", "TREE-PLAN"],
+        ["plans/research/kiln-temp.md", "TREE-RESEARCH"],
+      ]),
+    );
+    const outside = scratch("council-outside-");
+    write(outside, {
+      "plans/drafts/kiln-temp.md": "OUTSIDE-PLAN",
+      "plans/research/kiln-temp.md": "OUTSIDE-RESEARCH",
+    });
+    // Git lists the worktree by a path that is a link to it.
+    const listedPath = join(scratch("council-listed-"), "kiln-link");
+    linkDirectory(tree, listedPath);
+    const packed = await packWith(
+      fakeRunner({ listing: listed([main, listedPath]) }),
+      main,
+      once(() => {
+        // After the check, the link is pointed somewhere else.
+        if (process.platform === "win32") rmdirSync(listedPath);
+        else unlinkSync(listedPath);
+        linkDirectory(outside, listedPath);
+      }),
+    );
+    const everything = JSON.stringify(packed);
+    expect(everything).toContain("TREE-PLAN");
+    expect(everything).toContain("TREE-RESEARCH");
+    expect(everything).not.toContain("OUTSIDE-");
   });
 });
