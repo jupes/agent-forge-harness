@@ -4,6 +4,11 @@ import type {
   CouncilServiceJob,
 } from "../../../scripts/council/service";
 import { type CouncilPreviewState, previewKey } from "../council-preview";
+import {
+  councilRunEventsUrl,
+  followCouncilRun,
+  isActive,
+} from "../council-run-follow";
 import { EmptyState } from "../ds/EmptyState";
 import { operatorPost, operatorRead } from "../operator";
 import { fetchTransport } from "../use-stream";
@@ -18,11 +23,6 @@ import {
 } from "./CouncilSetup";
 
 const API = "/__agent-forge/council-api";
-/** How long to wait before following a running job's stream again after it stopped. */
-const RECONNECT_MS = 1_000;
-
-const isActive = (job: CouncilServiceJob): boolean =>
-  job.status === "running" || job.status === "cancelling";
 
 /** The operator API's preview row: what a run would send, with nothing started. */
 const PREVIEW = "/__agent-forge/council/preview";
@@ -113,64 +113,26 @@ export function CouncilIsland() {
   }, []);
 
   useEffect(() => {
-    if (!job || !["running", "cancelling"].includes(job.status)) return;
+    if (!job || !isActive(job)) return;
     const runId = job.runId;
-    const path = `/runs/${encodeURIComponent(runId)}`;
     // Read with fetch, not the browser's event-source class: that class
-    // cannot send the operator token a run's stream needs.
-    const follow = fetchTransport(`${API}${path}/events`, {
-      fetch: operatorRead,
+    // cannot send the operator token a run's stream needs. The stream sends
+    // the whole job once and then only what changed; the follower rebuilds it.
+    const follower = followCouncilRun({
+      transport: fetchTransport(councilRunEventsUrl(API, runId), {
+        fetch: operatorRead,
+      }),
+      readRun: () =>
+        request<CouncilServiceJob>(`/runs/${encodeURIComponent(runId)}`),
+      onJob: setJob,
+      onError: setError,
+      onFinished: () => {
+        void request<CouncilServiceJob[]>("/runs")
+          .then(setHistory)
+          .catch(() => {});
+      },
     });
-    let closed = false;
-    let connection: { close(): void } | null = null;
-    let retry: ReturnType<typeof setTimeout> | null = null;
-    const connect = (): void => {
-      connection = follow(null, {
-        onOpen: () => {},
-        onActivity: () => {},
-        onMessage: (message) => {
-          if (closed || message.event !== "snapshot") return;
-          try {
-            const snapshot = JSON.parse(message.data) as CouncilServiceJob;
-            setJob(snapshot);
-            if (!isActive(snapshot)) {
-              closed = true;
-              connection?.close();
-              void request<CouncilServiceJob[]>("/runs")
-                .then(setHistory)
-                .catch(() => {});
-            }
-          } catch {
-            setError(
-              "A progress update could not be read. Reopen the run from history.",
-            );
-          }
-        },
-        // The stream stopped while the run was going: read the run, and
-        // follow it again while it still is.
-        onEnd: () => {
-          if (closed) return;
-          void request<CouncilServiceJob>(path)
-            .then((fresh) => {
-              if (closed) return;
-              setJob(fresh);
-              if (isActive(fresh)) retry = setTimeout(connect, RECONNECT_MS);
-            })
-            .catch(() => {
-              if (!closed)
-                setError(
-                  "Connection lost. The council may still be running; refresh to reconnect.",
-                );
-            });
-        },
-      });
-    };
-    connect();
-    return () => {
-      closed = true;
-      if (retry !== null) clearTimeout(retry);
-      connection?.close();
-    };
+    return () => follower.close();
   }, [job?.runId, job?.status]);
 
   async function start(): Promise<void> {
