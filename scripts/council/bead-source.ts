@@ -430,8 +430,12 @@ function beadRun(id: BeadsIssueId, checkouts: Checkout[]): BeadRun | null {
 
 /** The read-only listing of the repository's worktrees; -z, so a path cannot forge a record. */
 const WORKTREE_LIST = ["git", "worktree", "list", "--porcelain", "-z"];
-/** How many listed worktrees are looked at. */
-const MAX_WORKTREES = 50;
+/**
+ * How many worktrees that hold forge runs are searched, in the order git lists
+ * them. Every listed path is looked at first: only those with a runs
+ * directory are verified and counted against this.
+ */
+const MAX_RUN_CHECKOUTS = 100;
 /** How many worktrees that were not searched are named in the listing. */
 const MAX_WORKTREE_NOTES = 10;
 /** A `.git` file or a `gitdir` file is one short line. */
@@ -571,10 +575,22 @@ function worktreeName(workspace: string, path: string): string {
   return basename(resolve(path)) || path;
 }
 
+/** Whether a listed path has a forge runs directory: a cheap look, before anything is verified. */
+function hasRunsDirectory(path: string): boolean {
+  try {
+    return statSync(join(path, FORGE_RUNS_DIR)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The checkouts a bead's run is looked for in: the workspace, then every
  * other worktree git lists for the workspace's own repository that really is
- * one. What was listed and not searched is a note, never an error.
+ * one and has a forge runs directory, up to `MAX_RUN_CHECKOUTS` of them. No
+ * listed path is passed over for its place in the listing. What was listed
+ * and not searched is a note, never an error; a path with no runs directory
+ * holds nothing to read and is passed over without one.
  */
 async function runCheckouts(
   cwd: string,
@@ -600,27 +616,39 @@ async function runCheckouts(
   const workspace = realDirectory(cwd) ?? resolve(cwd);
   const seen = new Set([sameFileKey(workspace)]);
   const skipped: ContextPart[] = [];
-  const paths = listedWorktrees(stdout);
-  for (const path of paths.slice(0, MAX_WORKTREES)) {
+  const refused = (name: string): void => {
+    skipped.push(
+      note(
+        `worktree ${name}`,
+        "not searched, not a worktree of this repository",
+      ),
+    );
+  };
+  let beyond = 0;
+  for (const path of listedWorktrees(stdout)) {
     const name = worktreeName(workspace, path);
-    if (isAbsolute(path) && !existsSync(path)) {
+    if (!isAbsolute(path)) {
+      refused(name);
+      continue;
+    }
+    if (!existsSync(path)) {
       skipped.push(
         note(`worktree ${name}`, "listed by git but gone, not searched"),
       );
       continue;
     }
-    const real = isAbsolute(path) ? realDirectory(path) : null;
+    if (!hasRunsDirectory(path)) continue;
+    const real = realDirectory(path);
     if (real === null || !isCheckoutOf(real, common)) {
-      skipped.push(
-        note(
-          `worktree ${name}`,
-          "not searched, not a worktree of this repository",
-        ),
-      );
+      refused(name);
       continue;
     }
     if (seen.has(sameFileKey(real))) continue;
     seen.add(sameFileKey(real));
+    if (checkouts.length > MAX_RUN_CHECKOUTS) {
+      beyond += 1;
+      continue;
+    }
     // The root as listed: `locateWorkspaceFile` resolves it with the same
     // function it resolves each file with, so the two compare spelling for
     // spelling (a Windows short name, a drive letter's case).
@@ -630,13 +658,19 @@ async function runCheckouts(
     });
   }
   const notes = skipped.slice(0, MAX_WORKTREE_NOTES);
-  const more =
-    skipped.length - notes.length + Math.max(0, paths.length - MAX_WORKTREES);
+  const more = skipped.length - notes.length;
   if (more > 0)
     notes.push(
       note(
         `${more} more worktree${more === 1 ? "" : "s"}`,
-        `not searched (limit ${MAX_WORKTREE_NOTES} listed)`,
+        `not searched, not named here (limit ${MAX_WORKTREE_NOTES} named)`,
+      ),
+    );
+  if (beyond > 0)
+    notes.push(
+      note(
+        `${beyond} more worktree${beyond === 1 ? "" : "s"} with forge runs`,
+        `not searched (limit ${MAX_RUN_CHECKOUTS} searched)`,
       ),
     );
   return { checkouts, notes };

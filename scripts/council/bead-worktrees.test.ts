@@ -542,7 +542,7 @@ describe("the path guard inside another worktree", () => {
 });
 
 describe("what git lists", () => {
-  test("only a worktree of the workspace's own repository is searched: a directory outside it, a half-forged link, another repository's worktree, a directory whose .git is a link, a file and a relative path are refused; a gone one is a note", async () => {
+  test("only a worktree of the workspace's own repository is searched: a directory outside it, a half-forged link, another repository's worktree, a directory whose .git is a link and a relative path are refused, a file is passed over, a gone one is a note", async () => {
     const main = mainCheckout();
     const tree = linkedWorktree(
       main,
@@ -625,7 +625,8 @@ describe("what git lists", () => {
       `worktree ${basename(halfForged)}: ${refused}`,
       `worktree other-tree: ${refused}`,
       `worktree ${basename(posing)}: ${refused}`,
-      `worktree not-a-directory: ${refused}`,
+      // A listed path with no forge runs directory (here a file) is passed
+      // over without a note: nothing there could be read.
       "worktree removed-tree: listed by git but gone, not searched",
       `worktree plans: ${refused}`,
     ]);
@@ -658,7 +659,7 @@ describe("what git lists", () => {
     ]);
   });
 
-  test("at most ten worktrees that were not searched are listed; the rest are counted", async () => {
+  test("at most ten worktrees that were not searched are named; the rest are counted, naming that limit", async () => {
     const main = mainCheckout();
     const base = scratch("council-gone-");
     const gone = Array.from({ length: 12 }, (_, index) =>
@@ -675,9 +676,87 @@ describe("what git lists", () => {
       "worktree gone-01: listed by git but gone, not searched",
     );
     expect(lines.at(-1)).toBe(
-      "2 more worktrees: not searched (limit 10 listed)",
+      "2 more worktrees: not searched, not named here (limit 10 named)",
     );
   });
+
+  /** `count` linked worktrees of `main` under `.claude/worktrees`, as git lists them: by name. */
+  const manyWorktrees = (main: string, count: number): string[] =>
+    Array.from({ length: count }, (_, index) =>
+      linkedWorktree(
+        main,
+        join(
+          main,
+          ".claude",
+          "worktrees",
+          `wt-${String(index + 1).padStart(3, "0")}`,
+        ),
+      ),
+    );
+
+  test("a run in a worktree far down a long listing is found: no worktree is passed over for where git lists it", async () => {
+    // As on the machine this was found on: 93 linked worktrees, and the one
+    // that built the run 85th in git's (alphabetical) listing.
+    const main = mainCheckout();
+    const trees = manyWorktrees(main, 93);
+    const holder = trees[84] ?? "";
+    write(
+      holder,
+      Object.fromEntries([
+        runState("kiln-temp", {
+          beadId: BEAD,
+          artifacts: { plan: "plans/drafts/kiln-temp.md" },
+        }),
+        ["plans/drafts/kiln-temp.md", "THE-PLAN"],
+      ]),
+    );
+    const packed = await pack(
+      fakeRunner({ listing: listed([main, ...trees]) }),
+      main,
+    );
+    expect(packed.source.metadata?.forgeRun).toBe("kiln-temp");
+    expect(linkedListing(packed)).toEqual([
+      "E4 linked plan plans/drafts/kiln-temp.md from worktree .claude/worktrees/wt-085: 8 bytes",
+    ]);
+  }, 60_000);
+
+  test("at most 100 worktrees that hold forge runs are searched, in the order git lists them; the rest are counted, naming that limit", async () => {
+    const main = mainCheckout();
+    const trees = manyWorktrees(main, 102);
+    // Every one holds a run, of another bead; the bead's own runs are in the
+    // 100th (older) and the 101st (newer).
+    for (const [index, tree] of trees.entries())
+      write(
+        tree,
+        Object.fromEntries([
+          runState(`other-${index + 1}`, { beadId: "demo-harness-zz9" }),
+        ]),
+      );
+    write(
+      trees[99] ?? "",
+      Object.fromEntries([
+        runState("hundredth", { beadId: BEAD, artifacts: {} }),
+      ]),
+    );
+    write(
+      trees[100] ?? "",
+      Object.fromEntries([
+        runState("past-the-limit", {
+          beadId: BEAD,
+          artifacts: {},
+          updatedAt: "2031-03-01T00:00:00.000Z",
+        }),
+      ]),
+    );
+    const packed = await pack(
+      fakeRunner({ listing: listed([main, ...trees]) }),
+      main,
+    );
+    expect(packed.source.metadata?.forgeRun).toBe("hundredth");
+    expect(linkedListing(packed)).toEqual([
+      "2 more worktrees with forge runs: not searched (limit 100 searched)",
+    ]);
+  }, 60_000);
 
   test("when git cannot list the worktrees the workspace alone is searched, and the listing says so", async () => {
     const failures: Array<[string, CommandResult | "throws"]> = [
