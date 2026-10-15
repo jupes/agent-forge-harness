@@ -18,9 +18,11 @@
  *   appends its event under the queue lock, and the ownership is read again
  *   inside that lock just before the write, so a bead another shift started
  *   meanwhile (paused, resumed and picked up again) is not released; a start
- *   whose event the ledger did not store is not seen. A bead the record lists
- *   and the shift does not own is left as it is and reported. A released bead
- *   gets one `worklog:` comment.
+ *   whose event the ledger did not store is not seen. A record entry that
+ *   names no run id is not this shift's. A bead the record lists and the
+ *   shift does not own is left as it is and reported; one whose newest move
+ *   could not be read (before the move or inside the lock), listed or not,
+ *   stays pending. A released bead gets one `worklog:` comment.
  * - Every reservation still held in one of its worktrees
  *   (`<main>/trees/<shift-id>-<n>`) is released, whichever bead holds it.
  * - Once nothing is left undone, `shift.stopped` (reason `recovered`) is
@@ -30,8 +32,9 @@
  *   second recovery never releases a bead or posts a comment twice.
  *
  * Refused before anything is written: an id that is not a shift's, no record
- * of this workspace, a record that has stopped, and a record whose process is
- * alive. A process id the operating system gave to another program after the
+ * of this workspace, a record whose fields recovery relies on are not what a
+ * shift writes (`unreadable`), a record that has stopped, and a record whose
+ * process is alive. A process id the operating system gave to another program after the
  * shift ended reads as alive too: such a shift cannot be recovered until that
  * process ends, and the refusal says so rather than guessing.
  *
@@ -50,16 +53,18 @@ import type {
 } from "../../types/hearth";
 import { comparableCheckout } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
-import { parsed, refusal, storeEvent } from "../hearth/tracker-write";
+import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { activeReservations, queryEvents } from "../ledger/query";
 import { createQueue } from "./queue";
 import { withQueueLock } from "./queue-lock";
 import { release } from "./reservations";
 import {
+  isProcessId,
   isShiftId,
   processAlive,
   readShiftRecord,
+  SHIFT_BEAD_OUTCOMES,
   type ShiftBeadRecord,
   type ShiftRecord,
   writeShiftRecord,
@@ -85,6 +90,12 @@ export interface RecoverDeps {
   /** The main checkout: the shift's worktrees are `<mainCheckout>/trees/<shift-id>-<n>`. */
   mainCheckout: string;
   appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
+  /**
+   * The ledger's `queryEvents`, through which recovery reads the shift's
+   * moves, each bead's newest move and `shift.stopped`; the ledger's own by
+   * default. A test gives one that fails a read.
+   */
+  queryEvents?: typeof queryEvents | undefined;
   now?: (() => Date) | undefined;
   /** How long to wait for a recovery in progress; 5 s by default. */
   waitMs?: number | undefined;
@@ -99,6 +110,7 @@ export interface RecoverDeps {
  */
 export interface RecoveredBead {
   beadId: string;
+  /** Empty when the record's entry names no run id. */
   runId: string;
   outcome: "released" | "left" | "pending";
   why: string;
@@ -130,6 +142,7 @@ export interface Recovery {
 export type RecoverFailure =
   | "invalid"
   | "not-found"
+  | "unreadable"
   | "stopped"
   | "alive"
   | "busy"
@@ -159,6 +172,36 @@ export function recoveredComment(input: {
   return `worklog: shift ${input.shiftId} was recovered after its process (pid ${input.pid}) ended while this bead was running (${runs}, run ${input.runId}): the bead is back in queued. Its events: bun run forge:audit --run ${input.runId}.`;
 }
 
+const isRecordObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * What in a record's fields recovery relies on is not what a shift writes,
+ * or null. `readShiftRecord` checks the id, the state, `pid` as a number,
+ * `startedAt` and `beads` as an array; this is the rest recovery reads: a
+ * pid `processAlive` can ask about, and each entry's bead id, run id (a
+ * string when present: an entry without one is not this shift's), outcome and
+ * run count. The workspace is checked before this.
+ */
+function unreadable(record: ShiftRecord): string | null {
+  if (!isProcessId(record.pid))
+    return "pid: expected a process id (a whole number from 1 to 2147483647)";
+  for (const [index, entry] of (record.beads as unknown[]).entries()) {
+    const at = `beads[${index}]`;
+    if (!isRecordObject(entry)) return `${at}: expected an object`;
+    if (!isBeadId(entry["beadId"]))
+      return `${at}.beadId: expected a Beads issue id`;
+    if (entry["runId"] !== undefined && typeof entry["runId"] !== "string")
+      return `${at}.runId: expected a string`;
+    if (!SHIFT_BEAD_OUTCOMES.some((outcome) => outcome === entry["outcome"]))
+      return `${at}.outcome: expected one of ${SHIFT_BEAD_OUTCOMES.join(", ")}`;
+    const attempts = entry["attempts"];
+    if (!Number.isInteger(attempts) || Number(attempts) < 0)
+      return `${at}.attempts: expected a whole number`;
+  }
+  return null;
+}
+
 /** The record when the shift may be recovered, else the refusal. Reads only. */
 function recoverable(
   id: string,
@@ -173,6 +216,15 @@ function recoverable(
       ),
     };
   const record = readShiftRecord(deps.shiftsDir, id);
+  const notRecoverable = (why: string) => ({
+    ok: false as const,
+    refused: no(
+      "unreadable",
+      `the record of ${id} is not one recovery can read (${why}); nothing was done.`,
+    ),
+  });
+  if (record !== null && typeof record.workspace !== "string")
+    return notRecoverable("workspace: expected a path");
   if (
     record === null ||
     comparableCheckout(record.workspace) !== comparableCheckout(deps.workspace)
@@ -181,6 +233,8 @@ function recoverable(
       ok: false,
       refused: no("not-found", `No shift of this workspace has the id ${id}.`),
     };
+  const why = unreadable(record);
+  if (why !== null) return notRecoverable(why);
   if (record.state === "stopped")
     return {
       ok: false,
@@ -277,9 +331,10 @@ async function recoverLocked(
   // The beads this shift's runs moved, from the ledger alone (as `forge:audit
   // --shift` finds them): a bead it claimed and then died before saving in its
   // record is found here.
+  const query = deps.queryEvents ?? queryEvents;
   let shiftMoves: LedgerEvent[];
   try {
-    shiftMoves = queryEvents(
+    shiftMoves = query(
       { workspace, shiftId: id, kinds: ["bead.transitioned"] },
       ledger,
     );
@@ -292,9 +347,17 @@ async function recoverLocked(
 
   /** Who moved the bead last, and whether that was this run's start. */
   function ownership(beadId: string, runId: string): Ownership {
+    // A start that names no run (an operator's, made by hand) is no run's:
+    // an entry with no run id would match it.
+    if (runId === "")
+      return {
+        owned: false,
+        final: true,
+        why: "its record entry names no run id, so it is not known to be this shift's; left as it is",
+      };
     let newest: Move | undefined;
     try {
-      newest = queryEvents(
+      newest = query(
         { workspace, beadId, beadExact: true, kinds: ["bead.transitioned"] },
         ledger,
       )
@@ -331,15 +394,20 @@ async function recoverLocked(
 
   interface Candidate {
     beadId: string;
+    /** Empty when the record's entry names none (`unreadable` lets it be absent). */
     runId: string;
-    /** Whether the record lists it as running: one it does not is reported only when it is released. */
+    /**
+     * Whether the record lists it as running. One it does not is reported
+     * when it is released, or left pending, and not when it is not this
+     * shift's.
+     */
     listed: boolean;
   }
   const candidates: Candidate[] = record.beads
     .filter((entry) => entry.outcome === "running")
     .map((entry) => ({
       beadId: entry.beadId,
-      runId: entry.runId,
+      runId: typeof entry.runId === "string" ? entry.runId : "",
       listed: true,
     }));
   for (const event of shiftMoves) {
@@ -382,12 +450,14 @@ async function recoverLocked(
     const { beadId, runId } = candidate;
     const before = ownership(beadId, runId);
     if (!before.owned) {
-      if (!candidate.listed) continue;
+      // A ledger that could not be read says nothing about whose it is,
+      // listed or not: it stays to be settled, and the shift stays open.
       if (!before.final) {
         beads.push({ beadId, runId, outcome: "pending", why: before.why });
         unfinished.push(`${beadId}: ${before.why}`);
         continue;
       }
+      if (!candidate.listed) continue;
       settle(candidate, "left", before.why);
       save(record);
       beads.push({ beadId, runId, outcome: "left", why: before.why });
@@ -522,10 +592,8 @@ async function recoverLocked(
     let found = false;
     try {
       found =
-        queryEvents(
-          { workspace, shiftId: id, kinds: ["shift.stopped"] },
-          ledger,
-        ).length > 0;
+        query({ workspace, shiftId: id, kinds: ["shift.stopped"] }, ledger)
+          .length > 0;
     } catch (error) {
       unfinished.push(`the ledger could not be read: ${message(error)}`);
     }

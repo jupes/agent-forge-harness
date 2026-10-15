@@ -350,7 +350,13 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - Refused, with nothing written by the recovery (no bd call, no event, no file; the hearth's
     audit row is the runner's): an id that is not a shift's; no
     record, or the record of another workspace (`not-found`: bd runs on this workspace's tracker);
-    a record already `stopped`; a record whose `pid` is alive (`processAlive`). A pid the system
+    a record whose fields recovery relies on are not what a shift writes (`unreadable`: a
+    workspace that is not a string, a pid that is not `isProcessId`, a bead entry that is not an
+    object with a Beads id, a string run id when it has one, a known outcome and a whole run
+    count); a record already `stopped`; a record whose `pid` is alive (`processAlive`).
+    `isProcessId` is 1 to 2^31 - 1: `process.kill` takes a signed 32-bit pid and throws for any
+    other (a fraction, `2**32 + pid`), which `processAlive` reads as dead, and 0 and -1 name a
+    group, not a process. `readShiftRecord` and `GET /shifts` are unchanged. A pid the system
     gave to another program after the shift ended reads as alive too: such a shift is not recovered
     until that process ends, and the refusal says so. Nothing guesses whether a live pid is the
     shift's.
@@ -359,7 +365,9 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     rule) with no entry or a `set-aside` one. The second covers a bead claimed between two saves of
     the record: `admit` pushes the entry as `set-aside` before `start`, and saves it only later.
   - Ownership: the shift owns a bead when its newest recorded queue move (a `bead.transitioned`
-    with `to`, in this workspace) is a move into `running` carrying this shift's run id for it.
+    with `to`, in this workspace) is a move into `running` carrying this shift's run id for it. A
+    record entry with no run id (or an empty one) owns nothing: it would match a start that names
+    no run, such as an operator's by hand.
     Read from the ledger first (a bead it does not own is not moved), then again inside the queue
     lock just before the write: `release` is made through `createQueue(...).move(id, "release",
     "scheduler")` with a `bd` runner that answers that bead's `update` as refused once the ledger
@@ -367,7 +375,9 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     is either seen or made after this release. A bead it does not own is left as it is: an entry
     the record listed as `running` becomes `left` with `error` `recovered: <why>` (the move that
     took it: the operator's pause, another run's start with its run id, or a move of its own run
-    that is not a start); a ledger-only one is not reported. Not this shift's by the
+    that is not a start); a ledger-only one is not reported. A bead whose newest move could not
+    be read (the read before the move, or the one inside the lock) is neither: listed or
+    ledger-only, it stays `pending` and keeps the shift open. Not this shift's by the
     rule either: a start the ledger did not store, and one `forge:audit --compact` folded. Both
     leave the bead to the operator's queue actions. A bead another shift started whose start event
     was not stored would be released (the gap `forge:queue reconcile` reports).

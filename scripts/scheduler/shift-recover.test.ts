@@ -506,6 +506,27 @@ describe("forge:shift recover — a shift whose process died", () => {
     ]);
   });
 
+  test("a reservation in a worktree named like one of its own (<shift-id>-1) but outside <main>/trees/ is kept", async () => {
+    const r = rig([queued("t-out")]);
+    const outside = join(r.root, "elsewhere", `${A}-1`);
+    const reserved = await reserve(
+      { beadId: "t-out", worktree: outside, globs: ["src/t-out/**"] },
+      {
+        workspace: r.workspace,
+        ledgerPath: r.ledger,
+        appendEvent: appendFor(r),
+        lockFile: r.deps.lockFile,
+      },
+    );
+    if (!reserved.ok) throw new Error(reserved.error);
+    died(r, A, []);
+
+    const done = await recovered(r);
+    expect(done.complete).toBe(true);
+    expect(done.reservations).toEqual([]);
+    expect(r.held()).toEqual([["t-out", comparablePath(outside)]]);
+  });
+
   test("a bead it claimed that its record does not list as running (never saved, or saved before the claim as set-aside) is found from the ledger and released; a bead it gave back itself is not touched", async () => {
     const r = rig([queued("t-unsaved"), queued("t-early"), queued("t-back")]);
     await claim(r, A, "t-unsaved", 1);
@@ -670,5 +691,171 @@ describe("forge:shift recover — a shift whose process died", () => {
       state: "stopped",
       reason: "recovered",
     });
+  });
+
+  test("a record entry that names no run id is not this shift's: a bead an operator started by hand (no run id) is left running and reported", async () => {
+    const r = rig([queued("t-1")]);
+    const started = await createQueue({
+      workspace: r.workspace,
+      runBd: r.tracker.run,
+      appendEvent: appendFor(r),
+      lockFile: r.deps.lockFile,
+    }).move("t-1", "start", "operator");
+    if (!started.ok) throw new Error(started.error);
+    // As a record edited by hand or written before entries carried run ids.
+    const entry: Record<string, unknown> = {
+      beadId: "t-1",
+      outcome: "running",
+      attempts: 1,
+    };
+    // justification: the record on disk lacks a field the type requires; that is the case under test.
+    died(r, A, [entry as unknown as ShiftBeadRecord]);
+    const updates = r.tracker.updates().length;
+
+    const done = await recovered(r);
+    expect(done.beads).toMatchObject([
+      { beadId: "t-1", runId: "", outcome: "left" },
+    ]);
+    expect(done.beads[0]?.why).toContain("names no run id");
+    expect(r.labels("t-1")).toEqual(["queue:running"]);
+    expect(r.tracker.updates()).toHaveLength(updates);
+    expect(r.comments("t-1")).toEqual([]);
+  });
+});
+
+describe("forge:shift recover — a ledger read that fails", () => {
+  /**
+   * The ledger's query, failing every read of one bead's moves from its
+   * `from`th on (1: every read; 2: the one inside the queue lock and after).
+   */
+  function failing(beads: Record<string, number>): typeof queryEvents {
+    const reads = new Map<string, number>();
+    return (filter, opts) => {
+      const beadId = filter?.beadExact === true ? filter.beadId : undefined;
+      const from = beadId === undefined ? undefined : beads[beadId];
+      if (beadId !== undefined && from !== undefined) {
+        const n = (reads.get(beadId) ?? 0) + 1;
+        reads.set(beadId, n);
+        if (n >= from) throw new Error("database is locked");
+      }
+      return queryEvents(filter, opts);
+    };
+  }
+
+  /** A shift that died holding two beads: one its record lists, one only its run ids in the ledger show. */
+  async function twoBeads() {
+    const r = rig([queued("t-listed"), queued("t-unsaved")]);
+    const listed = await claim(r, A, "t-listed", 1);
+    await claim(r, A, "t-unsaved", 2);
+    died(r, A, [listed]);
+    return r;
+  }
+
+  async function expectPendingThenFinished(r: Rig, first: RecoverDeps) {
+    const updates = r.tracker.updates().length;
+    const outcome = await recoverShift(A, first);
+    if (!outcome.ok) throw new Error(outcome.error);
+    const done = outcome.value;
+    expect(done.complete).toBe(false);
+    expect(done.stopped).toBe("pending");
+    expect(
+      done.beads.map((bead) => [bead.beadId, bead.outcome]).sort(),
+    ).toEqual([
+      ["t-listed", "pending"],
+      ["t-unsaved", "pending"],
+    ]);
+    expect(done.unfinished.join(" ")).toContain(
+      "t-unsaved: the ledger could not be read to tell whose it is (database is locked)",
+    );
+    expect(r.tracker.updates()).toHaveLength(updates);
+    expect(r.labels("t-listed")).toEqual(["queue:running"]);
+    expect(r.labels("t-unsaved")).toEqual(["queue:running"]);
+    expect(readShiftRecord(r.deps.shiftsDir, A)?.state).toBe("running");
+    expect(r.events({ kinds: ["shift.stopped"] })).toEqual([]);
+
+    // With the ledger readable again, recovering again finishes the job.
+    const again = await recovered(r);
+    expect(again.complete).toBe(true);
+    expect(r.labels("t-listed")).toEqual(["queue:queued"]);
+    expect(r.labels("t-unsaved")).toEqual(["queue:queued"]);
+    expect(readShiftRecord(r.deps.shiftsDir, A)?.state).toBe("stopped");
+  }
+
+  test("the first read of whose a bead is failing leaves it pending, listed or found only through the ledger: nothing is moved, the record stays running with no shift.stopped, and the next recovery finishes", async () => {
+    const r = await twoBeads();
+    await expectPendingThenFinished(r, {
+      ...r.deps,
+      queryEvents: failing({ "t-listed": 1, "t-unsaved": 1 }),
+    });
+  });
+
+  test("the read inside the queue lock failing leaves the bead pending, listed or found only through the ledger: the update never reaches bd, and the next recovery finishes", async () => {
+    const r = await twoBeads();
+    await expectPendingThenFinished(r, {
+      ...r.deps,
+      queryEvents: failing({ "t-listed": 2, "t-unsaved": 2 }),
+    });
+  });
+});
+
+describe("forge:shift recover — a record it cannot read", () => {
+  test("is refused as unreadable, with nothing written and nothing thrown: a workspace that is not a string, a pid process.kill cannot ask about, a bead entry that is not an object, has no Beads id, a run id that is not a string, an unknown outcome or a negative run count", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["workspace: expected a path", { workspace: 5 }],
+      ["pid: expected a process id", { pid: -1 }],
+      ["pid: expected a process id", { pid: 0 }],
+      ["pid: expected a process id", { pid: 1.5 }],
+      ["pid: expected a process id", { pid: 2 ** 32 + process.pid }],
+      ["pid: expected a process id", { pid: 1e20 }],
+      [
+        "beads[0].beadId: expected a Beads issue id",
+        {
+          beads: [
+            { beadId: "--help", runId: "x", outcome: "running", attempts: 1 },
+          ],
+        },
+      ],
+      ["beads[0]: expected an object", { beads: ["t-1"] }],
+      [
+        "beads[0].runId: expected a string",
+        {
+          beads: [{ beadId: "t-1", runId: 5, outcome: "running", attempts: 1 }],
+        },
+      ],
+      [
+        "beads[0].outcome: expected one of",
+        {
+          beads: [
+            { beadId: "t-1", runId: "x", outcome: "flying", attempts: 1 },
+          ],
+        },
+      ],
+      [
+        "beads[0].attempts: expected a whole number",
+        {
+          beads: [
+            { beadId: "t-1", runId: "x", outcome: "running", attempts: -1 },
+          ],
+        },
+      ],
+    ];
+    for (const [why, fields] of cases) {
+      const r = rig([queued("t-1")]);
+      const entry = await claim(r, A, "t-1", 1);
+      // justification: the fields under test are not what the record's type allows.
+      died(r, A, [entry], fields as Partial<ShiftRecord>);
+      const before = recordFile(r, A);
+      const events = r.events().length;
+      const outcome = await recoverShift(A, r.deps);
+      expect({ fields, outcome }).toMatchObject({
+        fields,
+        outcome: { ok: false, kind: "unreadable" },
+      });
+      if (!outcome.ok) expect(outcome.error).toContain(why);
+      expect(r.calls).toEqual([]);
+      expect(r.events()).toHaveLength(events);
+      expect(recordFile(r, A)).toBe(before);
+      expect(r.labels("t-1")).toEqual(["queue:running"]);
+    }
   });
 });

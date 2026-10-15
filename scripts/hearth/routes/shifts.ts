@@ -50,6 +50,7 @@ export interface ShiftRouteDeps {
 const RECOVER_STATUS: Record<RecoverFailure, number> = {
   invalid: 400,
   "not-found": 404,
+  unreadable: 409,
   stopped: 409,
   alive: 409,
   busy: 409,

@@ -589,6 +589,26 @@ describe("forge:shift recover", () => {
       });
   });
 
+  test("a recover of a record it cannot read (a workspace that is not a string) exits 1 with the envelope and says why, and changes nothing", async () => {
+    const shiftId = "shift-20261015-090000-c4c4";
+    const { deps, io, tracker, record } = await deadShift(shiftId, "cli-u");
+    // justification: a field the record's type does not allow is the case under test.
+    writeShiftRecord(deps.shiftsDir, {
+      ...record(shiftId, 2_000_000_000),
+      workspace: 5,
+    } as unknown as ShiftRecord);
+    const result = await runShiftCli(["recover", shiftId], deps, io);
+    expect(result).toEqual({
+      exit: 1,
+      out: {
+        ok: false,
+        data: null,
+        error: `the record of ${shiftId} is not one recovery can read (workspace: expected a path); nothing was done.`,
+      },
+    });
+    expect(tracker.beads.get("cli-u")?.labels).toEqual(["queue:running"]);
+  });
+
   test("a recover that cannot finish exits 1 with what it did and what is left, and leaves the record running", async () => {
     const shiftId = "shift-20261015-090000-c3c3";
     const { deps, io, tracker } = await deadShift(shiftId, "cli-f");

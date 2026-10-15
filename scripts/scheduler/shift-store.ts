@@ -177,6 +177,20 @@ export function readShiftRecord(dir: string, id: string): ShiftRecord | null {
   return value as unknown as ShiftRecord;
 }
 
+/**
+ * Whether `value` is a process id `processAlive` can ask about: a whole number
+ * from 1 to 2^31 - 1. `process.kill` takes a signed 32-bit pid and throws for
+ * a larger or a fractional one, which `processAlive` reads as "not running";
+ * 0 and -1 name a process group or every process, not one process.
+ */
+export function isProcessId(value: unknown): value is number {
+  return (
+    Number.isInteger(value) &&
+    Number(value) >= 1 &&
+    Number(value) <= 2 ** 31 - 1
+  );
+}
+
 /** Whether a process with this id is running (on Windows as elsewhere: signal 0 only asks). */
 export function processAlive(pid: number): boolean {
   try {

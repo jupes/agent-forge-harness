@@ -302,7 +302,7 @@ describe("POST /shifts/:id/recover", () => {
     });
   });
 
-  test("no such shift and another workspace's are 404; a stopped one and one whose process is alive are 409; an id that is not a shift's is 400 with no audit row; none of them moves a bead or changes a record", async () => {
+  test("no such shift and another workspace's are 404; a stopped one, one whose process is alive and one whose record it cannot read are 409; an id that is not a shift's is 400 with no audit row; none of them moves a bead or changes a record", async () => {
     const h = await start();
     const other = "shift-20261015-090000-0e02";
     const stopped = "shift-20261015-090000-0e03";
@@ -331,9 +331,20 @@ describe("POST /shifts/:id/recover", () => {
     expect(running.status).toBe(409);
     expect(running.body.error).toContain(`pid ${process.pid}) is running`);
     expect((await recover(h, alive, null)).status).toBe(403);
+    // A record whose fields are not a shift's is refused, not a 500.
+    const broken = "shift-20261015-090000-0e07";
+    // justification: a field the record's type does not allow is the case under test.
+    writeShiftRecord(shifts(h), {
+      ...record(broken, h.workspace, { pid: DEAD }),
+      workspace: 5,
+    } as unknown as ShiftRecord);
+    const unreadable = await recover(h, broken);
+    expect(unreadable.status).toBe(409);
+    expect(unreadable.body.error).toContain("is not one recovery can read");
 
     expect(h.bd.calls).toEqual([]);
     expect(h.events().map((event) => event.kind)).toEqual([
+      "operator.action",
       "operator.action",
       "operator.action",
       "operator.action",
