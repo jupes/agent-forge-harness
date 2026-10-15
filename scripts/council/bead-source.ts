@@ -503,17 +503,18 @@ function commonDirectoryWithWorktrees(cwd: string): string | null {
  * keeps: the main checkout's `.git` directory is the common directory; a
  * linked worktree's `.git` file names an admin directory directly inside
  * `<common>/worktrees`, whose `gitdir` file names that `.git` file back.
- * A `.git` that is itself a link proves nothing and is refused.
+ * A `.git` that is itself a link proves nothing and is refused: read with
+ * `lstat`, it is neither a directory nor a file.
  */
 function isCheckoutOf(real: string, common: string): boolean {
   const dotGit = join(real, ".git");
   try {
     const found = lstatSync(dotGit);
-    if (found.isSymbolicLink()) return false;
     if (found.isDirectory()) {
       const own = realDirectory(dotGit);
       return own !== null && sameFileKey(own) === sameFileKey(common);
     }
+    if (!found.isFile()) return false;
   } catch {
     return false;
   }
