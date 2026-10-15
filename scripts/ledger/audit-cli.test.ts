@@ -4,6 +4,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { validateOperatorEnvelope } from "../hearth/validate";
+import { shiftRunId } from "../scheduler/shift";
+import { mintShiftId } from "../scheduler/shift-store";
 import { appendEvent } from "./append";
 import {
   DEFAULT_LIMIT,
@@ -138,6 +140,67 @@ describe("parseAuditArgs", () => {
     expect(backup.ok && backup.value.command).toBe("backup");
     const compact = parseAuditArgs(["--compact"]);
     expect(compact.ok && compact.value.command).toBe("compact");
+  });
+
+  test("--shift is read into the query as the shift id it names, and combines with the other filters", () => {
+    expect(
+      parseAuditArgs([
+        "--shift",
+        "shift-20261014-120000-abcd",
+        "--kind",
+        "bead.transitioned",
+        "--all-workspaces",
+      ]),
+    ).toEqual({
+      ok: true,
+      value: {
+        command: "query",
+        json: false,
+        allWorkspaces: true,
+        filter: {
+          shiftId: "shift-20261014-120000-abcd",
+          kinds: ["bead.transitioned"],
+        },
+      },
+    });
+  });
+
+  test("a --shift value that is not a shift id is refused before any query, whatever it holds", () => {
+    const malformed = [
+      "x",
+      "",
+      "%",
+      "shift-%",
+      "shift-20261014-120000-abc_",
+      "shift-20261014-120000-abc*",
+      "shift-20261014-120000-ABCD",
+      "shift-20261014-120000-abcd-1",
+      "b-1-shift-20261014-120000-abcd",
+      "shift-20261014-120000-abcd ",
+      "shift-2026-10-14",
+    ];
+    for (const value of malformed) {
+      const parsed = parseAuditArgs(["--shift", value]);
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) {
+        expect(parsed.error).toContain("--shift");
+        expect(parsed.error).toContain("shift-YYYYMMDD-HHMMSS-xxxx");
+      }
+    }
+    const missing = parseAuditArgs(["--shift"]);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toBe("--shift needs a value");
+  });
+
+  test("--shift is not a flag of --scoreboard, --backup or --compact", () => {
+    const shift = ["--shift", "shift-20261014-120000-abcd"];
+    for (const upkeep of ["--scoreboard", "--backup", "--compact"]) {
+      const parsed = parseAuditArgs([upkeep, ...shift]);
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) expect(parsed.error).toContain(upkeep);
+    }
+    const board = parseAuditArgs(["--scoreboard", ...shift]);
+    expect(!board.ok && board.error).toContain("--shift");
   });
 });
 
@@ -380,6 +443,231 @@ describe("forge:audit scoped to a value the ledger refuses to store", () => {
   });
 });
 
+describe("forge:audit --shift", () => {
+  const begun = new Date("2026-10-14T12:00:00Z");
+  // Two shifts of the same second, ids that differ in the last digit only.
+  const A = mintShiftId(begun, () => "abcd");
+  const B = mintShiftId(begun, () => "abce");
+  // A bead id so long that "<bead>-<shift-id>" is not a valid run slug.
+  const LONG_BEAD = `agent-forge-harness-${"x".repeat(60)}`;
+  const ELSEWHERE = "c:/another/checkout";
+
+  /** The ids of the events each shift owns in the checkout, in the order they were appended. */
+  interface Seeded {
+    box: { cwd: string; home: string; path: string };
+    here: string;
+    forA: number[];
+    forB: number[];
+    /** Shift A's events in the other checkout. */
+    forAElsewhere: number[];
+  }
+
+  function seeded(): Seeded {
+    const box = sandbox();
+    const here = resolveCheckout(box.cwd).workspace;
+    const forA: number[] = [];
+    const forB: number[] = [];
+    const forAElsewhere: number[] = [];
+    const put = (input: LedgerEventInput, owner?: number[]): void => {
+      const result = appendEvent(input, { path: box.path });
+      if (!result.ok || !("id" in result)) throw new Error("not stored");
+      owner?.push(result.id);
+    };
+    const runs = {
+      a1: shiftRunId("agent-forge-harness-x1gs.5.4.6", A, 1),
+      a2: shiftRunId(LONG_BEAD, A, 2),
+      b1: shiftRunId("agent-forge-harness-x1gs.5.4.7", B, 1),
+      b2: shiftRunId(LONG_BEAD, B, 2),
+    };
+    const move = (
+      runId: string | undefined,
+      to: "running" | "review" | "queued",
+      workspace = here,
+    ): LedgerEventInput => ({
+      kind: "bead.transitioned",
+      workspace,
+      beadId: "agent-forge-harness-x1gs.5.4.6",
+      ...(runId !== undefined ? { runId } : {}),
+      payload: { from: "queued", to, reason: "start:scheduler" },
+    });
+    const starts = (shiftId: string, workspace = here): LedgerEventInput => ({
+      kind: "shift.started",
+      workspace,
+      payload: { shiftId, concurrency: 2, durationMs: 7_200_000, maxBeads: 4 },
+    });
+    const stops = (shiftId: string): LedgerEventInput => ({
+      kind: "shift.stopped",
+      workspace: here,
+      payload: { shiftId, reason: "drained" },
+    });
+    // Two shifts at once: their events are interleaved.
+    put(starts(A), forA);
+    put(starts(B), forB);
+    put(move(runs.a1, "running"), forA);
+    put(move(runs.b1, "running"), forB);
+    put(
+      {
+        kind: "reservation.acquired",
+        workspace: here,
+        beadId: "agent-forge-harness-x1gs.5.4.6",
+        runId: runs.a1,
+        payload: { worktree: "c:/forge/trees/a", globs: ["scripts/ledger/**"] },
+      },
+      forA,
+    );
+    put(event(here, { runId: runs.a1, sessionId: "sess-a1" }), forA);
+    put(move(runs.a2, "running"), forA);
+    put(event(here, { runId: runs.b2, sessionId: "sess-b2" }), forB);
+    // Not a shift's: a Forge run, an event with no run, and a bead event with no run.
+    put({
+      kind: "run.phase.completed",
+      workspace: here,
+      runId: "forge-run-a",
+      payload: { phase: "plan" },
+    });
+    put(event(here));
+    put(move(undefined, "queued"));
+    // The same shift ids in another checkout.
+    put(starts(A, ELSEWHERE), forAElsewhere);
+    put(move(runs.a1, "running", ELSEWHERE), forAElsewhere);
+    put(move(runs.a1, "review"), forA);
+    put(stops(B), forB);
+    put(stops(A), forA);
+    return { box, here, forA, forB, forAElsewhere };
+  }
+
+  function idsOf(outcome: { stdout: string }): number[] {
+    const envelope = JSON.parse(outcome.stdout) as {
+      data: Array<{ id: number }>;
+    };
+    return envelope.data.map((row) => row.id);
+  }
+
+  const contextOf = (data: Seeded) => ({
+    cwd: data.box.cwd,
+    env: { AGENT_FORGE_HOME: data.box.home },
+  });
+
+  test("the ids this suite seeds are built by the shift's own functions: shiftRunId in both of its forms and mintShiftId", () => {
+    expect(shiftRunId("agent-forge-harness-x1gs.5.4.6", A, 1)).toBe(
+      `agent-forge-harness-x1gs.5.4.6-${A}`,
+    );
+    expect(shiftRunId(LONG_BEAD, A, 2)).toBe(`${A}-2`);
+    expect(A).toMatch(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/);
+  });
+
+  test("answers the shift's two events and the events of every run it made, in id order, and no other shift's or run's", () => {
+    const data = seeded();
+    const context = contextOf(data);
+    // Each shift has runs named both ways, events of two shapes, and the
+    // other shift's events sit between them.
+    expect(data.forA).toEqual([1, 3, 5, 6, 7, 14, 16]);
+    expect(data.forB).toEqual([2, 4, 8, 15]);
+    expect(data.forAElsewhere).toEqual([12, 13]);
+
+    const first = runAudit(["--shift", A, "--json"], context);
+    expect(first.code).toBe(0);
+    expect(validateOperatorEnvelope(JSON.parse(first.stdout)).ok).toBe(true);
+    expect(idsOf(first)).toEqual(data.forA);
+    expect(first.stderr).toBeUndefined();
+
+    const second = runAudit(["--shift", B, "--json"], context);
+    expect(idsOf(second)).toEqual(data.forB);
+
+    // The table shows the same events: the shift's start first, its stop last.
+    const table = runAudit(["--shift", A], context);
+    const lines = table.stdout.split("\n");
+    expect(lines).toHaveLength(data.forA.length + 1);
+    expect(lines[1]).toContain("shift.started");
+    expect(lines[lines.length - 1]).toContain("shift.stopped");
+  });
+
+  test("stays in the checkout it runs from, and --all-workspaces lifts that as it does for every filter", () => {
+    const data = seeded();
+    const context = contextOf(data);
+    const here = runAudit(["--shift", A, "--json"], context);
+    const workspaces = (
+      JSON.parse(here.stdout) as { data: Array<{ workspace: string }> }
+    ).data.map((row) => row.workspace);
+    expect(new Set(workspaces)).toEqual(new Set([data.here]));
+
+    const everywhere = runAudit(
+      ["--shift", A, "--all-workspaces", "--json"],
+      context,
+    );
+    expect(idsOf(everywhere)).toEqual(
+      [...data.forA, ...data.forAElsewhere].sort((a, b) => a - b),
+    );
+
+    // From the other checkout the answer is that checkout's.
+    const otherCwd = join(data.box.cwd, "..", "other checkout");
+    mkdirSync(join(otherCwd, ".git"), { recursive: true });
+    const elsewhere = runAudit(["--shift", A, "--json"], {
+      cwd: otherCwd,
+      env: { AGENT_FORGE_HOME: data.box.home },
+    });
+    expect(idsOf(elsewhere)).toEqual([]);
+  });
+
+  test("combines with the other filters, and a cut result says so", () => {
+    const data = seeded();
+    const context = contextOf(data);
+    const moves = runAudit(
+      ["--shift", A, "--kind", "bead.transitioned", "--json"],
+      context,
+    );
+    expect(idsOf(moves)).toEqual([3, 7, 14]);
+
+    const cut = runAudit(["--shift", A, "--limit", "2", "--json"], context);
+    expect(idsOf(cut)).toEqual(data.forA.slice(-2));
+    expect(cut.stderr).toContain("newest 2");
+  });
+
+  test("a shift id the ledger never saw answers an empty list and exits 0, as an unknown --run does", () => {
+    const data = seeded();
+    const context = contextOf(data);
+    const unknown = mintShiftId(begun, () => "ffff");
+    const outcome = runAudit(["--shift", unknown, "--json"], context);
+    expect(outcome.code).toBe(0);
+    expect(JSON.parse(outcome.stdout)).toEqual({
+      ok: true,
+      data: [],
+      error: null,
+    });
+    expect(outcome.stderr).toBeUndefined();
+    const table = runAudit(["--shift", unknown], context);
+    expect(table.code).toBe(0);
+    expect(table.stdout).toBe("no events");
+    expect(runAudit(["--run", "no-such-run", "--json"], context).code).toBe(0);
+  });
+
+  test("a malformed shift id is refused with the envelope and exit code 2, and widens nothing", () => {
+    const data = seeded();
+    const context = contextOf(data);
+    for (const value of [
+      "%",
+      "shift-%",
+      "shift-20261014-120000-abc_",
+      "",
+      "x",
+    ]) {
+      for (const flags of [[], ["--json"], ["--all-workspaces"]]) {
+        const outcome = runAudit(["--shift", value, ...flags], context);
+        expect(outcome.code).toBe(2);
+        const envelope = JSON.parse(outcome.stdout) as {
+          ok: boolean;
+          data: unknown;
+          error: string;
+        };
+        expect(validateOperatorEnvelope(envelope).ok).toBe(true);
+        expect(envelope.ok).toBe(false);
+        expect(envelope.data).toBeNull();
+        expect(envelope.error).toContain("--shift");
+      }
+    }
+  });
+});
+
 describe("forge:audit (spawned)", () => {
   test("a cut result prints its note on stderr and only the envelope on stdout", async () => {
     const box = sandbox();
@@ -438,6 +726,64 @@ describe("forge:audit (spawned)", () => {
       data: Array<{ id: number }>;
     };
     expect(all.data.map((row) => row.id)).toEqual([1, 3]);
+  }, 30_000);
+
+  test("forge:audit --shift prints the shift's events and exits 0, an unknown shift prints an empty list and exits 0, a malformed id exits 2", async () => {
+    const box = sandbox();
+    const here = resolveCheckout(box.cwd).workspace;
+    const shift = mintShiftId(new Date("2026-10-14T12:00:00Z"), () => "abcd");
+    const unknown = mintShiftId(new Date("2026-10-14T12:00:00Z"), () => "abce");
+    appendEvent(
+      {
+        kind: "shift.started",
+        workspace: here,
+        payload: { shiftId: shift, concurrency: 2 },
+      },
+      { path: box.path },
+    );
+    appendEvent(event(here, { runId: shiftRunId("b-1", shift, 1) }), {
+      path: box.path,
+    });
+    appendEvent(event(here, { runId: "forge-run" }), { path: box.path });
+    appendEvent(
+      {
+        kind: "shift.stopped",
+        workspace: here,
+        payload: { shiftId: shift, reason: "drained" },
+      },
+      { path: box.path },
+    );
+    closeLedger();
+
+    const found = await audit(box, ["--shift", shift, "--json"]);
+    expect(found.exitCode).toBe(0);
+    expect(
+      (JSON.parse(found.stdout) as { data: Array<{ id: number }> }).data.map(
+        (row) => row.id,
+      ),
+    ).toEqual([1, 2, 4]);
+
+    const none = await audit(box, ["--shift", unknown, "--json"]);
+    expect(none.exitCode).toBe(0);
+    expect(JSON.parse(none.stdout)).toEqual({
+      ok: true,
+      data: [],
+      error: null,
+    });
+
+    for (const args of [
+      ["--shift", "shift-%", "--json"],
+      ["--shift", "shift-%"],
+    ]) {
+      const refused = await audit(box, args);
+      expect(refused.exitCode).toBe(2);
+      const envelope = JSON.parse(refused.stdout) as {
+        ok: boolean;
+        error: string;
+      };
+      expect(envelope.ok).toBe(false);
+      expect(envelope.error).toContain("--shift");
+    }
   }, 30_000);
 
   test("on a ledger that does not exist yet, forge:audit --json answers with an empty list", async () => {
