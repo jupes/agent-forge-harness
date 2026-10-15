@@ -292,17 +292,19 @@ describe("POST /shifts", () => {
   test("the audit row names the minted id and is stored before the child is started", async () => {
     const h = await start();
     const id = h.shifts.next();
-    let auditAtLaunch: unknown[] = [];
+    // What the ledger held as each child was started.
+    const atLaunch: unknown[][] = [];
     h.shifts.onLaunch = () => {
-      auditAtLaunch = h.events().map((event) => event.payload);
+      atLaunch.push(h.events().map((event) => event.payload));
     };
-    expect((await startShift(h, { for: "2h" })).status).toBe(202);
+    const started = await startShift(h, { for: "2h" });
     const audit = {
       action: "shift.start",
       surface: "api" as const,
       target: id,
     };
-    expect(auditAtLaunch).toEqual([audit]);
+    expect(atLaunch).toEqual([[audit]]);
+    expect(started.status).toBe(202);
     expect(h.events().map((event) => [event.kind, event.payload])).toEqual([
       ["operator.action", audit],
     ]);

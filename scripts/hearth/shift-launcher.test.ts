@@ -292,7 +292,8 @@ describe("the registry of the shifts a hearth starts", () => {
  * `<cwd>/seen-<id>.json`, then does what `<cwd>/stand-in.json` says:
  * - `fail`: announce, print a refusal envelope holding a token, exit 1;
  * - `run`: write a running record in `<AGENT_FORGE_HOME>/shifts`, and on a
- *   stop request there close it (`operator`) and exit 0;
+ *   stop request there take a second, as a shift does, then close it
+ *   (`operator`) and exit 0;
  * - `stubborn`: write a running record and never stop.
  */
 const STAND_IN = `
@@ -336,6 +337,8 @@ save("running");
 for (;;) {
   await Bun.sleep(50);
   if (mode === "run" && existsSync(join(shifts, id + ".stop"))) {
+    // A shift takes a while to stop: it ends its runs and gives their beads back.
+    await Bun.sleep(1000);
     save("stopped", "operator");
     process.exit(0);
   }
