@@ -1,5 +1,5 @@
 ---
-argument-hint: "<pr | plan | file | bead> <source> --profile <path>"
+argument-hint: "<pr | plan | file | bead> <source> | <text> [--profile <path>]"
 ---
 
 # /council — Deliberative multi-provider review

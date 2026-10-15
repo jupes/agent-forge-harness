@@ -94,7 +94,22 @@ export function CommandsIsland(): JSX.Element {
               class: "af-col-command",
               cell: (row) => <code>{row.name}</code>,
             },
-            { key: "summary", header: "Summary" },
+            {
+              key: "summary",
+              header: "Summary",
+              cell: (row) => (
+                <Fragment>
+                  <span class="af-skill-summary">{row.summary}</span>
+                  {row.notLoaded ? (
+                    <span class="af-muted af-skill-note">
+                      {" "}
+                      Not loaded by Claude Code: its file is not named{" "}
+                      <code>SKILL.md</code>.
+                    </span>
+                  ) : null}
+                </Fragment>
+              ),
+            },
           ]}
         />
       </Card>

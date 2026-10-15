@@ -252,6 +252,16 @@ describe("parseSkillFile", () => {
     });
   });
 
+  test("a skill in a file not named SKILL.md is marked not loaded: Claude Code reads only SKILL.md", () => {
+    const text = "---\nname: ui-shot\ndescription: Takes shots.\n---\n";
+    expect(parseSkillFile("ui-shot/ui-shot.md", text)).toEqual({
+      ok: true,
+      entry: { name: "ui-shot", summary: "Takes shots.", notLoaded: true },
+    });
+    const loaded = parseSkillFile("ui-shot/SKILL.md", text);
+    expect(loaded.ok && "notLoaded" in loaded.entry).toBe(false);
+  });
+
   test("reads a description folded over several lines", () => {
     expect(
       parseSkillFile(
@@ -332,7 +342,7 @@ describe("skillsFromDir", () => {
     expect(skillsFromDir(root)).toEqual({
       entries: [
         { name: "alpha", summary: "Does alpha." },
-        { name: "ui-shot", summary: "Does ui-shot." },
+        { name: "ui-shot", summary: "Does ui-shot.", notLoaded: true },
         { name: "zoom-out", summary: "Does zoom-out." },
       ],
       errors: [],
@@ -355,6 +365,73 @@ describe("skillsFromDir", () => {
     expect(skillsFromDir(root).errors).toEqual([
       "alpha/SKILL.md: the file must open with a frontmatter block holding a name and a description",
     ]);
+  });
+});
+
+/**
+ * The repo's own formatter, run on text as if it were a generated module (the
+ * installed binary, never fetched): what `bun run lint` would make of it.
+ */
+function formatted(text: string): string {
+  const biome = join(
+    ROOT,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "biome.exe" : "biome",
+  );
+  const run = Bun.spawnSync(
+    [biome, "format", "--stdin-file-path", join(ROOT, SKILLS_MODULE)],
+    {
+      cwd: ROOT,
+      stdin: Buffer.from(text),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+  return run.stdout.toString();
+}
+
+describe("the generated modules, whatever the text in them", () => {
+  const texts = [
+    'Say "hi" to the "world"',
+    "Don't stop, it's fine",
+    `Both: "one" and "two" and "three" with 'one' and 'two'`,
+    `Both: 'one' and 'two' and 'three' with "one" and "two"`,
+    `Even: it's a "quoted word`,
+    'A back\\slash before "a quote" and "another"',
+    `A back\\slash before a single quote\\'s end and "q"`,
+    `${"x".repeat(70)} "quoted" "twice"`,
+    `${"y".repeat(60)} don't`,
+    "日本語のテキスト".repeat(5),
+    `${"z".repeat(55)} 日本語 "q" "r"`,
+  ];
+
+  test("the formatter changes none of them: the quote is the one it chooses, and it wraps where it wraps", () => {
+    const commands = renderCatalogModule(
+      texts.map((text, i) => ({
+        name: `/c${i}`,
+        argumentHint: text,
+        description: text,
+      })),
+    );
+    const skills = renderSkillsModule(
+      texts.map((summary, i) => ({ name: `s${i}`, summary })),
+    );
+    expect(formatted(commands)).toBe(commands);
+    expect(formatted(skills)).toBe(skills);
+  }, 30_000);
+
+  test("each is the text it was given, once the module is read back", async () => {
+    const skills = renderSkillsModule(
+      texts.map((summary, i) => ({ name: `s${i}`, summary })),
+    );
+    const dir = scratchRoot();
+    write(dir, "skills.ts", skills.replace(/^import type .*\n/m, ""));
+    const loaded = (await import(join(dir, "skills.ts"))) as {
+      SKILLS: { summary: string }[];
+    };
+    expect(loaded.SKILLS.map((skill) => skill.summary)).toEqual(texts);
   });
 });
 

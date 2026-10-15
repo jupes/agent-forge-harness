@@ -40,19 +40,24 @@ function commandFiles(): [string, string, string][] {
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-/** Each skill folder's name and its description, on one line. */
-function skillFiles(): [string, string][] {
+/** Each skill folder's name, its description on one line, and whether its file is the `SKILL.md` Claude Code loads. */
+function skillFiles(): [string, string, boolean][] {
   const dir = join(process.cwd(), ".claude", "skills");
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry): [string, string] => {
-      const file = existsSync(join(dir, entry.name, "SKILL.md"))
-        ? "SKILL.md"
-        : `${entry.name}.md`;
+    .map((entry): [string, string, boolean] => {
+      const loaded = existsSync(join(dir, entry.name, "SKILL.md"));
       const { fields } = split(
-        readFileSync(join(dir, entry.name, file), "utf8"),
+        readFileSync(
+          join(dir, entry.name, loaded ? "SKILL.md" : `${entry.name}.md`),
+          "utf8",
+        ),
       );
-      return [entry.name, String(fields.description).replace(/\s+/g, " ")];
+      return [
+        entry.name,
+        String(fields.description).replace(/\s+/g, " "),
+        loaded,
+      ];
     })
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
@@ -74,7 +79,7 @@ test("the Commands page lists every command file under .claude/commands, each wi
   expect(shown).toEqual(commandFiles());
 });
 
-test("the Commands page lists every skill folder under .claude/skills, each with its description up to the trigger text", async ({
+test("the Commands page lists every skill folder under .claude/skills, each with its description up to the trigger text, and a note on a skill whose file is not SKILL.md", async ({
   page,
 }) => {
   await openSettled(page, "/index.html#/commands");
@@ -83,15 +88,21 @@ test("the Commands page lists every skill folder under .claude/skills, each with
     .getByRole("region", { name: "Skills", exact: true })
     .locator("tbody tr");
   const shown = await rows.evaluateAll((trs) =>
-    trs.map((tr) =>
-      Array.from(tr.querySelectorAll("td"), (td) => td.textContent ?? ""),
-    ),
+    trs.map((tr) => ({
+      name: tr.querySelector("td")?.textContent ?? "",
+      summary: tr.querySelector(".af-skill-summary")?.textContent ?? "",
+      note: tr.querySelector(".af-skill-note")?.textContent ?? "",
+    })),
   );
 
   const files = skillFiles();
-  expect(shown.map(([name]) => name)).toEqual(files.map(([name]) => name));
-  for (const [name, summary = ""] of shown) {
-    const description = new Map(files).get(name ?? "") ?? "";
+  expect(shown.map(({ name }) => name)).toEqual(files.map(([name]) => name));
+  expect(
+    shown.filter(({ note }) => note !== "").map(({ name }) => name),
+    "only a skill whose file is not SKILL.md is marked not loaded",
+  ).toEqual(files.filter(([, , loaded]) => !loaded).map(([name]) => name));
+  for (const { name, summary } of shown) {
+    const description = new Map(files.map(([n, d]) => [n, d])).get(name) ?? "";
     const kept = summary.replace(/…$/, "");
     expect(kept.length, `${name} has a summary`).toBeGreaterThan(0);
     expect(

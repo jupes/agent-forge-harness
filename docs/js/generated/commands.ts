@@ -23,7 +23,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "/council",
-    argumentHint: "<pr | plan | file | bead> <source> --profile <path>",
+    argumentHint:
+      "<pr | plan | file | bead> <source> | <text> [--profile <path>]",
     description: "Deliberative multi-provider review",
   },
   {

@@ -9,7 +9,8 @@
  * heading is `# /<name> — <description>`, `<name>` being the file's own name.
  * A skill's frontmatter holds `name` (the folder's name) and `description`; the
  * row shows the description without its "Use when ..." trigger text, cut to
- * `SUMMARY_LIMIT` characters (see `summarizeDescription`).
+ * `SUMMARY_LIMIT` characters (see `summarizeDescription`), and is marked
+ * `notLoaded` when the file is not named `SKILL.md`.
  *
  * The rows are written to `docs/js/generated/commands.ts` and
  * `docs/js/generated/skills.ts`, which the page imports, so the page needs no
@@ -45,6 +46,8 @@ export interface SkillEntry {
   name: string;
   /** The description without its trigger text, cut to `SUMMARY_LIMIT`. */
   summary: string;
+  /** Set only when the skill's file is not named `SKILL.md`, the one file Claude Code loads. */
+  notLoaded?: true;
 }
 
 /** The generated modules, relative to the harness root. */
@@ -219,7 +222,13 @@ export function parseSkillFile(file: string, text: string): Parsed<SkillEntry> {
   }
   return {
     ok: true,
-    entry: { name, summary: summarizeDescription(description) },
+    entry: {
+      name,
+      summary: summarizeDescription(description),
+      ...(file.split("/")[1] === "SKILL.md"
+        ? {}
+        : { notLoaded: true as const }),
+    },
   };
 }
 
@@ -259,39 +268,70 @@ export function skillsFromDir(dir: string): {
   return { entries, errors };
 }
 
-/** The formatter's line width (biome's default). */
-const LINE_WIDTH = 80;
+/** The harness root, where the repo's formatter and its configuration are. */
+const HARNESS_ROOT = resolve(import.meta.dir, "..", "..");
 
-/** One property line; past the line width the value goes on its own line, as the formatter puts it. */
-function property(key: string, value: string): string {
-  const literal = JSON.stringify(value);
-  const line = `    ${key}: ${literal},`;
-  return line.length <= LINE_WIDTH
-    ? `${line}\n`
-    : `    ${key}:\n      ${literal},\n`;
+/**
+ * What `bun run lint` leaves alone: `text` run through the repo's own formatter
+ * (the installed binary, never fetched). The formatter, not this file, decides
+ * the quote a string is written in, where a long line breaks and how wide a
+ * character is, so a summary or a hint with quotes, a backslash or wide
+ * characters in it cannot make the generated module fail the lint.
+ */
+function format(text: string): string {
+  const bin = ["biome.exe", "biome"]
+    .map((name) => join(HARNESS_ROOT, "node_modules", ".bin", name))
+    .find((path) => existsSync(path));
+  if (bin === undefined) {
+    throw new Error(
+      "node_modules/.bin/biome is not installed: run bun install, then bun run dashboard:commands again",
+    );
+  }
+  const run = Bun.spawnSync(
+    [bin, "format", "--stdin-file-path", join(HARNESS_ROOT, CATALOG_MODULE)],
+    {
+      cwd: HARNESS_ROOT,
+      stdin: Buffer.from(text),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  if (run.exitCode !== 0) {
+    throw new Error(
+      `the formatter failed on a generated module: ${run.stderr.toString().trim()}`,
+    );
+  }
+  return run.stdout.toString();
 }
 
-/** A generated module's text: one object per entry, formatted as the linter wants it. */
+/** One property line, each value a JSON string literal: the formatter settles its quote and its line. */
+function property(key: string, value: string | boolean): string {
+  return `    ${key}: ${JSON.stringify(value)},\n`;
+}
+
+/** A generated module's text: one object per entry, formatted. */
 function renderModule(
   header: readonly string[],
   type: string,
   exportName: string,
-  rows: readonly (readonly [string, string])[][],
+  rows: readonly (readonly [string, string | boolean])[][],
 ): string {
-  return [
-    "/**\n",
-    ...header.map((line) => ` * ${line}\n`),
-    " */\n",
-    "\n",
-    `import type { ${type} } from "../../../scripts/dashboard/commands-catalog";\n`,
-    "\n",
-    `export const ${exportName}: readonly ${type}[] = [\n`,
-    ...rows.map(
-      (row) =>
-        `  {\n${row.map(([key, value]) => property(key, value)).join("")}  },\n`,
-    ),
-    "];\n",
-  ].join("");
+  return format(
+    [
+      "/**\n",
+      ...header.map((line) => ` * ${line}\n`),
+      " */\n",
+      "\n",
+      `import type { ${type} } from "../../../scripts/dashboard/commands-catalog";\n`,
+      "\n",
+      `export const ${exportName}: readonly ${type}[] = [\n`,
+      ...rows.map(
+        (row) =>
+          `  {\n${row.map(([key, value]) => property(key, value)).join("")}  },\n`,
+      ),
+      "];\n",
+    ].join(""),
+  );
 }
 
 /** The generated commands module's text. */
@@ -323,6 +363,7 @@ export function renderSkillsModule(entries: readonly SkillEntry[]): string {
     entries.map((entry) => [
       ["name", entry.name],
       ["summary", entry.summary],
+      ...(entry.notLoaded ? ([["notLoaded", true]] as const) : []),
     ]),
   );
 }
