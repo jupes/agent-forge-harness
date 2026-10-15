@@ -1,12 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { BenchName, Smith } from "../../types/hearth";
+import { scratchDirs } from "../test-scratch";
 import { loadConfig } from "./load";
 import { pickFromBench, resolveSmith } from "./resolve";
 
-const root = mkdtempSync(join(tmpdir(), "forge-resolve-"));
+// Made when the file loads, so it goes when the file is done.
+const scratch = scratchDirs();
+afterAll(() => scratch.cleanup());
+const root = scratch.make("forge-resolve-");
 const { config } = loadConfig({ harnessRoot: root, home: root, env: {} });
 
 describe("resolveSmith", () => {
