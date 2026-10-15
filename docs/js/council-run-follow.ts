@@ -11,13 +11,19 @@
  * with `applyCouncilJobDelta`.
  *
  * A delta is made from the job the hearth last sent on this connection, so it
- * is applied to the job this connection last received, held here, and never to
- * a job the page got some other way (a run opened from the history, a run read
- * again): that one may be newer or older, and applying a delta to it would
- * repeat or lose entries. A delta that cannot be applied (no job yet on this
- * connection, another run's, or unreadable) is answered by reading the run
- * again. A new connection starts with the whole job, which replaces the one
- * held.
+ * is applied to the job this connection last received, held here per
+ * connection, and never to a job the page got some other way (a run opened
+ * from the history, a run read again) or on another connection: that one may
+ * be newer or older, and applying a delta to it would repeat or lose entries.
+ * A delta that cannot be applied is answered by reading the run again: no job
+ * yet on this connection (or the last whole job could not be read), another
+ * run's, unreadable, or not what follows the job held (the next event number
+ * after the last one held, and no discussion round already held), so a delta
+ * sent twice or out of order is never applied. A new connection starts with
+ * the whole job, which replaces the one held, and a message from a connection
+ * that is no longer the current one is ignored. Reading again is capped: after
+ * `MAX_FALLBACKS` reads in a row without a connection that delivered a second
+ * good message, following stops and the page is told the connection was lost.
  *
  * The stream is read with the caller's transport, not the browser's
  * event-source class: a run's stream needs the operator token, which that
@@ -34,6 +40,12 @@ import type { StreamTransport, Timers } from "./use-stream";
 
 /** How long to wait before following a running job's stream again after it stopped. */
 export const RECONNECT_MS = 1_000;
+
+/**
+ * Reads of the run in a row, for a stream that stopped or a delta that could
+ * not be applied, before following gives up.
+ */
+export const MAX_FALLBACKS = 5;
 
 export const UNREADABLE_UPDATE =
   "A progress update could not be read. Reopen the run from history.";
@@ -92,6 +104,37 @@ function deltaFrom(data: string): CouncilJobDelta | null {
   return value as CouncilJobDelta;
 }
 
+/**
+ * Whether what the delta appends comes right after what `held` has: its first
+ * event is the next number after the last one held (the service numbers a
+ * run's events 0, 1, 2 … with none left out, `emit` in
+ * `scripts/council/engine.ts`; a job with no event held takes any first
+ * number), the rest follow one by one, and no round is one `held` already has.
+ * A delta sent twice, or one made for a later job that arrives first, fails
+ * this.
+ */
+function continues(held: CouncilServiceJob, delta: CouncilJobDelta): boolean {
+  let previous: number | undefined = held.events.at(-1)?.seq;
+  for (const item of delta.events) {
+    const seq: unknown = item?.seq;
+    if (
+      typeof seq !== "number" ||
+      (previous !== undefined && seq !== previous + 1)
+    )
+      return false;
+    previous = seq;
+  }
+  const kept = held.discussion ?? [];
+  return delta.discussion.every(
+    (item) =>
+      !kept.some(
+        (have) =>
+          have?.completedAt === item?.completedAt &&
+          have?.stage === item?.stage,
+      ),
+  );
+}
+
 /** The job the delta brings `held` to, or null when it cannot be applied to it. */
 function applied(
   held: CouncilServiceJob | null,
@@ -99,7 +142,8 @@ function applied(
 ): CouncilServiceJob | null {
   if (held === null) return null;
   const delta = deltaFrom(data);
-  if (delta === null || delta.runId !== held.runId) return null;
+  if (delta === null || delta.runId !== held.runId || !continues(held, delta))
+    return null;
   return applyCouncilJobDelta(held, delta);
 }
 
@@ -108,12 +152,6 @@ const REAL_TIMERS: Timers = {
   // justification: the handle is whatever `set` above returned.
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
-
-/**
- * Reads of the run in a row, for a stream that stopped or a delta that could
- * not be applied, before following gives up.
- */
-export const MAX_FALLBACKS = 5;
 
 export interface CouncilRunFollowOptions {
   /** The run followed: a job of another run is never taken for it. */
@@ -131,25 +169,44 @@ export interface CouncilRunFollowOptions {
   timers?: Timers;
 }
 
+/** One connection to the run's stream. */
+interface Link {
+  /** The job this connection last received: what its next delta is made from. */
+  held: CouncilServiceJob | null;
+  /** The messages of this connection that were taken. */
+  taken: number;
+  handle: { close(): void } | null;
+}
+
 /** Follow a running job until it stops running or `close()` is called. */
 export function followCouncilRun(options: CouncilRunFollowOptions): {
   close(): void;
 } {
-  const { transport, readRun, onJob, onError, onFinished } = options;
+  const { runId, transport, readRun, onJob, onError, onFinished } = options;
   const retryMs = options.retryMs ?? RECONNECT_MS;
   const timers = options.timers ?? REAL_TIMERS;
   let closed = false;
-  let connection: { close(): void } | null = null;
   let retry: unknown = null;
-  /** The job this connection last received: what its next delta is made from. */
-  let held: CouncilServiceJob | null = null;
+  /** The connection in use; anything another connection sends is ignored. */
+  let link: Link | null = null;
+  /** Reads of the run in a row since a connection made progress. */
+  let fallbacks = 0;
 
-  const show = (job: CouncilServiceJob): void => {
-    held = job;
+  const dropLink = (): void => {
+    const old = link;
+    link = null;
+    old?.handle?.close();
+  };
+
+  const take = (from: Link, job: CouncilServiceJob): void => {
+    from.held = job;
+    from.taken += 1;
+    // A connection that delivered a second good message was making progress.
+    if (from.taken > 1) fallbacks = 0;
     onJob(job);
     if (!isActive(job)) {
       closed = true;
-      connection?.close();
+      dropLink();
       onFinished();
     }
   };
@@ -158,8 +215,13 @@ export function followCouncilRun(options: CouncilRunFollowOptions): {
   // be applied: read the run, and follow it again while it still is going.
   const readAgain = (): void => {
     if (closed) return;
-    connection?.close();
-    held = null;
+    dropLink();
+    fallbacks += 1;
+    if (fallbacks > MAX_FALLBACKS) {
+      closed = true;
+      onError(CONNECTION_LOST);
+      return;
+    }
     void readRun()
       .then((fresh) => {
         if (closed) return;
@@ -176,24 +238,31 @@ export function followCouncilRun(options: CouncilRunFollowOptions): {
   };
 
   function connect(): void {
-    held = null;
-    connection = transport(null, {
+    const mine: Link = { held: null, taken: 0, handle: null };
+    link = mine;
+    mine.handle = transport(null, {
       onOpen: () => {},
       onActivity: () => {},
       onMessage: (message) => {
-        if (closed) return;
+        if (closed || link !== mine) return;
         if (message.event === "snapshot") {
           const snapshot = jobFrom(message.data);
-          if (snapshot === null) onError(UNREADABLE_UPDATE);
-          else show(snapshot);
+          if (snapshot === null || snapshot.runId !== runId) {
+            // What the next delta would be applied to is no longer known.
+            mine.held = null;
+            onError(UNREADABLE_UPDATE);
+          } else take(mine, snapshot);
         } else if (message.event === "delta") {
-          const next = applied(held, message.data);
+          const next = applied(mine.held, message.data);
           if (next === null) readAgain();
-          else show(next);
+          else take(mine, next);
         }
       },
-      onEnd: readAgain,
+      onEnd: () => {
+        if (!closed && link === mine) readAgain();
+      },
     });
+    if (link !== mine) mine.handle.close();
   }
 
   connect();
@@ -201,7 +270,7 @@ export function followCouncilRun(options: CouncilRunFollowOptions): {
     close() {
       closed = true;
       if (retry !== null) timers.clear(retry);
-      connection?.close();
+      dropLink();
     },
   };
 }
