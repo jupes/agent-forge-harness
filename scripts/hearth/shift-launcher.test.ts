@@ -567,19 +567,25 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
 /**
  * A hearth as `bun run hearth` runs one, in a process of its own: started,
  * then `closeOnSignal`, the shutdown `main()` installs. Its launcher is the
- * real one, given the stand-in. It prints where it listens and what it uses,
- * and emits the signal it is given (`process.emit`: no signal can be sent to
- * a process on Windows) when its stdin says `signal`.
+ * real one, given the stand-in, with the real tree guard or, when asked
+ * (`none`), one that guards nothing, so that only the exit hook can end the
+ * shift. It prints where it listens and what it uses, then reads its stdin a
+ * line at a time: `signal` emits the signal it was given (`process.emit`: no
+ * signal can be sent to a process on Windows), and `exit` calls
+ * `process.exit(3)`, a way out that skips `close()`.
  */
 const HEARTH_MAIN = (standIn: string) => `
 import { closeOnSignal } from ${JSON.stringify(join(import.meta.dir, "server.ts"))};
 import { superviseShift } from ${JSON.stringify(join(import.meta.dir, "shift-launcher.ts"))};
 import { startTestHearth } from ${JSON.stringify(join(import.meta.dir, "testing.ts"))};
-const signal = process.argv[2] ?? "";
+const [signal = "", guard = "real"] = process.argv.slice(2);
+const unguarded = () => ({ release: () => undefined });
 const h = await startTestHearth({
   api: {
-    launchShift: (spec) =>
-      superviseShift({ ...spec, argv: [spec.argv[0], ${JSON.stringify(standIn)}, ...spec.argv.slice(2)] }),
+    launchShift: (spec) => {
+      const given = { ...spec, argv: [spec.argv[0], ${JSON.stringify(standIn)}, ...spec.argv.slice(2)] };
+      return guard === "none" ? superviseShift(given, unguarded) : superviseShift(given);
+    },
     shiftStopGraceMs: 15000,
   },
 });
@@ -589,87 +595,199 @@ const decoder = new TextDecoder();
 let text = "";
 for await (const chunk of Bun.stdin.stream()) {
   text += decoder.decode(chunk);
-  if (text.includes("signal")) {
-    text = "";
-    process.emit(signal);
+  let end = text.indexOf("\\n");
+  while (end !== -1) {
+    const line = text.slice(0, end).trim();
+    text = text.slice(end + 1);
+    if (line === "signal") process.emit(signal);
+    if (line === "exit") process.exit(3);
+    end = text.indexOf("\\n");
   }
 }
 `;
 
+/** Where a hearth process listens and what it uses, as it prints them. */
+interface HearthWhere {
+  api: string;
+  url: string;
+  token: string;
+  home: string;
+  root: string;
+  configHome: string;
+  workspace: string;
+}
+
+/** A shift a hearth process started, once its record says it runs. */
+interface StartedShift {
+  id: string;
+  pid: number;
+  /** The pid of the child the stand-in started (`stubborn` only). */
+  grandchild: number | null;
+}
+
+/** Start `HEARTH_MAIN` in a bun process of its own and read where it listens. */
+async function hearthProcess(signal: string, guard: "real" | "none" = "real") {
+  const dir = scratch();
+  const standIn = join(dir, "stand-in.ts");
+  const main = join(dir, "hearth-main.ts");
+  writeFileSync(standIn, STAND_IN);
+  writeFileSync(main, HEARTH_MAIN(standIn));
+  const proc = Bun.spawn([process.execPath, main, signal, guard], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const left: number[] = [];
+  const reader = proc.stdout.getReader();
+  let first = "";
+  while (!first.includes("\n")) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    first += new TextDecoder().decode(value);
+  }
+  reader.releaseLock();
+  const where = JSON.parse(first.split(/\r?\n/)[0] ?? "") as HearthWhere;
+  for (const made of [where.home, where.root, where.configHome])
+    dirs.push(made);
+  return {
+    proc,
+    where,
+    send(line: string): void {
+      proc.stdin.write(`${line}\n`);
+      proc.stdin.flush();
+    },
+    async startShift(mode: "run" | "stubborn"): Promise<StartedShift> {
+      writeFileSync(
+        join(where.root, "stand-in.json"),
+        JSON.stringify({ mode, workspace: where.workspace }),
+      );
+      const started = await fetch(`${where.api}/shifts`, {
+        method: "POST",
+        headers: {
+          Origin: where.url,
+          "Content-Type": "application/json",
+          [OPERATOR_HEADER]: where.token,
+        },
+        body: "{}",
+      });
+      expect(started.status).toBe(202);
+      const id = ((await started.json()) as { data: { shiftId: string } }).data
+        .shiftId;
+      const running = await until(async () => {
+        const listed = (await (
+          await fetch(`${where.api}/shifts`, {
+            headers: { Origin: where.url },
+          })
+        ).json()) as { data: ShiftListEntry[] };
+        const entry = listed.data.find((each) => each.shiftId === id);
+        return entry?.state === "running" ? entry : undefined;
+      });
+      left.push(running.pid);
+      const grandchild =
+        mode === "stubborn"
+          ? await until(() => {
+              try {
+                return (
+                  JSON.parse(
+                    readFileSync(
+                      join(where.root, `grandchild-${id}.json`),
+                      "utf8",
+                    ),
+                  ) as { pid: number }
+                ).pid;
+              } catch {
+                return undefined;
+              }
+            })
+          : null;
+      if (grandchild !== null) left.push(grandchild);
+      return { id, pid: running.pid, grandchild };
+    },
+    /** End what a failed test left running: the hearth, the shift, its child. */
+    cleanup(): void {
+      proc.kill();
+      for (const pid of left) if (processAlive(pid)) killTree(pid);
+    },
+  };
+}
+
+/** Wait until neither process runs; fails the test after 5 s. */
+async function gone(...pids: Array<number | null>): Promise<void> {
+  for (const pid of pids)
+    if (pid !== null)
+      await until(() => (processAlive(pid) ? undefined : true), 5_000);
+}
+
 describe("a hearth that gets SIGINT or SIGTERM", () => {
   for (const signal of ["SIGTERM", "SIGINT"])
     test(`${signal} runs the hearth's close: the shift it started gets its stop request, closes its record and exits 0 on its own, and the hearth exits 0`, async () => {
-      const dir = scratch();
-      const standIn = join(dir, "stand-in.ts");
-      const main = join(dir, "hearth-main.ts");
-      writeFileSync(standIn, STAND_IN);
-      writeFileSync(main, HEARTH_MAIN(standIn));
-      const hearth = Bun.spawn([process.execPath, main, signal], {
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      let shiftPid = 0;
+      const hearth = await hearthProcess(signal);
       try {
-        const reader = hearth.stdout.getReader();
-        let first = "";
-        while (!first.includes("\n")) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          first += new TextDecoder().decode(value);
-        }
-        reader.releaseLock();
-        const where = JSON.parse(first.split(/\r?\n/)[0] ?? "") as {
-          api: string;
-          url: string;
-          token: string;
-          home: string;
-          root: string;
-          configHome: string;
-          workspace: string;
-        };
-        for (const made of [where.home, where.root, where.configHome])
-          dirs.push(made);
-        writeFileSync(
-          join(where.root, "stand-in.json"),
-          JSON.stringify({ mode: "run", workspace: where.workspace }),
-        );
-        const started = await fetch(`${where.api}/shifts`, {
-          method: "POST",
-          headers: {
-            Origin: where.url,
-            "Content-Type": "application/json",
-            [OPERATOR_HEADER]: where.token,
-          },
-          body: "{}",
+        const shift = await hearth.startShift("run");
+        hearth.send("signal");
+        expect(await hearth.proc.exited).toBe(0);
+        const shifts = join(hearth.where.home, SHIFTS_DIR);
+        expect(existsSync(join(shifts, `${shift.id}.stop`))).toBe(true);
+        expect(readShiftRecord(shifts, shift.id)).toMatchObject({
+          state: "stopped",
+          reason: "operator",
         });
-        expect(started.status).toBe(202);
-        const id = ((await started.json()) as { data: { shiftId: string } })
-          .data.shiftId;
-        const running = await until(async () => {
-          const listed = (await (
-            await fetch(`${where.api}/shifts`, {
-              headers: { Origin: where.url },
-            })
-          ).json()) as { data: ShiftListEntry[] };
-          const entry = listed.data.find((each) => each.shiftId === id);
-          return entry?.state === "running" ? entry : undefined;
-        });
-        shiftPid = running.pid;
-
-        hearth.stdin.write("signal\n");
-        hearth.stdin.flush();
-        expect(await hearth.exited).toBe(0);
-        expect(existsSync(join(where.home, SHIFTS_DIR, `${id}.stop`))).toBe(
-          true,
-        );
-        expect(readShiftRecord(join(where.home, SHIFTS_DIR), id)).toMatchObject(
-          { state: "stopped", reason: "operator" },
-        );
-        expect(processAlive(shiftPid)).toBe(false);
+        expect(processAlive(shift.pid)).toBe(false);
       } finally {
-        hearth.kill();
-        if (shiftPid !== 0 && processAlive(shiftPid)) killTree(shiftPid);
+        hearth.cleanup();
       }
     }, 40_000);
+
+  test("a second signal while the hearth closes ends its shifts at once, with the child each started, and the hearth exits 130 long before the grace", async () => {
+    // The grace is 15 s, and the shift never stops when asked.
+    const hearth = await hearthProcess("SIGINT");
+    try {
+      const shift = await hearth.startShift("stubborn");
+      const began = Date.now();
+      hearth.send("signal");
+      // The close has begun: it has asked the shift to stop, and now waits.
+      await until(() =>
+        existsSync(join(hearth.where.home, SHIFTS_DIR, `${shift.id}.stop`))
+          ? true
+          : undefined,
+      );
+      hearth.send("signal");
+      expect(await hearth.proc.exited).toBe(130);
+      expect(Date.now() - began).toBeLessThan(8_000);
+      await gone(shift.pid, shift.grandchild);
+    } finally {
+      hearth.cleanup();
+    }
+  }, 40_000);
+});
+
+describe("a hearth that ends without closing", () => {
+  test("one that exits some other way (process.exit) ends the shifts it started, with the child each started, through its exit hook alone (no tree guard)", async () => {
+    const hearth = await hearthProcess("SIGINT", "none");
+    try {
+      const shift = await hearth.startShift("stubborn");
+      hearth.send("exit");
+      expect(await hearth.proc.exited).toBe(3);
+      await gone(shift.pid, shift.grandchild);
+    } finally {
+      hearth.cleanup();
+    }
+  }, 40_000);
+
+  test("one killed outright (TerminateProcess on Windows, SIGKILL elsewhere: no code of its own runs) ends the shifts it started, with the child each started, through the tree guard", async () => {
+    const hearth = await hearthProcess("SIGINT");
+    try {
+      const shift = await hearth.startShift("stubborn");
+      if (process.platform === "win32")
+        Bun.spawnSync(["taskkill", "/F", "/PID", String(hearth.proc.pid)], {
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      else process.kill(hearth.proc.pid, "SIGKILL");
+      await hearth.proc.exited;
+      await gone(shift.pid, shift.grandchild);
+    } finally {
+      hearth.cleanup();
+    }
+  }, 40_000);
 });

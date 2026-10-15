@@ -55,6 +55,7 @@ import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
 import {
   createShiftStarts,
+  endLiveShifts,
   type ShiftLauncher,
   superviseShift,
 } from "./shift-launcher";
@@ -464,19 +465,33 @@ async function main(argv: string[]): Promise<void> {
   closeOnSignal(hearth);
 }
 
+/** The exit code of a hearth whose close was cut short by a second signal. */
+export const INTERRUPTED_EXIT = 130;
+
 /**
  * End a started hearth on `SIGINT` or `SIGTERM`: its whole `close()`, the
- * shifts it started asked to stop and waited for, then `exit(0)`. Nothing
- * else in the hearth may listen for those signals and exit first: the shift
- * launcher does not use `supervise()`, whose handler would (`shift-launcher.ts`).
- * A hearth ended with no chance to run code (`SIGKILL`; on Windows,
- * `TerminateProcess`, which is how the dashboard ends it) never gets here.
+ * shifts it started asked to stop and waited for, then `exit(0)`. A second
+ * signal while that runs does not wait: the tree of every shift still running
+ * is ended at once (`endLiveShifts`) and the hearth exits
+ * `INTERRUPTED_EXIT` (130, as an interrupted command does). A shift ended so
+ * needs `forge:shift recover`. Nothing else in the hearth may listen for those
+ * signals and exit first: the shift launcher does not use `supervise()`, whose
+ * handler would (`shift-launcher.ts`). A hearth ended with no chance to run
+ * code (`SIGKILL`; on Windows, `TerminateProcess`, which is how the dashboard
+ * ends it) never gets here.
  */
 export function closeOnSignal(
   hearth: StartedHearth,
   exit: (code: number) => void = (code) => process.exit(code),
 ): void {
+  let closing = false;
   const shutdown = (): void => {
+    if (closing) {
+      endLiveShifts();
+      exit(INTERRUPTED_EXIT);
+      return;
+    }
+    closing = true;
     void hearth.close().finally(() => exit(0));
   };
   process.on("SIGINT", shutdown);

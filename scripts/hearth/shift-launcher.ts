@@ -34,7 +34,7 @@
 
 import { resolve } from "node:path";
 import { killTree, STDERR_TAIL_CHARS } from "../executors/supervisor";
-import { guardTree } from "../executors/tree-guard";
+import { guardTree, type TreeGuard } from "../executors/tree-guard";
 import {
   mintShiftId,
   readShiftRecord,
@@ -104,6 +104,16 @@ const liveShifts = new Set<number>();
 let exitHooked = false;
 
 /**
+ * End, at once and synchronously, the tree of every shift child this process
+ * started that is still running. A second signal during the hearth's close
+ * calls it (`closeOnSignal` in `server.ts`), and so does the `exit` hook.
+ */
+export function endLiveShifts(): void {
+  for (const pid of liveShifts) killTree(pid);
+  liveShifts.clear();
+}
+
+/**
  * End every shift child still running when this process exits by a way that
  * skipped `close()` (an uncaught error, a `process.exit` elsewhere).
  * Synchronous, as an `exit` listener must be. Nothing here listens for
@@ -113,10 +123,7 @@ let exitHooked = false;
 function hookExit(): void {
   if (exitHooked) return;
   exitHooked = true;
-  process.on("exit", () => {
-    for (const pid of liveShifts) killTree(pid);
-    liveShifts.clear();
-  });
+  process.on("exit", endLiveShifts);
 }
 
 /** Read a stream to its end, keeping only its last `max` characters. */
@@ -150,7 +157,11 @@ async function tail(
  * Windows (a terminal's Ctrl-C then reaches the hearth, not the shift, and
  * `killTree` ends the group). No time limit: the shift's own deadline ends it.
  */
-export function superviseShift(spec: ShiftLaunchSpec): LaunchedShiftChild {
+export function superviseShift(
+  spec: ShiftLaunchSpec,
+  /** The tree guard; a test hands in one that guards nothing, to see the exit hook alone. */
+  guardChild: (pid: number) => TreeGuard = guardTree,
+): LaunchedShiftChild {
   const proc = Bun.spawn(spec.argv, {
     cwd: spec.cwd,
     env: spec.env,
@@ -161,7 +172,7 @@ export function superviseShift(spec: ShiftLaunchSpec): LaunchedShiftChild {
   });
   hookExit();
   liveShifts.add(proc.pid);
-  const guard = guardTree(proc.pid);
+  const guard = guardChild(proc.pid);
   const stdout = tail(proc.stdout, STDOUT_TAIL_CHARS);
   const stderr = tail(proc.stderr, STDERR_TAIL_CHARS);
   const done = (async (): Promise<ShiftChildExit> => {
