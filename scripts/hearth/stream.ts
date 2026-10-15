@@ -1,10 +1,11 @@
 /**
  * The hearth's event stream: `GET /__agent-forge/stream`, server-sent events.
  *
- * A new connection gets one `snapshot` — where the ledger stood and what each
- * collection held — and then a `delta` for every ledger event after it, in id
- * order. A reconnect that sends `Last-Event-ID` gets only the deltas after
- * that id.
+ * Every stream begins with the comment `: open`, written as soon as it opens.
+ * A new connection then gets one `snapshot` — where the ledger stood and what
+ * each collection held — and then a `delta` for every ledger event after it,
+ * in id order. A reconnect that sends `Last-Event-ID` gets only the deltas
+ * after that id. A `: keepalive` comment follows every 15 s.
  *
  * The ledger is written by other processes (hooks, gates, CLIs), so nothing
  * can tell this one that a row arrived: each connection polls for ids above
@@ -20,6 +21,8 @@ import type { RouteReply } from "./api";
 /** How often an open stream looks for new events. Well inside "a delta within 1 s". */
 export const STREAM_POLL_MS = 250;
 export const STREAM_KEEPALIVE_MS = 15_000;
+/** The first bytes of every stream, written as soon as it opens. */
+export const STREAM_OPEN_COMMENT = ": open\n\n";
 /** A page that opens streams in a loop stops here. */
 export const STREAM_MAX_CONNECTIONS = 32;
 /** A connection with more than this waiting to be sent is given nothing new until it drains. */
@@ -195,6 +198,12 @@ export function createLedgerStream(deps: LedgerStreamDeps): LedgerStream {
       // Sent now, so the client sees the stream open while the snapshot is
       // still being read; without this the headers wait for the first write.
       res.flushHeaders();
+      // And a first byte at once. Behind the dashboard's proxy the headers
+      // reach the page only with the first byte of the body, so a stream
+      // opened for the page only with its snapshot, or, on a resume, with the
+      // first keepalive 15 s later; the page could not tell that from a hearth
+      // that hangs. A comment: no client reads it as a message.
+      res.write(STREAM_OPEN_COMMENT);
 
       if (lastEventId !== null && lastEventId <= newest) {
         // A resume: the client has everything up to its id.

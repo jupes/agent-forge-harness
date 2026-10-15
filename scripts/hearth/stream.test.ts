@@ -286,6 +286,23 @@ describe("GET /stream on a hearth", () => {
     expect(await resumed.quiet(100)).toBe(true);
   });
 
+  test("a resume's first bytes are the comment ': open', long before its first keepalive", async () => {
+    const h = await start();
+    const first = await stream(h);
+    const { cursor } = snapshotOf(await first.next());
+    first.close();
+    const controller = new AbortController();
+    cleanup.push(() => controller.abort());
+    const asked = performance.now();
+    const response = await fetch(`${h.api}/stream`, {
+      headers: { Origin: h.hearth.url, "Last-Event-ID": String(cursor) },
+      signal: controller.signal,
+    });
+    const chunk = await response.body?.getReader().read();
+    expect(new TextDecoder().decode(chunk?.value)).toBe(": open\n\n");
+    expect(performance.now() - asked).toBeLessThan(1000);
+  });
+
   test("a keepalive comment arrives at the configured interval; the default is 15 s", async () => {
     expect(STREAM_KEEPALIVE_MS).toBe(15_000);
     expect(STREAM_POLL_MS).toBeLessThanOrEqual(500);
@@ -408,6 +425,41 @@ describe("createLedgerStream (injected ledger, bare server)", () => {
       await new Promise((done) => setTimeout(done, 10));
     return check();
   };
+
+  test("a stream's first bytes are the comment ': open', sent at once, while its snapshot is still being read; the snapshot follows it", async () => {
+    let release: () => void = () => undefined;
+    const h = await harness({
+      collections: () =>
+        new Promise((done) => {
+          release = () =>
+            done({
+              runs: { ok: true, data: [], error: null },
+            });
+        }),
+    });
+    const controller = new AbortController();
+    cleanup.push(() => controller.abort());
+    const response = await fetch(h.url, { signal: controller.signal });
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("no body");
+    const decoder = new TextDecoder();
+    const within = <T>(ms: number, read: Promise<T>): Promise<T | "nothing"> =>
+      Promise.race([
+        read,
+        new Promise<"nothing">((done) => setTimeout(() => done("nothing"), ms)),
+      ]);
+    const first = await within(1000, reader.read());
+    expect(
+      first === "nothing"
+        ? first
+        : decoder.decode(first.value, { stream: true }),
+    ).toBe(": open\n\n");
+    release();
+    const next = await within(1000, reader.read());
+    expect(
+      next === "nothing" ? next : decoder.decode(next.value, { stream: true }),
+    ).toStartWith("event: snapshot\n");
+  });
 
   test("when a client leaves, its connection is dropped and the ledger is not read for it again", async () => {
     const h = await harness();
