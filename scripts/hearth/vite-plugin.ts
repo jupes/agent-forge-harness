@@ -123,6 +123,45 @@ function closeWithUpstream(proxy: HttpProxy.Server): void {
   });
 }
 
+/**
+ * Drop the request to the hearth when the client leaves before the hearth's
+ * answer has ended. The proxy aborts its own request only on the client
+ * request's `aborted` event, which Node emits only for a request whose body
+ * had not ended: a GET the page gave up before the hearth answered (a hearth
+ * that hangs) left the proxy's connection to the hearth open, one per request.
+ * Under Node a client that leaves closes the response; under Bun it closes the
+ * request's socket and not the response. Both are listened to. An answer that
+ * ended cleanly is left alone, and the listeners are taken off then.
+ */
+function dropWithClient(proxy: HttpProxy.Server): void {
+  proxy.on("proxyReq", (proxyReq, req, res) => {
+    const socket = req.socket;
+    const forget = (): void => {
+      res.off("close", leave);
+      socket.off("close", leave);
+    };
+    let answered = false;
+    function leave(): void {
+      forget();
+      if (!answered) proxyReq.destroy();
+    }
+    proxyReq.once("response", (proxyRes) => {
+      proxyRes.once("end", () => {
+        answered = true;
+        forget();
+      });
+    });
+    // The proxy reports its request once it has a socket: the client may be
+    // gone already.
+    if (res.destroyed || socket.destroyed) {
+      leave();
+      return;
+    }
+    res.once("close", leave);
+    socket.once("close", leave);
+  });
+}
+
 export function hearthPlugin(
   root: string,
   options: HearthPluginOptions = {},
@@ -146,7 +185,10 @@ export function hearthPlugin(
         [API_PREFIX]: {
           target: `http://127.0.0.1:${port}`,
           changeOrigin: false,
-          configure: closeWithUpstream,
+          configure: (proxy) => {
+            closeWithUpstream(proxy);
+            dropWithClient(proxy);
+          },
         },
       };
 

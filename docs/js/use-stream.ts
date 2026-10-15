@@ -57,13 +57,21 @@ export const RETRY_BASE_MS = 500;
 /** This many failures in a row turn live updates off for the page. */
 export const MAX_FAILURES = 6;
 /**
- * Three missed keepalives: the hearth sends one every 15 s. A connection that
- * sends nothing for this long, not even its answer, is given up. The answer
- * counts too because a hearth that hangs never sends one, and the limit is no
- * shorter because, behind the dashboard's proxy, the answer arrives only with
- * its first byte: a resumed stream's keepalive, 15 s after the request.
+ * Three missed keepalives: the hearth sends one every 15 s. An open stream
+ * that sends nothing for this long is given up.
  */
 export const SILENCE_MS = 45_000;
+/**
+ * A request with no answer (no response headers) for this long is given up:
+ * a hearth that hangs never answers. The hearth writes a byte as soon as a
+ * stream opens (`: open`), so its answer reaches the page at once, also
+ * behind the dashboard's proxy, which passes the headers on only with the
+ * first byte. What can still hold it: the hearth's read of the ledger's
+ * cursor (the ledger waits up to 2 s on a busy file), and the dashboard
+ * starting a hearth again before it proxies. A start slower than this costs
+ * one failure and a retry, which joins the same start.
+ */
+export const ANSWER_MS = 10_000;
 /**
  * A stream that has been open this long and is then heard from works; only
  * then do earlier failures stop counting. A live hearth sends a byte at least
@@ -474,9 +482,10 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     flush();
   };
 
-  const watchSilence = (): void => {
+  /** Give the connection up after `ms` with nothing from it. */
+  const watchSilence = (ms: number = SILENCE_MS): void => {
     silenceTimer = stop(silenceTimer);
-    silenceTimer = timers.set(lost, SILENCE_MS);
+    silenceTimer = timers.set(lost, ms);
   };
 
   /** A connection failed, ended, or went silent. */
@@ -518,7 +527,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       failures = 0;
     };
     // Timed from the request: a hearth that hangs never answers it.
-    watchSilence();
+    watchSilence(ANSWER_MS);
     const handle = deps.transport(state.cursor, {
       onOpen() {
         if (!current()) return;
