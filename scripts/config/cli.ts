@@ -7,7 +7,8 @@
  *   bun run forge:config get <key>       # one effective value, e.g. workflow.default_crew
  *   bun run forge:config keys            # every key `set` writes
  *   bun run forge:config set <key> <value> --user|--workspace
- *                                        # one value into ~/.agent-forge/config.toml or
+ *                                        # one value into the machine file (config.toml in
+ *                                        # AGENT_FORGE_HOME, else ~/.agent-forge) or
  *                                        # <harness>/agent-forge.toml; lists are comma-separated
  *   bun run forge:config show --json     # { ok, data, error }
  *
@@ -16,7 +17,7 @@
 
 import { join } from "path";
 import { isMain } from "../is-main";
-import { type LoadOptions, loadConfig } from "./load";
+import { type LoadOptions, loadConfig, machineConfigFile } from "./load";
 import { setConfigValue, settableKeys } from "./write";
 
 export interface CliOutcome {
@@ -54,7 +55,7 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
       return fail("usage: forge:config set <key> <value> --user|--workspace");
     if (user === workspace)
       return fail(
-        "say which file to write: --user (~/.agent-forge/config.toml) or --workspace (<harness>/agent-forge.toml)",
+        `say which file to write: --user (${machineConfigFile(options)}) or --workspace (<harness>/agent-forge.toml)`,
       );
     const outcome = setConfigValue({
       key,
