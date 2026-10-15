@@ -4,12 +4,14 @@
  *
  * The record (`<id>.json`) is written by the shift as it goes: what it was
  * asked to do, each bead it took and how that ended, and why it stopped. It is
- * a report, never read back to decide anything: Beads holds each bead's state
- * and the ledger the history. The stop request (`<id>.stop`) is an empty file:
- * `forge:shift stop` and `POST /shifts/:id/stop` write it through
- * `requestStop`, and a running shift looks for it on every tick. Both go in the
- * harness home, so the hearth and a shift started with the same home see the
- * same files.
+ * a report, never read back by the shift to decide anything: Beads holds each
+ * bead's state and the ledger the history. A recovery (`shift-recover.ts`)
+ * reads it to know which beads to look at, and closes it. The stop request
+ * (`<id>.stop`) is an empty file: `forge:shift stop` and
+ * `POST /shifts/:id/stop` write it through `requestStop`, and a running shift
+ * looks for it on every tick. Both go in the harness home, so the hearth and a
+ * shift started with the same home see the same files. `recover-lock.db`
+ * beside them is the recoveries' lock.
  */
 
 import {
@@ -50,11 +52,13 @@ export function mintShiftId(
  * - `running`: its run is in flight.
  * - `review`: a run succeeded and the bead was submitted; its draft pull
  *   request is `prUrl`, or `error` says why none was opened.
- * - `released`: the shift stopped it (the deadline, a stop) and put it back in `queued`.
+ * - `released`: the shift stopped it (the deadline, a stop) and put it back in
+ *   `queued`, or a recovery did after the shift's process ended (`error` then
+ *   says `recovered: …`).
  * - `halted`: its runs failed past the repairs, and it was halted.
  * - `left`: the shift let it go in another state: the operator paused or
- *   halted it while it ran, or a queue move after the run did not go through
- *   (`error` says which).
+ *   halted it while it ran, or a queue move after the run did not go through,
+ *   or a recovery found it moved since and left it (`error` says which).
  * - `set-aside`: it never ran: the claim was refused, or its smith, its
  *   reservation or its worktree could not be had.
  */
