@@ -123,6 +123,7 @@ const PAYLOADS: {
       outcome: "cancelled",
       costUsd: 0.4,
       summary: "cancelled by the operator",
+      findings: { blocker: 0, high: 1, medium: 2, low: 0 },
     },
     bad: { councilRunId: "run-1", outcome: "great" },
   },
@@ -217,6 +218,60 @@ describe("validateLedgerEventInput — what emitters append", () => {
     expect(started({ maxBeads: 0 })).toBe(false);
     expect(started({ maxUsd: -1 })).toBe(false);
     expect(started({ maxUsd: "10" })).toBe(false);
+  });
+
+  test("council.run.finished takes findings as a whole count for each of the four severities, or none at all", () => {
+    const finished = (findings: unknown) =>
+      validateLedgerEventInput(
+        input("council.run.finished", {
+          councilRunId: "run-1",
+          outcome: "fail",
+          findings,
+        }),
+      ).ok;
+    const counts = { blocker: 1, high: 0, medium: 2, low: 3 };
+    expect(finished(undefined)).toBe(true);
+    expect(finished(counts)).toBe(true);
+    expect(finished({ blocker: 0, high: 0, medium: 0, low: 0 })).toBe(true);
+    // Partial, fractional, negative, text and non-object findings are refused, not stored.
+    expect(finished({ blocker: 1 })).toBe(false);
+    expect(finished({ ...counts, medium: 1.5 })).toBe(false);
+    expect(finished({ ...counts, low: -1 })).toBe(false);
+    expect(finished({ ...counts, high: "none" })).toBe(false);
+    expect(finished({ ...counts, blocker: null })).toBe(false);
+    expect(finished(null)).toBe(false);
+    expect(finished("blocker 1")).toBe(false);
+    expect(finished([1, 0, 2, 3])).toBe(false);
+  });
+
+  test("a findings count is bounded: a whole number up to a million is accepted, a larger one is refused on both events that carry findings", () => {
+    const counts = { blocker: 1, high: 0, medium: 2, low: 3 };
+    const finished = (findings: unknown) =>
+      validateLedgerEventInput(
+        input("council.run.finished", {
+          councilRunId: "run-1",
+          outcome: "fail",
+          findings,
+        }),
+      ).ok;
+    const reviewed = (findings: unknown) =>
+      validateLedgerEventInput(
+        input("review.recorded", {
+          phase: "plan",
+          round: 1,
+          verdict: "FAIL",
+          findings,
+        }),
+      ).ok;
+    for (const accepts of [finished, reviewed])
+      expect(accepts({ ...counts, blocker: 1_000_000 })).toBe(true);
+    // Past the bound, up to and beyond what a double holds exactly (two such counts would sum to Infinity).
+    for (const tooMany of [1_000_001, 2 ** 53, 1e308])
+      for (const accepts of [finished, reviewed])
+        expect({ tooMany, ok: accepts({ ...counts, low: tooMany }) }).toEqual({
+          tooMany,
+          ok: false,
+        });
   });
 
   test("rejects non-objects and missing workspace", () => {

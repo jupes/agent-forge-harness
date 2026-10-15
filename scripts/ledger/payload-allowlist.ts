@@ -51,7 +51,13 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
   ],
   "shift.stopped": ["shiftId", "reason"],
   "council.run.started": ["councilRunId", "profile", "budgetUsd"],
-  "council.run.finished": ["councilRunId", "outcome", "costUsd", "summary"],
+  "council.run.finished": [
+    "councilRunId",
+    "outcome",
+    "costUsd",
+    "summary",
+    "findings",
+  ],
   "friction.recorded": ["frictionBeadId", "causeEventUlid"],
   "operator.action": ["action", "surface", "target"],
 };
@@ -101,6 +107,22 @@ function usage(value: unknown): unknown {
   return Object.keys(cut).length > 0 ? cut : DROP;
 }
 
+/**
+ * Findings by severity, as counts: a whole, non-negative number under each of
+ * the four severities and nothing else. A review round and a council run both
+ * carry them, and neither may carry text there; nothing is stored when no
+ * count is left.
+ */
+function findingCounts(value: unknown): unknown {
+  const cut = Object.fromEntries(
+    Object.entries(pick(value, FINDING_KEYS)).filter(
+      ([, count]) =>
+        typeof count === "number" && Number.isInteger(count) && count >= 0,
+    ),
+  );
+  return Object.keys(cut).length > 0 ? cut : DROP;
+}
+
 /** Payload keys whose value is an object or array, and the shape each is cut to. */
 const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   usage,
@@ -108,7 +130,7 @@ const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   evaluator: (value) => pick(value, EXECUTOR_KEYS),
   evaluatorIdentity,
   verdictArtifact,
-  findings: (value) => pick(value, FINDING_KEYS),
+  findings: findingCounts,
   globs: (value) =>
     Array.isArray(value)
       ? value.filter((item): item is string => typeof item === "string")

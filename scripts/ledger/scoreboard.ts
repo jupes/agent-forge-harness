@@ -14,8 +14,10 @@
  *   payload's `builder` and `evaluator` are not read. An event with no
  *   executor counts in the row whose executor is null.
  * - A value no event recorded is null, never 0: a pass rate with no gate run,
- *   a cost nobody reported. Council findings by severity are always null,
- *   because `council.run.finished` records none.
+ *   a cost nobody reported. Council findings by severity are the sum of the
+ *   `findings` counts on the finished runs that recorded them, and null where
+ *   none did (a failed or cancelled run records none, and neither does a run
+ *   written before the field existed); `runsWithFindings` says how many did.
  * - Only events still in the ledger are read. Days folded by `compact` keep a
  *   count per kind and nothing per executor, so they are not in it.
  */
@@ -28,6 +30,7 @@ import {
   type ScoreboardExecutor,
   type ScoreboardRow,
 } from "../../types/hearth";
+import type { ReviewFindings } from "../forge/phases";
 import { comparableCheckout } from "../forge/runs";
 import { openLedger } from "./db";
 
@@ -99,6 +102,7 @@ function emptyRow(executor: ScoreboardExecutor | null): ScoreboardRow {
       costUsd: null,
       runsWithCost: 0,
       findings: null,
+      runsWithFindings: 0,
     },
     usage: { sessions: 0, costUsd: null, sessionsWithCost: 0, tokens: {} },
   };
@@ -123,6 +127,10 @@ function keyOf(executor: ScoreboardExecutor | null): string {
         executor.model,
       ]);
 }
+
+const SEVERITIES = ["blocker", "high", "medium", "low"] as const;
+
+const NO_FINDINGS: ReviewFindings = { blocker: 0, high: 0, medium: 0, low: 0 };
 
 /** A number a payload reported, when it is one. */
 function reported(value: unknown): number | undefined {
@@ -196,7 +204,7 @@ function count(tally: Tally, kind: string, payload: Record<string, unknown>) {
       else if (verdict === "FAIL") row.reviews.fail++;
       else if (verdict === "UNREADABLE") row.reviews.unreadable++;
       const findings = record(payload["findings"]);
-      for (const severity of ["blocker", "high", "medium", "low"] as const)
+      for (const severity of SEVERITIES)
         row.reviews.findings[severity] += reported(findings[severity]) ?? 0;
       return;
     }
@@ -217,6 +225,19 @@ function count(tally: Tally, kind: string, payload: Record<string, unknown>) {
       if (cost !== undefined) {
         row.council.costUsd = (row.council.costUsd ?? 0) + cost;
         row.council.runsWithCost++;
+      }
+      // A run reports its findings when at least one severity is a number; a
+      // run without them (failed, cancelled, or written before the field
+      // existed) leaves the sum null, not zero.
+      const findings = record(payload["findings"]);
+      const counts = SEVERITIES.map((severity) => reported(findings[severity]));
+      if (counts.some((value) => value !== undefined)) {
+        const sum = row.council.findings ?? { ...NO_FINDINGS };
+        SEVERITIES.forEach((severity, i) => {
+          sum[severity] += counts[i] ?? 0;
+        });
+        row.council.findings = sum;
+        row.council.runsWithFindings++;
       }
       return;
     }
@@ -325,6 +346,9 @@ function headOf(executor: ScoreboardExecutor | null): string {
 
 const usd = (value: number): string => `$${value.toFixed(4)}`;
 
+const countsText = (findings: ReviewFindings): string =>
+  SEVERITIES.map((severity) => `${findings[severity]} ${severity}`).join(", ");
+
 function block(row: ScoreboardRow): string {
   const { sessions, gates, verdicts, reviews, council, usage } = row;
   const rate =
@@ -335,6 +359,10 @@ function block(row: ScoreboardRow): string {
     council.costUsd === null
       ? `unknown (0 of ${council.finished} finished reported one)`
       : `${usd(council.costUsd)} (${council.runsWithCost} of ${council.finished} finished)`;
+  const councilFindings =
+    council.findings === null
+      ? `not recorded (0 of ${council.finished} finished reported them)`
+      : `${countsText(council.findings)} (${council.runsWithFindings} of ${council.finished} finished reported them)`;
   const usageCost =
     usage.costUsd === null
       ? `unknown (0 of ${sessions.ended} ended sessions reported one)`
@@ -348,10 +376,10 @@ function block(row: ScoreboardRow): string {
     `  runs ${row.runs}; sessions ${sessions.started} started, ${sessions.ended} ended: ${sessions.completed} completed, ${sessions.failed} failed, ${sessions.timedOut} timed out, ${sessions.stopped} stopped, ${sessions.other} other`,
     `  gates ${gates.ran} ran: ${gates.passed} passed, ${gates.failed} failed, pass rate ${rate}`,
     `  verdicts ${verdicts.pass} pass, ${verdicts.fail} fail, ${verdicts.unreadable} unreadable`,
-    `  reviews ${reviews.rounds} rounds: ${reviews.pass} PASS, ${reviews.fail} FAIL, ${reviews.unreadable} UNREADABLE; findings ${reviews.findings.blocker} blocker, ${reviews.findings.high} high, ${reviews.findings.medium} medium, ${reviews.findings.low} low`,
+    `  reviews ${reviews.rounds} rounds: ${reviews.pass} PASS, ${reviews.fail} FAIL, ${reviews.unreadable} UNREADABLE; findings ${countsText(reviews.findings)}`,
     `  council ${council.started} started, ${council.finished} finished: ${council.pass} pass, ${council.fail} fail, ${council.unreadable} unreadable, ${council.cancelled} cancelled`,
     `  council cost ${councilCost}`,
-    "  council findings by severity: not recorded",
+    `  council findings by severity: ${councilFindings}`,
     `  usage cost ${usageCost}`,
     `  usage tokens ${tokens.length > 0 ? tokens.join(", ") : "not reported"}`,
   ].join("\n");
