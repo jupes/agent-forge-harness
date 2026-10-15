@@ -56,8 +56,10 @@ import type {
   LedgerEvent,
   OperatorEnvelope,
   RunDetail,
+  Scoreboard,
 } from "../../types/hearth";
 import { createCouncilMcpServer } from "../council/mcp";
+import type { CouncilPreview } from "../council/service";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -353,8 +355,8 @@ describe("tools/list", () => {
   });
 });
 
-/** The most the ten rows may cost in `tools/list`. Raise it on purpose, not by accident. */
-const LISTING_BUDGET = 3500;
+/** The most the twelve rows may cost in `tools/list`. Raise it on purpose, not by accident. */
+const LISTING_BUDGET = 4400;
 
 /**
  * Every path read through `node:fs` and `node:fs/promises` until `stop`,
@@ -1062,6 +1064,7 @@ const READS: Record<
   forge_runs_list: { target: "/runs" },
   forge_run_get: { args: { slug: "demo" }, target: "/runs/demo?events=20" },
   forge_events_query: { target: "/events?limit=50" },
+  forge_scoreboard_get: { target: "/scoreboard" },
   forge_queue_list: { target: "/queue" },
   forge_reservations_list: { target: "/reservations" },
   forge_smiths_list: { target: "/smiths" },
@@ -1228,6 +1231,44 @@ describe("arguments become the request", () => {
     expect(ids(next)).toEqual(all.slice(2, 4));
   });
 
+  test("forge_scoreboard_get sends no parameter when not told, and since as given: the board is the one a direct GET of that request answers, and since narrows it", async () => {
+    const hearth = await stocked();
+    const s = await session(place(hearth));
+    const board = (answer: Answer): Scoreboard =>
+      answer.envelope.data as Scoreboard;
+
+    const whole = await s.call("forge_scoreboard_get");
+    expect(s.sent.at(-1)?.target).toBe(`${API}/scoreboard`);
+    expect(whole.envelope).toEqual(
+      await direct(hearth.hearth.url, `${API}/scoreboard`),
+    );
+    // Not an empty board: the stocked hearth's gate and session events are in it.
+    expect(board(whole).events).toBeGreaterThan(0);
+    expect(board(whole).rows.length).toBeGreaterThan(0);
+
+    // The plus of the time zone is sent as a plus, not as a space; the route reads the instant.
+    const offset = "2000-01-01T00:00:00+02:00";
+    const early = await s.call("forge_scoreboard_get", { since: offset });
+    expect(query(s.sent.at(-1))).toEqual({ since: offset });
+    expect(s.sent.at(-1)?.target).toContain(
+      "since=2000-01-01T00%3A00%3A00%2B02%3A00",
+    );
+    expect(early.envelope).toEqual(
+      await direct(
+        hearth.hearth.url,
+        `${API}/scoreboard?since=${encodeURIComponent(offset)}`,
+      ),
+    );
+    expect(board(early).events).toBe(board(whole).events);
+
+    // A since after every stored event reaches the route and empties the board.
+    const late = await s.call("forge_scoreboard_get", {
+      since: "2999-01-01T00:00:00Z",
+    });
+    expect(query(s.sent.at(-1))).toEqual({ since: "2999-01-01T00:00:00Z" });
+    expect(board(late)).toEqual({ rows: [], events: 0, from: null, to: null });
+  });
+
   test("forge_run_get asks for the run's 20 newest events when not told, and for the number given: 0 is the run with none", async () => {
     const hearth = await stocked();
     // More events than the tool asks for by default, so its bound shows.
@@ -1295,6 +1336,12 @@ describe("arguments become the request", () => {
         { since: "yesterday" },
         "/events?since=yesterday&limit=50",
       ],
+      [
+        "forge_scoreboard_get",
+        { since: "yesterday" },
+        "/scoreboard?since=yesterday",
+      ],
+      ["forge_scoreboard_get", { since: "" }, "/scoreboard?since="],
       ["forge_sessions_list", { limit: 0 }, "/sessions?limit=0"],
       ["forge_run_get", { slug: "no-such-run" }, "/runs/no-such-run?events=20"],
       ["forge_run_get", { slug: "demo", events: 201 }, "/runs/demo?events=201"],
@@ -1331,6 +1378,11 @@ describe("arguments become the request", () => {
       ["forge_queue_list", { state: ["no-such-state"] }, "state"],
       ["forge_events_query", { bead: "x".repeat(1001) }, "bead"],
       ["forge_events_query", { kind: ["tool.called"] }, "kind"],
+      ["forge_scoreboard_get", { since: 5 }, "since"],
+      ["forge_scoreboard_get", { since: "x".repeat(1001) }, "since"],
+      // The route reads this workspace only: no other scope is asked for here.
+      ["forge_scoreboard_get", { allWorkspaces: true }, "allWorkspaces"],
+      ["forge_scoreboard_get", { bead: "b-1" }, "bead"],
       ["forge_config_get", { operatorToken: "f".repeat(64) }, "operatorToken"],
     ];
     for (const [name, args, key] of cases) {
@@ -1981,6 +2033,25 @@ const OPERATOR_FIXTURES: Record<string, OperatorFixture> = {
     settle: (hearth) =>
       runFinished(hearth.hearth.url, hearth.hearth.token, "mcp-start"),
   },
+  forge_council_preview: {
+    args: {
+      sourceType: "text",
+      source: "Prüfe diesen Plan: 計画, 🙂.",
+      beadId: "demo-7",
+    },
+    action: "council.run.preview",
+    target: "demo-7",
+    request: {
+      target: `${API}/council/preview`,
+      body: {
+        sourceType: "text",
+        source: "Prüfe diesen Plan: 計画, 🙂.",
+        beadId: "demo-7",
+      },
+    },
+    // Nothing was started.
+    settle: async () => {},
+  },
   forge_council_cancel: {
     args: { id: "mcp-cancel" },
     prepare: (hearth) =>
@@ -2108,7 +2179,10 @@ describe("a governed tool in an operator session (iterating the table)", () => {
       expect(calls.length).toBe(1);
       expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
       // What the effect was handed is what was sent, byte for byte.
-      if (tool.name === "forge_council_start")
+      if (
+        tool.name === "forge_council_start" ||
+        tool.name === "forge_council_preview"
+      )
         expect((calls[0]?.input as { source: string }).source).toBe(
           String(fixture.args["source"]),
         );
@@ -2147,6 +2221,158 @@ describe("a governed tool in an operator session (iterating the table)", () => {
     }
     expect(hearth.events(["operator.action"])).toEqual([]);
     expect(effects).toEqual([]);
+  });
+});
+
+/** The ids of the council runs a hearth holds, read with its own token. A listing that is refused throws: it must not read as "no run". */
+async function councilRunIds(hearth: TestHearth): Promise<string[]> {
+  const response = await fetch(`${hearth.hearth.url}${API}/council-api/runs`, {
+    headers: { [OPERATOR_HEADER]: hearth.hearth.token },
+  });
+  if (response.status !== 200)
+    throw new Error(`the run listing answered ${response.status}`);
+  const { data } = (await response.json()) as {
+    data?: Array<{ runId: string }>;
+  };
+  return (data ?? []).map((job) => job.runId);
+}
+
+/** What the hearth answers a direct, same-origin POST that carries its own operator token. */
+async function directPost(
+  hearth: TestHearth,
+  target: string,
+  body: unknown,
+): Promise<OperatorEnvelope> {
+  const response = await fetch(`${hearth.hearth.url}${API}${target}`, {
+    method: "POST",
+    headers: hearth.headers(hearth.hearth.token),
+    body: JSON.stringify(body),
+  });
+  const checked = validateOperatorEnvelope(await response.json());
+  if (!checked.ok) throw new Error(`not an envelope: ${checked.error}`);
+  return checked.value;
+}
+
+describe("forge_council_preview", () => {
+  const body = {
+    sourceType: "text",
+    source: "Evaluate this plan and list what evidence is missing.",
+    beadId: "demo-7",
+  };
+
+  test("an operator session gets the listing a direct preview of the same body answers, audited against the bead as an mcp action, and no run starts", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    expect(await councilRunIds(hearth)).toEqual([]);
+
+    const answer = await operator.call("forge_council_preview", body);
+    expect({ isError: answer.isError, ok: answer.envelope.ok }).toEqual({
+      isError: false,
+      ok: true,
+    });
+    const preview = answer.envelope.data as CouncilPreview;
+    expect(preview.listing.length).toBeGreaterThan(0);
+    expect(preview.byteLength).toBeGreaterThan(0);
+
+    // Exactly the preview's audit row, against the bead, and nothing of a run.
+    expect(
+      hearth.events().map((event) => [event.kind, event.payload, event.beadId]),
+    ).toContainEqual([
+      "operator.action",
+      { action: "council.run.preview", surface: "mcp", target: "demo-7" },
+      "demo-7",
+    ]);
+    expect(
+      hearth
+        .events(["operator.action"])
+        .map((event) => (event.payload as { action: string }).action),
+    ).toEqual(["council.run.preview"]);
+    expect(await councilRunIds(hearth)).toEqual([]);
+    expect(hearth.commands.calls).toEqual([]);
+
+    // The same body posted straight to the route: the same answer.
+    expect(answer.envelope).toEqual(
+      await directPost(hearth, "/council/preview", body),
+    );
+
+    // The run listing is not blind: a start is in it.
+    await startRun(hearth.hearth.url, hearth.hearth.token, {
+      ...body,
+      runId: "after-preview",
+    });
+    expect(await councilRunIds(hearth)).toEqual(["after-preview"]);
+    await runFinished(hearth.hearth.url, hearth.hearth.token, "after-preview");
+  }, 30_000);
+
+  test("a source the hearth cannot pack comes back as the hearth's own refusal, and no run starts", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    const request = { sourceType: "file", source: "no-such-note.md" };
+    const answer = await operator.call("forge_council_preview", request);
+    expect(answer.isError).toBe(true);
+    expect(answer.envelope.ok).toBe(false);
+    expect(answer.envelope).toEqual(
+      await directPost(hearth, "/council/preview", request),
+    );
+    expect(await councilRunIds(hearth)).toEqual([]);
+  });
+
+  test("an agent session is refused before its arguments are read, a bead source included: nothing is sent, no token file is read, the hearth runs no command and records no action", async () => {
+    const hearth = await stocked();
+    const agent = await session(place(hearth));
+    for (const args of [
+      { sourceType: "bead", source: "demo-7" },
+      { sourceType: "bead", source: "demo-7", beadId: "demo-7" },
+      // Arguments the tool would refuse in an operator session are not looked at here.
+      { sourceType: 7, runId: "x", profile: "y" },
+      undefined,
+    ]) {
+      const answer = await agent.call("forge_council_preview", args);
+      expect({ args, answer }).toEqual({
+        args,
+        answer: {
+          isError: true,
+          texts: [expect.any(String)],
+          envelope: {
+            ok: false,
+            data: null,
+            error:
+              "forge_council_preview needs an operator session: this server was started without --operator and holds no operator token.",
+          },
+        },
+      });
+    }
+    expect(agent.sent).toEqual([]);
+    expect(agent.tokenReads).toEqual([]);
+    expect(hearth.commands.calls).toEqual([]);
+    expect(hearth.events(["operator.action"])).toEqual([]);
+  });
+
+  test("an operator session is refused what the route does not read, here: a run id, a profile or a ceiling is not a preview's, and nothing is sent", async () => {
+    const hearth = await stocked();
+    const operator = await session(place(hearth), { operator: true });
+    const base = { sourceType: "text", source: "x" };
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ ...base, runId: "r-1" }, "runId"],
+      [{ ...base, profile: "default" }, "profile"],
+      [{ ...base, maxUsd: 1 }, "maxUsd"],
+      [{ sourceType: "text" }, "source"],
+      [{ source: "x" }, "sourceType"],
+      [{ ...base, maxBytes: "10" }, "maxBytes"],
+      [{ ...base, redactSecrets: "yes" }, "redactSecrets"],
+    ];
+    for (const [args, key] of cases) {
+      const answer = await operator.call("forge_council_preview", args);
+      expect({ args, isError: answer.isError }).toEqual({
+        args,
+        isError: true,
+      });
+      expect(answer.envelope.error).toStartWith("forge_council_preview: ");
+      expect(answer.envelope.error).toContain(key);
+    }
+    expect(operator.sent).toEqual([]);
+    expect(operator.tokenReads).toEqual([]);
+    expect(hearth.events(["operator.action"])).toEqual([]);
   });
 });
 
@@ -2252,6 +2478,7 @@ const ANY_ARGS: Record<string, Record<string, unknown>> = {
     source: "x",
     runId: "which-start",
   },
+  forge_council_preview: { sourceType: "text", source: "x" },
   forge_council_cancel: { id: "which-cancel" },
 };
 
@@ -2397,6 +2624,7 @@ const SCOPE_FIXTURES: Record<
 > = {
   forge_sessions_list: {},
   forge_events_query: {},
+  forge_scoreboard_get: {},
   forge_reservations_list: {},
   forge_queue_list: {},
   forge_runs_list: {},
@@ -2406,6 +2634,10 @@ const SCOPE_FIXTURES: Record<
   forge_council_start: {
     args: { sourceType: "file", source: "note.md", runId: "scope-start" },
     settle: (own) => runFinished(own.url, own.hearth.token, "scope-start"),
+  },
+  // A file only the worktree holds: the main checkout's hearth cannot pack it.
+  forge_council_preview: {
+    args: { sourceType: "file", source: "note.md" },
   },
   forge_council_cancel: {
     args: { id: "scope-cancel" },

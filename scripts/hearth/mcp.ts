@@ -153,6 +153,16 @@ export const FORGE_TOOLS: readonly ForgeTool[] = [
     path: "/events",
   },
   {
+    name: "forge_scoreboard_get",
+    authority: "agent",
+    scope: "workspace",
+    description:
+      "Per executor, from this workspace's ledger: sessions, gates, verdicts, reviews, council runs, usage. since: ISO 8601 time, only events at or after it.",
+    input: z.strictObject({ since: filter.optional() }),
+    method: "GET",
+    path: "/scoreboard",
+  },
+  {
     name: "forge_queue_list",
     authority: "agent",
     scope: "workspace",
@@ -205,6 +215,24 @@ export const FORGE_TOOLS: readonly ForgeTool[] = [
     }),
     method: "POST",
     path: "/council/runs",
+    maxBodyBytes: 2_100_000,
+  },
+  {
+    name: "forge_council_preview",
+    authority: "operator",
+    scope: "checkout",
+    // An action, though it starts nothing: a bead source is read through `bd`.
+    // Only what changes a pack: a run's profile, ceiling and id are not read.
+    description: `${OPERATOR_ONLY} Preview what a council run on a source would send, listed part by part. Starts nothing. sourceType: file, plan, pr, text or bead.`,
+    input: z.strictObject({
+      sourceType: z.string(),
+      source: z.string(),
+      maxBytes: z.number().optional(),
+      redactSecrets: z.boolean().optional(),
+      beadId: z.string().optional(),
+    }),
+    method: "POST",
+    path: "/council/preview",
     maxBodyBytes: 2_100_000,
   },
   {
