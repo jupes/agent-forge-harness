@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { scratchDirs } from "../test-scratch";
@@ -483,6 +483,25 @@ describe("loadConfig: [shift]", () => {
     expect(() => load(machine)).toThrow(
       `${machine.userFile}: shift.max_usd: expected dollars above 0, at most 1000`,
     );
+  });
+
+  test("the shipped example's commented [shift], uncommented, loads to the builtins", () => {
+    const example = readFileSync(
+      join(import.meta.dir, "..", "..", "agent-forge.toml.example"),
+      "utf8",
+    );
+    const at = example.indexOf("# [shift]");
+    expect(at).toBeGreaterThan(-1);
+    const block = example
+      .slice(at)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^# /, ""))
+      .join("\n");
+    const s = sandbox();
+    writeFileSync(s.workspaceFile, block);
+    const { config, provenance } = load(s);
+    expect(config.shift).toEqual(BUILTIN_SHIFT_CONFIG);
+    expect(provenance["shift.throttle"]?.source).toBe(s.workspaceFile);
   });
 
   test("the highest value of each bound loads", () => {

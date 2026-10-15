@@ -247,8 +247,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     the module function.
   - `reserve` does not ask bd whether the bead holding a conflicting reservation is closed. Read
     `forge:eligible` first, or release the stale one.
-  - Host sampling (CPU and memory against the 85% default) is `host-load.ts`, called by the shift;
-    eligibility only takes "busy".
+  - Host sampling (CPU and memory against `[shift] throttle`, which the shift passes on each
+    call) is `host-load.ts`, called by the shift; eligibility only takes "busy".
 
 ## The shift (`shift.ts`, `shift-pr.ts`, `shift-store.ts`, `shift-recover.ts`, `host-load.ts`, `shift-cli.ts`)
 
@@ -318,6 +318,18 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   sum of `session.ended` usage `costUsd`; a run that reports no cost adds nothing and is counted in
   `unpriced`). The count and the spend stop admission; runs in flight finish, so the spend can be
   overshot by them. A busy host (`host-load.ts`) pauses admission and never stops the shift.
+- Where each bound comes from: the option `runShift` was given (a `forge:shift run` flag), else
+  the config's `[shift]` (`concurrency`, `for`, `max_beads`, `max_usd`, `repairs`), else its
+  builtin; the host threshold is `[shift] throttle`. `runShift` loads the config first, from
+  `deps.root` with the exec home and env (the load each run's `forge:exec` makes), and a config
+  that does not load refuses the shift before anything is fetched or written. The record's
+  `options` and `shift.started` carry the values that applied, not where each came from:
+  `bun run forge:config show` says that (`scripts/config/AGENTS.md`). The builtins and the bounds
+  live in `scripts/config/defaults.ts` (`BUILTIN_SHIFT`, `SHIFT_LIMITS`, `SHIFT_MAX_USD`);
+  `SHIFT_DEFAULTS` and `LIMITS` here read them, and `shiftOptions` uses the loader's checks, so
+  the config and a flag are refused in the same words. `POST /shifts` passes only the fields its
+  body gave as flags, so the child applies `[shift]` to the rest
+  (`scripts/hearth/routes/shifts.test.ts`: "only the fields the body gave become flags").
 - Stopping: the deadline (`elapsed`), the stop request file or the in-process signal (`operator`),
   nothing running with the count reached (`count`) or the spend reached (`budget`), nothing running
   and nothing eligible (`drained`), three failed eligibility reads in a row or a failure of the loop
