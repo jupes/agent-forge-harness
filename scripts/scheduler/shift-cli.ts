@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 /**
- * shift-cli.ts — run a shift, stop one, list them.
+ * shift-cli.ts — run a shift, stop one, recover one whose process died, list
+ * them.
  *
  * Usage:
  *   bun run forge:shift run [--for 2h] [--concurrency 2] [--max-beads 4]
  *       [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>]
  *       [--run-timeout <duration>] [--base master]
  *   bun run forge:shift stop <shift-id>
+ *   bun run forge:shift recover <shift-id>
  *   bun run forge:shift list
  *
  * A duration is a whole number of seconds, minutes or hours: `90s`, `30m`,
@@ -24,9 +26,18 @@
  *
  * `stop` asks a running shift to stop (the hearth's `POST /shifts/:id/stop`
  * does the same): it stops every run, puts their beads back in `queued`,
- * frees their reservations and records `shift.stopped`. Ctrl-C kills the
- * runs too, but leaves their beads `running` and their reservations held:
- * prefer `stop`.
+ * frees their reservations and records `shift.stopped`. Ctrl-C (or a crash,
+ * or a kill) ends the runs too, but leaves their beads `running`, their
+ * reservations held and the record `running`: prefer `stop`. `recover` (the
+ * hearth's `POST /shifts/:id/recover` does the same) is the way back once the
+ * shift's process has ended: it puts back in `queued` each bead the shift
+ * still owns (its newest recorded queue move is this shift's start of it;
+ * any other is left as it is and reported), frees every reservation held in
+ * the shift's worktrees, closes the record and records `shift.stopped` with
+ * the reason `recovered`. It is refused while the record's process is alive,
+ * and a pid the system gave to another program since reads as alive too. A
+ * recovery that could not finish exits 1, says what is left and leaves the
+ * record `running`: run it again.
  *
  * Every command prints `{ ok, data, error }` and exits 1 when `ok` is false.
  * bd runs in the main checkout; the ledger, the queue lock and the shift
@@ -39,10 +50,12 @@ import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
 import { isMain } from "../is-main";
 import { ledgerPath } from "../ledger/paths";
+import { resolveCheckout } from "../ledger/workspace";
 import { createHostSampler } from "./host-load";
 import type { CliResult } from "./reservations-cli";
 import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
 import { prCheckRunner, toolRunner } from "./shift-pr";
+import { recoverShift, unfinishedMessage } from "./shift-recover";
 import {
   listShiftRecords,
   mintShiftId,
@@ -52,7 +65,7 @@ import {
 import { createWorktree } from "./worktrees";
 
 const USAGE =
-  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] | stop <shift-id> | list";
+  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] | stop <shift-id> | recover <shift-id> | list";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -198,6 +211,34 @@ export async function runShiftCli(
       return failed(`Usage: ${USAGE}`);
     const asked = requestStop(deps.shiftsDir, id);
     return asked.ok ? done(asked.value) : failed(asked.error);
+  }
+
+  if (command === "recover") {
+    const [id, extra] = rest;
+    if (id === undefined || extra !== undefined)
+      return failed(`Usage: ${USAGE}`);
+    const recovered = await recoverShift(id, {
+      workspace: resolveCheckout(deps.root).workspace,
+      runBd: deps.runBd,
+      ledgerPath: deps.ledgerPath,
+      appendEvent: deps.appendEvent,
+      lockFile: deps.lockFile,
+      shiftsDir: deps.shiftsDir,
+      mainCheckout: deps.mainCheckout,
+      now: deps.now,
+    });
+    if (!recovered.ok) return failed(recovered.error);
+    const recovery = recovered.value;
+    return recovery.complete
+      ? done(recovery)
+      : {
+          exit: 1,
+          out: {
+            ok: false,
+            data: recovery,
+            error: unfinishedMessage(recovery),
+          },
+        };
   }
 
   if (command === "list") {

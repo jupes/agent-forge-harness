@@ -25,9 +25,9 @@
  * nothing but a bead's own shift branch.
  *
  * Not covered: a shift that dies (Ctrl-C, a crash, a kill) has its children
- * killed by the supervisor's exit hook, but leaves their beads `running` and
- * their reservations held. `forge:reservations release` and the operator's
- * queue actions are the way out.
+ * killed by the supervisor's exit hook, but leaves their beads `running`,
+ * their reservations held and its record `running`. `forge:shift recover`
+ * (`shift-recover.ts`) is the way back once its process has ended.
  */
 
 import { join } from "node:path";

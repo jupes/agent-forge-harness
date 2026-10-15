@@ -296,7 +296,10 @@ export type OperatorSurface = (typeof OPERATOR_SURFACES)[number];
  * Why a shift ended: its time ran out (`elapsed`), an operator stopped it,
  * the host stayed too busy (`throttle`), it could not go on (`halted`), it had
  * nothing left to run (`drained`), it admitted its last bead (`count`), or it
- * spent its budget (`budget`).
+ * spent its budget (`budget`). `recovered`: its process ended without
+ * stopping it (Ctrl-C, a crash, a kill), and `forge:shift recover` gave its
+ * beads and reservations back and closed it; the shift itself never records
+ * this one.
  */
 export const SHIFT_STOP_REASONS = [
   "elapsed",
@@ -306,6 +309,7 @@ export const SHIFT_STOP_REASONS = [
   "drained",
   "count",
   "budget",
+  "recovered",
 ] as const;
 
 export type ShiftStopReason = (typeof SHIFT_STOP_REASONS)[number];

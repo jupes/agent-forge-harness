@@ -11,17 +11,21 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { LedgerEventInput } from "../../types/hearth";
 import { claudeAdapter } from "../executors/claude";
 import type { ExecutorAdapter } from "../executors/types";
 import type { BdRunner } from "../hearth/routes/dev-api";
+import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { createQueue } from "./queue";
 import {
   answerQueueList,
   queueTracker,
   type TrackedBead,
 } from "./queue-fixture";
+import { reserve } from "./reservations";
 import type { ShiftDeps } from "./shift";
 import { parseDuration, runShiftCli, shiftCliDeps } from "./shift-cli";
 import { RUN_PR_BODY } from "./shift-pr";
@@ -478,5 +482,154 @@ describe("forge:shift", () => {
     ).toEqual(["shift-20261014-120000-0001", "shift-20261014-110000-0001"]);
     expect((await runShiftCli(["dance"], deps, io)).exit).toBe(1);
     expect((await runShiftCli([], deps, io)).exit).toBe(1);
+  });
+});
+
+describe("forge:shift recover", () => {
+  /**
+   * A checkout of its own whose shift `shiftId` died running one bead: the
+   * bead started as the scheduler and its reservation taken, each event with
+   * the bead's run id, and a record that says running with a pid no process
+   * has.
+   */
+  async function deadShift(shiftId: string, beadId: string) {
+    const root = scratch();
+    mkdirSync(join(root, ".git"));
+    const made = cli(root, [queued(beadId)]);
+    const { deps, tracker } = made;
+    const { workspace } = resolveCheckout(root);
+    const runId = `${beadId}-${shiftId}`;
+    const append = (event: LedgerEventInput) =>
+      appendEvent({ ...event, runId }, { path: deps.ledgerPath });
+    const started = await createQueue({
+      workspace,
+      runBd: tracker.run,
+      appendEvent: append,
+      lockFile: deps.lockFile,
+    }).move(beadId, "start", "scheduler");
+    if (!started.ok) throw new Error(started.error);
+    const worktree = join(root, "trees", `${shiftId}-1`);
+    const reserved = await reserve(
+      { beadId, worktree, globs: [`src/${beadId}/**`] },
+      {
+        workspace,
+        ledgerPath: deps.ledgerPath,
+        appendEvent: append,
+        lockFile: deps.lockFile,
+      },
+    );
+    if (!reserved.ok) throw new Error(reserved.error);
+    const record = (id: string, pid: number): ShiftRecord => ({
+      shiftId: id,
+      pid,
+      workspace,
+      startedAt: "2026-10-15T09:00:00.000Z",
+      deadline: "2026-10-15T11:00:00.000Z",
+      state: "running",
+      options: {
+        concurrency: 2,
+        forMs: 7_200_000,
+        maxBeads: 4,
+        maxUsd: 10,
+        repairs: 3,
+      },
+      spentUsd: 0,
+      unpriced: 0,
+      beads:
+        id === shiftId
+          ? [{ beadId, runId, outcome: "running", attempts: 1, worktree }]
+          : [],
+    });
+    // No process has this id.
+    writeShiftRecord(deps.shiftsDir, record(shiftId, 2_000_000_000));
+    return { ...made, workspace, record };
+  }
+
+  test("recover puts the bead a dead shift still owns back in queued, frees its reservation and closes the record; a second recover, a shift whose process is alive, no id and an extra argument exit 1", async () => {
+    const shiftId = "shift-20261015-090000-c1c1";
+    const { deps, io, tracker, workspace, record } = await deadShift(
+      shiftId,
+      "cli-r",
+    );
+    const result = await runShiftCli(["recover", shiftId], deps, io);
+    expect(result.exit).toBe(0);
+    expect(result.out).toMatchObject({
+      ok: true,
+      error: null,
+      data: {
+        shiftId,
+        complete: true,
+        stopped: "recorded",
+        beads: [{ beadId: "cli-r", outcome: "released" }],
+        reservations: [{ beadId: "cli-r", outcome: "released" }],
+      },
+    });
+    expect(tracker.beads.get("cli-r")?.labels).toEqual(["queue:queued"]);
+    expect(
+      activeReservations({ workspace }, { path: deps.ledgerPath }),
+    ).toEqual([]);
+    expect(readShiftRecord(deps.shiftsDir, shiftId)).toMatchObject({
+      state: "stopped",
+      reason: "recovered",
+    });
+
+    const again = await runShiftCli(["recover", shiftId], deps, io);
+    expect(again.exit).toBe(1);
+    expect(again.out.error).toContain("has stopped already (recovered)");
+    const alive = "shift-20261015-100000-c2c2";
+    writeShiftRecord(deps.shiftsDir, record(alive, process.pid));
+    const refused = await runShiftCli(["recover", alive], deps, io);
+    expect(refused.exit).toBe(1);
+    expect(refused.out.error).toContain(`pid ${process.pid}) is running`);
+    expect(readShiftRecord(deps.shiftsDir, alive)?.state).toBe("running");
+    for (const argv of [["recover"], ["recover", shiftId, "extra"]])
+      expect((await runShiftCli(argv, deps, io)).out).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("recover <shift-id>"),
+      });
+  });
+
+  test("a recover of a record it cannot read (a workspace that is not a string) exits 1 with the envelope and says why, and changes nothing", async () => {
+    const shiftId = "shift-20261015-090000-c4c4";
+    const { deps, io, tracker, record } = await deadShift(shiftId, "cli-u");
+    // justification: a field the record's type does not allow is the case under test.
+    writeShiftRecord(deps.shiftsDir, {
+      ...record(shiftId, 2_000_000_000),
+      workspace: 5,
+    } as unknown as ShiftRecord);
+    const result = await runShiftCli(["recover", shiftId], deps, io);
+    expect(result).toEqual({
+      exit: 1,
+      out: {
+        ok: false,
+        data: null,
+        error: `the record of ${shiftId} is not one recovery can read (workspace: expected a path); nothing was done.`,
+      },
+    });
+    expect(tracker.beads.get("cli-u")?.labels).toEqual(["queue:running"]);
+  });
+
+  test("a recover that cannot finish exits 1 with what it did and what is left, and leaves the record running", async () => {
+    const shiftId = "shift-20261015-090000-c3c3";
+    const { deps, io, tracker } = await deadShift(shiftId, "cli-f");
+    const failing: ShiftDeps = {
+      ...deps,
+      runBd: async (args, options) =>
+        args[0] === "update"
+          ? { status: 1, stdout: "", stderr: "Error: database is locked\n" }
+          : deps.runBd(args, options),
+    };
+    const result = await runShiftCli(["recover", shiftId], failing, io);
+    expect(result.exit).toBe(1);
+    expect(result.out.ok).toBe(false);
+    expect(result.out.error).toContain(`${shiftId} is not recovered yet`);
+    expect(result.out.error).toContain("database is locked");
+    expect(result.out.error).toContain("recover it again");
+    expect(result.out.data).toMatchObject({
+      complete: false,
+      beads: [{ beadId: "cli-f", outcome: "pending" }],
+    });
+    expect(tracker.beads.get("cli-f")?.labels).toEqual(["queue:running"]);
+    expect(readShiftRecord(deps.shiftsDir, shiftId)?.state).toBe("running");
   });
 });

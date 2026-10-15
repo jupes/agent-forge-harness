@@ -26,7 +26,11 @@ import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { queueTracker } from "../scheduler/queue-fixture";
-import { SHIFTS_DIR, writeShiftRecord } from "../scheduler/shift-store";
+import {
+  readShiftRecord,
+  SHIFTS_DIR,
+  writeShiftRecord,
+} from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
@@ -469,6 +473,54 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(
         existsSync(join(h.home, SHIFTS_DIR, "shift-20261014-120000-f1a0.stop")),
       ).toBe(true);
+    },
+  },
+  "POST /shifts/:id/recover": {
+    valid: {
+      path: "/shifts/shift-20261015-090000-f1a1/recover",
+      body: {},
+      status: 200,
+      target: "shift-20261015-090000-f1a1",
+    },
+    invalid: { path: "/shifts/shift-1/recover", body: {} },
+    // A shift of this hearth's workspace whose process ended (no process has
+    // that pid) while it held nothing: recovering it closes it.
+    prepare: async (h) => {
+      writeShiftRecord(join(h.home, SHIFTS_DIR), {
+        shiftId: "shift-20261015-090000-f1a1",
+        pid: 2_000_000_000,
+        workspace: h.workspace,
+        startedAt: "2026-10-15T09:00:00.000Z",
+        deadline: "2026-10-15T11:00:00.000Z",
+        state: "running",
+        options: {
+          concurrency: 2,
+          forMs: 7_200_000,
+          maxBeads: 4,
+          maxUsd: 10,
+          repairs: 3,
+        },
+        spentUsd: 0,
+        unpriced: 0,
+        beads: [],
+      });
+    },
+    outcome: [
+      {
+        kind: "shift.stopped",
+        payload: { shiftId: "shift-20261015-090000-f1a1", reason: "recovered" },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        shiftId: "shift-20261015-090000-f1a1",
+        complete: true,
+        beads: [],
+        reservations: [],
+      });
+      expect(
+        readShiftRecord(join(h.home, SHIFTS_DIR), "shift-20261015-090000-f1a1"),
+      ).toMatchObject({ state: "stopped", reason: "recovered" });
     },
   },
   "POST /beads": {
@@ -1620,7 +1672,7 @@ describe("the paths that existed before the table", () => {
     expect(posted.status).toBe(405);
     expect(posted.headers.get("allow")).toBe("GET");
 
-    // The shifts can be listed and stopped, not started: POST /shifts is not mounted.
+    // The shifts can be listed, stopped and recovered, not started: POST /shifts is not mounted.
     const startShift = await post(h, "/shifts", {});
     expect(startShift.status).toBe(405);
     expect(startShift.headers.get("allow")).toBe("GET");
