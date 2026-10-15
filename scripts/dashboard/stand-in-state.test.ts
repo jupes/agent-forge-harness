@@ -5,11 +5,12 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  readComments,
   readState,
   type StandInState,
   withRetries,
@@ -138,5 +139,108 @@ describe("readState and writeState", () => {
     expect(Object.keys(readState(dir))).toEqual(["e2e-199"]);
     expect(await exited).toBe(0);
     expect(JSON.parse(out.trim())).toMatchObject({ reads: expect.any(Number) });
+  }, 30_000);
+});
+
+describe("the stand-in's comments", () => {
+  const STAND_IN = join(
+    import.meta.dir,
+    "..",
+    "..",
+    "tests",
+    "e2e",
+    "bd-stand-in.ts",
+  );
+  /** Run the stand-in itself, as the hearth runs `bd`: an argument array, no shell. */
+  const bd = (dir: string, args: string[]) => {
+    const run = spawnSync(process.execPath, [STAND_IN, ...args], {
+      env: { ...process.env, BD_STAND_IN_STATE: dir },
+      encoding: "utf8",
+    });
+    return { status: run.status, stdout: run.stdout, stderr: run.stderr };
+  };
+  const issue = (id: string): StandInState[string] => ({
+    id,
+    title: id,
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    created_at: "2026-10-12T00:00:00Z",
+    updated_at: "2026-10-12T00:00:00Z",
+  });
+
+  test("what `comments add` writes is printed back by the comments read, oldest first and as bd prints it; an issue with none prints none, and the issues are left as they were", () => {
+    const dir = scratch();
+    const issues: StandInState = {
+      "e2e-1": issue("e2e-1"),
+      "e2e-2": issue("e2e-2"),
+    };
+    writeState(dir, issues);
+    const first = bd(dir, [
+      "comments",
+      "add",
+      "--json",
+      "--",
+      "e2e-1",
+      "review: COUNCIL c-1 PASS",
+    ]);
+    expect(first.status).toBe(0);
+    const added = JSON.parse(first.stdout) as { id: string; issue_id: string };
+    expect(added.issue_id).toBe("e2e-1");
+    // A text that looks like an option is kept as a text.
+    expect(
+      bd(dir, ["comments", "add", "--json", "--", "e2e-1", "--help"]).status,
+    ).toBe(0);
+
+    const read = bd(dir, ["--readonly", "comments", "e2e-1", "--json"]);
+    expect(read.status).toBe(0);
+    const second = expect.stringMatching(/^[0-9a-f-]{36}$/);
+    const time = expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+    // bd prints a read's fields in this order, timed to the second.
+    expect(Object.keys(JSON.parse(read.stdout)[0] ?? {})).toEqual([
+      "id",
+      "issue_id",
+      "author",
+      "text",
+      "created_at",
+    ]);
+    expect(JSON.parse(read.stdout)).toEqual([
+      {
+        id: added.id,
+        issue_id: "e2e-1",
+        author: "operator",
+        text: "review: COUNCIL c-1 PASS",
+        created_at: time,
+      },
+      {
+        id: second,
+        issue_id: "e2e-1",
+        author: "operator",
+        text: "--help",
+        created_at: time,
+      },
+    ]);
+    expect(
+      JSON.parse(bd(dir, ["--readonly", "comments", "e2e-2", "--json"]).stdout),
+    ).toEqual([]);
+    expect(readState(dir)).toEqual(issues);
+  }, 30_000);
+
+  test("a comment on an issue the stand-in does not know is refused as bd refuses it, and nothing is kept", () => {
+    const dir = scratch();
+    writeState(dir, { "e2e-1": issue("e2e-1") });
+    const refused = bd(dir, [
+      "comments",
+      "add",
+      "--json",
+      "--",
+      "e2e-9",
+      "review: nowhere",
+    ]);
+    expect(refused.status).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({
+      error: 'resolving e2e-9: no issue found matching "e2e-9"',
+    });
+    expect(readComments(dir)).toEqual({});
   }, 30_000);
 });
