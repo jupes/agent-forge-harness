@@ -136,6 +136,8 @@ export interface OperatorApiOverrides {
   mintShiftId?: () => string;
   /** How long `close()` waits for the shifts it started to stop; `SHIFT_STOP_GRACE_MS` by default. */
   shiftStopGraceMs?: number;
+  /** The clock a start's `startedAt` (and a minted id) is read from; the system's by default. */
+  shiftNow?: () => Date;
   /** How long an action's body may take to arrive; 10 s when not given. */
   bodyTimeoutMs?: number;
 }
@@ -259,6 +261,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     launch: options.api?.launchShift ?? superviseShift,
     mintShiftId: options.api?.mintShiftId,
     stopGraceMs: options.api?.shiftStopGraceMs,
+    now: options.api?.shiftNow,
   });
   const table = operatorRoutes({
     root,

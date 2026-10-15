@@ -175,6 +175,29 @@ function startInput(
   };
 }
 
+/**
+ * What `GET /shifts` lists, newest first by `startedAt`, with every tie broken
+ * the same way each time: a start of this hearth that has no record before a
+ * record (it has not even written one yet), starts in the order the registry
+ * gives them (the later launch first), and records by id, descending.
+ */
+export function newestFirst(
+  starts: readonly ShiftLaunchEntry[],
+  records: readonly ListedShift[],
+): ShiftListEntry[] {
+  const launchOrder = new Map(
+    starts.map((entry, index) => [entry.shiftId, index]),
+  );
+  const rank = (entry: ShiftListEntry): number =>
+    launchOrder.get(entry.shiftId) ?? starts.length;
+  return [...starts, ...records].sort(
+    (a, b) =>
+      b.startedAt.localeCompare(a.startedAt) ||
+      rank(a) - rank(b) ||
+      b.shiftId.localeCompare(a.shiftId),
+  );
+}
+
 export function shiftRoutes(deps: ShiftRouteDeps): ApiRoute[] {
   /** A start of this hearth whose record does not exist yet has nothing to stop or give back. */
   const stillStarting = (id: string): RouteReply | null =>
@@ -191,16 +214,11 @@ export function shiftRoutes(deps: ShiftRouteDeps): ApiRoute[] {
     path: "/shifts",
     validate: noParameters,
     read: () => {
-      const listed: ShiftListEntry[] = [
-        ...listShiftRecords(deps.shiftsDir).filter(
-          (record) => record.workspace === deps.workspace,
-        ),
-        ...deps.starts.unrecorded(),
-      ];
-      return {
-        status: 200,
-        data: listed.sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
-      };
+      const starts = deps.starts.unrecorded();
+      const records = listShiftRecords(deps.shiftsDir).filter(
+        (record) => record.workspace === deps.workspace,
+      );
+      return { status: 200, data: newestFirst(starts, records) };
     },
   };
 

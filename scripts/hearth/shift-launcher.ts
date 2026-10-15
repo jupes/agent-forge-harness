@@ -167,7 +167,7 @@ export interface ShiftStarts {
     flags: readonly string[],
     requested: Record<string, unknown>,
   ): StartOutcome;
-  /** This hearth's launches that have no record, newest first. */
+  /** This hearth's launches that have no record, newest first: by `startedAt`, then the later launch first. */
   unrecorded(): ShiftLaunchEntry[];
   /** Ask the running ones to stop, wait, end what is left. Starts nothing after it is called. */
   close(): Promise<void>;
@@ -175,6 +175,8 @@ export interface ShiftStarts {
 
 interface Launch {
   shiftId: string;
+  /** This hearth's count of launches when it was started: breaks a tie between equal `startedAt`. */
+  seq: number;
   child: LaunchedShiftChild;
   startedAt: string;
   requested: Record<string, unknown>;
@@ -237,6 +239,7 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
   const mint = deps.mintShiftId ?? (() => mintShiftId(now()));
   const graceMs = deps.stopGraceMs ?? SHIFT_STOP_GRACE_MS;
   let closing = false;
+  let launched = 0;
 
   const recorded = (id: string): boolean =>
     readShiftRecord(deps.shiftsDir, id) !== null;
@@ -325,8 +328,10 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
         };
       }
       let settle = (): void => undefined;
+      launched += 1;
       const launch: Launch = {
         shiftId,
+        seq: launched,
         child,
         startedAt: now().toISOString(),
         requested: { ...requested },
@@ -352,10 +357,12 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
 
     unrecorded() {
       prune();
+      // Newest first: by start time, and for an equal time (two starts in
+      // one millisecond) the later launch first, never the order of a sort.
       return [...launches.values()]
         .filter((launch) => !recorded(launch.shiftId))
-        .map(entry)
-        .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.seq - a.seq)
+        .map(entry);
     },
 
     async close() {

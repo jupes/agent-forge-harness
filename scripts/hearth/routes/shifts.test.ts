@@ -17,7 +17,11 @@ import {
 } from "../../scheduler/shift-store";
 import { OPERATOR_HEADER } from "../paths";
 import { SHIFT_CLI, type ShiftLaunchEntry } from "../shift-launcher";
-import { startTestHearth, type TestHearth } from "../testing";
+import {
+  startTestHearth,
+  type TestHearth,
+  type TestHearthOptions,
+} from "../testing";
 import { validateOperatorEnvelope } from "../validate";
 import { QUEUE_LOCK_FILE } from "./queue";
 import type { ShiftListEntry } from "./shifts";
@@ -36,11 +40,18 @@ afterEach(async () => {
   for (const hearth of open.splice(0)) await hearth.close();
 });
 
-async function start(): Promise<TestHearth> {
-  const h = await startTestHearth();
+async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
+  const h = await startTestHearth(options);
   open.push(h);
   return h;
 }
+
+/** The instant every start of a hearth given it is stamped with: their `startedAt` tie. */
+const INSTANT = "2026-10-15T12:00:00.000Z";
+
+/** A hearth whose starts all happen in one millisecond, so only the tie-break orders them. */
+const oneInstant = (): Promise<TestHearth> =>
+  start({ api: { shiftNow: () => new Date(INSTANT) } });
 
 const shifts = (h: TestHearth) => join(h.home, SHIFTS_DIR);
 
@@ -328,7 +339,8 @@ describe("POST /shifts", () => {
   });
 
   test("a second start while one this hearth started has no record yet is 409 and starts nothing; once the first has its record, or has failed, a start goes, and two shifts run at once", async () => {
-    const h = await start();
+    // All in one millisecond: the later start is listed first by the tie-break, not by the clock.
+    const h = await oneInstant();
     const first = h.shifts.next();
     expect((await startShift(h, {})).status).toBe(202);
     const busy = await startShift(h, { concurrency: 1 });
@@ -360,7 +372,7 @@ describe("POST /shifts", () => {
   });
 
   test("a shift that ends before writing its record is listed as failed, with its exit code and the error it printed, secrets redacted; one that printed none, with the end of its stderr; neither is listed once its record exists", async () => {
-    const h = await start();
+    const h = await oneInstant();
     const printed = h.shifts.next();
     await startShift(h, {});
     h.shifts.launches[0]?.exit({
@@ -446,7 +458,7 @@ describe("POST /shifts", () => {
   });
 
   test("GET /shifts lists CLI-started records and this hearth's starts together, newest first, and only this workspace's records", async () => {
-    const h = await start();
+    const h = await oneInstant();
     writeShiftRecord(
       shifts(h),
       record("shift-20261014-090000-0001", h.workspace, {
@@ -466,6 +478,33 @@ describe("POST /shifts", () => {
     ).toEqual([
       [starting, "starting", true],
       ["shift-20261014-090000-0001", "stopped", false],
+    ]);
+  });
+
+  test("GET /shifts breaks a tie in startedAt the same way every time: this hearth's starts first, the later launch first, then records by id, descending", async () => {
+    const h = await oneInstant();
+    // Written in the order that would come out of a sort by time alone.
+    for (const id of [
+      "shift-20261015-120000-0a01",
+      "shift-20261015-120000-0b02",
+    ])
+      writeShiftRecord(
+        shifts(h),
+        record(id, h.workspace, { startedAt: INSTANT }),
+      );
+    const earlier = h.shifts.next();
+    await startShift(h, {});
+    h.shifts.launches[0]?.exit({ exitCode: 1 });
+    await h.shifts.launches[0]?.done;
+    const later = h.shifts.next();
+    await startShift(h, {});
+    const listed = await list(h);
+    expect(listed.every((each) => each.startedAt === INSTANT)).toBe(true);
+    expect(listed.map((each) => [each.shiftId, each.state])).toEqual([
+      [later, "starting"],
+      [earlier, "failed"],
+      ["shift-20261015-120000-0b02", "running"],
+      ["shift-20261015-120000-0a01", "running"],
     ]);
   });
 

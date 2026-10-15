@@ -140,6 +140,9 @@ describe("launchFailure", () => {
 });
 
 describe("the registry of the shifts a hearth starts", () => {
+  /** Every start of a registry is stamped with this instant: their start times tie. */
+  const INSTANT = new Date("2026-10-15T12:00:00.000Z");
+
   function registry(graceMs = 200) {
     const shiftsDir = join(scratch(), "forge home", SHIFTS_DIR);
     const launcher = fakeShifts();
@@ -157,6 +160,7 @@ describe("the registry of the shifts a hearth starts", () => {
       launch: launcher.launch,
       mintShiftId: () => launcher.mint(),
       stopGraceMs: graceMs,
+      now: () => INSTANT,
     });
     return { shiftsDir, launcher, starts };
   }
@@ -220,17 +224,18 @@ describe("the registry of the shifts a hearth starts", () => {
     expect(offered).toHaveLength(20);
   });
 
-  test(`the newest ${KEPT_FAILED_LAUNCHES} launches that failed are kept, newest first; older ones are dropped`, async () => {
+  test(`the newest ${KEPT_FAILED_LAUNCHES} launches that failed are kept, the later launch first when their start times tie; older ones are dropped`, async () => {
     const { launcher, starts } = registry();
     for (let n = 0; n < KEPT_FAILED_LAUNCHES + 2; n++) {
       const started = starts.start(starts.mint(), [], {});
       if (!started.ok) throw new Error(started.error);
       launcher.launches[n]?.exit({ exitCode: 1 });
       await launcher.launches[n]?.done;
-      // Distinct start times, a millisecond apart at least.
-      await Bun.sleep(2);
     }
     const kept = starts.unrecorded();
+    expect(
+      kept.every((entry) => entry.startedAt === INSTANT.toISOString()),
+    ).toBe(true);
     expect(kept.map((entry) => entry.shiftId)).toEqual(
       launcher.minted.slice(2).reverse(),
     );
