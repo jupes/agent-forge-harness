@@ -297,7 +297,7 @@ describe("tools/list", () => {
       expect(greeting).toEqual(greetings[0]);
   });
 
-  test("is the forge rows in table order, then the council's own listing unchanged", async () => {
+  test("is the forge rows in table order, then the council's own listing, where a tool an agent session may not call says so first", async () => {
     const { client } = await session(emptyPlace());
     const { tools } = await client.listTools();
 
@@ -316,7 +316,13 @@ describe("tools/list", () => {
       ...FORGE_TOOLS.map((tool) => tool.name),
       "council_echo",
     ]);
-    expect(tools.slice(FORGE_TOOLS.length)).toEqual(own);
+    // The stand-in's one tool is not a read tool of the council's: governed.
+    expect(tools.slice(FORGE_TOOLS.length)).toEqual(
+      own.map((tool) => ({
+        ...tool,
+        description: `Operator session only. ${tool.description}`,
+      })),
+    );
     for (const [index, row] of FORGE_TOOLS.entries()) {
       const listed = tools[index];
       expect(listed?.description).toBe(row.description);
@@ -1893,16 +1899,28 @@ describe("what a hearth answers is not trusted", () => {
   });
 });
 
-/** What a hearth's council service says of a run. */
-async function runStatus(url: string, runId: string): Promise<string> {
-  const response = await fetch(`${url}${API}/council-api/runs/${runId}`);
+/** What a hearth's council service says of a run. Reading a stored run needs the operator token. */
+async function runStatus(
+  url: string,
+  token: string,
+  runId: string,
+): Promise<string> {
+  const response = await fetch(`${url}${API}/council-api/runs/${runId}`, {
+    headers: { [OPERATOR_HEADER]: token },
+  });
+  if (response.status === 403)
+    throw new Error(`the hearth at ${url} refused to read run ${runId}`);
   const job = (await response.json()) as { data?: { status?: string } };
   return job.data?.status ?? "";
 }
 
-async function runFinished(url: string, runId: string): Promise<void> {
+async function runFinished(
+  url: string,
+  token: string,
+  runId: string,
+): Promise<void> {
   for (let attempt = 0; attempt < 400; attempt++) {
-    const status = await runStatus(url, runId);
+    const status = await runStatus(url, token, runId);
     if (status !== "running" && status !== "cancelling") return;
     await new Promise((done) => setTimeout(done, 25));
   }
@@ -1960,7 +1978,8 @@ const OPERATOR_FIXTURES: Record<string, OperatorFixture> = {
         runId: "mcp-start",
       },
     },
-    settle: (hearth) => runFinished(hearth.hearth.url, "mcp-start"),
+    settle: (hearth) =>
+      runFinished(hearth.hearth.url, hearth.hearth.token, "mcp-start"),
   },
   forge_council_cancel: {
     args: { id: "mcp-cancel" },
@@ -1973,7 +1992,8 @@ const OPERATOR_FIXTURES: Record<string, OperatorFixture> = {
     action: "council.run.cancel",
     target: "mcp-cancel",
     request: { target: `${API}/council/runs/mcp-cancel/cancel`, body: {} },
-    settle: (hearth) => runFinished(hearth.hearth.url, "mcp-cancel"),
+    settle: (hearth) =>
+      runFinished(hearth.hearth.url, hearth.hearth.token, "mcp-cancel"),
   },
 };
 
@@ -2094,7 +2114,9 @@ describe("a governed tool in an operator session (iterating the table)", () => {
         );
       await fixture.settle(hearth);
     }
-    expect(await runStatus(hearth.hearth.url, "mcp-start")).toBe("completed");
+    expect(
+      await runStatus(hearth.hearth.url, hearth.hearth.token, "mcp-start"),
+    ).toBe("completed");
   }, 30_000);
 
   test("the hearth's own refusal is behind this server's: a well-formed token the hearth did not mint comes back as its 403, and nothing is recorded or done", async () => {
@@ -2383,7 +2405,7 @@ const SCOPE_FIXTURES: Record<
   forge_config_get: {},
   forge_council_start: {
     args: { sourceType: "file", source: "note.md", runId: "scope-start" },
-    settle: (own) => runFinished(own.url, "scope-start"),
+    settle: (own) => runFinished(own.url, own.hearth.token, "scope-start"),
   },
   forge_council_cancel: {
     args: { id: "scope-cancel" },
@@ -2393,7 +2415,7 @@ const SCOPE_FIXTURES: Record<
         source: "Evaluate this plan.",
         runId: "scope-cancel",
       }),
-    settle: (own) => runFinished(own.url, "scope-cancel"),
+    settle: (own) => runFinished(own.url, own.hearth.token, "scope-cancel"),
   },
 };
 
@@ -2553,37 +2575,73 @@ async function until(holds: () => boolean, label: string): Promise<void> {
 /** The largest delay a timer takes: what a caller passes to wait as long as it likes. */
 const NO_LIMIT = 2_147_483_647;
 
+/** The real council's registry, and a client of it that is not bridged. */
+async function realCouncil(): Promise<{
+  workspace: string;
+  build: () => McpServer;
+  direct: Client;
+}> {
+  const workspace = tempDir("af-mcp-council-");
+  const options = {
+    workspaceRoot: workspace,
+    harnessRoot: REPO,
+    environment: { COUNCIL_RUNS_DIR: join(workspace, "runs") },
+  };
+  const own = createCouncilMcpServer(options);
+  const direct = new Client({ name: "direct", version: "0" });
+  const [near, far] = InMemoryTransport.createLinkedPair();
+  await own.connect(far);
+  await direct.connect(near);
+  cleanup.push(async () => {
+    await direct.close();
+    await own.close();
+  });
+  return {
+    workspace,
+    build: () => createCouncilMcpServer(options),
+    direct,
+  };
+}
+
+/** What an agent session is answered by a tool it may not call. */
+const agentRefusal = (name: string): OperatorEnvelope => ({
+  ok: false,
+  data: null,
+  error: `${name} needs an operator session: this server was started without --operator and holds no operator token.`,
+});
+
+/** The real council's tools that act: an agent session is refused them. */
+const COUNCIL_ACTIONS = ["council_start", "council_review", "council_cancel"];
+
 describe("the council's tools, re-exported", () => {
-  test("the real council: its listing arrives unchanged, a call answers what the council itself answers, and a review runs to its end", async () => {
-    const workspace = tempDir("af-mcp-council-");
-    const options = {
-      workspaceRoot: workspace,
-      harnessRoot: REPO,
-      environment: { COUNCIL_RUNS_DIR: join(workspace, "runs") },
-    };
+  test("the real council: its listing arrives with only its three acting tools marked operator only, a call answers what the council itself answers, and a review runs to its end", async () => {
+    const { workspace, build, direct } = await realCouncil();
     const hearth = await stocked();
     const through = await session(place(hearth), {
       operator: true,
-      council: () => createCouncilMcpServer(options),
-    });
-
-    const own = createCouncilMcpServer(options);
-    const direct = new Client({ name: "direct", version: "0" });
-    const [near, far] = InMemoryTransport.createLinkedPair();
-    await own.connect(far);
-    await direct.connect(near);
-    cleanup.push(async () => {
-      await direct.close();
-      await own.close();
+      council: build,
     });
 
     const listed = (await through.client.listTools()).tools;
     const theirs = (await direct.listTools()).tools;
     expect(theirs.length).toBeGreaterThan(0);
-    expect(listed.slice(FORGE_TOOLS.length)).toEqual(theirs);
-    expect(JSON.stringify(listed.slice(FORGE_TOOLS.length))).toBe(
-      JSON.stringify(theirs),
+    expect(listed.slice(FORGE_TOOLS.length)).toEqual(
+      theirs.map((tool) =>
+        COUNCIL_ACTIONS.includes(tool.name)
+          ? {
+              ...tool,
+              description: `Operator session only. ${tool.description}`,
+            }
+          : tool,
+      ),
     );
+    // Every tool the council does not mark read-only is one of the three.
+    expect(
+      theirs
+        .filter((tool) => tool.annotations?.readOnlyHint !== true)
+        .map((tool) => tool.name)
+        .sort(),
+    ).toEqual([...COUNCIL_ACTIONS].sort());
 
     const calls: Array<[string, Record<string, unknown>]> = [
       ["council_profiles", {}],
@@ -2629,9 +2687,129 @@ describe("the council's tools, re-exported", () => {
     expect(hearth.events(["operator.action"])).toEqual([]);
   }, 30_000);
 
+  test("the real council in an agent session: its read tools answer what the council itself answers; council_start, council_review and council_cancel are refused whatever they are sent, and nothing starts", async () => {
+    const { workspace, build, direct } = await realCouncil();
+    const agent = await session(emptyPlace(), { council: build });
+
+    const reads: Array<[string, Record<string, unknown>]> = [
+      ["council_profiles", {}],
+      ["council_readiness", {}],
+      ["council_list", {}],
+      ["council_status", { runId: "no-such-run" }],
+      ["council_replay", { runId: "no-such-run" }],
+    ];
+    for (const [name, args] of reads) {
+      const forwarded = await agent.client.callTool({ name, arguments: args });
+      outputs.push(JSON.stringify(forwarded));
+      expect({ name, forwarded }).toEqual({
+        name,
+        forwarded: await direct.callTool({ name, arguments: args }),
+      });
+    }
+
+    const review = { sourceType: "text", source: "Evaluate this plan." };
+    const acts: Array<[string, Record<string, unknown> | undefined]> = [
+      ["council_start", { ...review, runId: "agent-start" }],
+      ["council_review", { ...review, runId: "agent-review" }],
+      ["council_cancel", { runId: "no-such-run" }],
+      ["council_start", { kind: "bead", id: "agent-forge-harness-abc" }],
+      ["council_review", { not: "an argument it takes" }],
+      ["council_cancel", undefined],
+    ];
+    for (const [name, args] of acts) {
+      const answer = await agent.call(name, args);
+      expect({
+        name,
+        isError: answer.isError,
+        envelope: answer.envelope,
+      }).toEqual({ name, isError: true, envelope: agentRefusal(name) });
+      expect(answer.texts).toEqual([JSON.stringify(agentRefusal(name))]);
+    }
+
+    // Nothing started: the bridged council lists no run, and no run reserved a directory.
+    const after = await agent.client.callTool({
+      name: "council_list",
+      arguments: {},
+    });
+    expect(after.structuredContent).toEqual({
+      ok: true,
+      data: { runs: [] },
+      error: null,
+    });
+    for (const runId of ["agent-start", "agent-review"])
+      expect(existsSync(join(workspace, "runs", runId))).toBe(false);
+    expect(agent.sent).toEqual([]);
+    expect(agent.tokenReads).toEqual([]);
+  }, 30_000);
+
+  test("fails closed: a council tool answers an agent session only when it is one of the council's read tools by name and the council marks it read-only", async () => {
+    const answered = async () => ({
+      content: [{ type: "text" as const, text: "answered" }],
+    });
+    const council = (): McpServer => {
+      const server = new McpServer({ name: "stand-in-council", version: "0" });
+      // Marked read-only, but not one of the council's read tools.
+      server.registerTool(
+        "council_echo",
+        {
+          description: "Echoes.",
+          inputSchema: z.object({}),
+          annotations: { readOnlyHint: true },
+        },
+        answered,
+      );
+      // A read tool's name, not marked read-only.
+      server.registerTool(
+        "council_status",
+        { description: "Status.", inputSchema: z.object({}) },
+        answered,
+      );
+      // Both.
+      server.registerTool(
+        "council_list",
+        {
+          description: "Lists.",
+          inputSchema: z.object({}),
+          annotations: { readOnlyHint: true },
+        },
+        answered,
+      );
+      return server;
+    };
+    const agent = await session(emptyPlace(), { council });
+    const operator = await session(emptyPlace(), { council, operator: true });
+
+    for (const name of ["council_echo", "council_status"])
+      expect((await agent.call(name, {})).envelope).toEqual(agentRefusal(name));
+    const text = async (s: Session, name: string): Promise<unknown> =>
+      (await s.client.callTool({ name, arguments: {} })).content;
+    expect(await text(agent, "council_list")).toEqual([
+      { type: "text", text: "answered" },
+    ]);
+    for (const name of ["council_echo", "council_status", "council_list"])
+      expect({ name, content: await text(operator, name) }).toEqual({
+        name,
+        content: [{ type: "text", text: "answered" }],
+      });
+
+    const listing = async (s: Session) =>
+      (await s.client.listTools()).tools
+        .slice(FORGE_TOOLS.length)
+        .map((tool) => [tool.name, tool.description]);
+    expect(await listing(agent)).toEqual([
+      ["council_echo", "Operator session only. Echoes."],
+      ["council_status", "Operator session only. Status."],
+      ["council_list", "Lists."],
+    ]);
+    expect(await listing(operator)).toEqual(await listing(agent));
+  });
+
   test("a bridged call has no time limit of the bridge's own: still waiting after a day, it then answers", async () => {
     const council = waitingCouncil();
-    const s = await session(emptyPlace(), { council: council.build });
+    const s = await session(emptyPlace(), {
+      council: council.build,
+      operator: true,
+    });
     jest.useFakeTimers();
     try {
       const pending = s.client
@@ -2655,7 +2833,10 @@ describe("the council's tools, re-exported", () => {
 
   test("the caller cancelling a bridged call cancels it in the council", async () => {
     const council = waitingCouncil();
-    const s = await session(emptyPlace(), { council: council.build });
+    const s = await session(emptyPlace(), {
+      council: council.build,
+      operator: true,
+    });
     const caller = new AbortController();
     const pending = s.client
       .callTool(
@@ -2681,6 +2862,7 @@ describe("the council's tools, re-exported", () => {
     const s = await session(emptyPlace(), {
       council: council.build,
       gone: gone.signal,
+      operator: true,
     });
     const pending = s.client
       .callTool({ name: "council_wait", arguments: {} }, { timeout: NO_LIMIT })
@@ -2702,7 +2884,10 @@ describe("the council's tools, re-exported", () => {
 
   test("the connection closing ends the calls still waiting", async () => {
     const council = waitingCouncil();
-    const s = await session(emptyPlace(), { council: council.build });
+    const s = await session(emptyPlace(), {
+      council: council.build,
+      operator: true,
+    });
     const pending = s.client
       .callTool({ name: "council_wait", arguments: {} }, { timeout: NO_LIMIT })
       .catch(() => "rejected");
@@ -3173,14 +3358,14 @@ describe("the server as a process, over stdio", () => {
  */
 const HEARTH_MCP = JSON.stringify("./scripts/hearth/mcp");
 
-/** A script for `bun -e`, run from the repository root: the real serve function with a stand-in council. */
+/** A script for `bun -e`, run from the repository root: the real serve function with a stand-in council, as an operator session (its tools are not read tools of the council). */
 const standInScript = (tools: string): string => `
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { serveHearthMcp } from ${HEARTH_MCP};
 serveHearthMcp({
   root: process.env.MCP_TEST_ROOT ?? "",
-  operator: false,
+  operator: true,
   council: () => {
     const server = new McpServer({ name: "stand-in", version: "0" });
     for (const name of ${tools})
@@ -3292,6 +3477,19 @@ describe("the registration", () => {
         })
       ).error,
     ).toContain("needs an operator session");
+    // Nor do the council's own tools that act; its read tools answer.
+    for (const name of ["council_start", "council_review", "council_cancel"])
+      expect(
+        await server.tool(name, {
+          sourceType: "text",
+          source: "x",
+          runId: "registered-agent",
+        }),
+      ).toEqual(agentRefusal(name));
+    expect(await server.tool("council_list")).toMatchObject({
+      ok: true,
+      data: { runs: [] },
+    });
     expect(await server.end()).toBe(0);
     for (const line of server
       .stdout()
@@ -3494,14 +3692,14 @@ describe("a body the hearth will not read", () => {
   }, 30_000);
 });
 
-/** The real serve function with a council that begins work of its own and says when it is closed. */
+/** The real serve function, as an operator session, with a council that begins work of its own and says when it is closed. */
 const backgroundScript = `
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { serveHearthMcp } from ${HEARTH_MCP};
 serveHearthMcp({
   root: process.env.MCP_TEST_ROOT ?? "",
-  operator: false,
+  operator: true,
   council: () => {
     const server = new McpServer({ name: "stand-in", version: "0" });
     let work;
@@ -3728,7 +3926,7 @@ describe("what the second review found", () => {
     ).toEqual([
       { action: "council.run.start", surface: "mcp", target: "large-accepted" },
     ]);
-    await runFinished(hearth.hearth.url, "large-accepted");
+    await runFinished(hearth.hearth.url, hearth.hearth.token, "large-accepted");
   }, 30_000);
 
   test("a large body is held back after the head, 100 ms when not told otherwise: a refusal on the head within that time arrives, and the timer that would write the body never fires once the exchange is over", async () => {
@@ -3874,7 +4072,7 @@ describe("what the second review found", () => {
   }, 15_000);
 });
 
-/** The real serve function with a council whose own work leaves a file behind when it ends. */
+/** The real serve function, as an operator session, with a council whose own work leaves a file behind when it ends. */
 const markerScript = `
 import { writeFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
@@ -3884,7 +4082,7 @@ const mark =(text) => writeFileSync(process.env.MCP_TEST_MARKER ?? "", text, { f
 process.on("exit", (code) => mark("exit " + code + "\\n"));
 serveHearthMcp({
   root: process.env.MCP_TEST_ROOT ?? "",
-  operator: false,
+  operator: true,
   council: () => {
     const server = new McpServer({ name: "stand-in", version: "0" });
     let work;
@@ -4023,9 +4221,15 @@ describe("the instruction files", () => {
           tool: tool.name,
           there: true,
         });
-      // It does not make starting a council the operator's alone: the council's own tools stay for any session.
-      expect(section).toContain("`council_*`");
+      // The council's tools that act are refused in an agent session too; its read tools are any session's.
+      for (const tool of ["council_start", "council_review", "council_cancel"])
+        expect({ file, tool, there: section.includes(`\`${tool}\``) }).toEqual({
+          file,
+          tool,
+          there: true,
+        });
       expect(section).toContain("any session");
+      expect(section).not.toContain("`council_*` tools are any session's");
       // A section, not a manual.
       expect(section.length).toBeLessThan(800);
     });

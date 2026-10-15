@@ -773,10 +773,15 @@ export function contextListing(
 ): string[] {
   const parts = pack.source.metadata?.parts;
   if (Array.isArray(parts)) return [...parts];
-  return pack.evidence.map(
+  const items = pack.evidence.map(
     (item) =>
       `${item.id} ${item.title}: ${item.byteLength} bytes${item.truncated ? ", cut to fit the evidence budget" : ""}`,
   );
+  // A pr source asked for its linked beads names each one whose criteria it sends.
+  const linked = pack.source.metadata?.linkedCriteriaIds;
+  return Array.isArray(linked) && linked.length > 0
+    ? [...items, `linked acceptance criteria sent: ${linked.join(", ")}`]
+    : items;
 }
 
 /** An evidence item's lines as a prompt shows them, numbered from 1. */

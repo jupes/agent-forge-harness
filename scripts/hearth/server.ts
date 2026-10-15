@@ -229,16 +229,17 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       : {}),
     runCommand: hearthCouncilRunner(root, options.councilRunCommand),
   });
-  const council = councilHttpHandler(service);
   const tokenFile = tokenPath(home, root);
   let token = "";
   /**
-   * The token a mutation must present: the one minted at this start, and only
-   * while the published file still holds it. Before it is minted, or once the
-   * file is gone or says something else, nothing is honoured.
+   * The token a mutation, or a read of a stored council run, must present: the
+   * one minted at this start, and only while the published file still holds
+   * it. Before it is minted, or once the file is gone or says something else,
+   * nothing is honoured.
    */
   const expectedToken = (): string | null =>
     token !== "" && readToken(tokenFile) === token ? token : null;
+  const council = councilHttpHandler(service, { expectedToken });
 
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
   const workspace = resolveCheckout(root).workspace;

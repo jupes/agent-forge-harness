@@ -21,7 +21,12 @@ import {
   reserveCouncilRun,
   writeCouncilArtifacts,
 } from "./artifacts";
-import { buildContextPack, renderContextForPrompt } from "./context";
+import { parseCouncilCliArgs, runCouncilCli } from "./cli";
+import {
+  buildContextPack,
+  contextListing,
+  renderContextForPrompt,
+} from "./context";
 import type { IndependentSuccess } from "./deliberation";
 import { FakeCouncilTransport } from "./engine";
 import { createCouncilMcpServer } from "./mcp";
@@ -41,6 +46,7 @@ import {
   type CouncilSeat,
   type PeerCandidate,
 } from "./types";
+import { prepareCouncilContext } from "./workflow";
 
 const temporary: string[] = [];
 function temp() {
@@ -743,6 +749,7 @@ describe("PR snapshot safety", () => {
   test("omits credential files and renamed secrets while tolerating missing optional Beads", async () => {
     const compiled = await compilePullRequest("42", {
       runner: prRunner({ bdMissing: true }),
+      linkedCriteria: true,
     });
     expect(compiled.text).not.toContain("synthetic-env-secret");
     expect(compiled.text).not.toContain("synthetic-renamed-secret");
@@ -752,7 +759,7 @@ describe("PR snapshot safety", () => {
     expect(compiled.text).toContain("Acceptance criteria unavailable");
     expect(compiled.text).toContain("Sensitive file excluded");
   });
-  test("with the linked-criteria lookup switched off no bead is read; by default the linked bead still is", async () => {
+  test("by default, and with the lookup switched off, no bead the PR body names is read; asked for, each is read with bd --readonly and the beads whose criteria were packed are named", async () => {
     const commands = (calls: string[][]) => calls.map((call) => call[0]);
     const recorded: string[][] = [];
     const base = prRunner();
@@ -761,19 +768,187 @@ describe("PR snapshot safety", () => {
       return base(command, cwd);
     };
 
-    const quiet = await compilePullRequest("42", {
-      runner,
-      linkedCriteria: false,
-    });
-    expect(commands(recorded)).not.toContain("bd");
-    expect(quiet.text).toContain("(not looked up for this source)");
-    expect(quiet.text).not.toContain("Safe review");
-    expect(quiet.metadata.linkedIssueIds).toEqual([]);
+    for (const options of [{}, { linkedCriteria: false }]) {
+      recorded.length = 0;
+      const quiet = await compilePullRequest("42", { runner, ...options });
+      expect({ options, commands: commands(recorded) }).toEqual({
+        options,
+        commands: ["gh", "gh", "gh"],
+      });
+      expect(quiet.text).toContain("(not looked up for this source)");
+      expect(quiet.text).not.toContain("Safe review");
+      expect(quiet.metadata.linkedIssueIds).toEqual([]);
+      expect(quiet.metadata).not.toHaveProperty("linkedCriteriaIds");
+    }
 
     recorded.length = 0;
-    const usual = await compilePullRequest("42", { runner });
-    expect(commands(recorded)).toContain("bd");
-    expect(usual.text).toContain("Safe review");
+    const asked = await compilePullRequest("42", {
+      runner,
+      linkedCriteria: true,
+    });
+    expect(recorded.filter((call) => call[0] === "bd")).toEqual([
+      ["bd", "--readonly", "show", "agent-forge-harness-t1b1.3", "--json"],
+    ]);
+    expect(asked.text).toContain("agent-forge-harness-t1b1.3: Safe review");
+    expect(asked.metadata.linkedCriteriaIds).toEqual([
+      "agent-forge-harness-t1b1.3",
+    ]);
+  });
+  test("the listing of a pr source names each bead whose acceptance criteria it sends, and none when it sends none", async () => {
+    const linked = (listing: string[]) =>
+      listing.filter((line) => line.startsWith("linked acceptance criteria"));
+    const pack = (linkedCriteria?: boolean) =>
+      prepareCouncilContext({
+        kind: "pr",
+        source: "42",
+        workspaceRoot: temp(),
+        secretPolicy: "reject",
+        runner: prRunner(),
+        ...(linkedCriteria === undefined ? {} : { linkedCriteria }),
+      });
+    expect(linked(contextListing(await pack(true)))).toEqual([
+      "linked acceptance criteria sent: agent-forge-harness-t1b1.3",
+    ]);
+    expect(linked(contextListing(await pack()))).toEqual([]);
+    expect(linked(contextListing(await pack(false)))).toEqual([]);
+  });
+  test("the CLI takes --linked-criteria with a pr source only: without it no bead is read, with it each is read read-only, listed in the dry run, and listed on stderr before a real run starts", async () => {
+    expect(
+      parseCouncilCliArgs(["pr", "42", "--linked-criteria"]),
+    ).toMatchObject({
+      ok: true,
+      value: { kind: "run", sourceKind: "pr", linkedCriteria: true },
+    });
+    expect(parseCouncilCliArgs(["pr", "42"])).toMatchObject({
+      ok: true,
+      value: { kind: "run", sourceKind: "pr" },
+    });
+    expect(parseCouncilCliArgs(["pr", "42"])).not.toMatchObject({
+      value: { linkedCriteria: true },
+    });
+    for (const args of [
+      ["file", "notes.md", "--linked-criteria"],
+      ["plan", "plan.md", "--linked-criteria"],
+      ["bead", "agent-forge-harness-abc", "--linked-criteria"],
+      ["stdin", "--linked-criteria"],
+    ])
+      expect({ args, parsed: parseCouncilCliArgs(args) }).toEqual({
+        args,
+        parsed: {
+          ok: false,
+          error: "--linked-criteria applies only to a pr source",
+          json: false,
+        },
+      });
+
+    const cwd = temp();
+    const recorded: string[][] = [];
+    const base = prRunner();
+    const runCommand: CommandRunner = async (command, at) => {
+      recorded.push(command);
+      return base(command, at);
+    };
+    const cli = async (args: string[]) => {
+      let stdout = "";
+      const stderr: string[] = [];
+      recorded.length = 0;
+      const code = await runCouncilCli(args, {
+        cwd,
+        readStdin: async () => "",
+        stdout: (text) => {
+          stdout += text;
+        },
+        stderr: (text) => {
+          stderr.push(text);
+        },
+        runCommand,
+      });
+      return {
+        code,
+        stdout,
+        stderr: stderr.join(""),
+        bd: recorded.filter((call) => call[0] === "bd"),
+      };
+    };
+    const line = "linked acceptance criteria sent: agent-forge-harness-t1b1.3";
+
+    const plain = await cli(["pr", "42", "--dry-run", "--json"]);
+    expect(plain.code).toBe(0);
+    expect(plain.bd).toEqual([]);
+    expect(plain.stdout).not.toContain("linked acceptance criteria");
+
+    const asked = await cli([
+      "pr",
+      "42",
+      "--dry-run",
+      "--json",
+      "--linked-criteria",
+    ]);
+    expect(asked.code).toBe(0);
+    expect(asked.bd).toEqual([
+      ["bd", "--readonly", "show", "agent-forge-harness-t1b1.3", "--json"],
+    ]);
+    expect(
+      (JSON.parse(asked.stdout) as { data: { context: { listing: string[] } } })
+        .data.context.listing,
+    ).toContain(line);
+
+    const real = await cli([
+      "pr",
+      "42",
+      "--linked-criteria",
+      "--run-id",
+      "linked-run",
+      "--runs-dir",
+      "runs",
+    ]);
+    expect(real.code).toBe(0);
+    expect(real.stderr).toContain(`Evidence to be sent:\n`);
+    expect(real.stderr).toContain(`  ${line}\n`);
+    const unasked = await cli([
+      "pr",
+      "42",
+      "--run-id",
+      "unlinked-run",
+      "--runs-dir",
+      "runs",
+    ]);
+    expect(unasked.code).toBe(0);
+    expect(unasked.bd).toEqual([]);
+    expect(unasked.stderr).not.toContain("Evidence to be sent:");
+  }, 30_000);
+  test("a pr job through the council service reads no bead, even when the caller's request says linkedCriteria", async () => {
+    const root = temp();
+    const recorded: string[][] = [];
+    const base = prRunner();
+    const council = createCouncilService({
+      workspaceRoot: root,
+      harnessRoot: process.cwd(),
+      runsRoot: join(root, "runs"),
+      resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 1 }),
+      runCommand: async (command, cwd) => {
+        recorded.push(command);
+        return base(command, cwd);
+      },
+    });
+    try {
+      // What the MCP tools and the hearth route hand the service: a field it does not take is not a way in.
+      const request = {
+        sourceType: "pr",
+        source: "42",
+        runId: "pr-job",
+        linkedCriteria: true,
+      } as const;
+      council.start(request);
+      const finished = await council.wait("pr-job");
+      expect(finished.status).toBe("completed");
+      expect(recorded.map((call) => call[0])).toEqual(["gh", "gh", "gh"]);
+      expect(JSON.stringify(finished.run?.context)).not.toContain(
+        "Safe review",
+      );
+    } finally {
+      await council.close();
+    }
   });
   test("a failed command's error is redacted before it is cut, drops a key that never ends, and carries no control character", () => {
     const token = `ghp_${"Zq9".repeat(12)}`;
@@ -872,7 +1047,10 @@ describe("PR snapshot safety", () => {
       }
       return result;
     };
-    const compiled = await compilePullRequest("42", { runner });
+    const compiled = await compilePullRequest("42", {
+      runner,
+      linkedCriteria: true,
+    });
     expect(calls).toBe(10);
     expect(maxActive).toBeGreaterThan(1);
     expect(compiled.metadata.linkedIssueIds).toHaveLength(10);

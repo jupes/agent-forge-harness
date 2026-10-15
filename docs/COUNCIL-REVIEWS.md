@@ -10,7 +10,7 @@ Run `bun run dashboard` and open [the council page](http://127.0.0.1:8787/counci
 
 The **Inside the discussion** panel publishes validated results at round barriers, before chair synthesis. Choose independent reviews, peer critique, or a rebuttal; expand a member to read findings, strengths, unknowns, and evidence-backed objections. Peer reviewers can also identify differently worded candidates as the same underlying issue. The engine merges them only after enough eligible non-author peers agree, before quorum is calculated. Rebuttals show changed stance/severity, the current explanation, and the earlier rationale. **Follow latest** tracks newly completed rounds. Findings remain provisional until synthesis; unresolved findings and provider failures are visible. These are requested review explanations, not private model reasoning traces. Final JSON and Markdown reports preserve the same round history; older reports without round snapshots still expose their raw transcript.
 
-Keys stay in the local server's environment. The execution API accepts only loopback connections and same-origin browser requests. Do not expose this development server publicly or tunnel it to other users. Static hosting displays instructions instead of attempting execution. `DASHBOARD_NO_BUILD=1` skips the unrelated initial Beads dashboard refresh when only the council is needed.
+Keys stay in the local server's environment. The execution API accepts only loopback connections and same-origin browser requests. Starting or cancelling a run needs the hearth's operator token, and so does reading a stored run (the run list, one run, its progress stream): a run holds what was reviewed, a bead's private text included. The page fetches the token from the hearth and sends it; a request without it is refused before any run is looked up. Do not expose this development server publicly or tunnel it to other users. Static hosting displays instructions instead of attempting execution. `DASHBOARD_NO_BUILD=1` skips the unrelated initial Beads dashboard refresh when only the council is needed.
 
 ## Install and try the CLI
 
@@ -29,7 +29,7 @@ bun run council -- pr 123 --profile councils/multi-provider.example.json
 bun run council -- pr https://github.com/owner/repo/pull/123 --profile councils/multi-provider.example.json
 ```
 
-PR review captures the base and head commit SHAs, changed-file list, patch, and linked Agent Forge Beads acceptance criteria when available. If GitHub's metadata response omits any changed files (including its 100-file list cap), the capture fails before fetching or reviewing the diff rather than silently dropping patch sections. Oversized complete patches are truncated at a UTF-8 boundary and the omission is recorded. The GitHub CLI is invoked with argument arrays rather than a shell, and only a PR number or an HTTPS pull-request URL is accepted.
+PR review captures the base and head commit SHAs, changed-file list and patch. It reads no bead unless you ask: with `--linked-criteria` (CLI only), the acceptance criteria of the Beads issues the PR description names, at most ten, are read with `bd --readonly` and sent too, and the listing names each one (`linked acceptance criteria sent: …`), in a dry run and on stderr before a real run. Bead content is private, and a PR description is written by whoever opened the PR, so it does not choose which beads are sent; a review started from the dashboard, the MCP tools or the hearth never sends them. To review a bead together with its pull request, review the bead (below). If GitHub's metadata response omits any changed files (including its 100-file list cap), the capture fails before fetching or reviewing the diff rather than silently dropping patch sections. Oversized complete patches are truncated at a UTF-8 boundary and the omission is recorded. The GitHub CLI is invoked with argument arrays rather than a shell, and only a PR number or an HTTPS pull-request URL is accepted.
 
 Review a Beads issue by its full id. Look at the dry run first: it lists every part that would be sent.
 
@@ -203,6 +203,8 @@ The server exposes eight tools:
 | `council_replay` | Retrieve one nonduplicated full terminal run by its safe run ID after polling completes. |
 
 File and profile paths are restricted to the configured workspace or harness roots. MCP inputs intentionally have no credential fields. This makes the stdio server suitable for local editors, coding agents, CI wrappers, and other systems that can launch an MCP subprocess.
+
+The harness's own registration is different. `.mcp.json` registers `bun run hearth:mcp`, which re-exports these eight tools into every session that loads project servers. There a session started without `--operator` can call only `council_profiles`, `council_readiness`, `council_status`, `council_replay` and `council_list`; `council_start`, `council_review` and `council_cancel` are refused before the council sees the call, as `forge_council_start` is. An operator registers that server in their own local scope with `--operator` to use them, or registers `bun run council:mcp` as above, which keeps all eight for whoever launched it.
 
 Example tool sequence:
 

@@ -22,6 +22,10 @@ Review a PR, plan, research document, Beads issue, or supplied text using the sh
 4. Read the returned `run`, including limitations, failures, unreviewed or contested findings, and reviewer rationales. An unsuccessful envelope may still contain a preserved run and artifacts; report them.
 5. Present the chair's recommendation with evidence and disagreements. A council verdict is advisory, not permission to edit, approve, merge, or post a GitHub review.
 
+## A pull request as the source
+
+`/council pr` sends the PR's metadata, changed files and patch, and no bead. The acceptance criteria of the beads its description names are sent only with `--linked-criteria`, and only when the user asks for them: the PR description, not the user, chose those beads. With it, the dry run's listing names each bead whose criteria will be sent (`linked acceptance criteria sent: …`); show it to the user before step 3.
+
 ## A bead as the source
 
 `/council bead <id>` packs one Beads issue: its acceptance criteria (with id, title, type, priority, status, labels and dependency ids), its latest comments newest first, its description, the plan, research and report of its forge run or that it names, and the most recently mentioned pull request of this workspace's own origin repository. The evidence budget is spent in that order. The acceptance criteria and the comments take what they need first; the description is held to a tenth of the budget and each linked file to 15% until the pull request has had its turn, so under a short budget a long plan can be cut while the pull request is still packed.
@@ -33,4 +37,4 @@ Review a PR, plan, research document, Beads issue, or supplied text using the sh
 - Any plan, research or report path the bead mentions is sent, even when it was written for another bead. The listing shows each one: check it.
 - A run of a bead is recorded in the ledger against that bead, whether it was started with this command, through the MCP server or through the hearth's council route, and whether or not the caller also named the bead for the ledger. Naming a different bead for the ledger is refused. The dashboard's council page does not offer a bead as a source.
 
-For interactive use: `bun run dashboard`, then `/council.html`. For another agent or system, prefer MCP `council_start` followed by `council_status`, avoiding a long blocking tool request. See `docs/COUNCIL-REVIEWS.md`.
+For interactive use: `bun run dashboard`, then `/council.html`. For another agent or system, prefer MCP `council_start` followed by `council_status`, avoiding a long blocking tool request: through the council's own server (`bun run council:mcp`) or an operator session of the harness's. The harness's registration in `.mcp.json` refuses `council_start`, `council_review` and `council_cancel` in an agent session. See `docs/COUNCIL-REVIEWS.md`.

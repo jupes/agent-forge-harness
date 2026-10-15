@@ -47,6 +47,8 @@ Options:
   --bead <id>            Beads issue the review is for (recorded in the ledger;
                          a bead source is always recorded as its own bead)
   --redact-secrets       Redact detected credentials instead of rejecting input
+  --linked-criteria      pr only: also send the acceptance criteria of the beads
+                         the PR description names (at most ten; off by default)
   --dry-run              Resolve context and estimate cost without model calls
   --json                 Emit the standard { ok, data, error } envelope
   --help                  Show this help
@@ -54,6 +56,8 @@ Options:
 A bead source sends the named bead's acceptance criteria, comments, description,
 linked plan/research/report and pull request to every provider in the profile.
 Run it with --dry-run first: the listing shows each part that would be sent.
+A pr source reads no bead unless --linked-criteria is given; then the listing
+names each bead whose acceptance criteria will be sent.
 `;
 
 type RunCommand = {
@@ -67,6 +71,8 @@ type RunCommand = {
   runId?: string;
   beadId?: string;
   secretPolicy: SecretPolicy;
+  /** pr only: the operator asked for the linked beads' acceptance criteria. */
+  linkedCriteria?: true;
   dryRun: boolean;
   json: boolean;
 };
@@ -160,11 +166,23 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
   let beadId: string | undefined;
   let secretPolicy: SecretPolicy = "reject";
   let dryRun = false;
+  let linkedCriteria = false;
   for (let index = start; index < args.length; index += 1) {
     const arg = args[index]!;
     if (arg === "--json") continue;
     if (arg === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+    if (arg === "--linked-criteria") {
+      // A bead is sent only when the operator asks: here, for a PR's beads.
+      if (command !== "pr")
+        return {
+          ok: false,
+          error: "--linked-criteria applies only to a pr source",
+          json,
+        };
+      linkedCriteria = true;
       continue;
     }
     if (arg === "--redact-secrets") {
@@ -240,6 +258,7 @@ export function parseCouncilCliArgs(args: string[]): ParseCliResult {
   if (maxBytes !== undefined) value.maxBytes = maxBytes;
   if (runId) value.runId = runId;
   if (beadId) value.beadId = beadId;
+  if (linkedCriteria) value.linkedCriteria = true;
   return { ok: true, value };
 }
 
@@ -339,6 +358,7 @@ export async function runCouncilCli(
       secretPolicy: command.secretPolicy,
       maxBytes: command.maxBytes,
       runner: io.runCommand,
+      linkedCriteria: command.linkedCriteria === true,
     });
     const listing = contextListing(context);
     const estimatedCostUsd = estimateCouncilCost(profile);
@@ -394,9 +414,10 @@ export async function runCouncilCli(
       return estimatedCostUsd <= budget ? 0 : 1;
     }
 
-    // A bead is private: say what is about to leave before anything does.
+    // A bead is private: say what is about to leave before anything does,
+    // for a bead source and for a PR whose linked beads were asked for.
     // On stderr in every mode, so stdout stays the report or one envelope.
-    if (context.source.kind === "bead")
+    if (context.source.kind === "bead" || command.linkedCriteria === true)
       io.stderr(
         [
           "Evidence to be sent:",

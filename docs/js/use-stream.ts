@@ -153,7 +153,8 @@ export type StreamTransport = (
 ) => { close(): void };
 
 export interface FetchTransportOptions {
-  fetch?: typeof fetch;
+  /** How the request is made: the page's `fetch`, or one that adds what a route needs (the operator token). */
+  fetch?: (input: string, init?: RequestInit) => Promise<Response>;
   /** Extra request headers. A page needs none: its own origin is what the hearth checks. */
   headers?: Record<string, string>;
 }

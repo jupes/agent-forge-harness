@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createOperatorPost, NotSent } from "../../docs/js/operator";
+import {
+  createOperatorClient,
+  createOperatorPost,
+  NotSent,
+} from "../../docs/js/operator";
 import { OPERATOR_HEADER, SURFACE_HEADER, TOKEN_ROUTE } from "../hearth/paths";
 
 interface Call {
@@ -21,11 +25,7 @@ function fakeHearth(tokens: string[]) {
     input: string,
     init: RequestInit = {},
   ): Promise<Response> => {
-    const headers = Object.fromEntries(
-      Object.entries((init.headers ?? {}) as Record<string, string>).map(
-        ([name, value]) => [name.toLowerCase(), value],
-      ),
-    );
+    const headers = Object.fromEntries(new Headers(init.headers).entries());
     calls.push({
       url: input,
       method: init.method ?? "GET",
@@ -51,9 +51,83 @@ function fakeHearth(tokens: string[]) {
       current = "minted-after-restart";
     },
     posts: () => calls.filter((call) => call.method === "POST"),
+    reads: () =>
+      calls.filter((call) => call.method === "GET" && call.url !== TOKEN_ROUTE),
     tokenFetches: () => calls.filter((call) => call.url === TOKEN_ROUTE).length,
   };
 }
+
+describe("operatorRead", () => {
+  test("sends the token on a GET and keeps the request's own headers and signal; no body and no surface label", async () => {
+    const hearth = fakeHearth(["t-1"]);
+    const { read } = createOperatorClient(hearth.fetchImpl);
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const watched = createOperatorClient(async (input, init) => {
+      signals.push(init?.signal);
+      return hearth.fetchImpl(input, init);
+    }).read;
+
+    const answer = await read("/__agent-forge/council-api/runs/r-1");
+    expect(answer.status).toBe(200);
+    const controller = new AbortController();
+    await watched("/__agent-forge/council-api/runs/r-1/events", {
+      headers: { Accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+
+    expect(hearth.reads().map((call) => call.headers)).toEqual([
+      { [OPERATOR_HEADER]: "t-1" },
+      { accept: "text/event-stream", [OPERATOR_HEADER]: "t-1" },
+    ]);
+    expect(hearth.reads().map((call) => call.body)).toEqual([null, null]);
+    expect(signals.at(-1)).toBe(controller.signal);
+  });
+
+  test("shares the poster's token: a post and a read fetch it once", async () => {
+    const hearth = fakeHearth(["t-1"]);
+    const client = createOperatorClient(hearth.fetchImpl);
+    await client.post("/__agent-forge/council-api/runs", {});
+    await client.read("/__agent-forge/council-api/runs");
+    expect(hearth.tokenFetches()).toBe(1);
+    expect(hearth.reads().at(-1)?.headers[OPERATOR_HEADER]).toBe("t-1");
+  });
+
+  test("after a 403 it fetches a fresh token and reads once more", async () => {
+    const hearth = fakeHearth(["t-1", "t-2"]);
+    const { read } = createOperatorClient(hearth.fetchImpl);
+    expect((await read("/__agent-forge/x")).status).toBe(200);
+
+    hearth.restart();
+    const calls = hearth.calls.length;
+    expect((await read("/__agent-forge/x")).status).toBe(200);
+    expect(
+      hearth.calls.slice(calls).map((call) => `${call.method} ${call.url}`),
+    ).toEqual([
+      "GET /__agent-forge/x",
+      `GET ${TOKEN_ROUTE}`,
+      "GET /__agent-forge/x",
+    ]);
+    expect(hearth.reads().at(-1)?.headers[OPERATOR_HEADER]).toBe("t-2");
+  });
+
+  test("a token that cannot be had fails the read with NotSent, and no read is made", async () => {
+    const calls: string[] = [];
+    const { read } = createOperatorClient(async (input, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      return input === TOKEN_ROUTE
+        ? Response.json(
+            { ok: false, data: null, error: "still starting" },
+            { status: 503 },
+          )
+        : Response.json({ ok: true, data: 1, error: null });
+    });
+    const error = await read("/__agent-forge/x").catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(NotSent);
+    expect(calls).toEqual([`GET ${TOKEN_ROUTE}`]);
+  });
+});
 
 describe("operatorPost", () => {
   test("fetches the token once, and sends it with the ui surface and the JSON body", async () => {

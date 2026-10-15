@@ -16,7 +16,7 @@ import { openSettled, stubForgeRun } from "./fixtures";
  * runner makes itself carries no `Origin` and is refused before the token is
  * looked at, which would prove nothing about the token.
  *
- * One test starts a real council run. The default council profile is
+ * Two tests start a real council run each. The default council profile is
  * simulated (no model is called), its artifacts go to this run's own hearth
  * home, and nothing is written to Beads.
  */
@@ -38,7 +38,7 @@ interface Answer<T> {
 function fromPage<T>(
   page: Page,
   path: string,
-  init?: { method: string; headers: Record<string, string>; body: string },
+  init?: { method: string; headers: Record<string, string>; body?: string },
 ): Promise<Answer<T>> {
   return page.evaluate(
     async ({ url, options }) => {
@@ -99,7 +99,7 @@ test("a mutation from the page without the operator token is refused, and nothin
   expect(await recorded(page, "operator.action")).toEqual(before);
 });
 
-test("the Council page starts a run with the operator token; the hearth records the action, then the run", async ({
+test("the Council page starts a run with the operator token and follows it to its end on a stream it reads with the token; the hearth records the action, then the run", async ({
   page,
 }) => {
   await openSettled(page, "/council.html");
@@ -116,6 +116,11 @@ test("the Council page starts a run with the operator token; the hearth records 
       request.method() === "POST" &&
       request.url().endsWith(`${API}/council-api/runs`),
   );
+  const streamed = page.waitForRequest(
+    (request) =>
+      request.method() === "GET" &&
+      /\/council-api\/runs\/[^/]+\/events$/.test(request.url()),
+  );
   await page.getByRole("button", { name: "Convene council" }).click();
   const request = await posted;
 
@@ -126,6 +131,16 @@ test("the Council page starts a run with the operator token; the hearth records 
   const job = ((await response?.json()) as Envelope<{ runId: string }>).data;
   const runId = job?.runId ?? "";
   expect(runId).not.toBe("");
+
+  // The run's stream is read with the token, and answered.
+  const stream = await streamed;
+  expect(stream.url()).toContain(`/council-api/runs/${runId}/events`);
+  expect(stream.headers()[OPERATOR_HEADER]).toBe(token);
+  expect((await stream.response())?.status()).toBe(200);
+  await expect(page.locator(".council-report .pill").first()).toHaveText(
+    "completed",
+    { timeout: 30_000 },
+  );
 
   // The run is simulated and ends by itself; its end is the last thing recorded.
   const ofRun = (events: Stored[]): Stored[] =>
@@ -157,6 +172,64 @@ test("the Council page starts a run with the operator token; the hearth records 
     surface: "ui",
     target: runId,
   });
+});
+
+test("a stored run opens on the Council page, which reads it with the operator token; a read from the page without the token is refused and carries nothing of the run", async ({
+  page,
+}) => {
+  await openSettled(page, "/council.html");
+  const token =
+    (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data?.token ??
+    "";
+  const withToken = { [OPERATOR_HEADER]: token };
+  const source = "Evaluate this plan: the kiln reports its heat in Celsius.";
+  const started = await fromPage<{ runId: string }>(
+    page,
+    `${API}/council/runs`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...withToken },
+      body: JSON.stringify({ sourceType: "text", source }),
+    },
+  );
+  expect(started.status).toBe(202);
+  const runId = started.body.data?.runId ?? "";
+  expect(runId).not.toBe("");
+  const stored = `${API}/council-api/runs/${runId}`;
+  await expect
+    .poll(
+      async () =>
+        (
+          await fromPage<{ status: string }>(page, stored, {
+            method: "GET",
+            headers: withToken,
+          })
+        ).body.data?.status,
+      { timeout: 30_000 },
+    )
+    .toBe("completed");
+
+  // Same origin, no token: refused, and nothing of the run in the answer.
+  for (const path of [stored, `${stored}/events`, `${API}/council-api/runs`]) {
+    const bare = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      return { status: response.status, text: await response.text() };
+    }, path);
+    expect({ path, status: bare.status }).toEqual({ path, status: 403 });
+    expect(bare.text).not.toContain("Celsius");
+    expect(bare.text).not.toContain(runId);
+  }
+
+  // Opened as a bookmark, the page reads the run with the token and shows it.
+  const read = page.waitForRequest(
+    (request) => request.method() === "GET" && request.url().endsWith(stored),
+  );
+  await openSettled(page, `/council.html?run=${runId}`);
+  expect((await read).headers()[OPERATOR_HEADER]).toBe(token);
+  await expect(page.locator(".council-report .pill").first()).toHaveText(
+    "completed",
+  );
+  await expect(page.locator(".council-report .run-meta")).toContainText(runId);
 });
 
 test("a checkpoint review is posted with the operator token", async ({

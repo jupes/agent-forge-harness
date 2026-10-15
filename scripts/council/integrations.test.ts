@@ -297,7 +297,7 @@ describe("multi-provider transports", () => {
 });
 
 describe("PR source compilation", () => {
-  test("records immutable refs, diff omissions, files, and linked acceptance criteria", async () => {
+  test("records immutable refs, diff omissions, files, and, when asked for, linked acceptance criteria", async () => {
     const calls: string[][] = [];
     const runner: CommandRunner = async (command) => {
       calls.push(command);
@@ -343,6 +343,7 @@ describe("PR source compilation", () => {
       cwd: process.cwd(),
       maxDiffBytes: 20,
       runner,
+      linkedCriteria: true,
     });
     expect(compiled.metadata.baseSha).toBe("base-sha");
     expect(compiled.metadata.headSha).toBe("head-sha");

@@ -229,7 +229,7 @@ test(
 );
 
 test(
-  "starts a council run through the proxy with the operator token, and streams the finished run's snapshot",
+  "starts a council run through the proxy with the operator token; a read of the run without the token is refused, and with it the finished run is read and its snapshot streamed",
   async () => {
     const { url, token } = await fixture();
     const api = `${url}/__agent-forge/council-api`;
@@ -258,17 +258,20 @@ test(
     // this process, under load, that stream stopped part way and never ended
     // in 26 of 1136 runs; read after the run had finished, in none of 396
     // (wwj5). The dashboard runs Vite under Node, in a process of its own.
+    // Reading a stored run needs the operator token, through the proxy too.
+    const read = { headers: { [OPERATOR_HEADER]: token } };
+    expect((await fetch(`${api}/runs/proxied-review`)).status).toBe(403);
     let status = "running";
     for (let attempt = 0; attempt < 100 && status === "running"; attempt++) {
       const job = (await (
-        await fetch(`${api}/runs/proxied-review`)
+        await fetch(`${api}/runs/proxied-review`, read)
       ).json()) as OperatorEnvelope<{ status: string }>;
       status = job.data?.status ?? `no run: ${job.error}`;
       if (status === "running")
         await new Promise((done) => setTimeout(done, 100));
     }
     expect(status).toBe("completed");
-    const stream = await fetch(`${api}/runs/proxied-review/events`);
+    const stream = await fetch(`${api}/runs/proxied-review/events`, read);
     expect(stream.headers.get("content-type")).toBe("text/event-stream");
     const body = await stream.text();
     expect(body).toContain("event: snapshot");
