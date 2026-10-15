@@ -26,7 +26,8 @@
  *
  * Then sweeps run correlations under `.tmp/work/run-correlations/`, by the same
  * closed-bead and age rule, and only a file the correlation loader validates
- * as this checkout's: see `sweepCorrelations`.
+ * as this checkout's, and a killed writer's draft there on its age alone: see
+ * `sweepCorrelations`.
  *
  * Which beads are closed comes from the live tracker (one `bd export`). Only
  * when bd does not answer is `.beads/issues.jsonl` used: a warning says so on
@@ -74,7 +75,10 @@ import { isMain } from "./is-main";
 import { queryEvents } from "./ledger/query";
 import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATIONS_DIR } from "./run-correlation";
-import { loadRunCorrelation } from "./run-correlation-store";
+import {
+  isCorrelationDraftFile,
+  loadRunCorrelation,
+} from "./run-correlation-store";
 
 /**
  * How many days old a file must be (since it was last written) before it may
@@ -351,14 +355,17 @@ export function sweepEvaluations(input: {
 }
 
 /**
- * What to do with a writer's scratch file, or null when the name is not a
- * regular file. It is removed on its age alone: it is never a verdict and
- * names no bead to wait for (see `isWriterScratchFile`), and a young one may
- * belong to a writer that is about to link it in.
+ * What to do with a writer's scratch file (or, for `kind` "draft", a
+ * correlation writer's draft), or null when the name is not a regular file. It
+ * is removed on its age alone: it is never the file it was written to become
+ * and names no bead to wait for (see `isWriterScratchFile`,
+ * `isCorrelationDraftFile`), and a young one may belong to a writer that is
+ * about to link it in.
  */
 function classifyScratchFile(
   path: string,
   input: { ttlDays: number; nowMs: number },
+  kind: "scratch file" | "draft" = "scratch file",
 ): Omit<SweepCandidate, "path"> | null {
   let modified: number;
   try {
@@ -369,18 +376,19 @@ function classifyScratchFile(
     return null;
   }
   const ageDays = Math.floor((input.nowMs - modified) / 86_400_000);
+  const never = kind === "draft" ? "a correlation" : "a verdict";
   return ageDays < input.ttlDays
     ? {
         taskId: "",
         ageDays,
         action: "skip",
-        reason: `a writer's scratch file, age ${ageDays}d < TTL ${input.ttlDays}d`,
+        reason: `a writer's ${kind}, age ${ageDays}d < TTL ${input.ttlDays}d`,
       }
     : {
         taskId: "",
         ageDays,
         action: "delete",
-        reason: `a writer's scratch file, never a verdict itself, age ${ageDays}d ≥ TTL ${input.ttlDays}d`,
+        reason: `a writer's ${kind}, never ${never} itself, age ${ageDays}d ≥ TTL ${input.ttlDays}d`,
       };
 }
 
@@ -480,9 +488,15 @@ export interface CorrelationSweep {
  *   correlation of the run it is named after;
  * - the Beads issue it names is closed, and the file is older than the TTL.
  *
- * Anything else there (a writer's draft, a file the loader refuses) is left
- * as it is, and nothing outside the directory is touched. `checkout` must be
- * the top level of a checkout, as for `sweepEvaluations`.
+ * A correlation writer's draft (`isCorrelationDraftFile`: `<run>.json.<pid>.tmp`,
+ * what a writer killed between its write and its rename leaves) is a candidate
+ * too, and is removed once it is older than the TTL, whatever it holds and
+ * whatever its bead's status: it is never a correlation, and the age keeps a
+ * running writer's own draft safe.
+ *
+ * Anything else there (a file the loader refuses, a name that only looks like
+ * a draft) is left as it is, and nothing outside the directory is touched.
+ * `checkout` must be the top level of a checkout, as for `sweepEvaluations`.
  */
 export function sweepCorrelations(input: {
   /** The top level of the checkout to sweep. */
@@ -522,13 +536,12 @@ export function sweepCorrelations(input: {
   }
 
   for (const file of readdirSync(`${root}/${RUN_CORRELATIONS_DIR}`).sort()) {
-    if (!file.endsWith(".json")) continue;
+    const draft = isCorrelationDraftFile(file);
+    if (!draft && !file.endsWith(".json")) continue;
     const relative = `${RUN_CORRELATIONS_DIR}/${file}`;
-    const candidate = classifyCorrelationFile(
-      `${root}/${relative}`,
-      root,
-      input,
-    );
+    const candidate = draft
+      ? classifyScratchFile(`${root}/${relative}`, input, "draft")
+      : classifyCorrelationFile(`${root}/${relative}`, root, input);
     if (candidate === null) continue;
     candidates.push({ ...candidate, path: relative });
     if (candidate.action !== "delete" || !input.apply) continue;
