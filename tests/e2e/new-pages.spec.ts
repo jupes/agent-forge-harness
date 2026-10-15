@@ -644,6 +644,11 @@ test.describe("Repos & knowledge", () => {
     const retiredDocs = repos.filter({ hasText: "retired-docs" });
     await expect(retiredDocs).toContainText("archived");
     await expect(retiredDocs).toContainText("120d old");
+    // Why, in visible text rather than a tooltip.
+    await expect(retiredDocs).toContainText(
+      "skipped by bun run repo and /sync-knowledge --all",
+    );
+    await expect(legacyWorker).not.toContainText("skipped by");
     await expect(retiredDocs.locator(".af-tag svg")).toHaveCount(0);
     await expect(repos.filter({ hasText: "archived" })).toHaveCount(1);
 

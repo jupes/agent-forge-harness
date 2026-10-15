@@ -120,16 +120,20 @@ describe("buildRepoEntries", () => {
         { name: "plain" },
         { name: "yes-string", archived: "yes" },
         { name: "one", archived: 1 },
+        { name: "true-string", archived: "true" },
+        { name: "nothing", archived: null },
       ),
       clonedDirs: ["surprise-repo"],
       knowledge: new Map(),
       now: NOW,
     });
     expect(entries.map((entry) => [entry.name, entry.archived])).toEqual([
+      ["nothing", false],
       ["old-docs", true],
       ["one", false],
       ["plain", false],
       ["surprise-repo", false],
+      ["true-string", false],
       ["web", false],
       ["yes-string", false],
     ]);

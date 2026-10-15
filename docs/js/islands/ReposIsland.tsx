@@ -90,16 +90,20 @@ export function ReposIsland(): JSX.Element {
                     {repo.archived ? (
                       <>
                         {" "}
-                        <Tag
-                          tone="muted"
-                          title="Archived in repos.json: bun run repo and /sync-knowledge --all skip it"
-                        >
+                        <Tag tone="muted" class="af-tag-archived">
                           archived
                         </Tag>
                       </>
                     ) : null}
                   </span>
-                  <span class="af-issue-blocked">{repo.path}</span>
+                  <span class="af-issue-blocked">
+                    {repo.path}
+                    {repo.archived ? (
+                      <span class="af-archived-note">
+                        {" · skipped by bun run repo and /sync-knowledge --all"}
+                      </span>
+                    ) : null}
+                  </span>
                 </>
               ),
             },
