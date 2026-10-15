@@ -26,6 +26,7 @@ import {
   writeFileSync,
 } from "fs";
 import { basename, join, resolve } from "path";
+import { splitFrontmatter } from "./frontmatter";
 
 const ROOT = process.cwd();
 const CLAUDE_DIR = join(ROOT, ".claude");
@@ -130,7 +131,12 @@ function convertCommands(): { converted: string[]; skipped: string[] } {
       continue;
     }
 
-    const body = readFileSync(join(srcRoot, file), "utf8");
+    // A command file may open with its own frontmatter (`argument-hint`, read by
+    // Claude Code and the dashboard's Commands page). Codex gets the skill's
+    // frontmatter below, so the command's block is dropped, not nested in it.
+    const { body } = splitFrontmatter(
+      readFileSync(join(srcRoot, file), "utf8"),
+    );
     const description =
       COMMAND_DESCRIPTIONS[name] ??
       `${firstHeading(body) || name}. Use when the user runs /${name}.`;
