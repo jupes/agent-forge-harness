@@ -26,8 +26,25 @@
  *
  * What the ledger no longer holds cannot be compared: once `forge:audit
  * --compact` has removed a bead's first moves, its oldest remaining move is
- * reported as a gap before it. A reassign's event names no smith, so a
- * reassign the ledger missed is not found here.
+ * reported as a gap before it.
+ *
+ * A reassign moves no state, so it is not in the chain. Its event names the
+ * smith `bd` confirmed, and the smith on each bead the list printed is
+ * compared with the one its newest recorded reassign named:
+ *
+ * - `smith`: they differ (`recorded` null: no reassign was recorded; `found`
+ *   null: the bead carries no smith). With `askedEvent`, an `operator.action`
+ *   `queue.reassign` row for the bead that names the smith found was stored
+ *   after that reassign: the operator API asked the queue for this smith, so
+ *   it is a reassign the ledger missed. Without it nothing asked for it
+ *   through the operator API since: set by hand (or by a writer that stores
+ *   no audit row, which looks the same).
+ *
+ * The row is written before the reassign is made, so it says what was asked,
+ * not what was done: a request that `bd` refused, followed by the same smith
+ * set by hand, reads as a missed reassign. A reassign recorded before the
+ * event named its smith cannot be compared, and a bead the list did not
+ * print has no smith to compare: neither is reported.
  */
 
 import {
@@ -81,7 +98,25 @@ export interface QueueDuplicate {
   events: [number, number];
 }
 
-export type QueueDrift = QueueGap | QueueDuplicate;
+/** The smith on a bead, which its newest recorded reassign does not name. */
+export interface QueueSmithDrift {
+  kind: "smith";
+  beadId: string;
+  /** The smith the bead's newest recorded reassign named; null when none was recorded. */
+  recorded: string | null;
+  /** The smith metadata on the bead now; null when it carries none. */
+  found: string | null;
+  /** The ledger id of that newest recorded reassign. */
+  afterEvent?: number;
+  /**
+   * The ledger id of the newest `operator.action` `queue.reassign` row for
+   * the bead that names `found` and was stored after `afterEvent`: a
+   * reassign the ledger missed. Absent when no such row was stored.
+   */
+  askedEvent?: number;
+}
+
+export type QueueDrift = QueueGap | QueueDuplicate | QueueSmithDrift;
 
 export interface QueueReconcile {
   /** How many beads were compared: each one the list printed, and each one with a recorded move. */
@@ -118,6 +153,88 @@ function moveOf(event: LedgerEvent): (Move & { beadId: string }) | null {
     from: payload.from,
     to: payload.to,
   };
+}
+
+/** A recorded reassign: its ledger id and the smith it named (none before events named it). */
+interface Reassign {
+  id: number;
+  smith: string | undefined;
+}
+
+/** The event when it records a reassign for a bead. */
+function reassignOf(
+  event: LedgerEvent,
+): (Reassign & { beadId: string }) | null {
+  if (event.kind !== "bead.transitioned" || event.beadId === undefined)
+    return null;
+  const payload = event.payload;
+  if (!("action" in payload) || payload.action !== "reassign") return null;
+  return {
+    id: event.id,
+    beadId: event.beadId,
+    smith: typeof payload.smith === "string" ? payload.smith : undefined,
+  };
+}
+
+/** A request for a reassign: the operator API's audit row, stored before the reassign is made. */
+interface Request {
+  id: number;
+  smith: string;
+}
+
+/** The event when it is the operator API's audit row of a reassign for a bead. */
+function requestOf(event: LedgerEvent): (Request & { beadId: string }) | null {
+  if (event.kind !== "operator.action" || event.beadId === undefined)
+    return null;
+  const { action, target } = event.payload;
+  return action === "queue.reassign" && typeof target === "string"
+    ? { id: event.id, beadId: event.beadId, smith: target }
+    : null;
+}
+
+/** The smith a bead carries (`reassign` writes it as metadata `smith`), or null. */
+function smithOn(bead: ListedBead): string | null {
+  const smith = isRecord(bead.metadata) ? bead.metadata["smith"] : undefined;
+  return typeof smith === "string" && smith !== "" ? smith : null;
+}
+
+/**
+ * A listed bead's smith against its newest recorded reassign, and the
+ * request after that reassign that names the smith found. Nothing for a bead
+ * the list did not print, or one whose newest reassign names no smith.
+ */
+function smithDriftOf(
+  beadId: string,
+  reassigns: readonly Reassign[],
+  requests: readonly Request[],
+  bead: ListedBead | undefined,
+): QueueSmithDrift[] {
+  if (bead === undefined) return [];
+  const last = reassigns.at(-1);
+  if (last !== undefined && last.smith === undefined) return [];
+  const recorded = last?.smith ?? null;
+  const found = smithOn(bead);
+  if (found === recorded) return [];
+  // Requests come oldest first: the newest that names the smith found, after the reassign.
+  const asked =
+    found === null
+      ? undefined
+      : [...requests]
+          .reverse()
+          .find(
+            (request) =>
+              request.smith === found && request.id > (last?.id ?? 0),
+          );
+  return [
+    {
+      kind: "smith",
+      beadId,
+      recorded,
+      found,
+      ...(last !== undefined ? { afterEvent: last.id } : {}),
+      ...(asked !== undefined ? { askedEvent: asked.id } : {}),
+    },
+  ];
 }
 
 /** Where the bead stands on Beads: the state the queue wrote on it, or null, and its queue labels. */
@@ -189,6 +306,13 @@ function driftOf(
   return drift;
 }
 
+/** Add `item` to the bead's list in `map`, in the order it comes. */
+function collect<T>(map: Map<string, T[]>, beadId: string, item: T): void {
+  const list = map.get(beadId) ?? [];
+  list.push(item);
+  map.set(beadId, list);
+}
+
 /**
  * The drift between what `bd list` printed and the ledger's events. Pure. A
  * bead the list did not print is outside the queue; a bead with no recorded
@@ -200,23 +324,42 @@ export function queueDrift(
 ): QueueReconcile {
   const listed = new Map(beads.map((bead) => [bead.id, bead]));
   const moves = new Map<string, Move[]>();
+  const reassigns = new Map<string, Reassign[]>();
+  const requests = new Map<string, Request[]>();
   let count = 0;
   for (const event of [...events].sort((a, b) => a.id - b.id)) {
     const move = moveOf(event);
-    if (move === null) continue;
-    count++;
-    const { beadId, ...rest } = move;
-    const list = moves.get(beadId) ?? [];
-    list.push(rest);
-    moves.set(beadId, list);
+    if (move !== null) {
+      count++;
+      const { beadId, ...rest } = move;
+      collect(moves, beadId, rest);
+      continue;
+    }
+    const reassign = reassignOf(event);
+    if (reassign !== null) {
+      const { beadId, ...rest } = reassign;
+      collect(reassigns, beadId, rest);
+      continue;
+    }
+    const request = requestOf(event);
+    if (request !== null) {
+      const { beadId, ...rest } = request;
+      collect(requests, beadId, rest);
+    }
   }
   const ids = [...new Set([...listed.keys(), ...moves.keys()])].sort();
   return {
     beads: ids.length,
     moves: count,
-    drift: ids.flatMap((id) =>
-      driftOf(id, moves.get(id) ?? [], listed.get(id)),
-    ),
+    drift: ids.flatMap((id) => [
+      ...driftOf(id, moves.get(id) ?? [], listed.get(id)),
+      ...smithDriftOf(
+        id,
+        reassigns.get(id) ?? [],
+        requests.get(id) ?? [],
+        listed.get(id),
+      ),
+    ]),
   };
 }
 
@@ -285,7 +428,7 @@ async function listed(
 
 /**
  * Read the queue from Beads with the list `GET /queue` makes and the
- * workspace's `bead.transitioned` events from the ledger, both under the
+ * workspace's `bead.transitioned` and `operator.action` events from the ledger, both under the
  * queue lock, and compare them. Under the lock, a move by a process that
  * shares the lock file is either wholly before the read or wholly after it,
  * so a gap is not a move still being made. Nothing is written.
@@ -301,7 +444,10 @@ export async function reconcileQueue(
       let events: LedgerEvent[];
       try {
         events = queryEvents(
-          { workspace: deps.workspace, kinds: ["bead.transitioned"] },
+          {
+            workspace: deps.workspace,
+            kinds: ["bead.transitioned", "operator.action"],
+          },
           { path: deps.ledgerPath },
         );
       } catch (error) {

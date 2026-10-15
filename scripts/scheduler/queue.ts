@@ -293,7 +293,8 @@ export interface Queue {
   ): Promise<QueueOutcome<QueueMoveResult>>;
   /**
    * Record `smith` as the bead's smith. It moves no state; once `bd`
-   * confirmed the write it appends `bead.transitioned` `{ action: "reassign" }`.
+   * confirmed the write it appends `bead.transitioned`
+   * `{ action: "reassign", smith }`.
    */
   reassign(
     id: string,
@@ -540,12 +541,14 @@ export function createQueue(deps: QueueDeps): Queue {
       );
 
     // After the write, so that a reader that reads the queue again on this
-    // event finds the smith. A tracker write: the state did not move.
+    // event finds the smith. A tracker write: the state did not move. It
+    // names the smith `bd` confirmed, so that `forge:queue reconcile` can
+    // tell a smith on the bead with no event for it.
     const unrecorded = await storeEvent(deps.appendEvent, {
       kind: "bead.transitioned",
       workspace: deps.workspace,
       beadId: id,
-      payload: { action: "reassign" },
+      payload: { action: "reassign", smith },
     });
     return {
       ok: true,

@@ -1049,6 +1049,23 @@ describe("run event helpers (in-process, scratch ledger)", () => {
     ]);
   });
 
+  test("a run with the same slug in another workspace entering the same phase is appended there, and deduped there on its own", () => {
+    const box = sandbox();
+    const opts = { path: box.path };
+    const other = attach({
+      workspace: "c:/work/other",
+      worktree: "c:/work/other",
+    });
+    expect(emitPhaseEntered(attach(), "plan", opts)?.ok).toBe(true);
+    expect(emitPhaseEntered(other, "plan", opts)?.ok).toBe(true);
+    expect(emitPhaseEntered(other, "plan", opts)).toBeNull();
+    expect(emitPhaseEntered(attach(), "plan", opts)).toBeNull();
+    expect(runEvents(box, "x").map((e) => [e.kind, e.workspace])).toEqual([
+      ["run.phase.entered", "c:/work/repo"],
+      ["run.phase.entered", "c:/work/other"],
+    ]);
+  });
+
   test("a review event carries the counts and the decision but not the summary text", () => {
     const box = sandbox();
     emitRunEvent(

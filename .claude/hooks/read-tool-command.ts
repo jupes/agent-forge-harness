@@ -14,6 +14,7 @@
  * The script blocks the command then.
  */
 
+import { isMain } from "../../scripts/is-main";
 import { type HookInput, readHookStdin } from "./utils/hook-input";
 
 /** What `jq -r '.tool_input.command'` prints for `input`, or null where jq fails. */
@@ -44,7 +45,7 @@ async function main(): Promise<number> {
   return 0;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   main()
     .catch((error: unknown) => {
       console.error(

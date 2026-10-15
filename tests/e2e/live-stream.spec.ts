@@ -243,6 +243,62 @@ test("one stream connection serves every page of the app", async ({ page }) => {
   expect(streamRequests()).toBe(1);
 });
 
+test("a stream answered with a server failure is asked for again, and the page goes live from the hearth's stream", async ({
+  page,
+}) => {
+  const streamRequests = countStreamRequests(page);
+  let failures = 0;
+  await page.route(`**${STREAM}`, (route) => {
+    if (failures > 0) return route.continue();
+    failures += 1;
+    return route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, data: null, error: "bad gateway" }),
+    });
+  });
+  await stubSnapshot(page);
+  await openSettled(page, DASHBOARD);
+
+  // The retry waits a quarter to half a second, then reaches the suite's hearth.
+  await expect(page.getByTestId("live-stats")).toBeVisible();
+  await expect(page.getByTestId("live-banner")).toHaveCount(0);
+  expect(failures).toBe(1);
+  expect(streamRequests()).toBe(2);
+});
+
+test("a stream that fails six times in a row is retried, then the page says live updates stopped and asks no more", async ({
+  page,
+}) => {
+  // Five waits, each a random half to all of 0.5, 1, 2, 4 and 8 s: 7.75 to 15.5 s in all.
+  test.setTimeout(60_000);
+  const streamRequests = countStreamRequests(page);
+  await page.route(`**${STREAM}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, data: null, error: "unavailable" }),
+    }),
+  );
+  await stubSnapshot(page);
+  await openSettled(page, DASHBOARD);
+
+  const banner = page.getByTestId("live-banner");
+  // While it retries the page says nothing.
+  await expect.poll(streamRequests).toBeGreaterThanOrEqual(2);
+  await expect(banner).toHaveCount(0);
+  await expect(banner).toContainText("Live updates stopped", {
+    timeout: 25_000,
+  });
+  await expect(banner).toContainText("Reload the page to connect again");
+  await expect(page.getByTestId("live-stats")).toHaveCount(0);
+  expect(streamRequests()).toBe(6);
+
+  // Longer than the first wait would be: nothing asks again.
+  await page.waitForTimeout(1500);
+  expect(streamRequests()).toBe(6);
+});
+
 test("where nothing serves a stream, the page asks once, says so once, and still works", async ({
   page,
 }) => {

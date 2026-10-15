@@ -108,6 +108,176 @@ async function report(r: Rig) {
   return read.value;
 }
 
+/** Store an event the queue did not write; answers its ledger id. */
+function stored(event: LedgerEventInput): number {
+  const result = store(event);
+  if (!result.ok || !("id" in result))
+    throw new Error(`not stored: ${JSON.stringify(result)}`);
+  return result.id;
+}
+
+/** The audit row the operator API stores before it asks the queue for a reassign. */
+const askedFor = (r: Rig, id: string, smith: string): number =>
+  stored({
+    kind: "operator.action",
+    workspace: r.workspace,
+    beadId: id,
+    payload: { action: "queue.reassign", surface: "ui", target: smith },
+  });
+
+/** Write the bead's smith metadata the way a hand edit with `bd` does: no queue, no event. */
+function smithByHand(r: Rig, id: string, smith: string | undefined): void {
+  const bead = r.tracker.beads.get(id);
+  if (bead === undefined) throw new Error(`no bead ${id}`);
+  const { smith: _old, ...rest } = bead.metadata ?? {};
+  bead.metadata = smith === undefined ? rest : { ...rest, smith };
+}
+
+/** The ledger id of the bead's recorded reassign at `index`, oldest first. */
+function reassignId(r: Rig, id: string, index: number): number {
+  const event = queryEvents(
+    {
+      workspace: r.workspace,
+      beadId: id,
+      beadExact: true,
+      kinds: ["bead.transitioned"],
+    },
+    { path: ledger },
+  ).filter(
+    (each) => "action" in each.payload && each.payload.action === "reassign",
+  )[index];
+  if (event === undefined) throw new Error(`no recorded reassign ${index}`);
+  return event.id;
+}
+
+describe("reconcileQueue: each bead's smith on Beads against the reassigns the ledger recorded", () => {
+  const config = () => loadConfig({ harnessRoot: home, env: {}, home }).config;
+
+  async function reassigned(queue: Queue, id: string, smith: string) {
+    const result = await queue.reassign(id, smith, config());
+    expect(result.ok ? smith : result.error).toBe(smith);
+  }
+
+  test("a reassign whose event the ledger refused: the smith on the bead is reported against the last recorded one, with the operator's request for it", async () => {
+    const bead = outside();
+    const r = rig([bead]);
+    await moved(r.queue(), bead.id, "propose", "approve");
+    // A request for this smith before the last recorded reassign is not this one's.
+    askedFor(r, bead.id, "claude-journeyman");
+    await reassigned(r.queue(), bead.id, "claude-master");
+    const asked = askedFor(r, bead.id, "claude-journeyman");
+    await reassigned(r.queue(lost), bead.id, "claude-journeyman");
+    expect(await report(r)).toEqual({
+      beads: 1,
+      moves: 2,
+      drift: [
+        {
+          kind: "smith",
+          beadId: bead.id,
+          recorded: "claude-master",
+          found: "claude-journeyman",
+          afterEvent: reassignId(r, bead.id, 0),
+          askedEvent: asked,
+        },
+      ],
+    });
+  });
+
+  test("the first reassign's event refused: there is no recorded smith, and the request is found", async () => {
+    const bead = outside();
+    const r = rig([bead]);
+    await moved(r.queue(), bead.id, "propose");
+    const asked = askedFor(r, bead.id, "claude-master");
+    await reassigned(r.queue(lost), bead.id, "claude-master");
+    expect((await report(r)).drift).toEqual([
+      {
+        kind: "smith",
+        beadId: bead.id,
+        recorded: null,
+        found: "claude-master",
+        askedEvent: asked,
+      },
+    ]);
+  });
+
+  test("a smith never assigned through the queue is told apart: no request after the last recorded reassign names it; one removed by hand is reported too", async () => {
+    const setByHand = outside();
+    const removedByHand = outside();
+    const otherAsked = outside();
+    const askedBefore = outside();
+    const r = rig([setByHand, removedByHand, otherAsked, askedBefore]);
+    const queue = r.queue();
+    for (const bead of [setByHand, removedByHand, otherAsked, askedBefore])
+      await moved(queue, bead.id, "propose");
+    await reassigned(queue, removedByHand.id, "claude-master");
+    // Asked for one smith, which bd never wrote; another was then set by hand.
+    askedFor(r, otherAsked.id, "claude-journeyman");
+    // Asked for, recorded, then reassigned again: that request is not for the same smith set by hand later.
+    askedFor(r, askedBefore.id, "claude-journeyman");
+    await reassigned(queue, askedBefore.id, "claude-journeyman");
+    await reassigned(queue, askedBefore.id, "claude-master");
+    for (const [id, smith] of [
+      [setByHand.id, "claude-master"],
+      [removedByHand.id, undefined],
+      [otherAsked.id, "claude-apprentice"],
+      [askedBefore.id, "claude-journeyman"],
+    ] as const)
+      smithByHand(r, id, smith);
+    const drift = (await report(r)).drift;
+    expect(drift).toContainEqual({
+      kind: "smith",
+      beadId: setByHand.id,
+      recorded: null,
+      found: "claude-master",
+    });
+    expect(drift).toContainEqual({
+      kind: "smith",
+      beadId: removedByHand.id,
+      recorded: "claude-master",
+      found: null,
+      afterEvent: reassignId(r, removedByHand.id, 0),
+    });
+    expect(drift).toContainEqual({
+      kind: "smith",
+      beadId: otherAsked.id,
+      recorded: null,
+      found: "claude-apprentice",
+    });
+    expect(drift).toContainEqual({
+      kind: "smith",
+      beadId: askedBefore.id,
+      recorded: "claude-master",
+      found: "claude-journeyman",
+      afterEvent: reassignId(r, askedBefore.id, 1),
+    });
+    expect(drift.length).toBe(4);
+  });
+
+  test("a reassign recorded before its event named the smith cannot be compared, and is not reported", async () => {
+    const bead = outside();
+    const r = rig([bead]);
+    await moved(r.queue(), bead.id, "propose");
+    smithByHand(r, bead.id, "claude-master");
+    stored({
+      kind: "bead.transitioned",
+      workspace: r.workspace,
+      beadId: bead.id,
+      payload: { action: "reassign" },
+    });
+    expect(await report(r)).toEqual({ beads: 1, moves: 1, drift: [] });
+  });
+
+  test("a bead the list does not print has no smith to compare: its reassigns are passed over", async () => {
+    const bead = outside();
+    const r = rig([bead]);
+    await moved(r.queue(), bead.id, "propose");
+    await reassigned(r.queue(), bead.id, "claude-master");
+    const out = r.tracker.beads.get(bead.id);
+    if (out) Object.assign(out, { labels: ["command-center"], metadata: {} });
+    expect((await report(r)).drift.map((each) => each.kind)).toEqual(["gap"]);
+  });
+});
+
 describe("reconcileQueue: each bead's queue state on Beads against the moves the ledger recorded", () => {
   test("moves made and recorded by the queue leave no drift, whatever the path; a label the queue never wrote is not drift", async () => {
     const walked = outside();

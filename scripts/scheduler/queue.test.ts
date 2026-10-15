@@ -1450,7 +1450,7 @@ describe("two callers at once", () => {
 describe("reassign", () => {
   const config = loadConfig({ harnessRoot: workspace, env: {}, home }).config;
 
-  test("records the smith as the bead's smith metadata, in the states where the work has not started, with one event that moves no state", async () => {
+  test("records the smith as the bead's smith metadata, in the states where the work has not started, with one event that names the smith and moves no state", async () => {
     for (const state of QUEUE_STATES) {
       const bead = beadIn(state, state === "paused" ? "queued" : undefined);
       const { tracker, queue, events } = rig([bead]);
@@ -1485,7 +1485,9 @@ describe("reassign", () => {
       );
       // The state did not move: the one event is a tracker write, with no from or to.
       expect(queueLabels(tracker, bead.id)).toEqual([`queue:${state}`]);
-      expect(events(bead.id)).toEqual([{ action: "reassign" }]);
+      expect(events(bead.id)).toEqual([
+        { action: "reassign", smith: "claude-master" },
+      ]);
     }
   });
 
@@ -1501,7 +1503,9 @@ describe("reassign", () => {
     const result = await queue.reassign(bead.id, "claude-master", config);
     expect(result.ok).toBe(true);
     expect(smithWhenAppended).toEqual(["claude-master"]);
-    expect(events(bead.id)).toEqual([{ action: "reassign" }]);
+    expect(events(bead.id)).toEqual([
+      { action: "reassign", smith: "claude-master" },
+    ]);
   });
 
   test("the smith is written and the ledger will not store the event: the answer says so, and the smith stands", async () => {

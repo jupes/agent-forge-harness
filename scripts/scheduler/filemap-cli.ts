@@ -26,6 +26,7 @@
  */
 
 import { readFileSync } from "fs";
+import { isMain } from "../is-main";
 import { parseFileMap, parsePlanFileMaps } from "./filemap";
 
 export interface FileMapCliOutcome {
@@ -124,7 +125,7 @@ export function runFileMapCli(
     : refuse(refused.join("; "), { checkpoints });
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const outcome = runFileMapCli(process.argv.slice(2), {
     // File descriptor 0 is standard input.
     read: (path) => readFileSync(path === "-" ? 0 : path, "utf8"),

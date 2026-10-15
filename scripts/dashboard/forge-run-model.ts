@@ -147,6 +147,11 @@ export interface ForgeRunView {
   revising: RunSummary["revising"];
   /** The newest quality-gate run within `gateScope`, or null if there is none. */
   gate: GateRun | null;
+  /**
+   * The gate runs within `gateScope` before `gate`, newest first: at most
+   * `GATE_HISTORY`, from the logs the newest was read from and older ones.
+   */
+  earlierGates: GateRun[];
   gateScope: GateScope;
 }
 
@@ -465,29 +470,42 @@ export function latestGateRun(
   return null;
 }
 
+/** How many gate runs before its newest one a forge run's card lists. */
+export const GATE_HISTORY = 10;
+
 /**
- * The newest gate run for each of `slugs`, plus this checkout's newest overall
- * and its newest that belongs to none of `slugs`, in **one** pass over the logs.
+ * The newest gate run for each of `slugs` and up to `earlier` before it,
+ * plus this checkout's newest overall and its newest that belongs to none of
+ * `slugs`, in **one** pass over the logs.
  *
  * Several runs can be in flight, and `gateLogs` is a generator that reads files
  * lazily — running `latestGateRun` once per run would consume it on the first
- * one. Iteration stops as soon as every run has its gate, so `unattributed` is
- * the newest such entry among those read, not among all that exist.
+ * one. Iteration stops as soon as every run has its gate and `earlier` before
+ * it. `unattributed` is looked for only until every run has its newest gate,
+ * so it is the newest such entry among those read by then, not among all that
+ * exist; reading on for the earlier runs does not change it.
  */
 export function latestGateRunsFor(
   logs: Iterable<string | null>,
   checkout: string,
   slugs: readonly string[],
+  earlier = 0,
 ): {
   byRun: Map<string, GateRun>;
+  /** Each run's gate runs before its newest, newest first. */
+  earlierByRun: Map<string, GateRun[]>;
   checkoutLatest: GateRun | null;
   unattributed: GateRun | null;
 } {
   const here = comparableCheckout(checkout);
   const wanted = new Set(slugs);
   const byRun = new Map<string, GateRun>();
+  const earlierByRun = new Map<string, GateRun[]>();
   let checkoutLatest: GateRun | null = null;
   let unattributed: GateRun | null = null;
+  /** Runs that have their newest gate and `earlier` before it. */
+  let full = 0;
+  const done = () => ({ byRun, earlierByRun, checkoutLatest, unattributed });
 
   for (const jsonl of logs) {
     if (!jsonl) continue;
@@ -506,16 +524,23 @@ export function latestGateRunsFor(
       checkoutLatest ??= run;
       const scope = gateRunScope(run);
       if (scope === null || !wanted.has(scope)) {
-        unattributed ??= run;
-      } else if (!byRun.has(scope)) {
-        byRun.set(scope, run);
-        if (byRun.size === wanted.size) {
-          return { byRun, checkoutLatest, unattributed };
-        }
+        // With no run every entry read is unattributed, as it always was.
+        if (wanted.size === 0 || byRun.size < wanted.size) unattributed ??= run;
+        continue;
+      }
+      const before = earlierByRun.get(scope) ?? [];
+      if (!byRun.has(scope)) byRun.set(scope, run);
+      else if (before.length < earlier) {
+        before.push(run);
+        earlierByRun.set(scope, before);
+      } else continue;
+      if ((earlierByRun.get(scope)?.length ?? 0) === earlier) {
+        full += 1;
+        if (full === wanted.size) return done();
       }
     }
   }
-  return { byRun, checkoutLatest, unattributed };
+  return done();
 }
 
 export function forgeRunSnapshot(input: {
@@ -532,11 +557,13 @@ export function forgeRunSnapshot(input: {
     return state === null ? [] : [state];
   });
   const summaries = byRecency(states.map(summarizeRun));
-  const { byRun, checkoutLatest, unattributed } = latestGateRunsFor(
-    input.gateLogs,
-    input.checkout,
-    summaries.map((run) => run.slug),
-  );
+  const { byRun, earlierByRun, checkoutLatest, unattributed } =
+    latestGateRunsFor(
+      input.gateLogs,
+      input.checkout,
+      summaries.map((run) => run.slug),
+      GATE_HISTORY,
+    );
 
   const runs: ForgeRunView[] = summaries.map((summary) => {
     const state = states.find((candidate) => candidate.slug === summary.slug);
@@ -557,6 +584,7 @@ export function forgeRunSnapshot(input: {
       reviewPending: summary.reviewPending,
       revising: summary.revising,
       gate: byRun.get(summary.slug) ?? null,
+      earlierGates: earlierByRun.get(summary.slug) ?? [],
       gateScope,
     };
   });

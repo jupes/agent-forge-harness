@@ -34,6 +34,7 @@
     "forge:eligible": "bun run scripts/scheduler/reservations-cli.ts eligible",
     "forge:reservations": "bun run scripts/scheduler/reservations-cli.ts",
     "forge:queue": "bun run scripts/scheduler/queue-cli.ts",
+    "forge:shift": "bun run scripts/scheduler/shift-cli.ts",
     "agents-md": "bun run scripts/agents-md.ts",
     "codex:sync": "bun run scripts/sync-codex.ts",
     "molecules:check": "bun run scripts/molecules/check.ts",

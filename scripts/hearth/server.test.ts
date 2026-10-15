@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
@@ -346,6 +347,71 @@ async function startIn(home: string, root: string): Promise<Hearth> {
   return hearth;
 }
 
+/** Whether a connection to `port` on loopback is refused: nothing listens there. */
+function refusesConnections(port: number): Promise<boolean> {
+  return new Promise((done) => {
+    const socket = connect(port, "127.0.0.1");
+    socket.once("connect", () => {
+      socket.destroy();
+      done(false);
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) =>
+      done(error.code === "ECONNREFUSED"),
+    );
+  });
+}
+
+test("a start whose token file cannot be written (a file where the tokens directory goes) rejects, and leaves nothing listening on its port and no lock", async () => {
+  const { home, root } = places();
+  writeFileSync(join(home, "tokens"), "");
+  const port = await closedPort();
+  let failure: unknown = null;
+  try {
+    const hearth = await createHearth({ root, home, port, environment: {} });
+    if (hearth.kind === "started") cleanup.push(() => hearth.close());
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect(existsSync(lockPath(home, root))).toBe(false);
+  expect(await refusesConnections(port)).toBe(true);
+});
+
+test("a start whose lock cannot be taken (a directory where the lock file goes) rejects, and leaves nothing listening on its port and the directory as it was", async () => {
+  const { home, root } = places();
+  mkdirSync(lockPath(home, root));
+  const port = await closedPort();
+  let failure: unknown = null;
+  try {
+    const hearth = await createHearth({ root, home, port, environment: {} });
+    if (hearth.kind === "started") cleanup.push(() => hearth.close());
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect(statSync(lockPath(home, root)).isDirectory()).toBe(true);
+  expect(existsSync(tokenPath(home, root))).toBe(false);
+  expect(await refusesConnections(port)).toBe(true);
+});
+
+test("a start on a port another server holds rejects, and writes no lock and no token file", async () => {
+  const { home, root } = places();
+  const other = createServer();
+  await new Promise<void>((done) => other.listen(0, "127.0.0.1", done));
+  cleanup.push(() => new Promise<void>((done) => other.close(() => done())));
+  const port = (other.address() as AddressInfo).port;
+  let failure: unknown = null;
+  try {
+    const hearth = await createHearth({ root, home, port, environment: {} });
+    if (hearth.kind === "started") cleanup.push(() => hearth.close());
+  } catch (error) {
+    failure = error;
+  }
+  expect((failure as NodeJS.ErrnoException | null)?.code).toBe("EADDRINUSE");
+  expect(existsSync(lockPath(home, root))).toBe(false);
+  expect(existsSync(tokenPath(home, root))).toBe(false);
+});
+
 test("a direct start replaces a lock that names this process's pid when nothing answers on its port, and starts", async () => {
   const { home, root } = places();
   const planted = plantLock(home, root, await closedPort());
@@ -484,38 +550,58 @@ test("with HTTP_PROXY naming a port nothing listens on and no NO_PROXY, the serv
 
 const STILL_STARTING = "503 The control plane is still starting";
 
-test("a token request sent as the hearth starts, before its start has returned, is answered 503 'still starting' and not with an empty token or the token another hearth left in the file; one answered after the start is served the token the start minted", async () => {
-  const answers: string[] = [];
-  const allowed = new Set([STILL_STARTING, "200 the token this start minted"]);
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const { home, root } = places();
-    const file = tokenPath(home, root);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${"f".repeat(64)}\n`);
-    const port = await closedPort();
-    // It is listening by the time this call returns, and takes the lock and
-    // mints its token only after that.
-    const starting = createHearth({ root, home, port, environment: {} });
-    const asked = fetch(`http://127.0.0.1:${port}${TOKEN_ROUTE}`, {
-      headers: { Origin: `http://127.0.0.1:${port}` },
-    });
-    const hearth = await starting;
-    if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
-    cleanup.push(() => hearth.close());
-    const answer = await asked;
-    const body = (await answer.json()) as {
-      data: { token?: unknown } | null;
-      error: string | null;
-    };
-    const token = body.data?.token;
-    answers.push(
-      answer.status === 200 && token === hearth.token
-        ? "200 the token this start minted"
-        : `${answer.status} ${body.error ?? `token ${JSON.stringify(token)}`}`,
-    );
-  }
-  expect(answers.filter((answer) => !allowed.has(answer))).toEqual([]);
-  expect(answers).toContain(STILL_STARTING);
+/** A token request to `port` that declares the hearth's own origin: its status, and its error or the token it served. */
+async function askToken(port: number): Promise<string> {
+  const answer = await fetch(`http://127.0.0.1:${port}${TOKEN_ROUTE}`, {
+    headers: { Origin: `http://127.0.0.1:${port}` },
+  });
+  const body = (await answer.json()) as {
+    data: { token?: unknown } | null;
+    error: string | null;
+  };
+  return `${answer.status} ${body.error ?? `token ${JSON.stringify(body.data?.token)}`}`;
+}
+
+test("a token request answered while the start is held after it listens, before it takes the lock and writes its token file, is 503 'still starting' and not an empty token or the token another hearth left in the file; once the start has returned it is served the token the start minted", async () => {
+  const { home, root } = places();
+  const file = tokenPath(home, root);
+  mkdirSync(dirname(file), { recursive: true });
+  const left = "f".repeat(64);
+  writeFileSync(file, `${left}\n`);
+  let release = (): void => {};
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  let listening = (_port: number): void => {};
+  const listened = new Promise<number>((done) => {
+    listening = done;
+  });
+  const starting = createHearth({
+    root,
+    home,
+    environment: {},
+    onListening: async (port) => {
+      listening(port);
+      await held;
+    },
+  });
+  const port = await listened;
+  const during = await askToken(port);
+  // Held: the lock is not taken and the file still holds the other hearth's token.
+  const lockDuring = existsSync(lockPath(home, root));
+  const fileDuring = readFileSync(file, "utf8");
+  release();
+  const hearth = await starting;
+  if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
+  cleanup.push(() => hearth.close());
+  const after = await askToken(port);
+  expect({ during, lockDuring, fileDuring, after }).toEqual({
+    during: STILL_STARTING,
+    lockDuring: false,
+    fileDuring: `${left}\n`,
+    after: `200 token ${JSON.stringify(hearth.token)}`,
+  });
+  expect(hearth.token).not.toBe(left);
 });
 
 test("health reports the pid and root", async () => {

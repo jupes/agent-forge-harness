@@ -15,6 +15,7 @@
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isMain } from "../is-main";
 
 export interface CommandEntry {
   /** The slash command, `/<file name>`. */
@@ -105,7 +106,7 @@ export function renderCatalogModule(entries: readonly CommandEntry[]): string {
   ].join("");
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = resolve(import.meta.dir, "..", "..");
   const { entries, errors } = catalogFromDir(join(root, ".claude", "commands"));
   if (errors.length > 0) {
