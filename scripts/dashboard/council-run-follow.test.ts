@@ -7,6 +7,7 @@ import {
   CONNECTION_LOST,
   councilRunEventsUrl,
   followCouncilRun,
+  MAX_FALLBACKS,
   UNREADABLE_UPDATE,
 } from "../../docs/js/council-run-follow";
 import {
@@ -90,9 +91,11 @@ interface Connection {
 
 /**
  * A transport that opens nothing: the test pushes messages into the
- * connections the follower asked for. A message is delivered to a closed
- * connection too, which a real transport never does, to show the follower
- * does not depend on that.
+ * connections the follower asked for. `send` and `end` reach a connection
+ * the follower has closed or replaced too, which a real transport never does
+ * after `close()`: the tests that do it show that the follower ignores
+ * anything from a connection that is no longer the current one, and does not
+ * rely on the transport for that.
  */
 function standInStream() {
   const connections: Connection[] = [];
@@ -159,6 +162,7 @@ function follow(
   let finished = 0;
   let reads = 0;
   const follower = followCouncilRun({
+    runId: RUN,
     transport: stream.transport,
     readRun: () => {
       reads += 1;
@@ -420,6 +424,227 @@ describe("followCouncilRun over a stand-in stream", () => {
   });
 });
 
+const seqs = (job: CouncilServiceJob | undefined): number[] =>
+  job?.events.map((item) => item.seq) ?? [];
+
+/** A discussion round as the hearth sends it: only what a repeat is told by. */
+const round = (stage: string, completedAt: string) => ({
+  stage,
+  round: 1,
+  completedAt,
+  findings: [],
+});
+
+const deltaMessage = (parts: Record<string, unknown>): SseMessage =>
+  raw(
+    "delta",
+    JSON.stringify({
+      runId: RUN,
+      events: [],
+      discussion: [],
+      set: {},
+      unset: [],
+      ...parts,
+    }),
+  );
+
+describe("a message that does not follow the job the connection holds", () => {
+  test("a delta sent twice is applied once, and the second reads the run again", async () => {
+    const two = jobOf(2);
+    const three = jobOf(3);
+    const h = follow(async () => jobOf(7));
+    h.stream.send(0, snapshotOf(two));
+    h.stream.send(0, deltaOf(two, three));
+    h.stream.send(0, deltaOf(two, three));
+    expect(h.jobs.map(seqs)).toEqual([
+      [0, 1],
+      [0, 1, 2],
+    ]);
+    expect(h.stream.connections[0]?.closed).toBe(true);
+    expect(h.reads()).toBe(1);
+    await flush();
+    expect(seqs(h.jobs.at(-1))).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  test("a delta made for a later job, arriving before the one between, is not applied: the run is read again", async () => {
+    const h = follow(async () => jobOf(7));
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.send(0, deltaOf(jobOf(3), jobOf(4)));
+    expect(h.jobs.map(seqs)).toEqual([[0, 1]]);
+    expect(h.reads()).toBe(1);
+    h.stream.send(0, deltaOf(jobOf(2), jobOf(3)));
+    await flush();
+    expect(seqs(h.jobs.at(-1))).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(h.reads()).toBe(1);
+  });
+
+  test("a delta whose own events skip one is not applied", () => {
+    const h = follow();
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.send(0, deltaMessage({ events: [event(2), event(4)] }));
+    expect(h.jobs.map(seqs)).toEqual([[0, 1]]);
+    expect(h.reads()).toBe(1);
+  });
+
+  test("a delta that carries a round the job already has is not applied", () => {
+    const first = round("independent", "2026-10-14T10:00:05.000Z");
+    const held = { ...jobOf(2), discussion: [first] };
+    const h = follow();
+    h.stream.send(0, snapshotOf(held as unknown as CouncilServiceJob));
+    h.stream.send(0, deltaMessage({ discussion: [first] }));
+    expect(h.jobs).toHaveLength(1);
+    expect(h.reads()).toBe(1);
+
+    const other = follow();
+    other.stream.send(0, snapshotOf(held as unknown as CouncilServiceJob));
+    other.stream.send(
+      0,
+      deltaMessage({ discussion: [round("peer", "2026-10-14T10:00:09.000Z")] }),
+    );
+    expect(other.jobs).toHaveLength(2);
+    expect(other.reads()).toBe(0);
+  });
+
+  test("a delta that appends to a job with no events, or appends none, is applied", () => {
+    const h = follow();
+    h.stream.send(0, snapshotOf(jobOf(0)));
+    h.stream.send(0, deltaOf(jobOf(0), jobOf(2)));
+    h.stream.send(0, deltaOf(jobOf(2), { ...jobOf(2), status: "cancelling" }));
+    expect(h.jobs.map((job) => [seqs(job), job.status])).toEqual([
+      [[], "running"],
+      [[0, 1], "running"],
+      [[0, 1], "cancelling"],
+    ]);
+    expect(h.reads()).toBe(0);
+  });
+
+  test("a whole job of another run is not taken for this one: it is reported, not shown, and the next delta reads the run again", () => {
+    const h = follow();
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.send(0, snapshotOf(jobOf(3, "running", "other")));
+    expect(h.errors).toEqual([UNREADABLE_UPDATE]);
+    expect(h.jobs).toEqual([jobOf(2)]);
+    h.stream.send(0, deltaOf(jobOf(2), jobOf(3)));
+    expect(h.jobs).toEqual([jobOf(2)]);
+    expect(h.reads()).toBe(1);
+  });
+
+  test("a whole job that cannot be read leaves no job held: the next delta reads the run again instead of landing on the job before", async () => {
+    const h = follow(async () => jobOf(7));
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.send(0, raw("snapshot", "{broken"));
+    h.stream.send(0, deltaOf(jobOf(2), jobOf(3)));
+    expect(h.errors).toEqual([UNREADABLE_UPDATE]);
+    expect(h.jobs).toEqual([jobOf(2)]);
+    expect(h.reads()).toBe(1);
+    await flush();
+    expect(h.jobs.at(-1)).toEqual(jobOf(7));
+  });
+});
+
+describe("a connection that is no longer the current one", () => {
+  test("a delta arriving late on the connection before is not applied to the new connection's job, and starts no read", async () => {
+    const h = follow(async () => jobOf(3));
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.end(0);
+    await flush();
+    h.clock.fire();
+    h.stream.send(1, snapshotOf(jobOf(5)));
+    const shown = h.jobs.length;
+
+    h.stream.send(0, deltaOf(jobOf(2), jobOf(3)));
+    h.stream.send(0, snapshotOf(jobOf(99)));
+    expect(h.jobs).toHaveLength(shown);
+    expect(seqs(h.jobs.at(-1))).toEqual([0, 1, 2, 3, 4]);
+    expect(h.reads()).toBe(1);
+    expect(h.clock.waits()).toEqual([]);
+    expect(h.stream.connections[1]?.closed).toBe(false);
+    // The current connection goes on from its own job.
+    h.stream.send(1, deltaOf(jobOf(5), jobOf(6)));
+    expect(seqs(h.jobs.at(-1))).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  test("a connection closed at a bad delta that then ends does not start a second read", async () => {
+    const h = follow(async () => jobOf(7));
+    h.stream.send(0, snapshotOf(jobOf(2)));
+    h.stream.send(0, raw("delta", "{"));
+    expect(h.reads()).toBe(1);
+    h.stream.end(0);
+    h.stream.send(0, raw("delta", "{"));
+    await flush();
+    expect(h.reads()).toBe(1);
+    expect(h.clock.waits()).toEqual([1_000]);
+    h.clock.fire();
+    expect(h.stream.connections).toHaveLength(2);
+  });
+});
+
+/** Connection `index` is sent a whole job and a delta that cannot be applied; the run is read and the next connection opened. */
+async function fallBack(
+  h: ReturnType<typeof follow>,
+  index: number,
+): Promise<void> {
+  h.stream.send(index, snapshotOf(jobOf(2)));
+  h.stream.send(index, raw("delta", "{"));
+  await flush();
+  h.clock.fire();
+}
+
+describe("reading the run again is capped", () => {
+  test(`after ${MAX_FALLBACKS} reads in a row the page is told the connection was lost, and the stream is not followed again`, async () => {
+    const h = follow(async () => jobOf(7));
+    for (let index = 0; index < MAX_FALLBACKS; index++)
+      await fallBack(h, index);
+    expect(h.reads()).toBe(MAX_FALLBACKS);
+    expect(h.errors).toEqual([]);
+    expect(h.stream.connections).toHaveLength(MAX_FALLBACKS + 1);
+
+    await fallBack(h, MAX_FALLBACKS);
+    expect(h.reads()).toBe(MAX_FALLBACKS);
+    expect(h.errors).toEqual([CONNECTION_LOST]);
+    expect(h.clock.waits()).toEqual([]);
+    expect(h.stream.connections).toHaveLength(MAX_FALLBACKS + 1);
+    expect(h.stream.connections[MAX_FALLBACKS]?.closed).toBe(true);
+  });
+
+  test("a stream that keeps stopping after its first message counts as well", async () => {
+    const h = follow(async () => jobOf(7));
+    for (let index = 0; index < MAX_FALLBACKS; index++) {
+      h.stream.send(index, snapshotOf(jobOf(2)));
+      h.stream.end(index);
+      await flush();
+      h.clock.fire();
+    }
+    expect(h.errors).toEqual([]);
+    h.stream.send(MAX_FALLBACKS, snapshotOf(jobOf(2)));
+    h.stream.end(MAX_FALLBACKS);
+    await flush();
+    expect(h.reads()).toBe(MAX_FALLBACKS);
+    expect(h.errors).toEqual([CONNECTION_LOST]);
+    expect(h.clock.waits()).toEqual([]);
+  });
+
+  test("a connection that delivers a second good message starts the count again", async () => {
+    const h = follow(async () => jobOf(7));
+    for (let index = 0; index < MAX_FALLBACKS - 1; index++)
+      await fallBack(h, index);
+    // This connection makes progress: a whole job and a delta that applies.
+    const progress = MAX_FALLBACKS - 1;
+    h.stream.send(progress, snapshotOf(jobOf(2)));
+    h.stream.send(progress, deltaOf(jobOf(2), jobOf(3)));
+    h.stream.send(progress, raw("delta", "{"));
+    await flush();
+    h.clock.fire();
+    for (let index = progress + 1; index < progress + MAX_FALLBACKS; index++)
+      await fallBack(h, index);
+    expect(h.errors).toEqual([]);
+    expect(h.reads()).toBe(MAX_FALLBACKS - 1 + MAX_FALLBACKS);
+
+    await fallBack(h, progress + MAX_FALLBACKS);
+    expect(h.errors).toEqual([CONNECTION_LOST]);
+  });
+});
+
 // ── Against the hearth's real route ─────────────────────────────────────────
 
 const TOKEN = "9".repeat(64);
@@ -518,6 +743,7 @@ describe("followCouncilRun against the hearth's council route", () => {
     const shown: CouncilServiceJob[] = [];
     let finished = 0;
     const follower = followCouncilRun({
+      runId: "followed",
       transport,
       readRun: async () => {
         throw new Error("the run must not need a read");

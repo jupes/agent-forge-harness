@@ -109,7 +109,15 @@ const REAL_TIMERS: Timers = {
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
+/**
+ * Reads of the run in a row, for a stream that stopped or a delta that could
+ * not be applied, before following gives up.
+ */
+export const MAX_FALLBACKS = 5;
+
 export interface CouncilRunFollowOptions {
+  /** The run followed: a job of another run is never taken for it. */
+  runId: string;
   /** Opens the run's stream (`councilRunEventsUrl`); called again for each connection. */
   transport: StreamTransport;
   /** Reads the run whole. */

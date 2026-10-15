@@ -119,6 +119,7 @@ export function CouncilIsland() {
     // cannot send the operator token a run's stream needs. The stream sends
     // the whole job once and then only what changed; the follower rebuilds it.
     const follower = followCouncilRun({
+      runId,
       transport: fetchTransport(councilRunEventsUrl(API, runId), {
         fetch: operatorRead,
       }),
