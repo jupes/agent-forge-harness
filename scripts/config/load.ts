@@ -25,6 +25,7 @@ import {
   BUILTIN_SMITHS,
   SHIFT_LIMITS,
   SHIFT_MAX_USD,
+  SHIFT_THROTTLE,
 } from "./defaults";
 
 export interface Provenance {
@@ -48,7 +49,7 @@ export interface ShiftConfig {
   maxUsd: number;
   /** Runs after a failed one before the bead is halted (`repairs`). */
   repairs: number;
-  /** At or above this share of CPU or of memory in use, the host is too busy to admit more (`throttle`). */
+  /** At or above this share of CPU or of memory in use, the host is too busy to admit more (`throttle`, 0.1 to 1). */
   throttle: number;
 }
 
@@ -108,37 +109,42 @@ export function maxUsdError(value: unknown): string | null {
     : `expected dollars above 0, at most ${SHIFT_MAX_USD}`;
 }
 
+type Read<T> = { ok: true; value: T } | { ok: false; error: string };
+
+/**
+ * A shift's length, in ms, from a duration as written (`[shift] for`,
+ * `forge:shift run --for`), or why it is not one: both are refused in these
+ * words.
+ */
+export function shiftLength(raw: unknown): Read<number> {
+  const ms = typeof raw === "string" ? parseDuration(raw) : null;
+  if (ms === null)
+    return { ok: false, error: "expected a duration such as 90s, 30m or 2h" };
+  return wholeNumberError(ms, SHIFT_LIMITS.forMs) === null
+    ? { ok: true, value: ms }
+    : {
+        ok: false,
+        error: `expected a duration of at most ${SHIFT_LIMITS.forMs[1] / UNIT_MS.h}h`,
+      };
+}
+
 /** The value a `[shift]` key holds, as the shift takes it, or why it is not one. */
-function shiftValue(
-  key: ShiftKey,
-  raw: unknown,
-): { ok: true; value: number } | { ok: false; error: string } {
+function shiftValue(key: ShiftKey, raw: unknown): Read<number> {
   const checked = (error: string | null) =>
     error === null
       ? { ok: true as const, value: raw as number }
       : { ok: false as const, error };
+  const [lowest, highest] = SHIFT_THROTTLE;
   switch (key) {
-    case "for": {
-      const ms = typeof raw === "string" ? parseDuration(raw) : null;
-      if (ms === null)
-        return {
-          ok: false,
-          error: "expected a duration such as 90s, 30m or 2h",
-        };
-      return wholeNumberError(ms, SHIFT_LIMITS.forMs) === null
-        ? { ok: true, value: ms }
-        : {
-            ok: false,
-            error: `expected a duration of at most ${SHIFT_LIMITS.forMs[1] / UNIT_MS.h}h`,
-          };
-    }
+    case "for":
+      return shiftLength(raw);
     case "max_usd":
       return checked(maxUsdError(raw));
     case "throttle":
       return checked(
-        typeof raw === "number" && raw > 0 && raw <= 1
+        typeof raw === "number" && raw >= lowest && raw <= highest
           ? null
-          : "expected a share above 0, at most 1 (0.85 is 85%)",
+          : `expected a share from ${lowest} to ${highest} (0.85 is 85%)`,
       );
     default:
       return checked(wholeNumberError(raw, SHIFT_LIMITS[SHIFT_FIELDS[key]]));

@@ -88,6 +88,13 @@ export const SHIFT_LIMITS = {
 export const SHIFT_MAX_USD = 1000;
 
 /**
+ * The range of the host threshold (`[shift] throttle`), a share. Below the
+ * floor a shift would find any host that is doing anything too busy, and
+ * admit nothing until its time ran out.
+ */
+export const SHIFT_THROTTLE = [0.1, 1] as const;
+
+/**
  * Always passed to spawned executors: without these a child cannot start on
  * Windows (or find itself). Matched case-insensitively. Config `pass` only adds.
  *

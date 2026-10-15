@@ -413,10 +413,11 @@ describe("set: [shift] keys", () => {
       "soon",
       "shift.for: expected a duration such as 90s, 30m or 2h",
     ],
+    ["shift.throttle", "85", "shift.throttle: expected a share from 0.1 to 1"],
     [
       "shift.throttle",
-      "85",
-      "shift.throttle: expected a share above 0, at most 1",
+      "0.000000001",
+      "shift.throttle: expected a share from 0.1 to 1",
     ],
     ["shift.nothing", "1", 'unknown shift key "nothing"'],
     ["shift.constructor", "1", 'unknown shift key "constructor"'],

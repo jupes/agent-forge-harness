@@ -456,11 +456,10 @@ describe("loadConfig: [shift]", () => {
         "shift.for: expected a duration such as 90s, 30m or 2h",
       ],
       ['for = "25h"', "shift.for: expected a duration of at most 24h"],
-      ["throttle = 0", "shift.throttle: expected a share above 0, at most 1"],
-      [
-        "throttle = 1.01",
-        "shift.throttle: expected a share above 0, at most 1",
-      ],
+      ["throttle = 0", "shift.throttle: expected a share from 0.1 to 1"],
+      ["throttle = 5e-324", "shift.throttle: expected a share from 0.1 to 1"],
+      ["throttle = 0.099", "shift.throttle: expected a share from 0.1 to 1"],
+      ["throttle = 1.01", "shift.throttle: expected a share from 0.1 to 1"],
       [
         "max-usd = 5",
         "shift.max-usd: unknown key (expected concurrency | for | max_beads | max_usd | repairs | throttle)",
@@ -502,6 +501,22 @@ describe("loadConfig: [shift]", () => {
     const { config, provenance } = load(s);
     expect(config.shift).toEqual(BUILTIN_SHIFT_CONFIG);
     expect(provenance["shift.throttle"]?.source).toBe(s.workspaceFile);
+  });
+
+  test("the lowest value of each bound loads, the throttle's floor of 0.1 included", () => {
+    const s = sandbox();
+    writeFileSync(
+      s.workspaceFile,
+      '[shift]\nconcurrency = 1\nfor = "1s"\nmax_beads = 1\nmax_usd = 0.01\nrepairs = 0\nthrottle = 0.1\n',
+    );
+    expect(load(s).config.shift).toEqual({
+      concurrency: 1,
+      forMs: 1000,
+      maxBeads: 1,
+      maxUsd: 0.01,
+      repairs: 0,
+      throttle: 0.1,
+    });
   });
 
   test("the highest value of each bound loads", () => {
