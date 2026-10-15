@@ -115,14 +115,43 @@ export type WorkspaceFile =
     }
   | { ok: false; reason: "missing" | "outside" | "not-a-file" | "sensitive" };
 
+/** A real path as compared with another: without case where the file system ignores it. */
+export function samePathKey(realPath: string): string {
+  return process.platform === "win32" || process.platform === "darwin"
+    ? realPath.toLowerCase()
+    : realPath;
+}
+
+/**
+ * Whether `realPath`, a real path found earlier, still resolves to itself:
+ * false when a directory on the way to it has since been replaced by a link,
+ * or it is gone. A check made just before a read; what changes between it and
+ * the read itself is not seen.
+ */
+export function stillAt(realPath: string): boolean {
+  try {
+    return samePathKey(realpathSync(realPath)) === samePathKey(realPath);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Where `path` really is, when a source may read it: a regular file whose real
  * path is inside the workspace and whose name is not a credential file's.
  * Never throws: whatever cannot be resolved, a file or a root removed while it
  * is looked at included, is `missing`, so no error naming a local path
  * escapes from here.
+ *
+ * `realRoot`, when given, is the root's real path as it was verified: a root
+ * that no longer resolves to it (moved away, a link put in its place) is not
+ * trusted, and the file is `missing`.
  */
-export function locateWorkspaceFile(path: string, root: string): WorkspaceFile {
+export function locateWorkspaceFile(
+  path: string,
+  root: string,
+  realRoot?: string,
+): WorkspaceFile {
   if (!existsSync(path)) return { ok: false, reason: "missing" };
   let resolvedRoot: string;
   let resolvedPath: string;
@@ -134,6 +163,11 @@ export function locateWorkspaceFile(path: string, root: string): WorkspaceFile {
   } catch {
     return { ok: false, reason: "missing" };
   }
+  if (
+    realRoot !== undefined &&
+    samePathKey(resolvedRoot) !== samePathKey(realRoot)
+  )
+    return { ok: false, reason: "missing" };
   const rel = relative(resolvedRoot, resolvedPath);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
     return { ok: false, reason: "outside" };
@@ -406,20 +440,24 @@ const HIDDEN = new RegExp(classOf(HIDDEN_RANGES), "gu");
 
 /**
  * What the form with the invisible characters taken out removes: every
- * character `withoutControls` replaces but the tab and the line breaks
- * (U+0009 to U+000D), which keep apart words that are apart.
+ * character `withoutControls` replaces but the tab and the line feed, and a
+ * carriage return only when no line feed follows it. Those keep apart words a
+ * reader sees apart; a line tabulation, a form feed or a lone carriage return
+ * between two halves of a key is taken out like any other.
  */
 const REMOVED_RANGES = HIDDEN_RANGES.flatMap(
   ([first, last]): Array<readonly [number, number]> =>
     first <= 0x0d && last >= 0x09
       ? [
           [first, 0x08],
+          [0x0b, 0x0c],
           [0x0e, last],
         ]
       : [[first, last]],
 );
-const REMOVED = new RegExp(classOf(REMOVED_RANGES), "gu");
-const HAS_REMOVED = new RegExp(classOf(REMOVED_RANGES), "u");
+const REMOVED_SOURCE = `\\r(?!\\n)|${classOf(REMOVED_RANGES)}`;
+const REMOVED = new RegExp(REMOVED_SOURCE, "gu");
+const HAS_REMOVED = new RegExp(REMOVED_SOURCE, "u");
 
 /**
  * `value` with its invisible characters taken out, and for each code unit

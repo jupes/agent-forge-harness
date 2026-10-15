@@ -2947,6 +2947,24 @@ describe("a secret split by invisible characters", () => {
       `${ANTHROPIC.slice(0, 17)}${ZWSP}${ANTHROPIC.slice(17)}`,
       "Zq",
     ],
+    // Line tabulation, form feed and a carriage return with no line feed
+    // after it are not the separators a reader sees between words: only a
+    // tab, a line feed and CR LF are kept apart.
+    [
+      "a key split by a line tabulation (U+000B)",
+      `${ANTHROPIC.slice(0, 17)}${String.fromCharCode(0x0b)}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    [
+      "a key split by a form feed (U+000C)",
+      `${ANTHROPIC.slice(0, 17)}${String.fromCharCode(0x0c)}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    [
+      "a key split by a carriage return with no line feed after it",
+      `${ANTHROPIC.slice(0, 17)}${String.fromCharCode(0x0d)}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
     [
       "a glued key, the value split by soft hyphens",
       `${KEY}${NAME}${SHY}=${spread(VALUE, SHY)}`,
@@ -2964,7 +2982,7 @@ describe("a secret split by invisible characters", () => {
     ],
   ];
 
-  test("words on two lines, or either side of a tab, are not joined into a key: the line breaks and the tab stay when the invisible characters are taken out", () => {
+  test("words on two lines, or either side of a tab, are not joined into a key: a line feed, CR LF and a tab stay when the invisible characters are taken out", () => {
     const word = "abcdefghijklmnopqrstuvwxyz";
     for (const between of ["\n", "\r\n", "\t"]) {
       const text = `The flag reads sk-${between}${word} on the bench.`;

@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmdirSync,
   rmSync,
   symlinkSync,
@@ -908,7 +909,7 @@ describe("a checkout that changes while it is read", () => {
     expect(JSON.stringify(packed)).not.toContain(basename(main));
   });
 
-  test("the reads stay in the real path that was verified: a link swapped in for the listed path afterwards does not move them", async () => {
+  test("when git lists a worktree through a link, the reads stay in the real path that was verified: the link pointed elsewhere after the check does not move them", async () => {
     const main = mainCheckout();
     const tree = linkedWorktree(
       main,
@@ -947,5 +948,44 @@ describe("a checkout that changes while it is read", () => {
     expect(everything).toContain("TREE-PLAN");
     expect(everything).toContain("TREE-RESEARCH");
     expect(everything).not.toContain("OUTSIDE-");
+  });
+
+  test("a worktree moved away after the check and replaced by a link is not read through: the file already located and the next one are missing (checked at locate and again just before each read; a swap between that last check and the read itself is not covered)", async () => {
+    const main = mainCheckout();
+    // Listed as itself, a real directory: the usual case.
+    const tree = linkedWorktree(
+      main,
+      join(main, "trees", "kiln"),
+      Object.fromEntries([
+        runState("kiln-temp", {
+          beadId: BEAD,
+          artifacts: {
+            plan: "plans/drafts/kiln-temp.md",
+            research: "plans/research/kiln-temp.md",
+          },
+        }),
+        ["plans/drafts/kiln-temp.md", "TREE-PLAN"],
+        ["plans/research/kiln-temp.md", "TREE-RESEARCH"],
+      ]),
+    );
+    const outside = scratch("council-outside-");
+    write(outside, {
+      "plans/drafts/kiln-temp.md": "OUTSIDE-PLAN",
+      "plans/research/kiln-temp.md": "OUTSIDE-RESEARCH",
+    });
+    const packed = await packWith(
+      fakeRunner({ listing: listed([main, tree]) }),
+      main,
+      once(() => {
+        // Between the plan being located and being read.
+        renameSync(tree, `${tree}-moved`);
+        linkDirectory(outside, tree);
+      }),
+    );
+    expect(JSON.stringify(packed)).not.toContain("OUTSIDE-");
+    expect(linkedListing(packed)).toEqual([
+      "linked plan plans/drafts/kiln-temp.md from worktree trees/kiln: missing, not packed",
+      "linked research plans/research/kiln-temp.md from worktree trees/kiln: missing, not packed",
+    ]);
   });
 });

@@ -41,9 +41,11 @@ import {
   locateWorkspaceFile,
   readUtf8Text,
   type SecretPolicy,
+  samePathKey,
   sanitizeContent,
   scanNamed,
   scanShown,
+  stillAt,
   withoutControls,
 } from "./context";
 import {
@@ -350,11 +352,7 @@ function unreadable(
 }
 
 /** One file per real path, whatever spelling named it. */
-function sameFileKey(realPath: string): string {
-  return process.platform === "win32" || process.platform === "darwin"
-    ? realPath.toLowerCase()
-    : realPath;
-}
+const sameFileKey = samePathKey;
 
 type LinkedFiles = { parts: ContextPart[]; incomplete: boolean };
 
@@ -371,6 +369,12 @@ function stamp(state: ForgeState): string {
  */
 type Checkout = {
   root: string;
+  /**
+   * For another worktree, the real path that was verified (the root itself):
+   * a file is read there only while the root still resolves to it. Absent
+   * for the workspace.
+   */
+  realRoot?: string;
   /** How the listing names it; null for the workspace itself. */
   worktree: string | null;
 };
@@ -379,11 +383,24 @@ type Checkout = {
 type BeadRun = { slug: string; state: ForgeState; checkout: Checkout };
 
 /**
+ * Whether a file located in a checkout may still be read there: its real path
+ * still resolves to itself, and a verified root still to its real path.
+ * Checked just before the read; a change between this and the read itself is
+ * not seen.
+ */
+function stillInside(realPath: string, realRoot: string | undefined): boolean {
+  return (realRoot === undefined || stillAt(realRoot)) && stillAt(realPath);
+}
+
+/**
  * The forge runs recorded in a checkout, each read only when its state file
  * really is inside that checkout: a runs directory linked to somewhere else is
  * not followed.
  */
-function runsIn(root: string): Array<{ slug: string; state: ForgeState }> {
+function runsIn(
+  checkout: Checkout,
+): Array<{ slug: string; state: ForgeState }> {
+  const { root, realRoot } = checkout;
   let names: string[];
   try {
     names = readdirSync(join(root, FORGE_RUNS_DIR));
@@ -397,8 +414,13 @@ function runsIn(root: string): Array<{ slug: string; state: ForgeState }> {
     // A read, never `listRuns`: that one migrates files on the way past.
     let state: ForgeState | null = null;
     try {
-      const found = locateWorkspaceFile(join(root, FORGE_RUNS_DIR, name), root);
-      if (found.ok) state = parseState(readFileSync(found.path, "utf8"));
+      const found = locateWorkspaceFile(
+        join(root, FORGE_RUNS_DIR, name),
+        root,
+        realRoot,
+      );
+      if (found.ok && stillInside(found.path, realRoot))
+        state = parseState(readFileSync(found.path, "utf8"));
     } catch {
       state = null;
     }
@@ -416,7 +438,7 @@ function runsIn(root: string): Array<{ slug: string; state: ForgeState }> {
 function beadRun(id: BeadsIssueId, checkouts: Checkout[]): BeadRun | null {
   let newest: BeadRun | null = null;
   for (const checkout of checkouts)
-    for (const { slug, state } of runsIn(checkout.root)) {
+    for (const { slug, state } of runsIn(checkout)) {
       const owns =
         state.beadId !== undefined ? state.beadId === id : state.epic === id;
       if (!owns) continue;
@@ -639,10 +661,13 @@ async function runCheckouts(
     }
     if (!hasRunsDirectory(path)) continue;
     // The real path, resolved once, here, is what is verified and what every
-    // read below stays inside: a link swapped in for the listed path later
-    // cannot move it. It is resolved by the function `locateWorkspaceFile`
-    // resolves each file with, so the two compare spelling for spelling (a
-    // Windows short name, a drive letter's case).
+    // read below is held to: a file is located there only while the root
+    // still resolves to it, and read only while it and its file still
+    // resolve to themselves (checked just before the read; a change between
+    // that check and the read itself is not seen). It is resolved by the
+    // function `locateWorkspaceFile` resolves each file with, so the two
+    // compare spelling for spelling (a Windows short name, a drive letter's
+    // case).
     let root: string;
     try {
       root = realpathSync(path);
@@ -663,7 +688,11 @@ async function runCheckouts(
       beyond += 1;
       continue;
     }
-    checkouts.push({ root, worktree: worktreeName(workspace, real) });
+    checkouts.push({
+      root,
+      realRoot: root,
+      worktree: worktreeName(workspace, real),
+    });
   }
   const notes = skipped.slice(0, MAX_WORKTREE_NOTES);
   const more = skipped.length - notes.length;
@@ -705,6 +734,8 @@ function linkedFileParts(
     path: string;
     /** The checkout the file is read inside, and nowhere else. */
     root: string;
+    /** That checkout's verified real path, for another worktree. */
+    realRoot?: string;
     where: "workspace" | "worktree";
   };
   const linked: Linked[] = [];
@@ -731,6 +762,9 @@ function linkedFileParts(
           ...(tree === null ? {} : { title: `linked ${kind} ${path}` }),
           path,
           root: run.checkout.root,
+          ...(run.checkout.realRoot === undefined
+            ? {}
+            : { realRoot: run.checkout.realRoot }),
           where: tree === null ? "workspace" : "worktree",
         });
       else
@@ -755,13 +789,13 @@ function linkedFileParts(
     }
 
   const packed = new Map<string, string>();
-  for (const { label, title, path, root, where } of linked.slice(
+  for (const { label, title, path, root, realRoot, where } of linked.slice(
     0,
     MAX_LINKED_FILES,
   )) {
     // The same guard wherever the file is: its real path inside the checkout
     // it was named for, then a plan, research or report path there too.
-    const found = locateWorkspaceFile(resolve(root, path), root);
+    const found = locateWorkspaceFile(resolve(root, path), root, realRoot);
     if (!found.ok) {
       result.parts.push(note(label, unreadable(found.reason, where)));
       continue;
@@ -804,6 +838,13 @@ function linkedFileParts(
           `too large, not packed (over ${MAX_LINKED_FILE_BYTES} bytes)`,
         ),
       );
+      continue;
+    }
+    // Just before the read: the file, and a verified root, still where they
+    // were found. A directory moved away and a link put in its place since
+    // the file was located would otherwise be read through.
+    if (!stillInside(found.path, realRoot)) {
+      result.parts.push(note(label, unreadable("missing", where)));
       continue;
     }
     const body = readUtf8Text(found.path);
