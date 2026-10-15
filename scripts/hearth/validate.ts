@@ -211,6 +211,14 @@ const phase = oneOf(["research", "plan", "implement", "ship"]);
 const queueState = oneOf(QUEUE_STATES);
 const verdictOutcome = oneOf(["pass", "fail", "unreadable"]);
 
+/** Findings by severity (`ReviewFindings`): a whole count for each of the four, numbers only. */
+const findingCounts = shape({
+  blocker: nonNegInt,
+  high: nonNegInt,
+  medium: nonNegInt,
+  low: nonNegInt,
+});
+
 const sha256Hex: Check = (v, path) =>
   typeof v === "string" && /^[0-9a-f]{64}$/.test(v)
     ? null
@@ -293,12 +301,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     phase,
     round: posInt,
     verdict: oneOf(["PASS", "FAIL", "UNREADABLE"]),
-    findings: shape({
-      blocker: nonNegInt,
-      high: nonNegInt,
-      medium: nonNegInt,
-      low: nonNegInt,
-    }),
+    findings: findingCounts,
     action: optional(oneOf(["advance", "revise", "halt"])),
   }),
   "gate.ran": shape({
@@ -345,6 +348,7 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     outcome: oneOf(["pass", "fail", "unreadable", "cancelled"]),
     costUsd: optional(num),
     summary: optional(str),
+    findings: optional(findingCounts),
   }),
   "friction.recorded": shape({
     frictionBeadId: nonEmptyStr,

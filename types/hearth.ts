@@ -432,6 +432,13 @@ export interface LedgerPayloads {
     costUsd?: number;
     /** Opt-in body: redacted and capped by the ledger. */
     summary?: string;
+    /**
+     * The run's findings counted by severity, numbers only (the shape
+     * `review.recorded` uses). Present for a completed run, with explicit
+     * zeros when it found nothing; absent for a failed or cancelled run, one
+     * that produced no run, and any row written before this field existed.
+     */
+    findings?: ReviewFindings;
   };
   /** The friction itself is a Beads chore; this event links it to its cause. */
   "friction.recorded": { frictionBeadId: string; causeEventUlid?: string };
@@ -634,8 +641,10 @@ export interface ScoreboardRow {
   /**
    * `council.run.started` and `council.run.finished` events. `costUsd` sums
    * the finished runs that reported a cost (`runsWithCost` of them), null when
-   * none did. `findings` is always null: `council.run.finished` records an
-   * outcome, a cost and a summary, not findings by severity.
+   * none did. `findings` sums the findings by severity of the finished runs
+   * that reported them (`runsWithFindings` of them, a completed run's), null
+   * when none did: a failed or cancelled run reports none, and neither does
+   * a run recorded before `council.run.finished` carried them.
    */
   council: {
     started: number;
@@ -646,7 +655,8 @@ export interface ScoreboardRow {
     cancelled: number;
     costUsd: number | null;
     runsWithCost: number;
-    findings: null;
+    findings: ReviewFindings | null;
+    runsWithFindings: number;
   };
   /**
    * The `usage` of `session.ended` events (`sessions` of them carried one).

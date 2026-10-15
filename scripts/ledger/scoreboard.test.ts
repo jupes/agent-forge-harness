@@ -7,6 +7,7 @@ import type {
   Scoreboard,
   ScoreboardRow,
 } from "../../types/hearth";
+import type { ReviewFindings } from "../forge/phases";
 import { validateOperatorEnvelope } from "../hearth/validate";
 import { appendEvent } from "./append";
 import { parseAuditArgs, runAudit } from "./audit-cli";
@@ -74,6 +75,7 @@ const NO_COUNCIL: ScoreboardRow["council"] = {
   costUsd: null,
   runsWithCost: 0,
   findings: null,
+  runsWithFindings: 0,
 };
 
 const NO_USAGE: ScoreboardRow["usage"] = {
@@ -108,13 +110,19 @@ const JOURNEYMAN_ROW: ScoreboardRow = {
     unreadable: 0,
     findings: { blocker: 1, high: 1, medium: 1, low: 2 },
   },
+  // c-1 (pass, a cost, findings 0/1/1/2), c-3 (fail, findings 1/0/2/0) and c-4
+  // (pass, written before the event carried findings): the findings are
+  // summed over the two runs that reported them.
   council: {
     ...NO_COUNCIL,
-    started: 1,
-    finished: 1,
-    pass: 1,
+    started: 3,
+    finished: 3,
+    pass: 2,
+    fail: 1,
     costUsd: 0.1,
     runsWithCost: 1,
+    findings: { blocker: 1, high: 1, medium: 3, low: 2 },
+    runsWithFindings: 2,
   },
   usage: {
     sessions: 2,
@@ -149,7 +157,15 @@ const CODEX_ROW: ScoreboardRow = {
     unreadable: 0,
     findings: NO_FINDINGS,
   },
-  council: NO_COUNCIL,
+  // c-5 (fail, findings 0/0/0/4): the only council run of this smith.
+  council: {
+    ...NO_COUNCIL,
+    started: 1,
+    finished: 1,
+    fail: 1,
+    findings: { blocker: 0, high: 0, medium: 0, low: 4 },
+    runsWithFindings: 1,
+  },
   usage: {
     sessions: 1,
     costUsd: null,
@@ -222,7 +238,7 @@ describe("readScoreboard over a fixture ledger with two smiths", () => {
     });
   });
 
-  test("what no event recorded is null, never 0: a pass rate with no gate, a cost no session or council run reported, and council findings", () => {
+  test("what no event recorded is null, never 0: a pass rate with no gate, a cost no session or council run reported, and council findings no finished run reported", () => {
     const path = fixtureLedger();
     const [journeyman, codex, lead, nobody] = readScoreboard(
       { workspace: FIXTURE_WORKSPACE },
@@ -232,8 +248,16 @@ describe("readScoreboard over a fixture ledger with two smiths", () => {
     expect(codex?.usage.costUsd).toBeNull();
     expect(codex?.council.costUsd).toBeNull();
     expect(nobody?.council.costUsd).toBeNull();
-    for (const row of [journeyman, codex, lead, nobody])
-      expect(row?.council.findings).toBeNull();
+    // No council run at all, and a finished run (cancelled) that reported none.
+    expect(lead?.council).toMatchObject({ finished: 0, findings: null });
+    expect(nobody?.council).toMatchObject({
+      finished: 1,
+      findings: null,
+      runsWithFindings: 0,
+    });
+    // The smiths whose finished runs reported them have counts, zeros included where they were reported.
+    expect(journeyman?.council.findings).not.toBeNull();
+    expect(codex?.council.findings).not.toBeNull();
     // A count is only as wide as what was reported: codex reported no cache reads.
     expect(Object.keys(codex?.usage.tokens ?? {}).sort()).toEqual([
       "cachedInputTokens",
@@ -287,6 +311,62 @@ describe("readScoreboard over a fixture ledger with two smiths", () => {
     // The interactive session started before the instant; only its end is in.
     expect(board.rows[2]?.sessions.started).toBe(0);
     expect(board.rows[2]?.sessions.other).toBe(1);
+  });
+
+  test("council findings are summed over the finished runs in scope that reported them", () => {
+    const path = fixtureLedger();
+    // From 09:53 the first journeyman run (c-1) is out; c-3 and c-4 are in.
+    const board = readScoreboard(
+      { workspace: FIXTURE_WORKSPACE, since: "2026-10-10T09:53:00Z" },
+      { path },
+    );
+    expect(board.rows[0]?.council).toMatchObject({
+      finished: 2,
+      findings: { blocker: 1, high: 0, medium: 2, low: 0 },
+      runsWithFindings: 1,
+    });
+    // From 09:57 only c-4 is in, and it reported none: null, not zeros.
+    const later = readScoreboard(
+      { workspace: FIXTURE_WORKSPACE, since: "2026-10-10T09:57:00Z" },
+      { path },
+    );
+    expect(later.rows[0]?.council).toMatchObject({
+      finished: 1,
+      findings: null,
+      runsWithFindings: 0,
+    });
+  });
+
+  test("a run that reported zero of each severity is a count of zeros, and a ledger written before the field existed has none", () => {
+    const { path } = sandbox();
+    const finished = (
+      councilRunId: string,
+      findings?: ReviewFindings,
+    ): FixtureEvent => ({
+      kind: "council.run.finished",
+      ts: "2026-10-10T09:00:00Z",
+      executor: { provider: "claude", model: "claude-sonnet-4-5" },
+      payload: {
+        councilRunId,
+        outcome: "pass",
+        ...(findings !== undefined ? { findings } : {}),
+      },
+    });
+    seed(path, FIXTURE_WORKSPACE, [finished("old-1"), finished("old-2")]);
+    expect(
+      readScoreboard({ workspace: FIXTURE_WORKSPACE }, { path }).rows[0]
+        ?.council,
+    ).toMatchObject({ finished: 2, findings: null, runsWithFindings: 0 });
+
+    seed(path, FIXTURE_WORKSPACE, [finished("new-1", NO_FINDINGS)]);
+    expect(
+      readScoreboard({ workspace: FIXTURE_WORKSPACE }, { path }).rows[0]
+        ?.council,
+    ).toMatchObject({
+      finished: 3,
+      findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+      runsWithFindings: 1,
+    });
   });
 
   test("a ledger with no events answers an empty scoreboard", () => {
@@ -438,7 +518,7 @@ describe("forge:audit --scoreboard", () => {
     expect(blocks[0]).toContain(
       "gates 3 ran: 2 passed, 1 failed, pass rate 66.7%",
     );
-    expect(blocks[0]).toContain("council cost $0.1000 (1 of 1 finished)");
+    expect(blocks[0]).toContain("council cost $0.1000 (1 of 3 finished)");
     expect(blocks[1]?.split("\n")[0]).toBe(
       "codex-journeyman (codex gpt-5-codex)",
     );
@@ -450,8 +530,18 @@ describe("forge:audit --scoreboard", () => {
     expect(blocks[2]?.split("\n")[0]).toBe("no smith (claude claude-opus-4-1)");
     expect(blocks[2]).toContain("pass rate unknown (no gate ran)");
     expect(blocks[3]?.split("\n")[0]).toBe("no executor recorded");
-    for (const block of blocks)
-      expect(block).toContain("council findings by severity: not recorded");
+    expect(blocks[0]).toContain(
+      "council findings by severity: 1 blocker, 1 high, 3 medium, 2 low (2 of 3 finished reported them)",
+    );
+    expect(blocks[1]).toContain(
+      "council findings by severity: 0 blocker, 0 high, 0 medium, 4 low (1 of 1 finished reported them)",
+    );
+    expect(blocks[2]).toContain(
+      "council findings by severity: not recorded (0 of 0 finished reported them)",
+    );
+    expect(blocks[3]).toContain(
+      "council findings by severity: not recorded (0 of 1 finished reported them)",
+    );
     expect(
       formatScoreboard({ rows: [], events: 0, from: null, to: null }),
     ).toBe("no events");
