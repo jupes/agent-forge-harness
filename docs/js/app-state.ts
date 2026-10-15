@@ -216,6 +216,98 @@ function foldSession(
   ].slice(0, MAX_LIVE_SESSIONS);
 }
 
+/**
+ * The sessions that `events` (not yet applied) name and that the list holds no
+ * row for, in the order they first appear.
+ *
+ * `foldSession` makes such a session's row from the one event alone, which is
+ * the whole row only when the batch also holds the session's `session.started`.
+ * Otherwise it is a session older than the snapshot's list that speaks again:
+ * the route lists it with its start, kind, worktree and executor, and the
+ * client has to ask for them (`withSessionRows`). Ask before the events are
+ * applied: afterwards the list holds a row for every one of them.
+ */
+export function sessionsWithoutRow(
+  state: LiveState,
+  events: readonly LedgerEvent[],
+): string[] {
+  const { cursor } = state;
+  const held = state.sessions.data;
+  if (cursor === null || held === null) return [];
+  const known = new Set(held.map((session) => session.sessionId));
+  const begun = new Set<string>();
+  const wanted = new Set<string>();
+  for (const event of events) {
+    const id = event.sessionId;
+    if (id === undefined || event.id <= cursor) continue;
+    if (event.kind === "session.started") begun.add(id);
+    if (!known.has(id)) wanted.add(id);
+  }
+  return [...wanted].filter((id) => !begun.has(id));
+}
+
+/** The fields of a session row that only the ledger's older events can supply. */
+function completed(
+  held: SessionSummary,
+  listed: SessionSummary,
+): SessionSummary {
+  const next: SessionSummary = { ...held };
+  if (next.kind === undefined && listed.kind !== undefined)
+    next.kind = listed.kind;
+  if (next.worktree === undefined && listed.worktree !== undefined)
+    next.worktree = listed.worktree;
+  if (
+    next.parentSessionId === undefined &&
+    listed.parentSessionId !== undefined
+  )
+    next.parentSessionId = listed.parentSessionId;
+  if (next.startedAt === undefined && listed.startedAt !== undefined)
+    next.startedAt = listed.startedAt;
+  if (next.executor === undefined && listed.executor !== undefined)
+    next.executor = listed.executor;
+  if (next.beadId === undefined && listed.beadId !== undefined)
+    next.beadId = listed.beadId;
+  if (next.runId === undefined && listed.runId !== undefined)
+    next.runId = listed.runId;
+  return next;
+}
+
+/**
+ * Rows listed by the sessions route, for the sessions in `ids` that the list
+ * holds without them (see `sessionsWithoutRow`).
+ *
+ * Only what the held row lacks is taken. The answer is not swapped in for the
+ * list: events were applied while the read was in flight, and they are newer
+ * than anything it says (so `lastEventAt` and `endedAt` stay the held row's,
+ * as does any field an event since has set). Sessions not in `ids`, and ids the
+ * route did not list, are left alone; when nothing changes the same object
+ * comes back.
+ */
+export function withSessionRows(
+  state: LiveState,
+  rows: readonly SessionSummary[],
+  ids: ReadonlySet<string>,
+): LiveState {
+  const held = state.sessions.data;
+  if (held === null) return state;
+  const listed = new Map(rows.map((row) => [row.sessionId, row]));
+  let changed = false;
+  const next = held.map((session) => {
+    const row = ids.has(session.sessionId)
+      ? listed.get(session.sessionId)
+      : undefined;
+    if (row === undefined) return session;
+    const filled = completed(session, row);
+    const same = (Object.keys(filled) as Array<keyof SessionSummary>).every(
+      (key) => filled[key] === session[key],
+    );
+    if (same) return session;
+    changed = true;
+    return filled;
+  });
+  return changed ? { ...state, sessions: { data: next, error: null } } : state;
+}
+
 /** Oldest claim first, as `activeReservations` (scripts/ledger/query.ts) lists them. */
 function foldReservation(
   held: Reservation[],

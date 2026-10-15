@@ -28,6 +28,7 @@ import type {
   LedgerEvent,
   LedgerEventKind,
   OperatorEnvelope,
+  SessionSummary,
   StreamSnapshot,
 } from "../../types/hearth";
 import {
@@ -35,7 +36,10 @@ import {
   applySnapshot,
   INITIAL_LIVE_STATE,
   type LiveState,
+  MAX_LIVE_SESSIONS,
+  sessionsWithoutRow,
   withCollection,
+  withSessionRows,
   withStatus,
 } from "./app-state";
 import {
@@ -57,6 +61,8 @@ export const BATCH_MS = 50;
 export const BATCH_MAX = 500;
 /** A view's route is read again at most once per this window. */
 export const REFETCH_WINDOW_MS = 300;
+/** How many times the sessions route is tried again, on its own, after a read that got no answer. */
+export const SESSION_ROW_RETRIES = 3;
 /**
  * The first retry waits up to this; each later one doubles it. With
  * `MAX_FAILURES` at six there are five retries, so the longest wait is up to
@@ -413,6 +419,10 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   /** The next request asks for a snapshot even when the page has a cursor. */
   let askAfresh = false;
   let waiting: LedgerEvent[] = [];
+  /** Sessions whose row came from deltas alone and is still to be completed from the sessions route. */
+  const rowless = new Set<string>();
+  /** Reads of the sessions route that failed in a row. */
+  let rowFailures = 0;
   let batchTimer: unknown = null;
   let retryTimer: unknown = null;
   let silenceTimer: unknown = null;
@@ -444,12 +454,19 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     const batch = waiting;
     waiting = [];
     const before = state.cursor;
+    // Asked before the batch is applied: afterwards the list holds them all.
+    const unrowed = sessionsWithoutRow(state, batch);
     const next = applyDeltas(state, batch);
     if (next === state || before === null) return;
     const kinds = new Set<LedgerEventKind>();
     for (const event of batch) if (event.id > before) kinds.add(event.kind);
     setState(next);
     tell(kinds);
+    // After the update, so the delta is shown without waiting for the read.
+    if (unrowed.length > 0) {
+      for (const id of unrowed) rowless.add(id);
+      sessionRows.request();
+    }
   };
 
   const receive = (message: SseMessage): void => {
@@ -463,6 +480,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     if (message.event === "snapshot" && isSnapshot(data)) {
       // A snapshot replaces everything, so nothing older is worth applying.
       waiting = [];
+      rowless.clear();
+      rowFailures = 0;
       batchTimer = stop(batchTimer);
       setState(applySnapshot(state, data));
     } else if (message.event === "delta" && isLedgerEvent(data)) {
@@ -622,6 +641,44 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   watchers.add({
     kinds: new Set(QUEUE_KINDS),
     callback: () => queue.request(),
+  });
+
+  // Sessions are folded from events, so the route is never swapped in for the
+  // list: it only completes the rows that deltas alone could not (see
+  // `withSessionRows`). A rejected read keeps the ids for the next one.
+  const sessionRows = createRefetcher({
+    timers,
+    now,
+    async run() {
+      if (rowless.size === 0) return;
+      const asked = [...rowless];
+      let envelope: OperatorEnvelope<unknown>;
+      try {
+        envelope = await deps.read(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      } catch (cause) {
+        // Nothing answered: the ids stay, and a few more tries follow on their
+        // own, so one waiting session is not left bare until the next snapshot.
+        rowFailures += 1;
+        if (rowFailures <= SESSION_ROW_RETRIES) sessionRows.request();
+        throw cause;
+      }
+      rowFailures = 0;
+      if (holders === 0 || state.cursor === null || state.status === "off")
+        return;
+      if (!envelope.ok || !Array.isArray(envelope.data)) {
+        for (const id of asked) rowless.delete(id);
+        return;
+      }
+      // justification: the sessions route answers a list of session summaries.
+      const rows = envelope.data as SessionSummary[];
+      const ids = new Set(rowless);
+      const next = withSessionRows(state, rows, ids);
+      // Answered: asked about before the read, or listed by it. A session that
+      // spoke after the answer was made is not listed and stays for the next read.
+      for (const id of asked) rowless.delete(id);
+      for (const row of rows) rowless.delete(row.sessionId);
+      setState(next);
+    },
   });
 
   return {
