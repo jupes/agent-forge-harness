@@ -1706,6 +1706,111 @@ describe("client: watchers and the routes read again", () => {
       expect(reads.asked).toHaveLength(2);
     });
 
+    test("a read that fails is tried again for the one session waiting, a few times and no more", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      // No other session speaks: the retry comes on its own, past the window.
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toEqual([SESSIONS, SESSIONS]);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toHaveLength(3);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(REFETCH_WINDOW_MS);
+      expect(reads.asked).toHaveLength(4);
+      // A hearth that keeps failing is not asked every window for ever.
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toHaveLength(4);
+    });
+
+    test("a retry that is answered fills the row", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      clock.advance(REFETCH_WINDOW_MS);
+      await reads.answer(ok([row("a")]));
+      expect(client.getState().sessions.data?.[0]).toMatchObject({
+        kind: "headless",
+      });
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toHaveLength(2);
+    });
+
+    test("a new snapshot ends the wait for the sessions it replaced: no retry follows", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      reads.waitingReads.shift()?.fail();
+      await settle();
+      wire.current.snapshot({ cursor: 20, sessions: ok([session("a")]) });
+      clock.advance(3_600_000);
+      await settle();
+      expect(reads.asked).toEqual([SESSIONS]);
+    });
+
+    test("an answer that says the sessions cannot be read ends the wait for the sessions asked about", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      await reads.answer(failed("ledger unreadable"));
+      clock.advance(10_000);
+      await settle();
+      expect(reads.asked).toEqual([SESSIONS]);
+
+      // Another session speaks; "a" is not asked about again, so its row stays as it was.
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(REFETCH_WINDOW_MS);
+      await reads.answer(ok([row("b"), row("a")]));
+      expect(
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]),
+      ).toEqual([
+        ["b", "headless"],
+        ["a", undefined],
+      ]);
+    });
+
+    test("a session the route did not list is not asked about again", async () => {
+      const { wire, client, clock, reads } = harness();
+      client.subscribe(() => undefined);
+      wire.current.open();
+      wire.current.snapshot({ cursor: 10, sessions: ok([]) });
+      wire.current.delta(spoke(11, "a"));
+      clock.advance(BATCH_MS);
+      await reads.answer(ok([]));
+      wire.current.delta(spoke(12, "b"));
+      clock.advance(REFETCH_WINDOW_MS);
+      await reads.answer(ok([row("b"), row("a")]));
+      expect(
+        client.getState().sessions.data?.map((s) => [s.sessionId, s.kind]),
+      ).toEqual([
+        ["b", "headless"],
+        ["a", undefined],
+      ]);
+    });
+
     test("a read that fails keeps the row, and the next read carries the session again", async () => {
       const { wire, client, clock, reads } = harness();
       client.subscribe(() => undefined);

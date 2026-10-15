@@ -52,6 +52,8 @@ export const BATCH_MS = 50;
 export const BATCH_MAX = 500;
 /** A view's route is read again at most once per this window. */
 export const REFETCH_WINDOW_MS = 300;
+/** How many times the sessions route is tried again, on its own, after a read that got no answer. */
+export const SESSION_ROW_RETRIES = 3;
 /**
  * The first retry waits up to this; each later one doubles it. With
  * `MAX_FAILURES` at six there are five retries, so the longest wait is up to
@@ -411,6 +413,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   let waiting: LedgerEvent[] = [];
   /** Sessions whose row came from deltas alone and is still to be completed from the sessions route. */
   const rowless = new Set<string>();
+  /** Reads of the sessions route that failed in a row. */
+  let rowFailures = 0;
   let batchTimer: unknown = null;
   let retryTimer: unknown = null;
   let silenceTimer: unknown = null;
@@ -469,6 +473,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       // A snapshot replaces everything, so nothing older is worth applying.
       waiting = [];
       rowless.clear();
+      rowFailures = 0;
       batchTimer = stop(batchTimer);
       setState(applySnapshot(state, data));
     } else if (message.event === "delta" && isLedgerEvent(data)) {
@@ -629,7 +634,17 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     async run() {
       if (rowless.size === 0) return;
       const asked = [...rowless];
-      const envelope = await deps.read(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      let envelope: OperatorEnvelope<unknown>;
+      try {
+        envelope = await deps.read(`/sessions?limit=${MAX_LIVE_SESSIONS}`);
+      } catch (cause) {
+        // Nothing answered: the ids stay, and a few more tries follow on their
+        // own, so one waiting session is not left bare until the next snapshot.
+        rowFailures += 1;
+        if (rowFailures <= SESSION_ROW_RETRIES) sessionRows.request();
+        throw cause;
+      }
+      rowFailures = 0;
       if (holders === 0 || state.cursor === null || state.status === "off")
         return;
       if (!envelope.ok || !Array.isArray(envelope.data)) {
