@@ -11,11 +11,25 @@
  * of it, before a pull request is fetched.
  */
 
-import { readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import type { ForgeState } from "../forge/phases";
-import { FORGE_RUNS_DIR, runSlugFromFilename } from "../forge/runs";
-import { readRunState } from "../forge/runs-store";
+import { FORGE_RUNS_DIR, parseState, runSlugFromFilename } from "../forge/runs";
 import { type BeadsIssueId, parseBeadsIssueId } from "../run-correlation";
 import { secretSpans } from "../secret-patterns";
 import {
@@ -318,12 +332,22 @@ function note(label: string, words: string): ContextPart {
   return { label, chunks: [], note: words };
 }
 
-const UNREADABLE = {
-  missing: "missing, not packed",
-  outside: "not packed, it resolves outside the workspace",
-  "not-a-file": "not packed, not a regular file",
-  sensitive: "not packed, a credential file name",
-} as const;
+/** Why a linked file is not packed; `where` is the checkout it was looked for in. */
+function unreadable(
+  reason: "missing" | "outside" | "not-a-file" | "sensitive",
+  where: "workspace" | "worktree",
+): string {
+  switch (reason) {
+    case "missing":
+      return "missing, not packed";
+    case "outside":
+      return `not packed, it resolves outside the ${where}`;
+    case "not-a-file":
+      return "not packed, not a regular file";
+    case "sensitive":
+      return "not packed, a credential file name";
+  }
+}
 
 /** One file per real path, whatever spelling named it. */
 function sameFileKey(realPath: string): string {
@@ -340,37 +364,281 @@ function stamp(state: ForgeState): string {
   return typeof at === "string" ? at : "";
 }
 
+/**
+ * A checkout a forge run may have been built in: the workspace, or another
+ * worktree of the workspace's own repository. Every file of a run found in a
+ * checkout is read inside that checkout only.
+ */
+type Checkout = {
+  root: string;
+  /** How the listing names it; null for the workspace itself. */
+  worktree: string | null;
+};
+
 /** A run by the name of its state file, which is checked; the name inside the file is not. */
-type BeadRun = { slug: string; state: ForgeState };
+type BeadRun = { slug: string; state: ForgeState; checkout: Checkout };
 
 /**
- * The forge run that works this bead, newest first: a run that names the bead,
- * or one that names no bead and whose epic is the bead. A run that works
- * another bead is never this bead's, whatever its epic.
+ * The forge runs recorded in a checkout, each read only when its state file
+ * really is inside that checkout: a runs directory linked to somewhere else is
+ * not followed.
  */
-function beadRun(id: BeadsIssueId, cwd: string): BeadRun | null {
+function runsIn(root: string): Array<{ slug: string; state: ForgeState }> {
   let names: string[];
   try {
-    names = readdirSync(join(cwd, FORGE_RUNS_DIR));
+    names = readdirSync(join(root, FORGE_RUNS_DIR));
   } catch {
-    return null;
+    return [];
   }
-  let newest: BeadRun | null = null;
+  const runs: Array<{ slug: string; state: ForgeState }> = [];
   for (const name of names) {
     const slug = runSlugFromFilename(name);
     if (slug === null) continue;
     // A read, never `listRuns`: that one migrates files on the way past.
-    const state = readRunState(slug, cwd);
-    if (state === null) continue;
-    const owns =
-      state.beadId !== undefined ? state.beadId === id : state.epic === id;
-    if (!owns) continue;
-    // A run state is a file anyone can write: a timestamp that is not text
-    // counts as the oldest instead of stopping the pack.
-    if (newest === null || stamp(state) > stamp(newest.state))
-      newest = { slug, state };
+    let state: ForgeState | null = null;
+    try {
+      const found = locateWorkspaceFile(join(root, FORGE_RUNS_DIR, name), root);
+      if (found.ok) state = parseState(readFileSync(found.path, "utf8"));
+    } catch {
+      state = null;
+    }
+    if (state !== null) runs.push({ slug, state });
   }
+  return runs;
+}
+
+/**
+ * The forge run that works this bead, newest first, in any of the checkouts:
+ * a run that names the bead, or one that names no bead and whose epic is the
+ * bead. A run that works another bead is never this bead's, whatever its
+ * epic. The workspace comes first, so a tie keeps its run.
+ */
+function beadRun(id: BeadsIssueId, checkouts: Checkout[]): BeadRun | null {
+  let newest: BeadRun | null = null;
+  for (const checkout of checkouts)
+    for (const { slug, state } of runsIn(checkout.root)) {
+      const owns =
+        state.beadId !== undefined ? state.beadId === id : state.epic === id;
+      if (!owns) continue;
+      // A run state is a file anyone can write: a timestamp that is not text
+      // counts as the oldest instead of stopping the pack.
+      if (newest === null || stamp(state) > stamp(newest.state))
+        newest = { slug, state, checkout };
+    }
   return newest;
+}
+
+/** The read-only listing of the repository's worktrees; -z, so a path cannot forge a record. */
+const WORKTREE_LIST = ["git", "worktree", "list", "--porcelain", "-z"];
+/** How many listed worktrees are looked at. */
+const MAX_WORKTREES = 50;
+/** How many worktrees that were not searched are named in the listing. */
+const MAX_WORKTREE_NOTES = 10;
+/** A `.git` file or a `gitdir` file is one short line. */
+const MAX_POINTER_BYTES = 4096;
+
+/** The real path of a directory, or null when `path` is not one. */
+function realDirectory(path: string): string | null {
+  try {
+    const real = realpathSync.native(path);
+    return statSync(real).isDirectory() ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The text of a small regular file that is not a link, or null. */
+function pointerText(path: string): string | null {
+  try {
+    const found = lstatSync(path);
+    if (!found.isFile() || found.size > MAX_POINTER_BYTES) return null;
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+/** The admin directory a worktree's `.git` file names, or null. */
+function adminDirectoryOf(checkout: string): string | null {
+  const text = pointerText(join(checkout, ".git"));
+  const match = text === null ? null : /^gitdir: (.+)$/.exec(text);
+  return match?.[1] ? realDirectory(resolve(checkout, match[1])) : null;
+}
+
+/**
+ * The common directory of the workspace's repository when that repository has
+ * a linked worktree, else null: only then is git asked for the list. The
+ * workspace's `.git` is a directory (the main checkout), or a file naming its
+ * admin directory, whose `commondir` file names the common directory.
+ */
+function commonDirectoryWithWorktrees(cwd: string): string | null {
+  const dotGit = join(cwd, ".git");
+  let common: string | null;
+  try {
+    const found = lstatSync(dotGit);
+    if (found.isDirectory()) common = realDirectory(dotGit);
+    else if (found.isFile()) {
+      const admin = adminDirectoryOf(cwd);
+      const pointer =
+        admin === null ? null : pointerText(join(admin, "commondir"));
+      common =
+        admin === null
+          ? null
+          : realDirectory(pointer === null ? admin : resolve(admin, pointer));
+    } else common = null;
+  } catch {
+    return null;
+  }
+  if (common === null) return null;
+  try {
+    return readdirSync(join(common, "worktrees")).length > 0 ? common : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the directory at `real` (a real path) is a checkout of the
+ * repository whose common directory is `common`, by both ends of the link git
+ * keeps: the main checkout's `.git` directory is the common directory; a
+ * linked worktree's `.git` file names an admin directory directly inside
+ * `<common>/worktrees`, whose `gitdir` file names that `.git` file back.
+ * A `.git` that is itself a link proves nothing and is refused.
+ */
+function isCheckoutOf(real: string, common: string): boolean {
+  const dotGit = join(real, ".git");
+  try {
+    const found = lstatSync(dotGit);
+    if (found.isSymbolicLink()) return false;
+    if (found.isDirectory()) {
+      const own = realDirectory(dotGit);
+      return own !== null && sameFileKey(own) === sameFileKey(common);
+    }
+  } catch {
+    return false;
+  }
+  const admin = adminDirectoryOf(real);
+  const admins = realDirectory(join(common, "worktrees"));
+  if (admin === null || admins === null) return false;
+  if (sameFileKey(dirname(admin)) !== sameFileKey(admins)) return false;
+  const back = pointerText(join(admin, "gitdir"));
+  if (back === null) return false;
+  try {
+    return (
+      sameFileKey(realpathSync.native(resolve(admin, back))) ===
+      sameFileKey(realpathSync.native(dotGit))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The worktree paths a `-z` porcelain listing names, bare entries left out. */
+function listedWorktrees(stdout: string): string[] {
+  const paths: string[] = [];
+  let current: string | null = null;
+  let bare = false;
+  const flush = (): void => {
+    if (current !== null && !bare) paths.push(current);
+  };
+  for (const line of stdout.split("\0")) {
+    if (line.startsWith("worktree ")) {
+      flush();
+      current = line.slice("worktree ".length);
+      bare = false;
+    } else if (line === "bare") bare = true;
+  }
+  flush();
+  return paths;
+}
+
+/**
+ * How the listing names a worktree: its path from the workspace when it is
+ * inside it, else its directory's name; a path that is not absolute as it was
+ * written. Never the whole absolute path.
+ */
+function worktreeName(workspace: string, path: string): string {
+  if (!isAbsolute(path)) return path;
+  const rel = relative(workspace, resolve(path));
+  if (
+    rel !== "" &&
+    rel !== ".." &&
+    !rel.startsWith(`..${sep}`) &&
+    !isAbsolute(rel)
+  )
+    return rel.replaceAll("\\", "/");
+  return basename(resolve(path)) || path;
+}
+
+/**
+ * The checkouts a bead's run is looked for in: the workspace, then every
+ * other worktree git lists for the workspace's own repository that really is
+ * one. What was listed and not searched is a note, never an error.
+ */
+async function runCheckouts(
+  cwd: string,
+  runner: CommandRunner,
+): Promise<{ checkouts: Checkout[]; notes: ContextPart[] }> {
+  const checkouts: Checkout[] = [{ root: cwd, worktree: null }];
+  const common = commonDirectoryWithWorktrees(cwd);
+  if (common === null) return { checkouts, notes: [] };
+  let stdout: string | null = null;
+  try {
+    const result = await runner(WORKTREE_LIST, cwd);
+    if (result.exitCode === 0 && result.stdout.includes("\0"))
+      stdout = result.stdout;
+  } catch {
+    stdout = null;
+  }
+  if (stdout === null)
+    return {
+      checkouts,
+      notes: [note("worktrees", "not searched, git could not list them")],
+    };
+
+  const workspace = realDirectory(cwd) ?? resolve(cwd);
+  const seen = new Set([sameFileKey(workspace)]);
+  const skipped: ContextPart[] = [];
+  const paths = listedWorktrees(stdout);
+  for (const path of paths.slice(0, MAX_WORKTREES)) {
+    const name = worktreeName(workspace, path);
+    if (isAbsolute(path) && !existsSync(path)) {
+      skipped.push(
+        note(`worktree ${name}`, "listed by git but gone, not searched"),
+      );
+      continue;
+    }
+    const real = isAbsolute(path) ? realDirectory(path) : null;
+    if (real === null || !isCheckoutOf(real, common)) {
+      skipped.push(
+        note(
+          `worktree ${name}`,
+          "not searched, not a worktree of this repository",
+        ),
+      );
+      continue;
+    }
+    if (seen.has(sameFileKey(real))) continue;
+    seen.add(sameFileKey(real));
+    // The root as listed: `locateWorkspaceFile` resolves it with the same
+    // function it resolves each file with, so the two compare spelling for
+    // spelling (a Windows short name, a drive letter's case).
+    checkouts.push({
+      root: resolve(path),
+      worktree: worktreeName(workspace, real),
+    });
+  }
+  const notes = skipped.slice(0, MAX_WORKTREE_NOTES);
+  const more =
+    skipped.length - notes.length + Math.max(0, paths.length - MAX_WORKTREES);
+  if (more > 0)
+    notes.push(
+      note(
+        `${more} more worktree${more === 1 ? "" : "s"}`,
+        `not searched (limit ${MAX_WORKTREE_NOTES} listed)`,
+      ),
+    );
+  return { checkouts, notes };
 }
 
 const PATH_MENTION =
@@ -386,10 +654,23 @@ function linkedFileParts(
   texts: string[],
 ): LinkedFiles {
   const result: LinkedFiles = { parts: [], incomplete: false };
-  const linked: Array<{ label: string; path: string }> = [];
+  type Linked = {
+    label: string;
+    /** The evidence title, when it is not the label. */
+    title?: string;
+    path: string;
+    /** The checkout the file is read inside, and nowhere else. */
+    root: string;
+    where: "workspace" | "worktree";
+  };
+  const linked: Linked[] = [];
   const named = new Set<string>();
   const artifacts: unknown = run?.state.artifacts;
-  if (isRecord(artifacts))
+  // A run built in another worktree is read there, and the listing says so;
+  // the evidence title, which providers see, does not name the local layout.
+  const tree = run?.checkout.worktree ?? null;
+  const from = tree === null ? "" : ` from worktree ${tree}`;
+  if (run && isRecord(artifacts))
     for (const [kind, key] of [
       ["plan", "plan"],
       ["research", "research"],
@@ -401,11 +682,17 @@ function linkedFileParts(
       // A run state is a file anyone can write: what it names is shown only
       // when it is a path this source would read.
       if (isLinkedArtifactPath(path))
-        linked.push({ label: `linked ${kind} ${path}`, path });
+        linked.push({
+          label: `linked ${kind} ${path}${from}`,
+          ...(tree === null ? {} : { title: `linked ${kind} ${path}` }),
+          path,
+          root: run.checkout.root,
+          where: tree === null ? "workspace" : "worktree",
+        });
       else
         result.parts.push(
           note(
-            `linked ${kind}`,
+            `linked ${kind}${from}`,
             "refused, the run state names a path that is not a plan, research or report",
           ),
         );
@@ -415,14 +702,24 @@ function linkedFileParts(
       const path = match[0];
       if (named.has(path) || !isLinkedArtifactPath(path)) continue;
       named.add(path);
-      linked.push({ label: `linked file ${path}`, path });
+      linked.push({
+        label: `linked file ${path}`,
+        path,
+        root: cwd,
+        where: "workspace",
+      });
     }
 
   const packed = new Map<string, string>();
-  for (const { label, path } of linked.slice(0, MAX_LINKED_FILES)) {
-    const found = locateWorkspaceFile(resolve(cwd, path), cwd);
+  for (const { label, title, path, root, where } of linked.slice(
+    0,
+    MAX_LINKED_FILES,
+  )) {
+    // The same guard wherever the file is: its real path inside the checkout
+    // it was named for, then a plan, research or report path there too.
+    const found = locateWorkspaceFile(resolve(root, path), root);
     if (!found.ok) {
-      result.parts.push(note(label, UNREADABLE[found.reason]));
+      result.parts.push(note(label, unreadable(found.reason, where)));
       continue;
     }
     // A link inside the workspace can lead anywhere in it: the place the file
@@ -466,6 +763,7 @@ function linkedFileParts(
     packed.set(sameFileKey(found.path), path);
     result.parts.push({
       label,
+      ...(title === undefined ? {} : { title }),
       maxShare: LINKED_FILE_SHARE,
       chunks: [{ text: body }],
     });
@@ -829,7 +1127,9 @@ export async function compileBead(
     descriptionPart(id, safe),
   ];
   const texts = mentionTexts(safe, comments);
-  const run = beadRun(id, cwd);
+  // After every field is scanned: a refused bead asks git for nothing.
+  const searched = await runCheckouts(cwd, runner);
+  const run = beadRun(id, searched.checkouts);
   const linked = linkedFileParts(cwd, run, texts);
   const pullRequest = await pullRequestParts(texts, {
     cwd,
@@ -851,7 +1151,7 @@ export async function compileBead(
       ...(run ? { forgeRun: run.slug } : {}),
       ...(pullRequest.url ? { pullRequest: pullRequest.url } : {}),
     },
-    parts: [...own, ...linked.parts, ...pullRequest.parts],
+    parts: [...own, ...linked.parts, ...searched.notes, ...pullRequest.parts],
     incomplete: linked.incomplete || pullRequest.incomplete,
     redactions: [...found].map(([kind, count]) => ({ kind, count })),
   };

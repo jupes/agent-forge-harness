@@ -2935,12 +2935,15 @@ describe("a bead as the source of a council run started through the hearth", () 
       command.slice(0, 2).join(" "),
       resolve(cwd),
     ]);
-    expect(where.slice(0, 3)).toEqual([
+    // The bead's forge run is looked for in every worktree git lists
+    // (x1gs.7.5): that listing is asked for in the root too.
+    expect(where.slice(0, 4)).toEqual([
       ["bd --readonly", resolve(h.main ?? "")],
       ["bd --readonly", resolve(h.main ?? "")],
+      ["git worktree", resolve(h.root)],
       ["git remote", resolve(h.root)],
     ]);
-    for (const [command, cwd] of where.slice(3))
+    for (const [command, cwd] of where.slice(4))
       expect({ command, cwd }).toEqual({ command, cwd: resolve(h.root) });
   }, 20_000);
 
