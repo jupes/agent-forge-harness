@@ -76,6 +76,7 @@ describe("buildRepoEntries", () => {
       knowledgeFile: "knowledge/repos/game-guide-ai.yaml",
       knowledgeAgeDays: 3,
       freshness: "current",
+      archived: false,
     });
   });
 
@@ -109,6 +110,75 @@ describe("buildRepoEntries", () => {
     });
     expect(entries.map((entry) => entry.name)).toEqual(["surprise-repo"]);
     expect(entries[0]?.cloned).toBe(true);
+  });
+
+  test("carries archived from repos.json: only the boolean true archives a repository", () => {
+    const entries = buildRepoEntries({
+      reposJson: reposJson(
+        { name: "old-docs", archived: true },
+        { name: "web", archived: false },
+        { name: "plain" },
+        { name: "yes-string", archived: "yes" },
+        { name: "one", archived: 1 },
+      ),
+      clonedDirs: ["surprise-repo"],
+      knowledge: new Map(),
+      now: NOW,
+    });
+    expect(entries.map((entry) => [entry.name, entry.archived])).toEqual([
+      ["old-docs", true],
+      ["one", false],
+      ["plain", false],
+      ["surprise-repo", false],
+      ["web", false],
+      ["yes-string", false],
+    ]);
+  });
+
+  test("does not band an archived repository's knowledge age into aging or stale", () => {
+    // /sync-knowledge --all skips an archived repository, so its file is not
+    // overdue for a refresh however old it is; the age is still reported.
+    const entries = buildRepoEntries({
+      reposJson: reposJson(
+        { name: "frozen-api", archived: true },
+        { name: "frozen-docs", archived: true },
+        { name: "frozen-new", archived: true },
+        { name: "frozen-none", archived: true },
+        { name: "frozen-unreadable", archived: true },
+        { name: "live-api", archived: false },
+      ),
+      clonedDirs: [],
+      knowledge: new Map([
+        ["frozen-api", 400],
+        ["frozen-docs", 20],
+        ["frozen-new", 2],
+        ["frozen-unreadable", null],
+        ["live-api", 400],
+      ]),
+      now: NOW,
+    });
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+    expect(byName.get("frozen-api")).toMatchObject({
+      archived: true,
+      knowledgeAgeDays: 400,
+      freshness: "archived",
+    });
+    expect(byName.get("frozen-docs")?.freshness).toBe("archived");
+    expect(byName.get("frozen-new")?.freshness).toBe("archived");
+    // No file to be old: still reported as missing, not as archived knowledge.
+    expect(byName.get("frozen-none")).toMatchObject({
+      archived: true,
+      knowledgeFile: null,
+      knowledgeAgeDays: null,
+      freshness: "missing",
+    });
+    // A file whose age could not be read has no age to leave unbanded.
+    expect(byName.get("frozen-unreadable")?.freshness).toBe("missing");
+    // An active repository with the same age is still stale.
+    expect(byName.get("live-api")).toMatchObject({
+      archived: false,
+      freshness: "stale",
+    });
   });
 
   test("does not list a repo twice and sorts by name", () => {

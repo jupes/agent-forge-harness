@@ -17,6 +17,7 @@ const FRESHNESS_TONE = {
   aging: "accent",
   stale: "outline",
   missing: "muted",
+  archived: "muted",
 } as const;
 
 function freshnessLabel(repo: RepoEntry): string {
@@ -84,7 +85,20 @@ export function ReposIsland(): JSX.Element {
               header: "Repository",
               cell: (repo) => (
                 <>
-                  <span class="af-issue-title">{repo.name}</span>
+                  <span class="af-issue-title">
+                    {repo.name}
+                    {repo.archived ? (
+                      <>
+                        {" "}
+                        <Tag
+                          tone="muted"
+                          title="Archived in repos.json: bun run repo and /sync-knowledge --all skip it"
+                        >
+                          archived
+                        </Tag>
+                      </>
+                    ) : null}
+                  </span>
                   <span class="af-issue-blocked">{repo.path}</span>
                 </>
               ),
@@ -124,7 +138,9 @@ export function ReposIsland(): JSX.Element {
         />
         <p class="af-muted af-prose">
           Refresh a repo's knowledge file with <code>/sync-knowledge</code>.
-          Files older than 30 days are marked stale.
+          Files older than 30 days are marked stale, except an archived
+          repository's: <code>/sync-knowledge --all</code> skips it, so its file
+          is not expected to be refreshed.
         </p>
       </Card>
 
