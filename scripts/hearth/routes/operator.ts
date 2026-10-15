@@ -39,6 +39,7 @@ import { applyReview } from "./dev-api";
 import {
   beadsReads,
   fail,
+  hearthLedger,
   isRecord,
   ledgerReads,
   looksLikeSecret,
@@ -338,10 +339,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     scoreboard,
   ];
 
-  const ledger = { path: deps.ledgerPath };
+  // Opened with the hearth's first-open wait, as the read rows are.
+  const ledger = (): { path: string } => hearthLedger(deps.ledgerPath);
   const { workspace } = deps;
   const live = createLedgerStream({
-    cursor: () => latestEventId({ workspace }, ledger),
+    cursor: () => latestEventId({ workspace }, ledger()),
     // Every collection row, whatever a later bead adds to the table.
     collections: async () => {
       const rows = reads.filter((row) => row.collection !== undefined);
@@ -351,7 +353,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       );
     },
     eventsAfter: (afterId, limit) =>
-      queryEvents({ workspace, afterId, limit }, ledger),
+      queryEvents({ workspace, afterId, limit }, ledger()),
     pollMs: deps.streamPollMs,
     keepaliveMs: deps.streamKeepaliveMs,
   });
