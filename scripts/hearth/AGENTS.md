@@ -57,4 +57,4 @@ The hearth: the standalone loopback control-plane server (`bun run hearth`), its
 
 - Tests: `bun test scripts/hearth`. `supervisor.test.ts`, `api-spawned.test.ts` and `mcp.test.ts` start real `bun` child processes.
 - A temp root used as a hearth root in a test needs a planted `.git`: the OS temp directory can sit inside a checkout, and the ledger's workspace would otherwise be that checkout.
-- `loadDashboardServerEnvironment` pulls in `vite`; a compiled sidecar will need an env loader without it.
+- `server.ts` and everything it imports load no Vite module, so `bun build --compile scripts/hearth/server.ts` works (the sidecar, x1gs.9.1). Its `.env` files are read by `loadDashboardServerEnvironment` (`scripts/dashboard/server-environment.ts`) with built-ins only, as Vite's `loadEnv` read them. `server-environment.test.ts` checks both: the hearth's import graph, and each file form against `loadEnv`.
