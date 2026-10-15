@@ -461,8 +461,23 @@ async function main(argv: string[]): Promise<void> {
     `hearth ${hearth.kind === "started" ? "listening" : "already running"} on ${hearth.url}\n`,
   );
   if (hearth.kind === "reused") return;
+  closeOnSignal(hearth);
+}
+
+/**
+ * End a started hearth on `SIGINT` or `SIGTERM`: its whole `close()`, the
+ * shifts it started asked to stop and waited for, then `exit(0)`. Nothing
+ * else in the hearth may listen for those signals and exit first: the shift
+ * launcher does not use `supervise()`, whose handler would (`shift-launcher.ts`).
+ * A hearth ended with no chance to run code (`SIGKILL`; on Windows,
+ * `TerminateProcess`, which is how the dashboard ends it) never gets here.
+ */
+export function closeOnSignal(
+  hearth: StartedHearth,
+  exit: (code: number) => void = (code) => process.exit(code),
+): void {
   const shutdown = (): void => {
-    void hearth.close().finally(() => process.exit(0));
+    void hearth.close().finally(() => exit(0));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

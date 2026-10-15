@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { killTree } from "../executors/supervisor";
 import {
   processAlive,
   readShiftRecord,
@@ -113,6 +114,24 @@ describe("launchFailure", () => {
     );
   });
 
+  test("an error the shift printed is cut to 500 characters, from its start", () => {
+    const error = launchFailure({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        ok: false,
+        data: null,
+        error: `the config could not be read: ${"y".repeat(2000)}`,
+      }),
+      stderr: "",
+    });
+    expect(error.length).toBe(500);
+    expect(
+      error.startsWith(
+        "the shift exited 1 before it wrote its record: the config could not be read: yyy",
+      ),
+    ).toBe(true);
+  });
+
   test("with no envelope, names the end of its stderr without the line that announced the id; with nothing printed, how it exited", () => {
     const long = "x".repeat(2000);
     const error = launchFailure({
@@ -187,6 +206,42 @@ describe("the registry of the shifts a hearth starts", () => {
     rmSync(join(shiftsDir, `${id}.json`));
     // Forgotten once it ended with a record: a record removed later does not bring it back.
     expect(starts.unrecorded()).toEqual([]);
+  });
+
+  test("a second start under an id this registry started is refused and starts nothing; an id minted and not yet started is not minted again; close() ends the first", async () => {
+    const shiftsDir = join(scratch(), SHIFTS_DIR);
+    const launcher = fakeShifts();
+    const ids = [
+      "shift-20261015-120000-0e31",
+      "shift-20261015-120000-0e31",
+      "shift-20261015-120000-0e32",
+    ];
+    let offered = 0;
+    const starts = createShiftStarts({
+      root: "c:/root",
+      home: "c:/home",
+      shiftsDir,
+      workspace: "c:/root",
+      environment: {},
+      launch: launcher.launch,
+      mintShiftId: () => ids[offered++] ?? "",
+      stopGraceMs: 100,
+    });
+    // Two requests minted before either started: the second gets another id.
+    expect([starts.mint(), starts.mint()]).toEqual([
+      "shift-20261015-120000-0e31",
+      "shift-20261015-120000-0e32",
+    ]);
+    const id = "shift-20261015-120000-0e31";
+    expect(starts.start(id, [], {}).ok).toBe(true);
+    expect(starts.start(id, ["--for", "1h"], {})).toEqual({
+      ok: false,
+      kind: "duplicate",
+      error: `${id} was started by this control plane already; no shift was started`,
+    });
+    expect(launcher.launches).toHaveLength(1);
+    await starts.close();
+    expect(launcher.launches[0]?.stopped).toBe(true);
   });
 
   test("an id is minted past any a record, a stop request or a launch has; with none free, minting throws", () => {
@@ -304,7 +359,8 @@ describe("the registry of the shifts a hearth starts", () => {
  * - `run`: write a running record in `<AGENT_FORGE_HOME>/shifts`, and on a
  *   stop request there take a second, as a shift does, then close it
  *   (`operator`) and exit 0;
- * - `stubborn`: write a running record and never stop.
+ * - `stubborn`: write a running record, start a child of its own (its pid in
+ *   `<cwd>/grandchild-<id>.json`), and never stop.
  */
 const STAND_IN = `
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -344,6 +400,19 @@ if (mode === "fail") {
 }
 mkdirSync(shifts, { recursive: true });
 save("running");
+if (mode === "stubborn") {
+  // A run of its own, as a shift has: the hearth must end it with the shift.
+  // Detached on Windows only: there Bun puts a child it starts in a job that
+  // ends it with its parent, so it would die with this process whoever ended
+  // it; elsewhere it stays in this process's group, which the hearth ends.
+  const run = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    detached: process.platform === "win32",
+  });
+  writeFileSync(join(process.cwd(), "grandchild-" + id + ".json"), JSON.stringify({ pid: run.pid }));
+}
 for (;;) {
   await Bun.sleep(50);
   if (mode === "run" && existsSync(join(shifts, id + ".stop"))) {
@@ -458,20 +527,149 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
     expect(processAlive(children[0]?.pid ?? 0)).toBe(false);
   }, 30_000);
 
-  test("closing the hearth ends a shift that has not stopped by the grace, with its process tree; its record stays running for forge:shift recover", async () => {
+  test("closing the hearth ends a shift that has not stopped by the grace, with its process tree (the child it started too); its record stays running for forge:shift recover", async () => {
     const { h, children, startShift, listed } = await hearth(800);
     const id = await startShift("stubborn", {});
     await until(async () =>
       (await listed(id))?.state === "running" ? true : undefined,
     );
+    const grandchild = await until(() => {
+      try {
+        return (
+          JSON.parse(
+            readFileSync(join(h.root, `grandchild-${id}.json`), "utf8"),
+          ) as { pid: number }
+        ).pid;
+      } catch {
+        return undefined;
+      }
+    });
     const pid = children[0]?.pid ?? 0;
-    const began = Date.now();
-    await h.hearth.close();
-    expect(Date.now() - began).toBeGreaterThanOrEqual(800);
-    expect((await children[0]?.done)?.exitCode).not.toBe(0);
-    await until(() => (processAlive(pid) ? undefined : true), 5_000);
-    expect(readShiftRecord(join(h.home, SHIFTS_DIR), id)?.state).toBe(
-      "running",
-    );
+    try {
+      expect(processAlive(grandchild)).toBe(true);
+      const began = Date.now();
+      await h.hearth.close();
+      expect(Date.now() - began).toBeGreaterThanOrEqual(800);
+      expect((await children[0]?.done)?.exitCode).not.toBe(0);
+      await until(() => (processAlive(pid) ? undefined : true), 5_000);
+      await until(() => (processAlive(grandchild) ? undefined : true), 5_000);
+      expect(readShiftRecord(join(h.home, SHIFTS_DIR), id)?.state).toBe(
+        "running",
+      );
+    } finally {
+      // Left running only when the test failed.
+      for (const left of [grandchild, pid])
+        if (processAlive(left)) killTree(left);
+    }
   }, 30_000);
+});
+
+/**
+ * A hearth as `bun run hearth` runs one, in a process of its own: started,
+ * then `closeOnSignal`, the shutdown `main()` installs. Its launcher is the
+ * real one, given the stand-in. It prints where it listens and what it uses,
+ * and emits the signal it is given (`process.emit`: no signal can be sent to
+ * a process on Windows) when its stdin says `signal`.
+ */
+const HEARTH_MAIN = (standIn: string) => `
+import { closeOnSignal } from ${JSON.stringify(join(import.meta.dir, "server.ts"))};
+import { superviseShift } from ${JSON.stringify(join(import.meta.dir, "shift-launcher.ts"))};
+import { startTestHearth } from ${JSON.stringify(join(import.meta.dir, "testing.ts"))};
+const signal = process.argv[2] ?? "";
+const h = await startTestHearth({
+  api: {
+    launchShift: (spec) =>
+      superviseShift({ ...spec, argv: [spec.argv[0], ${JSON.stringify(standIn)}, ...spec.argv.slice(2)] }),
+    shiftStopGraceMs: 15000,
+  },
+});
+closeOnSignal(h.hearth);
+console.log(JSON.stringify({ api: h.api, url: h.hearth.url, token: h.hearth.token, home: h.home, root: h.root, configHome: h.configHome, workspace: h.workspace }));
+const decoder = new TextDecoder();
+let text = "";
+for await (const chunk of Bun.stdin.stream()) {
+  text += decoder.decode(chunk);
+  if (text.includes("signal")) {
+    text = "";
+    process.emit(signal);
+  }
+}
+`;
+
+describe("a hearth that gets SIGINT or SIGTERM", () => {
+  for (const signal of ["SIGTERM", "SIGINT"])
+    test(`${signal} runs the hearth's close: the shift it started gets its stop request, closes its record and exits 0 on its own, and the hearth exits 0`, async () => {
+      const dir = scratch();
+      const standIn = join(dir, "stand-in.ts");
+      const main = join(dir, "hearth-main.ts");
+      writeFileSync(standIn, STAND_IN);
+      writeFileSync(main, HEARTH_MAIN(standIn));
+      const hearth = Bun.spawn([process.execPath, main, signal], {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let shiftPid = 0;
+      try {
+        const reader = hearth.stdout.getReader();
+        let first = "";
+        while (!first.includes("\n")) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          first += new TextDecoder().decode(value);
+        }
+        reader.releaseLock();
+        const where = JSON.parse(first.split(/\r?\n/)[0] ?? "") as {
+          api: string;
+          url: string;
+          token: string;
+          home: string;
+          root: string;
+          configHome: string;
+          workspace: string;
+        };
+        for (const made of [where.home, where.root, where.configHome])
+          dirs.push(made);
+        writeFileSync(
+          join(where.root, "stand-in.json"),
+          JSON.stringify({ mode: "run", workspace: where.workspace }),
+        );
+        const started = await fetch(`${where.api}/shifts`, {
+          method: "POST",
+          headers: {
+            Origin: where.url,
+            "Content-Type": "application/json",
+            [OPERATOR_HEADER]: where.token,
+          },
+          body: "{}",
+        });
+        expect(started.status).toBe(202);
+        const id = ((await started.json()) as { data: { shiftId: string } })
+          .data.shiftId;
+        const running = await until(async () => {
+          const listed = (await (
+            await fetch(`${where.api}/shifts`, {
+              headers: { Origin: where.url },
+            })
+          ).json()) as { data: ShiftListEntry[] };
+          const entry = listed.data.find((each) => each.shiftId === id);
+          return entry?.state === "running" ? entry : undefined;
+        });
+        shiftPid = running.pid;
+
+        hearth.stdin.write("signal\n");
+        hearth.stdin.flush();
+        expect(await hearth.exited).toBe(0);
+        expect(existsSync(join(where.home, SHIFTS_DIR, `${id}.stop`))).toBe(
+          true,
+        );
+        expect(readShiftRecord(join(where.home, SHIFTS_DIR), id)).toMatchObject(
+          { state: "stopped", reason: "operator" },
+        );
+        expect(processAlive(shiftPid)).toBe(false);
+      } finally {
+        hearth.kill();
+        if (shiftPid !== 0 && processAlive(shiftPid)) killTree(shiftPid);
+      }
+    }, 40_000);
 });

@@ -4,10 +4,12 @@
  * hearth supervises, never a shell, in the hearth's root and with the hearth's
  * environment and `AGENT_FORGE_HOME` set to the hearth's home, so the shift
  * takes the same queue lock and writes the same ledger and shifts directory
- * the hearth reads. `supervise` (`scripts/executors/supervisor.ts`) keeps the
- * child from outliving the hearth: its exit hook, and its tree guard for a
- * hearth killed outright. No time limit is set: the shift's own deadline ends
- * it.
+ * the hearth reads. The child cannot outlive the hearth: an `exit` hook ends
+ * its tree, and the tree guard (`scripts/executors/tree-guard.ts`) ends it for
+ * a hearth killed outright. It is not started through `supervise`, whose
+ * signal handler would kill it before the hearth's `close()` could ask it to
+ * stop (`superviseShift`). No time limit is set: the shift's own deadline
+ * ends it.
  *
  * What the hearth knows of a shift it started is held here, in memory, for as
  * long as the hearth runs:
@@ -22,15 +24,17 @@
  *   stderr, secrets redacted and bounded, with its exit code. The newest
  *   `KEPT_FAILED_LAUNCHES` are listed; nothing of a launch outlives the hearth.
  *
- * `close()` (the hearth's own) asks every shift it started that is still
- * running to stop, as `POST /shifts/:id/stop` does, as soon as its record
- * exists, waits up to `SHIFT_STOP_GRACE_MS` for each to exit, and then ends
- * what is left with its process tree. A shift ended that way leaves its beads
+ * `close()` (the hearth's own, which `SIGINT` and `SIGTERM` run) asks every
+ * shift it started that is still running to stop, as `POST /shifts/:id/stop`
+ * does, as soon as its record exists, waits up to `SHIFT_STOP_GRACE_MS` for
+ * each to exit, and then ends what is left with its process tree. A shift
+ * ended that way, or by the exit hook or the tree guard, leaves its beads
  * `running` and its record `running`; `forge:shift recover` gives them back.
  */
 
 import { resolve } from "node:path";
-import { supervise } from "../executors/supervisor";
+import { killTree, STDERR_TAIL_CHARS } from "../executors/supervisor";
+import { guardTree } from "../executors/tree-guard";
 import {
   mintShiftId,
   readShiftRecord,
@@ -63,6 +67,9 @@ const ERROR_CHARS = 500;
 /** How often `close()` looks for a record to ask to stop, and for the children to have gone. */
 const CLOSE_POLL_MS = 100;
 
+/** How many ids minted for a start that has not happened yet are held from a second mint. */
+const KEPT_MINTED = 64;
+
 /** What starting a shift is: an argument array, never a shell. */
 export interface ShiftLaunchSpec {
   argv: string[];
@@ -92,25 +99,91 @@ export interface LaunchedShiftChild {
 /** Starts the child; throws when it could not be started. */
 export type ShiftLauncher = (spec: ShiftLaunchSpec) => LaunchedShiftChild;
 
-/** The real launcher: the child under `supervise`, with no time limit. */
+/** The shift children this process started that are still running, by pid. */
+const liveShifts = new Set<number>();
+let exitHooked = false;
+
+/**
+ * End every shift child still running when this process exits by a way that
+ * skipped `close()` (an uncaught error, a `process.exit` elsewhere).
+ * Synchronous, as an `exit` listener must be. Nothing here listens for
+ * `SIGINT` or `SIGTERM`: those are the hearth's own (`closeOnSignal` in
+ * `server.ts`), so that its `close()` can ask its shifts to stop first.
+ */
+function hookExit(): void {
+  if (exitHooked) return;
+  exitHooked = true;
+  process.on("exit", () => {
+    for (const pid of liveShifts) killTree(pid);
+    liveShifts.clear();
+  });
+}
+
+/** Read a stream to its end, keeping only its last `max` characters. */
+async function tail(
+  stream: ReadableStream<Uint8Array>,
+  max: number,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text = (text + decoder.decode(value, { stream: true })).slice(-max);
+    }
+  } catch {
+    // The child went; what was read is kept.
+  }
+  return (text + decoder.decode()).slice(-max);
+}
+
+/**
+ * The real launcher. Not `supervise()` (`scripts/executors/supervisor.ts`):
+ * that installs a `SIGINT`/`SIGTERM` handler that kills every supervised
+ * child and exits 130 at once, so the hearth's own shutdown would never get to
+ * ask its shifts to stop (`x1gs.5.4.14` is that handler's own change). What
+ * `supervise` gives that is kept: an argument array and no shell, the tree
+ * guard (`guardTree`) for a hearth killed outright, `killTree` for the whole
+ * tree, and an `exit` hook. The child gets its own process group outside
+ * Windows (a terminal's Ctrl-C then reaches the hearth, not the shift, and
+ * `killTree` ends the group). No time limit: the shift's own deadline ends it.
+ */
 export function superviseShift(spec: ShiftLaunchSpec): LaunchedShiftChild {
-  let stdout = "";
-  const child = supervise({
-    command: spec.argv,
+  const proc = Bun.spawn(spec.argv, {
     cwd: spec.cwd,
     env: spec.env,
-    onLine: (line) => {
-      stdout = `${stdout}${line}\n`.slice(-STDOUT_TAIL_CHARS);
-    },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(process.platform === "win32" ? {} : { detached: true }),
   });
+  hookExit();
+  liveShifts.add(proc.pid);
+  const guard = guardTree(proc.pid);
+  const stdout = tail(proc.stdout, STDOUT_TAIL_CHARS);
+  const stderr = tail(proc.stderr, STDERR_TAIL_CHARS);
+  const done = (async (): Promise<ShiftChildExit> => {
+    try {
+      const code = await proc.exited;
+      return {
+        exitCode: proc.signalCode !== null ? null : code,
+        stdout: await stdout,
+        stderr: await stderr,
+      };
+    } finally {
+      guard.release();
+      liveShifts.delete(proc.pid);
+    }
+  })();
   return {
-    pid: child.pid,
-    done: child.done.then((exit) => ({
-      exitCode: exit.exitCode,
-      stdout,
-      stderr: exit.stderr,
-    })),
-    stop: () => child.stop("the hearth is closing"),
+    pid: proc.pid,
+    done,
+    stop: async () => {
+      killTree(proc.pid);
+      await done;
+    },
   };
 }
 
@@ -153,7 +226,7 @@ export interface ShiftStartsDeps {
 
 export type StartOutcome =
   | { ok: true; value: ShiftLaunchEntry }
-  | { ok: false; kind: "closing" | "failed"; error: string };
+  | { ok: false; kind: "closing" | "duplicate" | "failed"; error: string };
 
 export interface ShiftStarts {
   /** A shift id that no record, stop request or launch of this hearth has. */
@@ -240,6 +313,8 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
   const graceMs = deps.stopGraceMs ?? SHIFT_STOP_GRACE_MS;
   let closing = false;
   let launched = 0;
+  /** Ids minted for a start that has not reached `start()` yet. */
+  const minted = new Set<string>();
 
   const recorded = (id: string): boolean =>
     readShiftRecord(deps.shiftsDir, id) !== null;
@@ -280,10 +355,23 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
 
   return {
     mint() {
-      // The second and four random hex digits make a clash unlikely, not impossible.
+      // The second and four random hex digits make a clash unlikely, not
+      // impossible; an id minted for a request still on its way to `start`
+      // is held too.
       for (let attempt = 0; attempt < 20; attempt++) {
         const id = mint();
-        if (!shiftIdInUse(deps.shiftsDir, id) && !launches.has(id)) return id;
+        if (
+          shiftIdInUse(deps.shiftsDir, id) ||
+          launches.has(id) ||
+          minted.has(id)
+        )
+          continue;
+        minted.add(id);
+        // A request refused after its mint (its audit row not stored) never
+        // starts: only the newest few are held.
+        for (const old of [...minted].slice(0, -KEPT_MINTED))
+          minted.delete(old);
+        return id;
       }
       throw new Error("no free shift id could be minted");
     },
@@ -306,6 +394,14 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
           kind: "closing",
           error: "The control plane is closing; no shift was started",
         };
+      // Two starts under one id would leave the first out of `close()`.
+      if (launches.has(shiftId))
+        return {
+          ok: false,
+          kind: "duplicate",
+          error: `${shiftId} was started by this control plane already; no shift was started`,
+        };
+      minted.delete(shiftId);
       // The hearth's home replaces any other, in any letter case (Windows
       // names are case-insensitive, and two spellings would both be passed).
       const env: Record<string, string> = {};

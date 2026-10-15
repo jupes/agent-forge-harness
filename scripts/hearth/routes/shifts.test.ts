@@ -280,6 +280,9 @@ describe("POST /shifts", () => {
       [{ epic: "--help" }, "epic needs a value"],
       [{ smith: "-x" }, "smith: expected the name of a configured smith"],
       [{ smith: 5 }, "smith: expected a string"],
+      // Names a smith or a branch may take, but that read as a token.
+      [{ smith: TOKEN }, "smith: must not look like a secret"],
+      [{ base: TOKEN }, "base: must not look like a secret"],
       [{ base: "HEAD" }, "base: expected the name of a branch on origin"],
       [
         { base: "shift/shift-20261015-120000-0001/demo-1" },
@@ -441,6 +444,29 @@ describe("POST /shifts", () => {
       [crashed, "failed"],
       [printed, "stopped"],
     ]);
+  });
+
+  test("a start under an id this hearth has started already (two requests that minted it at once) is 409 and starts nothing", async () => {
+    const h = await start();
+    const row = h.hearth.routes.find(
+      (route) => route.kind === "action" && route.path === "/shifts",
+    );
+    if (row?.kind !== "action") throw new Error("POST /shifts is not mounted");
+    const id = "shift-20261015-120000-0e33";
+    // Both requests passed validation with the same id; the first has its record by the time the second starts.
+    const first = await row.effect({ shiftId: id, flags: [], requested: {} });
+    expect(first.status).toBe(202);
+    writeShiftRecord(shifts(h), record(id, h.workspace));
+    const second = await row.effect({
+      shiftId: id,
+      flags: ["--for", "1h"],
+      requested: { for: "1h" },
+    });
+    expect(second).toEqual({
+      status: 409,
+      error: `${id} was started by this control plane already; no shift was started`,
+    });
+    expect(h.shifts.launches).toHaveLength(1);
   });
 
   test("a child that cannot be started is 502 with the reason, after its audit row, and is not listed", async () => {

@@ -429,9 +429,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - Uncommitted changes in a worktree are not in its pull request, and nothing says so.
   - The secret scan covers the PR title and body only: the branch's files and its full commit
     messages are pushed without one (the shift's own body lists only the first 50 subjects).
-  - A shift the hearth started dies with a hearth ended by a signal or killed (the supervisor's
-    signal handler and tree guard, in the hearth): it is killed, not stopped, and needs a recover.
-    Only the hearth's own `close()` asks it to stop first.
+  - A shift the hearth started is asked to stop when the hearth closes (its `close()`, which
+    `SIGINT` and `SIGTERM` run), but dies at once with a hearth killed outright: on Windows that
+    is how the dashboard ends the hearth (`TerminateProcess`, which runs no code), and the tree
+    guard then ends the shift. Such a shift, and one ended by a console Ctrl-C on Windows (which
+    reaches the shift too), needs `forge:shift recover`.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
   shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record
   their calls and answer as the test says, and a fake adapter whose runs the test scripts. Its kill

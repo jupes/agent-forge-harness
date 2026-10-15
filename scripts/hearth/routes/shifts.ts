@@ -35,10 +35,19 @@ import type {
   RouteReply,
   RouteRequest,
 } from "../api";
-import type { ShiftLaunchEntry, ShiftStarts } from "../shift-launcher";
+import type {
+  ShiftLaunchEntry,
+  ShiftStarts,
+  StartOutcome,
+} from "../shift-launcher";
 import type { ValidationResult } from "../validate";
 import type { BdRunner } from "./dev-api";
-import { bodyFields, fail, noParameters } from "./operator-reads";
+import {
+  bodyFields,
+  fail,
+  looksLikeSecret,
+  noParameters,
+} from "./operator-reads";
 
 export interface ShiftRouteDeps {
   /** The workspace this hearth serves: only its shifts are listed, stopped or recovered. */
@@ -112,6 +121,17 @@ export interface ShiftStart {
   requested: Record<string, unknown>;
 }
 
+/** Why a start was refused once audited, as a status. */
+const START_STATUS: Record<
+  Exclude<StartOutcome, { ok: true }>["kind"],
+  number
+> = {
+  // A second start under an id this hearth already started (two requests minted it at once).
+  duplicate: 409,
+  failed: 502,
+  closing: 503,
+};
+
 /** Why a recovery was refused, as a status; never 403 (a 403 means refused before anything was done). */
 const RECOVER_STATUS: Record<RecoverFailure, number> = {
   invalid: 400,
@@ -162,6 +182,10 @@ function startInput(
             ? `${field}: expected a duration such as 90s, 30m or 2h`
             : `${field}: expected a string`,
         );
+      // A value travels on the child's command line and back in every
+      // listing of the start: one that reads as a secret goes nowhere.
+      else if (looksLikeSecret(value))
+        return fail(`${field}: must not look like a secret`);
       flags.push(flag, String(value));
     }
     const parsed = runOptions(flags);
@@ -245,7 +269,7 @@ export function shiftRoutes(deps: ShiftRouteDeps): ApiRoute[] {
       );
       if (!started.ok)
         return {
-          status: started.kind === "closing" ? 503 : 502,
+          status: START_STATUS[started.kind],
           error: started.error,
         };
       return {
