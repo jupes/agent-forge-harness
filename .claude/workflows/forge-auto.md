@@ -48,7 +48,7 @@ a fresh evaluator subagent**, and the next move comes from `bun run forge:review
 | FAIL, any blocker/high | Revise this phase with the findings as the brief, then review again. |
 | Two rounds no better than the last | **Halt** — not converging. |
 | Revision budget spent (default 2) | **Halt.** |
-| No verdict, or an unreadable one | **Halt.** A run that cannot grade itself must not advance. |
+| No verdict, or an unreadable one | **Halt.** A run that cannot grade itself must not advance. The halt reason names why the verdict was unusable (the round's `verdictError`). |
 | An evaluator observed to rank below the builder | **Halt.** The round is recorded `UNREADABLE`: a grader known to be weaker grades nothing. |
 
 Only an observation halts the loop on who judged. When `forge:review` can see the evaluator would
