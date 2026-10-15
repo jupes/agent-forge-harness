@@ -66,14 +66,56 @@ describe("workbenchColumns", () => {
     expect(card("t-3")?.moves).toEqual(["resume", "reassign"]);
   });
 
-  test("a label the queue did not write offers nothing and says so", () => {
-    const [proposed] = workbenchColumns(
-      [entry("t-1", "proposed", { backed: false })],
+  test("a label the queue did not write offers propose alone, and says it puts the bead in the queue as proposed", () => {
+    const [, , queued] = workbenchColumns(
+      [entry("t-1", "queued", { backed: false })],
       none,
       null,
     );
-    expect(proposed?.cards[0]).toMatchObject({ moves: [] });
-    expect(proposed?.cards[0]?.note).toContain("did not write");
+    expect(queued?.cards[0]).toMatchObject({ moves: ["propose"] });
+    expect(queued?.cards[0]?.note).toBe(
+      "The queue did not write this label (inherited from a parent, or added by hand), so the bead is in no queue state: Propose puts it in the queue as proposed, where it waits for an approval.",
+    );
+  });
+
+  test("a paused card that can be resumed says where Resume puts it: back where it was, and Queued for a bead paused while running", () => {
+    const paused = workbenchColumns(
+      [
+        entry("t-1", "paused", { resume: "approved" }),
+        entry("t-2", "paused", { resume: "queued" }),
+        // GET /queue already answers queued for one paused while running; the card says the same for the state it was paused from.
+        entry("t-3", "paused", { resume: "running" }),
+        entry("t-4", "paused"),
+      ],
+      none,
+      null,
+    ).find((column) => column.state === "paused");
+    expect(
+      paused?.cards.map((card) => [card.id, card.moves, card.resumes ?? null]),
+    ).toEqual([
+      [
+        "t-1",
+        ["resume", "reassign"],
+        { to: "approved", says: "Resume returns it to Approved." },
+      ],
+      [
+        "t-2",
+        ["resume", "reassign"],
+        {
+          to: "queued",
+          says: "Resume puts it in Queued, where a shift starts it. A bead paused while it was running goes there too: nothing runs it after a pause.",
+        },
+      ],
+      [
+        "t-3",
+        ["resume", "reassign"],
+        {
+          to: "queued",
+          says: "Resume puts it in Queued, where a shift starts it. A bead paused while it was running goes there too: nothing runs it after a pause.",
+        },
+      ],
+      ["t-4", ["reassign"], null],
+    ]);
   });
 
   test("a bead with two queue labels is shown in both columns, offers nothing, and is marked", () => {
@@ -149,6 +191,30 @@ describe("moveOutcome", () => {
     expect(
       await moveOutcome("t-1", "approve", answering(200, envelope(true))),
     ).toEqual({ tone: "done", message: "Approved t-1." });
+    expect(
+      await moveOutcome("t-1", "propose", answering(200, envelope(true))),
+    ).toEqual({ tone: "done", message: "Proposed t-1." });
+  });
+
+  test("a resume that is done says where the bead went, from the answer", async () => {
+    const resumed = (to: unknown) =>
+      answering(
+        200,
+        JSON.stringify({
+          ok: true,
+          data: { id: "t-1", action: "resume", from: "paused", to },
+          error: null,
+        }),
+      );
+    expect(await moveOutcome("t-1", "resume", resumed("queued"))).toEqual({
+      tone: "done",
+      message: "Resumed t-1 to Queued.",
+    });
+    // An answer that names no state is still done, and says no more than that.
+    expect(await moveOutcome("t-1", "resume", resumed("nowhere"))).toEqual({
+      tone: "done",
+      message: "Resumed t-1.",
+    });
   });
 
   test("a refusal is said in the hearth's words; without them, by its status", async () => {

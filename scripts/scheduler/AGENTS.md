@@ -39,7 +39,7 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
 - A bead's queue state is one `queue:<state>` label on the bead. Beads is where it lives; the ledger
   records each move and is never read back to find a state. Beads `status` is read once (a closed
   bead is not started) and never written.
-- `QUEUE_TABLE` (`queue-table.ts`, pure and safe in a browser bundle; `queue.ts` re-exports it) is the only place that says which moves are legal and who may make them. `operatorMoves(entry)` is what the dashboard's Workbench offers from it: the operator's approve, queue, pause and resume, and reassign where a smith may change; nothing for an unbacked label or a bead with two queue labels. A move is
+- `QUEUE_TABLE` (`queue-table.ts`, pure and safe in a browser bundle; `queue.ts` re-exports it) is the only place that says which moves are legal and who may make them. `operatorMoves(entry)` is what the dashboard's Workbench offers from it: the operator's approve, queue, pause and resume, and reassign where a smith may change; for an unbacked label, what the table allows from outside the queue, which is propose (`x1gs.5.10`); nothing for a bead with two queue labels. A move is
   an action (`propose`, `approve`, `queue`, `start`, `submit`, `complete`, `rework`, `release`,
   `pause`, `resume`, `halt`) taken by an actor (`operator`, a person through the hearth's rows;
   `scheduler`, a shift or an auto-task). It encodes decision 5: work enters as `proposed`, only an
@@ -74,7 +74,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   label must also unset `queue_state` and `queue_resume`, or a label put back later would count as
   the queue's.
 - `pause` records where the bead was (`queue_resume`) and `resume` returns it there and removes the
-  key. A paused bead with no usable `queue_resume` is refused on resume.
+  key, except that a bead paused from `running` resumes to `queued` (`resumeTarget`, `x1gs.5.4.4`):
+  after a pause nothing runs it, and a shift starts it again from `queued`. So only `start` leads
+  into `running`, and a value of `running` already on a bead is read the same way. `GET /queue`
+  answers an entry's `resume` as where it goes (`queued` for `running`). A paused bead with no usable
+  `queue_resume` is refused on resume.
 - Never send `--remove-label=X --add-label=X`: `bd` adds before it removes and the bead is left
   with no label. Removing a label that is not there is silent. `--add-label=a,b` is two labels.
 - `bd` has no compare-and-set for labels, and nothing it prints tells the second of two writers it
@@ -315,8 +319,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   ledger that does not store it starts nothing.
 - A bead the operator pauses or halts while it runs is found by reading each running bead back
   every `pollMs`; its run is stopped, its reservation freed, and its queue state left as the
-  operator put it (`left`). Resuming a paused `running` bead returns it to `running` with nothing
-  running it; no shift picks it up again.
+  operator put it (`left`). Resuming it puts it in `queued` (the queue section): this shift has set
+  it aside and does not start it again; a later shift does. A resume made before the read-back
+  noticed the pause leaves the bead `queued` while its run still runs, until the next read-back
+  stops it; in that window another shift could start it too (a reservation of the same bead in
+  another worktree is no conflict). Not covered (`x1gs.5.4.13`).
 - Each bead's events carry its run id (`<bead>-<shift-id>`, else `<shift-id>-<n>`): the moves and
   reservations through an `appendEvent` that adds it, the session through `--run`. `forge:audit
   --run <id>` shows one bead from claim to release, and `forge:audit --shift <id>` shows the whole

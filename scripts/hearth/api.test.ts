@@ -319,6 +319,50 @@ function queueMove(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  // A child that inherited its parent's label: in no state, so propose takes it in.
+  "POST /queue/:id/propose": {
+    valid: {
+      path: "/queue/demo-propose/propose",
+      body: {},
+      status: 200,
+      target: "demo-propose",
+    },
+    invalid: { path: "/queue/-rf/propose", body: {} },
+    prepare: (h) => {
+      const tracker = queueTracker([
+        { id: "demo-propose", labels: ["queue:queued"] },
+      ]);
+      h.bd.answer = (args) => tracker.answer(args);
+      return Promise.resolve();
+    },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: { from: null, to: "proposed", reason: "propose:operator" },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toEqual({
+        id: "demo-propose",
+        action: "propose",
+        from: null,
+        to: "proposed",
+        recorded: true,
+      });
+      expect(h.bd.calls.slice(-2)).toEqual([
+        ["show", "--readonly", "--json", "--", "demo-propose"],
+        [
+          "update",
+          "--remove-label=queue:queued",
+          "--add-label=queue:proposed",
+          "--set-metadata=queue_state=proposed",
+          "--json",
+          "--",
+          "demo-propose",
+        ],
+      ]);
+    },
+  },
   "POST /queue/:id/approve": queueMove("approve", "proposed", "approved", [
     "--remove-label=queue:proposed",
     "--add-label=queue:approved",
@@ -1582,8 +1626,7 @@ describe("the paths that existed before the table", () => {
     expect(startShift.headers.get("allow")).toBe("GET");
 
     const unmounted = [
-      // The scheduler's moves, and proposing, are not the operator API's.
-      "/queue/demo-1/propose",
+      // The scheduler's moves are not the operator API's.
       "/queue/demo-1/start",
       "/queue/demo-1/submit",
       "/queue/demo-1/complete",
@@ -2627,12 +2670,21 @@ describe("/queue", () => {
         labels: ["queue:queued"],
         metadata: { queue_state: "queued", queue_resume: "approved" },
       },
+      {
+        id: "p-4",
+        title: "Paused while running",
+        status: "open",
+        labels: ["queue:paused"],
+        metadata: { queue_state: "paused", queue_resume: "running" },
+      },
     ]);
     const entries = (await envelope<QueueEntry[]>(await get(h, "/queue"))).data;
+    // A bead paused while running returns to queued, not to running.
     expect(entries?.map((e) => [e.beadId, e.resume ?? null])).toEqual([
       ["p-1", "queued"],
       ["p-2", null],
       ["p-3", null],
+      ["p-4", "queued"],
     ]);
   });
 

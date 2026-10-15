@@ -287,9 +287,11 @@ describe("reconcileQueue: each bead's queue state on Beads against the moves the
     const r = rig([walked, halted, inherited, twoLabels]);
     const queue = r.queue();
     await moved(queue, walked.id, "propose", "approve", "queue", "start");
-    await moved(queue, walked.id, "pause", "resume", "submit", "complete");
+    // A bead paused while running resumes to queued, and is started again.
+    await moved(queue, walked.id, "pause", "resume", "start");
+    await moved(queue, walked.id, "submit", "complete");
     await moved(queue, halted.id, "propose", "approve", "halt");
-    expect(await report(r)).toEqual({ beads: 4, moves: 11, drift: [] });
+    expect(await report(r)).toEqual({ beads: 4, moves: 12, drift: [] });
   });
 
   test("the last move made and its event not stored: a gap after the last recorded move, up to the state on the bead", async () => {
