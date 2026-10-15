@@ -1,12 +1,16 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
+import { scratchDirs } from "../test-scratch";
 import { loadConfig, machineConfigFile } from "./load";
 import { withProcessHomes } from "./testing";
 
+const scratch = scratchDirs();
+afterEach(() => scratch.cleanup());
+
 function sandbox() {
-  const root = mkdtempSync(join(tmpdir(), "forge-config-"));
+  const root = scratch.make("forge-config-");
   const harness = join(root, "harness with space");
   const home = join(root, "home");
   mkdirSync(harness, { recursive: true });

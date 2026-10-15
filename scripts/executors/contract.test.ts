@@ -4,11 +4,10 @@
  * lifecycle, cleanup) — not that a real provider CLI emits these shapes.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   writeFileSync,
@@ -22,11 +21,15 @@ import { comparableCheckout } from "../forge/runs";
 import { hashText } from "../hash-text";
 import { validateLedgerEventInput } from "../hearth/validate";
 import { type Attach, SESSION_MIRROR_FILE } from "../ledger/identity";
+import { scratchDirs } from "../test-scratch";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { buildChildEnv } from "./env";
 import { liveChildCount } from "./supervisor";
 import type { ExecutorAdapter, SpawnRequest } from "./types";
+
+const scratch = scratchDirs();
+afterEach(() => scratch.cleanup());
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const adapters: Array<{
@@ -88,9 +91,7 @@ async function run(
 ) {
   // Each directory is its own checkout: a bare temp directory would resolve to
   // whatever checkout the temp directory happens to sit in.
-  const root = realpathSync.native(
-    mkdtempSync(join(tmpdir(), "exec contract ")),
-  );
+  const root = realpathSync.native(scratch.make("exec contract "));
   mkdirSync(join(root, ".git"));
   const worktree = join(root, "work tree with spaces");
   mkdirSync(join(worktree, ".git"), { recursive: true });
@@ -410,7 +411,7 @@ for (const { name, adapter, smith, usage, effortArgs } of adapters) {
     });
 
     test("stop() kills the child and records why", async () => {
-      const root = mkdtempSync(join(tmpdir(), "exec stop "));
+      const root = scratch.make("exec stop ");
       mkdirSync(join(root, ".git"));
       const handle = await adapter.spawn({
         beadId: "b",
