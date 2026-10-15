@@ -6,17 +6,22 @@
  * Usage:
  *   bun run forge:shift run [--for 2h] [--concurrency 2] [--max-beads 4]
  *       [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>]
- *       [--run-timeout <duration>] [--base master]
+ *       [--run-timeout <duration>] [--base master] [--id <shift-id>]
  *   bun run forge:shift stop <shift-id>
  *   bun run forge:shift recover <shift-id>
  *   bun run forge:shift list
  *
  * A duration is a whole number of seconds, minutes or hours: `90s`, `30m`,
- * `2h`. `run` first fetches `--base` (default master) from origin, and every
- * bead's worktree starts at the commit it names, whatever the checkout it
- * runs in has checked out; a base that cannot be fetched starts nothing. It
- * then writes one line to stderr, the shift's id and the command that stops
- * it, runs until the shift stops and prints the shift's record. It takes only
+ * `2h`. `--id` gives the shift the id it runs under instead of one minted at
+ * the start: the hearth's `POST /shifts` mints the id first, so that its audit
+ * row names the shift, and starts `run --id <id>` as its child. It must be a
+ * shift id (`shift-YYYYMMDD-HHMMSS-xxxx`) that no shift record and no stop
+ * request in the home has, or nothing starts. `run` first fetches `--base`
+ * (default master) from origin, and every bead's worktree starts at the
+ * commit it names, whatever the checkout it runs in has checked out; a base
+ * that cannot be fetched starts nothing. It then writes one line to stderr,
+ * the shift's id and the command that stops it, runs until the shift stops
+ * and prints the shift's record. It takes only
  * beads in `queued` (an operator approved and queued them) and never merges.
  * A bead whose run succeeds ends in `review` with its work committed on the
  * branch `shift/<shift-id>/<bead>`, in a worktree under `trees/` that is
@@ -57,15 +62,17 @@ import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
 import { prCheckRunner, toolRunner } from "./shift-pr";
 import { recoverShift, unfinishedMessage } from "./shift-recover";
 import {
+  isShiftId,
   listShiftRecords,
   mintShiftId,
   requestStop,
   SHIFTS_DIR,
+  shiftIdInUse,
 } from "./shift-store";
 import { createWorktree } from "./worktrees";
 
 const USAGE =
-  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] | stop <shift-id> | recover <shift-id> | list";
+  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -139,18 +146,34 @@ const RUN_FLAGS = {
   "--base": "base",
 } as const;
 
-/** The options `run` was given, or why they are not options. */
-function runOptions(
+/**
+ * The options `run` was given, and the shift id `--id` gave it, or why they
+ * are not options. The hearth's `POST /shifts` parses its flags with this
+ * too, before it starts the child that will parse them again.
+ */
+export function runOptions(
   args: readonly string[],
-): { ok: true; value: Partial<ShiftOptions> } | { ok: false; error: string } {
+):
+  | { ok: true; value: Partial<ShiftOptions>; shiftId?: string | undefined }
+  | { ok: false; error: string } {
   const options: Partial<ShiftOptions> = {};
+  let shiftId: string | undefined;
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i] ?? "";
     const value = args[i + 1];
-    if (!Object.hasOwn(RUN_FLAGS, flag))
+    if (flag !== "--id" && !Object.hasOwn(RUN_FLAGS, flag))
       return { ok: false, error: `unknown option ${flag}` };
     if (value === undefined || value.startsWith("--"))
       return { ok: false, error: `${flag} needs a value` };
+    if (flag === "--id") {
+      if (!isShiftId(value))
+        return {
+          ok: false,
+          error: "--id: expected a shift id (shift-YYYYMMDD-HHMMSS-xxxx)",
+        };
+      shiftId = value;
+      continue;
+    }
     const name = RUN_FLAGS[flag as keyof typeof RUN_FLAGS];
     if (name === "epic" || name === "smith" || name === "base") {
       options[name] = value;
@@ -171,7 +194,7 @@ function runOptions(
       return { ok: false, error: `${flag}: expected a number` };
     options[name] = number;
   }
-  return { ok: true, value: options };
+  return { ok: true, value: options, shiftId };
 }
 
 export interface ShiftCliIo {
@@ -189,7 +212,16 @@ export async function runShiftCli(
   if (command === "run") {
     const options = runOptions(rest);
     if (!options.ok) return failed(`${options.error}. Usage: ${USAGE}`);
-    const shiftId = deps.shiftId ?? mintShiftId(new Date());
+    // Checked here and not again: a second start with the same id between
+    // this check and the record is not prevented.
+    if (
+      options.shiftId !== undefined &&
+      shiftIdInUse(deps.shiftsDir, options.shiftId)
+    )
+      return failed(
+        `--id: ${options.shiftId} is in use: a shift record or a stop request has it; nothing was started`,
+      );
+    const shiftId = options.shiftId ?? deps.shiftId ?? mintShiftId(new Date());
     io.announce(
       JSON.stringify({ shiftId, stop: `bun run forge:shift stop ${shiftId}` }),
     );

@@ -249,6 +249,9 @@ describe("forge:shift", () => {
       ["run", "stray"],
       ["run", "--base", "shift/shift-20261014-120000-0a0b/t-1"],
       ["run", "--base", "-x"],
+      ["run", "--id", "shift-nope"],
+      ["run", "--id", "SHIFT-20261015-120000-0A0B"],
+      ["run", "--id"],
     ]) {
       const result = await runShiftCli(argv, deps, io);
       expect({ argv, exit: result.exit, ok: result.out.ok }).toEqual({
@@ -395,6 +398,94 @@ describe("forge:shift", () => {
       "Draft pull request: https://github.com/example/harness/pull/1.",
     );
   }, 60_000);
+
+  test("run --id runs the shift under the id it is given: the announce line, the result and the record name it", async () => {
+    const { repo } = withOrigin();
+    const { deps, io, announced } = cli(repo, []);
+    const id = "shift-20261015-120000-1d1d";
+    const result = await runShiftCli(
+      ["run", "--id", id, "--for", "2m", "--concurrency", "1"],
+      deps,
+      io,
+    );
+    expect(result.exit).toBe(0);
+    expect(JSON.parse(announced[0] ?? "{}")).toEqual({
+      shiftId: id,
+      stop: `bun run forge:shift stop ${id}`,
+    });
+    expect(result.out.data).toMatchObject({ shiftId: id, reason: "drained" });
+    expect(readShiftRecord(deps.shiftsDir, id)).toMatchObject({
+      shiftId: id,
+      state: "stopped",
+      reason: "drained",
+      options: { concurrency: 1, forMs: 120_000 },
+    });
+  }, 60_000);
+
+  test("run --id with a value that is not a shift id exits 1 naming --id, before anything is announced", async () => {
+    const { deps, io, announced, home } = cli(scratch());
+    for (const id of ["shift-nope", "SHIFT-20261015-120000-0A0B", "../x"])
+      expect(await runShiftCli(["run", "--id", id], deps, io)).toEqual({
+        exit: 1,
+        out: {
+          ok: false,
+          data: null,
+          error: expect.stringContaining(
+            "--id: expected a shift id (shift-YYYYMMDD-HHMMSS-xxxx)",
+          ),
+        },
+      });
+    expect(announced).toEqual([]);
+    expect(existsSync(join(home, "shifts"))).toBe(false);
+  });
+
+  test("run --id with an id a record or a stop request already has exits 1 before anything is announced or fetched, and changes neither", async () => {
+    const { deps, io, announced, gh } = cli(scratch());
+    const recorded = "shift-20261015-120000-2e2e";
+    const asked = "shift-20261015-120000-3f3f";
+    const old: ShiftRecord = {
+      shiftId: recorded,
+      pid: 2_000_000_000,
+      workspace: "c:/somewhere",
+      startedAt: "2026-10-15T12:00:00.000Z",
+      deadline: "2026-10-15T14:00:00.000Z",
+      state: "stopped",
+      reason: "drained",
+      options: {
+        concurrency: 2,
+        forMs: 7_200_000,
+        maxBeads: 4,
+        maxUsd: 10,
+        repairs: 3,
+      },
+      spentUsd: 0,
+      unpriced: 0,
+      beads: [],
+    };
+    writeShiftRecord(deps.shiftsDir, old);
+    writeFileSync(join(deps.shiftsDir, `${asked}.stop`), "");
+    const before = readFileSync(
+      join(deps.shiftsDir, `${recorded}.json`),
+      "utf8",
+    );
+    for (const id of [recorded, asked]) {
+      const result = await runShiftCli(["run", "--id", id], deps, io);
+      expect(result).toEqual({
+        exit: 1,
+        out: {
+          ok: false,
+          data: null,
+          error: `--id: ${id} is in use: a shift record or a stop request has it; nothing was started`,
+        },
+      });
+    }
+    expect(announced).toEqual([]);
+    expect(gh).toEqual([]);
+    expect(readFileSync(join(deps.shiftsDir, `${recorded}.json`), "utf8")).toBe(
+      before,
+    );
+    expect(existsSync(join(deps.shiftsDir, `${asked}.json`))).toBe(false);
+  });
 
   test("run --base names the branch fetched from origin: one origin does not have starts nothing, and nothing is written", async () => {
     const { repo } = withOrigin();

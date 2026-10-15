@@ -16,6 +16,7 @@ import {
   readShiftRecord,
   requestStop,
   type ShiftRecord,
+  shiftIdInUse,
   stopRequested,
   writeShiftRecord,
 } from "./shift-store";
@@ -74,6 +75,25 @@ describe("shift ids", () => {
       null,
     ])
       expect(isShiftId(value)).toBe(false);
+  });
+
+  test("an id is in use once a record, a record that does not parse, or a stop request has it; one that is not a shift id is never free", () => {
+    const shifts = dir();
+    const free = "shift-20261015-120000-0e10";
+    const recorded = "shift-20261015-120000-0e11";
+    const broken = "shift-20261015-120000-0e12";
+    const asked = "shift-20261015-120000-0e13";
+    // No directory yet: every shift id is free.
+    expect(shiftIdInUse(shifts, free)).toBe(false);
+    writeShiftRecord(shifts, record(recorded));
+    writeFileSync(join(shifts, `${broken}.json`), "{ not json");
+    writeFileSync(join(shifts, `${asked}.stop`), "");
+    expect(shiftIdInUse(shifts, free)).toBe(false);
+    expect(shiftIdInUse(shifts, recorded)).toBe(true);
+    expect(shiftIdInUse(shifts, broken)).toBe(true);
+    expect(shiftIdInUse(shifts, asked)).toBe(true);
+    for (const id of ["shift-nope", "../shift-20261015-120000-0e10", ""])
+      expect(shiftIdInUse(shifts, id)).toBe(true);
   });
 });
 
