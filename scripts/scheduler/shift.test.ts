@@ -24,6 +24,7 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations, queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { readEligibility } from "./eligibility";
 import { createQueue } from "./queue";
 import {
   answerQueueList,
@@ -34,12 +35,18 @@ import {
 } from "./queue-fixture";
 import {
   runShift,
+  SHIFT_ENDINGS,
   type ShiftDeps,
   type ShiftOptions,
   shiftOptions,
 } from "./shift";
 import { PR_FAILURES, type ToolResult, type ToolRun } from "./shift-pr";
-import { processAlive, readShiftRecord, requestStop } from "./shift-store";
+import {
+  processAlive,
+  readShiftRecord,
+  requestStop,
+  writeShiftRecord,
+} from "./shift-store";
 
 /**
  * The shift loop, hermetic: `bd` is the queue's in-memory tracker, the
@@ -396,7 +403,12 @@ function rig(
 }
 
 async function shift(r: Rig, options: Partial<ShiftOptions> = {}) {
-  const outcome = await runShift({ ...FAST, ...options }, r.deps);
+  return ended(runShift({ ...FAST, ...options }, r.deps));
+}
+
+/** How a shift `runShift` was given ended; a refusal fails the test. */
+async function ended(running: ReturnType<typeof runShift>) {
+  const outcome = await running;
   if (!outcome.ok) throw new Error(outcome.error);
   return outcome.value;
 }
@@ -1132,6 +1144,225 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
     expect(
       r.calls.filter((args) => args[0] === "comments" && args[4] === "t-1"),
     ).toHaveLength(2);
+  });
+});
+
+describe("forge:shift — a bead resumed before its shift read it back (x1gs.5.4.13)", () => {
+  /** The operator's queue, as the hearth moves beads: no run id on its events. */
+  const operatorQueue = (r: Rig) =>
+    createQueue({
+      workspace: r.workspace,
+      runBd: r.tracker.run,
+      appendEvent: (event) => appendEvent(event, { path: r.ledger }),
+      lockFile: r.deps.lockFile,
+    });
+  const runsOf = (r: Rig, beadId: string) =>
+    r.fake.runs.filter((run) => run.beadId === beadId);
+
+  test("a second shift does not start a bead paused and resumed while the first runs it, until that run has ended and released its reservation; then it does", async () => {
+    const A = "shift-20261015-120000-0a01";
+    const B = "shift-20261015-120000-0b02";
+    const r = rig([queued("t-1"), queued("t-2")], () => "hang");
+    const stopA = new AbortController();
+    const stopB = new AbortController();
+    // A takes t-1 only, and never reads it back during the test (pollMs).
+    const first = runShift(
+      { ...FAST, concurrency: 1, maxBeads: 1, pollMs: 600_000 },
+      { ...r.deps, shiftId: A, signal: stopA.signal },
+    );
+    let second: ReturnType<typeof runShift> | undefined;
+    try {
+      await until(() => runsOf(r, "t-1").length === 1);
+      const operator = operatorQueue(r);
+      expect((await operator.move("t-1", "pause", "operator")).ok).toBe(true);
+      expect((await operator.move("t-1", "resume", "operator")).ok).toBe(true);
+      expect(r.labels("t-1")).toEqual(["queue:queued"]);
+
+      // What every reader of eligibility sees now (the Workbench too).
+      const seen = await readEligibility({
+        root: r.root,
+        runBd: r.deps.runBd,
+        ledgerPath: r.ledger,
+        host: { busy: false },
+        shiftsDir: r.deps.shiftsDir,
+      });
+      if (!seen.ok) throw new Error(seen.error);
+      expect(seen.value.waiting.find((w) => w.id === "t-1")).toMatchObject({
+        waitsOnShift: A,
+      });
+      expect(seen.value.waiting.find((w) => w.id === "t-1")?.why).toContain(
+        "has not ended",
+      );
+
+      second = runShift(
+        { ...FAST, concurrency: 2 },
+        { ...r.deps, shiftId: B, signal: stopB.signal },
+      );
+      await until(() => runsOf(r, "t-2").length === 1);
+      // Let B read eligibility again and again while A's run goes on (B,
+      // with a slot free, reads every pollMs), or start t-1 a second time.
+      const lists = () => r.calls.filter((args) => args[0] === "list").length;
+      const listed = lists();
+      await until(() => lists() >= listed + 10 || runsOf(r, "t-1").length > 1);
+      expect(runsOf(r, "t-1")).toHaveLength(1);
+      expect(runsOf(r, "t-1")[0]?.endedAt).toBeUndefined();
+
+      // A stops: its run ends, and A releases its reservation of t-1.
+      stopA.abort();
+      const a = await ended(first);
+      expect(a.reason).toBe("operator");
+      await until(() => runsOf(r, "t-1").length === 2);
+      const [earlier, later] = runsOf(r, "t-1");
+      expect(later?.worktree).toContain(B);
+      expect(later?.startedAt ?? 0).toBeGreaterThanOrEqual(
+        earlier?.endedAt ?? Number.POSITIVE_INFINITY,
+      );
+      // B claimed it only after A's reservation was released.
+      const events = r.events();
+      const freedByA = events.findIndex(
+        (event) =>
+          event.kind === "reservation.released" && event.runId === `t-1-${A}`,
+      );
+      const startedByB = events.findIndex(
+        (event) =>
+          event.kind === "bead.transitioned" &&
+          event.runId === `t-1-${B}` &&
+          (event.payload as { to?: string }).to === "running",
+      );
+      expect(freedByA).toBeGreaterThan(-1);
+      expect(startedByB).toBeGreaterThan(freedByA);
+    } finally {
+      stopA.abort();
+      stopB.abort();
+      await first.catch(() => undefined);
+      await second?.catch(() => undefined);
+    }
+    for (const id of ["t-1", "t-2"])
+      expect(r.labels(id)).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+  });
+
+  test("a reservation a stopped shift left behind (its release failed) does not keep the bead from the next shift, which reads that shift's record", async () => {
+    const gone = "shift-20261015-110000-0c03";
+    const r = rig([queued("t-1")]);
+    writeShiftRecord(r.deps.shiftsDir, {
+      shiftId: gone,
+      pid: process.pid,
+      workspace: r.workspace,
+      startedAt: "2026-10-15T11:00:00.000Z",
+      deadline: "2026-10-15T13:00:00.000Z",
+      endedAt: "2026-10-15T11:30:00.000Z",
+      state: "stopped",
+      reason: "operator",
+      options: {
+        concurrency: 2,
+        forMs: 7_200_000,
+        maxBeads: 4,
+        maxUsd: 10,
+        repairs: 0,
+      },
+      spentUsd: 0,
+      unpriced: 0,
+      beads: [],
+    });
+    appendEvent(
+      {
+        kind: "reservation.acquired",
+        workspace: r.workspace,
+        beadId: "t-1",
+        payload: {
+          worktree: join(r.root, "trees", `${gone}-1`),
+          globs: ["src/t-1/**"],
+        },
+      },
+      { path: r.ledger },
+    );
+    const done = await shift(r);
+    expect(done.reason).toBe("drained");
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-1"]);
+    expect(r.labels("t-1")).toEqual(["queue:review"]);
+  });
+
+  test("a bead another run started since this shift started it: the watch stops this shift's run as left, its reservation freed, and leaves the bead running for that run", async () => {
+    let skew = 0;
+    const r = rig([queued("t-1")], () => "hang", {
+      now: () => new Date(Date.now() + skew),
+    });
+    const stop = new AbortController();
+    const running = runShift(
+      { ...FAST, pollMs: 60_000 },
+      { ...r.deps, signal: stop.signal },
+    );
+    try {
+      await until(() => r.fake.runs.length === 1);
+      const operator = operatorQueue(r);
+      expect((await operator.move("t-1", "pause", "operator")).ok).toBe(true);
+      expect((await operator.move("t-1", "resume", "operator")).ok).toBe(true);
+      // Another shift's claim, as its queue records it: with its run id.
+      const other = createQueue({
+        workspace: r.workspace,
+        runBd: r.tracker.run,
+        appendEvent: (event) =>
+          appendEvent({ ...event, runId: "t-1-other-run" }, { path: r.ledger }),
+        lockFile: r.deps.lockFile,
+      });
+      expect((await other.move("t-1", "start", "scheduler")).ok).toBe(true);
+      // The shift's next tick reads the bead back.
+      skew += 60_000;
+      await until(() => r.fake.runs[0]?.endedAt !== undefined);
+    } finally {
+      stop.abort();
+    }
+    const done = await ended(running);
+    expect(r.labels("t-1")).toEqual(["queue:running"]);
+    expect(r.reservations()).toBe(0);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "left" });
+    expect(done.record.beads[0]?.error).toContain(
+      "another run (t-1-other-run) started the bead",
+    );
+    expect(r.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${done.shiftId} ended this bead after 1 run: left. ${SHIFT_ENDINGS.taken}`,
+    );
+    // Nothing of the shift's moved the bead after the other run's start.
+    expect(
+      r
+        .events()
+        .filter((event) => event.kind === "bead.transitioned")
+        .at(-1),
+    ).toMatchObject({ runId: "t-1-other-run", payload: { to: "running" } });
+  });
+
+  test("a start that names no run (an operator's, by hand) is no other run's: the watch reads the bead back and lets its own run go on", async () => {
+    let skew = 0;
+    const r = rig([queued("t-1")], () => "hang", {
+      now: () => new Date(Date.now() + skew),
+    });
+    const stop = new AbortController();
+    const running = runShift(
+      { ...FAST, pollMs: 60_000 },
+      { ...r.deps, signal: stop.signal },
+    );
+    try {
+      await until(() => r.fake.runs.length === 1);
+      const operator = operatorQueue(r);
+      for (const action of ["pause", "resume", "start"] as const)
+        expect((await operator.move("t-1", action, "operator")).ok).toBe(true);
+      const shows = () =>
+        r.calls.filter((args) => args[0] === "show" && args.at(-1) === "t-1")
+          .length;
+      const before = shows();
+      skew += 60_000;
+      await until(() => shows() > before);
+      // A tick later the run is still going.
+      await Bun.sleep(100);
+      expect(r.fake.runs[0]?.endedAt).toBeUndefined();
+    } finally {
+      stop.abort();
+    }
+    const done = await ended(running);
+    expect(done.reason).toBe("operator");
+    expect(done.record.beads[0]).toMatchObject({ outcome: "released" });
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
   });
 });
 
