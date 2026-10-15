@@ -42,7 +42,16 @@ import {
   withSessionRows,
   withStatus,
 } from "./app-state";
+import {
+  type HearthReadOptions,
+  REAL_TIMERS,
+  readHearth,
+  servedStatically,
+  type Timers,
+} from "./hearth-read";
 import { type DevApiState, fetchDevApi } from "./use-dev-api";
+
+export type { Timers };
 
 // ── Limits ──────────────────────────────────────────────────────────────────
 
@@ -240,17 +249,6 @@ export function fetchTransport(
 }
 
 // ── Reading a route again ───────────────────────────────────────────────────
-
-export interface Timers {
-  set(run: () => void, ms: number): unknown;
-  clear(handle: unknown): void;
-}
-
-const REAL_TIMERS: Timers = {
-  set: (run, ms) => setTimeout(run, ms),
-  // justification: the handle is whatever `set` above returned.
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
 
 export interface Refetcher {
   /** Ask for a read. Many asks in a burst become one read now and at most one after it. */
@@ -734,27 +732,34 @@ export function startLiveRead<T>(options: LiveReadOptions<T>): LiveRead {
 
 // ── The page's client and its hooks ─────────────────────────────────────────
 
-async function readRoute(
+/** One read of an operator API read route, under the rules of `readHearth`. */
+function readRoute(
   path: string,
-  fetchImpl: (input: string) => Promise<Response> = (input) => fetch(input),
+  options: HearthReadOptions = {},
 ): Promise<OperatorEnvelope<unknown>> {
-  const response = await fetchImpl(`${API_PREFIX}${path}`);
-  const envelope: unknown = await response.json();
-  if (!isRecord(envelope) || typeof envelope["ok"] !== "boolean")
-    throw new Error(`HTTP ${response.status}`);
-  // justification: checked above to be an envelope; its data is read by the route's own type.
-  return envelope as OperatorEnvelope<unknown>;
+  return readHearth(
+    `${API_PREFIX}${path}`,
+    async (response) => {
+      const envelope: unknown = await response.json();
+      if (!isRecord(envelope) || typeof envelope["ok"] !== "boolean")
+        throw new Error(`HTTP ${response.status}`);
+      // justification: checked above to be an envelope; its data is read by the route's own type.
+      return envelope as OperatorEnvelope<unknown>;
+    },
+    options,
+  );
 }
 
 /**
  * An operator API read route's data, or an error with the hearth's own words
- * when it answered `ok: false`.
+ * when it answered `ok: false`. It fails when the hearth does not answer
+ * within `READ_TIMEOUT_MS`, and at once on a static copy.
  */
 export async function readOperatorRoute<T>(
   path: string,
-  fetchImpl?: (input: string) => Promise<Response>,
+  options: HearthReadOptions = {},
 ): Promise<T> {
-  const envelope = await readRoute(path, fetchImpl);
+  const envelope = await readRoute(path, options);
   if (!envelope.ok)
     throw new Error(envelope.error ?? "the control plane refused the read");
   // justification: the route named `path` answers data of the caller's `T`.
@@ -791,12 +796,15 @@ let page: StreamClient | null = null;
 /** The one client of this page, made on first use. */
 export function appStream(): StreamClient {
   page ??= createStreamClient({
-    // A build has no HMR socket: there `import.meta.hot` is undefined. The
-    // dev server, which proxies the hearth, always gives a page one.
-    transport: pageTransport(import.meta.hot === undefined),
-    read: readRoute,
+    transport: pageTransport(servedStatically()),
+    read: (path) => readRoute(path, pageReads()),
   });
   return page;
+}
+
+/** What the page's own reads are made with: none at all on a static copy. */
+export function pageReads(): HearthReadOptions {
+  return { staticCopy: servedStatically() };
 }
 
 /**
@@ -846,7 +854,7 @@ export function useLiveRead<T>(
   useEffect(
     () =>
       startLiveRead<T>({
-        load: () => fetchDevApi<T>(route),
+        load: () => fetchDevApi<T>(route, pageReads()),
         client: appStream(),
         kinds,
         onChange: setState,
@@ -876,7 +884,7 @@ export function useOperatorRead<T>(
 
   useEffect(() => {
     const read = startLiveRead<T>({
-      load: () => readOperatorRoute<T>(path),
+      load: () => readOperatorRoute<T>(path, pageReads()),
       client: appStream(),
       kinds,
       onChange: setState,
