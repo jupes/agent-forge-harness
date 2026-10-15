@@ -148,7 +148,12 @@ describe("the registry of the shifts a hearth starts", () => {
       home: "c:/home",
       shiftsDir,
       workspace: "c:/root",
-      environment: { PATH: "c:/bin", AGENT_FORGE_HOME: "c:/elsewhere" },
+      environment: {
+        PATH: "c:/bin",
+        AGENT_FORGE_HOME: "c:/elsewhere",
+        Agent_Forge_Home: "c:/elsewhere too",
+        UNSET: undefined,
+      },
       launch: launcher.launch,
       mintShiftId: () => launcher.mint(),
       stopGraceMs: graceMs,
@@ -156,7 +161,7 @@ describe("the registry of the shifts a hearth starts", () => {
     return { shiftsDir, launcher, starts };
   }
 
-  test("a start runs forge:shift run with the id and the flags, in the root, with the environment and the home; it is starting until its record exists, and a launch that exits after its record is forgotten", async () => {
+  test("a start runs forge:shift run with the id and the flags, in the root, with the environment and the home in place of any spelling of AGENT_FORGE_HOME; it is starting until its record exists, and a launch that exits after its record is forgotten", async () => {
     const { shiftsDir, launcher, starts } = registry();
     const id = starts.mint();
     const started = starts.start(id, ["--for", "2h"], { for: "2h" });

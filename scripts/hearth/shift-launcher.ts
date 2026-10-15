@@ -303,9 +303,12 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
           kind: "closing",
           error: "The control plane is closing; no shift was started",
         };
+      // The hearth's home replaces any other, in any letter case (Windows
+      // names are case-insensitive, and two spellings would both be passed).
       const env: Record<string, string> = {};
       for (const [name, value] of Object.entries(deps.environment))
-        if (value !== undefined) env[name] = value;
+        if (value !== undefined && name.toUpperCase() !== "AGENT_FORGE_HOME")
+          env[name] = value;
       env["AGENT_FORGE_HOME"] = deps.home;
       let child: LaunchedShiftChild;
       try {
