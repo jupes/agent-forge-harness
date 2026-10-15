@@ -10,7 +10,7 @@ import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import type { Smith } from "../../types/hearth";
 import { BUILTIN_BENCHES, BUILTIN_SMITHS } from "../config/defaults";
-import type { ForgeConfig } from "../config/load";
+import { BUILTIN_SHIFT_CONFIG, type ForgeConfig } from "../config/load";
 import { scratchDirs } from "../test-scratch";
 import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
@@ -399,6 +399,7 @@ describe("taskSmiths", () => {
       },
       benches: BUILTIN_BENCHES as ForgeConfig["benches"],
       execution: { envPass: [] },
+      shift: { ...BUILTIN_SHIFT_CONFIG },
     };
     const picked = taskSmiths(config);
     expect(Object.keys(picked).sort()).toEqual(["claude", "codex"]);
