@@ -29,6 +29,11 @@ import {
   type BeadWrite,
   type BeadWriteResult,
 } from "../../../types/hearth";
+import {
+  type HearthReadOptions,
+  readHearth,
+  servedStatically,
+} from "../hearth-read";
 import { NotSent, type OperatorPost, operatorPost } from "../operator";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -112,21 +117,34 @@ export interface BeadWrites {
   close(id: string, reason: string): Promise<WriteOutcome>;
 }
 
-/** The writes, with their own memory of the options; `post` and `fetchImpl` are replaced in tests. */
+/**
+ * The writes, with their own memory of the options; `post` and `fetchImpl` are
+ * replaced in tests. The options are read under `readHearth`'s rules: within
+ * its time limit, and not at all on a static copy (`reads.staticCopy`).
+ */
 export function createBeadWrites(
   post: OperatorPost = operatorPost,
   fetchImpl: Fetch = (input, init) => fetch(input, init),
+  reads: Omit<HearthReadOptions, "fetch"> = {},
 ): BeadWrites {
   let known: Promise<Availability> | null = null;
 
   async function readOptions(): Promise<Availability> {
     try {
-      const response = await fetchImpl(OPTIONS_ROUTE);
-      const envelope = envelopeOf(await response.json());
-      if (response.ok && envelope?.ok && isOptions(envelope.data))
-        return { available: true, options: envelope.data };
+      const options = await readHearth(
+        OPTIONS_ROUTE,
+        async (response) => {
+          const envelope = envelopeOf(await response.json());
+          return response.ok && envelope?.ok && isOptions(envelope.data)
+            ? envelope.data
+            : null;
+        },
+        { ...reads, fetch: fetchImpl },
+      );
+      if (options !== null) return { available: true, options };
     } catch {
-      // No answer, or one that is not JSON: there is no control plane to ask.
+      // No answer in time, one that is not JSON, or a static copy: there is
+      // no control plane to ask.
     }
     return { available: false, reason: NO_CONTROL_PLANE };
   }
@@ -238,7 +256,13 @@ export function createBeadWrites(
 }
 
 /** The page's writes: one memory of the options for every island. */
-export const beadWrites: BeadWrites = createBeadWrites();
+export const beadWrites: BeadWrites = createBeadWrites(
+  operatorPost,
+  undefined,
+  {
+    staticCopy: servedStatically(),
+  },
+);
 
 /** One action on a bead: offered, or not and why. */
 export type Offer = { enabled: true } | { enabled: false; reason: string };

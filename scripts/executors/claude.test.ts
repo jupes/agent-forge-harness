@@ -1,12 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-} from "fs";
-import { tmpdir } from "os";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
 import { join } from "path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { runVerdictWrite } from "../eval-verdict-cli";
@@ -15,6 +8,7 @@ import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { getSessionModel, getSubagentModels } from "../ledger/session-models";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "../run-correlation";
+import { scratchDirs } from "../test-scratch";
 import { claudeAdapter, parseClaudeError, parseClaudeLine } from "./claude";
 import { type ExecDeps, runExec } from "./exec-cli";
 
@@ -29,8 +23,11 @@ const fake = (mode = "ok") => [
 ];
 
 const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
+const scratch = scratchDirs();
+afterEach(() => {
+  // A ledger file still open cannot be removed on Windows: close first.
+  for (const ledger of ledgers.splice(0)) closeLedger(ledger);
+  scratch.cleanup();
 });
 
 /**
@@ -39,9 +36,7 @@ afterAll(() => {
  * system reports it, which is how the ledger spells a checkout.
  */
 function setup() {
-  const root = realpathSync.native(
-    mkdtempSync(join(tmpdir(), "forge claude ")),
-  );
+  const root = realpathSync.native(scratch.make("forge claude "));
   mkdirSync(join(root, ".git"));
   const worktree = join(root, "wt dir");
   mkdirSync(join(worktree, ".git"), { recursive: true });

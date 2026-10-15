@@ -470,6 +470,7 @@ const repo = (
   cloned: boolean,
   knowledgeAgeDays: number | null,
   freshness: RepoEntry["freshness"],
+  archived = false,
 ): RepoEntry => ({
   name,
   path: `repos/${name}`,
@@ -479,6 +480,7 @@ const repo = (
   knowledgeFile:
     knowledgeAgeDays === null ? null : `knowledge/repos/${name}.yaml`,
   knowledgeAgeDays,
+  archived,
   freshness,
 });
 
@@ -491,6 +493,9 @@ export const REPOS = {
       repo("billing-api", "main", true, 3, "current"),
       repo("legacy-worker", "trunk", true, 45, "stale"),
       repo("mobile-app", "develop", true, 22, "aging"),
+      // Archived: `bun run repo` and /sync-knowledge --all skip it, so its
+      // 120-day-old file is neither aging nor stale.
+      repo("retired-docs", "master", true, 120, "archived", true),
       repo("web-client", "master", false, null, "missing"),
     ],
     worktrees: [

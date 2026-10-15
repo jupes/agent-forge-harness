@@ -1,22 +1,24 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   writeFileSync,
 } from "fs";
-import { tmpdir } from "os";
 import { join } from "path";
+import { scratchDirs } from "../test-scratch";
 import { loadConfig } from "./load";
 import { type ConfigTarget, setConfigValue } from "./write";
+
+const scratch = scratchDirs();
+afterEach(() => scratch.cleanup());
 
 /** U+FEFF, built here so no editor turns it into an invisible character in this file. */
 const BOM = String.fromCharCode(0xfeff);
 
 function sandbox() {
-  const root = mkdtempSync(join(tmpdir(), "forge-config-set-"));
+  const root = scratch.make("forge-config-set-");
   const harness = join(root, "harness");
   const home = join(root, "home");
   mkdirSync(harness, { recursive: true });
