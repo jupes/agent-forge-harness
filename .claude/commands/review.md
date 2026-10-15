@@ -1,3 +1,7 @@
+---
+argument-hint: "[branch | #pr] [--council <profile>]"
+---
+
 # /review — Risk-Tiered Code Review
 
 Performs a structured code review with four risk tiers. Produces an AC Trace Matrix.
