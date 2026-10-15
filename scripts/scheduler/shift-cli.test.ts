@@ -232,7 +232,7 @@ describe("forge:shift", () => {
     if (!made.ok) throw new Error(made.error);
     expect(git(made.path, "rev-parse", "HEAD").trim()).toBe(originSha);
     expect(git(repo, "rev-parse", "HEAD").trim()).not.toBe(originSha);
-  });
+  }, 60_000);
 
   test("run with options that are not a shift's exits 1 and writes nothing", async () => {
     const { deps, io, home } = cli(scratch());

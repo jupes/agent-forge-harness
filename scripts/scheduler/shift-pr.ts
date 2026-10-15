@@ -25,8 +25,16 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { isBeadId } from "../hearth/tracker-write";
 import { redactSecrets } from "../secret-patterns";
 import { isShiftId } from "./shift-store";
 
@@ -299,6 +307,74 @@ export function shiftPrBody(
 
 const PR_URL = /^https:\/\/\S+\/pull\/\d+$/;
 
+/** Whether `path` (which need not exist yet) lies inside `root`, once every link on the way is followed. */
+function realInside(root: string, path: string): boolean {
+  let existing = path;
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return false;
+    rest.unshift(basename(existing));
+    existing = parent;
+  }
+  let real: string;
+  try {
+    real = realpathSync.native(existing);
+  } catch {
+    return false;
+  }
+  const rel = relative(root, join(real, ...rest));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Whether `path` is a file of the worktree's own (`root`, its real path):
+ * absent, or a plain file with one name whose real path is inside the
+ * worktree. A symbolic link, a hard link (a file with more than one name) or
+ * a path that leads out of the worktree is refused, with why.
+ */
+function ownFile(root: string, path: string): { present: boolean } | string {
+  if (!realInside(root, dirname(path))) return "is outside the worktree";
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    return (error as { code?: unknown }).code === "ENOENT"
+      ? { present: false }
+      : "cannot be read";
+  }
+  if (stat.isSymbolicLink()) return "is a symbolic link";
+  if (!stat.isFile()) return "is not a file";
+  if (stat.nlink > 1) return `is a hard link (it has ${stat.nlink} names)`;
+  if (!realInside(root, path)) return "is outside the worktree";
+  return { present: true };
+}
+
+/**
+ * Write `text` to `path` as a fresh file of the worktree's own: its
+ * directory must lead nowhere out of the worktree, a plain file left there
+ * from before is removed, and a link is refused rather than written through.
+ * Null once written, else why not.
+ */
+function writeOwnFile(root: string, path: string, text: string): string | null {
+  if (!realInside(root, dirname(path))) return "is outside the worktree";
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+  } catch {
+    return "has no directory it can be written in";
+  }
+  const before = ownFile(root, path);
+  if (typeof before === "string") return before;
+  try {
+    if (before.present) unlinkSync(path);
+    writeFileSync(path, text, { flag: "wx" });
+  } catch (error) {
+    return `could not be written (${(error as { code?: unknown }).code ?? "unknown error"})`;
+  }
+  const after = ownFile(root, path);
+  return typeof after === "string" ? after : null;
+}
+
 /**
  * Open the draft pull request of a bead in review. Never merges, never marks
  * it ready, never pushes any branch but the bead's own shift branch, and
@@ -311,6 +387,7 @@ export async function openDraftPr(
   const { branch, worktree, base } = request;
   if (
     !isShiftId(request.shiftId) ||
+    !isBeadId(request.beadId) ||
     branch !== `shift/${request.shiftId}/${request.beadId}` ||
     branch === base ||
     !isBaseBranch(base)
@@ -341,20 +418,27 @@ export async function openDraftPr(
       `${branch} has no commits after ${request.baseSha}`,
     );
 
+  let root: string;
+  try {
+    root = realpathSync.native(worktree);
+  } catch {
+    return fail("body", `the worktree ${worktree} cannot be read`);
+  }
   const runBody = join(worktree, RUN_PR_BODY);
-  const from: "run" | "shift" = existsSync(runBody) ? "run" : "shift";
+  const runFile = ownFile(root, runBody);
+  if (typeof runFile === "string")
+    return fail("body", `${RUN_PR_BODY} ${runFile}; it is not used`, "run");
+  const from: "run" | "shift" = runFile.present ? "run" : "shift";
   const body = from === "run" ? runBody : join(worktree, SHIFT_PR_BODY);
-  if (from === "shift")
-    try {
-      mkdirSync(dirname(body), { recursive: true });
-      writeFileSync(body, shiftPrBody(request, commits));
-    } catch (error) {
+  if (from === "shift") {
+    const written = writeOwnFile(root, body, shiftPrBody(request, commits));
+    if (written !== null)
       return fail(
         "body",
-        `the shift's PR body could not be written: ${error instanceof Error ? error.message : String(error)}`,
+        `the shift's PR body was not written: ${SHIFT_PR_BODY} ${written}`,
         from,
       );
-    }
+  }
   let unchecked: string | null;
   try {
     unchecked = await deps.checkPrBody(body);
@@ -364,11 +448,15 @@ export async function openDraftPr(
   if (unchecked !== null)
     return fail("body", redactSecrets(unchecked).text.slice(0, 300), from);
 
+  // The one ref, named in full on the command line, so that no remote.*.push
+  // refspec applies; no tags, whatever push.followTags says; no submodules.
   const pushed = await call(
     deps.git,
     [
       "push",
       "--porcelain",
+      "--no-follow-tags",
+      "--recurse-submodules=no",
       ORIGIN,
       `refs/heads/${branch}:refs/heads/${branch}`,
     ],

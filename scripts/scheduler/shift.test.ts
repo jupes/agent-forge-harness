@@ -833,6 +833,8 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
         args: [
           "push",
           "--porcelain",
+          "--no-follow-tags",
+          "--recurse-submodules=no",
           "origin",
           `refs/heads/${branch}:refs/heads/${branch}`,
         ],

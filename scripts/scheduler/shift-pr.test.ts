@@ -1,11 +1,14 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -200,6 +203,43 @@ const remoteBranches = (origin: string): string[] =>
     .split("\n")
     .filter((line) => line !== "")
     .sort();
+
+/** Every ref origin has, tags included. */
+const remoteRefs = (origin: string): string[] =>
+  git(origin, "for-each-ref", "--format=%(refname)")
+    .split("\n")
+    .filter((line) => line !== "")
+    .sort();
+
+/**
+ * Whether this process may make a file symbolic link. On Windows it needs a
+ * privilege (or developer mode) that this machine's test runs do not have;
+ * junctions and hard links need none, so those cases always run.
+ */
+const canSymlinkFiles = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "ln "));
+  try {
+    writeFileSync(join(dir, "target"), "x");
+    symlinkSync(join(dir, "target"), join(dir, "link"), "file");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+/** A pr:check that records which files it was asked about and passes them. */
+function recordedCheck() {
+  const paths: string[] = [];
+  return {
+    paths,
+    run: async (path: string): Promise<string | null> => {
+      paths.push(path);
+      return null;
+    },
+  };
+}
 
 describe("isBaseBranch", () => {
   test("a plain branch name, never a shift branch or one that reads as an option", () => {
@@ -450,6 +490,154 @@ describe("openDraftPr", () => {
     ).toMatchObject({ ok: false, kind: "url" });
   });
 
+  test("a push carries the shift branch only: a tag the run made is not pushed even when the repository's config says push.followTags", async () => {
+    const s = scratch();
+    git(s.main, "config", "push.followTags", "true");
+    const request = beadWorktree(s, "t-7", 1);
+    git(request.worktree, "config", "tag.gpgsign", "false");
+    git(request.worktree, "tag", "-a", "v9.9.9", "-m", "the run's release tag");
+    leaveBody(request.worktree);
+    const opened = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: fakeGh().run,
+      checkPrBody: async () => null,
+    });
+    expect(opened).toMatchObject({ ok: true });
+    expect(remoteRefs(s.origin)).toEqual([
+      "refs/heads/master",
+      `refs/heads/${request.branch}`,
+    ]);
+  });
+
+  test("a bead id that is not one is refused before git is asked anything, even when the branch is built from it", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-8", 1);
+    leaveBody(request.worktree);
+    for (const beadId of [
+      "a:refs/heads/master",
+      "x/../../master",
+      "a@{u}",
+      "-x",
+      "a b",
+      "a~1",
+      "a^",
+      "",
+    ]) {
+      const git = recordedGit();
+      const gh = fakeGh();
+      const refused = await openDraftPr(
+        { ...request, beadId, branch: `shift/${SHIFT}/${beadId}` },
+        { git: git.run, gh: gh.run, checkPrBody: async () => null },
+      );
+      expect({ beadId, refused }).toMatchObject({
+        beadId,
+        refused: { ok: false, kind: "branch" },
+      });
+      expect(git.calls).toEqual([]);
+      expect(gh.calls).toEqual([]);
+    }
+    expect(remoteRefs(s.origin)).toEqual(["refs/heads/master"]);
+  });
+});
+
+describe("openDraftPr — a body reached through a link is never used or written", () => {
+  /** What must not happen when the body is refused: nothing checked, pushed or opened. */
+  async function refusedOutright(
+    s: Scratch,
+    request: PullRequestRequest,
+    reason: RegExp,
+  ) {
+    const git = recordedGit();
+    const gh = fakeGh();
+    const check = recordedCheck();
+    const refused = await openDraftPr(request, {
+      git: git.run,
+      gh: gh.run,
+      checkPrBody: check.run,
+    });
+    expect(refused).toMatchObject({ ok: false, kind: "body" });
+    if (!refused.ok) expect(refused.error).toMatch(reason);
+    expect(check.paths).toEqual([]);
+    expect(git.calls.some((call) => call.args[0] === "push")).toBe(false);
+    expect(gh.calls).toEqual([]);
+    expect(remoteRefs(s.origin)).toEqual(["refs/heads/master"]);
+  }
+
+  test("the run's body in a directory elsewhere, reached through .tmp/work as a junction, is not checked or posted", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-j1", 1);
+    const elsewhere = join(s.origin, "..", "elsewhere one");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "pr-body.md"), FILLED);
+    mkdirSync(join(request.worktree, ".tmp"), { recursive: true });
+    symlinkSync(elsewhere, join(request.worktree, ".tmp", "work"), "junction");
+    await refusedOutright(s, request, /outside the worktree/);
+  });
+
+  test("with no run body and .tmp/work a junction to a directory elsewhere, the shift writes nothing there", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-j2", 1);
+    const elsewhere = join(s.origin, "..", "elsewhere two");
+    mkdirSync(elsewhere);
+    mkdirSync(join(request.worktree, ".tmp"), { recursive: true });
+    symlinkSync(elsewhere, join(request.worktree, ".tmp", "work"), "junction");
+    await refusedOutright(s, request, /outside the worktree/);
+    expect(existsSync(join(elsewhere, "shift-pr-body.md"))).toBe(false);
+  });
+
+  test("a run body that is a hard link to a file elsewhere is not checked or posted", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-h1", 1);
+    const elsewhere = join(s.origin, "..", "elsewhere body.md");
+    writeFileSync(elsewhere, FILLED);
+    mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
+    linkSync(elsewhere, join(request.worktree, RUN_PR_BODY));
+    await refusedOutright(s, request, /link/);
+  });
+
+  test("a shift body left as a hard link to a file elsewhere is not written through: that file keeps its content", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-h2", 1);
+    const victim = join(s.origin, "..", "victim.txt");
+    writeFileSync(victim, "ORIGINAL CONTENT\n");
+    mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
+    linkSync(victim, join(request.worktree, SHIFT_PR_BODY));
+    await refusedOutright(s, request, /link/);
+    expect(readFileSync(victim, "utf8")).toBe("ORIGINAL CONTENT\n");
+  });
+
+  test("a shift body left from before, as a plain file of the worktree, is replaced by a fresh one", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-p1", 1);
+    mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
+    writeFileSync(join(request.worktree, SHIFT_PR_BODY), "stale\n");
+    const opened = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: fakeGh().run,
+      checkPrBody: prCheckRunner(REPO),
+    });
+    expect(opened).toMatchObject({ ok: true, body: "shift" });
+    expect(
+      readFileSync(join(request.worktree, SHIFT_PR_BODY), "utf8"),
+    ).toContain("left no PR body");
+  });
+
+  // A file symbolic link needs a privilege on Windows that these test runs do not have.
+  test.skipIf(!canSymlinkFiles)(
+    "a run body that is a symbolic link to a file elsewhere is not checked or posted",
+    async () => {
+      const s = scratch();
+      const request = beadWorktree(s, "t-s1", 1);
+      const elsewhere = join(s.origin, "..", "elsewhere linked.md");
+      writeFileSync(elsewhere, FILLED);
+      mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
+      symlinkSync(elsewhere, join(request.worktree, RUN_PR_BODY), "file");
+      await refusedOutright(s, request, /link/);
+    },
+  );
+});
+
+describe("PR_FAILURES", () => {
   test("every failure has a fixed sentence for the bead's comment", () => {
     expect(Object.keys(PR_FAILURES).sort()).toEqual(
       ["body", "branch", "gh", "no-commits", "push", "url"].sort(),
