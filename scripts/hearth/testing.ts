@@ -343,7 +343,8 @@ export interface StreamClient {
 /**
  * Read server-sent events as they arrive, one message at a time: the body is
  * read chunk by chunk, so a test sees a message when it is sent, not when the
- * stream ends. The caller closes the client.
+ * stream ends. The comment a ledger stream opens with (`: open`) is not
+ * passed on. The caller closes the client.
  */
 export async function openEventStream(
   url: string,
@@ -382,6 +383,9 @@ export async function openEventStream(
         else if (line.startsWith("id: ")) message.id = line.slice(4);
         else if (line.startsWith("data: ")) message.data += line.slice(6);
       }
+      // The ledger stream's first bytes (`stream.ts`): they say the stream is
+      // open, which `response` already shows, and are not a message to read.
+      if (message.event === "comment" && message.data === "open") continue;
       ready.push(message);
     }
   };

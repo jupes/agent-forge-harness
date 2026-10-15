@@ -1,13 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import {
   connect,
   createServer as createNetServer,
   type Socket,
 } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
 import type { LiveStatus } from "../../docs/js/app-state";
 import {
@@ -19,9 +24,10 @@ import type { OperatorEnvelope, StreamSnapshot } from "../../types/hearth";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
+import { loopbackProxyVariable } from "./loopback";
 import { API_PREFIX, OPERATOR_HEADER } from "./paths";
 import { createHearth } from "./server";
-import { openEventStream } from "./testing";
+import { openEventStream, startTestHearth } from "./testing";
 import { guardRequest, hearthPlugin } from "./vite-plugin";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -741,3 +747,323 @@ test("the guard counts Host, Origin and Sec-Fetch-Site in any letter case, as No
   ).toBe(true);
   expect(once.status()).toBe(200);
 });
+
+// ── A page that gives a request up, and the dashboard under Node ────────────
+
+/**
+ * A stand-in for a hearth that hangs: on a loopback port, it accepts each
+ * connection, reads nothing and never answers. It keeps every connection and
+ * notes each one's close.
+ */
+async function hungUpstream(): Promise<{
+  port: number;
+  sockets: Socket[];
+  closed: Set<Socket>;
+}> {
+  const sockets: Socket[] = [];
+  const closed = new Set<Socket>();
+  const server = createNetServer((socket) => {
+    sockets.push(socket);
+    socket.once("close", () => closed.add(socket));
+    socket.on("error", () => undefined);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  cleanup.push(
+    () =>
+      new Promise<void>((done) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => done());
+      }),
+  );
+  return { port: address.port, sockets, closed };
+}
+
+/** `node`, which the dashboard runs under in use; the tests that need it are skipped without it. */
+const NODE = Bun.which("node");
+/** Whether that `node` reads proxy settings from the environment (`NODE_USE_ENV_PROXY`). */
+const NODE_USES_ENV_PROXY =
+  NODE !== null &&
+  Bun.spawnSync([NODE, "--help"]).stdout.toString().includes("--use-env-proxy");
+
+/** This process's environment without any proxy setting. */
+function withoutProxies(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env))
+    if (value !== undefined && !/proxy/i.test(name)) env[name] = value;
+  return env;
+}
+
+/**
+ * The dashboard's proxy as it runs in use: a Vite dev server under Node, in a
+ * child process with exactly `env`, with `hearthPlugin` attached to
+ * `upstream`. Vite loads the config file with its own bundler, as it loads
+ * `vite.dashboard.config.ts`. When `env.PROBE` names a URL, the child asks
+ * for it once before the server listens, with `http.get` through
+ * `http.globalAgent`: the agent that follows `HTTP_PROXY` under
+ * `NODE_USE_ENV_PROXY`, and the one the proxy must never be given.
+ */
+async function nodeDashboard(
+  upstream: number,
+  env: Record<string, string>,
+): Promise<string> {
+  if (!NODE) throw new Error("node is not on PATH");
+  const slash = (path: string): string => path.replaceAll("\\", "/");
+  const root = mkdtempSync(join(tmpdir(), "af-node-dashboard-"));
+  mkdirSync(join(root, ".git"));
+  const config = join(root, "dashboard.config.ts");
+  const plugin = slash(resolve(import.meta.dir, "vite-plugin.ts"));
+  writeFileSync(
+    config,
+    [
+      `import { hearthPlugin } from ${JSON.stringify(plugin)};`,
+      "export default {",
+      `  root: ${JSON.stringify(slash(root))},`,
+      '  logLevel: "silent",',
+      `  plugins: [hearthPlugin(${JSON.stringify(slash(root))}, { home: ${JSON.stringify(slash(root))}, supervisor: { ensure: async () => ${upstream}, stopIfOwner: async () => {} } })],`,
+      "};",
+    ].join("\n"),
+  );
+  const vite = pathToFileURL(
+    join(
+      dirname(Bun.resolveSync("vite/package.json", import.meta.dir)),
+      "dist",
+      "node",
+      "index.js",
+    ),
+  ).href;
+  const port = freePort();
+  const script = [
+    `const { createServer } = await import(${JSON.stringify(vite)});`,
+    `const server = await createServer({ configFile: ${JSON.stringify(slash(config))}, server: { host: "127.0.0.1", port: ${port}, strictPort: true } });`,
+    'if (process.env.PROBE) { const http = await import("node:http"); await new Promise((done) => http.get(process.env.PROBE, { agent: http.globalAgent }, (res) => { res.resume(); res.on("end", done); }).on("error", done)); }',
+    "await server.listen();",
+    'process.stdout.write("listening\\n");',
+    "process.stdin.resume();",
+    'process.stdin.on("end", () => server.close().then(() => process.exit(0)));',
+  ].join("\n");
+  const child = Bun.spawn([NODE, "--input-type=module", "-e", script], {
+    env,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  cleanup.push(async () => {
+    child.stdin.end();
+    child.kill();
+    await child.exited;
+    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  });
+  const reader = child.stdout.getReader();
+  let said = "";
+  const deadline = performance.now() + 30_000;
+  while (!said.includes("listening")) {
+    if (performance.now() > deadline)
+      throw new Error("the dashboard under node did not listen within 30 s");
+    const { value, done } = await reader.read();
+    if (done)
+      throw new Error(
+        `the dashboard under node exited: ${await new Response(child.stderr).text()}`,
+      );
+    said += new TextDecoder().decode(value);
+  }
+  reader.releaseLock();
+  return `http://127.0.0.1:${port}`;
+}
+
+/** Ask for a stream through the dashboard at `url`, then give it up before any answer. */
+async function askAndGiveUp(
+  url: string,
+  upstream: { sockets: Socket[] },
+): Promise<void> {
+  const controller = new AbortController();
+  const asked = fetch(`${url}${API_PREFIX}/stream`, {
+    headers: { Origin: url },
+    signal: controller.signal,
+  }).catch(() => undefined);
+  await eventually(
+    "the proxy reaches the hearth",
+    () => upstream.sockets.length === 1,
+    10_000,
+  );
+  controller.abort();
+  await asked;
+}
+
+// Run under Node only. Under Bun's `node:http` (Vite in this process), a client
+// that left before any answer had been written raised no event on the request,
+// the response or the socket within 1.5 s; the socket's `close` came only when
+// the server closed (measured on Windows, Bun 1.3.10). The proxy cannot tell
+// there. The dashboard runs Vite under Node.
+test.skipIf(!NODE)(
+  "a request the page gives up before the hearth answers closes the proxy's connection to the hearth within 1 s (the dashboard under Node, in a child process)",
+  async () => {
+    const upstream = await hungUpstream();
+    const url = await nodeDashboard(upstream.port, withoutProxies());
+    await askAndGiveUp(url, upstream);
+    await eventually(
+      "the proxy's connection to the hearth closes",
+      () => upstream.closed.size === 1,
+      1000,
+    );
+  },
+  60_000,
+);
+
+// ── A stream opens for the page at once ─────────────────────────────────────
+
+/** "within 1 s", or what was measured instead: the time in ms, or "never". */
+function withinOneSecond(opened: number | "never"): string {
+  if (opened === "never") return "not open within 3 s";
+  return opened < 1000 ? "within 1 s" : `${Math.round(opened)} ms`;
+}
+
+/**
+ * How long, through the dashboard at `url`, a resumed stream takes to open
+ * for the page's own transport (`fetchTransport`): from the request to its
+ * answer. A first open gives the cursor to resume from. "never" when it has
+ * not opened within 3 s.
+ */
+async function resumeOpensAfter(url: string): Promise<number | "never"> {
+  const first = await openEventStream(`${url}${API_PREFIX}/stream`, {
+    Origin: url,
+  });
+  const snapshot = await first.next(10_000);
+  first.close();
+  const { cursor } = JSON.parse(snapshot?.data ?? "{}") as StreamSnapshot;
+  const asked = performance.now();
+  let connection: { close(): void } | null = null;
+  const opened = new Promise<number>((done, fail) => {
+    connection = fetchTransport(`${url}${API_PREFIX}/stream`, {
+      headers: { Origin: url },
+    })(cursor, {
+      onOpen: () => done(performance.now() - asked),
+      onActivity: () => undefined,
+      onMessage: () => undefined,
+      onEnd: (outcome) => fail(new Error(`the stream ended (${outcome})`)),
+    });
+  });
+  try {
+    return await Promise.race([
+      opened,
+      new Promise<"never">((done) => setTimeout(() => done("never"), 3000)),
+    ]);
+  } finally {
+    (connection as { close(): void } | null)?.close();
+  }
+}
+
+test(
+  "through the proxy, a resumed stream opens for the page within 1 s, long before its first keepalive (Vite in process, under Bun)",
+  async () => {
+    const { url } = await fixture();
+    const opened = await resumeOpensAfter(url);
+    expect(withinOneSecond(opened)).toBe("within 1 s");
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test.skipIf(!NODE)(
+  "through the dashboard under Node, a resumed stream opens for the page within 1 s, long before its first keepalive (Vite in a child process, the hearth in this one)",
+  async () => {
+    const hearth = await startTestHearth();
+    cleanup.push(() => hearth.close());
+    const url = await nodeDashboard(
+      Number(new URL(hearth.hearth.url).port),
+      withoutProxies(),
+    );
+    const opened = await resumeOpensAfter(url);
+    expect(withinOneSecond(opened)).toBe("within 1 s");
+  },
+  60_000,
+);
+
+// ── The dashboard and HTTP_PROXY ────────────────────────────────────────────
+
+/** A stand-in hearth: answers every request with one envelope and notes what was asked, with the operator token it carried. */
+async function recordingHearth(): Promise<{ port: number; seen: string[] }> {
+  const seen: string[] = [];
+  const server = createHttpServer((req, res) => {
+    seen.push(
+      `${req.method} ${req.url} ${req.headers[OPERATOR_HEADER] ?? "-"}`,
+    );
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ok: true, data: "the hearth", error: null }));
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  cleanup.push(
+    () =>
+      new Promise<void>((done) => {
+        server.closeAllConnections();
+        server.close(() => done());
+      }),
+  );
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  return { port: address.port, seen };
+}
+
+/** A stand-in HTTP proxy: notes the first line of everything sent to it, and refuses it. */
+async function recordingProxy(): Promise<{ url: string; seen: string[] }> {
+  const seen: string[] = [];
+  const sockets = new Set<Socket>();
+  const server = createNetServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => undefined);
+    socket.once("data", (chunk: Buffer) => {
+      seen.push(chunk.toString("latin1").split("\r\n")[0] ?? "");
+      socket.end(
+        "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+      );
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  cleanup.push(
+    () =>
+      new Promise<void>((done) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => done());
+      }),
+  );
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  return { url: `http://127.0.0.1:${address.port}`, seen };
+}
+
+test.skipIf(!NODE_USES_ENV_PROXY)(
+  "under NODE_USE_ENV_PROXY=1 with HTTP_PROXY set and no NO_PROXY, the dashboard under Node sends a page's request to the hearth directly, operator token included, and nothing of it to the proxy; in that process a request through http.globalAgent does go to the proxy",
+  async () => {
+    const hearth = await recordingHearth();
+    const probe = await recordingHearth();
+    const proxy = await recordingProxy();
+    const env = {
+      ...withoutProxies(),
+      NODE_USE_ENV_PROXY: "1",
+      HTTP_PROXY: proxy.url,
+      PROBE: `http://127.0.0.1:${probe.port}/probe`,
+    };
+    // The measured rule says Node takes this proxy for 127.0.0.1 here.
+    expect(loopbackProxyVariable(env, "node")).toBe("HTTP_PROXY");
+    const url = await nodeDashboard(hearth.port, env);
+
+    const answer = await fetch(`${url}${API_PREFIX}/sessions`, {
+      headers: { Origin: url, [OPERATOR_HEADER]: "token-under-test" },
+    });
+    expect(await answer.json()).toEqual({
+      ok: true,
+      data: "the hearth",
+      error: null,
+    });
+    expect(hearth.seen).toEqual([
+      `GET ${API_PREFIX}/sessions token-under-test`,
+    ]);
+    // The control: the child's request for the probe through
+    // http.globalAgent went to the proxy, so the environment was in effect
+    // for that agent there. Nothing else reached the proxy.
+    expect(probe.seen).toEqual([]);
+    expect(proxy.seen).toHaveLength(1);
+    expect(proxy.seen[0]).toContain(`127.0.0.1:${probe.port}`);
+  },
+  60_000,
+);
