@@ -412,6 +412,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   /** Whether a connection of this page has ended: the next one to open may follow a gap. */
   let afterAGap = false;
   let failures = 0;
+  /** The next request asks for a snapshot even when the page has a cursor. */
+  let askAfresh = false;
   let waiting: LedgerEvent[] = [];
   let batchTimer: unknown = null;
   let retryTimer: unknown = null;
@@ -526,9 +528,18 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       works = true;
       failures = 0;
     };
-    // Timed from the request: a hearth that hangs never answers it.
-    watchSilence(ANSWER_MS);
-    const handle = deps.transport(state.cursor, {
+    const resumeFrom = askAfresh ? null : state.cursor;
+    askAfresh = false;
+    // Timed from the request: a hearth that hangs never answers it. A resume
+    // that gets no answer is asked for next without its id: a hearth started
+    // before it wrote `: open` answers an idle resume, behind the proxy, only
+    // with its first keepalive (15 s), and a first open with its snapshot.
+    silenceTimer = stop(silenceTimer);
+    silenceTimer = timers.set(() => {
+      if (resumeFrom !== null) askAfresh = true;
+      lost();
+    }, ANSWER_MS);
+    const handle = deps.transport(resumeFrom, {
       onOpen() {
         if (!current()) return;
         openedAt = now();

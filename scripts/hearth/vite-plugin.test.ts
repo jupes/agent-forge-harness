@@ -799,8 +799,10 @@ function withoutProxies(): Record<string, string> {
  * The dashboard's proxy as it runs in use: a Vite dev server under Node, in a
  * child process with exactly `env`, with `hearthPlugin` attached to
  * `upstream`. Vite loads the config file with its own bundler, as it loads
- * `vite.dashboard.config.ts`. When `env.PROBE` names a URL, the child's own
- * `fetch` asks for it once before the server listens.
+ * `vite.dashboard.config.ts`. When `env.PROBE` names a URL, the child asks
+ * for it once before the server listens, with `http.get` through
+ * `http.globalAgent`: the agent that follows `HTTP_PROXY` under
+ * `NODE_USE_ENV_PROXY`, and the one the proxy must never be given.
  */
 async function nodeDashboard(
   upstream: number,
@@ -835,7 +837,7 @@ async function nodeDashboard(
   const script = [
     `const { createServer } = await import(${JSON.stringify(vite)});`,
     `const server = await createServer({ configFile: ${JSON.stringify(slash(config))}, server: { host: "127.0.0.1", port: ${port}, strictPort: true } });`,
-    "if (process.env.PROBE) await fetch(process.env.PROBE).catch(() => undefined);",
+    'if (process.env.PROBE) { const http = await import("node:http"); await new Promise((done) => http.get(process.env.PROBE, { agent: http.globalAgent }, (res) => { res.resume(); res.on("end", done); }).on("error", done)); }',
     "await server.listen();",
     'process.stdout.write("listening\\n");',
     "process.stdin.resume();",
@@ -911,18 +913,18 @@ test.skipIf(!NODE)(
 
 // ── A stream opens for the page at once ─────────────────────────────────────
 
-/**
- * How long, through the dashboard at `url`, a resumed stream takes to open
- * for the page's own transport (`fetchTransport`): from the request to its
- * answer. A first open gives the cursor to resume from. "never" when it has
- * not opened within 3 s.
- */
 /** "within 1 s", or what was measured instead: the time in ms, or "never". */
 function withinOneSecond(opened: number | "never"): string {
   if (opened === "never") return "not open within 3 s";
   return opened < 1000 ? "within 1 s" : `${Math.round(opened)} ms`;
 }
 
+/**
+ * How long, through the dashboard at `url`, a resumed stream takes to open
+ * for the page's own transport (`fetchTransport`): from the request to its
+ * answer. A first open gives the cursor to resume from. "never" when it has
+ * not opened within 3 s.
+ */
 async function resumeOpensAfter(url: string): Promise<number | "never"> {
   const first = await openEventStream(`${url}${API_PREFIX}/stream`, {
     Origin: url,
@@ -1030,7 +1032,7 @@ async function recordingProxy(): Promise<{ url: string; seen: string[] }> {
 }
 
 test.skipIf(!NODE_USES_ENV_PROXY)(
-  "under NODE_USE_ENV_PROXY=1 with HTTP_PROXY set and no NO_PROXY, the dashboard under Node sends a page's request to the hearth directly, operator token included, and nothing of it to the proxy; Node's own fetch in that process does go to the proxy",
+  "under NODE_USE_ENV_PROXY=1 with HTTP_PROXY set and no NO_PROXY, the dashboard under Node sends a page's request to the hearth directly, operator token included, and nothing of it to the proxy; in that process a request through http.globalAgent does go to the proxy",
   async () => {
     const hearth = await recordingHearth();
     const probe = await recordingHearth();
@@ -1041,7 +1043,7 @@ test.skipIf(!NODE_USES_ENV_PROXY)(
       HTTP_PROXY: proxy.url,
       PROBE: `http://127.0.0.1:${probe.port}/probe`,
     };
-    // The measured rule says Node's fetch takes this proxy for 127.0.0.1 here.
+    // The measured rule says Node takes this proxy for 127.0.0.1 here.
     expect(loopbackProxyVariable(env, "node")).toBe("HTTP_PROXY");
     const url = await nodeDashboard(hearth.port, env);
 
@@ -1056,8 +1058,9 @@ test.skipIf(!NODE_USES_ENV_PROXY)(
     expect(hearth.seen).toEqual([
       `GET ${API_PREFIX}/sessions token-under-test`,
     ]);
-    // The control: the child's own fetch of the probe went to the proxy, so
-    // the environment was in effect there. Nothing else reached the proxy.
+    // The control: the child's request for the probe through
+    // http.globalAgent went to the proxy, so the environment was in effect
+    // for that agent there. Nothing else reached the proxy.
     expect(probe.seen).toEqual([]);
     expect(proxy.seen).toHaveLength(1);
     expect(proxy.seen[0]).toContain(`127.0.0.1:${probe.port}`);

@@ -1113,6 +1113,38 @@ describe("client: reconnect", () => {
     expect(wire.current.lastEventId).toBeNull();
   });
 
+  test("a resume that gets no answer within ANSWER_MS is asked for again without its id, for a fresh snapshot; one that answers keeps resuming", () => {
+    const { wire, client, clock } = harness(() => 0);
+    client.subscribe(() => undefined);
+    /** Move time to the retry that is waiting. */
+    const retry = (): void => {
+      const [wait] = clock.waits();
+      if (wait !== undefined) clock.advance(wait);
+    };
+    wire.current.open();
+    wire.current.snapshot({ cursor: 10 });
+    // The stream ends; the next request resumes after 10.
+    wire.current.end("ended");
+    retry();
+    expect(wire.connections).toHaveLength(2);
+    expect(wire.current.lastEventId).toBe(10);
+    // A hearth from before `: open`, behind the proxy: an idle resume answers
+    // only with its keepalive at 15 s, past the answer limit.
+    clock.advance(ANSWER_MS);
+    retry();
+    expect(wire.connections).toHaveLength(3);
+    expect(wire.current.lastEventId).toBeNull();
+    // That first open answers with its snapshot; the page is live again.
+    wire.current.open();
+    wire.current.snapshot({ cursor: 12 });
+    expect(client.getState()).toMatchObject({ status: "live", cursor: 12 });
+    // A resume that failed some other way keeps its id.
+    wire.current.end("failed");
+    retry();
+    expect(wire.connections).toHaveLength(4);
+    expect(wire.current.lastEventId).toBe(12);
+  });
+
   test("an answer that comes just inside the limit is not given up; once open, the stream has the silence limit", () => {
     const { wire, client, clock } = harness(() => 0);
     client.subscribe(() => undefined);
