@@ -289,13 +289,14 @@ describe("forge:doctor --task (fake binary)", () => {
     });
 
     test("git cannot be started at all: the directory that was made is kept, and the report names it", async () => {
-      const { options } = taskSetup();
+      const { root, options } = taskSetup();
+      const missing = join(root, "no-such-git");
       const [report] = await runDoctor(
         { claude: claudeAdapter },
         { claude: fake("claude") },
         {
           ...options,
-          makeDirectory: () => makeTaskDirectory({ env: { PATH: "" } }),
+          makeDirectory: () => makeTaskDirectory({ git: missing }),
         },
       );
       const kept = keptDirectory(report);

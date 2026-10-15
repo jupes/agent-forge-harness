@@ -130,17 +130,19 @@ export class TaskDirectoryError extends Error {
  * checkout of its own, as a forge:exec worktree is one, and nowhere near the
  * harness. When `git init` fails, or git cannot be started, the directory made
  * so far is kept and the error is a `TaskDirectoryError` that names it.
- * `env` is the environment `git init` runs with; default: the process's own.
+ * `env` is the environment `git init` runs with (default: the process's own)
+ * and `git` the program it runs (default: `git`, found on PATH); both are for
+ * tests.
  */
 export function makeTaskDirectory(
-  options: { env?: Record<string, string | undefined> } = {},
+  options: { env?: Record<string, string | undefined>; git?: string } = {},
 ): string {
   const directory = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-doctor-task-")),
   );
   let failure: string | null = null;
   try {
-    const init = Bun.spawnSync(["git", "init", "--quiet"], {
+    const init = Bun.spawnSync([options.git ?? "git", "init", "--quiet"], {
       cwd: directory,
       stdout: "ignore",
       stderr: "pipe",
