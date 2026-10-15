@@ -2900,3 +2900,203 @@ describe("a key glued to a provider variable name, an invisible character before
     expect(leaks).toEqual([]);
   });
 });
+
+describe("a secret split by invisible characters", () => {
+  /**
+   * Invisible characters inside a value, a variable name or a key: read as
+   * written they break the match, read as shown (each one a space) they break
+   * it too. Only the text with them taken out holds the secret whole.
+   */
+  const KEY = ["sk", "Zq9Zq8Zq7Zq6Zq5Zq4Zq3Zq2"].join("-");
+  const ANTHROPIC = ["sk", "ant", "Zq9Zq8Zq7Zq6Zq5Zq4Zq3Zq2"].join("-");
+  const NAME = ["OPENAI", "API", "KEY"].join("_");
+  const VALUE = "Wx8Wx7Wx6Wx5Wx4Wx3";
+  const ZWSP = String.fromCharCode(0x200b);
+  const SHY = String.fromCharCode(0x00ad);
+  const WORD_JOINER = String.fromCharCode(0x2060);
+  const TAG_A = String.fromCharCode(0xdb40, 0xdc41);
+  const VS1 = String.fromCharCode(0xfe00);
+  /** `text` with `between` after every `every` characters. */
+  const spread = (text: string, between: string, every = 4): string =>
+    (text.match(new RegExp(`.{1,${every}}`, "g")) ?? []).join(between);
+
+  /** [what, the text, a fragment of the secret that must not survive] */
+  const SPLIT: Array<[string, string, string]> = [
+    [
+      "a glued key, a zero-width space before the sign, the value split by more",
+      `${KEY}${NAME}${ZWSP}=${spread(VALUE, ZWSP)}`,
+      "Wx",
+    ],
+    [
+      "the value split by zero-width spaces, nothing glued",
+      `${NAME}${ZWSP}=${spread(VALUE, ZWSP)}`,
+      "Wx",
+    ],
+    [
+      "the variable name split by a zero-width space",
+      `OPENAI${ZWSP}_API_KEY=${VALUE}`,
+      "Wx",
+    ],
+    [
+      "the variable name split by a soft hyphen",
+      `OPENAI${SHY}_API_KEY=${VALUE}`,
+      "Wx",
+    ],
+    [
+      "a key split by a zero-width space",
+      `${ANTHROPIC.slice(0, 17)}${ZWSP}${ANTHROPIC.slice(17)}`,
+      "Zq",
+    ],
+    [
+      "a glued key, the value split by soft hyphens",
+      `${KEY}${NAME}${SHY}=${spread(VALUE, SHY)}`,
+      "Wx",
+    ],
+    [
+      "the value split by tag characters (two code units each)",
+      `${NAME}=${spread(VALUE, TAG_A, 3)}`,
+      "Wx",
+    ],
+    [
+      "the name split by a word joiner, the value by variation selectors",
+      `OPENAI_API${WORD_JOINER}_KEY=${spread(VALUE, VS1, 2)}`,
+      "Wx",
+    ],
+  ];
+
+  test("in a pack, nothing of the secret survives under redact, the whole written span is replaced, and the pack is refused under reject", () => {
+    const leaks: string[] = [];
+    for (const [what, text, residue] of SPLIT) {
+      const parts: ContextPart[] = [
+        { label: "head", chunks: [{ text: `Rotate ${text}` }] },
+      ];
+      const packed = buildContextPackFromParts({
+        kind: "bead",
+        displayName: "demo",
+        locator: "demo",
+        secretPolicy: "redact",
+        parts,
+      });
+      if (JSON.stringify(packed).includes(residue))
+        leaks.push(`${what}: kept under redact`);
+      // Every invisible character inside the secret goes with it.
+      if (
+        !/^Rotate \[REDACTED:[a-z-]+\]$/.test(packed.evidence[0]?.content ?? "")
+      )
+        leaks.push(`${what}: not one marker over the written span`);
+      try {
+        buildContextPackFromParts({
+          kind: "bead",
+          displayName: "demo",
+          locator: "demo",
+          parts,
+        });
+        leaks.push(`${what}: sent under reject`);
+      } catch (error) {
+        if (!(error instanceof ContextSecurityError)) throw error;
+      }
+      const stdin = buildContextPack({
+        kind: "stdin",
+        text: `Rotate ${text}`,
+        secretPolicy: "redact",
+      });
+      if (JSON.stringify(stdin).includes(residue))
+        leaks.push(`${what}: kept in a stdin pack under redact`);
+    }
+    expect(leaks).toEqual([]);
+  });
+
+  test("through a bead source, in a comment or a pull request's title, nothing of the secret is sent under redact and the bead is refused under reject", async () => {
+    const leaks: string[] = [];
+    for (const [what, text, residue] of SPLIT) {
+      const arrangements: Array<[string, () => Fake]> = [
+        [
+          "a comment",
+          () =>
+            fakeRunner({
+              comments: [comment("2031-01-06T10:00:00Z", `Rotate ${text}`)],
+            }),
+        ],
+        [
+          "a pull request's title",
+          () =>
+            fakeRunner({
+              comments: [comment("2031-01-06T10:00:00Z", `see ${prUrl(12)}`)],
+              extra: withPullRequest({ title: `Rotate ${text}` }),
+            }),
+        ],
+      ];
+      for (const [place, arrange] of arrangements) {
+        const packed = await pack(arrange(), workspace(), {
+          secretPolicy: "redact",
+        });
+        if (JSON.stringify(packed).includes(residue))
+          leaks.push(`${what}, in ${place}: kept under redact`);
+        const message = await refusalOf(pack(arrange(), workspace()));
+        if (!message.startsWith("potential secrets detected"))
+          leaks.push(`${what}, in ${place}: not refused under reject`);
+      }
+    }
+    expect(leaks).toEqual([]);
+  });
+
+  test("one invisible character, or several, beside the sign of a glued or bare assignment, or on both sides of it", () => {
+    const INVISIBLE: Array<[string, string]> = [
+      ["word joiner", WORD_JOINER],
+      ["byte order mark", String.fromCharCode(0xfeff)],
+      ["soft hyphen", SHY],
+      ["Mongolian vowel separator", String.fromCharCode(0x180e)],
+      ["variation selector 1", VS1],
+      ["variation selector 16", String.fromCharCode(0xfe0f)],
+      ["variation selector 17", String.fromCharCode(0xdb40, 0xdd00)],
+      ["tag A", TAG_A],
+      ["cancel tag", String.fromCharCode(0xdb40, 0xdc7f)],
+      ["three zero-width spaces", ZWSP.repeat(3)],
+      ["soft hyphen, word joiner and a tag", `${SHY}${WORD_JOINER}${TAG_A}`],
+      ["a zero-width space and a space", `${ZWSP} `],
+      ["Hangul filler", String.fromCharCode(0x3164)],
+      ["right-to-left override", String.fromCharCode(0x202e)],
+    ];
+    const FORMS: Array<[string, (hidden: string) => string]> = [
+      ["glued to a key", (hidden) => `${KEY}${NAME}${hidden}=${VALUE}`],
+      [
+        "glued to an anthropic key",
+        (hidden) => `${ANTHROPIC}${NAME}${hidden}=${VALUE}`,
+      ],
+      ["bare", (hidden) => `${NAME}${hidden}=${VALUE}`],
+      [
+        "on both sides of the sign",
+        (hidden) => `${KEY}${NAME}${hidden}=${hidden}${VALUE}`,
+      ],
+      ["before a colon", (hidden) => `${KEY}${NAME}${hidden}: ${VALUE}`],
+    ];
+    const leaks: string[] = [];
+    for (const [character, hidden] of INVISIBLE)
+      for (const [form, make] of FORMS) {
+        const parts: ContextPart[] = [
+          { label: "head", chunks: [{ text: `Rotate ${make(hidden)}` }] },
+        ];
+        const packed = buildContextPackFromParts({
+          kind: "bead",
+          displayName: "demo",
+          locator: "demo",
+          secretPolicy: "redact",
+          parts,
+        });
+        if (JSON.stringify(packed).includes("Wx"))
+          leaks.push(`${character}, ${form}: kept under redact`);
+        try {
+          buildContextPackFromParts({
+            kind: "bead",
+            displayName: "demo",
+            locator: "demo",
+            parts,
+          });
+          leaks.push(`${character}, ${form}: sent under reject`);
+        } catch (error) {
+          if (!(error instanceof ContextSecurityError)) throw error;
+        }
+      }
+    expect(leaks).toEqual([]);
+  });
+});

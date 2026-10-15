@@ -381,15 +381,58 @@ const HIDDEN_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0xe0000, 0xe0fff], // tags and the variation selectors supplement
 ];
 
-/** Built from the code points above, so this file holds none of them. */
-const HIDDEN = new RegExp(
-  `[${HIDDEN_RANGES.map(([first, last]) =>
-    first === last
-      ? `\\u{${first.toString(16)}}`
-      : `\\u{${first.toString(16)}}-\\u{${last.toString(16)}}`,
-  ).join("")}]`,
-  "gu",
+/** A character class of these ranges, built from code points so this file holds none of them. */
+function classOf(ranges: ReadonlyArray<readonly [number, number]>): string {
+  return `[${ranges
+    .map(([first, last]) =>
+      first === last
+        ? `\\u{${first.toString(16)}}`
+        : `\\u{${first.toString(16)}}-\\u{${last.toString(16)}}`,
+    )
+    .join("")}]`;
+}
+
+const HIDDEN = new RegExp(classOf(HIDDEN_RANGES), "gu");
+
+/**
+ * What the form with the invisible characters taken out removes: every
+ * character `withoutControls` replaces but the tab and the line breaks
+ * (U+0009 to U+000D), which keep apart words that are apart.
+ */
+const REMOVED_RANGES = HIDDEN_RANGES.flatMap(
+  ([first, last]): Array<readonly [number, number]> =>
+    first <= 0x0d && last >= 0x09
+      ? [
+          [first, 0x08],
+          [0x0e, last],
+        ]
+      : [[first, last]],
 );
+const REMOVED = new RegExp(classOf(REMOVED_RANGES), "gu");
+const HAS_REMOVED = new RegExp(classOf(REMOVED_RANGES), "u");
+
+/**
+ * `value` with its invisible characters taken out, and for each code unit
+ * left the index it came from in `value`; null when there are none to take.
+ */
+function withoutInvisible(
+  value: string,
+): { text: string; origin: number[] } | null {
+  if (!HAS_REMOVED.test(value)) return null;
+  const origin: number[] = [];
+  let text = "";
+  let kept = 0;
+  const keep = (until: number): void => {
+    text += value.slice(kept, until);
+    for (let at = kept; at < until; at += 1) origin.push(at);
+  };
+  for (const match of value.matchAll(REMOVED)) {
+    keep(match.index);
+    kept = match.index + match[0].length;
+  }
+  keep(value.length);
+  return { text, origin };
+}
 
 /**
  * `value` with every control character and every invisible formatting
@@ -432,22 +475,31 @@ function replaceSpans(base: string, merged: MergedSpan[]): Redacted {
 }
 
 /**
- * Where the scanner finds something in `value` as written or as shown
- * (`withoutControls`), overlapping finds merged, with the shown form.
+ * Where the scanner finds something in `value` read three ways, as places in
+ * `value`, overlapping finds merged, with the shown form:
  *
- * Scanning the two forms one after the other is not enough: a key written
- * directly against a provider variable name, an invisible character between
- * the name and its sign, is taken with the name by the first scan, and the
- * second then finds no assignment and leaves the value. The two forms have the
- * same length, code unit for code unit, so what each scan finds is a place in
- * both, and the union of the two is what is replaced.
+ * - as written;
+ * - as shown (`withoutControls`): a key written directly against a provider
+ *   variable name, an invisible character between the name and its sign, is
+ *   taken with the name as written, and the sign is then left with nothing
+ *   before it; as shown, the name is assigned the value. The shown form has
+ *   the same length, code unit for code unit, so a find is a place in both;
+ * - with the invisible characters taken out (`withoutInvisible`): a value, a
+ *   name or a key split by them is broken as written and broken as shown, and
+ *   whole only here. Each find is mapped back to the written text from the
+ *   first character it covers to the last, so the invisible characters inside
+ *   it go with it.
+ *
+ * Scanning one form after another is not enough (the first scan's marker
+ * takes the name the next one needs), so every form reads `value` itself and
+ * the union of what they find is what is replaced.
  */
-function secretsInEitherForm(value: string): {
+function secretsInAnyForm(value: string): {
   shown: string;
   written: SecretSpan[];
   merged: MergedSpan[];
-  /** True when the shown form finds something the written form does not cover. */
-  shownAddsMore: boolean;
+  /** True when another form finds something the written form does not cover. */
+  othersAddMore: boolean;
 } {
   const shown = withoutControls(value);
   if (shown.length !== value.length)
@@ -455,13 +507,23 @@ function secretsInEitherForm(value: string): {
     throw new Error("the shown form of a text must keep its length");
   const written = secretSpans(value);
   const seen = shown === value ? [] : secretSpans(shown);
-  const shownAddsMore = seen.some(
+  const joined = shown === value ? null : withoutInvisible(value);
+  const whole =
+    joined === null
+      ? []
+      : secretSpans(joined.text).map((span) => ({
+          kind: span.kind,
+          start: joined.origin[span.start] ?? span.start,
+          end: (joined.origin[span.end - 1] ?? span.end - 1) + 1,
+        }));
+  const others = [...seen, ...whole];
+  const othersAddMore = others.some(
     (span) =>
       !written.some(
         (cover) => cover.start <= span.start && span.end <= cover.end,
       ),
   );
-  const found = [...written, ...seen].sort(
+  const found = [...written, ...others].sort(
     (a, b) => a.start - b.start || b.end - a.end,
   );
   const merged: MergedSpan[] = [];
@@ -472,32 +534,33 @@ function secretsInEitherForm(value: string): {
       last.kinds.add(span.kind);
     } else merged.push({ ...span, kinds: new Set([span.kind]) });
   }
-  return { shown, written, merged, shownAddsMore };
+  return { shown, written, merged, othersAddMore };
 }
 
 /**
  * `value` as it is shown — every control and invisible formatting character
  * replaced by a space — with every secret the scanner finds in it as written,
- * or as shown, replaced. Overlapping finds become one marker, named by the
- * first.
+ * as shown or with the invisible characters taken out, replaced. Overlapping
+ * finds become one marker, named by the first.
  */
 export function redactShown(value: string): Redacted {
-  const { shown, merged } = secretsInEitherForm(value);
+  const { shown, merged } = secretsInAnyForm(value);
   if (merged.length === 0) return { text: shown, redactions: [] };
   return replaceSpans(shown, merged);
 }
 
 /**
  * `value` as written — its invisible characters kept, because content is sent
- * as written — with every secret the scanner finds in it as written, or as
- * shown, replaced (see `secretsInEitherForm`). When the shown form finds
- * nothing the written one does not, this is exactly `redactSecrets(value)`.
+ * as written — with every secret the scanner finds in it as written, as shown
+ * or with the invisible characters taken out, replaced (see
+ * `secretsInAnyForm`). When the other forms find nothing the written one
+ * does not, this is exactly `redactSecrets(value)`.
  */
 export function redactWritten(value: string): Redacted {
-  const { written, merged, shownAddsMore } = secretsInEitherForm(value);
+  const { written, merged, othersAddMore } = secretsInAnyForm(value);
   if (merged.length === 0) return { text: value, redactions: [] };
   // The written form's own finds, counted as `redactSecrets` counts them.
-  if (!shownAddsMore && written.length > 0) return redactSecrets(value);
+  if (!othersAddMore && written.length > 0) return redactSecrets(value);
   return replaceSpans(value, merged);
 }
 
