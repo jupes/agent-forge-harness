@@ -17,17 +17,20 @@
  *   several, an `update` of labels or metadata, and the `list` shapes of
  *   `GET /queue` and of eligibility;
  * - answers `export` (the Beads counts read) with its issues, one line each;
- * - answers the two reads of a council's bead source (`--readonly show <id>
- *   --json`, `--readonly comments <id> --json`) for an issue it knows, with
- *   no comments: it does not keep them;
+ * - keeps what `comments add` writes, and answers the two reads of a
+ *   council's bead source (`--readonly show <id> --json`, `--readonly
+ *   comments <id> --json`) for an issue it knows: the issue, and the comments
+ *   it keeps for it, oldest first, in the shape bd lists them;
  * - answers any other `list` with an empty list, and exits 2 for anything
  *   else.
  *
- * Both files live in the directory `BD_STAND_IN_STATE` names: the run's own
- * home. The issues are read and replaced through `bd-stand-in-state.ts`, which
- * the suite's helpers use too. Nothing here reads or writes a tracker.
+ * Its files live in the directory `BD_STAND_IN_STATE` names: the run's own
+ * home. The issues and the comments are read and replaced through
+ * `bd-stand-in-state.ts`, which the suite's helpers use too. Nothing here
+ * reads or writes a tracker.
  */
 
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -41,7 +44,13 @@ import {
   queueTracker,
   type TrackedBead,
 } from "../../scripts/scheduler/queue-fixture";
-import { readState, type StandInIssue, writeState } from "./bd-stand-in-state";
+import {
+  readComments,
+  readState,
+  type StandInIssue,
+  writeComments,
+  writeState,
+} from "./bd-stand-in-state";
 
 interface Printed {
   status: number | null;
@@ -59,6 +68,8 @@ mkdirSync(state, { recursive: true });
 appendFileSync(join(state, "calls.jsonl"), `${JSON.stringify(args)}\n`);
 
 const issues = readState(state);
+/** The state directory, as the functions below read it (set, by the check above). */
+const home: string = state;
 const save = (issue: BdIssue): BdIssue => {
   issues[issue.id] = issue;
   writeState(state, issues);
@@ -138,8 +149,9 @@ function answerExport(): Printed {
 /**
  * The two reads of a council's bead source, `bd --readonly show <id> --json`
  * and `bd --readonly comments <id> --json`: the issue as bd prints it (in an
- * array), and its comments, which the stand-in does not keep, so none. An id
- * it does not know is refused as bd refuses it. Undefined for any other call.
+ * array), and the comments `comments add` left on it, oldest first, as bd
+ * lists them. An id it does not know is refused as bd refuses it. Undefined
+ * for any other call.
  */
 function answerBeadSource(): Printed | undefined {
   const [readonly, verb, id, json, ...rest] = args;
@@ -153,7 +165,8 @@ function answerBeadSource(): Printed | undefined {
     return undefined;
   const issue = issues[id];
   if (issue === undefined) return bdAnswers.refusedOnStderr(unknown(id));
-  if (verb === "comments") return { status: 0, stdout: "[]\n", stderr: "" };
+  if (verb === "comments")
+    return bdAnswers.listedComments(readComments(home)[id] ?? []);
   const { blockedBy: _blockedBy, ...printed } = issue;
   return { status: 0, stdout: `${JSON.stringify([printed])}\n`, stderr: "" };
 }
@@ -224,14 +237,20 @@ function answer(): Printed {
       ...bdAnswers.refusedOnStdout(unknown(write.id), args),
       stderr: "",
     };
-  if (write.verb === "comment")
-    return bdAnswers.commented({
-      id: `comment-${Date.now()}`,
+  if (write.verb === "comment") {
+    // Kept, so the comments read prints it back as bd does.
+    const comment = {
+      id: randomUUID(),
       issueId: issue.id,
       author: "operator",
       text: write.text,
       createdAt: new Date().toISOString(),
-    });
+    };
+    const comments = readComments(home);
+    comments[issue.id] = [...(comments[issue.id] ?? []), comment];
+    writeComments(home, comments);
+    return bdAnswers.commented(comment);
+  }
   // Closing a closed issue changes nothing: bd prints it as it is and exits 0.
   if (issue.status === "closed") return bdAnswers.closed(issue);
   return bdAnswers.closed(

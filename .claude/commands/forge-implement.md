@@ -1,3 +1,7 @@
+---
+argument-hint: "<slug> [--smith <name>]"
+---
+
 # /forge-implement — Forge Phase 3: Implement
 
 Execute the plan's Beads tasks with red-green-refactor TDD, pausing at each checkpoint so you can run

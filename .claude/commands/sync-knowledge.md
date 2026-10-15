@@ -1,3 +1,7 @@
+---
+argument-hint: "[repo | --all] [--include-archived]"
+---
+
 # /sync-knowledge — Auto-Generate Knowledge YAML
 
 Explores a repo's codebase and synthesizes a knowledge YAML file. Keeps agents productive without manual documentation.

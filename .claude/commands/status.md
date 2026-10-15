@@ -1,3 +1,7 @@
+---
+argument-hint: "[--deep]"
+---
+
 # /status — Workspace State
 
 Shows git state, ready work, blocked items, and PR health.

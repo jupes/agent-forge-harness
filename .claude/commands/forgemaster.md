@@ -1,3 +1,7 @@
+---
+argument-hint: "[description | BEADS-ID | JIRA-KEY] [--full | --mini] [--smith <name>]"
+---
+
 # /forgemaster — Route by complexity, then run the Forge pipeline gated phase by phase
 
 Judge the complexity of the request, **route** to the right-sized Forge path, then run it gated —

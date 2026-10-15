@@ -29,7 +29,7 @@ import type {
   ReviewRound,
 } from "./phases";
 
-import type { AutoDecision } from "./review-rules";
+import { type AutoDecision, storedVerdictError } from "./review-rules";
 
 /**
  * The decision rules moved to `review-rules.ts` so the registry and the
@@ -40,6 +40,8 @@ export {
   type AutoDecision,
   DEFAULT_MAX_REVISIONS,
   decideNext,
+  storedVerdictError,
+  VERDICT_ERROR_LIMIT,
 } from "./review-rules";
 /** The ledger's shape lives with the run's state; the rules live here. */
 export type { ReviewFindings, ReviewRound };
@@ -108,7 +110,7 @@ export function observedBelowBuilder(
     smiths: context.smiths,
   });
   return policy.rule === "evaluator-below-builder"
-    ? `observed evaluator ${evaluator.observedProvider}/${evaluator.observedModel} (rank ${policy.evaluatorRank}) is below the builder's rank (${policy.builderRank}), so its verdict grades no round of this run`
+    ? `observed evaluator ${evaluator.observedProvider}/${evaluator.observedModel} (rank ${policy.evaluatorRank}) is below the builder's rank (${policy.builderRank}), so its verdict grades no round of this run; re-review with an evaluator ranked ${policy.builderRank} or above`
     : null;
 }
 
@@ -119,10 +121,16 @@ export function roundFromVerdict(input: {
   verdict: EvalVerdictParsed | null;
   /** The digest of the file the verdict was read from, when it was taken. */
   verdictSha256?: string;
+  /** Why there is no verdict; stored, cleaned, on a round that has none. */
+  verdictError?: string;
   at: string;
   tier?: string;
 }): ReviewRound {
   const round = nextRoundOf(input.phase, input.history);
+  const why =
+    input.verdict === null && input.verdictError !== undefined
+      ? storedVerdictError(input.verdictError)
+      : null;
   return {
     phase: input.phase,
     round,
@@ -136,6 +144,7 @@ export function roundFromVerdict(input: {
       ? { verdictSha256: input.verdictSha256 }
       : {}),
     ...(input.verdict?.summary ? { summary: input.verdict.summary } : {}),
+    ...(why !== null ? { verdictError: why } : {}),
     at: input.at,
   };
 }

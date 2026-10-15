@@ -30,6 +30,7 @@ import { statusLabel, statusTone } from "../issue-presentation";
 import { operatorPost } from "../operator";
 import { timelineHash } from "../timeline-model";
 import { useLiveRead } from "../use-stream";
+import { SendToCouncil } from "./SendToCouncil";
 
 const REVIEW_URL = "/__agent-forge/dev-api/forge-run/review";
 
@@ -510,6 +511,8 @@ function CheckpointsCard({
                   >
                     timeline
                   </a>
+                  {" · "}
+                  <SendToCouncil id={checkpoint.id} inline />
                   {checkpoint.blockedBy.length > 0 ? (
                     <span class="af-checkpoint-waiting">
                       {" "}

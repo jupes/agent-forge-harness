@@ -1,3 +1,7 @@
+---
+argument-hint: "[message] [--amend]"
+---
+
 # /ship — Quality Gates → Commit → Push → PR
 
 Runs all quality checks, commits staged/unstaged changes, pushes the branch, and creates or updates a PR.
