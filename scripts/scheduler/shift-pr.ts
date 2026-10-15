@@ -10,13 +10,17 @@
  * `openDraftPr` is decision 7: a pull request opened with the template,
  * never merged, never pushed to the default branch. In order, each a refusal
  * before the next: the branch must be the bead's own shift branch
- * (`shift/<shift-id>/<bead>`, not the base); it must have commits of its own;
- * its body (the run's, else one the shift writes from the template's
- * sections) must pass `pr:check`; then that one ref is pushed to `origin`
- * (no force, no upstream written to the config) and `gh pr create --draft`
- * opens the pull request. A failure says which step (`kind`) and what git or
- * gh said (`error`, secrets redacted); `PR_FAILURES` holds the fixed sentence
- * for each kind that a bead's comment may carry.
+ * (`shift/<shift-id>/<bead>`, not the base); the worktree must be the
+ * directory the registry made (`<main>/trees/<id>`, not a link); the branch
+ * must have commits of its own; the body (the run's, read once from a file
+ * of the worktree's own, else one the shift writes from the template's
+ * sections) must hold nothing that looks like a secret, and is copied to a
+ * fresh file in the shift's own directory, which is the one file `pr:check`
+ * reads and gh posts; then that one ref is pushed to `origin` (no force, no
+ * tags, no upstream written to the config) and `gh pr create --draft` opens
+ * the pull request. A failure says which step (`kind`) and why (`error`,
+ * secrets redacted); `PR_FAILURES` holds the fixed sentence for each kind
+ * that a bead's comment may carry.
  *
  * git, gh and pr:check are given as functions, so the tests run real git on
  * a scratch repository with a bare origin of its own and a gh that records
@@ -26,11 +30,15 @@
 
 import { execFile } from "node:child_process";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
   realpathSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
@@ -184,8 +192,12 @@ export async function fetchBase(
 
 /** Where a run leaves its filled PR body, in its worktree (the ship step's own path). */
 export const RUN_PR_BODY = ".tmp/work/pr-body.md";
-/** Where the shift writes one when the run left none. */
-export const SHIFT_PR_BODY = ".tmp/work/shift-pr-body.md";
+
+/** The largest body the shift reads; gh itself takes far less. */
+const MAX_BODY_BYTES = 1_000_000;
+
+/** What `createWorktree` names a worktree: its directory under `trees/`. */
+const WORKTREE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
 /** The sections of `.claude/skills/pr-description/references/pr-template.md`, in its order. */
 export const PR_SECTIONS = [
@@ -201,8 +213,10 @@ export const PR_SECTIONS = [
 export const PR_FAILURES = {
   branch:
     "its branch is not the shift's own branch for it, so nothing was pushed",
+  worktree:
+    "its worktree is not the directory the shift made for it, so nothing was pushed",
   "no-commits": "its branch has no commits of its own, so nothing was pushed",
-  body: "no PR body passed pr:check, so nothing was pushed",
+  body: "no PR body could be used (a link, what looks like a secret, or pr:check refused it), so nothing was pushed",
   push: "the push of its branch to origin failed",
   gh: "gh pr create failed after its branch was pushed",
   url: "gh pr create printed no pull request URL after its branch was pushed",
@@ -220,7 +234,15 @@ export interface PullRequestRequest {
   /** Runs made: the first, then each repair. */
   attempts: number;
   branch: string;
+  /** `<mainCheckout>/trees/<worktreeId>`, as the registry made it. */
   worktree: string;
+  mainCheckout: string;
+  worktreeId: string;
+  /**
+   * The shift's own directory, outside every worktree: the body that is
+   * checked and posted is a copy written here, fresh for each attempt.
+   */
+  bodyDir: string;
   /** The branch on origin the pull request goes into. */
   base: string;
   /** The commit the bead's worktree started at. */
@@ -328,51 +350,97 @@ function realInside(root: string, path: string): boolean {
 }
 
 /**
- * Whether `path` is a file of the worktree's own (`root`, its real path):
- * absent, or a plain file with one name whose real path is inside the
- * worktree. A symbolic link, a hard link (a file with more than one name) or
- * a path that leads out of the worktree is refused, with why.
+ * The worktree's real path, when it is the directory the registry made:
+ * `<mainCheckout>/trees/<worktreeId>` itself, not a link, and leading
+ * nowhere else. Else why not.
  */
-function ownFile(root: string, path: string): { present: boolean } | string {
-  if (!realInside(root, dirname(path))) return "is outside the worktree";
-  let stat: ReturnType<typeof lstatSync>;
+function shiftWorktree(request: PullRequestRequest): { root: string } | string {
+  if (!WORKTREE_ID.test(request.worktreeId)) return "has no worktree id";
+  let main: string;
+  let root: string;
   try {
-    stat = lstatSync(path);
+    const stat = lstatSync(request.worktree);
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      return `${request.worktree} is a link, or not a directory`;
+    main = realpathSync.native(request.mainCheckout);
+    root = realpathSync.native(request.worktree);
+  } catch {
+    return `${request.worktree} cannot be read`;
+  }
+  return relative(join(main, "trees", request.worktreeId), root) === ""
+    ? { root }
+    : `${request.worktree} is not ${join(main, "trees", request.worktreeId)}`;
+}
+
+/**
+ * The text of `path` when it is a file of the worktree's own (`root`, its
+ * real path), read once: absent, or a plain file with one name whose real
+ * path is inside the worktree, and the file opened is the one checked (same
+ * device and file id). A symbolic link, a hard link, a path that leads out
+ * of the worktree, or a file swapped between the check and the open is
+ * refused, with why.
+ */
+function readOwnFile(
+  root: string,
+  path: string,
+): { present: false } | { present: true; text: string } | string {
+  if (!realInside(root, dirname(path))) return "is outside the worktree";
+  let checked: ReturnType<typeof lstatSync>;
+  try {
+    checked = lstatSync(path, { bigint: true });
   } catch (error) {
     return (error as { code?: unknown }).code === "ENOENT"
       ? { present: false }
       : "cannot be read";
   }
-  if (stat.isSymbolicLink()) return "is a symbolic link";
-  if (!stat.isFile()) return "is not a file";
-  if (stat.nlink > 1) return `is a hard link (it has ${stat.nlink} names)`;
+  if (checked.isSymbolicLink()) return "is a symbolic link";
+  if (!checked.isFile()) return "is not a file";
+  if (checked.nlink > 1n)
+    return `is a hard link (it has ${checked.nlink} names)`;
   if (!realInside(root, path)) return "is outside the worktree";
-  return { present: true };
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return "cannot be opened";
+  }
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (
+      opened.dev !== checked.dev ||
+      opened.ino !== checked.ino ||
+      opened.nlink > 1n ||
+      !opened.isFile()
+    )
+      return "changed between the check and the read";
+    if (opened.size > BigInt(MAX_BODY_BYTES))
+      return `is larger than ${MAX_BODY_BYTES} bytes`;
+    return { present: true, text: readFileSync(fd, "utf8") };
+  } catch {
+    return "cannot be read";
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
- * Write `text` to `path` as a fresh file of the worktree's own: its
- * directory must lead nowhere out of the worktree, a plain file left there
- * from before is removed, and a link is refused rather than written through.
- * Null once written, else why not.
+ * Write the body the shift will check and post to a fresh file of its own,
+ * outside every worktree: a new directory under `bodyDir` (`mkdtemp`), and
+ * the file in it made with `wx`. The path, or why not.
  */
-function writeOwnFile(root: string, path: string, text: string): string | null {
-  if (!realInside(root, dirname(path))) return "is outside the worktree";
+function keepBody(
+  request: PullRequestRequest,
+  text: string,
+): { path: string } | string {
   try {
-    mkdirSync(dirname(path), { recursive: true });
-  } catch {
-    return "has no directory it can be written in";
-  }
-  const before = ownFile(root, path);
-  if (typeof before === "string") return before;
-  try {
-    if (before.present) unlinkSync(path);
+    mkdirSync(request.bodyDir, { recursive: true });
+    const dir = mkdtempSync(join(request.bodyDir, `${request.beadId}-`));
+    const path = join(dir, "pr-body.md");
     writeFileSync(path, text, { flag: "wx" });
+    return { path };
   } catch (error) {
-    return `could not be written (${(error as { code?: unknown }).code ?? "unknown error"})`;
+    return `the body could not be kept in ${request.bodyDir} (${(error as { code?: unknown }).code ?? "unknown error"})`;
   }
-  const after = ownFile(root, path);
-  return typeof after === "string" ? after : null;
 }
 
 /**
@@ -396,6 +464,10 @@ export async function openDraftPr(
       "branch",
       `${branch} is not shift/${request.shiftId}/${request.beadId}, or is the base ${base}`,
     );
+  // Before git runs in it or anything is read from it.
+  const made = shiftWorktree(request);
+  if (typeof made === "string") return fail("worktree", made);
+  const { root } = made;
 
   const log = await call(
     deps.git,
@@ -418,27 +490,27 @@ export async function openDraftPr(
       `${branch} has no commits after ${request.baseSha}`,
     );
 
-  let root: string;
-  try {
-    root = realpathSync.native(worktree);
-  } catch {
-    return fail("body", `the worktree ${worktree} cannot be read`);
-  }
-  const runBody = join(worktree, RUN_PR_BODY);
-  const runFile = ownFile(root, runBody);
+  // The body is read once, here. What is checked and posted from now on is
+  // the shift's own copy outside the worktree, so nothing done to the
+  // worktree afterwards (a junction swapped in by a leftover process) can
+  // change it.
+  const runFile = readOwnFile(root, join(worktree, RUN_PR_BODY));
   if (typeof runFile === "string")
     return fail("body", `${RUN_PR_BODY} ${runFile}; it is not used`, "run");
   const from: "run" | "shift" = runFile.present ? "run" : "shift";
-  const body = from === "run" ? runBody : join(worktree, SHIFT_PR_BODY);
-  if (from === "shift") {
-    const written = writeOwnFile(root, body, shiftPrBody(request, commits));
-    if (written !== null)
-      return fail(
-        "body",
-        `the shift's PR body was not written: ${SHIFT_PR_BODY} ${written}`,
-        from,
-      );
-  }
+  const text = runFile.present ? runFile.text : shiftPrBody(request, commits);
+  // The repository is public: a body or title that looks like it holds a
+  // secret is not copied, pushed or posted, and the refusal names only kinds.
+  const secrets = redactSecrets(`${prTitle(request)}\n${text}`).redactions;
+  if (secrets.length > 0)
+    return fail(
+      "body",
+      `the PR title or body holds what looks like a secret (${secrets.map((found) => found.kind).join(", ")}); nothing was copied or pushed`,
+      from,
+    );
+  const kept = keepBody(request, text);
+  if (typeof kept === "string") return fail("body", kept, from);
+  const body = kept.path;
   let unchecked: string | null;
   try {
     unchecked = await deps.checkPrBody(body);

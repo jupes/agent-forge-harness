@@ -269,14 +269,20 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   limit.
 - The pull request step (`openDraftPr`, decision 7), only for a bead `submit` moved to `review`,
   each check a refusal before the next: the bead id is one (`isBeadId`) and the branch is exactly
-  `shift/<shift-id>/<bead>` and not the base; it has commits after the base commit
-  (`git log <baseSha>..refs/heads/<branch>`); its body is the run's `.tmp/work/pr-body.md` in the
-  worktree (the prompt asks for it), else `.tmp/work/shift-pr-body.md`, which the shift writes with
-  the template's six sections, says the run left no body and claims no test evidence; `bun run
-  pr:check` passes on it. Either body must be a file of the worktree's own: a symbolic link, a hard
-  link (more than one name) or a path whose real path leaves the worktree (a junction on `.tmp` or
-  `.tmp/work`) is refused, never read, posted or written through, and the shift's body is written
-  as a fresh file (`wx`, a plain file left from before removed first). Then
+  `shift/<shift-id>/<bead>` and not the base; the worktree is the directory the registry made, a
+  plain directory (not a link) whose real path is exactly `<main>/trees/<id>` (kind `worktree`);
+  it has commits after the base commit (`git log <baseSha>..refs/heads/<branch>`). The body is the
+  run's `.tmp/work/pr-body.md` in the worktree (the prompt asks for it), else one the shift builds
+  with the template's six sections, which says the run left no body and claims no test evidence.
+  The run's body must be a file of the worktree's own: a symbolic link, a hard link (more than one
+  name), a path whose real path leaves the worktree (a junction on `.tmp` or `.tmp/work`), or a
+  file swapped between the check and the open (device and file id compared) is refused, never
+  read. It is read once, into memory. The title and the body are then scanned with
+  `redactSecrets`; anything found refuses the step as a `body` failure that names only the kinds.
+  The text is written to a fresh file the shift owns, outside every worktree
+  (`<home>/shifts/<shift-id>/<bead>-XXXXXX/pr-body.md`: `mkdtemp`, then `wx`), and that one path
+  is what `bun run pr:check` reads and gh posts, so nothing done to the worktree afterwards changes
+  what is checked or posted. The copies are kept beside the shift's record. Then
   `git push --porcelain --no-follow-tags --recurse-submodules=no origin refs/heads/<branch>:refs/heads/<branch>`
   (that one ref named in full, so no `remote.*.push` refspec applies; no tag whatever
   `push.followTags` says; no force, no upstream written to the shared config,
@@ -328,6 +334,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - The shift does not run `bd update --claim`; the run's own workflow does.
   - A base that moves during a shift is not fetched again; a remote other than `origin`.
   - Uncommitted changes in a worktree are not in its pull request, and nothing says so.
+  - The secret scan covers the PR title and body only: the branch's files and its full commit
+    messages are pushed without one (the shift's own body lists only the first 50 subjects).
   - No `POST /shifts`.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
   shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record

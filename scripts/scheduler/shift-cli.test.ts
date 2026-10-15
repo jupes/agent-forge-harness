@@ -258,7 +258,7 @@ describe("forge:shift", () => {
 
   test("run, end to end on the fake binary: the bead's worktree is a git worktree on the shift's branch from origin's master, the provider ran in it, its branch alone is pushed to origin, gh is asked for a draft pull request, and the bead ends in review with its reservation freed and two comments", async () => {
     const { repo, origin, originSha } = withOrigin();
-    const { deps, io, tracker, env, announced, gh } = cli(repo, [
+    const { deps, io, tracker, env, announced, gh, home } = cli(repo, [
       queued("cli-1"),
     ]);
     const dump = join(scratch(), "fake dump.json");
@@ -355,7 +355,19 @@ describe("forge:shift", () => {
       git(worktree, "rev-parse", "HEAD").trim(),
     );
     expect(git(origin, "rev-parse", "master").trim()).toBe(originSha);
-    // gh was asked for a draft pull request into master with the run's body, once.
+    // gh was asked for a draft pull request into master, once, with the run's
+    // body as the shift read it: a copy in the shift's own directory in the
+    // harness home, outside the worktree.
+    const bodyFile =
+      gh[0]?.args
+        .find((arg) => arg.startsWith("--body-file="))
+        ?.slice("--body-file=".length) ?? "";
+    expect(
+      comparablePath(bodyFile).startsWith(
+        `${comparablePath(join(home, "shifts", data.shiftId))}/`,
+      ),
+    ).toBe(true);
+    expect(readFileSync(bodyFile, "utf8")).toBe(RUN_BODY);
     expect(gh.map((call) => call.args)).toEqual([
       [
         "pr",
@@ -364,7 +376,7 @@ describe("forge:shift", () => {
         "--base=master",
         `--head=${branch}`,
         "--title=cli-1: Work for cli-1",
-        `--body-file=${join(worktree, RUN_PR_BODY)}`,
+        `--body-file=${bodyFile}`,
       ],
     ]);
     expect(bead).toMatchObject({

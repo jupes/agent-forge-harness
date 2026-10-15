@@ -5,9 +5,12 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -23,7 +26,6 @@ import {
   type PullRequestRequest,
   prCheckRunner,
   RUN_PR_BODY,
-  SHIFT_PR_BODY,
   type ToolRun,
   toolRunner,
 } from "./shift-pr";
@@ -37,6 +39,9 @@ import { createWorktree } from "./worktrees";
  */
 
 setDefaultTimeout(60_000);
+
+/** Where the shift once wrote its own body in the worktree; it no longer writes there. */
+const SHIFT_PR_BODY = ".tmp/work/shift-pr-body.md";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const roots: string[] = [];
@@ -66,10 +71,14 @@ function commit(dir: string, file: string, message: string): string {
 }
 
 interface Scratch {
+  /** The temp directory everything is in: outside the checkout and its worktrees. */
+  root: string;
   origin: string;
   main: string;
   /** origin's master, which the checkout has not fetched. */
   originSha: string;
+  /** The shift's own directory in its home, where it keeps the bodies it checks and posts. */
+  bodies: string;
 }
 
 /**
@@ -97,7 +106,13 @@ function scratch(): Scratch {
   git(other, "push", "-q", "origin", "master");
   git(main, "checkout", "-q", "-b", "feature");
   commit(main, "feature.txt", "feature only");
-  return { origin, main, originSha };
+  return {
+    root,
+    origin,
+    main,
+    originSha,
+    bodies: join(root, "forge home", "shifts", SHIFT),
+  };
 }
 
 const SHIFT = "shift-20261014-120000-0a0b";
@@ -112,11 +127,12 @@ function beadWorktree(
   const branch = `shift/${SHIFT}/${beadId}`;
   // As the shift does before it makes any worktree.
   git(s.main, "fetch", "-q", "origin");
+  const worktreeId = `${SHIFT}-${++worktrees}`;
   const made = createWorktree(
     s.main,
     s.main,
     { branch, beadId, startPoint: s.originSha },
-    { newId: () => `${SHIFT}-${++worktrees}` },
+    { newId: () => worktreeId },
   );
   if (!made.ok) throw new Error(made.error);
   const worktree = made.value.path;
@@ -132,10 +148,33 @@ function beadWorktree(
     attempts: 1,
     branch,
     worktree,
+    mainCheckout: s.main,
+    worktreeId,
+    bodyDir: s.bodies,
     base: "master",
     baseSha: s.originSha,
   };
 }
+
+/** The --body-file gh was given, and what it holds now. */
+function postedBody(call: Called | undefined): { path: string; text: string } {
+  const path =
+    call?.args
+      .find((arg) => arg.startsWith("--body-file="))
+      ?.slice("--body-file=".length) ?? "";
+  let text = "";
+  try {
+    text = path === "" ? "" : readFileSync(path, "utf8");
+  } catch {
+    text = "";
+  }
+  return { path, text };
+}
+
+/** Whether `path` is inside `dir`. */
+const under = (dir: string, path: string): boolean =>
+  realpathSync.native(path).startsWith(`${realpathSync.native(dir)}\\`) ||
+  realpathSync.native(path).startsWith(`${realpathSync.native(dir)}/`);
 
 const FILLED = [
   "## What Changed",
@@ -180,11 +219,14 @@ function fakeGh(
   }),
 ) {
   const calls: Called[] = [];
+  /** The body each call posted, read when gh was asked, as the real gh reads it. */
+  const posted: string[] = [];
   const run: ToolRun = async (args, cwd) => {
     calls.push({ args: [...args], cwd });
+    posted.push(postedBody({ args: [...args], cwd }).text);
     return answer([...args]);
   };
-  return { calls, run };
+  return { calls, posted, run };
 }
 
 /** Real git, every call recorded. */
@@ -302,7 +344,7 @@ describe("openDraftPr", () => {
   test("pushes only the bead's shift branch to origin and opens a draft pull request with the run's body; nothing else on origin changes", async () => {
     const s = scratch();
     const request = beadWorktree(s, "t-1", 2);
-    const body = leaveBody(request.worktree);
+    leaveBody(request.worktree);
     const gh = fakeGh();
     const opened = await openDraftPr(request, {
       git: toolRunner("git"),
@@ -326,6 +368,12 @@ describe("openDraftPr", () => {
     expect(git(s.origin, "merge-base", "master", request.branch)).toBe(
       s.originSha,
     );
+    // gh is given the run's body as it was read: a copy in the shift's own
+    // directory, outside the worktree.
+    const posted = postedBody(gh.calls[0]);
+    expect(under(s.bodies, posted.path)).toBe(true);
+    expect(posted.text).toBe(FILLED);
+    expect(gh.posted).toEqual([FILLED]);
     expect(gh.calls).toEqual([
       {
         args: [
@@ -335,7 +383,7 @@ describe("openDraftPr", () => {
           "--base=master",
           `--head=${request.branch}`,
           "--title=t-1: Add the widget",
-          `--body-file=${body}`,
+          `--body-file=${posted.path}`,
         ],
         cwd: request.worktree,
       },
@@ -349,7 +397,7 @@ describe("openDraftPr", () => {
     ).toBe("");
   });
 
-  test("when the run left no body, the shift writes one with the template's six sections; it passes the real pr:check and is the body gh is given", async () => {
+  test("when the run left no body, the shift writes one with the template's six sections, in its own directory and not in the worktree; it passes the real pr:check and is the body gh is given", async () => {
     const s = scratch();
     const request = beadWorktree(s, "t-2", 1);
     const gh = fakeGh();
@@ -359,9 +407,10 @@ describe("openDraftPr", () => {
       checkPrBody: prCheckRunner(REPO),
     });
     expect(opened).toMatchObject({ ok: true, body: "shift" });
-    const path = join(request.worktree, SHIFT_PR_BODY);
-    expect(gh.calls[0]?.args.at(-1)).toBe(`--body-file=${path}`);
-    const text = readFileSync(path, "utf8");
+    const { path, text } = postedBody(gh.calls[0]);
+    expect(under(s.bodies, path)).toBe(true);
+    expect(existsSync(join(request.worktree, SHIFT_PR_BODY))).toBe(false);
+    expect(existsSync(join(request.worktree, RUN_PR_BODY))).toBe(false);
     const headings = (markdown: string) =>
       [...markdown.matchAll(/^## (.+?)\s*$/gm)].map((match) => match[1]);
     // The six sections, in the template's order and words.
@@ -595,31 +644,23 @@ describe("openDraftPr — a body reached through a link is never used or written
     await refusedOutright(s, request, /link/);
   });
 
-  test("a shift body left as a hard link to a file elsewhere is not written through: that file keeps its content", async () => {
+  test("a shift-pr-body.md left in the worktree, even as a hard link to a file elsewhere, is never written: the shift writes its body only in its own directory", async () => {
     const s = scratch();
     const request = beadWorktree(s, "t-h2", 1);
     const victim = join(s.origin, "..", "victim.txt");
     writeFileSync(victim, "ORIGINAL CONTENT\n");
     mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
     linkSync(victim, join(request.worktree, SHIFT_PR_BODY));
-    await refusedOutright(s, request, /link/);
-    expect(readFileSync(victim, "utf8")).toBe("ORIGINAL CONTENT\n");
-  });
-
-  test("a shift body left from before, as a plain file of the worktree, is replaced by a fresh one", async () => {
-    const s = scratch();
-    const request = beadWorktree(s, "t-p1", 1);
-    mkdirSync(join(request.worktree, ".tmp", "work"), { recursive: true });
-    writeFileSync(join(request.worktree, SHIFT_PR_BODY), "stale\n");
+    const gh = fakeGh();
     const opened = await openDraftPr(request, {
       git: toolRunner("git"),
-      gh: fakeGh().run,
+      gh: gh.run,
       checkPrBody: prCheckRunner(REPO),
     });
     expect(opened).toMatchObject({ ok: true, body: "shift" });
-    expect(
-      readFileSync(join(request.worktree, SHIFT_PR_BODY), "utf8"),
-    ).toContain("left no PR body");
+    expect(readFileSync(victim, "utf8")).toBe("ORIGINAL CONTENT\n");
+    expect(under(s.bodies, postedBody(gh.calls[0]).path)).toBe(true);
+    expect(gh.posted[0]).toContain("left no PR body");
   });
 
   // A file symbolic link needs a privilege on Windows that these test runs do not have.
@@ -637,10 +678,163 @@ describe("openDraftPr — a body reached through a link is never used or written
   );
 });
 
+describe("openDraftPr — what pr:check passed is what gh posts, and nothing from outside the worktree or holding a secret", () => {
+  /** Put a junction at `.tmp/work` to a directory elsewhere holding its own body, keeping the real one aside. */
+  function swapWorkForJunction(s: Scratch, worktree: string): void {
+    const elsewhere = join(
+      s.root,
+      `elsewhere ${Math.random().toString(16).slice(2, 8)}`,
+    );
+    mkdirSync(elsewhere);
+    writeFileSync(
+      join(elsewhere, "pr-body.md"),
+      FILLED.replace("Added the widget.", "OUTSIDE BODY"),
+    );
+    renameSync(
+      join(worktree, ".tmp", "work"),
+      join(worktree, ".tmp", "work-was"),
+    );
+    symlinkSync(elsewhere, join(worktree, ".tmp", "work"), "junction");
+  }
+
+  test("a swap of .tmp/work for a junction after pr:check answered changes nothing: gh posts the very text pr:check passed, from the shift's own copy", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-w1", 1);
+    leaveBody(request.worktree);
+    const checked: Array<{ path: string; text: string }> = [];
+    const gh = fakeGh();
+    const opened = await openDraftPr(request, {
+      git: toolRunner("git"),
+      gh: gh.run,
+      checkPrBody: async (path) => {
+        checked.push({ path, text: readFileSync(path, "utf8") });
+        swapWorkForJunction(s, request.worktree);
+        return null;
+      },
+    });
+    expect(opened).toMatchObject({ ok: true, body: "run" });
+    expect(checked).toHaveLength(1);
+    expect(checked[0]?.text).toBe(FILLED);
+    expect(under(s.bodies, checked[0]?.path ?? "")).toBe(true);
+    expect(postedBody(gh.calls[0]).path).toBe(checked[0]?.path ?? "");
+    expect(gh.posted).toEqual([FILLED]);
+  });
+
+  test("a swap of .tmp/work for a junction while the branch is pushed changes nothing either", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-w2", 1);
+    leaveBody(request.worktree);
+    const real = toolRunner("git");
+    const gh = fakeGh();
+    const opened = await openDraftPr(request, {
+      git: async (args, cwd, timeoutMs) => {
+        if (args[0] === "push") swapWorkForJunction(s, request.worktree);
+        return real(args, cwd, timeoutMs);
+      },
+      gh: gh.run,
+      checkPrBody: prCheckRunner(REPO),
+    });
+    expect(opened).toMatchObject({ ok: true, body: "run" });
+    expect(gh.posted).toEqual([FILLED]);
+    expect(gh.posted[0]).not.toContain("OUTSIDE BODY");
+  });
+
+  test("a worktree directory replaced by a junction to a directory elsewhere (a copy of its .git file and a body) is not the shift's worktree: nothing is read, pushed or opened", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-w3", 1);
+    leaveBody(request.worktree);
+    const elsewhere = join(s.root, "elsewhere worktree");
+    mkdirSync(join(elsewhere, ".tmp", "work"), { recursive: true });
+    writeFileSync(
+      join(elsewhere, ".git"),
+      readFileSync(join(request.worktree, ".git"), "utf8"),
+    );
+    writeFileSync(
+      join(elsewhere, RUN_PR_BODY),
+      FILLED.replace("Added the widget.", "OUTSIDE BODY"),
+    );
+    renameSync(request.worktree, `${request.worktree}-kept`);
+    symlinkSync(elsewhere, request.worktree, "junction");
+    const git = recordedGit();
+    const gh = fakeGh();
+    const check = recordedCheck();
+    const refused = await openDraftPr(request, {
+      git: git.run,
+      gh: gh.run,
+      checkPrBody: check.run,
+    });
+    expect(refused).toMatchObject({ ok: false, kind: "worktree" });
+    expect(git.calls).toEqual([]);
+    expect(check.paths).toEqual([]);
+    expect(gh.calls).toEqual([]);
+    expect(remoteRefs(s.origin)).toEqual(["refs/heads/master"]);
+  });
+
+  const TOKEN = `ghp_${"Zx9Qw8Er7Ty6".repeat(3)}`;
+
+  /** No file the shift keeps holds the token. */
+  function keptNowhere(s: Scratch): void {
+    if (!existsSync(s.bodies)) return;
+    for (const entry of readdirSync(s.bodies, { recursive: true })) {
+      const path = join(s.bodies, String(entry));
+      if (statSync(path).isFile())
+        expect(readFileSync(path, "utf8")).not.toContain(TOKEN);
+    }
+  }
+
+  test("a run body that holds what looks like a secret is refused as a body failure: nothing is checked, copied, pushed or opened, and the refusal names the kind, never the text", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-k1", 1);
+    leaveBody(request.worktree, FILLED.replace("1 pass", `token ${TOKEN}`));
+    const git = recordedGit();
+    const gh = fakeGh();
+    const check = recordedCheck();
+    const refused = await openDraftPr(request, {
+      git: git.run,
+      gh: gh.run,
+      checkPrBody: check.run,
+    });
+    expect(refused).toMatchObject({ ok: false, kind: "body", body: "run" });
+    if (!refused.ok) {
+      expect(refused.error).toContain("github-token");
+      expect(refused.error).not.toContain(TOKEN);
+    }
+    expect(check.paths).toEqual([]);
+    expect(git.calls.some((call) => call.args[0] === "push")).toBe(false);
+    expect(gh.calls).toEqual([]);
+    expect(remoteRefs(s.origin)).toEqual(["refs/heads/master"]);
+    keptNowhere(s);
+  });
+
+  test("a secret in a commit subject the shift's own body would list, or in the title, is refused the same way", async () => {
+    const s = scratch();
+    const subject = beadWorktree(s, "t-k2", 0);
+    commit(subject.worktree, "key.txt", `add the key ${TOKEN}`);
+    const title = { ...beadWorktree(s, "t-k3", 1), title: `rotate ${TOKEN}` };
+    leaveBody(title.worktree);
+    for (const request of [subject, title]) {
+      const gh = fakeGh();
+      const refused = await openDraftPr(request, {
+        git: toolRunner("git"),
+        gh: gh.run,
+        checkPrBody: prCheckRunner(REPO),
+      });
+      expect({ bead: request.beadId, refused }).toMatchObject({
+        bead: request.beadId,
+        refused: { ok: false, kind: "body" },
+      });
+      if (!refused.ok) expect(refused.error).not.toContain(TOKEN);
+      expect(gh.calls).toEqual([]);
+    }
+    expect(remoteRefs(s.origin)).toEqual(["refs/heads/master"]);
+    keptNowhere(s);
+  });
+});
+
 describe("PR_FAILURES", () => {
   test("every failure has a fixed sentence for the bead's comment", () => {
     expect(Object.keys(PR_FAILURES).sort()).toEqual(
-      ["body", "branch", "gh", "no-commits", "push", "url"].sort(),
+      ["body", "branch", "gh", "no-commits", "push", "url", "worktree"].sort(),
     );
     for (const sentence of Object.values(PR_FAILURES))
       expect(sentence).toMatch(/^[a-z][^\n]*[a-z]$/);

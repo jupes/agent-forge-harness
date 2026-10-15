@@ -391,6 +391,8 @@ interface Slot {
   controller: AbortController;
   /** The bead's title, for its pull request. */
   title: string;
+  /** Its worktree's directory name under `<main>/trees/`, as the registry made it. */
+  worktreeId: string;
   /** Set before the controller is aborted: why the shift let the run go. */
   stopKind?: "shift" | "left";
   leftWhy?: string;
@@ -637,6 +639,10 @@ export async function runShift(
           attempts: entry.attempts,
           branch: entry.branch ?? "",
           worktree: entry.worktree ?? "",
+          mainCheckout: deps.mainCheckout,
+          worktreeId: slot.worktreeId,
+          // The shift's own directory in the home: outside every worktree.
+          bodyDir: join(deps.shiftsDir, shiftId),
           base: options.base,
           baseSha,
         },
@@ -911,6 +917,7 @@ export async function runShift(
       entry,
       controller: new AbortController(),
       title: shown.value.title,
+      worktreeId: id,
     };
     slots.set(bead.id, slot);
     save();

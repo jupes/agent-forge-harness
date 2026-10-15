@@ -894,6 +894,27 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
     expect(ended("t-3")).toContain(three?.prUrl ?? "no url");
   });
 
+  test("a body that looks like it holds a secret is not pushed or posted: the bead stays in review, its record and end comment name a body failure, and neither holds the secret", async () => {
+    const token = `ghp_${"Zx9Qw8Er7Ty6".repeat(3)}`;
+    const r = rig([queued("t-1")]);
+    // The run's one commit names the key; the shift's own body would list it.
+    r.gitAnswer = (args) =>
+      args[0] === "log" ? answered(`abc1234 add ${token}\n`) : undefined;
+    const done = await shift(r);
+    const entry = done.record.beads[0];
+    expect(entry).toMatchObject({ outcome: "review", prBody: "shift" });
+    expect(entry?.prUrl).toBeUndefined();
+    expect(entry?.error).toContain("pull request: body:");
+    expect(entry?.error).toContain("github-token");
+    expect(r.gh).toEqual([]);
+    expect(r.git.filter((call) => call.args[0] === "push")).toEqual([]);
+    expect(r.comments("t-1").at(-1)).toContain(PR_FAILURES.body);
+    for (const text of r.comments("t-1")) expect(text).not.toContain(token);
+    expect(
+      readFileSync(join(r.deps.shiftsDir, `${done.shiftId}.json`), "utf8"),
+    ).not.toContain(token);
+  });
+
   test("a bead that ran gets one worklog: comment when it starts and one when it ends, each a single bd comments add with every value after --", async () => {
     const r = rig([queued("t-1")]);
     const done = await shift(r);
