@@ -49,12 +49,16 @@ const ATTESTATION_KEY_ECHO =
  * The cause is what `forge:review` prints as `data.verdictError`, and it is
  * read back by the Stop reminder and written into the halt handoff, so it is
  * kept to one short line of the harness's own wording. The verdict file is
- * written by an evaluator, so the one message that echoes text from it (an
- * unknown attestations key) is stored without that text; the others carry
- * validated run and bead ids, provider and model names that matched a
- * configured smith, ranks, and the path the caller typed. Control characters
- * and line breaks become spaces, a closing full stop is dropped (the reason
- * adds its own), and the text is cut to `VERDICT_ERROR_LIMIT` characters.
+ * written by an evaluator, so the one parser message that echoes text from it
+ * (an unknown attestations key) is stored without that text here, and the
+ * caller stores a verdict of another run or bead as "names another run" or
+ * "another bead" (`verdictOfRun`'s `cause`) rather than with the ids it names.
+ * What else reaches a cause: the harness's own wording, the run's and its
+ * correlation's own ids, provider and model names that matched a configured
+ * smith, ranks, and the path the caller typed. Control characters and white
+ * space of any kind become single spaces, a closing full stop is dropped (the
+ * reason adds its own), and the text is cut to `VERDICT_ERROR_LIMIT`
+ * characters.
  */
 export function storedVerdictError(error: string): string | null {
   const neutral = error.replace(

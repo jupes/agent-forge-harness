@@ -215,6 +215,13 @@ function recordedPath(checkout: string, file: string): string {
  * verdict naming that bead and run. A run with no correlation takes none: a
  * schema 2 verdict's ids have nothing to be checked against, and a legacy
  * schema 1 verdict names no run at all.
+ *
+ * A refusal has two texts. `error` is what the command prints, and for a
+ * verdict of another run or bead it quotes the id the verdict names. `cause`
+ * is what the round stores and the halt reason shows: the same, except that it
+ * says only that the verdict names another run or bead, with the run's and the
+ * correlation's own ids, because the verdict's ids are written by the
+ * evaluator.
  */
 export function verdictOfRun(
   parsed: EvalVerdictParsed,
@@ -227,27 +234,35 @@ export function verdictOfRun(
         checkout?: string;
       }
     | { kind: "refused"; error: string },
-): { ok: true; value: EvalVerdict } | { ok: false; error: string } {
+):
+  | { ok: true; value: EvalVerdict }
+  | { ok: false; error: string; cause: string } {
+  const refuse = (error: string, cause = error) =>
+    ({ ok: false, error, cause }) as const;
   if (correlation.kind === "refused") {
-    return {
-      ok: false,
-      error: `run "${slug}" has a run correlation that cannot be used (${correlation.error}), so no verdict can be checked against it`,
-    };
+    return refuse(
+      `run "${slug}" has a run correlation that cannot be used (${correlation.error}), so no verdict can be checked against it`,
+    );
   }
   if (correlation.kind === "none") {
-    return {
-      ok: false,
-      // The correlation has to be in the checkout the run builds in.
-      error: `run "${slug}" has no run correlation, so no verdict can be checked against it (bun run forge:correlate --bead <id> --run ${slug}${correlation.checkout !== undefined ? ` --checkout "${correlation.checkout}"` : ""})`,
-    };
+    // The correlation has to be in the checkout the run builds in.
+    return refuse(
+      `run "${slug}" has no run correlation, so no verdict can be checked against it (bun run forge:correlate --bead <id> --run ${slug}${correlation.checkout !== undefined ? ` --checkout "${correlation.checkout}"` : ""})`,
+    );
   }
   const mine = verdictForRun(parsed, correlation.value);
-  return mine.ok || parsed.schemaVersion === EVAL_VERDICT_SCHEMA_VERSION
-    ? mine
-    : {
-        ok: false,
-        error: `run "${slug}" is correlated to ${correlation.value.beadsIssueId}, so its verdict must be schema 2; ${mine.error}`,
-      };
+  if (mine.ok) return mine;
+  if (parsed.schemaVersion !== EVAL_VERDICT_SCHEMA_VERSION) {
+    return refuse(
+      `run "${slug}" is correlated to ${correlation.value.beadsIssueId}, so its verdict must be schema 2; ${mine.error}`,
+    );
+  }
+  return refuse(
+    mine.error,
+    parsed.executionRunId !== correlation.value.executionRunId
+      ? `the verdict names another run, not this run ("${correlation.value.executionRunId}")`
+      : `the verdict names another bead, not this run's (${correlation.value.beadsIssueId})`,
+  );
 }
 
 if (isMain(import.meta)) {
@@ -332,6 +347,9 @@ if (isMain(import.meta)) {
   // digest goes into the ledger.
   let verdict: EvalVerdict | null = null;
   let verdictError: string | null = null;
+  // Why, as the round stores it; it differs from what is printed only for a
+  // verdict of another run or bead, whose ids the evaluator wrote.
+  let storedCause: string | null = null;
   const read = readVerdictFileAt(verdictPath);
   // A verdict grades one round. The same bytes again, for a later round or
   // another phase, are that round's verdict replayed: refused, and nothing
@@ -346,10 +364,12 @@ if (isMain(import.meta)) {
   }
   if (!read.ok) {
     verdictError = read.error;
+    storedCause = read.error;
   } else {
     const parsed = parseEvalVerdictJson(read.buffer.toString("utf8"));
     if (!parsed.ok) {
       verdictError = parsed.error;
+      storedCause = parsed.error;
     } else {
       const mine = verdictOfRun(parsed.value, slug, correlation);
       if (mine.ok) {
@@ -364,7 +384,10 @@ if (isMain(import.meta)) {
           );
         }
         verdict = mine.value;
-      } else verdictError = mine.error;
+      } else {
+        verdictError = mine.error;
+        storedCause = mine.cause;
+      }
     }
   }
 
@@ -395,6 +418,7 @@ if (isMain(import.meta)) {
     if (weaker !== null) {
       verdict = null;
       verdictError = weaker;
+      storedCause = weaker;
     }
   }
 
@@ -414,7 +438,7 @@ if (isMain(import.meta)) {
     verdict,
     ...(artifact ? { verdictSha256: artifact.sha256 } : {}),
     // Why there is no verdict, so the halt reason names it.
-    ...(verdictError !== null ? { verdictError } : {}),
+    ...(storedCause !== null ? { verdictError: storedCause } : {}),
     at: new Date().toISOString(),
     ...(args.values.tier !== undefined ? { tier: args.values.tier } : {}),
   });
