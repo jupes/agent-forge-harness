@@ -55,9 +55,12 @@ Safety:
   run it is named after (a `.json` file directly in `run-correlations/`, behind no link and not a link itself), the
   Beads issue it names is closed, and the file is older than the TTL. Until then the run stays correlated to that
   bead: a launcher does not hand a correlated run to another bead, and only `forge:correlate --bead <id> --run <run>`
-  rebinds it. Anything else in that directory (a writer's draft `<run>.json.<pid>.tmp`, a file the loader refuses) is left
-  alone, and correlations are swept only when the script runs at the top level of a checkout. The envelope reports
-  them as `data.correlations`.
+  rebinds it. A draft a correlation writer left there when it was killed between its write and its rename
+  (`<run>.json.<pid>.tmp`, the run id one the writer could have taken and the pid in digits, nothing else) is removed
+  once it is older than the TTL, whatever it holds and whatever its bead's status: it is never a correlation, and the age
+  keeps a running writer's draft safe. Anything else in that directory (a file the loader refuses, a name that only looks
+  like a draft) is left alone, and correlations are swept only when the script runs at the top level of a checkout. The
+  envelope reports them as `data.correlations`.
 - `--apply` is required to delete. Without it, the script prints what it **would** remove.
 - `<EPIC-ID>-interfaces.md` and `session-handoff.md` are always skipped.
 

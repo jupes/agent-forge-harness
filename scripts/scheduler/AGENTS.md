@@ -304,7 +304,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   running it; no shift picks it up again.
 - Each bead's events carry its run id (`<bead>-<shift-id>`, else `<shift-id>-<n>`): the moves and
   reservations through an `appendEvent` that adds it, the session through `--run`. `forge:audit
-  --run <id>` shows one bead from claim to release.
+  --run <id>` shows one bead from claim to release, and `forge:audit --shift <id>` shows the whole
+  shift: its `shift.started` and `shift.stopped` and the events of every run id above, found from the
+  ledger by that naming alone (`scripts/ledger/AGENTS.md`). A change to the naming here changes what
+  `--shift` finds; `scripts/ledger/audit-cli.test.ts` builds its ids with `shiftRunId` to catch it.
+  An operator's stop request (`operator.action`, `shift.stop`) is not part of that answer.
 - `shift-store.ts`: the record `<home>/shifts/<id>.json` (a report, never read back to decide) and
   the stop request `<id>.stop`, written by `requestStop` for `forge:shift stop` and
   `POST /shifts/:id/stop`. Same home as the hearth, or the hearth cannot see or stop the shift.
@@ -318,7 +322,7 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - The shift does not run `bd update --claim`; the run's own workflow does.
   - A base that moves during a shift is not fetched again; a remote other than `origin`.
   - Uncommitted changes in a worktree are not in its pull request, and nothing says so.
-  - No `forge:audit --shift`, no `POST /shifts`.
+  - No `POST /shifts`.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
   shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record
   their calls and answer as the test says, and a fake adapter whose runs the test scripts. Its kill
