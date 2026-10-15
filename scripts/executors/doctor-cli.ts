@@ -12,15 +12,17 @@
  * answered, the way forge:exec runs one (the adapter's flags and preparation,
  * the configured environment allowlist), with the smith `taskSmiths` picks.
  * The task asks for one shell command, `git status`, in a new git repository
- * under the OS temp directory, which is left in place. It passes when the
- * provider exits 0 on its own, reports no error and calls at least one tool.
+ * under the OS temp directory. It passes when the provider exits 0 on its own,
+ * reports no error and calls at least one tool. The directory is removed once
+ * the task passed; one that failed keeps its directory, and the report's
+ * `directory` (in `--json`) names it, so a failure can be looked into.
  * Against a real provider it spends a request. Nothing goes to the ledger.
  *
  * A missing CLI, or one that cannot run a task, is data, not failure: exit 0
  * unless the doctor itself breaks.
  */
 
-import { mkdtempSync, realpathSync } from "fs";
+import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Smith } from "../../types/hearth";
@@ -60,7 +62,10 @@ export interface TaskCheckOptions {
 interface TaskRun {
   /** The smith whose model the task asked for. */
   smith?: string;
-  /** Where the task ran; left in place. */
+  /**
+   * Where the task ran, when the directory was kept: the task failed, or the
+   * directory could not be removed. Absent once a passed task's is gone.
+   */
   directory?: string;
   /** Tool calls seen in the provider's stream. */
   tools: number;
@@ -120,6 +125,21 @@ export function makeTaskDirectory(): string {
   return directory;
 }
 
+/** Remove a task's directory, by its exact path; false when it could not be removed. */
+function removeTaskDirectory(directory: string): boolean {
+  try {
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function checkTask(
   adapter: ExecutorAdapter,
   command: string[] | undefined,
@@ -154,9 +174,12 @@ async function checkTask(
       runFailure(await handle.done) ??
       (tools === 0 ? "the provider exited 0 without calling a tool" : null);
     const run = { smith: smith.name, directory, tools };
-    return reason === null
-      ? { ok: true, ...run }
-      : { ok: false, ...run, reason };
+    if (reason !== null) return { ok: false, ...run, reason };
+    // A task that passed leaves nothing to look at. If its directory will not
+    // go, the report still says where it is.
+    return removeTaskDirectory(directory)
+      ? { ok: true, smith: smith.name, tools }
+      : { ok: true, ...run };
   } catch (error) {
     return {
       ok: false,

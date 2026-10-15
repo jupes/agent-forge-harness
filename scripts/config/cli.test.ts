@@ -1,19 +1,16 @@
-import { describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-} from "fs";
-import { tmpdir } from "os";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { scratchDirs } from "../test-scratch";
 import { runConfigCli } from "./cli";
 import { machineConfigFile } from "./load";
 import { withProcessHomes } from "./testing";
 
+const scratch = scratchDirs();
+afterEach(() => scratch.cleanup());
+
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "forge-config-cli-"));
+  const root = scratch.make("forge-config-cli-");
   return { harnessRoot: root, home: root, env: {} };
 }
 
@@ -130,7 +127,7 @@ describe("forge:config set", () => {
   });
 
   test("with no home given, --user writes config.toml in AGENT_FORGE_HOME, and show names that file", () => {
-    const root = mkdtempSync(join(tmpdir(), "forge-config-cli-"));
+    const root = scratch.make("forge-config-cli-");
     const forgeHome = join(root, "moved forge home");
     const osHome = join(root, "os home");
     mkdirSync(osHome);
