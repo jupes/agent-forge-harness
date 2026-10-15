@@ -340,6 +340,95 @@ describe("set: values are typed by key, and the result must load", () => {
   });
 });
 
+describe("set: [shift] keys", () => {
+  test("a number is written bare and the duration quoted, under one [shift] table, and the loader reads them back from that file", () => {
+    const box = sandbox();
+    expect(set(box, "shift.max_usd", "5")).toMatchObject({
+      ok: true,
+      value: 5,
+      created: true,
+    });
+    expect(set(box, "shift.for", "90m")).toMatchObject({
+      ok: true,
+      value: "90m",
+    });
+    expect(set(box, "shift.throttle", "0.5")).toMatchObject({
+      ok: true,
+      value: 0.5,
+    });
+    expect(set(box, "shift.max_usd", "7.25")).toMatchObject({
+      ok: true,
+      value: 7.25,
+    });
+    expect(readFileSync(box.workspaceFile, "utf8")).toBe(
+      '[shift]\nmax_usd = 7.25\nfor = "90m"\nthrottle = 0.5\n',
+    );
+    const { config, provenance } = loadConfig(box.options);
+    expect(config.shift).toMatchObject({
+      maxUsd: 7.25,
+      forMs: 90 * 60_000,
+      throttle: 0.5,
+    });
+    expect(provenance["shift.max_usd"]).toEqual({
+      value: 7.25,
+      source: box.workspaceFile,
+    });
+  });
+
+  test("the user file takes [shift] keys too", () => {
+    const box = sandbox();
+    expect(set(box, "shift.concurrency", "3", "user")).toMatchObject({
+      ok: true,
+      file: box.userFile,
+    });
+    expect(readFileSync(box.userFile, "utf8")).toBe(
+      "[shift]\nconcurrency = 3\n",
+    );
+  });
+
+  const cases: Array<[string, string, string]> = [
+    [
+      "shift.max_usd",
+      "lots",
+      'expected a number such as 3 or 0.85, got "lots"',
+    ],
+    ["shift.max_usd", "1e3", 'expected a number such as 3 or 0.85, got "1e3"'],
+    [
+      "shift.max_usd",
+      "5000",
+      "shift.max_usd: expected dollars above 0, at most 1000",
+    ],
+    [
+      "shift.concurrency",
+      "0",
+      "shift.concurrency: expected a whole number from 1 to 8",
+    ],
+    [
+      "shift.repairs",
+      "2.5",
+      "shift.repairs: expected a whole number from 0 to 10",
+    ],
+    [
+      "shift.for",
+      "soon",
+      "shift.for: expected a duration such as 90s, 30m or 2h",
+    ],
+    ["shift.throttle", "85", "shift.throttle: expected a share from 0.1 to 1"],
+    [
+      "shift.throttle",
+      "0.000000001",
+      "shift.throttle: expected a share from 0.1 to 1",
+    ],
+    ["shift.nothing", "1", 'unknown shift key "nothing"'],
+    ["shift.constructor", "1", 'unknown shift key "constructor"'],
+  ];
+  for (const [key, raw, why] of cases)
+    test(`${key} = "${raw}" is refused, and nothing is written`, () => {
+      const box = sandbox();
+      refused(box, box.workspaceFile, null, key, raw, why);
+    });
+});
+
 describe("set: keys it does not write", () => {
   const cases: Array<[string, string]> = [
     ["smiths.my-codex.model", "unknown smith"],

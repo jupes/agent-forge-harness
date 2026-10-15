@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { scratchDirs } from "../test-scratch";
-import { loadConfig, machineConfigFile } from "./load";
+import {
+  BUILTIN_SHIFT_CONFIG,
+  loadConfig,
+  machineConfigFile,
+  parseDuration,
+} from "./load";
 import { withProcessHomes } from "./testing";
 
 const scratch = scratchDirs();
@@ -349,5 +354,197 @@ default_crew = "claude-master"
     expect(() =>
       loadConfig({ harnessRoot: s.harness, home: s.home, env: {} }),
     ).toThrow(`${s.workspaceFile}: is saved as UTF-16`);
+  });
+});
+
+describe("loadConfig: [shift]", () => {
+  const load = (s: ReturnType<typeof sandbox>) =>
+    loadConfig({ harnessRoot: s.harness, home: s.home, env: {} });
+
+  test("with no files it is the builtins, each key reported as shift.<key> from builtin, the duration as written", () => {
+    const { config, provenance } = load(sandbox());
+    expect(config.shift).toEqual({
+      concurrency: 2,
+      forMs: 2 * 3_600_000,
+      maxBeads: 4,
+      maxUsd: 10,
+      repairs: 3,
+      throttle: 0.85,
+    });
+    expect(BUILTIN_SHIFT_CONFIG).toEqual(config.shift);
+    expect(
+      Object.fromEntries(
+        Object.entries(provenance).filter(([key]) => key.startsWith("shift.")),
+      ),
+    ).toEqual({
+      "shift.concurrency": { value: 2, source: "builtin" },
+      "shift.for": { value: "2h", source: "builtin" },
+      "shift.max_beads": { value: 4, source: "builtin" },
+      "shift.max_usd": { value: 10, source: "builtin" },
+      "shift.repairs": { value: 3, source: "builtin" },
+      "shift.throttle": { value: 0.85, source: "builtin" },
+    });
+  });
+
+  test("the workspace file wins a key both files set; a key only the machine file sets, max_usd included, still applies with a workspace file; each names its file", () => {
+    const s = sandbox();
+    writeFileSync(s.userFile, "[shift]\nconcurrency = 3\nmax_usd = 25.5\n");
+    writeFileSync(
+      s.workspaceFile,
+      '[shift]\nconcurrency = 1\nfor = "90m"\nthrottle = 0.5\n',
+    );
+    const { config, provenance } = load(s);
+    expect(config.shift).toEqual({
+      concurrency: 1,
+      forMs: 90 * 60_000,
+      maxBeads: 4,
+      maxUsd: 25.5,
+      repairs: 3,
+      throttle: 0.5,
+    });
+    expect(provenance["shift.concurrency"]).toEqual({
+      value: 1,
+      source: s.workspaceFile,
+    });
+    expect(provenance["shift.for"]).toEqual({
+      value: "90m",
+      source: s.workspaceFile,
+    });
+    expect(provenance["shift.throttle"]?.source).toBe(s.workspaceFile);
+    expect(provenance["shift.max_usd"]).toEqual({
+      value: 25.5,
+      source: s.userFile,
+    });
+    expect(provenance["shift.max_beads"]?.source).toBe("builtin");
+  });
+
+  test("a value outside the shift's own bounds, of another type, an unknown key or a [shift] that is not a table fails the load naming the file and the key", () => {
+    const cases: Array<[string, string]> = [
+      [
+        "concurrency = 0",
+        "shift.concurrency: expected a whole number from 1 to 8",
+      ],
+      [
+        "concurrency = 9",
+        "shift.concurrency: expected a whole number from 1 to 8",
+      ],
+      [
+        "concurrency = 1.5",
+        "shift.concurrency: expected a whole number from 1 to 8",
+      ],
+      [
+        'concurrency = "2"',
+        "shift.concurrency: expected a whole number from 1 to 8",
+      ],
+      [
+        "max_beads = 101",
+        "shift.max_beads: expected a whole number from 1 to 100",
+      ],
+      ["repairs = -1", "shift.repairs: expected a whole number from 0 to 10"],
+      ["max_usd = 0", "shift.max_usd: expected dollars above 0, at most 1000"],
+      [
+        "max_usd = 1000.5",
+        "shift.max_usd: expected dollars above 0, at most 1000",
+      ],
+      [
+        'max_usd = "5"',
+        "shift.max_usd: expected dollars above 0, at most 1000",
+      ],
+      ['for = "soon"', "shift.for: expected a duration such as 90s, 30m or 2h"],
+      [
+        "for = 7200000",
+        "shift.for: expected a duration such as 90s, 30m or 2h",
+      ],
+      ['for = "25h"', "shift.for: expected a duration of at most 24h"],
+      ["throttle = 0", "shift.throttle: expected a share from 0.1 to 1"],
+      ["throttle = 5e-324", "shift.throttle: expected a share from 0.1 to 1"],
+      ["throttle = 0.099", "shift.throttle: expected a share from 0.1 to 1"],
+      ["throttle = 1.01", "shift.throttle: expected a share from 0.1 to 1"],
+      [
+        "max-usd = 5",
+        "shift.max-usd: unknown key (expected concurrency | for | max_beads | max_usd | repairs | throttle)",
+      ],
+      ["constructor = 1", "shift.constructor: unknown key"],
+    ];
+    for (const [line, why] of cases) {
+      const s = sandbox();
+      writeFileSync(s.workspaceFile, `[shift]\n${line}\n`);
+      expect(() => load(s)).toThrow(`${s.workspaceFile}: ${why}`);
+    }
+    const table = sandbox();
+    writeFileSync(table.workspaceFile, "shift = 3\n");
+    expect(() => load(table)).toThrow(
+      `${table.workspaceFile}: shift: expected a table`,
+    );
+    // The machine file is checked as the workspace file is.
+    const machine = sandbox();
+    writeFileSync(machine.userFile, "[shift]\nmax_usd = 5000\n");
+    expect(() => load(machine)).toThrow(
+      `${machine.userFile}: shift.max_usd: expected dollars above 0, at most 1000`,
+    );
+  });
+
+  test("the shipped example's commented [shift], uncommented, loads to the builtins", () => {
+    const example = readFileSync(
+      join(import.meta.dir, "..", "..", "agent-forge.toml.example"),
+      "utf8",
+    );
+    const at = example.indexOf("# [shift]");
+    expect(at).toBeGreaterThan(-1);
+    const block = example
+      .slice(at)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^# /, ""))
+      .join("\n");
+    const s = sandbox();
+    writeFileSync(s.workspaceFile, block);
+    const { config, provenance } = load(s);
+    expect(config.shift).toEqual(BUILTIN_SHIFT_CONFIG);
+    expect(provenance["shift.throttle"]?.source).toBe(s.workspaceFile);
+  });
+
+  test("the lowest value of each bound loads, the throttle's floor of 0.1 included", () => {
+    const s = sandbox();
+    writeFileSync(
+      s.workspaceFile,
+      '[shift]\nconcurrency = 1\nfor = "1s"\nmax_beads = 1\nmax_usd = 0.01\nrepairs = 0\nthrottle = 0.1\n',
+    );
+    expect(load(s).config.shift).toEqual({
+      concurrency: 1,
+      forMs: 1000,
+      maxBeads: 1,
+      maxUsd: 0.01,
+      repairs: 0,
+      throttle: 0.1,
+    });
+  });
+
+  test("the highest value of each bound loads", () => {
+    const s = sandbox();
+    writeFileSync(
+      s.workspaceFile,
+      '[shift]\nconcurrency = 8\nfor = "24h"\nmax_beads = 100\nmax_usd = 1000\nrepairs = 10\nthrottle = 1\n',
+    );
+    expect(load(s).config.shift).toEqual({
+      concurrency: 8,
+      forMs: 24 * 3_600_000,
+      maxBeads: 100,
+      maxUsd: 1000,
+      repairs: 10,
+      throttle: 1,
+    });
+  });
+});
+
+describe("parseDuration", () => {
+  test("whole seconds, minutes and hours", () => {
+    expect(parseDuration("90s")).toBe(90_000);
+    expect(parseDuration("30m")).toBe(1_800_000);
+    expect(parseDuration("2h")).toBe(7_200_000);
+  });
+
+  test("anything else is no duration", () => {
+    for (const text of ["soon", "0m", "-1h", "2 h", "1.5h", "2", "h", "2d", ""])
+      expect(parseDuration(text)).toBeNull();
   });
 });

@@ -4,15 +4,30 @@
  * them.
  *
  * Usage:
- *   bun run forge:shift run [--for 2h] [--concurrency 2] [--max-beads 4]
- *       [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>]
- *       [--run-timeout <duration>] [--base master] [--id <shift-id>]
+ *   bun run forge:shift run [--for <duration>] [--concurrency <n>]
+ *       [--max-beads <n>] [--max-usd <dollars>] [--repairs <n>] [--epic <id>]
+ *       [--smith <name>] [--run-timeout <duration>] [--base master]
+ *       [--id <shift-id>]
  *   bun run forge:shift stop <shift-id>
  *   bun run forge:shift recover <shift-id>
  *   bun run forge:shift list
  *
  * A duration is a whole number of seconds, minutes or hours: `90s`, `30m`,
- * `2h`. `--id` gives the shift the id it runs under instead of one minted at
+ * `2h`. The bounds (`SHIFT_LIMITS`, `SHIFT_MAX_USD`, `SHIFT_THROTTLE` in
+ * scripts/config/defaults.ts): `--for` up to 24h, `--concurrency` 1 to 8,
+ * `--max-beads` 1 to 100, `--max-usd` above 0 and up to 1000, `--repairs` 0
+ * to 10, and `[shift] throttle` 0.1 to 1. A flag and `[shift]` out of bounds
+ * are refused in the same words after the name (`--for` / `shift.for`:
+ * `expected a duration of at most 24h`). Each of `--for`, `--concurrency`,
+ * `--max-beads`, `--max-usd` and
+ * `--repairs` left out is the config's `[shift]` value (`for`,
+ * `concurrency`, `max_beads`, `max_usd`, `repairs`), else its builtin
+ * (`BUILTIN_SHIFT`, scripts/config/defaults.ts); the host is too busy to
+ * admit more at `[shift] throttle`. The config is read as each run's
+ * `forge:exec` reads it:
+ * `agent-forge.toml` in the checkout the shift runs in, over `config.toml` in
+ * the Agent Forge home. `bun run forge:config get shift.<key>` says which
+ * value applies and where it came from; a flag still wins. `--id` gives the shift the id it runs under instead of one minted at
  * the start: the hearth's `POST /shifts` mints the id first, so that its audit
  * row names the shift, and starts `run --id <id>` as its child. It must be a
  * shift id (`shift-YYYYMMDD-HHMMSS-xxxx`) that no shift record and no stop
@@ -51,12 +66,14 @@
 
 import { join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
+import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
+import { parseDuration, shiftLength } from "../config/load";
 import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
 import { isMain } from "../is-main";
 import { ledgerPath } from "../ledger/paths";
 import { resolveCheckout } from "../ledger/workspace";
-import { createHostSampler } from "./host-load";
+import { createHostSampler, type HostSamplerOptions } from "./host-load";
 import type { CliResult } from "./reservations-cli";
 import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
 import { prCheckRunner, toolRunner } from "./shift-pr";
@@ -71,20 +88,12 @@ import {
 } from "./shift-store";
 import { createWorktree } from "./worktrees";
 
-const USAGE =
-  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list";
+const range = ([low, high]: readonly [number, number]): string =>
+  `${low}-${high}`;
+
+const USAGE = `run [--for <duration, up to ${SHIFT_LIMITS.forMs[1] / 3_600_000}h>] [--concurrency <${range(SHIFT_LIMITS.concurrency)}>] [--max-beads <${range(SHIFT_LIMITS.maxBeads)}>] [--max-usd <dollars above 0, up to ${SHIFT_MAX_USD}>] [--repairs <${range(SHIFT_LIMITS.repairs)}>] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list. Each of the first five left out is [shift] in agent-forge.toml, else the builtin (bun run forge:config get shift.<key>)`;
 
 type Env = Readonly<Record<string, string | undefined>>;
-
-const DURATION = /^([1-9]\d{0,5})(s|m|h)$/;
-const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000 } as const;
-
-/** `90s`, `30m`, `2h` in ms; null for anything else. */
-export function parseDuration(text: string): number | null {
-  const match = DURATION.exec(text);
-  if (match === null) return null;
-  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
-}
 
 /** The checkout this file belongs to: where `bun run pr:check` is defined. */
 const HARNESS = resolve(import.meta.dir, "..", "..");
@@ -94,12 +103,18 @@ const HARNESS = resolve(import.meta.dir, "..", "..");
  * queue lock and the shift records in the harness home; worktrees made by the
  * registry under the main checkout, from the base commit the shift fetched;
  * git and gh from the PATH, and this harness's `pr:check`; the host sampled
- * from this machine. Runs use the providers' own CLIs.
+ * from this machine (`host` replaces what the sampler reads, for a test),
+ * each sample against the threshold the shift passes. Runs use the
+ * providers' own CLIs.
  */
-export function shiftCliDeps(cwd: string, env: Env = process.env): ShiftDeps {
+export function shiftCliDeps(
+  cwd: string,
+  env: Env = process.env,
+  host: Pick<HostSamplerOptions, "probe" | "sleep"> = {},
+): ShiftDeps {
   const main = localStateRoot(cwd);
   const home = agentForgeHome(env);
-  const sampler = createHostSampler();
+  const sampler = createHostSampler(host);
   return {
     root: cwd,
     runBd: bdRunner(main),
@@ -107,7 +122,7 @@ export function shiftCliDeps(cwd: string, env: Env = process.env): ShiftDeps {
     lockFile: join(home, QUEUE_LOCK_FILE),
     shiftsDir: join(home, SHIFTS_DIR),
     mainCheckout: main,
-    sampleHost: sampler,
+    sampleHost: (threshold) => sampler(threshold),
     makeWorktree: ({ id, branch, beadId, startPoint }) => {
       const made = createWorktree(
         main,
@@ -179,7 +194,14 @@ export function runOptions(
       options[name] = value;
       continue;
     }
-    if (name === "forMs" || name === "runTimeoutMs") {
+    if (name === "forMs") {
+      // Refused in the words `[shift] for` is refused in.
+      const length = shiftLength(value);
+      if (!length.ok) return { ok: false, error: `${flag}: ${length.error}` };
+      options.forMs = length.value;
+      continue;
+    }
+    if (name === "runTimeoutMs") {
       const ms = parseDuration(value);
       if (ms === null)
         return {

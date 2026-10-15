@@ -104,6 +104,8 @@ export interface ShiftOptionsRecord {
   maxBeads: number;
   maxUsd: number;
   repairs: number;
+  /** The host threshold it sampled against (`[shift] throttle`); absent on a record written before x1gs.5.4.7. */
+  throttle?: number;
   /** The branch on origin its worktrees start from and its pull requests go into. */
   base?: string;
   epic?: string;

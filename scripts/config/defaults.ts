@@ -56,6 +56,45 @@ export const BUILTIN_BENCHES: Readonly<Record<BenchName, BenchEntry[]>> = {
 };
 
 /**
+ * `[shift]` as builtin, written as a file writes it: the one place each
+ * default of a shift lives. The loader starts every `[shift]` from these;
+ * `SHIFT_DEFAULTS` (scripts/scheduler/shift.ts) and the host sampler's default
+ * threshold (scripts/scheduler/host-load.ts) are read from them. Decision 8
+ * for `concurrency`, `for`, `repairs` and `throttle` (a share: 0.85 is 85%);
+ * the count and the spend are x1gs.5.4's.
+ */
+export const BUILTIN_SHIFT = {
+  concurrency: 2,
+  for: "2h",
+  max_beads: 4,
+  max_usd: 10,
+  repairs: 3,
+  throttle: 0.85,
+} as const;
+
+/**
+ * The bounds of a shift's options that `[shift]` also sets, each a whole
+ * number from the first to the second: `shiftOptions` checks a shift's
+ * options and the loader checks `[shift]` against these, and no other copy.
+ */
+export const SHIFT_LIMITS = {
+  concurrency: [1, 8],
+  forMs: [1, 24 * 60 * 60 * 1000],
+  maxBeads: [1, 100],
+  repairs: [0, 10],
+} as const;
+
+/** The most a shift may be given to spend, in US dollars (`maxUsd`, `[shift] max_usd`). */
+export const SHIFT_MAX_USD = 1000;
+
+/**
+ * The range of the host threshold (`[shift] throttle`), a share. Below the
+ * floor a shift would find any host that is doing anything too busy, and
+ * admit nothing until its time ran out.
+ */
+export const SHIFT_THROTTLE = [0.1, 1] as const;
+
+/**
  * Always passed to spawned executors: without these a child cannot start on
  * Windows (or find itself). Matched case-insensitively. Config `pass` only adds.
  *

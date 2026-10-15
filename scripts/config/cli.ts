@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
 /**
- * cli.ts — print the merged smiths/benches config with provenance.
+ * cli.ts — print the merged config with provenance.
  *
  * CLI:
- *   bun run forge:config show            # smiths, benches, env allowlist + where each came from
- *   bun run forge:config get <key>       # one effective value, e.g. workflow.default_crew
+ *   bun run forge:config show            # smiths, benches, env allowlist, [shift] + where each came from
+ *   bun run forge:config get <key>       # one effective value, e.g. workflow.default_crew or shift.max_usd
  *   bun run forge:config keys            # every key `set` writes
  *   bun run forge:config set <key> <value> --user|--workspace
  *                                        # one value into the machine file (config.toml in
  *                                        # AGENT_FORGE_HOME, else ~/.agent-forge) or
- *                                        # <harness>/agent-forge.toml; lists are comma-separated
+ *                                        # <harness>/agent-forge.toml; lists are comma-separated,
+ *                                        # e.g. set shift.max_usd 5 --workspace
  *   bun run forge:config show --json     # { ok, data, error }
  *
  * Exit code 0 when ok, 2 when not.

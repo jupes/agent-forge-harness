@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import { loadConfig } from "../config/load";
 import { claudeAdapter } from "../executors/claude";
 import type { ExecutorAdapter } from "../executors/types";
 import type { BdRunner } from "../hearth/routes/dev-api";
@@ -19,6 +20,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import type { HostProbe } from "./host-load";
 import { createQueue } from "./queue";
 import {
   answerQueueList,
@@ -27,7 +29,7 @@ import {
 } from "./queue-fixture";
 import { reserve } from "./reservations";
 import type { ShiftDeps } from "./shift";
-import { parseDuration, runShiftCli, shiftCliDeps } from "./shift-cli";
+import { runShiftCli, shiftCliDeps } from "./shift-cli";
 import { RUN_PR_BODY } from "./shift-pr";
 import {
   readShiftRecord,
@@ -197,19 +199,6 @@ function cli(root: string, beads: TrackedBead[] = []) {
   };
 }
 
-describe("parseDuration", () => {
-  test("whole seconds, minutes and hours", () => {
-    expect(parseDuration("90s")).toBe(90_000);
-    expect(parseDuration("30m")).toBe(1_800_000);
-    expect(parseDuration("2h")).toBe(7_200_000);
-  });
-
-  test("anything else is no duration", () => {
-    for (const text of ["soon", "0m", "-1h", "2 h", "1.5h", "2", "h", "2d", ""])
-      expect(parseDuration(text)).toBeNull();
-  });
-});
-
 describe("forge:shift", () => {
   test("shiftCliDeps puts the ledger, the queue lock and the shift records in the harness home, and worktrees under the main checkout", () => {
     const repo = repository();
@@ -219,6 +208,31 @@ describe("forge:shift", () => {
     expect(deps.lockFile).toBe(join(home, "queue-lock.db"));
     expect(deps.shiftsDir).toBe(join(home, "shifts"));
     expect(comparablePath(deps.mainCheckout)).toBe(comparablePath(repo));
+  });
+
+  test("shiftCliDeps's host sampler judges each sample against the threshold the shift passes, not the sampler's default", async () => {
+    // What the real sampler reads, held still: half the memory in use, and no
+    // CPU time between readings (so memory alone decides).
+    const probe: HostProbe = {
+      cpus: () => [{ times: { user: 10, nice: 0, sys: 0, idle: 10, irq: 0 } }],
+      freemem: () => 50,
+      totalmem: () => 100,
+    };
+    const deps = shiftCliDeps(
+      repository(),
+      { AGENT_FORGE_HOME: join(scratch(), "forge home") },
+      { probe, sleep: async () => undefined },
+    );
+    // The real sampler answers more than ShiftDeps names: its readings too.
+    const busy: unknown = await deps.sampleHost(0.4);
+    const idle: unknown = await deps.sampleHost(0.6);
+    expect(busy).toEqual({
+      busy: true,
+      cpu: null,
+      memory: 0.5,
+      reason: "memory 50% in use is at or above 40%",
+    });
+    expect(idle).toEqual({ busy: false, cpu: null, memory: 0.5 });
   });
 
   test("shiftCliDeps makes a worktree at the start point it is given, not at the HEAD of the checkout", () => {
@@ -260,6 +274,61 @@ describe("forge:shift", () => {
         ok: false,
       });
     }
+    expect(existsSync(join(home, "shifts"))).toBe(false);
+  });
+
+  test("run takes each option it was not given from [shift] in agent-forge.toml of the checkout it runs in, else the builtin, and a flag still wins: the record says what applied", async () => {
+    const { repo } = withOrigin();
+    writeFileSync(
+      join(repo, "agent-forge.toml"),
+      '[shift]\nconcurrency = 3\nfor = "45m"\nmax_usd = 4\nthrottle = 0.6\n',
+    );
+    const { deps, io } = cli(repo);
+    const result = await runShiftCli(["run", "--max-usd", "6"], deps, io);
+    expect(result.exit).toBe(0);
+    const data = result.out.data as { reason: string; record: ShiftRecord };
+    expect(data.reason).toBe("drained");
+    expect(data.record.options).toEqual({
+      concurrency: 3,
+      forMs: 45 * 60_000,
+      maxBeads: 4,
+      maxUsd: 6,
+      repairs: 3,
+      throttle: 0.6,
+      base: "master",
+    });
+  }, 60_000);
+
+  test("--for past its bound is refused in the words [shift] for is refused in, before anything is written", async () => {
+    const root = scratch();
+    const { deps, io, home } = cli(root);
+    const flag = await runShiftCli(["run", "--for", "25h"], deps, io);
+    expect(flag.exit).toBe(1);
+    expect(flag.out.error).toStartWith(
+      "--for: expected a duration of at most 24h. Usage: ",
+    );
+    const file = join(root, "agent-forge.toml");
+    writeFileSync(file, '[shift]\nfor = "25h"\n');
+    expect(() =>
+      loadConfig({ harnessRoot: root, home: root, env: {} }),
+    ).toThrow(`${file}: shift.for: expected a duration of at most 24h`);
+    expect(existsSync(join(home, "shifts"))).toBe(false);
+  });
+
+  test("run with a [shift] the config loader refuses exits 1 naming the file and the key, and writes no shift", async () => {
+    const root = scratch();
+    const file = join(root, "agent-forge.toml");
+    writeFileSync(file, "[shift]\nconcurrency = 9\n");
+    const { deps, io, home } = cli(root);
+    const result = await runShiftCli(["run"], deps, io);
+    expect(result).toEqual({
+      exit: 1,
+      out: {
+        ok: false,
+        data: null,
+        error: `the config could not be read: ${file}: shift.concurrency: expected a whole number from 1 to 8`,
+      },
+    });
     expect(existsSync(join(home, "shifts"))).toBe(false);
   });
 

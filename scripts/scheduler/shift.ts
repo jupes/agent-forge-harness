@@ -16,7 +16,8 @@
  *
  * What is its own: the base (origin's branch, fetched once before anything
  * else, every worktree starting at the commit it named), the bounds
- * (concurrency, time, beads admitted, spend), the host throttle, repairs,
+ * (concurrency, time, beads admitted, spend: each the caller's, else the
+ * config's `[shift]`), the host throttle (`[shift] throttle`), repairs,
  * noticing a bead the operator paused or halted, the draft pull request of a
  * bead that reached `review` (`shift-pr.ts`), the `worklog:` comments on each
  * bead it ran, and stopping: every child is aborted (its tree killed by the
@@ -36,7 +37,14 @@ import {
   QUEUE_LABEL_PREFIX,
   type ShiftStopReason,
 } from "../../types/hearth";
-import { type ForgeConfig, loadConfig } from "../config/load";
+import { SHIFT_LIMITS } from "../config/defaults";
+import {
+  BUILTIN_SHIFT_CONFIG,
+  type ForgeConfig,
+  loadConfig,
+  maxUsdError,
+  wholeNumberError,
+} from "../config/load";
 import { resolveSmith } from "../config/resolve";
 import { type ExecDeps, runExec } from "../executors/exec-cli";
 import { isValidSlug } from "../forge/runs";
@@ -91,23 +99,25 @@ export interface ShiftOptions {
   base: string;
 }
 
-/** Decision 8 for the first four; the count and the spend are this bead's defaults. */
+/**
+ * The bounds are `[shift]`'s builtins (scripts/config/defaults.ts); the rest
+ * are the shift's own. `runShift` takes a bound it was not given from the
+ * loaded `[shift]`, so these apply only where no config was read.
+ */
 export const SHIFT_DEFAULTS = {
-  concurrency: 2,
-  forMs: 2 * 60 * 60 * 1000,
-  maxBeads: 4,
-  maxUsd: 10,
-  repairs: 3,
+  concurrency: BUILTIN_SHIFT_CONFIG.concurrency,
+  forMs: BUILTIN_SHIFT_CONFIG.forMs,
+  maxBeads: BUILTIN_SHIFT_CONFIG.maxBeads,
+  maxUsd: BUILTIN_SHIFT_CONFIG.maxUsd,
+  repairs: BUILTIN_SHIFT_CONFIG.repairs,
   tickMs: 1000,
   pollMs: 15_000,
   base: "master",
 } as const;
 
+/** `[shift]`'s bounds, the ones the loader checks, and the shift's own two. */
 const LIMITS = {
-  concurrency: [1, 8],
-  forMs: [1, 24 * 60 * 60 * 1000],
-  maxBeads: [1, 100],
-  repairs: [0, 10],
+  ...SHIFT_LIMITS,
   tickMs: [1, 60_000],
   pollMs: [1, 10 * 60_000],
 } as const;
@@ -121,24 +131,15 @@ export function shiftOptions(
   given: Partial<ShiftOptions> = {},
 ): Checked<ShiftOptions> {
   const options: ShiftOptions = { ...SHIFT_DEFAULTS, ...given };
-  for (const [name, [low, high]] of Object.entries(LIMITS)) {
-    const value = options[name as keyof typeof LIMITS];
-    if (!Number.isInteger(value) || value < low || value > high)
-      return {
-        ok: false,
-        error: `${name}: expected a whole number from ${low} to ${high}`,
-      };
+  for (const [name, limits] of Object.entries(LIMITS)) {
+    const error = wholeNumberError(
+      options[name as keyof typeof LIMITS],
+      limits,
+    );
+    if (error !== null) return { ok: false, error: `${name}: ${error}` };
   }
-  if (
-    typeof options.maxUsd !== "number" ||
-    !Number.isFinite(options.maxUsd) ||
-    options.maxUsd <= 0 ||
-    options.maxUsd > 1000
-  )
-    return {
-      ok: false,
-      error: "maxUsd: expected dollars above 0, at most 1000",
-    };
+  const spend = maxUsdError(options.maxUsd);
+  if (spend !== null) return { ok: false, error: `maxUsd: ${spend}` };
   if (
     options.runTimeoutMs !== undefined &&
     (!Number.isInteger(options.runTimeoutMs) || options.runTimeoutMs < 1)
@@ -269,8 +270,10 @@ export interface ShiftDeps {
   shiftsDir: string;
   /** Where its worktrees go: `<main>/trees/<id>`. */
   mainCheckout: string;
-  /** Says whether the host is too busy to admit more. */
-  sampleHost(): Promise<{ busy: boolean; reason?: string | undefined }>;
+  /** Says whether the host is too busy to admit more: CPU or memory in use at or above `threshold` (`[shift] throttle`). */
+  sampleHost(
+    threshold: number,
+  ): Promise<{ busy: boolean; reason?: string | undefined }>;
   /** Makes `<mainCheckout>/trees/<id>` on a new branch that starts at `startPoint`. */
   makeWorktree(request: {
     id: string;
@@ -428,18 +431,17 @@ function endWhy(slot: Slot): string {
 }
 
 /**
- * Run a shift to its end. Refused before anything is done: options that are
- * not a shift's, a config that cannot be read, a ledger that does not store
- * `shift.started`. Otherwise it answers once it has stopped, with why.
+ * Run a shift to its end. Each bound not `given` is the config's `[shift]`
+ * (its builtin where no file sets it), read as each run's `forge:exec` reads
+ * the config; the host threshold is `[shift] throttle`. Refused before
+ * anything is done: a config that cannot be read, options that are not a
+ * shift's, a ledger that does not store `shift.started`. Otherwise it answers
+ * once it has stopped, with why.
  */
 export async function runShift(
   given: Partial<ShiftOptions>,
   deps: ShiftDeps,
 ): Promise<ShiftOutcome> {
-  const checked = shiftOptions(given);
-  if (!checked.ok) return checked;
-  const options = checked.value;
-
   let config: ForgeConfig;
   try {
     config = loadConfig({
@@ -453,6 +455,11 @@ export async function runShift(
       error: `the config could not be read: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  const { throttle, ...configured } = config.shift;
+  const checked = shiftOptions({ ...configured, ...given });
+  if (!checked.ok) return checked;
+  const options = checked.value;
+
   if (options.smith !== undefined) {
     const explicit = resolveSmith(config, { explicit: options.smith });
     if (!explicit.ok) return { ok: false, error: explicit.error };
@@ -493,6 +500,7 @@ export async function runShift(
       maxBeads: options.maxBeads,
       maxUsd: options.maxUsd,
       repairs: options.repairs,
+      throttle,
       base: options.base,
       ...(options.epic !== undefined ? { epic: options.epic } : {}),
       ...(options.smith !== undefined ? { smith: options.smith } : {}),
@@ -981,7 +989,7 @@ export async function runShift(
       ) {
         changed = false;
         lastRead = clock();
-        const host = await deps.sampleHost();
+        const host = await deps.sampleHost(throttle);
         if (host.busy) {
           hostBusy = true;
           break;

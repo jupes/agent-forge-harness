@@ -22,13 +22,15 @@ import {
 } from "fs";
 import { dirname, join } from "path";
 import { BENCH_NAMES } from "../../types/hearth";
-import { BUILTIN_SMITHS } from "./defaults";
+import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
   type ForgeConfig,
   type LoadOptions,
   loadConfig,
   machineConfigFile,
   readConfigText,
+  SHIFT_KEYS,
+  type ShiftKey,
 } from "./load";
 
 export type ConfigTarget = "user" | "workspace";
@@ -45,7 +47,7 @@ export type SetOutcome =
     }
   | { ok: false; error: string };
 
-type Kind = "string" | "boolean" | "strings" | "bench";
+type Kind = "string" | "boolean" | "number" | "strings" | "bench";
 
 const SMITH_FIELDS: Record<string, Kind> = {
   provider: "string",
@@ -57,12 +59,15 @@ const SMITH_FIELDS: Record<string, Kind> = {
 
 const BOM = "\uFEFF";
 const BARE = /^[A-Za-z0-9_-]+$/;
+/** A number as typed for a `[shift]` key: digits, an optional fraction, an optional minus (the loader says what is out of bounds). */
+const NUMBER = /^-?\d{1,9}(\.\d{1,9})?$/;
 const EXAMPLE = "agent-forge.toml.example";
 
 /** Every key `set` accepts, for the smiths in `config` (a smith whose name has a `.` cannot be named by a key). */
 export function settableKeys(config: ForgeConfig): string[] {
   const keys = ["workflow.default_crew", "execution.env.pass"];
   for (const bench of BENCH_NAMES) keys.push(`benches.${bench}`);
+  for (const key of SHIFT_KEYS) keys.push(`shift.${key}`);
   for (const name of Object.keys(config.smiths)) {
     if (name.includes(".")) continue;
     for (const field of Object.keys(SMITH_FIELDS))
@@ -89,6 +94,18 @@ function keyShape(key: string): KeyShape | string {
     return (BENCH_NAMES as readonly string[]).includes(bench)
       ? { table: ["benches"], field: bench, kind: "bench" }
       : `unknown bench "${bench}" (expected ${BENCH_NAMES.join(" | ")})`;
+  }
+  if (parts.length === 2 && parts[0] === "shift") {
+    const field = parts[1] ?? "";
+    // Looked up in the list, not as a property: `constructor` is on every object.
+    if (!(SHIFT_KEYS as readonly string[]).includes(field))
+      return `unknown shift key "${field}" (expected ${SHIFT_KEYS.join(" | ")})`;
+    // `for` is a duration as written ("90m"); the others are numbers.
+    const kind =
+      typeof BUILTIN_SHIFT[field as ShiftKey] === "number"
+        ? "number"
+        : "string";
+    return { table: ["shift"], field, kind };
   }
   if (parts.length === 3 && parts[0] === "smiths") {
     const [, smith = "", field = ""] = parts;
@@ -118,6 +135,10 @@ function typedValue(kind: Kind, raw: string): { value: unknown } | string {
     return raw === "true" || raw === "false"
       ? { value: raw === "true" }
       : `expected true or false, got "${raw}"`;
+  if (kind === "number")
+    return NUMBER.test(raw)
+      ? { value: Number(raw) }
+      : `expected a number such as 3 or 0.85, got "${raw}"`;
   const items = listOf(raw);
   if (items.some((item) => item === ""))
     return "an empty item in the list (items are separated by commas)";
@@ -130,7 +151,8 @@ function typedValue(kind: Kind, raw: string): { value: unknown } | string {
 function literal(value: unknown): string {
   if (Array.isArray(value))
     return `[${value.map((item) => JSON.stringify(String(item))).join(", ")}]`;
-  if (typeof value === "boolean") return String(value);
+  if (typeof value === "boolean" || typeof value === "number")
+    return String(value);
   return JSON.stringify(String(value));
 }
 

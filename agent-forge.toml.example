@@ -26,3 +26,14 @@ low = ["claude-apprentice:70", "codex-journeyman:30"]
 # Once this file exists, the same key in the machine file is ignored.
 [execution.env]
 pass = []
+
+# What forge:shift run takes for each flag it is not given, and the host threshold.
+# A flag still wins; a key left out here comes from the machine file, else the builtin.
+# See which value applies and where it came from: bun run forge:config get shift.max_usd
+# [shift]
+# concurrency = 2     # 1 to 8 beads at once
+# for = "2h"          # a duration: 90s, 30m, 2h (at most 24h)
+# max_beads = 4       # 1 to 100 beads in all
+# max_usd = 10        # US dollars, above 0 and at most 1000
+# repairs = 3         # 0 to 10 runs after a failed one
+# throttle = 0.85     # 0.1 to 1: CPU or memory in use at or above this share pauses admission

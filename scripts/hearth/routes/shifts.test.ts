@@ -267,7 +267,7 @@ describe("POST /shifts", () => {
       [[], "Expected a JSON object"],
       [{ for: "soon" }, "for: expected a duration such as 90s, 30m or 2h"],
       [{ for: 7200000 }, "for: expected a duration such as 90s, 30m or 2h"],
-      [{ for: "25h" }, "for (in milliseconds): expected a whole number from 1"],
+      [{ for: "25h" }, "for: expected a duration of at most 24h"],
       [{ runTimeout: "1d" }, "runTimeout: expected a duration"],
       [{ concurrency: "2" }, "concurrency: expected a number"],
       [{ concurrency: 0 }, "concurrency: expected a whole number from 1 to 8"],
