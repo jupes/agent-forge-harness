@@ -119,7 +119,7 @@ test("the Council page starts a run with the operator token and follows it to it
   const streamed = page.waitForRequest(
     (request) =>
       request.method() === "GET" &&
-      /\/council-api\/runs\/[^/]+\/events$/.test(request.url()),
+      /\/council-api\/runs\/[^/]+\/events(\?|$)/.test(request.url()),
   );
   await page.getByRole("button", { name: "Convene council" }).click();
   const request = await posted;
