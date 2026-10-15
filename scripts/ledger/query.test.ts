@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { appendEvent } from "./append";
-import { closeLedger } from "./db";
+import { closeLedger, openLedger } from "./db";
 import {
   activeReservations,
   lastEvent,
@@ -584,6 +584,43 @@ describe("queryEvents, a shift", () => {
     expect(ids(queryEvents({ workspace: W, shiftId: A }, { path }))).toEqual([
       2, 4,
     ]);
+  });
+
+  test("a shift event whose stored payload is not JSON (written outside appendEvent) is skipped, and the query still answers", () => {
+    const path = seed([
+      started(A), // 1
+      tool({ runId: `b-1-${A}` }), // 2
+    ]);
+    // appendEvent cannot write these; a ledger edited by hand or damaged can hold them.
+    const insert = openLedger(path).query(
+      `INSERT INTO events (ulid, ts, kind, workspace, payload) VALUES (?, ?, ?, ?, ?)`,
+    );
+    insert.run(
+      "01J0000000000000000000BAD1",
+      "2026-10-14T12:00:01.000Z",
+      "shift.started",
+      W,
+      "{not json",
+    ); // 3
+    insert.run(
+      "01J0000000000000000000BAD2",
+      "2026-10-14T12:00:02.000Z",
+      "shift.stopped",
+      W,
+      "",
+    ); // 4
+    insert.run(
+      "01J0000000000000000000BAD3",
+      "2026-10-14T12:00:03.000Z",
+      "shift.stopped",
+      W,
+      "[1, 2]",
+    ); // 5: JSON, but not an object with a shift id
+    appendEvent(stopped(A), { path }); // 6
+    expect(ids(queryEvents({ workspace: W, shiftId: A }, { path }))).toEqual([
+      1, 2, 6,
+    ]);
+    expect(queryEvents({ shiftId: B }, { path })).toEqual([]);
   });
 
   test("an id that is not a shift id matches nothing, pattern characters and the empty string included", () => {

@@ -91,6 +91,11 @@ interface Clause {
  * else about a run id is read, and a run the shift never named is not found
  * (one a person named by hand in the same way would be).
  *
+ * `json_extract` throws on a payload that is not JSON, and one such row (the
+ * ledger is written only by `appendEvent`, but a file edited by hand or
+ * damaged can hold one) would fail every `--shift` query: `CASE` makes the
+ * extraction wait for `json_valid`, and a row that is not JSON is skipped.
+ *
  * Only a well-formed shift id is matched. The format has a fixed width, so one
  * shift id is never the beginning or the end of another, and it holds no
  * character a pattern reads: the comparisons below are `substr` equalities and
@@ -107,7 +112,7 @@ function shiftClause(shiftId: string): {
   const tail = `-${shiftId}`;
   const head = `${shiftId}-`;
   return {
-    sql: `((kind IN ('shift.started', 'shift.stopped') AND json_extract(payload, '$.shiftId') = ?)
+    sql: `((kind IN ('shift.started', 'shift.stopped') AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.shiftId') END = ?)
       OR (run_id IS NOT NULL AND (
         (length(run_id) > ? AND substr(run_id, -?) = ?)
         OR (length(run_id) > ? AND substr(run_id, 1, ?) = ? AND substr(run_id, ? + 1) NOT GLOB '*[^0-9]*')
