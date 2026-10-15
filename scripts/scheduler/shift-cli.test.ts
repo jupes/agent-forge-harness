@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import { loadConfig } from "../config/load";
 import { claudeAdapter } from "../executors/claude";
 import type { ExecutorAdapter } from "../executors/types";
 import type { BdRunner } from "../hearth/routes/dev-api";
@@ -19,6 +20,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import type { HostProbe } from "./host-load";
 import { createQueue } from "./queue";
 import {
   answerQueueList,
@@ -208,6 +210,31 @@ describe("forge:shift", () => {
     expect(comparablePath(deps.mainCheckout)).toBe(comparablePath(repo));
   });
 
+  test("shiftCliDeps's host sampler judges each sample against the threshold the shift passes, not the sampler's default", async () => {
+    // What the real sampler reads, held still: half the memory in use, and no
+    // CPU time between readings (so memory alone decides).
+    const probe: HostProbe = {
+      cpus: () => [{ times: { user: 10, nice: 0, sys: 0, idle: 10, irq: 0 } }],
+      freemem: () => 50,
+      totalmem: () => 100,
+    };
+    const deps = shiftCliDeps(
+      repository(),
+      { AGENT_FORGE_HOME: join(scratch(), "forge home") },
+      { probe, sleep: async () => undefined },
+    );
+    // The real sampler answers more than ShiftDeps names: its readings too.
+    const busy: unknown = await deps.sampleHost(0.4);
+    const idle: unknown = await deps.sampleHost(0.6);
+    expect(busy).toEqual({
+      busy: true,
+      cpu: null,
+      memory: 0.5,
+      reason: "memory 50% in use is at or above 40%",
+    });
+    expect(idle).toEqual({ busy: false, cpu: null, memory: 0.5 });
+  });
+
   test("shiftCliDeps makes a worktree at the start point it is given, not at the HEAD of the checkout", () => {
     const { repo, originSha } = withOrigin();
     git(repo, "fetch", "-q", "origin");
@@ -254,7 +281,7 @@ describe("forge:shift", () => {
     const { repo } = withOrigin();
     writeFileSync(
       join(repo, "agent-forge.toml"),
-      '[shift]\nconcurrency = 3\nfor = "45m"\nmax_usd = 4\n',
+      '[shift]\nconcurrency = 3\nfor = "45m"\nmax_usd = 4\nthrottle = 0.6\n',
     );
     const { deps, io } = cli(repo);
     const result = await runShiftCli(["run", "--max-usd", "6"], deps, io);
@@ -267,9 +294,26 @@ describe("forge:shift", () => {
       maxBeads: 4,
       maxUsd: 6,
       repairs: 3,
+      throttle: 0.6,
       base: "master",
     });
   }, 60_000);
+
+  test("--for past its bound is refused in the words [shift] for is refused in, before anything is written", async () => {
+    const root = scratch();
+    const { deps, io, home } = cli(root);
+    const flag = await runShiftCli(["run", "--for", "25h"], deps, io);
+    expect(flag.exit).toBe(1);
+    expect(flag.out.error).toStartWith(
+      "--for: expected a duration of at most 24h. Usage: ",
+    );
+    const file = join(root, "agent-forge.toml");
+    writeFileSync(file, '[shift]\nfor = "25h"\n');
+    expect(() =>
+      loadConfig({ harnessRoot: root, home: root, env: {} }),
+    ).toThrow(`${file}: shift.for: expected a duration of at most 24h`);
+    expect(existsSync(join(home, "shifts"))).toBe(false);
+  });
 
   test("run with a [shift] the config loader refuses exits 1 naming the file and the key, and writes no shift", async () => {
     const root = scratch();

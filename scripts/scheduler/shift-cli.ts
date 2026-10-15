@@ -13,7 +13,13 @@
  *   bun run forge:shift list
  *
  * A duration is a whole number of seconds, minutes or hours: `90s`, `30m`,
- * `2h`. Each of `--for`, `--concurrency`, `--max-beads`, `--max-usd` and
+ * `2h`. The bounds (`SHIFT_LIMITS`, `SHIFT_MAX_USD`, `SHIFT_THROTTLE` in
+ * scripts/config/defaults.ts): `--for` up to 24h, `--concurrency` 1 to 8,
+ * `--max-beads` 1 to 100, `--max-usd` above 0 and up to 1000, `--repairs` 0
+ * to 10, and `[shift] throttle` 0.1 to 1. A flag and `[shift]` out of bounds
+ * are refused in the same words after the name (`--for` / `shift.for`:
+ * `expected a duration of at most 24h`). Each of `--for`, `--concurrency`,
+ * `--max-beads`, `--max-usd` and
  * `--repairs` left out is the config's `[shift]` value (`for`,
  * `concurrency`, `max_beads`, `max_usd`, `repairs`), else its builtin
  * (`BUILTIN_SHIFT`, scripts/config/defaults.ts); the host is too busy to
@@ -60,13 +66,14 @@
 
 import { join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
-import { parseDuration } from "../config/load";
+import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
+import { parseDuration, shiftLength } from "../config/load";
 import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
 import { isMain } from "../is-main";
 import { ledgerPath } from "../ledger/paths";
 import { resolveCheckout } from "../ledger/workspace";
-import { createHostSampler } from "./host-load";
+import { createHostSampler, type HostSamplerOptions } from "./host-load";
 import type { CliResult } from "./reservations-cli";
 import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
 import { prCheckRunner, toolRunner } from "./shift-pr";
@@ -81,8 +88,10 @@ import {
 } from "./shift-store";
 import { createWorktree } from "./worktrees";
 
-const USAGE =
-  "run [--for <duration>] [--concurrency <n>] [--max-beads <n>] [--max-usd <dollars>] [--repairs <n>] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list";
+const range = ([low, high]: readonly [number, number]): string =>
+  `${low}-${high}`;
+
+const USAGE = `run [--for <duration, up to ${SHIFT_LIMITS.forMs[1] / 3_600_000}h>] [--concurrency <${range(SHIFT_LIMITS.concurrency)}>] [--max-beads <${range(SHIFT_LIMITS.maxBeads)}>] [--max-usd <dollars above 0, up to ${SHIFT_MAX_USD}>] [--repairs <${range(SHIFT_LIMITS.repairs)}>] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list. Each of the first five left out is [shift] in agent-forge.toml, else the builtin (bun run forge:config get shift.<key>)`;
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -94,12 +103,18 @@ const HARNESS = resolve(import.meta.dir, "..", "..");
  * queue lock and the shift records in the harness home; worktrees made by the
  * registry under the main checkout, from the base commit the shift fetched;
  * git and gh from the PATH, and this harness's `pr:check`; the host sampled
- * from this machine. Runs use the providers' own CLIs.
+ * from this machine (`host` replaces what the sampler reads, for a test),
+ * each sample against the threshold the shift passes. Runs use the
+ * providers' own CLIs.
  */
-export function shiftCliDeps(cwd: string, env: Env = process.env): ShiftDeps {
+export function shiftCliDeps(
+  cwd: string,
+  env: Env = process.env,
+  host: Pick<HostSamplerOptions, "probe" | "sleep"> = {},
+): ShiftDeps {
   const main = localStateRoot(cwd);
   const home = agentForgeHome(env);
-  const sampler = createHostSampler();
+  const sampler = createHostSampler(host);
   return {
     root: cwd,
     runBd: bdRunner(main),
@@ -107,7 +122,7 @@ export function shiftCliDeps(cwd: string, env: Env = process.env): ShiftDeps {
     lockFile: join(home, QUEUE_LOCK_FILE),
     shiftsDir: join(home, SHIFTS_DIR),
     mainCheckout: main,
-    sampleHost: sampler,
+    sampleHost: (threshold) => sampler(threshold),
     makeWorktree: ({ id, branch, beadId, startPoint }) => {
       const made = createWorktree(
         main,
@@ -179,7 +194,14 @@ export function runOptions(
       options[name] = value;
       continue;
     }
-    if (name === "forMs" || name === "runTimeoutMs") {
+    if (name === "forMs") {
+      // Refused in the words `[shift] for` is refused in.
+      const length = shiftLength(value);
+      if (!length.ok) return { ok: false, error: `${flag}: ${length.error}` };
+      options.forMs = length.value;
+      continue;
+    }
+    if (name === "runTimeoutMs") {
       const ms = parseDuration(value);
       if (ms === null)
         return {

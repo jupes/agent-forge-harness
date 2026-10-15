@@ -500,6 +500,7 @@ export async function runShift(
       maxBeads: options.maxBeads,
       maxUsd: options.maxUsd,
       repairs: options.repairs,
+      throttle,
       base: options.base,
       ...(options.epic !== undefined ? { epic: options.epic } : {}),
       ...(options.smith !== undefined ? { smith: options.smith } : {}),

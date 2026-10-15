@@ -782,7 +782,7 @@ describe("forge:shift — the config's [shift]", () => {
     return { thresholds, sampleHost };
   };
 
-  test("each bound not given is the workspace file's [shift] and a given one wins; the record and shift.started carry the values that applied, and the host is sampled against [shift] throttle", async () => {
+  test("each bound not given is the workspace file's [shift] and a given one wins; the record carries the values that applied, throttle included, shift.started the bounds, and the host is sampled against [shift] throttle", async () => {
     const { thresholds, sampleHost } = sampled();
     const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], undefined, {
       sampleHost,
@@ -802,6 +802,7 @@ describe("forge:shift — the config's [shift]", () => {
       maxBeads: 2,
       maxUsd: 7,
       repairs: 0,
+      throttle: 0.5,
       base: "master",
     });
     expect(r.events()[0]).toMatchObject({
@@ -830,7 +831,7 @@ describe("forge:shift — the config's [shift]", () => {
     expect(done.record.options).toMatchObject({ maxUsd: 3, maxBeads: 5 });
   });
 
-  test("with no [shift] each bound not given is the builtin, and the host is sampled against the builtin threshold", async () => {
+  test("with no [shift] each bound not given is the builtin, and the host is sampled against the builtin threshold, which the record names", async () => {
     const { thresholds, sampleHost } = sampled();
     const r = rig([queued("t-1")], undefined, { sampleHost });
     const done = await shift(r);
@@ -840,6 +841,7 @@ describe("forge:shift — the config's [shift]", () => {
       maxBeads: 4,
       maxUsd: 10,
       repairs: 0,
+      throttle: 0.85,
       base: "master",
     });
     expect([...new Set(thresholds)]).toEqual([0.85]);
