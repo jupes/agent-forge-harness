@@ -503,3 +503,140 @@ describe("queryEvents, a bead within a workspace", () => {
     expect(ids(queryEvents({ beadId: "b-1" }, { path }))).toEqual([1, 2, 3, 4]);
   });
 });
+
+describe("queryEvents, a shift", () => {
+  // Two shifts of the same second whose ids differ in the last digit only.
+  const A = "shift-20261014-120000-abcd";
+  const B = "shift-20261014-120000-abce";
+  const other = "c:/work/other";
+
+  function started(shiftId: string, workspace = W): LedgerEventInput {
+    return {
+      kind: "shift.started",
+      workspace,
+      payload: { shiftId, concurrency: 2 },
+    };
+  }
+
+  function stopped(shiftId: string, workspace = W): LedgerEventInput {
+    return {
+      kind: "shift.stopped",
+      workspace,
+      payload: { shiftId, reason: "drained" },
+    };
+  }
+
+  test("is the shift's two events and the events of the runs it named, in id order, in the workspace asked for", () => {
+    const path = seed([
+      started(A), // 1
+      started(B), // 2
+      tool({ runId: `b-1-${A}` }), // 3: "<bead>-<shift-id>"
+      tool({ runId: `b-1-${B}` }), // 4
+      tool({ runId: `${A}-2` }), // 5: "<shift-id>-<n>"
+      tool({ runId: `${B}-1` }), // 6
+      tool({ runId: `b-1-${A}`, workspace: other }), // 7
+      started(A, other), // 8
+      stopped(B), // 9
+      tool({ runId: `b-2-${A}` }), // 10
+      stopped(A), // 11
+    ]);
+    expect(ids(queryEvents({ workspace: W, shiftId: A }, { path }))).toEqual([
+      1, 3, 5, 10, 11,
+    ]);
+    expect(ids(queryEvents({ workspace: W, shiftId: B }, { path }))).toEqual([
+      2, 4, 6, 9,
+    ]);
+    expect(
+      ids(queryEvents({ workspace: other, shiftId: A }, { path })),
+    ).toEqual([7, 8]);
+    expect(ids(queryEvents({ shiftId: A }, { path }))).toEqual([
+      1, 3, 5, 7, 8, 10, 11,
+    ]);
+  });
+
+  test("a run id that only resembles the shift's is not the shift's", () => {
+    const path = seed([
+      started(A), // 1
+      tool({ runId: A }), // 2: the id alone names no bead and no number
+      tool({ runId: `x${A}` }), // 3: no dash before the id
+      tool({ runId: `b-1-${A}0` }), // 4: the id goes on
+      tool({ runId: `${A}0-1` }), // 5: the id goes on
+      tool({ runId: `${A}-1x` }), // 6: not a number
+      tool({ runId: `${A}-` }), // 7: no number
+      tool({ runId: `${A}-2-extra` }), // 8: more than a number
+      tool({ runId: `-${A}` }), // 9: no bead before the dash
+      tool({ beadId: "b-1" }), // 10: no run
+      tool({ runId: "forge-run" }), // 11
+      tool({ runId: `b-1-${A}` }), // 12: the shift's
+    ]);
+    expect(ids(queryEvents({ workspace: W, shiftId: A }, { path }))).toEqual([
+      1, 12,
+    ]);
+  });
+
+  test("a shift event is found by the id in its payload, not by its run id or its position", () => {
+    const path = seed([
+      started(B), // 1
+      { ...started(A), runId: "forge-run" }, // 2
+      tool({ runId: "forge-run" }), // 3
+      stopped(A), // 4
+    ]);
+    expect(ids(queryEvents({ workspace: W, shiftId: A }, { path }))).toEqual([
+      2, 4,
+    ]);
+  });
+
+  test("an id that is not a shift id matches nothing, pattern characters and the empty string included", () => {
+    const path = seed([
+      started(A),
+      tool({ runId: `b-1-${A}` }),
+      tool({ runId: `${A}-1` }),
+      tool({ runId: "run-" }),
+    ]);
+    for (const shiftId of [
+      "",
+      "%",
+      "_",
+      "shift-%",
+      "shift-20261014-120000-abc_",
+      "shift-20261014-120000-abc%",
+      "*",
+      "shift-20261014-120000-abc*",
+      "shift-20261014-120000-ABCD",
+      `${A}-1`,
+      "-",
+    ])
+      expect(queryEvents({ shiftId }, { path })).toEqual([]);
+  });
+
+  test("a shift the ledger never saw is an empty answer; the filter combines with the others and with the limit", () => {
+    const path = seed([
+      started(A), // 1
+      gate({ runId: `b-1-${A}` }), // 2
+      tool({ runId: `b-1-${A}` }), // 3
+      tool({ runId: `b-1-${A}` }), // 4
+      stopped(A), // 5
+    ]);
+    expect(queryEvents({ shiftId: B }, { path })).toEqual([]);
+    expect(
+      ids(
+        queryEvents(
+          { shiftId: A, kinds: ["gate.ran", "shift.stopped"] },
+          { path },
+        ),
+      ),
+    ).toEqual([2, 5]);
+    expect(
+      ids(queryEvents({ shiftId: A, runId: `b-1-${A}` }, { path })),
+    ).toEqual([2, 3, 4]);
+    expect(ids(queryEvents({ shiftId: A, limit: 2 }, { path }))).toEqual([
+      4, 5,
+    ]);
+    expect(
+      ids(queryEvents({ shiftId: A, afterId: 2, limit: 2 }, { path })),
+    ).toEqual([3, 4]);
+    const page = queryEventPage({ shiftId: A, limit: 2 }, { path });
+    expect(ids(page.events)).toEqual([4, 5]);
+    expect(page.more).toBe(true);
+  });
+});

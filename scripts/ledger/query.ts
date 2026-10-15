@@ -12,6 +12,7 @@ import type {
   SessionSummary,
 } from "../../types/hearth";
 import { comparableCheckout } from "../forge/runs";
+import { isShiftId } from "../scheduler/shift-store";
 import { openLedger } from "./db";
 
 export interface EventFilter {
@@ -21,6 +22,11 @@ export interface EventFilter {
   /** Only events tagged with the bead itself, without the session join. */
   beadExact?: boolean;
   runId?: string;
+  /**
+   * A shift: its `shift.started` and `shift.stopped` and every event of a run
+   * it named. See `shiftClause`. A value that is not a shift id matches nothing.
+   */
+  shiftId?: string;
   sessionId?: string;
   /** ISO 8601; events at or after this instant. */
   since?: string;
@@ -75,6 +81,50 @@ interface Clause {
   params: Array<string | number>;
 }
 
+/**
+ * The events of one shift, found from the ledger alone: the shift's own
+ * `shift.started` and `shift.stopped` (the id is in their payload), and every
+ * event of a run id the shift gave its beads. `scripts/scheduler/shift.ts`
+ * names a bead's run `<bead>-<shift-id>`, else `<shift-id>-<n>`, so a run id
+ * belongs to the shift when it ends with `-<shift-id>` after at least one
+ * character, or is `<shift-id>-` followed by digits and nothing else. Nothing
+ * else about a run id is read, and a run the shift never named is not found
+ * (one a person named by hand in the same way would be).
+ *
+ * Only a well-formed shift id is matched. The format has a fixed width, so one
+ * shift id is never the beginning or the end of another, and it holds no
+ * character a pattern reads: the comparisons below are `substr` equalities and
+ * a `GLOB` whose pattern is fixed, never a pattern built from the id. Anything
+ * else is a clause that matches nothing, so a caller that skipped the check
+ * cannot widen the match (an empty id would otherwise match every run id that
+ * ends in a dash).
+ */
+function shiftClause(shiftId: string): {
+  sql: string;
+  params: Array<string | number>;
+} {
+  if (!isShiftId(shiftId)) return { sql: "0", params: [] };
+  const tail = `-${shiftId}`;
+  const head = `${shiftId}-`;
+  return {
+    sql: `((kind IN ('shift.started', 'shift.stopped') AND json_extract(payload, '$.shiftId') = ?)
+      OR (run_id IS NOT NULL AND (
+        (length(run_id) > ? AND substr(run_id, -?) = ?)
+        OR (length(run_id) > ? AND substr(run_id, 1, ?) = ? AND substr(run_id, ? + 1) NOT GLOB '*[^0-9]*')
+      )))`,
+    params: [
+      shiftId,
+      tail.length,
+      tail.length,
+      tail,
+      head.length,
+      head.length,
+      head,
+      head.length,
+    ],
+  };
+}
+
 function clauses(filter: EventFilter): Clause {
   const where: string[] = [];
   const params: Array<string | number> = [];
@@ -102,6 +152,11 @@ function clauses(filter: EventFilter): Clause {
   if (filter.runId !== undefined) {
     where.push("run_id = ?");
     params.push(filter.runId);
+  }
+  if (filter.shiftId !== undefined) {
+    const shift = shiftClause(filter.shiftId);
+    where.push(shift.sql);
+    params.push(...shift.params);
   }
   if (filter.sessionId !== undefined) {
     where.push("session_id = ?");
