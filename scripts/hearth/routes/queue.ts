@@ -1,6 +1,10 @@
 /**
- * The queue rows of the operator API: approve, queue, pause, resume and
- * reassign (`03-target-architecture.md` §6).
+ * The queue rows of the operator API: propose, approve, queue, pause, resume
+ * and reassign (`03-target-architecture.md` §6). `propose` (`x1gs.5.10`) puts
+ * a bead outside the queue, or one carrying a queue label the queue did not
+ * write (inherited from a parent, or added by hand), in the queue as
+ * `proposed`; `resume` of a bead paused while running puts it in `queued`
+ * (`x1gs.5.4.4`).
  *
  * Each is a way in to `scripts/scheduler/queue.ts`, as the operator: the
  * table of legal moves, the lock, the `bd` calls and the `bead.transitioned`
@@ -44,6 +48,7 @@ export const QUEUE_LOCK_FILE = "queue-lock.db";
 
 /** The moves an operator makes through the API. The others are the scheduler's, or made by hand. */
 export const OPERATOR_QUEUE_ACTIONS = [
+  "propose",
   "approve",
   "queue",
   "pause",

@@ -13,8 +13,13 @@ import type { Eligibility } from "../../scripts/scheduler/eligibility";
 import {
   type OperatorMove,
   operatorMoves,
+  resumeTarget,
 } from "../../scripts/scheduler/queue-table";
-import type { QueueEntry, QueueState } from "../../types/hearth";
+import {
+  QUEUE_STATES,
+  type QueueEntry,
+  type QueueState,
+} from "../../types/hearth";
 import { NotSent } from "./operator";
 
 /** The columns, left to right: the happy path, then the two side states, then the end. */
@@ -52,8 +57,10 @@ export interface WorkbenchCard {
   /** The smith the bead's work goes to: its own, else the default (null when unknown). */
   smith: string | null;
   smithIsDefault: boolean;
-  /** Why the card offers nothing, when it offers nothing for a reason. */
+  /** Why the card offers nothing, or only propose, when there is a reason. */
   note?: string;
+  /** For a paused bead that can be resumed: where Resume puts it, and that said in words. */
+  resumes?: { to: QueueState; says: string };
   /** For a queued bead, when eligibility was read: may it start now, and if not why. */
   start?: { may: true } | { may: false; why: string; waitsOn?: string };
 }
@@ -67,6 +74,17 @@ export interface WorkbenchColumn {
 }
 
 const natural = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+/**
+ * Where Resume puts a paused bead, in words: back where it was paused from,
+ * or Queued for a bead paused while running (`resumeTarget`), since nothing
+ * runs it after a pause and a shift starts it from there.
+ */
+function resumeSays(to: QueueState): string {
+  return to === "queued"
+    ? "Resume puts it in Queued, where a shift starts it. A bead paused while it was running goes there too: nothing runs it after a pause."
+    : `Resume returns it to ${COLUMN_LABELS[to]}.`;
+}
 
 export function workbenchColumns(
   queue: readonly QueueEntry[],
@@ -88,10 +106,15 @@ export function workbenchColumns(
     const note = twoLabels
       ? "Carries two queue labels: no move is made until one is taken out by hand."
       : entry.backed !== true
-        ? "The queue did not write this label (inherited or added by hand): propose it again."
+        ? "The queue did not write this label (inherited from a parent, or added by hand), so the bead is in no queue state: Propose puts it in the queue as proposed, where it waits for an approval."
         : entry.state === "paused" && entry.resume === undefined
           ? "Its queue_resume metadata names no state it can return to, so it cannot be resumed: set it by hand (bd update <id> --set-metadata=queue_resume=<state>)."
           : undefined;
+    const moves = operatorMoves(entry, { twoLabels });
+    const resumeTo =
+      moves.includes("resume") && entry.resume !== undefined
+        ? resumeTarget(entry.resume)
+        : undefined;
     const wait = waiting.get(entry.beadId);
     const start: WorkbenchCard["start"] =
       entry.state !== "queued" || eligibility === null
@@ -112,10 +135,13 @@ export function workbenchColumns(
       title: entry.title,
       state: entry.state,
       status: entry.status,
-      moves: operatorMoves(entry, { twoLabels }),
+      moves,
       smith: entry.smith ?? defaultSmith,
       smithIsDefault: entry.smith === undefined,
       ...(note !== undefined ? { note } : {}),
+      ...(resumeTo !== undefined
+        ? { resumes: { to: resumeTo, says: resumeSays(resumeTo) } }
+        : {}),
       ...(start !== undefined ? { start } : {}),
     };
   };
@@ -138,6 +164,7 @@ export function workbenchColumns(
 // ── What a move's answer means ──────────────────────────────────────────────
 
 const MOVE_DONE: Record<OperatorMove, string> = {
+  propose: "Proposed",
   approve: "Approved",
   queue: "Queued",
   pause: "Paused",
@@ -155,8 +182,9 @@ export interface MoveOutcome {
  * What one move's answer means for the card, by the write path's rules: no
  * answer, a 504, or a success that is not the control plane's envelope means
  * the outcome is not known; a refusal is said in the hearth's own words; only
- * an `ok: true` envelope is done. A move that could not get an operator token
- * (`NotSent`) was not sent, so it failed and changed nothing.
+ * an `ok: true` envelope is done; a resume says where the answer put the bead.
+ * A move that could not get an operator token (`NotSent`) was not sent, so it
+ * failed and changed nothing.
  */
 export async function moveOutcome(
   id: string,
@@ -179,16 +207,28 @@ export async function moveOutcome(
     return unknown;
   }
   if (response.status === 504) return unknown;
-  let envelope: { ok?: unknown; error?: unknown } | null = null;
+  let envelope: { ok?: unknown; data?: unknown; error?: unknown } | null = null;
   try {
-    envelope = (await response.json()) as { ok?: unknown; error?: unknown };
+    envelope = (await response.json()) as {
+      ok?: unknown;
+      data?: unknown;
+      error?: unknown;
+    };
   } catch {
     envelope = null;
   }
-  if (response.ok)
-    return envelope?.ok === true
-      ? { tone: "done", message: `${MOVE_DONE[move]} ${id}.` }
-      : unknown;
+  if (response.ok) {
+    if (envelope?.ok !== true) return unknown;
+    const data = envelope.data;
+    const to =
+      move === "resume" && typeof data === "object" && data !== null
+        ? QUEUE_STATES.find((state) => state === (data as { to?: unknown }).to)
+        : undefined;
+    return {
+      tone: "done",
+      message: `${MOVE_DONE[move]} ${id}${to !== undefined ? ` to ${COLUMN_LABELS[to]}` : ""}.`,
+    };
+  }
   return {
     tone: "failed",
     message:

@@ -40,7 +40,7 @@ import {
 } from "../../ledger/query";
 import { readScoreboard, type ScoreboardFilter } from "../../ledger/scoreboard";
 import { type Eligibility, readEligibility } from "../../scheduler/eligibility";
-import { PAUSABLE } from "../../scheduler/queue-table";
+import { PAUSABLE, resumeTarget } from "../../scheduler/queue-table";
 import { type GitRun, listWorktrees } from "../../scheduler/worktrees";
 import { redactSecrets } from "../../secret-patterns";
 import {
@@ -465,11 +465,15 @@ function withTimeout<T>(
   });
 }
 
-/** For a paused entry, the state it returns to, when the bead names one the table can return to. */
+/**
+ * For a paused entry, the state it returns to on resume, when the bead names
+ * a state it was paused from: that state, or `queued` for `running`
+ * (`resumeTarget`).
+ */
 function resumeOf(state: QueueState, value: unknown): { resume?: QueueState } {
   if (state !== "paused") return {};
-  const resume = PAUSABLE.find((pausable) => pausable === value);
-  return resume !== undefined ? { resume } : {};
+  const pausedFrom = PAUSABLE.find((pausable) => pausable === value);
+  return pausedFrom !== undefined ? { resume: resumeTarget(pausedFrom) } : {};
 }
 
 export type QueueRead =
