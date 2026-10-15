@@ -1,3 +1,7 @@
+---
+argument-hint: "[plan-path | bead-id] [--no-file]"
+---
+
 # /review-plan — Fact-check a plan against real code + first-party docs
 
 Review a **plan** for **inaccuracies**, grounding every finding in the real codebase and first-party
