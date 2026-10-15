@@ -9,6 +9,7 @@ import {
   BD_STAND_IN_SOURCE,
   BD_STAND_IN_STATE,
   bunPath,
+  GIT_STAND_IN_SOURCE,
   HEARTH_HOME,
 } from "./servers";
 
@@ -27,6 +28,10 @@ import {
  *
  * A build that fails, or a program that does not answer, stops the run: the
  * tests must not start against a `bd` nobody checked.
+ *
+ * The stand-in for `git` (`git-stand-in.ts`) is built into the same directory
+ * and checked the same way: it answers the bead source's worktree listing, so
+ * a council pack in the suite is the same on every machine (x1gs.7.14).
  *
  * First it removes the homes of earlier runs that are over
  * (`sweepFinishedRunHomes`): on Windows a run's teardown cannot remove its
@@ -70,5 +75,27 @@ export default function globalSetup(): void {
   if (asked.status !== 0 || asked.stdout.trim() !== "[]")
     throw new Error(
       `The stand-in for bd was built but does not answer (exit ${asked.status}): ${asked.stdout}${asked.stderr}`,
+    );
+
+  const git = join(
+    BD_STAND_IN_BIN,
+    process.platform === "win32" ? "git.exe" : "git",
+  );
+  const gitBuilt = spawnSync(
+    bunPath(),
+    ["build", "--compile", GIT_STAND_IN_SOURCE, "--outfile", git],
+    { encoding: "utf8" },
+  );
+  if (gitBuilt.status !== 0 || !existsSync(git))
+    throw new Error(
+      `The stand-in for git could not be built (exit ${gitBuilt.status}):\n${gitBuilt.stdout}\n${gitBuilt.stderr}`,
+    );
+  const listed = spawnSync(git, ["worktree", "list", "--porcelain", "-z"], {
+    encoding: "utf8",
+    cwd: HEARTH_HOME,
+  });
+  if (listed.status !== 0 || !listed.stdout.startsWith("worktree "))
+    throw new Error(
+      `The stand-in for git was built but does not answer (exit ${listed.status}): ${listed.stdout}${listed.stderr}`,
     );
 }
