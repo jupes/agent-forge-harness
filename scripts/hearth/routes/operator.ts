@@ -31,6 +31,7 @@ import {
   type StreamRoute,
   safeMessage,
 } from "../api";
+import type { ShiftStarts } from "../shift-launcher";
 import { createLedgerStream } from "../stream";
 import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
@@ -61,6 +62,8 @@ export interface OperatorDeps extends ReadDeps {
   queueLockFile: string;
   /** Where shifts given this hearth's home keep their records and stop requests. */
   shiftsDir: string;
+  /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
+  shiftStarts: ShiftStarts;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
@@ -406,6 +409,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         lockFile: deps.queueLockFile,
         // A shift's worktrees are under the main checkout, as forge:shift makes them.
         mainCheckout: localStateRoot(deps.root),
+        starts: deps.shiftStarts,
       }),
     ],
     close: () => live.close(),
