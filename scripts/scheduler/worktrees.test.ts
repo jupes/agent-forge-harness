@@ -290,6 +290,81 @@ describe("createWorktree", () => {
     );
   });
 
+  test("a start point: the branch starts at the commit it names, not at the HEAD of the checkout it is made from", () => {
+    const dir = repo();
+    git(dir, "checkout", "-q", "-b", "elsewhere");
+    writeFileSync(join(dir, "elsewhere.txt"), "elsewhere\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-q", "-m", "on elsewhere");
+    git(dir, "checkout", "-q", "master");
+    const created = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/started", startPoint: "elsewhere" },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+    expect(git(created.value.path, "rev-parse", "HEAD")).toBe(
+      git(dir, "rev-parse", "elsewhere"),
+    );
+    expect(git(created.value.path, "rev-parse", "HEAD")).not.toBe(
+      git(dir, "rev-parse", "HEAD"),
+    );
+  });
+
+  test("a start point that names no commit is refused before anything is made", () => {
+    const dir = repo();
+    const tree = git(dir, "rev-parse", "HEAD^{tree}");
+    for (const startPoint of ["no-such-ref", "HEAD~9", tree]) {
+      const refused = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/sp", startPoint },
+        deps(),
+      );
+      expect({ startPoint, ok: refused.ok }).toEqual({
+        startPoint,
+        ok: false,
+      });
+      if (!refused.ok) expect(refused.error).toContain("start point");
+    }
+    expect(git(dir, "branch", "--list", "feat/sp")).toBe("");
+    expect(existsSync(join(dir, "trees"))).toBe(false);
+  });
+
+  test("a start point that is empty, reads as an option or holds whitespace is refused without asking git about it", () => {
+    const dir = repo();
+    for (const startPoint of ["", "-x", "--all", "a b", "two\nlines"]) {
+      const asked: string[][] = [];
+      const recording: GitRun = (args, cwd, timeoutMs) => {
+        asked.push([...args]);
+        return gitRun(args, cwd, timeoutMs);
+      };
+      const refused = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/sq", startPoint },
+        deps({ git: recording }),
+      );
+      expect({ startPoint, ok: refused.ok }).toEqual({
+        startPoint,
+        ok: false,
+      });
+      if (!refused.ok) expect(refused.error).toContain("start point");
+      // git was asked about the repository and the branch, never about this start point.
+      expect(
+        asked.filter((args) =>
+          args.some((arg) => startPoint !== "" && arg.includes(startPoint)),
+        ),
+      ).toEqual([]);
+      expect(
+        asked.filter((args) => args.some((arg) => arg.endsWith("^{commit}"))),
+      ).toEqual([]);
+    }
+    expect(git(dir, "branch", "--list", "feat/sq")).toBe("");
+    expect(existsSync(join(dir, "trees"))).toBe(false);
+  });
+
   test("the session defaults to the mirror of the checkout it is made from", () => {
     const dir = repo();
     writeFileSync(join(dir, ".agent-forge-session"), "session-from-mirror\n");

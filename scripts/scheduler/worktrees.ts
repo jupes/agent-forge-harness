@@ -554,6 +554,30 @@ export interface CreateRequest {
   beadId?: string | undefined;
   /** Defaults to the session mirrored into the checkout the worktree is made from. */
   sessionId?: string | undefined;
+  /**
+   * The commit the branch starts at: a ref or a sha, verified as a commit in
+   * the main checkout. Defaults to the HEAD of the checkout it is made from.
+   */
+  startPoint?: string | undefined;
+}
+
+/** The commit a start point names, or why it names none. */
+function startCommit(
+  startPoint: string,
+  main: string,
+  git: GitRun,
+): Outcome<string> {
+  if (startPoint === "" || startPoint.startsWith("-") || /\s/.test(startPoint))
+    return no(`the start point "${startPoint}" is not a ref`);
+  const resolved = git(
+    ["rev-parse", "--verify", "--quiet", `${startPoint}^{commit}`],
+    main,
+    READ_MS,
+  );
+  const sha = resolved.stdout.trim();
+  if (resolved.status !== 0 || !/^[0-9a-f]{40,64}$/.test(sha))
+    return no(`the start point "${startPoint}" names no commit`);
+  return { ok: true, value: sha };
 }
 
 /** Why a branch name is refused, or null when it names a branch that does not exist yet. */
@@ -606,11 +630,13 @@ function ignoredHere(main: string, rel: string, git: GitRun): boolean {
 }
 
 /**
- * Make `<main>/trees/<id>` on a new branch that starts at the HEAD of `from`,
- * the checkout the command runs in, and record it. Refused before anything
- * is made: a name that is not a new branch, a bead or session id that is not
- * one, a repository that does not ignore `trees/` itself, the OS home. A
- * create git refuses leaves no branch and no record.
+ * Make `<main>/trees/<id>` on a new branch, and record it. The branch starts
+ * at the request's start point when it has one (a commit, verified in the
+ * main checkout), else at the HEAD of `from`, the checkout the command runs
+ * in. Refused before anything is made: a name that is not a new branch, a
+ * bead or session id that is not one, a start point that names no commit, a
+ * repository that does not ignore `trees/` itself, the OS home. A create git
+ * refuses leaves no branch and no record.
  */
 export function createWorktree(
   main: string,
@@ -646,10 +672,19 @@ export function createWorktree(
       "trees/ is not ignored by this repository's own .gitignore: add `trees/` there before making worktrees in it",
     );
 
-  const start = deps.git(["rev-parse", "HEAD"], from, READ_MS);
-  if (start.status !== 0)
-    return no(`the checkout ${from} has no HEAD to start from: ${said(start)}`);
-  const sha = start.stdout.trim();
+  let sha: string;
+  if (request.startPoint !== undefined) {
+    const start = startCommit(request.startPoint, root, deps.git);
+    if (!start.ok) return start;
+    sha = start.value;
+  } else {
+    const start = deps.git(["rev-parse", "HEAD"], from, READ_MS);
+    if (start.status !== 0)
+      return no(
+        `the checkout ${from} has no HEAD to start from: ${said(start)}`,
+      );
+    sha = start.stdout.trim();
+  }
 
   const mirror = deps.readMirror(from);
   const sessionId =

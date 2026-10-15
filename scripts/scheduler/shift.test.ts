@@ -31,6 +31,7 @@ import {
   type TrackedBead,
 } from "./queue-fixture";
 import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
+import { PR_FAILURES, type ToolResult, type ToolRun } from "./shift-pr";
 import { processAlive, readShiftRecord, requestStop } from "./shift-store";
 
 /**
@@ -74,8 +75,10 @@ function queued(
   };
 }
 
-/** What a scripted run does: end after `after` ms with `exit`, or run until it is stopped. */
-type Plan = { after: number; exit: 0 | 1; costUsd?: number } | "hang";
+/** What a scripted run does: end after `after` ms with `exit` (and `stderr`), or run until it is stopped. */
+type Plan =
+  | { after: number; exit: 0 | 1; costUsd?: number; stderr?: string }
+  | "hang";
 
 interface FakeRun {
   beadId: string;
@@ -95,6 +98,7 @@ interface FakeRun {
 function fakeAdapter(
   plan: (beadId: string, attempt: number) => Plan,
   reservations: () => number,
+  onSpawn: (request: SpawnRequest) => void = () => undefined,
 ) {
   const runs: FakeRun[] = [];
   let live = 0;
@@ -104,6 +108,7 @@ function fakeAdapter(
     provider: "claude",
     doctor: async () => ({ provider: "claude", found: true, ok: true }),
     async spawn(request: SpawnRequest) {
+      onSpawn(request);
       const attempt = (attempts.get(request.beadId) ?? 0) + 1;
       attempts.set(request.beadId, attempt);
       const run: FakeRun = {
@@ -143,7 +148,12 @@ function fakeAdapter(
       };
       if (step !== "hang") {
         cost = step.costUsd;
-        timers.push(setTimeout(() => end({ exitCode: step.exit }), step.after));
+        timers.push(
+          setTimeout(
+            () => end({ exitCode: step.exit, stderr: step.stderr ?? "" }),
+            step.after,
+          ),
+        );
       }
       if (request.timeoutMs !== undefined)
         timers.push(
@@ -205,6 +215,11 @@ function fakeAdapter(
   };
 }
 
+interface Called {
+  args: string[];
+  cwd: string;
+}
+
 interface Rig {
   root: string;
   home: string;
@@ -215,10 +230,21 @@ interface Rig {
   calls: string[][];
   /** Answer a `bd` call yourself: return a result to use it, or nothing to let the tracker answer. */
   intercept: ((args: string[]) => BdResult | undefined) | null;
+  /** Every git and gh call, and the start point of every worktree made. */
+  git: Called[];
+  gh: Called[];
+  startPoints: string[];
+  /** Answer a git or gh call yourself, as `intercept` does for bd. */
+  gitAnswer: ((args: string[]) => ToolResult | undefined) | null;
+  ghAnswer: ((args: string[]) => ToolResult | undefined) | null;
+  /** `git <verb>`, `bd <verb>`, `gh <verb>` and `spawn <bead>`, in the order they happened. */
+  order: string[];
   deps: ShiftDeps;
   fake: ReturnType<typeof fakeAdapter>;
   labels(id: string): string[];
   reservations(): number;
+  /** The texts of the `comments add` calls for a bead, in order. */
+  comments(id: string): string[];
   events(filter?: { runId?: string }): Array<{
     kind: string;
     runId?: string;
@@ -228,6 +254,15 @@ interface Rig {
 }
 
 const FAST: Partial<ShiftOptions> = { tickMs: 10, pollMs: 40, repairs: 0 };
+
+/** The commit the fake git says origin's base names. */
+const BASE_SHA = "b".repeat(40);
+
+const answered = (stdout: string): ToolResult => ({
+  status: 0,
+  stdout,
+  stderr: "",
+});
 
 function rig(
   beads: TrackedBead[],
@@ -248,20 +283,49 @@ function rig(
   const tracker = queueTracker(beads);
   const reservations = () =>
     activeReservations({ workspace }, { path: ledger }).length;
-  const fake = fakeAdapter(plan, reservations);
+  const order: string[] = [];
+  const fake = fakeAdapter(plan, reservations, (request) =>
+    order.push(`spawn ${request.beadId}`),
+  );
   const calls: string[][] = [];
-  // The tracker answers the queue's `show` and `update`; the list shapes of
-  // eligibility are answered from the same beads.
+  // The tracker answers the queue's `show` and `update` and the shift's
+  // comments; the list shapes of eligibility are answered from the same beads.
   const runBd: BdRunner = async (args) => {
     calls.push(args);
+    order.push(`bd ${args[0]}`);
     return (
       self.intercept?.(args) ??
       tracker.answer(args) ??
+      tracker.answerComment(args) ??
       answerQueueList(args, [...tracker.beads.values()]) ?? {
         status: 1,
         stdout: "",
         stderr: `Error: the test tracker does not answer: ${args.join(" ")}\n`,
       }
+    );
+  };
+  // git answers as a repository whose origin has the base, and takes every
+  // push; gh opens pull request after pull request. Neither is the real one.
+  const git: ToolRun = async (args, cwd) => {
+    self.git.push({ args: [...args], cwd });
+    order.push(`git ${args[0]}`);
+    const given = self.gitAnswer?.([...args]);
+    if (given !== undefined) return given;
+    if (args[0] === "fetch" || args[0] === "push") return answered("");
+    if (args[0] === "rev-parse") return answered(`${BASE_SHA}\n`);
+    if (args[0] === "log") return answered("abc1234 the run's work\n");
+    return {
+      status: 1,
+      stdout: "",
+      stderr: `the test's git does not answer: ${args.join(" ")}`,
+    };
+  };
+  const gh: ToolRun = async (args, cwd) => {
+    self.gh.push({ args: [...args], cwd });
+    order.push(`gh ${args[0]}`);
+    return (
+      self.ghAnswer?.([...args]) ??
+      answered(`https://github.com/example/harness/pull/${self.gh.length}\n`)
     );
   };
   const deps: ShiftDeps = {
@@ -272,11 +336,15 @@ function rig(
     shiftsDir: join(home, "shifts"),
     mainCheckout: root,
     sampleHost: async () => ({ busy: false }),
-    makeWorktree: ({ id }) => {
+    makeWorktree: ({ id, startPoint }) => {
+      self.startPoints.push(startPoint);
       const path = join(root, "trees", id);
       mkdirSync(join(path, ".git"), { recursive: true });
       return { ok: true, path };
     },
+    git,
+    gh,
+    checkPrBody: async () => null,
     exec: {
       env: { PATH: process.env["PATH"] ?? "", AGENT_FORGE_HOME: home },
       home: root,
@@ -292,6 +360,12 @@ function rig(
     tracker,
     calls,
     intercept: null,
+    git: [],
+    gh: [],
+    startPoints: [],
+    gitAnswer: null,
+    ghAnswer: null,
+    order,
     deps,
     fake,
     labels: (id) =>
@@ -299,6 +373,10 @@ function rig(
         l.startsWith("queue:"),
       ),
     reservations,
+    comments: (id) =>
+      calls
+        .filter((args) => args[0] === "comments" && args[4] === id)
+        .map((args) => args[5] ?? ""),
     events: (filter = {}) =>
       queryEvents({ workspace, ...filter }, { path: ledger }).map((event) => ({
         kind: event.kind,
@@ -571,6 +649,9 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(done.record.beads[0]?.error).toContain(
       "worktree: trees/ is not ignored",
     );
+    // It never started: no comment on it, and no pull request.
+    expect(r.comments("t-1")).toEqual([]);
+    expect(r.gh).toEqual([]);
   });
 
   test("a worktree maker that throws is a worktree that cannot be made: the bead is given back and the shift goes on", async () => {
@@ -669,6 +750,9 @@ describe("forge:shift — the loop, on a fake adapter", () => {
       [{ repairs: -1 }, "repairs"],
       [{ epic: "--all" }, "epic"],
       [{ smith: "no-such-smith" }, 'unknown smith "no-such-smith"'],
+      [{ base: "--upload-pack=x" }, "base"],
+      [{ base: "shift/shift-20261014-120000-0a0b/t-1" }, "base"],
+      [{ base: "a..b" }, "base"],
     ] as const) {
       const outcome = await runShift({ ...FAST, ...given }, r.deps);
       expect(outcome.ok).toBe(false);
@@ -676,6 +760,256 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     }
     expect(existsSync(r.deps.shiftsDir)).toBe(false);
     expect(r.events()).toEqual([]);
+    expect(r.git).toEqual([]);
+  });
+});
+
+describe("forge:shift — the base, the draft pull request and the worklog comments", () => {
+  test("origin's base is fetched before anything else, and every worktree of the shift starts at the commit it names; --base names another branch, and the pull requests go into it", async () => {
+    const r = rig([queued("t-1"), queued("t-2")]);
+    const done = await shift(r, { concurrency: 2, base: "release/2" });
+    expect(done.reason).toBe("drained");
+    expect(r.order[0]).toBe("git fetch");
+    expect(r.git[0]).toEqual({
+      args: [
+        "fetch",
+        "--no-tags",
+        "origin",
+        "+refs/heads/release/2:refs/remotes/origin/release/2",
+      ],
+      cwd: r.root,
+    });
+    expect(r.startPoints).toEqual([BASE_SHA, BASE_SHA]);
+    expect(done.record.options.base).toBe("release/2");
+    expect(done.record.baseSha).toBe(BASE_SHA);
+    expect(
+      r.gh.map((call) => call.args.find((arg) => arg.startsWith("--base="))),
+    ).toEqual(["--base=release/2", "--base=release/2"]);
+  });
+
+  test("a base that cannot be fetched refuses the shift before anything is written: no record, no event, no bd call", async () => {
+    const r = rig([queued("t-1")]);
+    r.gitAnswer = (args) =>
+      args[0] === "fetch"
+        ? {
+            status: 128,
+            stdout: "",
+            stderr: "fatal: couldn't find remote ref refs/heads/release\n",
+          }
+        : undefined;
+    const outcome = await runShift({ ...FAST, base: "release" }, r.deps);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toContain("the base could not be fetched");
+      expect(outcome.error).toContain("couldn't find remote ref");
+      expect(outcome.error).toContain("nothing was started");
+    }
+    expect(r.calls).toEqual([]);
+    expect(existsSync(r.deps.shiftsDir)).toBe(false);
+    expect(r.events()).toEqual([]);
+  });
+
+  test("a bead that reaches review gets a draft pull request once it is in review: only its shift branch is pushed, gh opens it into the base, and its URL is on the bead's record entry", async () => {
+    const r = rig([queued("t-1")]);
+    let labelAtGh: string[] = [];
+    r.ghAnswer = () => {
+      labelAtGh = r.labels("t-1");
+      return undefined;
+    };
+    const done = await shift(r);
+    const branch = `shift/${done.shiftId}/t-1`;
+    const entry = done.record.beads[0];
+    expect(entry).toMatchObject({
+      outcome: "review",
+      prUrl: "https://github.com/example/harness/pull/1",
+      prBody: "shift",
+    });
+    expect(entry?.error).toBeUndefined();
+    expect(labelAtGh).toEqual(["queue:review"]);
+    expect(
+      r.git.filter((call) => call.args[0] === "push").map((call) => call),
+    ).toEqual([
+      {
+        args: [
+          "push",
+          "--porcelain",
+          "--no-follow-tags",
+          "--recurse-submodules=no",
+          "origin",
+          `${BASE_SHA}:refs/heads/${branch}`,
+        ],
+        cwd: r.root,
+      },
+    ]);
+    expect(r.gh).toHaveLength(1);
+    expect(r.gh[0]?.args.slice(0, 5)).toEqual([
+      "pr",
+      "create",
+      "--draft",
+      "--base=master",
+      `--head=${branch}`,
+    ]);
+    expect(r.gh[0]?.cwd).toBe(r.root);
+    // Nothing merges, nothing is marked ready.
+    for (const call of r.gh)
+      expect(call.args.filter((arg) => /merge|ready/.test(arg))).toEqual([]);
+  });
+
+  test("a pull request step that fails leaves the bead in review with the reason on its record entry and a fixed sentence in its end comment, and the shift goes on to the next bead", async () => {
+    const r = rig([queued("t-1"), queued("t-2"), queued("t-3")]);
+    r.gitAnswer = (args) =>
+      args[0] === "push" && (args.at(-1) ?? "").endsWith("/t-1")
+        ? {
+            status: 1,
+            stdout: "",
+            stderr: " ! [remote rejected] (pre-receive hook declined)\n",
+          }
+        : undefined;
+    r.ghAnswer = (args) =>
+      args.some((arg) => arg.startsWith("--head=") && arg.endsWith("/t-2"))
+        ? {
+            status: 1,
+            stdout: "",
+            stderr: "GraphQL: Resource not accessible (createPullRequest)\n",
+          }
+        : undefined;
+    const done = await shift(r, { concurrency: 1 });
+    expect(done.reason).toBe("drained");
+    for (const id of ["t-1", "t-2", "t-3"])
+      expect(r.labels(id)).toEqual(["queue:review"]);
+    const [one, two, three] = done.record.beads;
+    expect(one).toMatchObject({ outcome: "review" });
+    expect(one?.prUrl).toBeUndefined();
+    expect(one?.error).toContain("pull request: push:");
+    expect(one?.error).toContain("pre-receive hook declined");
+    expect(two?.prUrl).toBeUndefined();
+    expect(two?.error).toContain("pull request: gh:");
+    expect(three?.prUrl).toMatch(/\/pull\/\d+$/);
+    expect(three?.error).toBeUndefined();
+    const ended = (id: string) => r.comments(id).at(-1) ?? "";
+    expect(ended("t-1")).toContain(PR_FAILURES.push);
+    expect(ended("t-1")).not.toContain("pre-receive");
+    expect(ended("t-2")).toContain(PR_FAILURES.gh);
+    expect(ended("t-2")).not.toContain("GraphQL");
+    expect(ended("t-3")).toContain(three?.prUrl ?? "no url");
+  });
+
+  test("a body that looks like it holds a secret is not pushed or posted: the bead stays in review, its record and end comment name a body failure, and neither holds the secret", async () => {
+    const token = `ghp_${"Zx9Qw8Er7Ty6".repeat(3)}`;
+    const r = rig([queued("t-1")]);
+    // The run's one commit names the key; the shift's own body would list it.
+    r.gitAnswer = (args) =>
+      args[0] === "log" ? answered(`abc1234 add ${token}\n`) : undefined;
+    const done = await shift(r);
+    const entry = done.record.beads[0];
+    expect(entry).toMatchObject({ outcome: "review", prBody: "shift" });
+    expect(entry?.prUrl).toBeUndefined();
+    expect(entry?.error).toContain("pull request: body:");
+    expect(entry?.error).toContain("github-token");
+    expect(r.gh).toEqual([]);
+    expect(r.git.filter((call) => call.args[0] === "push")).toEqual([]);
+    expect(r.comments("t-1").at(-1)).toContain(PR_FAILURES.body);
+    for (const text of r.comments("t-1")) expect(text).not.toContain(token);
+    expect(
+      readFileSync(join(r.deps.shiftsDir, `${done.shiftId}.json`), "utf8"),
+    ).not.toContain(token);
+  });
+
+  test("a bead that ran gets one worklog: comment when it starts and one when it ends, each a single bd comments add with every value after --", async () => {
+    const r = rig([queued("t-1")]);
+    const done = await shift(r);
+    const entry = done.record.beads[0];
+    if (entry === undefined) throw new Error("no bead");
+    const posted = r.calls.filter((args) => args[0] === "comments");
+    expect(posted).toHaveLength(2);
+    for (const args of posted) {
+      expect(args.slice(0, 5)).toEqual([
+        "comments",
+        "add",
+        "--json",
+        "--",
+        "t-1",
+      ]);
+      expect(args).toHaveLength(6);
+    }
+    expect(r.comments("t-1")).toEqual([
+      `worklog: shift ${done.shiftId} started this bead: run ${entry.runId}, smith ${entry.smith}, worktree ${entry.worktree}, branch ${entry.branch}. Its events: bun run forge:audit --run ${entry.runId}.`,
+      `worklog: shift ${done.shiftId} ended this bead after 1 run: review. A run succeeded and the bead was submitted for review. Draft pull request: ${entry.prUrl}.`,
+    ]);
+    expect(r.tracker.beads.get("t-1")?.comments).toEqual(r.comments("t-1"));
+    // Started before its first run; ended after its pull request.
+    const at = (step: string) => r.order.indexOf(step);
+    expect(at("bd comments")).toBeLessThan(at("spawn t-1"));
+    expect(r.order.lastIndexOf("bd comments")).toBeGreaterThan(at("gh pr"));
+    expect(entry.commentError).toBeUndefined();
+  });
+
+  test("the end comment of a bead halted, released or left gives the run count and a fixed reason, never the provider's own words", async () => {
+    const words = "PROVIDER-PRIVATE: the key is in ~/.secret";
+    const halted = rig([queued("t-bad")], () => ({
+      after: 10,
+      exit: 1,
+      stderr: words,
+    }));
+    const h = await shift(halted, { repairs: 1 });
+    expect(h.record.beads[0]?.error).toContain("PROVIDER-PRIVATE");
+    expect(halted.comments("t-bad").at(-1)).toBe(
+      `worklog: shift ${h.shiftId} ended this bead after 2 runs: halted. Every run failed; the bead was halted, and the operator's queue action is the way out.`,
+    );
+
+    const released = rig([queued("t-1")], () => "hang");
+    const rel = await shift(released, { forMs: 400 });
+    expect(released.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${rel.shiftId} ended this bead after 1 run: released. The shift stopped its run (its time ran out, or it was asked to stop) and put the bead back in queued.`,
+    );
+
+    const left = rig([queued("t-1")], () => "hang");
+    const running = shift(left, { pollMs: 30 });
+    await until(() => left.fake.runs.length === 1);
+    const operator = createQueue({
+      workspace: left.workspace,
+      runBd: left.tracker.run,
+      appendEvent: (event) => appendEvent(event, { path: left.ledger }),
+      lockFile: left.deps.lockFile,
+    });
+    expect((await operator.move("t-1", "pause", "operator")).ok).toBe(true);
+    const l = await running;
+    expect(left.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${l.shiftId} ended this bead after 1 run: left. It was moved while it ran (it is queue:paused) and was left as it is.`,
+    );
+    for (const r of [halted, released, left])
+      for (const text of r.calls
+        .filter((args) => args[0] === "comments")
+        .map((args) => args[5] ?? ""))
+        expect(text).not.toContain("PROVIDER-PRIVATE");
+  });
+
+  test("a comment bd refuses is written on the bead's record entry and stops nothing: the bead still ends in review with its pull request, and the next bead still runs", async () => {
+    const r = rig([queued("t-1"), queued("t-2")]);
+    r.intercept = (args) =>
+      args[0] === "comments" && args[4] === "t-1"
+        ? {
+            status: 1,
+            stdout: `${JSON.stringify({ error: "database is locked" })}\n`,
+            stderr: `Command failed: bd ${args.join(" ")}`,
+          }
+        : undefined;
+    const done = await shift(r, { concurrency: 1 });
+    expect(done.reason).toBe("drained");
+    const [one, two] = done.record.beads;
+    expect(one).toMatchObject({ outcome: "review" });
+    expect(one?.prUrl).toBeDefined();
+    expect(one?.error).toBeUndefined();
+    expect(one?.commentError).toBe(
+      "started comment: bd comments add failed: database is locked; ended comment: bd comments add failed: database is locked",
+    );
+    expect(two).toMatchObject({ outcome: "review" });
+    expect(two?.commentError).toBeUndefined();
+    expect(r.tracker.beads.get("t-2")?.comments).toHaveLength(2);
+    // Each comment was asked for once: none is repeated.
+    expect(
+      r.calls.filter((args) => args[0] === "comments" && args[4] === "t-1"),
+    ).toHaveLength(2);
   });
 });
 
