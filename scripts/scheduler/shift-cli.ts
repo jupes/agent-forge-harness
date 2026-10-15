@@ -4,15 +4,24 @@
  * them.
  *
  * Usage:
- *   bun run forge:shift run [--for 2h] [--concurrency 2] [--max-beads 4]
- *       [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>]
- *       [--run-timeout <duration>] [--base master] [--id <shift-id>]
+ *   bun run forge:shift run [--for <duration>] [--concurrency <n>]
+ *       [--max-beads <n>] [--max-usd <dollars>] [--repairs <n>] [--epic <id>]
+ *       [--smith <name>] [--run-timeout <duration>] [--base master]
+ *       [--id <shift-id>]
  *   bun run forge:shift stop <shift-id>
  *   bun run forge:shift recover <shift-id>
  *   bun run forge:shift list
  *
  * A duration is a whole number of seconds, minutes or hours: `90s`, `30m`,
- * `2h`. `--id` gives the shift the id it runs under instead of one minted at
+ * `2h`. Each of `--for`, `--concurrency`, `--max-beads`, `--max-usd` and
+ * `--repairs` left out is the config's `[shift]` value (`for`,
+ * `concurrency`, `max_beads`, `max_usd`, `repairs`), else its builtin
+ * (`BUILTIN_SHIFT`, scripts/config/defaults.ts); the host is too busy to
+ * admit more at `[shift] throttle`. The config is read as each run's
+ * `forge:exec` reads it:
+ * `agent-forge.toml` in the checkout the shift runs in, over `config.toml` in
+ * the Agent Forge home. `bun run forge:config get shift.<key>` says which
+ * value applies and where it came from; a flag still wins. `--id` gives the shift the id it runs under instead of one minted at
  * the start: the hearth's `POST /shifts` mints the id first, so that its audit
  * row names the shift, and starts `run --id <id>` as its child. It must be a
  * shift id (`shift-YYYYMMDD-HHMMSS-xxxx`) that no shift record and no stop
@@ -51,6 +60,7 @@
 
 import { join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
+import { parseDuration } from "../config/load";
 import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
 import { isMain } from "../is-main";
@@ -72,19 +82,9 @@ import {
 import { createWorktree } from "./worktrees";
 
 const USAGE =
-  "run [--for 2h] [--concurrency 2] [--max-beads 4] [--max-usd 10] [--repairs 3] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list";
+  "run [--for <duration>] [--concurrency <n>] [--max-beads <n>] [--max-usd <dollars>] [--repairs <n>] [--epic <id>] [--smith <name>] [--run-timeout <duration>] [--base master] [--id <shift-id>] | stop <shift-id> | recover <shift-id> | list";
 
 type Env = Readonly<Record<string, string | undefined>>;
-
-const DURATION = /^([1-9]\d{0,5})(s|m|h)$/;
-const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000 } as const;
-
-/** `90s`, `30m`, `2h` in ms; null for anything else. */
-export function parseDuration(text: string): number | null {
-  const match = DURATION.exec(text);
-  if (match === null) return null;
-  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
-}
 
 /** The checkout this file belongs to: where `bun run pr:check` is defined. */
 const HARNESS = resolve(import.meta.dir, "..", "..");

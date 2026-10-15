@@ -101,4 +101,20 @@ describe("the host sampler", () => {
       reason: "memory 70% in use is at or above 60%",
     });
   });
+
+  test("a call that names a threshold is judged against it, not the sampler's own; the next call without one goes back to the sampler's", async () => {
+    const probe = host([{ busy: 5, idle: 5 }], { free: 30, total: 100 });
+    const sample = createHostSampler({
+      probe,
+      sleep: noWait,
+      threshold: 0.95,
+    });
+    expect(await sample(0.6)).toEqual({
+      busy: true,
+      cpu: null,
+      memory: 0.7,
+      reason: "memory 70% in use is at or above 60%",
+    });
+    expect(await sample()).toEqual({ busy: false, cpu: null, memory: 0.7 });
+  });
 });

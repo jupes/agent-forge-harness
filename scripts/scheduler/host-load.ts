@@ -1,7 +1,8 @@
 /**
  * Whether the host is too busy to start more work: the share of CPU time
  * spent working since the last reading, and the share of memory in use, each
- * against one threshold (85% by default, decision 8).
+ * against one threshold: the caller's (the shift passes `[shift] throttle`),
+ * else `DEFAULT_HOST_THRESHOLD`, the builtin of `[shift] throttle`.
  *
  * The CPU figure comes from `os.cpus()` counters, which every platform Bun
  * runs on reports, Windows included (`os.loadavg()` is all zeros there). The
@@ -11,6 +12,7 @@
  */
 
 import { cpus, freemem, totalmem } from "node:os";
+import { BUILTIN_SHIFT } from "../config/defaults";
 
 /** The parts of `node:os` the sampler reads. */
 export interface HostProbe {
@@ -38,7 +40,7 @@ export interface HostLoad {
 }
 
 export interface HostSamplerOptions {
-  /** At or above this share, of either, the host is busy. Default 0.85. */
+  /** At or above this share, of either, the host is busy, unless a call names its own. Default `DEFAULT_HOST_THRESHOLD`. */
   threshold?: number;
   probe?: HostProbe;
   /** The gap between the two readings of the first sample. Default 500 ms. */
@@ -46,7 +48,8 @@ export interface HostSamplerOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export const DEFAULT_HOST_THRESHOLD = 0.85;
+/** The builtin of `[shift] throttle` (scripts/config/defaults.ts). */
+export const DEFAULT_HOST_THRESHOLD: number = BUILTIN_SHIFT.throttle;
 
 interface Reading {
   busy: number;
@@ -67,19 +70,19 @@ function read(probe: HostProbe): Reading {
 const percent = (share: number): string => `${Math.round(share * 100)}%`;
 const rounded = (share: number): number => Math.round(share * 1000) / 1000;
 
-/** A sampler: each call says how busy the host is now. */
+/** A sampler: each call says how busy the host is now, against the threshold the call names, else the sampler's. */
 export function createHostSampler(
   options: HostSamplerOptions = {},
-): () => Promise<HostLoad> {
+): (threshold?: number) => Promise<HostLoad> {
   const probe = options.probe ?? { cpus, freemem, totalmem };
-  const threshold = options.threshold ?? DEFAULT_HOST_THRESHOLD;
+  const fallback = options.threshold ?? DEFAULT_HOST_THRESHOLD;
   const gapMs = options.gapMs ?? 500;
   const sleep =
     options.sleep ??
     ((ms: number) => new Promise((done) => setTimeout(done, ms)));
   let last: Reading | null = null;
 
-  return async () => {
+  return async (threshold = fallback) => {
     if (last === null) {
       last = read(probe);
       await sleep(gapMs);

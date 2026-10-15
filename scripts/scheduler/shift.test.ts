@@ -6,10 +6,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import { loadConfig } from "../config/load";
 import { claudeAdapter } from "../executors/claude";
 import { liveChildCount } from "../executors/supervisor";
 import type {
@@ -30,7 +32,12 @@ import {
   queueTracker,
   type TrackedBead,
 } from "./queue-fixture";
-import { runShift, type ShiftDeps, type ShiftOptions } from "./shift";
+import {
+  runShift,
+  type ShiftDeps,
+  type ShiftOptions,
+  shiftOptions,
+} from "./shift";
 import { PR_FAILURES, type ToolResult, type ToolRun } from "./shift-pr";
 import { processAlive, readShiftRecord, requestStop } from "./shift-store";
 
@@ -761,6 +768,119 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(existsSync(r.deps.shiftsDir)).toBe(false);
     expect(r.events()).toEqual([]);
     expect(r.git).toEqual([]);
+  });
+});
+
+describe("forge:shift — the config's [shift]", () => {
+  /** A sampler that is never busy and keeps the threshold of each call. */
+  const sampled = () => {
+    const thresholds: number[] = [];
+    const sampleHost = async (threshold: number) => {
+      thresholds.push(threshold);
+      return { busy: false };
+    };
+    return { thresholds, sampleHost };
+  };
+
+  test("each bound not given is the workspace file's [shift] and a given one wins; the record and shift.started carry the values that applied, and the host is sampled against [shift] throttle", async () => {
+    const { thresholds, sampleHost } = sampled();
+    const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], undefined, {
+      sampleHost,
+    });
+    writeFileSync(
+      join(r.root, "agent-forge.toml"),
+      '[shift]\nconcurrency = 1\nfor = "90m"\nmax_beads = 2\nmax_usd = 7\nrepairs = 2\nthrottle = 0.5\n',
+    );
+    // FAST gives repairs = 0, which wins over the file's 2.
+    const done = await shift(r);
+    expect(done.reason).toBe("count");
+    expect(r.fake.maxLive()).toBe(1);
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-1", "t-2"]);
+    expect(done.record.options).toEqual({
+      concurrency: 1,
+      forMs: 90 * 60_000,
+      maxBeads: 2,
+      maxUsd: 7,
+      repairs: 0,
+      base: "master",
+    });
+    expect(r.events()[0]).toMatchObject({
+      kind: "shift.started",
+      payload: {
+        concurrency: 1,
+        durationMs: 90 * 60_000,
+        maxBeads: 2,
+        maxUsd: 7,
+      },
+    });
+    expect(thresholds.length).toBeGreaterThan(0);
+    expect([...new Set(thresholds)]).toEqual([0.5]);
+  });
+
+  test("a [shift] key the machine file sets applies with a workspace file present, and the workspace file wins a key both set", async () => {
+    const r = rig([queued("t-1")]);
+    // The rig's home stands in for the OS home: its machine file is here.
+    mkdirSync(join(r.root, ".agent-forge"), { recursive: true });
+    writeFileSync(
+      join(r.root, ".agent-forge", "config.toml"),
+      "[shift]\nmax_usd = 3\nmax_beads = 9\n",
+    );
+    writeFileSync(join(r.root, "agent-forge.toml"), "[shift]\nmax_beads = 5\n");
+    const done = await shift(r);
+    expect(done.record.options).toMatchObject({ maxUsd: 3, maxBeads: 5 });
+  });
+
+  test("with no [shift] each bound not given is the builtin, and the host is sampled against the builtin threshold", async () => {
+    const { thresholds, sampleHost } = sampled();
+    const r = rig([queued("t-1")], undefined, { sampleHost });
+    const done = await shift(r);
+    expect(done.record.options).toEqual({
+      concurrency: 2,
+      forMs: 2 * 3_600_000,
+      maxBeads: 4,
+      maxUsd: 10,
+      repairs: 0,
+      base: "master",
+    });
+    expect([...new Set(thresholds)]).toEqual([0.85]);
+  });
+
+  test("a [shift] value outside the shift's bounds refuses the shift before anything is done, naming the file and the key", async () => {
+    const r = rig([queued("t-1")]);
+    const file = join(r.root, "agent-forge.toml");
+    writeFileSync(file, "[shift]\nmax_usd = 0\n");
+    expect(await runShift(FAST, r.deps)).toEqual({
+      ok: false,
+      error: `the config could not be read: ${file}: shift.max_usd: expected dollars above 0, at most 1000`,
+    });
+    expect(existsSync(r.deps.shiftsDir)).toBe(false);
+    expect(r.events()).toEqual([]);
+    expect(r.git).toEqual([]);
+    expect(r.calls).toEqual([]);
+  });
+
+  test("shiftOptions and the [shift] loader refuse a value one past each bound with the same words", () => {
+    const cases: Array<[keyof ShiftOptions, string, number]> = [
+      ["concurrency", "concurrency", 9],
+      ["concurrency", "concurrency", 0],
+      ["maxBeads", "max_beads", 101],
+      ["repairs", "repairs", 11],
+      ["maxUsd", "max_usd", 1000.01],
+      ["maxUsd", "max_usd", 0],
+    ];
+    for (const [field, key, value] of cases) {
+      const option = shiftOptions({ [field]: value });
+      if (option.ok) throw new Error(`shiftOptions took ${field} = ${value}`);
+      expect(option.error).toStartWith(`${field}: expected`);
+      const words = option.error.slice(`${field}: `.length);
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), "af cfg ")));
+      roots.push(root);
+      const file = join(root, "agent-forge.toml");
+      writeFileSync(file, `[shift]\n${key} = ${value}\n`);
+      expect(() =>
+        loadConfig({ harnessRoot: root, home: root, env: {} }),
+      ).toThrow(`${file}: shift.${key}: ${words}`);
+    }
   });
 });
 
