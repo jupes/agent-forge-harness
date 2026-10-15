@@ -123,8 +123,10 @@ const DEFAULT_BODY_BYTES = 16_000;
 export const BODY_TIMEOUT_MS = 10_000;
 /**
  * A refusal whose body has not begun to arrive this long after the refusal was
- * decided is sent without waiting for it (see `serveAction`). Under the MCP
- * server's 100 ms hold-back.
+ * decided is sent without waiting for it (see `serveAction`): a client that
+ * said `Expect: 100-continue` was not asked for its body, and one that holds
+ * its body back without saying so (an MCP server built before it sent
+ * `Expect`, for 100 ms) has not sent it yet.
  */
 const HELD_BODY_MS = 50;
 /** A busy ledger is tried this many times, this far apart, before the action is refused. */
@@ -271,8 +273,17 @@ interface RequestBody {
  * makes the runtime end the response itself (an empty 200), so a reader that
  * stops at a deadline would never send its answer. Listeners are taken off
  * when the read stops, and the request is paused if its body had not ended.
+ *
+ * A client that said `Expect: 100-continue` waits to be asked for its body,
+ * and the server sends nothing for it (`server.ts`): the first read that keeps
+ * the body asks, with `100 Continue`. A read that keeps nothing (dropping the
+ * body of a refusal) does not ask, so such a client is refused on its head.
  */
-function requestBody(req: IncomingMessage, timeoutMs: number): RequestBody {
+function requestBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  timeoutMs: number,
+): RequestBody {
   const deadline = Date.now() + timeoutMs;
   // An error after the read has stopped (the connection closed under it) must not be thrown as unhandled.
   req.on("error", () => {});
@@ -314,6 +325,12 @@ function requestBody(req: IncomingMessage, timeoutMs: number): RequestBody {
     });
   return {
     read(keep) {
+      if (
+        reading === null &&
+        keep > 0 &&
+        req.headers.expect?.toLowerCase() === "100-continue"
+      )
+        res.writeContinue();
       reading ??= readTo(keep);
       return reading;
     },
@@ -470,9 +487,10 @@ export function createOperatorApi(
    * for longer: the answer is sent and the connection closed once it is
    * written. And a refusal whose body has not begun to arrive within
    * `HELD_BODY_MS` is sent then, as the refusal of a client that holds its
-   * body back until it has heard nothing (the MCP server does, for a body over
-   * 64 kB); the body is still read and dropped after it, and the connection
-   * closed if the body has not ended by the time limit.
+   * body back until it is asked for it (`Expect: 100-continue`, which the MCP
+   * server sends with a body over 64 kB) or until it has heard nothing; the
+   * body is still read and dropped after it, and the connection closed if the
+   * body has not ended by the time limit.
    */
   async function serveAction(
     route: ActionRoute,
@@ -480,7 +498,7 @@ export function createOperatorApi(
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    const incoming = requestBody(req, bodyTimeoutMs);
+    const incoming = requestBody(req, res, bodyTimeoutMs);
     const reply = await act(route, pending, req, incoming);
     const reading = incoming.read(0);
     let held: ReturnType<typeof setTimeout> | undefined;

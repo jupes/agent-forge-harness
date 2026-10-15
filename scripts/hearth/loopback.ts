@@ -25,8 +25,6 @@ export interface LoopbackRequest {
   signal?: AbortSignal;
   timeoutMs: number;
   maxBytes: number;
-  /** How long a body over 64 kB is held back after the head; `EARLY_ANSWER_MS` when not given. */
-  holdBodyMs?: number;
 }
 
 export interface LoopbackAnswer {
@@ -40,13 +38,16 @@ export type Exchange = (request: LoopbackRequest) => Promise<LoopbackAnswer>;
 export class NoAnswerInTime extends Error {}
 
 /**
- * A body up to this size is written with the head; a larger one waits
- * `EARLY_ANSWER_MS` for a refusal given on the head alone. A wait, not a
- * guarantee: a peer slower than that to refuse has its refusal lost as before,
- * and every large request that is accepted takes that much longer.
+ * A body up to this size is written with the head. A larger one is announced
+ * with `Expect: 100-continue` and written only when the peer answers `100
+ * Continue`, so a refusal the peer gives on the head alone (a token it does
+ * not honour) arrives however long the peer takes to give it, and is never
+ * sent to a client still writing a body. There is no wait of the exchange's
+ * own: a peer that answers neither is the exchange's time limit, as any silent
+ * peer is. The hearth sends `100 Continue` when it begins to read a body it
+ * will use; under Bun, a hearth built before it did sends it at once.
  */
 const BODY_WITH_HEAD_BYTES = 65_536;
-const EARLY_ANSWER_MS = 100;
 const HEAD_END = Buffer.from("\r\n\r\n");
 const CRLF = Buffer.from("\r\n");
 /** What a request target, a header name and a header value may be made of: nothing that could begin another line. */
@@ -74,6 +75,9 @@ function readAnswer(bytes: Buffer, ended: boolean): Reading {
   const lines = bytes.subarray(0, headEnd).toString("latin1").split("\r\n");
   const status = /^HTTP\/1\.[01] (\d{3})(?: |$)/.exec(lines[0] ?? "");
   if (!status) return bad("the answer is not HTTP");
+  // The other interim answers were read past (`interimAnswer`).
+  if (status[1] === "101")
+    return bad("the answer switches to another protocol");
   const headers = new Map<string, string>();
   for (const line of lines.slice(1)) {
     const colon = line.indexOf(":");
@@ -146,6 +150,21 @@ function readAnswer(bytes: Buffer, ended: boolean): Reading {
 }
 
 /**
+ * The status of the interim (1xx) answer that `bytes` begin with, and where it
+ * ends; null when they do not begin with a whole one. An interim answer is a
+ * head and nothing more. `101 Switching Protocols` is not read past: it ends
+ * HTTP on the connection, and `readAnswer` refuses it.
+ */
+function interimAnswer(bytes: Buffer): { status: number; end: number } | null {
+  const headEnd = bytes.indexOf(HEAD_END);
+  if (headEnd === -1) return null;
+  const line = bytes.subarray(0, bytes.indexOf(CRLF)).toString("latin1");
+  const status = /^HTTP\/1\.[01] (1\d\d)(?: |$)/.exec(line);
+  if (!status || status[1] === "101") return null;
+  return { status: Number(status[1]), end: headEnd + HEAD_END.length };
+}
+
+/**
  * One HTTP/1.1 exchange over a socket this process opens to `127.0.0.1`.
  *
  * Not `fetch` and not `node:http`: under Bun both take `HTTP_PROXY` from the
@@ -179,6 +198,10 @@ export const loopbackExchange: Exchange = (request) =>
       lines.push(`${name}: ${value}`);
     const payload = body === undefined ? null : Buffer.from(body, "utf8");
     if (payload) lines.push(`Content-Length: ${payload.byteLength}`);
+    // The body that waits for the peer's `100 Continue`, until it is written.
+    let waiting =
+      payload && payload.byteLength > BODY_WITH_HEAD_BYTES ? payload : null;
+    if (waiting) lines.push("Expect: 100-continue");
     const head = Buffer.from(`${lines.join("\r\n")}\r\n\r\n`, "latin1");
 
     if (request.signal?.aborted)
@@ -186,13 +209,13 @@ export const loopbackExchange: Exchange = (request) =>
     const socket = connect({ host: "127.0.0.1", port });
     const chunks: Buffer[] = [];
     let size = 0;
+    /** How many of the bytes received were interim answers, already read past. */
+    let interimBytes = 0;
     let settled = false;
-    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (outcome: LoopbackAnswer | Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      clearTimeout(bodyTimer);
       request.signal?.removeEventListener("abort", onAbort);
       // The peer may keep its end open; one answer is all that is read.
       socket.destroy();
@@ -207,24 +230,32 @@ export const loopbackExchange: Exchange = (request) =>
     );
     request.signal?.addEventListener("abort", onAbort, { once: true });
     const judge = (ended: boolean): void => {
-      const reading = readAnswer(Buffer.concat(chunks), ended);
+      let bytes = Buffer.concat(chunks).subarray(interimBytes);
+      // Interim answers are read past. `100 Continue` is the peer asking for
+      // a body that waits for it; any other is the peer still working.
+      for (
+        let interim = interimAnswer(bytes);
+        interim !== null;
+        interim = interimAnswer(bytes)
+      ) {
+        interimBytes += interim.end;
+        bytes = bytes.subarray(interim.end);
+        if (interim.status === 100 && waiting) {
+          socket.write(waiting);
+          waiting = null;
+        }
+      }
+      const reading = readAnswer(bytes, ended);
       if (reading.state === "done") finish(reading.answer);
       else if (reading.state === "bad") finish(new Error(reading.why));
     };
     socket.once("connect", () => {
-      if (!payload || payload.byteLength <= BODY_WITH_HEAD_BYTES) {
-        socket.write(payload ? Buffer.concat([head, payload]) : head);
-        return;
-      }
-      // A large body is held back for a moment. A peer that refuses on the
-      // head alone (a token it does not honour) answers at once and closes;
-      // written to a peer that has stopped reading, the body would have that
-      // answer discarded on the way back.
-      socket.write(head);
-      bodyTimer = setTimeout(
-        () => socket.write(payload),
-        request.holdBodyMs ?? EARLY_ANSWER_MS,
-      );
+      // A body that waits is not written here: a peer that refuses on the
+      // head alone (a token it does not honour) answers without asking for
+      // it, and the exchange ends with the body unsent. Written to a peer that
+      // has stopped reading, a large body could have that answer discarded on
+      // the way back.
+      socket.write(payload && !waiting ? Buffer.concat([head, payload]) : head);
     });
     socket.on("data", (chunk: Buffer) => {
       size += chunk.byteLength;
