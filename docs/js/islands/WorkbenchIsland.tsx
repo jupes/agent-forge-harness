@@ -20,6 +20,7 @@ import {
   type WorkbenchColumn,
   workbenchColumns,
 } from "../workbench-model";
+import { SendToCouncil } from "./SendToCouncil";
 
 /** What makes the Workbench read the queue and eligibility again. */
 const WORKBENCH_KINDS: readonly LedgerEventKind[] = [
@@ -122,7 +123,7 @@ function CardView({
     >
       <p class="af-workbench-title">{card.title || card.id}</p>
       <p class="af-muted af-workbench-id">
-        <code>{card.id}</code>
+        <code>{card.id}</code> · <SendToCouncil id={card.id} inline />
       </p>
       <p class="af-workbench-smith" data-smith={card.smith ?? ""}>
         {card.smith === null

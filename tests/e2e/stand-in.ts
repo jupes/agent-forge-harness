@@ -6,11 +6,12 @@
  * itself, since every spec of a run shares them.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page } from "@playwright/test";
 import { readState, writeState } from "./bd-stand-in-state";
-import { BD_STAND_IN_STATE } from "./servers";
+import { BD_STAND_IN_BIN, BD_STAND_IN_STATE } from "./servers";
 
 const API = "/__agent-forge";
 
@@ -25,6 +26,27 @@ export function standInCalls(): string[][] {
 }
 
 export const isList = (call: string[]): boolean => call[0] === "list";
+
+/**
+ * The comments bd prints for `id`, read by running the stand-in itself with
+ * the call a council's bead source makes (`--readonly comments <id> --json`).
+ * The call is recorded like any other.
+ */
+export function standInComments(id: string): Array<Record<string, unknown>> {
+  const program = join(
+    BD_STAND_IN_BIN,
+    process.platform === "win32" ? "bd.exe" : "bd",
+  );
+  const run = spawnSync(program, ["--readonly", "comments", id, "--json"], {
+    encoding: "utf8",
+    env: { ...process.env, BD_STAND_IN_STATE },
+  });
+  if (run.status !== 0)
+    throw new Error(
+      `the stand-in did not list the comments of ${id}: ${run.stdout}${run.stderr}`,
+    );
+  return JSON.parse(run.stdout) as Array<Record<string, unknown>>;
+}
 
 /**
  * Stop unless the hearth's `bd` is the stand-in: a read of the queue makes the

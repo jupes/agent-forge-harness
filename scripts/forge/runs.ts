@@ -26,7 +26,7 @@ import {
   type ReviewFindings,
   type ReviewRound,
 } from "./phases";
-import { reviewGate } from "./review-rules";
+import { reviewGate, storedVerdictError } from "./review-rules";
 
 /** Repo-relative directory holding one state file per run. */
 export const FORGE_RUNS_DIR = ".tmp/work/forge-runs";
@@ -83,17 +83,22 @@ function isReviewRound(value: unknown): value is ReviewRound {
 /**
  * A round as the state file holds it, keeping every field it carries. A stored
  * decision that is not one of the three actions is dropped — the field, not
- * the round — so the rules fall back to deriving it.
+ * the round — so the rules fall back to deriving it. So is a stored cause that
+ * is not text, and one that is text is cleaned as the command cleans what it
+ * stores (`storedVerdictError`), since the file may have been edited.
  */
 function readRound(value: ReviewRound): ReviewRound {
-  const { action, reason, ...rest } = value as Omit<
+  const { action, reason, verdictError, ...rest } = value as Omit<
     ReviewRound,
-    "action" | "reason"
-  > & { action?: unknown; reason?: unknown };
+    "action" | "reason" | "verdictError"
+  > & { action?: unknown; reason?: unknown; verdictError?: unknown };
+  const cause =
+    typeof verdictError === "string" ? storedVerdictError(verdictError) : null;
   return {
     ...rest,
     ...(isReviewAction(action) ? { action } : {}),
     ...(typeof reason === "string" ? { reason } : {}),
+    ...(cause !== null ? { verdictError: cause } : {}),
   };
 }
 

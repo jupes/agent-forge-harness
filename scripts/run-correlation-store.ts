@@ -22,7 +22,7 @@ import {
   writeFileSync,
 } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
-import { comparableCheckout } from "./forge/runs";
+import { comparableCheckout, isValidSlug } from "./forge/runs";
 import { ulid } from "./ledger/ulid";
 import { resolveCheckout } from "./ledger/workspace";
 import {
@@ -124,6 +124,27 @@ function correlationsDirIsOwn(root: string): boolean {
 }
 
 /**
+ * The draft a writer fills beside the correlation at `path` before it renames
+ * it into place: `<run>.json.<pid>.tmp`, its own whatever else is writing.
+ */
+export function correlationDraftPath(path: string, pid: number): string {
+  return `${path}.${pid}.tmp`;
+}
+
+const CORRELATION_DRAFT = /^(.+)\.json\.\d+\.tmp$/;
+
+/**
+ * True for a file name `correlationDraftPath` makes: a valid run id (the id a
+ * writer would have taken), then `.json.`, the writer's pid in digits and
+ * `.tmp`, and nothing else. Such a file is never a correlation: its writer
+ * died before the rename, so nothing was filed from it.
+ */
+export function isCorrelationDraftFile(name: string): boolean {
+  const match = CORRELATION_DRAFT.exec(name);
+  return match !== null && isValidSlug(match[1] ?? "");
+}
+
+/**
  * Start (or rejoin) a run's correlation: the one call a launcher makes.
  *
  * `executionRunId` is the id the caller already reserved for the run — a Forge
@@ -192,7 +213,7 @@ export function initRunCorrelation(input: {
   try {
     mkdirSync(dirname(path), { recursive: true });
     // Written beside the target and renamed, so a reader never sees half a file.
-    const draft = `${path}.${process.pid}.tmp`;
+    const draft = correlationDraftPath(path, process.pid);
     writeFileSync(draft, `${JSON.stringify(made.value, null, 2)}\n`);
     renameSync(draft, path);
   } catch (error) {
