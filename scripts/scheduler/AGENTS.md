@@ -288,8 +288,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   `push.followTags` says; no force, no upstream written to the shared config,
   `GIT_TERMINAL_PROMPT=0`) and
   `gh pr create --draft --base=<base> --head=<branch> --title=<bead>: <title> --body-file=<body>`,
-  both in the worktree. The URL gh prints goes on the record entry (`prUrl`, and `prBody`: `run` or
-  `shift`). Never merged, never marked ready, no step retried.
+  both run, like the `git log`, in the main checkout and never in the worktree: the branch is a ref
+  of the repository they share, so a worktree swapped for a link after the checks cannot point git
+  or gh at another repository. The worktree is only checked and its body read. The URL gh prints
+  goes on the record entry (`prUrl`, and `prBody`: `run` or `shift`). Never merged, never marked
+  ready, no step retried.
 - A pull request step that fails leaves the bead in `review` and the shift going: `error` on its
   entry says `pull request: <kind>: <what git or gh said>` (secrets redacted, at most 300
   characters), and its end comment gives the fixed sentence `PR_FAILURES[kind]`.

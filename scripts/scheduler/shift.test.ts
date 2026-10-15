@@ -838,7 +838,7 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
           "origin",
           `refs/heads/${branch}:refs/heads/${branch}`,
         ],
-        cwd: entry?.worktree ?? "",
+        cwd: r.root,
       },
     ]);
     expect(r.gh).toHaveLength(1);
@@ -849,7 +849,7 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
       "--base=master",
       `--head=${branch}`,
     ]);
-    expect(r.gh[0]?.cwd).toBe(entry?.worktree ?? "");
+    expect(r.gh[0]?.cwd).toBe(r.root);
     // Nothing merges, nothing is marked ready.
     for (const call of r.gh)
       expect(call.args.filter((arg) => /merge|ready/.test(arg))).toEqual([]);

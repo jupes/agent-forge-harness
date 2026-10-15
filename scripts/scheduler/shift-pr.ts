@@ -464,10 +464,14 @@ export async function openDraftPr(
       "branch",
       `${branch} is not shift/${request.shiftId}/${request.beadId}, or is the base ${base}`,
     );
-  // Before git runs in it or anything is read from it.
+  // Before anything is read from it.
   const made = shiftWorktree(request);
   if (typeof made === "string") return fail("worktree", made);
   const { root } = made;
+  // git and gh run in the main checkout, never in the worktree: the branch is
+  // a ref of the repository they share, and a worktree swapped for a link
+  // after the checks then cannot point either at another repository.
+  const main = request.mainCheckout;
 
   const log = await call(
     deps.git,
@@ -478,7 +482,7 @@ export async function openDraftPr(
       `${request.baseSha}..refs/heads/${branch}`,
       "--",
     ],
-    worktree,
+    main,
     10_000,
   );
   if (log.status !== 0)
@@ -532,7 +536,7 @@ export async function openDraftPr(
       ORIGIN,
       `refs/heads/${branch}:refs/heads/${branch}`,
     ],
-    worktree,
+    main,
   );
   if (pushed.status !== 0)
     return fail(
@@ -552,7 +556,7 @@ export async function openDraftPr(
       `--title=${prTitle(request)}`,
       `--body-file=${body}`,
     ],
-    worktree,
+    main,
   );
   if (opened.status !== 0)
     return fail("gh", `gh pr create failed: ${said(opened)}`, from);

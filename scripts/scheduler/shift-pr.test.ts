@@ -385,7 +385,7 @@ describe("openDraftPr", () => {
           "--title=t-1: Add the widget",
           `--body-file=${posted.path}`,
         ],
-        cwd: request.worktree,
+        cwd: s.main,
       },
     ]);
     // No upstream was written to the shared config.
@@ -768,6 +768,44 @@ describe("openDraftPr — what pr:check passed is what gh posts, and nothing fro
     expect(check.paths).toEqual([]);
     expect(gh.calls).toEqual([]);
     expect(remoteRefs(s.origin)).toEqual(["refs/heads/master"]);
+  });
+
+  test("a worktree swapped for a junction to another repository after the checks changes nothing: git and gh act in the main checkout, so the branch goes to its origin and no other", async () => {
+    const s = scratch();
+    const request = beadWorktree(s, "t-w4", 1);
+    leaveBody(request.worktree);
+    // Another repository, with an origin of its own and a branch of the same name.
+    const otherOrigin = join(s.root, "other origin.git");
+    git(s.root, "init", "-q", "--bare", "-b", "master", otherOrigin);
+    const other = join(s.root, "other repo");
+    mkdirSync(other);
+    git(other, "init", "-q", "-b", "master");
+    identity(other);
+    commit(other, "x.txt", "other work");
+    git(other, "branch", request.branch);
+    git(other, "remote", "add", "origin", otherOrigin);
+    const gitCalls = recordedGit();
+    const gh = fakeGh();
+    const opened = await openDraftPr(request, {
+      git: gitCalls.run,
+      gh: gh.run,
+      checkPrBody: async () => {
+        renameSync(request.worktree, `${request.worktree}-kept`);
+        symlinkSync(other, request.worktree, "junction");
+        return null;
+      },
+    });
+    expect(opened).toMatchObject({ ok: true });
+    expect(remoteBranches(s.origin)).toEqual([
+      "refs/heads/master",
+      `refs/heads/${request.branch}`,
+    ]);
+    expect(git(s.origin, "rev-parse", request.branch)).toBe(
+      git(`${request.worktree}-kept`, "rev-parse", "HEAD"),
+    );
+    expect(remoteRefs(otherOrigin)).toEqual([]);
+    for (const call of [...gitCalls.calls, ...gh.calls])
+      expect(realpathSync.native(call.cwd)).toBe(realpathSync.native(s.main));
   });
 
   const TOKEN = `ghp_${"Zx9Qw8Er7Ty6".repeat(3)}`;
