@@ -250,3 +250,67 @@ describe("buildPages: comments", () => {
     expect(warnings.join("\n")).toContain("b-1");
   });
 });
+
+describe("buildPages: the Repo column", () => {
+  const H = "agent-forge-harness";
+
+  test("each issue's repository follows repos/issue-repos.json and the names registered in repos/repos.json", async () => {
+    const cwd = checkout();
+    mkdirSync(join(cwd, "repos"));
+    writeFileSync(
+      join(cwd, "repos", "repos.json"),
+      JSON.stringify({ repos: [{ name: "my-frontend" }] }),
+    );
+    writeFileSync(
+      join(cwd, "repos", "issue-repos.json"),
+      JSON.stringify({ issues: { [`${H}-e10`]: "my-api" } }),
+    );
+    const bd = fakeBd(() =>
+      jsonl([
+        exportRow(`${H}-e10`, [], { title: "API epic" }),
+        exportRow(`${H}-e10.1`, [], {
+          title: "Child",
+          dependencies: [
+            {
+              issue_id: `${H}-e10.1`,
+              depends_on_id: `${H}-e10`,
+              type: "parent-child",
+            },
+          ],
+        }),
+        exportRow(`${H}-a1`, [], { title: "[my-frontend] Login" }),
+        exportRow(`${H}-a2`, [], { title: "[dashboard] Harness work" }),
+      ]),
+    );
+
+    await buildPages({ cwd, runBd: bd.run, ...quiet });
+
+    expect(written(cwd).issues.map((issue) => [issue.id, issue.repo])).toEqual([
+      [`${H}-e10`, "my-api"],
+      [`${H}-e10.1`, "my-api"],
+      [`${H}-a1`, "my-frontend"],
+      [`${H}-a2`, H],
+    ]);
+  });
+
+  test("a repository map that is not JSON is warned about, and the snapshot is still written", async () => {
+    const cwd = checkout();
+    mkdirSync(join(cwd, "repos"));
+    writeFileSync(join(cwd, "repos", "issue-repos.json"), "{ not json");
+    const bd = fakeBd(() => jsonl([exportRow(`${H}-a1`)]));
+    const warnings: string[] = [];
+
+    const result = await buildPages({
+      cwd,
+      runBd: bd.run,
+      log: () => {},
+      warn: (line) => warnings.push(line),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(written(cwd).issues.map((issue) => issue.repo)).toEqual([H]);
+    expect(warnings.join("\n")).toContain(
+      "repos/issue-repos.json is not valid JSON",
+    );
+  });
+});

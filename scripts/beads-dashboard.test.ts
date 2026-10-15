@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { BeadsDependency, BeadsIssue } from "../types/beads";
 import {
+  type BdExportRow,
   buildDerivedFromIssuesAndDeps,
   buildEpicFlowByEpic,
   collectBlockDeps,
@@ -101,6 +102,112 @@ describe("normalizeBdExportRow", () => {
       repo: "./repos/custom-repo",
     });
     expect(issue.repo).toBe("./repos/custom-repo");
+  });
+});
+
+describe("the Repo column: the repository an issue shows", () => {
+  const row = (
+    id: string,
+    title: string,
+    extra: Partial<BdExportRow> = {},
+  ): BdExportRow => ({
+    id,
+    title,
+    status: "open",
+    created_at: "2026-01-01T00:00:00Z",
+    ...extra,
+  });
+  const repoOf = (
+    rows: BdExportRow[],
+    id: string,
+    context?: Parameters<typeof issuesAndDepsFromExportRows>[1],
+  ): string | undefined =>
+    issuesAndDepsFromExportRows(rows, context).issues.find((i) => i.id === id)
+      ?.repo;
+
+  test("an issue labelled repo:rag-chat shows rag-chat; an unlabeled issue shows the host prefix", () => {
+    const labelled = normalizeBdExportRow(
+      row("agent-forge-harness-0im.3", "Label names the repository", {
+        labels: ["area", "repo:rag-chat"],
+      }),
+    );
+    const unlabeled = normalizeBdExportRow(
+      row("agent-forge-harness-x1gs", "Harness work", {
+        labels: ["dashboard"],
+      }),
+    );
+    expect(labelled.repo).toBe("rag-chat");
+    expect(unlabeled.repo).toBe("agent-forge-harness");
+  });
+
+  test("an unlabeled issue two levels below an epic (x1gs.8.6) shows the host prefix too", () => {
+    const issue = normalizeBdExportRow(
+      row("agent-forge-harness-x1gs.8.6", "Nested child"),
+    );
+    expect(issue.repo).toBe("agent-forge-harness");
+  });
+
+  test("a repo: label wins over the export's repo field", () => {
+    const issue = normalizeBdExportRow(
+      row("agent-forge-harness-0im.3", "Both", {
+        repo: "./repos/custom-repo",
+        labels: ["repo:rag-chat"],
+      }),
+    );
+    expect(issue.repo).toBe("rag-chat");
+  });
+
+  test("the label's key matches in any case and its value is trimmed; an empty value names nothing", () => {
+    const spaced = normalizeBdExportRow(
+      row("agent-forge-harness-a1", "Spaced", { labels: ["Repo: rag-chat "] }),
+    );
+    const empty = normalizeBdExportRow(
+      row("agent-forge-harness-a2", "Empty", { labels: ["repo:"] }),
+    );
+    expect(spaced.repo).toBe("rag-chat");
+    expect(empty.repo).toBe("agent-forge-harness");
+  });
+
+  test("with no label, a leading [name] in the title names a registered repository, in its registered spelling", () => {
+    const rows = [row("agent-forge-harness-a1", "[Game-Guide-AI] Fix login")];
+    expect(
+      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+    ).toBe("game-guide-ai");
+  });
+
+  test("a leading [tag] that names no known repository is an area tag: the issue shows the host prefix", () => {
+    const rows = [row("agent-forge-harness-a1", "[dashboard] Fix the column")];
+    expect(
+      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+    ).toBe("agent-forge-harness");
+  });
+
+  test("a repository another issue's repo: label names is known to the title rule", () => {
+    const rows = [
+      row("agent-forge-harness-a1", "Labelled", { labels: ["repo:rag-chat"] }),
+      row("agent-forge-harness-a2", "[rag-chat] Ingest the corpus"),
+    ];
+    expect(repoOf(rows, "agent-forge-harness-a2")).toBe("rag-chat");
+  });
+
+  test("a repo: label wins over a title prefix that names another repository", () => {
+    const rows = [
+      row("agent-forge-harness-a1", "[game-guide-ai] Shared work", {
+        labels: ["repo:rag-chat"],
+      }),
+    ];
+    expect(
+      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+    ).toBe("rag-chat");
+  });
+
+  test("only a leading [name] counts: one later in the title names nothing", () => {
+    const rows = [
+      row("agent-forge-harness-a1", "Port the [game-guide-ai] login page"),
+    ];
+    expect(
+      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+    ).toBe("agent-forge-harness");
   });
 });
 

@@ -31,6 +31,7 @@ import {
 } from "./queue";
 import {
   answerQueueList,
+  childOf,
   queueTracker,
   type TrackedBead,
 } from "./queue-fixture";
@@ -231,12 +232,15 @@ describe.skipIf(scratch === "")("the queue and a real bd", () => {
       kind: "unbacked",
       label: "queued",
     });
-    // The fixture's child, built the way the tests build one, reads the same.
-    const fixture: TrackedBead = {
-      id: child,
-      labels: ["queue:queued"],
-      parent: { id: parent, metadata: { queue_state: "queued" } },
-    };
+    // The fixture's child, made from the same parent by childOf, reads the same.
+    const fixture = childOf(
+      {
+        id: parent,
+        labels: ["queue:queued"],
+        metadata: { queue_state: "queued" },
+      },
+      child,
+    );
     const fake = await queueTracker([fixture]).run([
       "show",
       "--readonly",

@@ -78,6 +78,7 @@ function view(over: Partial<ForgeRunView> = {}): ForgeRunView {
     reviewPending: null,
     revising: false,
     gate: null,
+    earlierGates: [],
     gateScope: { checkout: "C:/work", slug: "alpha" },
     ...over,
   };

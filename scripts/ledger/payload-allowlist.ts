@@ -28,11 +28,27 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
     "verdictArtifact",
     "summary",
   ],
-  // Two forms: a queue transition (the first three) or a tracker write (the last three).
-  "bead.transitioned": ["from", "to", "reason", "action", "hash", "length"],
+  // Two forms: a queue transition (the first three) or a tracker write (the
+  // last four; only a reassign names a smith).
+  "bead.transitioned": [
+    "from",
+    "to",
+    "reason",
+    "action",
+    "hash",
+    "length",
+    "smith",
+  ],
   "reservation.acquired": ["worktree", "globs"],
   "reservation.released": ["worktree", "globs"],
-  "shift.started": ["shiftId", "concurrency", "durationMs", "filter"],
+  "shift.started": [
+    "shiftId",
+    "concurrency",
+    "durationMs",
+    "filter",
+    "maxBeads",
+    "maxUsd",
+  ],
   "shift.stopped": ["shiftId", "reason"],
   "council.run.started": ["councilRunId", "profile", "budgetUsd"],
   "council.run.finished": ["councilRunId", "outcome", "costUsd", "summary"],

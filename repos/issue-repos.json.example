@@ -1,0 +1,9 @@
+{
+  "issues": {
+    "agent-forge-harness-abc": "my-api",
+    "agent-forge-harness-def.2": "my-frontend"
+  },
+  "titleTags": {
+    "api": "my-api"
+  }
+}

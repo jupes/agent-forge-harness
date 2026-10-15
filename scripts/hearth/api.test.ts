@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -22,10 +23,11 @@ import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { queueTracker } from "../scheduler/queue-fixture";
+import { SHIFTS_DIR, writeShiftRecord } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
 import { tokenPath } from "./home";
-import { OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
+import { HEALTH_ROUTE, OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
 import type { BdResult } from "./routes/dev-api";
 import {
   startTestHearth,
@@ -271,7 +273,12 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     prepare: (h) => queued(h, "demo-reassign", "queued"),
     // It moves no state: its outcome is a tracker write, with no from or to.
-    outcome: [{ kind: "bead.transitioned", payload: { action: "reassign" } }],
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload: { action: "reassign", smith: "claude-master" },
+      },
+    ],
     happened: async (h, data) => {
       expect(data).toEqual({
         id: "demo-reassign",
@@ -289,6 +296,47 @@ const ACTIONS: Record<string, ActionFixture> = {
           "demo-reassign",
         ],
       ]);
+    },
+  },
+  "POST /shifts/:id/stop": {
+    valid: {
+      path: "/shifts/shift-20261014-120000-f1a0/stop",
+      body: {},
+      status: 200,
+      target: "shift-20261014-120000-f1a0",
+    },
+    invalid: { path: "/shifts/shift-1/stop", body: {} },
+    // A running shift of this hearth's workspace, as the shift writes it.
+    prepare: async (h) => {
+      writeShiftRecord(join(h.home, SHIFTS_DIR), {
+        shiftId: "shift-20261014-120000-f1a0",
+        pid: process.pid,
+        workspace: h.workspace,
+        startedAt: "2026-10-14T12:00:00.000Z",
+        deadline: "2026-10-14T14:00:00.000Z",
+        state: "running",
+        options: {
+          concurrency: 2,
+          forMs: 7_200_000,
+          maxBeads: 4,
+          maxUsd: 10,
+          repairs: 3,
+        },
+        spentUsd: 0,
+        unpriced: 0,
+        beads: [],
+      });
+    },
+    // The shift records shift.stopped itself; the row only asks.
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toEqual({
+        shiftId: "shift-20261014-120000-f1a0",
+        already: false,
+      });
+      expect(
+        existsSync(join(h.home, SHIFTS_DIR, "shift-20261014-120000-f1a0.stop")),
+      ).toBe(true);
     },
   },
   "POST /beads": {
@@ -485,6 +533,8 @@ const READS: Record<string, string> = {
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
+  "GET /scoreboard": "/scoreboard",
+  "GET /shifts": "/shifts",
 };
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -885,6 +935,95 @@ describe("every action row (iterating the table)", () => {
   });
 });
 
+describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
+  /** How long an action and a GET sent during it may take to be answered, from when the action was sent. */
+  const ABOUT_A_SECOND_MS = 1500;
+
+  /**
+   * Send a valid action, and 300 ms later a GET of the health route. Each
+   * answer's status, and when it arrived, counted from when the action was
+   * sent. The hearth runs in this process, so a serving thread held by the
+   * action holds this test's timer and the GET with it.
+   */
+  async function actionAndGetWhileLocked(h: TestHearth): Promise<{
+    action: { status: number; ms: number };
+    get: { status: number; ms: number };
+  }> {
+    const sent = performance.now();
+    const action = post(h, "/dev-api/forge-run/review", REVIEW).then(
+      async (response) => {
+        await response.body?.cancel();
+        return { status: response.status, ms: performance.now() - sent };
+      },
+    );
+    await new Promise((done) => setTimeout(done, 300));
+    const health = await fetch(`${h.hearth.url}${HEALTH_ROUTE}`);
+    await health.body?.cancel();
+    const get = { status: health.status, ms: performance.now() - sent };
+    return { action: await action, get };
+  }
+
+  /** Hold the write lock on `file` from another connection until `release` is called. */
+  function holdWriteLock(file: string): { release(): void } {
+    const holder = new Database(file, { create: true });
+    holder.exec("BEGIN EXCLUSIVE");
+    return {
+      release() {
+        holder.exec("ROLLBACK");
+        holder.close();
+      },
+    };
+  }
+
+  test("on a new ledger file the hearth has not opened: 503 within 1.5 s and the effect not called, and a GET of the health route sent 300 ms after it is answered within 1.5 s of the action", async () => {
+    const { h, probes } = await probed();
+    // Nothing has opened the hearth's ledger: the file does not exist yet.
+    expect(existsSync(h.ledger)).toBe(false);
+    const lock = holdWriteLock(h.ledger);
+    let measured: Awaited<ReturnType<typeof actionAndGetWhileLocked>>;
+    try {
+      measured = await actionAndGetWhileLocked(h);
+    } finally {
+      lock.release();
+    }
+    expect({
+      action: measured.action.status,
+      get: measured.get.status,
+    }).toEqual({ action: 503, get: 200 });
+    expect(measured.action.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(measured.get.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(probes).toEqual([]);
+    // Released, the same action is recorded and done.
+    expect((await post(h, "/dev-api/forge-run/review", REVIEW)).status).toBe(
+      200,
+    );
+    expect(probes.length).toBe(1);
+  }, 60_000);
+
+  test("on a ledger file the hearth has opened before: 503 within 1.5 s and the effect not called, and a GET of the health route sent 300 ms after it is answered within 1.5 s of the action", async () => {
+    const { h, probes } = await probed();
+    // The first action opens the ledger and records its audit row.
+    expect((await post(h, "/dev-api/forge-run/review", REVIEW)).status).toBe(
+      200,
+    );
+    expect(probes.length).toBe(1);
+    const lock = holdWriteLock(h.ledger);
+    let measured: Awaited<ReturnType<typeof actionAndGetWhileLocked>>;
+    try {
+      measured = await actionAndGetWhileLocked(h);
+    } finally {
+      lock.release();
+    }
+    expect({
+      action: measured.action.status,
+      get: measured.get.status,
+    }).toEqual({ action: 503, get: 200 });
+    expect(measured.action.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(measured.get.ms).toBeLessThan(ABOUT_A_SECOND_MS);
+    expect(probes.length).toBe(1);
+  }, 60_000);
+});
+
 describe("the operator token", () => {
   test("is honoured only while the token file still holds it; the token route then answers 503", async () => {
     const { h, probes } = await probed();
@@ -1108,6 +1247,11 @@ describe("the paths that existed before the table", () => {
     expect(posted.status).toBe(405);
     expect(posted.headers.get("allow")).toBe("GET");
 
+    // The shifts can be listed and stopped, not started: POST /shifts is not mounted.
+    const startShift = await post(h, "/shifts", {});
+    expect(startShift.status).toBe(405);
+    expect(startShift.headers.get("allow")).toBe("GET");
+
     const unmounted = [
       // The scheduler's moves, and proposing, are not the operator API's.
       "/queue/demo-1/propose",
@@ -1118,8 +1262,6 @@ describe("the paths that existed before the table", () => {
       "/queue/demo-1/release",
       "/queue/demo-1/halt",
       "/queue/demo-1",
-      "/shifts",
-      "/shifts/shift-1/stop",
       "/runs/demo/replan",
     ];
     for (const path of unmounted) {
@@ -1204,6 +1346,231 @@ describe("request bounds", () => {
     expect(h.bd.calls).toEqual([]);
     expect(probes).toEqual([]);
   });
+});
+
+/** What a raw client saw: the answer, and whether the hearth closed the connection. */
+interface RawExchange {
+  /** 0 when no status line arrived. */
+  status: number;
+  body: string;
+  /** When the status line arrived, from when the head was written; null when none did. */
+  answeredMs: number | null;
+  /** When the hearth closed the connection, from when the head was written; null when it was still open after `waitMs`. */
+  closedMs: number | null;
+}
+
+/**
+ * Write `head` (header lines, without the blank line) and then `body` over a
+ * socket of its own, and read until the hearth closes the connection or
+ * `waitMs` pass. The body may be less than the head declares: that request
+ * then stalls.
+ */
+function rawExchange(
+  h: TestHearth,
+  head: string[],
+  body: Buffer,
+  waitMs: number,
+): Promise<RawExchange> {
+  return new Promise((done) => {
+    let began = 0;
+    let received = Buffer.alloc(0);
+    let answeredMs: number | null = null;
+    let closedMs: number | null = null;
+    const socket = connect(h.hearth.port, "127.0.0.1", () => {
+      began = performance.now();
+      socket.write(`${head.join("\r\n")}\r\n\r\n`);
+      if (body.byteLength > 0) socket.write(body);
+    });
+    let gaveUp = false;
+    const giveUp = setTimeout(() => {
+      gaveUp = true;
+      socket.destroy();
+    }, waitMs);
+    socket.on("data", (chunk: Buffer) => {
+      answeredMs ??= performance.now() - began;
+      received = Buffer.concat([received, chunk]);
+    });
+    // Closed by the hearth: an end, or a close this client did not cause.
+    const hearthClosed = (): void => {
+      if (!gaveUp) closedMs ??= performance.now() - began;
+    };
+    socket.on("end", hearthClosed);
+    // A reset while the body is still being written is an outcome, not a failure.
+    socket.on("error", () => {});
+    socket.on("close", () => {
+      hearthClosed();
+      clearTimeout(giveUp);
+      const text = received.toString("utf8");
+      done({
+        status: Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1] ?? 0),
+        body: text.slice(text.indexOf("\r\n\r\n") + 4),
+        answeredMs,
+        closedMs,
+      });
+    });
+  });
+}
+
+describe("request bodies (raw socket)", () => {
+  const PATH = "/__agent-forge/dev-api/forge-run/review";
+  /** Far past every row's cap, and past what was answered before when the hearth refused a body unread. */
+  const LARGE = 8 * 1024 * 1024;
+
+  function headLines(
+    h: TestHearth,
+    lines: { origin?: boolean; token?: string; framing: string },
+  ): string[] {
+    return [
+      `POST ${PATH} HTTP/1.1`,
+      `Host: 127.0.0.1:${h.hearth.port}`,
+      ...(lines.origin === false ? [] : [`Origin: ${h.hearth.url}`]),
+      "Content-Type: application/json",
+      ...(lines.token !== undefined
+        ? [`X-Agent-Forge-Operator: ${lines.token}`]
+        : []),
+      lines.framing,
+    ];
+  }
+
+  test("an 8 MB body sent with Connection: close is answered with its refusal 5 times out of 5, when the request does not declare the hearth's origin (403), presents a wrong token (403) or declares a Content-Length over the row's cap (400); nothing is recorded", async () => {
+    const { h, probes } = await probed();
+    const cases: Array<[string, string[], number]> = [
+      [
+        "no declared origin",
+        headLines(h, {
+          origin: false,
+          token: h.hearth.token,
+          framing: `Content-Length: ${LARGE}`,
+        }),
+        403,
+      ],
+      [
+        "a wrong token",
+        headLines(h, { token: "wrong", framing: `Content-Length: ${LARGE}` }),
+        403,
+      ],
+      [
+        "a Content-Length over the cap",
+        headLines(h, {
+          token: h.hearth.token,
+          framing: `Content-Length: ${LARGE}`,
+        }),
+        400,
+      ],
+    ];
+    const body = Buffer.alloc(LARGE, 0x20);
+    const answers: unknown[] = [];
+    const expected: unknown[] = [];
+    for (const [label, head, status] of cases) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const answer = await rawExchange(
+          h,
+          [...head, "Connection: close"],
+          body,
+          10_000,
+        );
+        answers.push({ label, attempt, status: answer.status });
+        expected.push({ label, attempt, status });
+      }
+    }
+    expect(answers).toEqual(expected);
+    expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+  }, 60_000);
+
+  test("an authorised request whose body stops arriving (Content-Length, chunked, and a chunked body already over the cap) is answered 408 at the body time limit and its connection closed; nothing is recorded", async () => {
+    const { h, probes } = await probed({ api: { bodyTimeoutMs: 400 } });
+    const overCap = "x".repeat(20_000);
+    const cases: Array<[string, string, Buffer]> = [
+      ["Content-Length", "Content-Length: 1000", Buffer.from('{"issueId":')],
+      [
+        "chunked",
+        "Transfer-Encoding: chunked",
+        Buffer.from('b\r\n{"issueId":\r\n'),
+      ],
+      [
+        "chunked, over the cap",
+        "Transfer-Encoding: chunked",
+        Buffer.from(`${overCap.length.toString(16)}\r\n${overCap}\r\n`),
+      ],
+    ];
+    const seen: unknown[] = [];
+    const wanted: unknown[] = [];
+    for (const [label, framing, sent] of cases) {
+      const answer = await rawExchange(
+        h,
+        headLines(h, { token: h.hearth.token, framing }),
+        sent,
+        5_000,
+      );
+      seen.push({
+        label,
+        status: answer.status,
+        timeLimit: (JSON.parse(answer.body || "{}") as { error?: string })
+          .error,
+        answeredInTime:
+          answer.answeredMs !== null &&
+          answer.answeredMs >= 300 &&
+          answer.answeredMs < 2_000,
+        closedByHearth: answer.closedMs !== null && answer.closedMs < 2_000,
+      });
+      wanted.push({
+        label,
+        status: 408,
+        timeLimit: expect.stringContaining("did not arrive within 400 ms"),
+        answeredInTime: true,
+        closedByHearth: true,
+      });
+    }
+    expect(seen).toEqual(wanted);
+    expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+  }, 30_000);
+
+  test("a request refused for its token is answered 403 once its body has been read, at once when no byte of the body has arrived, and its connection is closed at the body time limit when the body never ends", async () => {
+    const { h, probes } = await probed({ api: { bodyTimeoutMs: 1_000 } });
+    const head = headLines(h, {
+      token: "wrong",
+      framing: "Content-Length: 1000",
+    });
+    const cases: Array<[string, Buffer, "at once" | "at the time limit"]> = [
+      // A client that holds its body back until it has heard nothing, as the MCP server does.
+      ["no byte of the body sent", Buffer.alloc(0), "at once"],
+      [
+        "part of the body sent",
+        Buffer.from('{"issueId":'),
+        "at the time limit",
+      ],
+    ];
+    const seen: unknown[] = [];
+    const wanted: unknown[] = [];
+    for (const [label, sent, when] of cases) {
+      const answer = await rawExchange(h, head, sent, 5_000);
+      const answeredMs = answer.answeredMs ?? Number.POSITIVE_INFINITY;
+      seen.push({
+        label,
+        status: answer.status,
+        answered:
+          answeredMs < 500
+            ? "at once"
+            : answeredMs >= 900 && answeredMs < 3_000
+              ? "at the time limit"
+              : `after ${Math.round(answeredMs)} ms`,
+        closedAtTheTimeLimit:
+          answer.closedMs !== null &&
+          answer.closedMs >= 900 &&
+          answer.closedMs < 3_000,
+      });
+      wanted.push({
+        label,
+        status: 403,
+        answered: when,
+        closedAtTheTimeLimit: true,
+      });
+    }
+    expect(seen).toEqual(wanted);
+    expect(probes).toEqual([]);
+  }, 30_000);
 });
 
 function get(

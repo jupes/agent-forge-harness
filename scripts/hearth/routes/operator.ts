@@ -32,6 +32,7 @@ import {
   safeMessage,
 } from "../api";
 import { createLedgerStream } from "../stream";
+import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
 import { applyReview } from "./dev-api";
@@ -46,6 +47,7 @@ import {
   workspaceReads,
 } from "./operator-reads";
 import { queueRoutes } from "./queue";
+import { shiftRoutes } from "./shifts";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
 
@@ -55,12 +57,12 @@ export interface OperatorDeps extends ReadDeps {
   appendEvent(event: LedgerEventInput): AppendResult;
   /** The queue lock's file: one for every process that moves beads of this tracker. */
   queueLockFile: string;
+  /** Where shifts given this hearth's home keep their records and stop requests. */
+  shiftsDir: string;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
 }
-
-const BEAD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 
 function councilRunId(value: unknown): ValidationResult<string> {
   if (typeof value !== "string") return fail("runId must be a string");
@@ -97,10 +99,7 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
   // bead source, the bead under review. Stricter than the service on the two
   // ids, because both go on the audit row.
   const beadId = councilBeadId(input);
-  if (
-    beadId !== undefined &&
-    (!BEAD_ID.test(beadId) || looksLikeSecret(beadId))
-  )
+  if (beadId !== undefined && !isBeadId(beadId))
     return fail("beadId must be a Beads issue id");
   const runId =
     body["runId"] === undefined
@@ -144,7 +143,7 @@ function review(request: RouteRequest): ValidationResult<Review> {
   if (!parameters.ok) return parameters;
   const comment = reviewCommentFor(request.body);
   if (!comment.ok) return fail(comment.error);
-  return looksLikeSecret(comment.issueId)
+  return !isBeadId(comment.issueId)
     ? fail("issueId must be a Beads issue id")
     : { ok: true, value: { issueId: comment.issueId, input: request.body } };
 }
@@ -248,7 +247,8 @@ export interface OperatorTable {
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
-  const { sessions, runs, run, events, reservations } = ledgerReads(deps);
+  const { sessions, runs, run, events, reservations, scoreboard } =
+    ledgerReads(deps);
   const { queue, smiths, config, worktrees, eligibility } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
@@ -265,6 +265,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     worktrees,
     eligibility,
     counts,
+    scoreboard,
   ];
 
   const ledger = { path: deps.ledgerPath };
@@ -310,6 +311,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         lockFile: deps.queueLockFile,
         configHome: deps.configHome,
       }),
+      ...shiftRoutes({ workspace, shiftsDir: deps.shiftsDir }),
     ],
     close: () => live.close(),
   };

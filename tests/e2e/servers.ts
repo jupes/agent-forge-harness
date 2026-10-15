@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { RUN_HOME_NAME } from "./run-homes";
 
 /**
  * The two servers the suite runs against: where they listen and where the
@@ -20,8 +21,6 @@ export const HEARTH_PORT = Number(process.env["E2E_HEARTH_PORT"] ?? 8798);
 
 export const DASHBOARD_URL = `http://127.0.0.1:${DASHBOARD_PORT}`;
 export const HEARTH_URL = `http://127.0.0.1:${HEARTH_PORT}`;
-
-const RUN_HOME_NAME = /^agent-forge-e2e-\d+-\d+$/;
 
 /**
  * A hearth home that exists for this run only.

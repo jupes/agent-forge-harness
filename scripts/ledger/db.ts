@@ -99,11 +99,11 @@ function isTransientOpenError(error: unknown): boolean {
   );
 }
 
-function prepare(file: string): Database {
+function prepare(file: string, waitMs: number): Database {
   const db = new Database(file, { create: true });
   try {
     // Both are per-connection settings, so they are issued on every open.
-    db.exec(`PRAGMA busy_timeout = ${MIGRATION_BUSY_MS}`);
+    db.exec(`PRAGMA busy_timeout = ${waitMs}`);
     db.exec("PRAGMA synchronous = NORMAL");
     if (userVersion(db) < MIGRATIONS.length) migrate(db);
     db.exec(`PRAGMA busy_timeout = ${APPEND_BUSY_MS}`);
@@ -114,20 +114,39 @@ function prepare(file: string): Database {
   }
 }
 
+export interface OpenLedgerOptions {
+  /**
+   * How long a first open waits on another connection's lock, in each of its
+   * statements and in all of its attempts, before it throws: 2 s when not
+   * given. Once a path is open its connection is reused and this is not
+   * looked at. The wait is synchronous.
+   */
+  waitMs?: number;
+}
+
 /**
  * The connection for a ledger file, opened once per process and path. Creates
  * the directory, the file and the schema as needed. Throws when the file
  * cannot be opened or migrated; `appendEvent` turns that into a result.
  */
-export function openLedger(path: string = ledgerPath()): Database {
+export function openLedger(
+  path: string = ledgerPath(),
+  options: OpenLedgerOptions = {},
+): Database {
   const file = resolve(path);
   const cached = connections.get(file);
   if (cached) return cached;
   mkdirSync(dirname(file), { recursive: true });
-  const deadline = Date.now() + MIGRATION_BUSY_MS;
+  // A whole number of milliseconds: it is written into a PRAGMA.
+  const given = options.waitMs;
+  const waitMs =
+    given !== undefined && Number.isFinite(given)
+      ? Math.max(0, Math.trunc(given))
+      : MIGRATION_BUSY_MS;
+  const deadline = Date.now() + waitMs;
   for (;;) {
     try {
-      const db = prepare(file);
+      const db = prepare(file, waitMs);
       connections.set(file, db);
       return db;
     } catch (error) {

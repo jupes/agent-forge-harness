@@ -5,8 +5,8 @@
  * later argument is the adapter's own and is recorded, not interpreted.
  *
  *   --fake-provider claude|codex   which stream dialect to print
- *   --fake-mode ok|tools|garbage|crash|hang|hang-tree|auth|model|no-tool-host|no-tools|stderr
- *   --fake-dump <file>             write { cwd, env, argv, stdin } as JSON
+ *   --fake-mode ok|tools|garbage|crash|hang|hang-tree|orphan|auth|model|no-tool-host|no-tools|stderr
+ *   --fake-dump <file>             write { cwd, env, argv, stdin, pid } as JSON
  *   --fake-session-id <id>         the session id the stream reports (Claude:
  *                                  `session_id` on every line; Codex:
  *                                  `thread_id` on `thread.started`). Default:
@@ -55,6 +55,8 @@
  *                 harness supervised did not outlive the harness even with
  *                 its exit hook removed, and a detached child of that fake
  *                 did (`supervisor.test.ts`)
+ *   orphan        start the same child, print its pid the same way, then
+ *                 exit 0 with the child still running
  */
 
 import { existsSync, writeFileSync } from "fs";
@@ -89,7 +91,13 @@ const stdin = await new Response(Bun.stdin.stream()).text();
 if (dump) {
   writeFileSync(
     dump,
-    JSON.stringify({ cwd: process.cwd(), env: process.env, argv, stdin }),
+    JSON.stringify({
+      cwd: process.cwd(),
+      env: process.env,
+      argv,
+      stdin,
+      pid: process.pid,
+    }),
   );
 }
 
@@ -161,8 +169,9 @@ if (mode === "hang") {
   await new Promise(() => undefined);
 }
 
-if (mode === "hang-tree") {
-  const child = Bun.spawn(
+/** A child of this process that hangs: detached on Windows, in this process's group elsewhere. */
+function hangingChild(): Bun.Subprocess {
+  return Bun.spawn(
     [process.execPath, import.meta.path, "--fake-mode", "hang"],
     {
       stdin: "ignore",
@@ -171,9 +180,18 @@ if (mode === "hang-tree") {
       ...(process.platform === "win32" ? { detached: true } : {}),
     },
   );
+}
+
+if (mode === "hang-tree") {
+  const child = hangingChild();
   emit({ childPid: child.pid });
   setInterval(() => undefined, 1000);
   await new Promise(() => undefined);
+}
+
+if (mode === "orphan") {
+  emit({ childPid: hangingChild().pid });
+  process.exit(0);
 }
 
 if (mode === "stderr") {
