@@ -858,6 +858,22 @@ describe("POST /queue/:id/propose", () => {
     );
   });
 
+  test("a closed bead is refused 409, with or without a queue label: audited, nothing written, no transition", async () => {
+    for (const bead of [
+      { id: "demo-1", status: "closed", labels: ["queue:queued"] },
+      { id: "demo-1", status: "closed" },
+    ] as TrackedBead[]) {
+      const { h, tracker } = await start([bead]);
+      const answer = await post(h, "/queue/demo-1/propose");
+      expect(answer.status).toBe(409);
+      expect(answer.body.error ?? "").toContain("closed");
+      expect(tracker.updates()).toEqual([]);
+      expect(recorded(h).map((event) => event.kind)).toEqual([
+        "operator.action",
+      ]);
+    }
+  });
+
   test("a bead outside the queue is proposed too", async () => {
     const { h, tracker } = await start([{ id: "demo-1" }]);
     const answer = await post(h, "/queue/demo-1/propose");
