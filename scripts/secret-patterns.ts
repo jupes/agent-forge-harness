@@ -196,6 +196,101 @@ export function redactSecrets(text: string): {
   return { text: sanitized, redactions };
 }
 
+/** A secret `redactSecrets` would replace: its kind, and the `[start, end)` it covers in the text it was given. */
+export interface SecretSpan {
+  kind: string;
+  start: number;
+  end: number;
+}
+
+/** The `[start, end)` spans one pattern or finder matches in `text`, as `redactSecrets` reads them. */
+function spansOf(
+  text: string,
+  secret: SecretPattern | SecretFinder,
+): Array<[number, number]> {
+  if ("spans" in secret) return secret.spans(text);
+  const spans: Array<[number, number]> = [];
+  for (const match of text.matchAll(secret.pattern)) {
+    const start = match.index;
+    if (secret.exempt?.(match[0], start, text)) continue;
+    spans.push([start, start + match[0].length]);
+  }
+  return spans;
+}
+
+/**
+ * Where `redactSecrets` finds secrets in `text`, in `text`'s own positions:
+ * one span for each marker it writes, in order, none overlapping. Writing
+ * `[REDACTED:<kind>]` over each span gives exactly what `redactSecrets` gives.
+ *
+ * The patterns are read in the same order and each one reads the text as the
+ * ones before it left it, so a later pattern can take in an earlier marker; a
+ * span then runs from the start of everything its match covers to the end.
+ * Two texts of the same length whose characters correspond one for one (a
+ * text and the same text with its invisible characters replaced) give spans
+ * that can be laid over each other.
+ */
+export function secretSpans(text: string): SecretSpan[] {
+  let current = text;
+  // For each character of `current`, the span of `text` it stands for, and the
+  // kind when it belongs to a marker. Made at the first hit: most texts have none.
+  let from: number[] | null = null;
+  let to: number[] | null = null;
+  let kinds: Array<string | null> | null = null;
+  for (const secret of SECRET_PATTERNS) {
+    const found = spansOf(current, secret);
+    if (found.length === 0) continue;
+    if (from === null || to === null || kinds === null) {
+      from = Array.from({ length: current.length }, (_, at) => at);
+      to = Array.from({ length: current.length }, (_, at) => at + 1);
+      kinds = new Array<string | null>(current.length).fill(null);
+    }
+    const nextFrom: number[] = [];
+    const nextTo: number[] = [];
+    const nextKinds: Array<string | null> = [];
+    const pieces: string[] = [];
+    let kept = 0;
+    const keep = (until: number): void => {
+      pieces.push(current.slice(kept, until));
+      for (let at = kept; at < until; at++) {
+        nextFrom.push(from?.[at] ?? at);
+        nextTo.push(to?.[at] ?? at + 1);
+        nextKinds.push(kinds?.[at] ?? null);
+      }
+    };
+    for (const [start, end] of found) {
+      keep(start);
+      const marker = `[REDACTED:${secret.kind}]`;
+      const covered = [from[start] ?? start, to[end - 1] ?? end] as const;
+      pieces.push(marker);
+      for (let at = 0; at < marker.length; at++) {
+        nextFrom.push(covered[0]);
+        nextTo.push(covered[1]);
+        nextKinds.push(secret.kind);
+      }
+      kept = end;
+    }
+    keep(current.length);
+    current = pieces.join("");
+    from = nextFrom;
+    to = nextTo;
+    kinds = nextKinds;
+  }
+  if (from === null || to === null || kinds === null) return [];
+  const spans: SecretSpan[] = [];
+  for (let at = 0; at < current.length; at++) {
+    const kind = kinds[at];
+    if (kind === null || kind === undefined) continue;
+    const start = from[at] ?? 0;
+    const end = to[at] ?? 0;
+    const last = spans.at(-1);
+    // One marker's characters all stand for the same span.
+    if (last && last.start === start && last.end === end) continue;
+    spans.push({ kind, start, end });
+  }
+  return spans;
+}
+
 function redactMatches(
   text: string,
   secret: SecretPattern,

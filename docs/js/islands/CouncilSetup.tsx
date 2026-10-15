@@ -1,5 +1,11 @@
 import type { ProviderReadiness } from "../../../scripts/council/providers";
 import type { CouncilProfile } from "../../../scripts/council/types";
+import {
+  type CouncilPreviewState,
+  needsPreview,
+  previewAllowsSend,
+  previewOf,
+} from "../council-preview";
 import { Button } from "../ds/Button";
 import { Card } from "../ds/Card";
 import { Field, Input, Select, Textarea } from "../ds/Field";
@@ -30,36 +36,107 @@ type Props = {
   profiles: ProfileChoice[];
   active: boolean;
   starting: boolean;
+  /** The last preview asked for; shown only while it is of this draft. */
+  preview: CouncilPreviewState;
   onChange: (patch: Partial<CouncilDraft>) => void;
   onStart: () => Promise<void>;
   onCancel: () => Promise<void>;
+  onPreview: () => Promise<void>;
 };
+
+/**
+ * What a run on a bead would send, part by part, before it sends anything.
+ * Called as a function, so it is part of the setup's own tree.
+ */
+function evidencePreview({
+  state,
+  disabled,
+  onPreview,
+}: {
+  state: CouncilPreviewState;
+  disabled: boolean;
+  onPreview: () => Promise<void>;
+}) {
+  const loading = state.status === "loading";
+  return (
+    <div class="af-evidence-preview">
+      <div class="af-button-row">
+        <Button onClick={() => void onPreview()} disabled={disabled || loading}>
+          {loading ? "Reading the bead…" : "Preview evidence"}
+        </Button>
+      </div>
+      {state.status === "ready" ? (
+        <>
+          <p class="af-muted">
+            What the council will send for{" "}
+            <strong>{state.preview.source.displayName}</strong>:{" "}
+            {state.preview.byteLength} bytes
+            {state.preview.truncated
+              ? ", not all of it: what is cut or left out is listed"
+              : ""}
+            {state.preview.redactions.length > 0
+              ? `; replaced: ${state.preview.redactions
+                  .map((redaction) => `${redaction.kind} ×${redaction.count}`)
+                  .join(", ")}`
+              : ""}
+            . The bead is read again when the run starts.
+          </p>
+          <ul class="af-evidence-listing" data-testid="council-preview-listing">
+            {state.preview.listing.map((line, index) => (
+              // A listing's lines are its order, and two may read alike.
+              <li key={`${index} ${line}`}>{line}</li>
+            ))}
+          </ul>
+        </>
+      ) : state.status === "failed" ? (
+        <p class="af-notice af-notice-error" role="alert">
+          {state.error}
+        </p>
+      ) : (
+        <p class="af-muted">
+          A bead's acceptance criteria, comments, description, linked plan and
+          pull request go to every provider of the profile. Preview them first:
+          each part is listed, and nothing is sent.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function CouncilSetup({
   draft,
   profiles,
   active,
   starting,
+  preview,
   onChange,
   onStart,
   onCancel,
+  onPreview,
 }: Props) {
   const { sourceType, source, profilePath, budget, redactSecrets } = draft;
   const profile = profiles.find((item) => item.path === profilePath);
   const ready = profile?.readiness.every((entry) => entry.configured) ?? false;
+  const bead = sourceType === "bead";
+  const shown = previewOf(preview, draft);
 
   const sourceLabel =
     sourceType === "text"
       ? "Document or question"
       : sourceType === "pr"
         ? "PR number or GitHub URL"
-        : "File path within this workspace";
+        : bead
+          ? "Beads issue id"
+          : "File path within this workspace";
 
   const sourcePlaceholder =
     sourceType === "text"
       ? "Paste the work, its goals, and the evidence the reviewers should consider…"
       : sourceType === "pr"
         ? "https://github.com/owner/repo/pull/123"
-        : "plans/drafts/my-plan.md";
+        : bead
+          ? "agent-forge-harness-x1gs.7"
+          : "plans/drafts/my-plan.md";
 
   return (
     <Card title="What should the council review?" headingLevel={2}>
@@ -77,6 +154,7 @@ export function CouncilSetup({
             <option value="pr">GitHub pull request</option>
             <option value="plan">Local Markdown plan</option>
             <option value="file">Local research or text file</option>
+            <option value="bead">Beads issue</option>
           </Select>
         </Field>
 
@@ -105,15 +183,40 @@ export function CouncilSetup({
         </Field>
 
         <Field label={sourceLabel} id="council-source" class="af-form-wide">
-          <Textarea
-            id="council-source"
-            value={source}
-            onInput={(event) => onChange({ source: event.currentTarget.value })}
-            placeholder={sourcePlaceholder}
-            disabled={active}
-            rows={5}
-          />
+          {bead ? (
+            <Input
+              id="council-source"
+              value={source}
+              onInput={(event) =>
+                onChange({ source: event.currentTarget.value })
+              }
+              placeholder={sourcePlaceholder}
+              disabled={active}
+              autocomplete="off"
+            />
+          ) : (
+            <Textarea
+              id="council-source"
+              value={source}
+              onInput={(event) =>
+                onChange({ source: event.currentTarget.value })
+              }
+              placeholder={sourcePlaceholder}
+              disabled={active}
+              rows={5}
+            />
+          )}
         </Field>
+
+        {needsPreview(sourceType) ? (
+          <div class="af-form-wide">
+            {evidencePreview({
+              state: shown,
+              disabled: active || !source.trim(),
+              onPreview,
+            })}
+          </div>
+        ) : null}
 
         <Field label="Run budget (USD)" id="council-budget">
           <Input
@@ -208,6 +311,7 @@ export function CouncilSetup({
               starting ||
               !ready ||
               !source.trim() ||
+              !previewAllowsSend(preview, draft) ||
               budget.trim() === "" ||
               !Number.isFinite(Number(budget)) ||
               Number(budget) < 0

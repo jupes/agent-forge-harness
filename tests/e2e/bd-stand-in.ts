@@ -17,6 +17,9 @@
  *   several, an `update` of labels or metadata, and the `list` shapes of
  *   `GET /queue` and of eligibility;
  * - answers `export` (the Beads counts read) with its issues, one line each;
+ * - answers the two reads of a council's bead source (`--readonly show <id>
+ *   --json`, `--readonly comments <id> --json`) for an issue it knows, with
+ *   no comments: it does not keep them;
  * - answers any other `list` with an empty list, and exits 2 for anything
  *   else.
  *
@@ -132,9 +135,34 @@ function answerExport(): Printed {
   return { status: 0, stdout: lines.join(""), stderr: "" };
 }
 
+/**
+ * The two reads of a council's bead source, `bd --readonly show <id> --json`
+ * and `bd --readonly comments <id> --json`: the issue as bd prints it (in an
+ * array), and its comments, which the stand-in does not keep, so none. An id
+ * it does not know is refused as bd refuses it. Undefined for any other call.
+ */
+function answerBeadSource(): Printed | undefined {
+  const [readonly, verb, id, json, ...rest] = args;
+  if (
+    readonly !== "--readonly" ||
+    (verb !== "show" && verb !== "comments") ||
+    id === undefined ||
+    json !== "--json" ||
+    rest.length > 0
+  )
+    return undefined;
+  const issue = issues[id];
+  if (issue === undefined) return bdAnswers.refusedOnStderr(unknown(id));
+  if (verb === "comments") return { status: 0, stdout: "[]\n", stderr: "" };
+  const { blockedBy: _blockedBy, ...printed } = issue;
+  return { status: 0, stdout: `${JSON.stringify([printed])}\n`, stderr: "" };
+}
+
 function answer(): Printed {
   const queued = answerQueue();
   if (queued !== undefined) return queued;
+  const read = answerBeadSource();
+  if (read !== undefined) return read;
   if (args[0] === "list") return { status: 0, stdout: "[]\n", stderr: "" };
   if (args[0] === "export") return answerExport();
   const write = readWrite(args);
