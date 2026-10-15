@@ -1,3 +1,7 @@
+---
+argument-hint: "<description | BEADS-ID | JIRA-KEY | slug> [--worktree] [--max-revisions <n>] [--smith <name>]"
+---
+
 # /forgemaster-auto — Run the Forge pipeline end to end without stopping for a human
 
 Same four phases as `/forgemaster` — **research → plan → implement → ship** — but every phase

@@ -462,91 +462,115 @@ interface Write {
   ): Confirmed | Conflict | Unconfirmed | null;
 }
 
-export function beadRoutes(deps: BeadDeps): ApiRoute[] {
-  /** Append the outcome event. Null when the ledger stored it, else why not. */
-  async function record(
-    action: BeadWrite,
-    id: string,
-    text?: string,
-  ): Promise<string | null> {
-    const event: LedgerEventInput = {
-      kind: "bead.transitioned",
-      workspace: deps.workspace,
-      beadId: id,
-      // Metadata only: what was done, and a hash and length of the one text it
-      // carried. The text itself goes to bd and nowhere else.
-      payload: {
-        action,
-        ...(text !== undefined
-          ? { hash: hashText(text), length: text.length }
-          : {}),
-      },
-    };
-    return storeEvent(deps.appendEvent, event);
-  }
+/** Append the outcome event. Null when the ledger stored it, else why not. */
+async function record(
+  deps: BeadDeps,
+  action: BeadWrite,
+  id: string,
+  text?: string,
+): Promise<string | null> {
+  const event: LedgerEventInput = {
+    kind: "bead.transitioned",
+    workspace: deps.workspace,
+    beadId: id,
+    // Metadata only: what was done, and a hash and length of the one text it
+    // carried. The text itself goes to bd and nowhere else.
+    payload: {
+      action,
+      ...(text !== undefined
+        ? { hash: hashText(text), length: text.length }
+        : {}),
+    },
+  };
+  return storeEvent(deps.appendEvent, event);
+}
 
-  /**
-   * One call to bd, never repeated, and one of five answers. None of them is a
-   * 403: the page posts an action again after a 403, which is safe only while a
-   * 403 always means "refused before anything was done".
-   */
-  async function write(spec: Write): Promise<RouteReply> {
-    const began = Date.now();
-    // 504 is the one status that means "the outcome is not known".
-    const unknown = (what: string): RouteReply => ({
+/**
+ * One call to bd, never repeated, and one of five answers. None of them is a
+ * 403: the page posts an action again after a 403, which is safe only while a
+ * 403 always means "refused before anything was done".
+ */
+async function write(deps: BeadDeps, spec: Write): Promise<RouteReply> {
+  const began = Date.now();
+  // 504 is the one status that means "the outcome is not known".
+  const unknown = (what: string): RouteReply => ({
+    status: 504,
+    error: `bd ${spec.command} ${what} Check with \`${spec.check}\` before trying again.`,
+  });
+  let result: BdResult;
+  try {
+    result = await deps.runBd(spec.args);
+  } catch {
+    // `bdRunner` never rejects; a runner that throws is an outcome nobody
+    // knows, and what it threw can repeat an argument, so it is not passed on.
+    return unknown(
+      "did not finish: it could not be run. The change may still have been made.",
+    );
+  }
+  // No exit status: a call killed at the runner's limit, and one the runtime
+  // could not spawn for a reason other than a missing program (its working
+  // directory gone), look alike here, so the answer gives both.
+  if (result.status === null)
+    return neverStarted(result)
+      ? {
+          status: 502,
+          error:
+            "bd could not be started (is it installed, and on the PATH of this control plane?). Nothing was changed.",
+        }
+      : unknown(
+          "did not finish: it was stopped before it answered, or it never started. The change may still have been made.",
+        );
+  if (result.status !== 0)
+    return {
+      status: 502,
+      error: safeMessage(`bd ${spec.command} failed: ${refusal(result)}`),
+    };
+  const confirmed = spec.confirm(result.stdout, began);
+  if (confirmed === null)
+    return unknown(
+      "exited 0 but did not confirm the change. It may have been made.",
+    );
+  if ("conflict" in confirmed)
+    return { status: 409, error: confirmed.conflict };
+  if ("unconfirmed" in confirmed)
+    return {
       status: 504,
-      error: `bd ${spec.command} ${what} Check with \`${spec.check}\` before trying again.`,
-    });
-    let result: BdResult;
-    try {
-      result = await deps.runBd(spec.args);
-    } catch {
-      // `bdRunner` never rejects; a runner that throws is an outcome nobody
-      // knows, and what it threw can repeat an argument, so it is not passed on.
-      return unknown(
-        "did not finish: it could not be run. The change may still have been made.",
-      );
-    }
-    // No exit status: a call killed at the runner's limit, and one the runtime
-    // could not spawn for a reason other than a missing program (its working
-    // directory gone), look alike here, so the answer gives both.
-    if (result.status === null)
-      return neverStarted(result)
-        ? {
-            status: 502,
-            error:
-              "bd could not be started (is it installed, and on the PATH of this control plane?). Nothing was changed.",
-          }
-        : unknown(
-            "did not finish: it was stopped before it answered, or it never started. The change may still have been made.",
-          );
-    if (result.status !== 0)
-      return {
-        status: 502,
-        error: safeMessage(`bd ${spec.command} failed: ${refusal(result)}`),
-      };
-    const confirmed = spec.confirm(result.stdout, began);
-    if (confirmed === null)
-      return unknown(
-        "exited 0 but did not confirm the change. It may have been made.",
-      );
-    if ("conflict" in confirmed)
-      return { status: 409, error: confirmed.conflict };
-    if ("unconfirmed" in confirmed)
-      return {
-        status: 504,
-        error: `bd ${spec.command} ${confirmed.unconfirmed}`,
-      };
-    const unrecorded = await record(spec.action, confirmed.id, spec.text);
-    const data: BeadWriteResult = {
-      ...confirmed,
-      action: spec.action,
-      recorded: unrecorded === null,
-      ...(unrecorded !== null ? { recordError: unrecorded } : {}),
+      error: `bd ${spec.command} ${confirmed.unconfirmed}`,
     };
-    return { status: spec.status, data };
-  }
+  const unrecorded = await record(deps, spec.action, confirmed.id, spec.text);
+  const data: BeadWriteResult = {
+    ...confirmed,
+    action: spec.action,
+    recorded: unrecorded === null,
+    ...(unrecorded !== null ? { recordError: unrecorded } : {}),
+  };
+  return { status: spec.status, data };
+}
 
+/**
+ * A comment on a bead: the comment row's write, for the hearth's own use too
+ * (a council run's verdict, `council-verdict.ts`). One `bd comments add`, both
+ * positionals after the terminator, so a text that looks like an option stays
+ * a text; never repeated; `bead.transitioned` once bd's answer confirms it.
+ * The id and the text are the caller's to have checked.
+ */
+export function commentOnBead(
+  deps: BeadDeps,
+  id: string,
+  text: string,
+): Promise<RouteReply> {
+  return write(deps, {
+    action: "comment",
+    command: "comments add",
+    args: ["comments", "add", "--json", "--", id, text],
+    text,
+    status: 201,
+    check: `bd show ${id}`,
+    confirm: commented,
+  });
+}
+
+export function beadRoutes(deps: BeadDeps): ApiRoute[] {
   const create: ActionRoute<CreateInput> = {
     kind: "action",
     method: "POST",
@@ -562,7 +586,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         ? { target: input.parent, beadId: input.parent }
         : {},
     effect: (input) =>
-      write({
+      write(deps, {
         action: "create",
         command: "create",
         args: [
@@ -597,7 +621,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     validate: claimInput,
     subject: subjectOf,
     effect: (id) =>
-      write({
+      write(deps, {
         action: "claim",
         command: "update --claim",
         args: ["update", "--claim", "--json", "--", id],
@@ -614,17 +638,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     action: "bead.comment",
     validate: worded("text", BEAD_TEXT_LIMITS.comment),
     subject: (input) => subjectOf(input.id),
-    effect: ({ id, text }) =>
-      write({
-        action: "comment",
-        command: "comments add",
-        // Both positionals after the terminator: a text that looks like an option stays a text.
-        args: ["comments", "add", "--json", "--", id, text],
-        text,
-        status: 201,
-        check: `bd show ${id}`,
-        confirm: commented,
-      }),
+    effect: ({ id, text }) => commentOnBead(deps, id, text),
   };
 
   const close: ActionRoute<Worded> = {
@@ -636,7 +650,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
     validate: worded("reason", BEAD_TEXT_LIMITS.reason),
     subject: (input) => subjectOf(input.id),
     effect: ({ id, text }) =>
-      write({
+      write(deps, {
         action: "close",
         command: "close",
         args: ["close", `--reason=${text}`, "--json", "--", id],

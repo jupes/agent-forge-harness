@@ -1,3 +1,7 @@
+---
+argument-hint: "<feature | slug> [--smith <name>]"
+---
+
 # /forge-research — Forge Phase 1: Research
 
 Investigate a feature against the real codebase, answer everything the code can answer, and grill the

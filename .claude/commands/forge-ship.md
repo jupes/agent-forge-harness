@@ -1,3 +1,7 @@
+---
+argument-hint: "<slug> [--smith <name>]"
+---
+
 # /forge-ship — Forge Phase 4: Ship
 
 Summarize the whole run — what shipped, Beads closed, before/after, and a runnable test walkthrough —

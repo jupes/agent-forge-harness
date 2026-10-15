@@ -1,3 +1,7 @@
+---
+argument-hint: "<idea | task-id> [--tasks]"
+---
+
 # /plan — Explore + Create Implementation Plan
 
 Explores the codebase and produces a structured implementation plan. Optionally materializes Beads tasks.

@@ -3032,8 +3032,12 @@ describe("a bead as the source of a council run started through the hearth", () 
     expect(
       h.commands.calls.map(({ command }) => command.slice(0, 3).join(" ")),
     ).toEqual(["bd --readonly show", "bd --readonly comments"]);
-    // The API's own bd is not the council's: the job never reached it.
-    expect(h.bd.calls).toEqual([]);
+    // The API's own bd is not the council's: the job's reads never reached it.
+    // The one call it was given is the verdict posted back to the bead
+    // (`routes/council-verdict.test.ts` holds what each end of a run posts).
+    expect(h.bd.calls.map((call) => call.slice(0, 5))).toEqual([
+      ["comments", "add", "--json", "--", "demo-7"],
+    ]);
     const audit = h.events(["operator.action"]);
     expect(
       [...audit, ...recorded].map((event) => [event.kind, event.beadId]),
