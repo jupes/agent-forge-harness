@@ -17,6 +17,7 @@ import { timelineHash } from "../timeline-model";
 import { BeadActions } from "./BeadActions";
 import { applied, useApplied } from "./bead-writes";
 import { CopyIdButton } from "./CopyIdButton";
+import { SendToCouncil } from "./SendToCouncil";
 
 export type IssueDetailCtx = {
   comments?: BeadsComment[];
@@ -111,6 +112,9 @@ export function IssueDetailPanel({
             >
               Timeline
             </a>
+          </Row>
+          <Row label="Council">
+            <SendToCouncil id={issue.id} />
           </Row>
           {issue.type ? <Row label="Type">{issue.type}</Row> : null}
           <Row label="Title">{issue.title}</Row>

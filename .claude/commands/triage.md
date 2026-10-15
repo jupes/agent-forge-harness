@@ -1,3 +1,7 @@
+---
+argument-hint: "[--epic <id>]"
+---
+
 # /triage — Deadline Management & Capacity Planning
 
 Classifies epics by deadline risk, reviews open PRs across repos, and creates bugs for failing CI.

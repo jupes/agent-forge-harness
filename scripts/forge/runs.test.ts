@@ -385,6 +385,36 @@ describe("an auto run's reviews decide what comes next (csf2)", () => {
     expect(parsed?.reviews?.[0]?.verdict).toBe("PASS");
   });
 
+  test("an unreadable round's stored cause is read back as text and cleaned; anything else is dropped, and the run still halts", () => {
+    // justification: a state file can hold any JSON, which is what is read back.
+    const unreadable = (verdictError: unknown): ReviewRound =>
+      ({
+        ...review("research", 1, "UNREADABLE"),
+        verdictError,
+      }) as unknown as ReviewRound;
+    const read = (verdictError: unknown) =>
+      parseState(
+        JSON.stringify(autoRun(["research"], [unreadable(verdictError)])),
+      )?.reviews?.[0];
+
+    expect(read("the verdict file is not JSON")?.verdictError).toBe(
+      "the verdict file is not JSON",
+    );
+    // A hand-edited file is cleaned the way the command cleans what it stores.
+    expect(read("two\nlines.  ")?.verdictError).toBe("two lines");
+    for (const bad of [42, null, ["a"], { a: 1 }, "", " . "]) {
+      expect(read(bad)).not.toHaveProperty("verdictError");
+    }
+
+    // With no stored decision the rule re-derives the halt from the cause.
+    const summary = summarizeRun(
+      autoRun(["research"], [unreadable("no run correlation")]),
+    );
+    expect(summary.halted?.reason).toBe(
+      'The review of "research" returned no usable verdict, so the run cannot grade itself: no run correlation.',
+    );
+  });
+
   test("rounds recorded before actions were stored fall back to the default rule", () => {
     // Three failing rounds use up the default budget of two revisions.
     const summary = summarizeRun(

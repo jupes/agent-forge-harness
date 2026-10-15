@@ -1,3 +1,7 @@
+---
+argument-hint: "<question>"
+---
+
 # /ask — Query Domain Knowledge
 
 Answers questions about the codebase using knowledge files. Flags stale knowledge and spot-checks answers.
