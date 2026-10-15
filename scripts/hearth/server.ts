@@ -331,6 +331,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       );
     });
   });
+  // A request that says `Expect: 100-continue` is handled like any other, and
+  // nothing is sent for it here: with no listener the runtime would answer
+  // `100 Continue` at once, before anything had looked at the request. The
+  // runner sends it when it begins to read a body it will use (`requestBody`
+  // in `api.ts`), so a refusal decided on the head goes out with the body
+  // never asked for. Nothing else here reads a body.
+  server.on("checkContinue", (req, res) => {
+    server.emit("request", req, res);
+  });
 
   const stop = async (): Promise<void> => {
     table.close();

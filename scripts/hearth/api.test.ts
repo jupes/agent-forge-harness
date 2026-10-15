@@ -1740,6 +1740,79 @@ function rawExchange(
   });
 }
 
+/** What a client that sends `Expect: 100-continue`, and writes its body only on `100 Continue`, was told. */
+interface ExpectingExchange {
+  /** The status line of each interim (1xx) answer, in order. */
+  interim: string[];
+  /** The final answer's status and body: 0 and "" when none came within the wait. */
+  status: number;
+  body: string;
+  /** Whether the body was written, which this client does only after `100 Continue`. */
+  bodySent: boolean;
+}
+
+/**
+ * Send `head` with `Expect: 100-continue` and `Connection: close`, write
+ * `body` only when the hearth answers `100 Continue`, and read up to the final
+ * answer (framed by Content-Length, as the hearth frames every answer here).
+ */
+function expectingExchange(
+  h: TestHearth,
+  head: string[],
+  body: Buffer,
+  waitMs = 10_000,
+): Promise<ExpectingExchange> {
+  return new Promise((done) => {
+    let received = Buffer.alloc(0);
+    let bodySent = false;
+    let settled = false;
+    const interim: string[] = [];
+    const socket = connect(h.hearth.port, "127.0.0.1", () => {
+      socket.write(
+        `${[...head, "Expect: 100-continue", "Connection: close"].join("\r\n")}\r\n\r\n`,
+      );
+    });
+    const finish = (status: number, text: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(giveUp);
+      socket.destroy();
+      done({ interim, status, body: text, bodySent });
+    };
+    const giveUp = setTimeout(() => finish(0, ""), waitMs);
+    socket.on("error", () => {});
+    socket.on("close", () => finish(0, ""));
+    socket.on("data", (chunk: Buffer) => {
+      received = Buffer.concat([received, chunk]);
+      for (;;) {
+        const end = received.indexOf("\r\n\r\n");
+        if (end === -1) return;
+        const lines = received
+          .subarray(0, end)
+          .toString("latin1")
+          .split("\r\n");
+        const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(lines[0] ?? "")?.[1]);
+        if (status >= 100 && status < 200) {
+          interim.push(lines[0] ?? "");
+          received = received.subarray(end + 4);
+          if (status === 100 && !bodySent) {
+            bodySent = true;
+            socket.write(body);
+          }
+          continue;
+        }
+        const declared = lines.find((line) => /^content-length:/i.test(line));
+        const length = Number(declared?.slice(declared.indexOf(":") + 1) ?? 0);
+        if (received.length < end + 4 + length) return;
+        return finish(
+          status,
+          received.subarray(end + 4, end + 4 + length).toString("utf8"),
+        );
+      }
+    });
+  });
+}
+
 describe("request bodies (raw socket)", () => {
   const PATH = "/__agent-forge/dev-api/forge-run/review";
   /** Far past every row's cap, and past what was answered before when the hearth refused a body unread. */
@@ -1899,6 +1972,78 @@ describe("request bodies (raw socket)", () => {
     }
     expect(seen).toEqual(wanted);
     expect(probes).toEqual([]);
+  }, 30_000);
+
+  test("a request that says Expect: 100-continue is answered on its head, with no 100 Continue and its body never asked for, when it does not declare the hearth's origin, presents a wrong token, declares a Content-Length over the row's cap, is not JSON, comes from another origin or names no route; authorised, it is sent 100 Continue and its body is read and acted on", async () => {
+    const { h, probes } = await probed();
+    const body = Buffer.from(JSON.stringify(REVIEW));
+    const framing = `Content-Length: ${body.byteLength}`;
+    const authorised = headLines(h, { token: h.hearth.token, framing });
+    const replaced = (from: string, to: string): string[] =>
+      authorised.map((line) => (line === from ? to : line));
+    const cases: Array<[string, string[], number]> = [
+      [
+        "no declared origin",
+        headLines(h, { origin: false, token: h.hearth.token, framing }),
+        403,
+      ],
+      ["a wrong token", headLines(h, { token: "wrong", framing }), 403],
+      [
+        "a Content-Length over the cap",
+        headLines(h, {
+          token: h.hearth.token,
+          framing: `Content-Length: ${LARGE}`,
+        }),
+        400,
+      ],
+      [
+        "not JSON",
+        replaced("Content-Type: application/json", "Content-Type: text/plain"),
+        400,
+      ],
+      [
+        "another origin (the front door)",
+        replaced(`Origin: ${h.hearth.url}`, "Origin: http://127.0.0.1:1"),
+        403,
+      ],
+      [
+        "no route",
+        replaced(
+          `POST ${PATH} HTTP/1.1`,
+          "POST /__agent-forge/no-such-route HTTP/1.1",
+        ),
+        404,
+      ],
+    ];
+    const seen: unknown[] = [];
+    const wanted: unknown[] = [];
+    for (const [label, head, status] of cases) {
+      const answer = await expectingExchange(h, head, body);
+      seen.push({
+        label,
+        status: answer.status,
+        interim: answer.interim,
+        bodySent: answer.bodySent,
+      });
+      wanted.push({ label, status, interim: [], bodySent: false });
+    }
+    expect(seen).toEqual(wanted);
+    expect(h.events()).toEqual([]);
+    expect(probes).toEqual([]);
+
+    const accepted = await expectingExchange(h, authorised, body);
+    expect({
+      interim: accepted.interim,
+      bodySent: accepted.bodySent,
+      status: accepted.status,
+    }).toEqual({
+      interim: ["HTTP/1.1 100 Continue"],
+      bodySent: true,
+      status: 200,
+    });
+    expect(probes.map((probe) => probe.input)).toEqual([
+      expect.objectContaining({ issueId: "demo-1" }),
+    ]);
   }, 30_000);
 });
 
