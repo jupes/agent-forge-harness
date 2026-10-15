@@ -16,7 +16,9 @@ import { resolveCheckout } from "./ledger/workspace";
 import { RUN_CORRELATION_ENV, RUN_CORRELATIONS_DIR } from "./run-correlation";
 import {
   correlateRun,
+  correlationDraftPath,
   initRunCorrelation,
+  isCorrelationDraftFile,
   loadRunCorrelation,
   pointedRunCorrelation,
   pointedRunCorrelationAnywhere,
@@ -188,6 +190,64 @@ describe("initRunCorrelation (the launcher boundary)", () => {
       expect(init(dir, over).ok).toBe(false);
     }
     expect(existsSync(join(dir, ".tmp"))).toBe(false);
+  });
+});
+
+describe("the writer's draft names (what a writer killed before the rename leaves)", () => {
+  test("the draft the writer fills beside a correlation is named <run>.json.<pid>.tmp, and the rule takes exactly that", () => {
+    expect(
+      correlationDraftPath("/work/run-correlations/run-1.json", 4242),
+    ).toBe("/work/run-correlations/run-1.json.4242.tmp");
+    for (const run of [
+      "run-1",
+      "Feature-ABC.v2",
+      "01JABCDEFGHJKMNPQRSTVWXYZ0",
+    ]) {
+      expect(isCorrelationDraftFile(`${run}.json.${process.pid}.tmp`)).toBe(
+        true,
+      );
+    }
+
+    // The real writer, stopped between the write and the rename: a directory
+    // sits where the file goes, so the rename fails and the draft stays.
+    const dir = checkout();
+    mkdirSync(join(dir, RUN_CORRELATIONS_DIR, "run-1.json"), {
+      recursive: true,
+    });
+    expect(init(dir).ok).toBe(false);
+    const left = readdirSync(join(dir, RUN_CORRELATIONS_DIR)).filter(
+      (name) => name !== "run-1.json",
+    );
+    expect(left).toEqual([`run-1.json.${process.pid}.tmp`]);
+    expect(isCorrelationDraftFile(left[0] ?? "")).toBe(true);
+  });
+
+  test("only <valid run id>.json.<digits>.tmp is a draft: a correlation and every near miss are not", () => {
+    for (const name of [
+      "run-1.json",
+      "run-1.json.tmp",
+      "run-1.json..tmp",
+      "run-1.json.abc.tmp",
+      "run-1.json.12a.tmp",
+      "run-1.json.-12.tmp",
+      "run-1.json.12.34.tmp",
+      "run-1.json.12.tmp.bak",
+      "run-1.json.12.tmpx",
+      "run-1.json.12.temp",
+      "run-1.JSON.12.tmp",
+      "run-1.12.tmp",
+      ".json.12.tmp",
+      ".run-1.json.12.tmp",
+      "-run-1.json.12.tmp",
+      "run 1.json.12.tmp",
+      "run/1.json.12.tmp",
+      "run..1.json.12.tmp",
+      `${"a".repeat(81)}.json.12.tmp`,
+      "",
+    ]) {
+      expect(isCorrelationDraftFile(name)).toBe(false);
+    }
+    expect(isCorrelationDraftFile(`${"a".repeat(80)}.json.12.tmp`)).toBe(true);
   });
 });
 
