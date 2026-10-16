@@ -1,54 +1,166 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import {
+  type AclTarget,
+  assertOwnerOnly,
+  makeOwnerOnly,
+  type WindowsAcl,
+} from "./acl-windows";
 
-/** Mode 0600 where the file system keeps POSIX modes; a no-op elsewhere. */
-function ownerOnly(file: string): void {
+/** What a refusal to write a secret tells the operator to do. */
+export const OWNER_ONLY_FIX =
+  "Use the default home (leave AGENT_FORGE_HOME unset: ~/.agent-forge, in your user profile) or set AGENT_FORGE_HOME to a folder on an NTFS drive";
+
+/** How `writeOwnerOnly` protects what it writes; tests hand in their own. */
+export interface OwnerOnlyOptions {
+  /** Whose protection applies: Windows' ACLs or POSIX modes. This process's platform by default. */
+  platform?: NodeJS.Platform;
+  /** Windows' ACL functions (`acl-windows.ts`); advapi32's by default. */
+  acl?: WindowsAcl;
+  /** Called with the temp file once its content is written, before it is renamed over the file. */
+  beforeRename?: (temp: string) => void;
+}
+
+/**
+ * Mode `mode` where the file system keeps POSIX modes; a no-op elsewhere.
+ * Best effort, as it always was: a file system without POSIX modes rejects it.
+ */
+function posixMode(path: string, mode: number): void {
   try {
-    chmodSync(file, 0o600);
+    chmodSync(path, mode);
   } catch {
     // Best effort: filesystems without POSIX modes reject chmod.
   }
 }
 
-/**
- * Create a fresh per-boot operator token and write it to `file`.
- *
- * The file is created with mode 0600. Windows ignores POSIX modes, so there the
- * protection is the user profile directory's own ACL, not this call.
- */
-export function createToken(file: string): string {
-  const token = randomBytes(32).toString("hex");
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${token}\n`, { mode: 0o600 });
-  ownerOnly(file);
-  return token;
+function posixOwnerOnly(path: string, target: AclTarget): void {
+  posixMode(path, target === "directory" ? 0o700 : 0o600);
+}
+
+function refusal(file: string, error: unknown): Error {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new Error(`Refusing to write ${file}: ${reason}. ${OWNER_ONLY_FIX}.`, {
+    cause: error,
+  });
 }
 
 /**
- * Replace `file` with `content`, readable by this OS user only, as the token
- * file is: created with mode 0600 (on Windows the protection is the profile
- * directory's ACL). Written to a new file beside it and renamed over it, so a
- * reader sees the old content or the new, never part of either.
+ * Replace `file` with `content`: its directory made, then given `protect`;
+ * then a new temp file beside `file`, given `protect` while it is still
+ * empty; then the content, and a rename over `file`. A reader sees the old
+ * content or the new, never part of either. Nothing is left of the temp file
+ * when any step throws.
  */
-export function writeOwnerOnly(file: string, content: string): void {
-  mkdirSync(dirname(file), { recursive: true });
+function replaceFile(
+  file: string,
+  content: string,
+  protect: (path: string, target: AclTarget) => void,
+  beforeRename?: (temp: string) => void,
+): void {
+  const dir = dirname(file);
+  mkdirSync(dirname(dir), { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  protect(dir, "directory");
   const temp = `${file}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+  let fd: number | null = null;
   try {
-    writeFileSync(temp, content, { mode: 0o600, flag: "wx" });
-    ownerOnly(temp);
+    fd = openSync(temp, "wx", 0o600);
+    protect(temp, "file");
+    writeFileSync(fd, content);
+    closeSync(fd);
+    fd = null;
+    beforeRename?.(temp);
     renameSync(temp, file);
   } catch (error) {
+    if (fd !== null) closeSync(fd);
     rmSync(temp, { force: true });
     throw error;
   }
+}
+
+/**
+ * Replace `file` with `content`, readable by this OS user only, and make the
+ * directory it is in so too: give each such file a directory of its own (the
+ * hearth's is `tokens/` under its home).
+ *
+ * - POSIX: the directory 0700, the file 0600.
+ * - Windows, where modes mean nothing: an explicit DACL on each, protected
+ *   (nothing inherited from the folder above) and granting full control to
+ *   this user and SYSTEM only, with this user as owner (`acl-windows.ts`);
+ *   the directory's entries are inherited by what is created in it. Each is
+ *   read back, and anything else is refused with nothing written: a file
+ *   system without ACLs (FAT32, exFAT) cannot hold a secret. Set on every
+ *   write, so a directory or a file from before is tightened too; setting
+ *   the directory's replaces what the files already in it inherited from the
+ *   folder above.
+ *
+ * The directory first, then a new temp file beside `file`, made owner-only
+ * while it is still empty, then the content, then a rename over `file`: a
+ * reader sees the old content or the new, never part of either, and never a
+ * file with another ACL. On Windows the renamed file is read back once more,
+ * and removed if it is not owner-only.
+ *
+ * The Windows ACL is set through `bun:ffi`, which only Bun has: under Node
+ * (the dashboard's Vite) every write here refuses on Windows.
+ */
+export function writeOwnerOnly(
+  file: string,
+  content: string,
+  options: OwnerOnlyOptions = {},
+): void {
+  const windows = (options.platform ?? process.platform) === "win32";
+  const protect = (path: string, target: AclTarget): void => {
+    try {
+      if (windows) makeOwnerOnly(path, target, options.acl);
+      else posixOwnerOnly(path, target);
+    } catch (error) {
+      throw refusal(file, error);
+    }
+  };
+  replaceFile(file, content, protect, options.beforeRename);
+  if (!windows) return;
+  try {
+    assertOwnerOnly(file, "file", options.acl);
+  } catch (error) {
+    rmSync(file, { force: true });
+    throw refusal(file, error);
+  }
+}
+
+/**
+ * Replace `file` with `content` as `writeOwnerOnly` does, for a file that
+ * holds no secret: the dashboard record, which the dashboard writes under
+ * Node, where no Windows ACL can be set. The same modes on POSIX (the
+ * directory 0700, the file 0600); on Windows, the ACL its folder gives it.
+ */
+export function writeNonSecret(file: string, content: string): void {
+  replaceFile(file, content, (path, target) => {
+    if (process.platform !== "win32") posixOwnerOnly(path, target);
+  });
+}
+
+/**
+ * Create a fresh per-boot operator token and write it to `file`, readable by
+ * this OS user only (`writeOwnerOnly`: 0600 on POSIX, an owner-only DACL on
+ * Windows). Throws, with nothing written, where that cannot be made so.
+ */
+export function createToken(
+  file: string,
+  options: OwnerOnlyOptions = {},
+): string {
+  const token = randomBytes(32).toString("hex");
+  writeOwnerOnly(file, `${token}\n`, options);
+  return token;
 }
 
 export function readToken(file: string): string | null {

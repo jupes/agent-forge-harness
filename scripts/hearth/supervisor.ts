@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lockPath } from "./home";
+import { homeWriteProblem } from "./home-guard";
 import {
   type HearthLock,
   isPidAlive,
@@ -70,7 +71,23 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
   let preferredPort: number | undefined;
   let inflight: Promise<number> | null = null;
 
+  /**
+   * Refuses a home, or a lock file, that others can write: they could name
+   * the port the dashboard proxies the page's requests to, the operator token
+   * with them (`home-guard.ts`). Checked before a lock is trusted. The same
+   * check the hearth makes at start, so a home it would refuse is refused
+   * here with its words, before a hearth is started at all.
+   */
+  function refuseUnlessPrivate(): void {
+    const problem = homeWriteProblem(options.home, file);
+    if (problem !== null)
+      throw new Error(
+        `Refusing to use the control plane for ${root}: ${problem}`,
+      );
+  }
+
   async function attachOrStart(): Promise<number> {
+    refuseUnlessPrivate();
     const current = readLock(file);
     if (
       current &&
@@ -99,6 +116,14 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     child.once("error", (error) => {
       failed = error;
     });
+    // A hearth that refused to start exits 1 at once; one that found another
+    // hearth of this root running exits 0, and that one's lock is found below.
+    child.once("exit", (code) => {
+      if (code !== 0 && code !== null)
+        failed ??= new Error(
+          `The hearth exited with code ${code} before it answered. It says why when started directly: bun run hearth, with AGENT_FORGE_HOME=${options.home}, in ${root}`,
+        );
+    });
     // The child is independent of this process; it must not hold it open.
     child.unref();
 
@@ -107,6 +132,7 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
       if (failed) throw failed;
       const lock = readLock(file);
       if (lock && lock.pid !== current?.pid && (await isHealthy(lock))) {
+        refuseUnlessPrivate();
         updateLock(file, { supervisor: options.id });
         preferredPort = lock.port;
         return lock.port;

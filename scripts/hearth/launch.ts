@@ -4,10 +4,10 @@
  * (`x1gs.3.31`).
  *
  * The root of trust is the token file, which only the OS user who started the
- * hearth can read (mode 0600; on Windows the profile directory's ACL). The
- * token route used to serve the token to any request that passed the front
- * door and declared the hearth's own `Origin`: headers any local program can
- * set, another OS user's included. Now:
+ * hearth can read (`writeOwnerOnly`: mode 0600, on Windows an owner-only
+ * DACL). The token route used to serve the token to any request that passed
+ * the front door and declared the hearth's own `Origin`: headers any local
+ * program can set, another OS user's included. Now:
  *
  * 1. A holder of the token mints a launch secret (`POST /launch`): 256 random
  *    bits, good for `LAUNCH_TTL_MS` and for one use. Only its hash is kept, in
@@ -48,7 +48,8 @@ import {
 } from "../../types/hearth";
 import type { AppendResult } from "../ledger/append";
 import { isDeclaredSameOrigin } from "./gate";
-import { rootKey } from "./home";
+import { lockPath, rootKey } from "./home";
+import { homeWriteProblem } from "./home-guard";
 import { type Exchange, loopbackExchange } from "./loopback";
 import {
   API_PREFIX,
@@ -559,6 +560,13 @@ const MINT_TIMEOUT_MS = 5000;
 const MINT_MAX_BYTES = 16_384;
 
 export interface RequestLaunchOptions {
+  /**
+   * The hearth home and the checkout root the port was found for: the home,
+   * and the lock file of that root in it, are checked first
+   * (`homeWriteProblem`), and nothing is sent when others can write either.
+   */
+  home: string;
+  root: string;
   /** The hearth's port on 127.0.0.1. */
   port: number;
   /** The operator token, read from the token file. Sent on this request only. */
@@ -570,11 +578,19 @@ export interface RequestLaunchOptions {
 
 /**
  * Mint a launch secret from the hearth on `port`. The error says why not in
- * the hearth's words, never with the token.
+ * the hearth's words, never with the token. Nothing is sent from a home, or
+ * with a lock file, that others can write: whoever can write them can name
+ * the port (`home-guard.ts`).
  */
 export async function requestLaunch(
   options: RequestLaunchOptions,
 ): Promise<MintedLaunch> {
+  const problem = homeWriteProblem(
+    options.home,
+    lockPath(options.home, options.root),
+  );
+  if (problem !== null)
+    throw new Error(`Refusing to send the operator token: ${problem}`);
   const answer = await (options.exchange ?? loopbackExchange)({
     port: options.port,
     method: "POST",
