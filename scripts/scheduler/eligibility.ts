@@ -169,9 +169,15 @@ function named(globs: readonly string[]): string {
 }
 
 /** Why a queued bead waits for the earlier run whose reservation a shift's worktree still holds. */
-function earlierRunWhy(worktree: string, shift: ShiftWorktree): string {
+function earlierRunWhy(
+  beadId: string,
+  worktree: string,
+  shift: ShiftWorktree,
+): string {
+  // A pid the system gave to another program after the shift died reads as
+  // live too: the operator who knows the shift is gone frees it by hand.
   if (shift.standing === "live")
-    return `its earlier run in ${worktree} (shift ${shift.shiftId}) has not ended: it starts again once that run releases its reservation`;
+    return `its earlier run in ${worktree} (shift ${shift.shiftId}) has not ended: it starts again once that run releases its reservation (if that shift is gone and its pid names another program now, bun run forge:reservations release ${beadId} ${worktree} frees it)`;
   if (shift.standing === "dead")
     return `its earlier run in ${worktree} (shift ${shift.shiftId}) still holds its reservation, and that shift's process has ended: bun run forge:shift recover ${shift.shiftId} frees it`;
   return `its reservation in ${worktree} is shift ${shift.shiftId}'s, whose record was not read here, so that run may not have ended: it starts again once the reservation is released (bun run forge:shift list shows the shift; forge:shift recover frees the reservations of one whose process ended, forge:reservations release one by hand)`;
@@ -266,7 +272,7 @@ export function eligibility(input: EligibilityInput): Eligibility {
     if (earlier !== undefined) {
       waiting.push({
         id: bead.id,
-        why: earlierRunWhy(earlier.worktree, earlier.shift),
+        why: earlierRunWhy(bead.id, earlier.worktree, earlier.shift),
         waitsOnShift: earlier.shift.shiftId,
         ...reserved,
       });

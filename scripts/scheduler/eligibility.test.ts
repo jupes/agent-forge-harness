@@ -457,7 +457,7 @@ describe("eligibility: a queued bead whose reservation a shift's worktree still 
     expect(answer.waiting).toEqual([
       {
         id: "t-1",
-        why: `its earlier run in ${TREE} (shift ${SHIFT}) has not ended: it starts again once that run releases its reservation`,
+        why: `its earlier run in ${TREE} (shift ${SHIFT}) has not ended: it starts again once that run releases its reservation (if that shift is gone and its pid names another program now, bun run forge:reservations release t-1 ${TREE} frees it)`,
         waitsOnShift: SHIFT,
         globs: ["src/**"],
         conservative: false,

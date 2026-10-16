@@ -2772,7 +2772,7 @@ describe("/eligibility", () => {
       expect.objectContaining({ id: "q-1", waitsOnShift: shiftId }),
     ]);
     expect(data?.waiting[0]?.why).toBe(
-      `its earlier run in ${worktree} (shift ${shiftId}) has not ended: it starts again once that run releases its reservation`,
+      `its earlier run in ${worktree} (shift ${shiftId}) has not ended: it starts again once that run releases its reservation (if that shift is gone and its pid names another program now, bun run forge:reservations release q-1 ${worktree} frees it)`,
     );
   });
 

@@ -290,6 +290,8 @@ describe("forge:shift recover — refusals write nothing", () => {
       expect(outcome.error).toContain(`pid ${process.pid}`);
       expect(outcome.error).toContain(`bun run forge:shift stop ${A}`);
       expect(outcome.error).toContain("gave its pid to another program");
+      // The way out when the operator knows the shift is gone (x1gs.5.4.13).
+      expect(outcome.error).toContain("bun run forge:reservations list");
     }
     expect(r.calls).toEqual([]);
     expect(r.events()).toHaveLength(events);

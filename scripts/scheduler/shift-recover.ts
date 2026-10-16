@@ -249,7 +249,7 @@ function recoverable(
       ok: false,
       refused: no(
         "alive",
-        `${id}'s process (pid ${record.pid}) is running, so the shift is not recovered: stop it with bun run forge:shift stop ${id}. If that process is not the shift (the operating system gave its pid to another program after the shift ended), it cannot be told apart here: recover the shift once that process has ended. Nothing was done.`,
+        `${id}'s process (pid ${record.pid}) is running, so the shift is not recovered: stop it with bun run forge:shift stop ${id}. If that process is not the shift (the operating system gave its pid to another program after the shift ended), it cannot be told apart here: recover the shift once that process has ended, or free each reservation it holds by hand meanwhile (bun run forge:reservations list, then release). Nothing was done.`,
       ),
     };
   return { ok: true, record };
