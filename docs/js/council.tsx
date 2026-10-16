@@ -1,6 +1,11 @@
 import { render } from "preact";
 import { CouncilIsland } from "./islands/CouncilIsland";
+import { startPageLaunch } from "./operator";
 import { StandalonePage } from "./StandalonePage";
+
+// First, as the dashboard's boot does: a launch link's secret leaves the
+// address bar and is exchanged for the page's session (`operator.ts`).
+startPageLaunch();
 
 function CouncilPage() {
   return (

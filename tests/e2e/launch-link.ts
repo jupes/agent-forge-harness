@@ -1,5 +1,9 @@
 import { tokenPath } from "../../scripts/hearth/home";
-import { launchUrl, requestLaunch } from "../../scripts/hearth/launch";
+import {
+  launchBase,
+  launchUrl,
+  requestLaunch,
+} from "../../scripts/hearth/launch";
 import { LAUNCH_KEY } from "../../scripts/hearth/paths";
 import { readToken } from "../../scripts/hearth/token";
 import { DASHBOARD_URL, HEARTH_HOME, HEARTH_PORT } from "./servers";
@@ -27,16 +31,27 @@ export function hearthToken(): string {
 }
 
 /**
- * A fresh launch link for the dashboard: `/#launch=<secret>`, or with a route
- * (`/timeline?bead=x`), `/index.html#/timeline?bead=x&launch=<secret>`.
+ * A fresh launch link for the dashboard: `/#launch=<secret>`, as the launcher
+ * prints it; with a route (`/timeline?bead=x`),
+ * `/index.html#/timeline?bead=x&launch=<secret>`; with another document
+ * (`council.html`), `/council.html#launch=<secret>`.
  */
-export async function launchLink(route?: string): Promise<string> {
+export async function launchLink(
+  options: { route?: string; document?: string } = {},
+): Promise<string> {
   const { secret } = await requestLaunch({
     port: HEARTH_PORT,
     token: hearthToken(),
     surface: "cli",
   });
-  if (route === undefined) return launchUrl(`${DASHBOARD_URL}/`, secret);
-  const joiner = route.includes("?") ? "&" : "?";
-  return `${DASHBOARD_URL}/index.html#${route}${joiner}${LAUNCH_KEY}=${secret}`;
+  const { route, document } = options;
+  if (route === undefined && document === undefined)
+    return launchUrl(DASHBOARD_URL, secret);
+  // The address the dashboard bound, as the launcher's links name it.
+  const base = launchBase(DASHBOARD_URL);
+  const fragment =
+    route === undefined
+      ? `${LAUNCH_KEY}=${secret}`
+      : `${route}${route.includes("?") ? "&" : "?"}${LAUNCH_KEY}=${secret}`;
+  return `${base}${document ?? "index.html"}#${fragment}`;
 }

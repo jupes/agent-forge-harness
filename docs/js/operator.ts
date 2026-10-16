@@ -231,8 +231,12 @@ export class NotSent extends Error {}
 async function fetchToken(fetchImpl: Fetch): Promise<string> {
   const response = await fetchImpl(TOKEN_ROUTE);
   // No session (none yet, or expired): the page says how to get one, in its
-  // own words, whatever the answer's body holds.
-  if (response.status === 401) throw new Error(NO_SESSION_ERROR);
+  // own words, whatever the answer's body holds. The body is read away first:
+  // an answer left unread stays open in the browser.
+  if (response.status === 401) {
+    await response.text().catch(() => "");
+    throw new Error(NO_SESSION_ERROR);
+  }
   const envelope = (await response.json()) as {
     ok: boolean;
     data: { token?: unknown } | null;

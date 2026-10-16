@@ -49,7 +49,7 @@ test("a bare URL gets no operator token (401, how to relaunch); the launch link,
   expect(await context.cookies()).toEqual([]);
 
   // Same path, so only the fragment changes: the page is not loaded again.
-  const link = await launchLink("/timeline?bead=e2e-launch");
+  const link = await launchLink({ route: "/timeline?bead=e2e-launch" });
   const secret = link.slice(
     link.indexOf(`${LAUNCH_KEY}=`) + LAUNCH_KEY.length + 1,
   );
@@ -135,4 +135,28 @@ test("a launch link works once: a second browser opened with the same link gets 
   } finally {
     await other.close();
   }
+});
+
+test("the Council page opened from a launch link takes the secret out of its address, keeps its query, and gets the token", async ({
+  page,
+}) => {
+  const link = await launchLink({ document: "council.html?sourceType=text" });
+  const secret = link.slice(
+    link.indexOf(`${LAUNCH_KEY}=`) + LAUNCH_KEY.length + 1,
+  );
+  const exchanged = nextExchange(page);
+  await openSettled(page, link);
+  expect((await exchanged).status()).toBe(200);
+  const at = new URL(page.url());
+  expect({ path: at.pathname, hash: at.hash }).toEqual({
+    path: "/council.html",
+    hash: "",
+  });
+  expect(at.searchParams.get("sourceType")).toBe("text");
+  expect(page.url()).not.toContain(secret);
+  const served = await tokenFromPage(page);
+  expect(served.status).toBe(200);
+  expect(
+    (JSON.parse(served.body) as { data: { token: string } }).data.token,
+  ).toBe(hearthToken());
 });

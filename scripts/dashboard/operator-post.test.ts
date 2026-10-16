@@ -355,6 +355,17 @@ describe("without a dashboard session (x1gs.3.31)", () => {
     expect(calls).toEqual([`GET ${TOKEN_ROUTE}`]);
   });
 
+  test("the 401's body is read away before the post fails: an answer left unread stays open in the browser", async () => {
+    const answers: Response[] = [];
+    const post = createOperatorPost(async (input) => {
+      const answer = await noSession(input);
+      answers.push(answer);
+      return answer;
+    });
+    await post("/__agent-forge/beads", {}).catch(() => undefined);
+    expect(answers.map((answer) => answer.bodyUsed)).toEqual([true]);
+  });
+
   test("after a 403 the token is asked for once more; a 401 then fails the post as NotSent, with no further request", async () => {
     const calls: string[] = [];
     let tokenAsks = 0;
