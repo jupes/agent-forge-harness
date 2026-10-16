@@ -52,6 +52,7 @@ import { isValidSlug } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import type { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
 import { createQueue, queueStateOf, smithFor } from "./queue";
@@ -294,6 +295,12 @@ export interface ShiftDeps {
   /** What `runExec` is given besides the run itself: the environment, the home, adapter and command overrides. */
   exec?: Pick<ExecDeps, "env" | "home" | "adapters" | "command"> | undefined;
   appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
+  /**
+   * The ledger's `queryEvents`, through which the pause watch reads whose
+   * start of a running bead is the newest; the ledger's own by default. A
+   * test gives one that fails.
+   */
+  queryEvents?: typeof queryEvents | undefined;
   /** An in-process stop: as an operator's stop request. */
   signal?: AbortSignal | undefined;
   now?: (() => Date) | undefined;
@@ -571,11 +578,14 @@ export async function runShift(
       appendEvent: appendFor(runId),
       lockFile: deps.lockFile,
     });
+  // With the shift records: a bead another shift's worktree still holds is
+  // not reserved again here, so no second run of it starts (`heldByShift`).
   const storeFor = (runId: string): ReservationDeps => ({
     workspace,
     ledgerPath: deps.ledgerPath,
     appendEvent: appendFor(runId),
     lockFile: deps.lockFile,
+    shiftsDir: deps.shiftsDir,
   });
 
   const slots = new Map<string, Slot>();
@@ -964,7 +974,11 @@ export async function runShift(
         // cannot be read, or that is missing this run's own start, says
         // nothing, and it runs on.
         const owner = runOwnership(
-          { workspace, ledgerPath: deps.ledgerPath },
+          {
+            workspace,
+            ledgerPath: deps.ledgerPath,
+            queryEvents: deps.queryEvents,
+          },
           slot.entry.beadId,
           slot.entry.runId,
         );

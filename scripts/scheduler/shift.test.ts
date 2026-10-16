@@ -1159,6 +1159,232 @@ describe("forge:shift — a bead resumed before its shift read it back (x1gs.5.4
   const runsOf = (r: Rig, beadId: string) =>
     r.fake.runs.filter((run) => run.beadId === beadId);
 
+  /** A shift's own `bd`: the first call `holds` picks waits until `open()`. */
+  function gated(r: Rig, holds: (args: string[]) => boolean) {
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((done) => {
+      open = done;
+    });
+    const state = { used: false, held: false };
+    const runBd: BdRunner = async (args) => {
+      if (!state.used && holds(args)) {
+        state.used = true;
+        state.held = true;
+        await gate;
+      }
+      return r.deps.runBd(args);
+    };
+    return { runBd, state, open: () => open() };
+  }
+
+  /** A shift run in the background, with a flag for when it has ended. */
+  function background(
+    options: Partial<ShiftOptions>,
+    deps: ShiftDeps,
+  ): { done: () => boolean; outcome: ReturnType<typeof runShift> } {
+    let finished = false;
+    const outcome = runShift({ ...FAST, ...options }, deps);
+    void outcome.finally(() => {
+      finished = true;
+    });
+    return { done: () => finished, outcome };
+  }
+
+  const startsOf = (r: Rig, runId: string) =>
+    r
+      .events({ runId })
+      .filter(
+        (event) =>
+          event.kind === "bead.transitioned" &&
+          (event.payload as { to?: string }).to === "running",
+      );
+
+  test("P1, the gap between a shift's start and its reserve: paused and resumed there, and started and reserved by a second shift meanwhile, the first shift's reserve is refused, it gives the bead back, and only one run ever runs", async () => {
+    const A = "shift-20261015-130000-0a11";
+    const B = "shift-20261015-130000-0b12";
+    const r = rig([queued("t-1")], () => "hang");
+    // A holds at its read of t-1 that follows its start: before its reserve.
+    let startedByA = false;
+    const gate = gated(
+      r,
+      (args) => startedByA && args[0] === "show" && args.at(-1) === "t-1",
+    );
+    const runA: BdRunner = async (args) => {
+      const result = await gate.runBd(args);
+      if (
+        args[0] === "update" &&
+        args.at(-1) === "t-1" &&
+        args.includes("--add-label=queue:running")
+      )
+        startedByA = true;
+      return result;
+    };
+    const stopA = new AbortController();
+    const stopB = new AbortController();
+    const a = background(
+      { concurrency: 1, maxBeads: 1 },
+      { ...r.deps, shiftId: A, runBd: runA, signal: stopA.signal },
+    );
+    let b: ReturnType<typeof background> | undefined;
+    try {
+      await until(() => gate.state.held);
+      const operator = operatorQueue(r);
+      expect((await operator.move("t-1", "pause", "operator")).ok).toBe(true);
+      expect((await operator.move("t-1", "resume", "operator")).ok).toBe(true);
+      // B reads eligibility now: t-1 is queued and holds no reservation.
+      b = background(
+        { concurrency: 1 },
+        { ...r.deps, shiftId: B, signal: stopB.signal },
+      );
+      await until(() => r.fake.runs.length === 1);
+      expect(r.fake.runs[0]?.worktree).toContain(B);
+      gate.open();
+      const first = await ended(a.outcome);
+      expect(r.fake.maxLive()).toBe(1);
+      expect(first.record.beads[0]).toMatchObject({ outcome: "set-aside" });
+      expect(first.record.beads[0]?.error).toContain(
+        `reservation: t-1 is still held in`,
+      );
+      expect(first.record.beads[0]?.error).toContain(`shift ${B} (live)`);
+      // B reads t-1 back out of running and lets its run go.
+      const second = await ended(b.outcome);
+      expect(second.record.beads[0]).toMatchObject({ outcome: "left" });
+    } finally {
+      stopA.abort();
+      stopB.abort();
+      await a.outcome.catch(() => undefined);
+      await b?.outcome.catch(() => undefined);
+    }
+    expect(r.fake.maxLive()).toBe(1);
+    expect(r.fake.runs).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    const now = await readEligibility({
+      root: r.root,
+      runBd: r.deps.runBd,
+      ledgerPath: r.ledger,
+      host: { busy: false },
+      shiftsDir: r.deps.shiftsDir,
+    });
+    expect(now.ok ? now.value.eligible.map((e) => e.id) : []).toEqual(["t-1"]);
+  });
+
+  for (const unstored of [false, true])
+    test(
+      unstored
+        ? "P6, a second shift's start the ledger did not store: its reserve is still refused, it gives the bead back, and the first shift's run is the only one; that run lets it go once it reads it back"
+        : "P2, a second shift acting on an eligibility read taken before the first shift claimed the bead: its start goes through after a pause and resume, its reserve is refused, it gives the bead back, and the first shift's run is the only one; that run lets it go once it reads it back",
+      async () => {
+        const A = "shift-20261015-140000-0a21";
+        const B = "shift-20261015-140000-0b22";
+        // Under an epic, so B reads t-1 once more (outside the queue lock)
+        // between its eligibility read and its start: there it is held.
+        const r = rig(
+          [queued("t-1", "src/t-1/**", { parent: { id: "ep-9" } })],
+          () => "hang",
+        );
+        let skewA = 0;
+        const gate = gated(
+          r,
+          (args) => args[0] === "show" && args.at(-1) === "t-1",
+        );
+        const stopA = new AbortController();
+        const stopB = new AbortController();
+        const b = background(
+          { concurrency: 1, epic: "ep-9" },
+          {
+            ...r.deps,
+            shiftId: B,
+            runBd: gate.runBd,
+            signal: stopB.signal,
+            ...(unstored
+              ? {
+                  appendEvent: (event: LedgerEventInput): AppendResult =>
+                    event.kind === "bead.transitioned"
+                      ? { ok: false, error: "disk full" }
+                      : appendEvent(event, { path: r.ledger }),
+                }
+              : {}),
+          },
+        );
+        let a: ReturnType<typeof background> | undefined;
+        try {
+          await until(() => gate.state.held);
+          // A claims t-1, reserves it and runs it; its watch waits for the clock.
+          a = background(
+            { concurrency: 1, maxBeads: 1, pollMs: 60_000 },
+            {
+              ...r.deps,
+              shiftId: A,
+              signal: stopA.signal,
+              now: () => new Date(Date.now() + skewA),
+            },
+          );
+          await until(() => r.fake.runs.length === 1);
+          const operator = operatorQueue(r);
+          expect((await operator.move("t-1", "pause", "operator")).ok).toBe(
+            true,
+          );
+          expect((await operator.move("t-1", "resume", "operator")).ok).toBe(
+            true,
+          );
+          gate.open();
+          await until(() => b.done() || r.fake.runs.length > 1);
+          expect(r.fake.runs).toHaveLength(1);
+          const second = await ended(b.outcome);
+          expect(second.record.beads[0]).toMatchObject({
+            outcome: "set-aside",
+          });
+          expect(second.record.beads[0]?.error).toContain(`shift ${A} (live)`);
+          expect(startsOf(r, `t-1-${B}`)).toHaveLength(unstored ? 0 : 1);
+          // A's next read finds t-1 out of running: its run is let go.
+          skewA += 60_000;
+          const first = await ended(a.outcome);
+          expect(first.record.beads[0]).toMatchObject({ outcome: "left" });
+          expect(first.record.beads[0]?.error).toContain("queue:queued");
+        } finally {
+          stopA.abort();
+          stopB.abort();
+          await b.outcome.catch(() => undefined);
+          await a?.outcome.catch(() => undefined);
+        }
+        expect(r.fake.maxLive()).toBe(1);
+        expect(r.labels("t-1")).toEqual(["queue:queued"]);
+        expect(r.reservations()).toBe(0);
+      },
+    );
+
+  test("a ledger read that fails tells the watch nothing: a healthy run read back as running goes on", async () => {
+    let skew = 0;
+    let reads = 0;
+    const r = rig([queued("t-1")], () => "hang", {
+      now: () => new Date(Date.now() + skew),
+      queryEvents: () => {
+        reads++;
+        throw new Error("database is locked");
+      },
+    });
+    const stop = new AbortController();
+    const running = runShift(
+      { ...FAST, pollMs: 60_000 },
+      { ...r.deps, signal: stop.signal },
+    );
+    try {
+      await until(() => r.fake.runs.length === 1);
+      skew += 60_000;
+      await until(() => reads > 0);
+      // Ticks later the run is still going.
+      await Bun.sleep(100);
+      expect(r.fake.runs[0]?.endedAt).toBeUndefined();
+    } finally {
+      stop.abort();
+    }
+    const done = await ended(running);
+    expect(done.reason).toBe("operator");
+    expect(done.record.beads[0]).toMatchObject({ outcome: "released" });
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+  });
+
   test("a second shift does not start a bead paused and resumed while the first runs it, until that run has ended and released its reservation; then it does", async () => {
     const A = "shift-20261015-120000-0a01";
     const B = "shift-20261015-120000-0b02";

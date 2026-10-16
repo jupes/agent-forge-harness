@@ -21,7 +21,7 @@ import {
   queueTracker,
   type TrackedBead,
 } from "./queue-fixture";
-import { reserve } from "./reservations";
+import { release, reserve } from "./reservations";
 import { shiftRunId } from "./shift";
 import {
   RECOVER_LOCK_FILE,
@@ -185,6 +185,8 @@ async function claim(
       ledgerPath: r.ledger,
       appendEvent: appendFor(r, runId),
       lockFile: r.deps.lockFile,
+      // As the shift reserves: with the shift records.
+      shiftsDir: r.deps.shiftsDir,
     },
   );
   if (!reserved.ok) throw new Error(reserved.error);
@@ -354,16 +356,43 @@ describe("forge:shift recover — a shift whose process died", () => {
     expect(done.record).toEqual(record as ShiftRecord);
   });
 
-  test("beads it no longer owns are left as they are and reported: one the operator paused, one paused, resumed and started by another shift; their reservations in its worktrees are freed and the other shift's is not", async () => {
+  test("beads it no longer owns are left as they are and reported: one the operator paused, one paused, resumed and started by another shift once its reservation in this shift's worktree was freed by hand; their reservations in its worktrees are freed and the other shift's is not", async () => {
     const r = rig([queued("t-own"), queued("t-paused"), queued("t-taken")]);
     const own = await claim(r, A, "t-own", 1);
     const paused = await claim(r, A, "t-paused", 2);
     const taken = await claim(r, A, "t-taken", 3);
     // After A's process ended: the operator pauses two of its beads and
-    // resumes one, and shift B picks that one up again.
+    // resumes one, and shift B picks that one up again. B may reserve it
+    // only once A's worktree no longer holds it (x1gs.5.4.13): until then
+    // its reserve is refused, and here the operator frees A's by hand.
     await operator(r, "t-paused", "pause");
     await operator(r, "t-taken", "pause");
     await operator(r, "t-taken", "resume");
+    const store = {
+      workspace: r.workspace,
+      ledgerPath: r.ledger,
+      appendEvent: appendFor(r),
+      lockFile: r.deps.lockFile,
+      shiftsDir: r.deps.shiftsDir,
+    };
+    died(r, A, [own, paused, taken]);
+    const refused = await reserve(
+      {
+        beadId: "t-taken",
+        worktree: worktreeOf(r, B, 1),
+        globs: ["src/t-taken/**"],
+      },
+      store,
+    );
+    expect(refused.ok ? "" : refused.error).toContain(`shift ${A} (dead)`);
+    expect(
+      (
+        await release(
+          { beadId: "t-taken", worktree: taken.worktree ?? "" },
+          store,
+        )
+      ).ok,
+    ).toBe(true);
     const again = await claim(r, B, "t-taken", 1);
     died(r, A, [own, paused, taken]);
     const updates = r.tracker.updates().length;
