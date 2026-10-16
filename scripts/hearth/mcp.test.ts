@@ -1580,11 +1580,13 @@ function publish(
 }
 
 /**
- * `path` spelled relative to the working directory, so that it would name
- * `path` if it were resolved. On Windows with the working directory on
- * another drive (a CI runner checks out on D: and has its temp folder on C:)
- * `relative` has no such spelling and answers `path` itself, absolute; the
- * drive-relative `C:Users\...` is then the relative spelling that names it.
+ * `path` spelled as a relative path. On the same drive it is relative to the
+ * working directory, so that it would name `path` if it were resolved. On
+ * Windows with the working directory on another drive (a CI runner checks
+ * out on D: and has its temp folder on C:) `relative` has no such spelling
+ * and answers `path` itself, absolute; the drive-relative `C:Users\...` is
+ * used then. It is not absolute, which is all the case needs, and it names
+ * `path` only when drive C:'s own current directory is `C:\`.
  */
 function relativeSpelling(path: string): string {
   const spelled = relative(process.cwd(), path);
