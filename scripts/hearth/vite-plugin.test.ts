@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -21,14 +27,38 @@ import {
   type StreamClient,
 } from "../../docs/js/use-stream";
 import type { OperatorEnvelope, StreamSnapshot } from "../../types/hearth";
+import { HEARTH_PLUGIN } from "../dashboard/dashboard-url";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
+import { dashboardRecordPath, tokenPath } from "./home";
+import {
+  readDashboardRecord,
+  sessionCookie,
+  sessionCookieName,
+} from "./launch";
 import { loopbackProxyVariable } from "./loopback";
-import { API_PREFIX, OPERATOR_HEADER } from "./paths";
+import {
+  API_PREFIX,
+  LAUNCH_ROUTE,
+  NO_SESSION_ERROR,
+  OPERATOR_HEADER,
+  TOKEN_ROUTE,
+} from "./paths";
 import { createHearth } from "./server";
-import { openEventStream, startTestHearth } from "./testing";
-import { guardRequest, hearthPlugin } from "./vite-plugin";
+import {
+  cookiePair,
+  dashboardSession,
+  exchangeLaunch,
+  openEventStream,
+  startTestHearth,
+} from "./testing";
+import {
+  guardRequest,
+  HEARTH_PLUGIN_NAME,
+  type HearthPluginApi,
+  hearthPlugin,
+} from "./vite-plugin";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -117,8 +147,11 @@ interface Fixture {
   /** The hearth's ledger file. */
   ledger: string;
   root: string;
+  home: string;
   /** Present when the proxy was pointed at a relay to the hearth. */
   relay: Relay | null;
+  /** The hearth plugin's `api`, as the dashboard's other plugins find it. */
+  plugin: HearthPluginApi;
 }
 
 async function fixture(options: { relay?: boolean } = {}): Promise<Fixture> {
@@ -143,16 +176,19 @@ async function fixture(options: { relay?: boolean } = {}): Promise<Fixture> {
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   const relay = options.relay ? await relayTo(hearth.port) : null;
   const upstream = relay?.port ?? hearth.port;
-  const vite = await listeningVite(root, () => [
-    rebuildStub(),
-    hearthPlugin(root, {
+  let plugin: HearthPluginApi | null = null;
+  const vite = await listeningVite(root, () => {
+    const made = hearthPlugin(root, {
       home,
       supervisor: {
         ensure: async () => upstream,
         stopIfOwner: async () => {},
       },
-    }),
-  ]);
+    });
+    plugin = made.api;
+    return [rebuildStub(), made];
+  });
+  if (plugin === null) throw new Error("no hearth plugin was made");
   const address = vite.httpServer?.address();
   if (!address || typeof address === "string") throw new Error("no address");
   cleanup.push(async () => {
@@ -169,7 +205,9 @@ async function fixture(options: { relay?: boolean } = {}): Promise<Fixture> {
     token: hearth.token,
     ledger,
     root,
+    home,
     relay,
+    plugin,
   };
 }
 
@@ -516,8 +554,9 @@ async function rawGet(
 
 /**
  * Proxied paths and what each answers a GET that declares the dashboard's own
- * origin: the token route, three handlers older than the operator table, and
- * one read row of the table.
+ * origin and carries a dashboard session (the token route needs one): the
+ * token route, three handlers older than the operator table, and one read row
+ * of the table.
  */
 const PROXIED_GETS: Array<[string, number]> = [
   ["/__agent-forge/token", 200],
@@ -532,9 +571,10 @@ const REPEAT_REFUSAL =
   "The control-plane APIs refuse a request that sends Host, Origin or Sec-Fetch-Site more than once";
 
 test(
-  "through the proxy, a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is refused by the guard on the token, health, dev-api, council-api and sessions paths, and is not served the token",
+  "through the proxy, a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is refused by the guard on the token, health, dev-api, council-api and sessions paths, and is not served the token, a dashboard session notwithstanding",
   async () => {
     const { url, token } = await fixture();
+    const cookie = `Cookie: ${await dashboardSession(url, token)}`;
     const host = `Host: ${new URL(url).host}`;
     const origin = `Origin: ${url}`;
     const site = "Sec-Fetch-Site: same-origin";
@@ -571,7 +611,7 @@ test(
     const refusals: unknown[] = [];
     for (const [path] of PROXIED_GETS) {
       for (const [label, lines] of repeats) {
-        const answer = await rawGet(url, path, lines);
+        const answer = await rawGet(url, path, [...lines, cookie]);
         let error: unknown = null;
         try {
           error = (JSON.parse(answer.body) as { error: unknown }).error;
@@ -600,13 +640,14 @@ test(
 );
 
 test(
-  "through the proxy, a GET with Host, Origin and Sec-Fetch-Site each sent once keeps its answer on the same paths, also when Accept is sent twice",
+  "through the proxy, a GET with Host, Origin and Sec-Fetch-Site each sent once and a dashboard session keeps its answer on the same paths, also when Accept is sent twice",
   async () => {
     const { url, token } = await fixture();
     const once = [
       `Host: ${new URL(url).host}`,
       `Origin: ${url}`,
       "Sec-Fetch-Site: same-origin",
+      `Cookie: ${await dashboardSession(url, token)}`,
     ];
     const variants: Array<[string, string[]]> = [
       ["each once", once],
@@ -635,6 +676,99 @@ test(
   },
   FIXTURE_TIMEOUT_MS,
 );
+
+test(
+  "x1gs.3.31 through the proxy: a request declaring the dashboard's origin gets no token without a session (401); the launch flow's Set-Cookie names the API prefix and no Domain, so it stays on the dashboard's own host, and the token route answers a request that carries it",
+  async () => {
+    const { url, token, home, root } = await fixture();
+    const ask = (cookie: string | null) =>
+      fetch(`${url}${TOKEN_ROUTE}`, {
+        headers: { Origin: url, ...(cookie ? { Cookie: cookie } : {}) },
+      });
+    const bare = await ask(null);
+    const bareBody = await bare.text();
+    expect({
+      status: bare.status,
+      error: (JSON.parse(bareBody) as { error: unknown }).error,
+      token: bareBody.includes(token),
+    }).toEqual({ status: 401, error: NO_SESSION_ERROR, token: false });
+
+    const minted = await fetch(`${url}${LAUNCH_ROUTE}`, {
+      method: "POST",
+      headers: { [OPERATOR_HEADER]: token },
+    });
+    const secret = String(
+      ((await minted.json()) as { data: { secret: unknown } }).data.secret,
+    );
+    const exchanged = await exchangeLaunch(url, secret);
+    expect(exchanged.status).toBe(200);
+    const name = sessionCookieName(home, root);
+    const value = cookiePair(exchanged.setCookie).slice(name.length + 1);
+    expect(exchanged.setCookie).toBe(sessionCookie(name, value));
+    const served = await ask(cookiePair(exchanged.setCookie));
+    expect(served.status).toBe(200);
+    expect(
+      ((await served.json()) as { data: { token: string } }).data.token,
+    ).toBe(token);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test(
+  "the hearth plugin's launchLink is the base it is given with a fresh secret in the fragment, which the session route exchanges once",
+  async () => {
+    const { url, plugin } = await fixture();
+    const link = await plugin.launchLink("http://localhost:4321/");
+    const match = /^http:\/\/localhost:4321\/#launch=([0-9a-f]{64})$/.exec(
+      link,
+    );
+    expect(match).not.toBeNull();
+    const secret = match?.[1] ?? "";
+    expect(await plugin.launchLink("http://localhost:4321/")).not.toBe(link);
+    expect((await exchangeLaunch(url, secret)).status).toBe(200);
+    expect((await exchangeLaunch(url, secret)).status).toBe(403);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test(
+  "the hearth plugin's launchLink rejects, saying so, when the token file cannot be read, and before the dashboard has started its control plane",
+  async () => {
+    const { plugin, home, root } = await fixture();
+    rmSync(tokenPath(home, root), { force: true });
+    const missing = await plugin
+      .launchLink("http://localhost:4321/")
+      .catch((error: unknown) => error);
+    expect(missing).toBeInstanceOf(Error);
+    expect(String(missing)).toContain("token file could not be read");
+    const early = await hearthPlugin(root, { home })
+      .api.launchLink("http://localhost:4321/")
+      .catch((error: unknown) => error);
+    expect(String(early)).toContain("has not started its control plane");
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test(
+  "a listening dashboard records where it listens for dashboard:open (localhost and its port, its pid and root) and removes the record when it closes",
+  async () => {
+    const { vite, url, home, root } = await fixture();
+    const record = dashboardRecordPath(home, root);
+    expect(readDashboardRecord(record)).toEqual({
+      pid: process.pid,
+      root: resolve(root),
+      url: `http://localhost:${new URL(url).port}/`,
+    });
+    await vite.close();
+    expect(existsSync(record)).toBe(false);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test("the print plugin finds the hearth plugin by the name it has", () => {
+  expect(hearthPlugin("/r", { home: "/h" }).name).toBe(HEARTH_PLUGIN_NAME);
+  expect(HEARTH_PLUGIN).toBe(HEARTH_PLUGIN_NAME);
+});
 
 function fakeRequest(
   remoteAddress: string,

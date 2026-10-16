@@ -7,6 +7,7 @@
     "setup": "bun run scripts/setup.ts",
     "build-pages": "bun run scripts/build-pages.ts",
     "dashboard": "vite --config vite.dashboard.config.ts",
+    "dashboard:open": "bun run scripts/hearth/dashboard-open.ts",
     "hearth": "bun run scripts/hearth/server.ts",
     "hearth:mcp": "bun run scripts/hearth/mcp.ts",
     "worktree": "bun run scripts/worktree.ts",
