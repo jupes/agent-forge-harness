@@ -78,11 +78,19 @@ const RERUN_WORKERS = Math.min(
 
 /**
  * How long the whole re-run may take. On the 4-thread windows-latest CI
- * runner (2 workers) it went past 180 s, the limit that holds elsewhere
+ * runner (2 workers) it took 333 s, past the 180 s that holds elsewhere
  * (ubuntu-latest: 79 s): the re-run is one `bun test` per file and the
  * processes those tests start, and a process starts slower on Windows.
  */
 const RERUN_LIMIT_MS = process.platform === "win32" ? 600_000 : 180_000;
+
+/**
+ * The per-test limit of each re-run file, the one CI gives the whole suite
+ * (`bun test scripts --timeout 15000`). With bun's default of 5 s, a test of
+ * beads.test.ts that passes in the suite timed out in the re-run on the
+ * windows-latest runner.
+ */
+const RERUN_TEST_TIMEOUT = "15000";
 
 /** A re-run file whose `bun test` did not exit 0, with the end of its output. */
 interface FailedRerun {
@@ -105,12 +113,21 @@ async function rerunEach(
   const failed: FailedRerun[] = [];
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
-      const child = Bun.spawn([process.execPath, "test", `./${file}`], {
-        cwd: REPO,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "test",
+          "--timeout",
+          RERUN_TEST_TIMEOUT,
+          `./${file}`,
+        ],
+        {
+          cwd: REPO,
+          env,
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
       const [stdout, stderr] = await Promise.all([
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
