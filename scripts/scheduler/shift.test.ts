@@ -497,14 +497,17 @@ describe("forge:shift — the loop, on a fake adapter", () => {
 
   test("the time cap: at --for every run is stopped, its bead put back in queued and its reservation released, and the shift ends elapsed", async () => {
     const r = rig([queued("t-1"), queued("t-2")], () => "hang");
+    // Long enough for both runs to start first: on the windows-latest CI
+    // runner a cap of 1 s ended the shift before either had started.
+    const forMs = 3_000;
     const began = Date.now();
-    const done = await shift(r, { concurrency: 2, forMs: 1000 });
+    const done = await shift(r, { concurrency: 2, forMs });
     expect(done.reason).toBe("elapsed");
-    expect(Date.now() - began).toBeLessThan(6000);
+    expect(Date.now() - began).toBeLessThan(forMs + 5_000);
     expect(r.fake.runs).toHaveLength(2);
     // Each run was given no more than the time that was left.
     for (const run of r.fake.runs)
-      expect(run.timeoutMs ?? Infinity).toBeLessThanOrEqual(1000);
+      expect(run.timeoutMs ?? Infinity).toBeLessThanOrEqual(forMs);
     for (const id of ["t-1", "t-2"])
       expect(r.labels(id)).toEqual(["queue:queued"]);
     expect(r.reservations()).toBe(0);
