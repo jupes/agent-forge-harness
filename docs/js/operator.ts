@@ -8,10 +8,14 @@
  * time it needs it, and sends it with each action and each such read. Posts
  * and reads share it.
  *
- * The token route answers only a same-origin request that holds the
- * dashboard's session cookie (`x1gs.3.31`), which the page gets once, from the
- * launch link it was opened with (see "The launch" below). Without one the
- * route answers 401 and the action fails as `NotSent`, saying how to open the
+ * The token route answers only a same-origin request that holds both halves
+ * of a dashboard session (`x1gs.3.31`): its HttpOnly cookie, which the browser
+ * sends, and its key, which the page keeps in its origin's `localStorage` and
+ * sends in `SESSION_KEY_HEADER`. The page gets both once, from the launch link
+ * it was opened with (see "The launch" below). The key is read from storage
+ * for every token request, never held in memory: a launch in another tab
+ * replaces both halves, and every tab follows it. Without a session the route
+ * answers 401 and the action fails as `NotSent`, saying how to open the
  * dashboard from its launcher (`NO_SESSION_ERROR`).
  *
  * The hearth mints a new token every time it starts, and the dashboard restarts
@@ -28,6 +32,8 @@ import {
   LAUNCH_KEY,
   NO_SESSION_ERROR,
   OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
+  SESSION_KEY_STORAGE,
   SESSION_ROUTE,
   SURFACE_HEADER,
   TOKEN_ROUTE,
@@ -35,6 +41,41 @@ import {
 import { STATIC_COPY_ERROR, servedStatically } from "./hearth-read";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+// ── The session key ─────────────────────────────────────────────────────────
+
+/** Where the page keeps its session key. */
+export interface SessionKeyStore {
+  /** The key, read now; null when there is none or the storage refuses. */
+  get(): string | null;
+  set(key: string): void;
+}
+
+/**
+ * The page's origin's `localStorage`. A page of another port of this host is
+ * sent the session cookie but cannot read this, so it never has the key. A
+ * storage the browser refuses holds no key, and the token route then answers
+ * 401: the page reads, and says how to relaunch.
+ */
+export const pageSessionKeys: SessionKeyStore = {
+  get() {
+    try {
+      return globalThis.localStorage?.getItem(SESSION_KEY_STORAGE) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  set(key) {
+    try {
+      globalThis.localStorage?.setItem(SESSION_KEY_STORAGE, key);
+    } catch {
+      // Refused storage: the session cannot be used from this page.
+    }
+  },
+};
+
+/** What a session key is: 256 bits as lower-case hex. */
+const SESSION_KEY_SHAPE = /^[0-9a-f]{64}$/;
 
 // ── The launch ──────────────────────────────────────────────────────────────
 //
@@ -118,11 +159,14 @@ export interface LaunchOptions {
   fetch?: Fetch;
   /** A static copy: the secret is taken out of the address bar and nothing is sent (no hearth is behind it). */
   staticCopy?: boolean;
+  /** Where the session key the exchange answers is kept; `pageSessionKeys` by default. */
+  sessionKeys?: SessionKeyStore;
 }
 
 async function exchangeLaunch(
   secret: string,
   fetchImpl: Fetch,
+  keys: SessionKeyStore,
 ): Promise<LaunchOutcome> {
   try {
     const response = await fetchImpl(SESSION_ROUTE, {
@@ -132,9 +176,20 @@ async function exchangeLaunch(
     });
     const envelope = (await response.json().catch(() => null)) as {
       ok?: unknown;
+      data?: { key?: unknown } | null;
       error?: unknown;
     } | null;
-    if (response.ok && envelope?.ok === true) return { state: "exchanged" };
+    if (response.ok && envelope?.ok === true) {
+      // The key goes to the origin's storage only: never into a URL, a log or memory.
+      const key = envelope.data?.key;
+      if (typeof key !== "string" || !SESSION_KEY_SHAPE.test(key))
+        return {
+          state: "refused",
+          error: "The control plane answered no session key",
+        };
+      keys.set(key);
+      return { state: "exchanged" };
+    }
     return {
       state: "refused",
       error:
@@ -171,6 +226,7 @@ export function beginLaunch(
   return exchangeLaunch(
     taken.secret,
     options.fetch ?? ((input, init) => fetch(input, init)),
+    options.sessionKeys ?? pageSessionKeys,
   );
 }
 
@@ -228,8 +284,15 @@ export interface OperatorClient {
  */
 export class NotSent extends Error {}
 
-async function fetchToken(fetchImpl: Fetch): Promise<string> {
-  const response = await fetchImpl(TOKEN_ROUTE);
+async function fetchToken(
+  fetchImpl: Fetch,
+  keys: SessionKeyStore,
+): Promise<string> {
+  // Read now, for this request: another tab's launch may have replaced it.
+  const key = keys.get();
+  const response = await (key === null
+    ? fetchImpl(TOKEN_ROUTE)
+    : fetchImpl(TOKEN_ROUTE, { headers: { [SESSION_KEY_HEADER]: key } }));
   // No session (none yet, or expired): the page says how to get one, in its
   // own words, whatever the answer's body holds. The body is read away first:
   // an answer left unread stays open in the browser.
@@ -255,9 +318,11 @@ export interface OperatorClientOptions {
   staticCopy?: boolean;
   /**
    * Awaited before each request for the token: the page's launch, whose
-   * session cookie the token route needs. Nothing by default.
+   * session the token route needs. Nothing by default.
    */
   ready?: () => Promise<unknown>;
+  /** Where the session key is read from, for each token request; `pageSessionKeys` by default. */
+  sessionKeys?: SessionKeyStore;
 }
 
 /** A poster and a reader with one token cache of their own; `fetchImpl` is replaced in tests. */
@@ -271,7 +336,7 @@ export function createOperatorClient(
     if (token === null) {
       const pending = (async () => {
         await options.ready?.();
-        return fetchToken(fetchImpl);
+        return fetchToken(fetchImpl, options.sessionKeys ?? pageSessionKeys);
       })();
       token = pending;
       // A failed fetch is not remembered: the next action asks again.

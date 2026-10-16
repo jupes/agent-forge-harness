@@ -13,6 +13,7 @@ import {
   LAUNCH_HEADER,
   NO_SESSION_ERROR,
   OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
   SESSION_ROUTE,
   SURFACE_HEADER,
   TOKEN_ROUTE,
@@ -417,6 +418,100 @@ describe("without a dashboard session (x1gs.3.31)", () => {
   });
 });
 
+/** A stand-in for the page's storage of its session key: what was set, in order. */
+function keyStore(initial: string | null = null) {
+  const store = {
+    held: initial === null ? ([] as string[]) : [initial],
+    get: () => store.held.at(-1) ?? null,
+    set: (key: string) => {
+      store.held.push(key);
+    },
+  };
+  return store;
+}
+
+const KEY = "ef".repeat(32);
+
+describe("the session key (x1gs.3.31)", () => {
+  test("the token request carries the key read from storage when it is made: after another tab's launch replaced it, the next one carries the new key", async () => {
+    const keys = keyStore("01".repeat(32));
+    const sentKeys: Array<string | null> = [];
+    let answers = 0;
+    const client = createOperatorClient(
+      async (input, init) => {
+        if (input === TOKEN_ROUTE) {
+          sentKeys.push(new Headers(init?.headers).get(SESSION_KEY_HEADER));
+          // The first is refused (the cookie is another tab's by now), the second served.
+          return answers++ === 0
+            ? Response.json(
+                { ok: false, data: null, error: "no session" },
+                { status: 401 },
+              )
+            : Response.json({ ok: true, data: { token: "t" }, error: null });
+        }
+        return Response.json({ ok: true, data: 1, error: null });
+      },
+      { sessionKeys: keys },
+    );
+    const first = await client
+      .post("/__agent-forge/x", {})
+      .catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(NotSent);
+    keys.set("02".repeat(32));
+    expect((await client.post("/__agent-forge/x", {})).status).toBe(200);
+    expect(sentKeys).toEqual(["01".repeat(32), "02".repeat(32)]);
+  });
+
+  test("with no key in storage the token request carries none, and the action fails as NotSent with how to relaunch", async () => {
+    const sent: Array<string | null> = [];
+    const post = createOperatorClient(
+      async (input, init) => {
+        sent.push(new Headers(init?.headers).get(SESSION_KEY_HEADER));
+        return input === TOKEN_ROUTE
+          ? Response.json(
+              { ok: false, data: null, error: "x" },
+              { status: 401 },
+            )
+          : Response.json({ ok: true, data: 1, error: null });
+      },
+      { sessionKeys: keyStore() },
+    ).post;
+    const error = await post("/__agent-forge/x", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toHaveProperty("message", NO_SESSION_ERROR);
+    expect(sent).toEqual([null]);
+  });
+
+  test("an exchange that answers no key, or one of another shape, is refused and keeps nothing; a refused exchange keeps nothing", async () => {
+    for (const data of [{}, { key: "short" }, { key: KEY.toUpperCase() }]) {
+      const keys = keyStore();
+      const outcome = await beginLaunch(
+        {
+          location: {
+            hash: `#launch=${"ab".repeat(32)}`,
+            pathname: "/",
+            search: "",
+          },
+          history: { state: null, replaceState: () => undefined },
+        },
+        {
+          fetch: async () => Response.json({ ok: true, data, error: null }),
+          sessionKeys: keys,
+        },
+      );
+      expect({ data, outcome, held: keys.held }).toEqual({
+        data,
+        outcome: {
+          state: "refused",
+          error: "The control plane answered no session key",
+        },
+        held: [],
+      });
+    }
+  });
+});
+
 describe("the launch fragment", () => {
   const SECRET = "ab".repeat(32);
 
@@ -478,8 +573,9 @@ describe("the launch fragment", () => {
     };
   }
 
-  test("beginLaunch removes the secret from the address bar before the exchange is answered, keeping the route, then posts it once, same-origin, to the session route", async () => {
+  test("beginLaunch removes the secret from the address bar before the exchange is answered, keeping the route, then posts it once, same-origin, to the session route, and keeps the session key it answers in the page's storage", async () => {
     const at = page(`#/timeline?bead=x-1&launch=${SECRET}`);
+    const keys = keyStore();
     const sent: Array<{
       url: string;
       init: RequestInit | undefined;
@@ -488,10 +584,12 @@ describe("the launch fragment", () => {
     const outcome = await beginLaunch(at, {
       fetch: async (url, init) => {
         sent.push({ url, init, hash: at.location.hash });
-        return Response.json({ ok: true, data: {}, error: null });
+        return Response.json({ ok: true, data: { key: KEY }, error: null });
       },
+      sessionKeys: keys,
     });
     expect(outcome).toEqual({ state: "exchanged" });
+    expect(keys.held).toEqual([KEY]);
     expect(at.replaced).toEqual(["/index.html?x=1#/timeline?bead=x-1"]);
     expect(sent).toEqual([
       {
@@ -536,14 +634,23 @@ describe("the launch fragment", () => {
         listeners.push(listener);
       },
     };
+    const keys = keyStore();
     const fetchImpl = async (
       url: string,
       init?: RequestInit,
     ): Promise<Response> => {
-      sent.push(new Headers(init?.headers).get(LAUNCH_HEADER) ?? url);
-      return Response.json({ ok: true, data: {}, error: null });
+      const secret = new Headers(init?.headers).get(LAUNCH_HEADER) ?? url;
+      sent.push(secret);
+      // A key of its own for each exchange.
+      return Response.json({
+        ok: true,
+        data: { key: secret.split("").reverse().join("") },
+        error: null,
+      });
     };
-    expect(await startPageLaunch(win, { fetch: fetchImpl })).toEqual({
+    expect(
+      await startPageLaunch(win, { fetch: fetchImpl, sessionKeys: keys }),
+    ).toEqual({
       state: "exchanged",
     });
     expect(listeners).toHaveLength(1);
@@ -561,16 +668,25 @@ describe("the launch fragment", () => {
     ]);
     expect(await launchSettled()).toEqual({ state: "exchanged" });
     expect(sent).toEqual([SECRET, next]);
+    // The later launch's key replaced the first's.
+    expect(keys.held).toEqual(["ba".repeat(32), "dc".repeat(32)]);
   });
 
-  test("beginLaunch reports a refused or failed exchange in the hearth's words, and never rejects", async () => {
+  test("beginLaunch reports a refused or failed exchange in the hearth's words, keeps no key, and never rejects", async () => {
+    const keys = keyStore();
     const refused = await beginLaunch(page(`#launch=${SECRET}`), {
       fetch: async () =>
         Response.json(
-          { ok: false, data: null, error: "This launch link is not valid" },
+          {
+            ok: false,
+            data: { key: KEY },
+            error: "This launch link is not valid",
+          },
           { status: 403 },
         ),
+      sessionKeys: keys,
     });
+    expect(keys.held).toEqual([]);
     expect(refused).toEqual({
       state: "refused",
       error: "This launch link is not valid",
