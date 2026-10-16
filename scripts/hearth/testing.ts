@@ -381,6 +381,30 @@ const SDDL_ALIASES: Record<string, string> = {
   OW: "S-1-3-4",
 };
 
+/**
+ * The SID an SDDL alias outside the table stands for, as Windows itself reads
+ * it. Some aliases name an account of this machine's own domain: `LA` is its
+ * built-in Administrator (RID 500), which is the account a CI runner works as,
+ * so `icacls /save` writes this user as `LA` there, not as the SID `whoami`
+ * prints. Asked once per alias.
+ */
+const resolvedAliases = new Map<string, string>();
+function sddlAliasSid(alias: string): string {
+  const known = SDDL_ALIASES[alias] ?? resolvedAliases.get(alias);
+  if (known !== undefined) return known;
+  if (!/^[A-Z]{2}$/.test(alias)) return alias;
+  const sid = system32("WindowsPowerShell\\v1.0\\powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    `(New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;${alias})').DiscretionaryAcl[0].SecurityIdentifier.Value`,
+  ]).trim();
+  if (!/^S-1-\d+(?:-\d+)+$/.test(sid))
+    throw new Error(`Windows read the SDDL alias ${alias} as no SID`);
+  resolvedAliases.set(alias, sid);
+  return sid;
+}
+
 export interface IcaclsAce {
   type: string;
   flags: string;
@@ -407,7 +431,7 @@ export function icaclsDacl(
     const [type = "", flags = "", rights = "", , , sid = ""] = (
       ace[1] ?? ""
     ).split(";");
-    return { type, flags, rights, sid: SDDL_ALIASES[sid] ?? sid };
+    return { type, flags, rights, sid: sddlAliasSid(sid) };
   });
   return { protected: (match[1] ?? "").includes("P"), aces };
 }
