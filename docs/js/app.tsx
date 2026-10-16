@@ -26,6 +26,7 @@ import { ReposIsland } from "./islands/ReposIsland";
 import { SkillBuilderIsland } from "./islands/SkillBuilderIsland";
 import { TimelineIsland } from "./islands/TimelineIsland";
 import { WorkbenchIsland } from "./islands/WorkbenchIsland";
+import { startPageLaunch } from "./operator";
 import {
   DEFAULT_ROUTE,
   legacyRedirectFor,
@@ -34,6 +35,11 @@ import {
   routeForHashChange,
 } from "./router";
 import { readSnapshotAgain, useSnapshotRebuilt } from "./use-snapshot-rebuilt";
+
+// First, before anything reads the hash: a launch link's secret leaves the
+// address bar (the route part stays) and is exchanged for the page's
+// dashboard session, which the operator token needs (`operator.ts`).
+startPageLaunch();
 
 const BEADS_URL = "data/beads.json";
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
