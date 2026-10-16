@@ -33,7 +33,8 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
-import { tokenPath } from "./home";
+import { sessionsPath, tokenPath } from "./home";
+import { createSessionStore, sessionCookieName } from "./launch";
 import { HEALTH_ROUTE, OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
 import type { BdResult } from "./routes/dev-api";
 import {
@@ -1396,6 +1397,10 @@ describe("the operator token", () => {
     const { h, probes } = await probed();
     const file = tokenPath(h.home, h.root);
     const minted = h.hearth.token;
+    // A page's dashboard session (x1gs.3.31), planted in the store so it
+    // records nothing: the token route's answers below are about the file.
+    const session = createSessionStore(sessionsPath(h.home, h.root)).create();
+    const cookie = `${sessionCookieName(h.home, h.root)}=${session.value}`;
     const states: Array<[string, () => void, string[]]> = [
       [
         "rewritten to another value",
@@ -1421,7 +1426,9 @@ describe("the operator token", () => {
           });
         }
       }
-      const served = await fetch(`${h.api}/token`, { headers: h.headers() });
+      const served = await fetch(`${h.api}/token`, {
+        headers: { ...h.headers(), Cookie: cookie },
+      });
       expect({ label, status: served.status }).toEqual({ label, status: 503 });
     }
     expect(probes).toEqual([]);

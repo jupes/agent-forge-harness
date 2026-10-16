@@ -406,7 +406,10 @@ describe("POST /session", () => {
     expect(value).toMatch(HEX_256);
     expect(value).not.toBe(secret);
     expect(value).not.toBe(h.hearth.token);
-    expect(first.setCookie).toBe(sessionCookie(name, value));
+    // Spelled out, not built with `sessionCookie`, so a change there shows here.
+    expect(first.setCookie).toBe(
+      `${name}=${value}; Path=/__agent-forge; HttpOnly; SameSite=Strict`,
+    );
     const second = await exchangeLaunch(h.hearth.url, secret);
     expect({ status: second.status, setCookie: second.setCookie }).toEqual({
       status: 403,

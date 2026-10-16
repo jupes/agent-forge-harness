@@ -32,11 +32,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
 import { dashboardRecordPath, tokenPath } from "./home";
-import {
-  readDashboardRecord,
-  sessionCookie,
-  sessionCookieName,
-} from "./launch";
+import { readDashboardRecord, sessionCookieName } from "./launch";
 import { loopbackProxyVariable } from "./loopback";
 import {
   API_PREFIX,
@@ -704,7 +700,9 @@ test(
     expect(exchanged.status).toBe(200);
     const name = sessionCookieName(home, root);
     const value = cookiePair(exchanged.setCookie).slice(name.length + 1);
-    expect(exchanged.setCookie).toBe(sessionCookie(name, value));
+    expect(exchanged.setCookie).toBe(
+      `${name}=${value}; Path=/__agent-forge; HttpOnly; SameSite=Strict`,
+    );
     const served = await ask(cookiePair(exchanged.setCookie));
     expect(served.status).toBe(200);
     expect(
