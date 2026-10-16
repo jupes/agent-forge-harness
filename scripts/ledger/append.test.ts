@@ -53,6 +53,13 @@ const toolCall: LedgerEventInput = {
   payload: { tool: "Bash", argsHash: "sha256:ab12", durationMs: 12 },
 };
 
+/**
+ * The loose bound on ten thousand appends, each a transaction of its own. The
+ * windows-latest CI runner's disk made them 22.8 s against 1.9 s on
+ * ubuntu-latest, past the 20 s that holds elsewhere.
+ */
+const APPEND_10K_BOUND_MS = process.platform === "win32" ? 60_000 : 20_000;
+
 describe("appendEvent", () => {
   test("an appended event is read back with the id, ulid and executor it was stored with", () => {
     const path = tempLedger();
@@ -285,25 +292,29 @@ describe("appendEvent", () => {
     expect(rawRows(path)).toHaveLength(2);
   });
 
-  test("ten thousand events are all stored", () => {
-    const path = tempLedger();
-    const started = performance.now();
-    for (let i = 0; i < 10_000; i++) {
-      const result = appendEvent(toolCall, { path });
-      if (!result.ok) throw new Error(result.error);
-    }
-    const elapsedMs = performance.now() - started;
-    const db = new Database(path, { readonly: true });
-    try {
-      expect(
-        db.query<{ n: number }, []>("SELECT count(*) AS n FROM events").get(),
-      ).toEqual({ n: 10_000 });
-    } finally {
-      db.close();
-    }
-    // A loose bound only: the measured figure is recorded by scripts/ledger/bench.ts.
-    expect(elapsedMs).toBeLessThan(20_000);
-  }, 30_000);
+  test(
+    "ten thousand events are all stored",
+    () => {
+      const path = tempLedger();
+      const started = performance.now();
+      for (let i = 0; i < 10_000; i++) {
+        const result = appendEvent(toolCall, { path });
+        if (!result.ok) throw new Error(result.error);
+      }
+      const elapsedMs = performance.now() - started;
+      const db = new Database(path, { readonly: true });
+      try {
+        expect(
+          db.query<{ n: number }, []>("SELECT count(*) AS n FROM events").get(),
+        ).toEqual({ n: 10_000 });
+      } finally {
+        db.close();
+      }
+      // A loose bound only: the measured figure is recorded by scripts/ledger/bench.ts.
+      expect(elapsedMs).toBeLessThan(APPEND_10K_BOUND_MS);
+    },
+    APPEND_10K_BOUND_MS + 10_000,
+  );
 });
 
 describe("a tracker write recorded as bead.transitioned", () => {
