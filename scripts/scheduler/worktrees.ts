@@ -64,13 +64,41 @@ export type GitRun = (
 const READ_MS = 5_000;
 const WRITE_MS = 30_000;
 
+/**
+ * Whether a run ended with ETIMEDOUT before its time limit could have passed.
+ * Bun 1.3.10 on Windows kills a synchronous spawn at once, and reports it
+ * timed out, when more than its time limit has passed since the process's
+ * previous timed spawn, whether it sat idle or busy meanwhile, so a hearth
+ * asked for its worktrees after a quiet spell would answer 502. The run
+ * straight after is timed truly.
+ */
+const timedOutEarly = (
+  error: Error | undefined,
+  elapsedMs: number,
+  timeoutMs: number,
+): boolean =>
+  (error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" &&
+  elapsedMs < timeoutMs / 2;
+
 export const gitRun: GitRun = (args, cwd, timeoutMs = WRITE_MS) => {
-  const result = spawnSync("git", [...args], {
-    cwd,
-    encoding: "utf8",
-    timeout: timeoutMs,
-    windowsHide: true,
-  });
+  const spawn = () => {
+    const started = performance.now();
+    const result = spawnSync("git", [...args], {
+      cwd,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      windowsHide: true,
+    });
+    return { result, elapsedMs: performance.now() - started };
+  };
+  const first = spawn();
+  const { result } = timedOutEarly(
+    first.result.error,
+    first.elapsedMs,
+    timeoutMs,
+  )
+    ? spawn()
+    : first;
   return {
     status: result.error ? null : result.status,
     stdout: result.stdout ?? "",

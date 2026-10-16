@@ -223,6 +223,24 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
+describe("gitRun", () => {
+  // Bun 1.3.10 on Windows timed the second run out at once, before git could
+  // answer: more than its time limit had passed since the first.
+  test("answers when more than its time limit has passed since the last run, rather than timing out before git could run", async () => {
+    const limitMs = 1_000;
+    // The first timed spawn of a process was never cut short, so the run
+    // under test is a second one, even when this test runs alone.
+    expect(gitRun(["--version"], tmpdir(), limitMs).status).toBe(0);
+    // Three times the limit: at one and a half times, Bun did not misfire.
+    await Bun.sleep(limitMs * 3);
+    const result = gitRun(["--version"], tmpdir(), limitMs);
+    expect({ status: result.status, stdout: result.stdout }).toEqual({
+      status: 0,
+      stdout: expect.stringMatching(/^git version /),
+    });
+  });
+});
+
 describe("mainCheckoutOf", () => {
   test("is the main checkout from the main checkout and from a linked worktree", () => {
     const dir = repo();
