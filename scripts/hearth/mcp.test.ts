@@ -1579,6 +1579,22 @@ function publish(
   return token;
 }
 
+/**
+ * `path` spelled relative to the working directory, so that it would name
+ * `path` if it were resolved. On Windows with the working directory on
+ * another drive (a CI runner checks out on D: and has its temp folder on C:)
+ * `relative` has no such spelling and answers `path` itself, absolute; the
+ * drive-relative `C:Users\...` is then the relative spelling that names it.
+ */
+function relativeSpelling(path: string): string {
+  const spelled = relative(process.cwd(), path);
+  if (!isAbsolute(spelled)) return spelled;
+  const driveRelative = path.replace(/^([A-Za-z]:)[\\/]/, "$1");
+  if (driveRelative === path || isAbsolute(driveRelative))
+    throw new Error(`no relative spelling of ${path}`);
+  return driveRelative;
+}
+
 /** The pid of a process that has exited. */
 async function deadPid(): Promise<number> {
   const child = spawn(process.execPath, ["-e", ""], {
@@ -1665,7 +1681,7 @@ describe("when no hearth can be used", () => {
       [
         "a root that is not absolute",
         (where, port) =>
-          publish(where, port, { root: relative(process.cwd(), where.root) }),
+          publish(where, port, { root: relativeSpelling(where.root) }),
       ],
     ];
     for (const [label, write] of cases) {
