@@ -5,16 +5,45 @@
  * the guard below sees every API request first. The hearth cannot tell a proxied
  * request from a local one (its peer is always the dev server), so the loopback
  * check has to happen here, on the real client address.
+ *
+ * The plugin also mints the dashboard's launch links (`api.launchLink`, which
+ * `printDashboardUrlPlugin` prints once the server listens): this process is
+ * the operator's own and can read the hearth's token file. And it records
+ * where the dashboard listens, for `bun run dashboard:open`.
  */
 
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { resolve } from "node:path";
 import type { HttpProxy, Plugin } from "vite";
+import { dashboardUrl } from "../dashboard/dashboard-url";
 import { followTrackerWrites } from "./follow-tracker-writes";
 import { isLoopbackAddress } from "./gate";
-import { hearthHome } from "./home";
+import { dashboardRecordPath, hearthHome, tokenPath } from "./home";
+import {
+  type DashboardRecord,
+  launchBase,
+  launchUrl,
+  readDashboardRecord,
+  requestLaunch,
+} from "./launch";
 import { API_PREFIX } from "./paths";
 import { createSupervisor, type HearthSupervisor } from "./supervisor";
+import { readToken, writeOwnerOnly } from "./token";
+
+/** The plugin's name, by which the dashboard's other plugins find its `api`. */
+export const HEARTH_PLUGIN_NAME = "agent-forge-hearth";
+
+/** What the hearth plugin offers the dashboard's other plugins (`Plugin.api`). */
+export interface HearthPluginApi {
+  /**
+   * The dashboard at `base` opened with a fresh launch secret, minted by this
+   * root's hearth with the operator token read from its token file. Rejects,
+   * saying why, when no secret could be minted.
+   */
+  launchLink(base: string): Promise<string>;
+}
 
 /**
  * Served by `rebuildPagesPlugin` (`scripts/dashboard/rebuild-pages.ts`), which
@@ -165,18 +194,60 @@ function dropWithClient(proxy: HttpProxy.Server): void {
 export function hearthPlugin(
   root: string,
   options: HearthPluginOptions = {},
-): Plugin {
+): Plugin & { api: HearthPluginApi } {
+  const home = options.home ?? hearthHome();
+  let attached: HearthSupervisor | null = null;
+  const api: HearthPluginApi = {
+    async launchLink(base) {
+      // Before anything is minted: a link that names `localhost`, or an
+      // address off this machine, is never printed (`launchBase`).
+      const checked = launchBase(base);
+      if (attached === null)
+        throw new Error("the dashboard has not started its control plane yet");
+      // Asked as a proxied request asks, so a hearth started again is found.
+      const port = await attached.ensure();
+      const token = readToken(tokenPath(home, root));
+      if (token === null)
+        throw new Error("the control plane's token file could not be read");
+      const minted = await requestLaunch({ port, token, surface: "cli" });
+      return launchUrl(checked, minted.secret);
+    },
+  };
   return {
-    name: "agent-forge-hearth",
+    name: HEARTH_PLUGIN_NAME,
+    api,
     async configureServer(server) {
       const supervisor =
         options.supervisor ??
         createSupervisor({
           root,
-          home: options.home ?? hearthHome(),
+          home,
           id: randomUUID(),
         });
+      attached = supervisor;
       const port = await supervisor.ensure();
+
+      // Where this dashboard listens, for `bun run dashboard:open`; removed
+      // when it closes, unless another dashboard of this root wrote it since.
+      const record = dashboardRecordPath(home, root);
+      server.httpServer?.once("listening", () => {
+        const url = dashboardUrl(server.httpServer?.address() ?? null);
+        if (url === null) return;
+        try {
+          const written: DashboardRecord = {
+            pid: process.pid,
+            root: resolve(root),
+            url,
+          };
+          writeOwnerOnly(record, `${JSON.stringify(written)}\n`);
+        } catch {
+          // Without it, `dashboard:open` says no dashboard is running and takes `--url`.
+        }
+      });
+      server.httpServer?.once("close", () => {
+        if (readDashboardRecord(record)?.pid === process.pid)
+          rmSync(record, { force: true });
+      });
 
       // Set before Vite builds its proxy middleware, which runs after every
       // `configureServer` hook has finished.

@@ -14,12 +14,25 @@ import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { closeLedger } from "../ledger/db";
 import { hasAmbiguousPath } from "./gate";
-import { lockPath, tokenPath } from "./home";
+import { lockPath, sessionsPath, tokenPath } from "./home";
+import { createSessionStore, sessionCookieName } from "./launch";
 import { type HearthLock, readLock } from "./lock";
-import { HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
+import {
+  HEALTH_ROUTE,
+  NO_SESSION_ERROR,
+  SESSION_KEY_HEADER,
+  TOKEN_ROUTE,
+} from "./paths";
 import { createHearth, type Hearth, type StartedHearth } from "./server";
-import { deadProxyEnvironment } from "./testing";
+import {
+  dashboardSession,
+  deadProxyEnvironment,
+  type HeldSession,
+  sessionHeaders,
+  sessionLines,
+} from "./testing";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -39,6 +52,8 @@ async function start(): Promise<{
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   cleanup.push(async () => {
     await hearth.close();
+    // A launch link or a session wrote its audit row there.
+    closeLedger(join(home, "ledger.db"));
     rmSync(home, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   });
@@ -85,25 +100,107 @@ test("refuses a non-loopback Host header", async () => {
   expect(res.status).toBe(403);
 });
 
-test("serves the token only to a same-origin request, never to a bare GET", async () => {
-  const { hearth } = await start();
-  const url = `${hearth.url}/__agent-forge/token`;
-  expect((await fetch(url)).status).toBe(403);
-  const viaOrigin = await fetch(url, { headers: { Origin: hearth.url } });
-  expect(viaOrigin.status).toBe(200);
-  expect(
-    ((await viaOrigin.json()) as { data: { token: string } }).data.token,
-  ).toBe(hearth.token);
-  const viaFetchSite = await fetch(url, {
-    headers: { "Sec-Fetch-Site": "same-origin" },
+/** A token request with `headers`: its status, its error, and whether its body holds the token. */
+async function askTokenWith(
+  hearth: StartedHearth,
+  headers: Record<string, string>,
+): Promise<{ status: number; error: string | null; token: boolean }> {
+  const answer = await fetch(`${hearth.url}${TOKEN_ROUTE}`, { headers });
+  const body = await answer.text();
+  return {
+    status: answer.status,
+    error: (JSON.parse(body) as { error: string | null }).error,
+    token: body.includes(hearth.token),
+  };
+}
+
+test("x1gs.3.31: a loopback request that declares the hearth's Origin (or Sec-Fetch-Site: same-origin) but holds no session cookie gets no token, 401 with the relaunch message; a bare GET is 403", async () => {
+  const { hearth, home, root } = await start();
+  const noSession = { status: 401, error: NO_SESSION_ERROR, token: false };
+  expect(await askTokenWith(hearth, {})).toEqual({
+    status: 403,
+    error: "The token is served only to a same-origin request",
+    token: false,
   });
-  expect(viaFetchSite.status).toBe(200);
+  expect(await askTokenWith(hearth, { Origin: hearth.url })).toEqual(noSession);
+  expect(
+    await askTokenWith(hearth, { "Sec-Fetch-Site": "same-origin" }),
+  ).toEqual(noSession);
+  // A cookie of the right name with a value no session has is no session.
+  expect(
+    await askTokenWith(hearth, {
+      Origin: hearth.url,
+      Cookie: `${sessionCookieName(home, root)}=${"0".repeat(64)}`,
+    }),
+  ).toEqual(noSession);
+});
+
+test("x1gs.3.31: the dashboard flow gets the token: a launch secret minted with the operator token, exchanged same-origin for a session cookie and key, then the token route with both and the declared origin; both without the declared origin is 403", async () => {
+  const { hearth } = await start();
+  const session = await dashboardSession(hearth.url, hearth.token);
+  for (const declared of [
+    { Origin: hearth.url },
+    { "Sec-Fetch-Site": "same-origin" },
+  ]) {
+    const answer = await fetch(`${hearth.url}${TOKEN_ROUTE}`, {
+      headers: { ...declared, ...sessionHeaders(session) },
+    });
+    expect(answer.status).toBe(200);
+    expect(
+      ((await answer.json()) as { data: { token: string } }).data.token,
+    ).toBe(hearth.token);
+  }
+  expect(await askTokenWith(hearth, sessionHeaders(session))).toEqual({
+    status: 403,
+    error: "The token is served only to a same-origin request",
+    token: false,
+  });
+});
+
+test("x1gs.3.31: a valid session cookie with no key, a wrong key, another session's key, or its key sent twice gets no token (401); the matching pair does", async () => {
+  const { hearth } = await start();
+  const one = await dashboardSession(hearth.url, hearth.token);
+  const two = await dashboardSession(hearth.url, hearth.token);
+  const noSession = { status: 401, error: NO_SESSION_ERROR, token: false };
+  const origin = { Origin: hearth.url };
+  expect(await askTokenWith(hearth, { ...origin, Cookie: one.cookie })).toEqual(
+    noSession,
+  );
+  for (const key of ["0".repeat(64), two.key, one.key.toUpperCase(), ""])
+    expect({
+      key,
+      answer: await askTokenWith(hearth, {
+        ...origin,
+        Cookie: one.cookie,
+        [SESSION_KEY_HEADER]: key,
+      }),
+    }).toEqual({ key, answer: noSession });
+  // The key alone is no session either.
+  expect(
+    await askTokenWith(hearth, { ...origin, [SESSION_KEY_HEADER]: one.key }),
+  ).toEqual(noSession);
+  const twice = await rawGetWith(hearth.port, TOKEN_ROUTE, [
+    `Host: 127.0.0.1:${hearth.port}`,
+    `Origin: ${hearth.url}`,
+    `Cookie: ${one.cookie}`,
+    `${SESSION_KEY_HEADER}: ${one.key}`,
+    `${SESSION_KEY_HEADER}: ${one.key}`,
+  ]);
+  expect({
+    status: twice.status,
+    token: twice.body.includes(hearth.token),
+  }).toEqual({ status: 401, token: false });
+  for (const session of [one, two])
+    expect(
+      await askTokenWith(hearth, { ...origin, ...sessionHeaders(session) }),
+    ).toEqual({ status: 200, error: null, token: true });
 });
 
 /**
  * Paths the operator table does not serve, and what each answers a GET that
- * declares the hearth's own origin. The table's runner has its own repeat
- * check; these were guarded by the front door alone.
+ * declares the hearth's own origin and carries a dashboard session (the token
+ * route needs one; the others ignore it). The table's runner has its own
+ * repeat check; these were guarded by the front door alone.
  */
 const OUTSIDE_THE_TABLE: Array<[string, number]> = [
   [TOKEN_ROUTE, 200],
@@ -143,8 +240,12 @@ function rawGetWith(
   });
 }
 
-test("a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is 403 on the token, health, dev-api, council-api and an unknown path, and is not served the token", async () => {
+test("a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is 403 on the token, health, dev-api, council-api and an unknown path, and is not served the token, a dashboard session notwithstanding", async () => {
   const { hearth } = await start();
+  // Every request carries a session, so the token route's refusals below are about the repeat.
+  const session = sessionLines(
+    await dashboardSession(hearth.url, hearth.token),
+  );
   const host = `Host: 127.0.0.1:${hearth.port}`;
   const origin = `Origin: ${hearth.url}`;
   const site = "Sec-Fetch-Site: same-origin";
@@ -172,11 +273,19 @@ test("a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or 
   const refusals: unknown[] = [];
   for (const [path, answered] of OUTSIDE_THE_TABLE) {
     // Each header once is answered, so the refusals below are about the repeat.
-    const once = await rawGetWith(hearth.port, path, [host, origin, site]);
+    const once = await rawGetWith(hearth.port, path, [
+      host,
+      origin,
+      site,
+      ...session,
+    ]);
     expect({ path, status: once.status }).toEqual({ path, status: answered });
     if (path === TOKEN_ROUTE) expect(once.body).toContain(hearth.token);
     for (const [label, lines] of repeats) {
-      const answer = await rawGetWith(hearth.port, path, lines);
+      const answer = await rawGetWith(hearth.port, path, [
+        ...lines,
+        ...session,
+      ]);
       answers.push({
         path,
         label,
@@ -190,8 +299,11 @@ test("a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or 
   expect(answers).toEqual(refusals);
 });
 
-test("Sec-Fetch-Site: same-site, cross-site, an unknown value or two values folded into one line is 403 on the token, health, dev-api, council-api and an unknown path, with or without the hearth's own Origin", async () => {
+test("Sec-Fetch-Site: same-site, cross-site, an unknown value or two values folded into one line is 403 on the token, health, dev-api, council-api and an unknown path, with or without the hearth's own Origin, a dashboard session notwithstanding", async () => {
   const { hearth } = await start();
+  const session = sessionHeaders(
+    await dashboardSession(hearth.url, hearth.token),
+  );
   const refused = [
     "same-site",
     "cross-site",
@@ -209,7 +321,7 @@ test("Sec-Fetch-Site: same-site, cross-site, an unknown value or two values fold
     for (const declared of declarations) {
       for (const value of refused) {
         const response = await fetch(`${hearth.url}${path}`, {
-          headers: { ...declared, "Sec-Fetch-Site": value },
+          headers: { ...declared, "Sec-Fetch-Site": value, ...session },
         });
         const body = await response.text();
         answers.push({
@@ -234,12 +346,19 @@ test("Sec-Fetch-Site: same-site, cross-site, an unknown value or two values fold
   expect(answers).toEqual(refusals);
 });
 
-test("Sec-Fetch-Site: same-origin or none, with the hearth's own Origin, keeps its answer on the token, health, dev-api, council-api and an unknown path", async () => {
+test("Sec-Fetch-Site: same-origin or none, with the hearth's own Origin and a dashboard session, keeps its answer on the token, health, dev-api, council-api and an unknown path", async () => {
   const { hearth } = await start();
+  const session = sessionHeaders(
+    await dashboardSession(hearth.url, hearth.token),
+  );
   for (const [path, answered] of OUTSIDE_THE_TABLE) {
     for (const value of ["same-origin", "none"]) {
       const response = await fetch(`${hearth.url}${path}`, {
-        headers: { Origin: hearth.url, "Sec-Fetch-Site": value },
+        headers: {
+          Origin: hearth.url,
+          "Sec-Fetch-Site": value,
+          ...session,
+        },
       });
       await response.body?.cancel();
       expect({ path, value, status: response.status }).toEqual({
@@ -555,10 +674,13 @@ test("with HTTP_PROXY naming a port nothing listens on and no NO_PROXY, the serv
 
 const STILL_STARTING = "503 The control plane is still starting";
 
-/** A token request to `port` that declares the hearth's own origin: its status, and its error or the token it served. */
-async function askToken(port: number): Promise<string> {
+/**
+ * A token request to `port` that declares the hearth's own origin and sends
+ * `session`: its status, and its error or the token it served.
+ */
+async function askToken(port: number, session: HeldSession): Promise<string> {
   const answer = await fetch(`http://127.0.0.1:${port}${TOKEN_ROUTE}`, {
-    headers: { Origin: `http://127.0.0.1:${port}` },
+    headers: { Origin: `http://127.0.0.1:${port}`, ...sessionHeaders(session) },
   });
   const body = (await answer.json()) as {
     data: { token?: unknown } | null;
@@ -573,6 +695,12 @@ test("a token request answered while the start is held after it listens, before 
   mkdirSync(dirname(file), { recursive: true });
   const left = "f".repeat(64);
   writeFileSync(file, `${left}\n`);
+  // A session an earlier hearth of this root gave a page, so the answers below are about the token.
+  const created = createSessionStore(sessionsPath(home, root)).create();
+  const session: HeldSession = {
+    cookie: `${sessionCookieName(home, root)}=${created.value}`,
+    key: created.key,
+  };
   let release = (): void => {};
   const held = new Promise<void>((done) => {
     release = done;
@@ -591,7 +719,7 @@ test("a token request answered while the start is held after it listens, before 
     },
   });
   const port = await listened;
-  const during = await askToken(port);
+  const during = await askToken(port, session);
   // Held: the lock is not taken and the file still holds the other hearth's token.
   const lockDuring = existsSync(lockPath(home, root));
   const fileDuring = readFileSync(file, "utf8");
@@ -599,7 +727,7 @@ test("a token request answered while the start is held after it listens, before 
   const hearth = await starting;
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   cleanup.push(() => hearth.close());
-  const after = await askToken(port);
+  const after = await askToken(port, session);
   expect({ during, lockDuring, fileDuring, after }).toEqual({
     during: STILL_STARTING,
     lockDuring: false,

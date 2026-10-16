@@ -1,10 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
-import {
-  OPERATOR_HEADER,
-  SURFACE_HEADER,
-  TOKEN_ROUTE,
-} from "../../scripts/hearth/paths";
+import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import { openSettled, stubForgeRun } from "./fixtures";
+import { pageToken } from "./launch-link";
 
 /**
  * The operator API, from a browser, through the dashboard's proxy.
@@ -103,8 +100,7 @@ test("the Council page starts a run with the operator token and follows it to it
   page,
 }) => {
   await openSettled(page, "/council.html");
-  const token = (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data
-    ?.token;
+  const token = await pageToken(page);
   expect(token, "the token route answers the page").toMatch(/^[0-9a-f]{64}$/);
 
   await page.fill(
@@ -178,9 +174,7 @@ test("a stored run opens on the Council page, which reads it with the operator t
   page,
 }) => {
   await openSettled(page, "/council.html");
-  const token =
-    (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data?.token ??
-    "";
+  const token = await pageToken(page);
   const withToken = { [OPERATOR_HEADER]: token };
   const source = "Evaluate this plan: the kiln reports its heat in Celsius.";
   const started = await fromPage<{ runId: string }>(
@@ -247,8 +241,7 @@ test("a checkpoint review is posted with the operator token", async ({
       headers.push(request.headers());
   });
   await openSettled(page, "/index.html#/forge-run");
-  const token = (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data
-    ?.token;
+  const token = await pageToken(page);
 
   await page.getByRole("button", { name: "Approve checkpoint" }).click();
   await expect(page.locator(".af-review-result")).toContainText(
@@ -265,8 +258,7 @@ test("the hearth stream reaches an EventSource through the dashboard: a snapshot
   page,
 }) => {
   await openSettled(page, "/council.html");
-  const token = (await fromPage<{ token: string }>(page, TOKEN_ROUTE)).body.data
-    ?.token;
+  const token = await pageToken(page);
 
   const seen = await page.evaluate(
     ({ api, header, value }) =>

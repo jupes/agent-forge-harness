@@ -1,11 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { STATIC_COPY_ERROR } from "../../docs/js/hearth-read";
 import {
+  beginLaunch,
   createOperatorClient,
   createOperatorPost,
+  launchSettled,
   NotSent,
+  startPageLaunch,
+  takeLaunchSecret,
 } from "../../docs/js/operator";
-import { OPERATOR_HEADER, SURFACE_HEADER, TOKEN_ROUTE } from "../hearth/paths";
+import {
+  LAUNCH_HEADER,
+  NO_SESSION_ERROR,
+  OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
+  SESSION_ROUTE,
+  SURFACE_HEADER,
+  TOKEN_ROUTE,
+} from "../hearth/paths";
 
 interface Call {
   url: string;
@@ -315,5 +327,375 @@ describe("operatorPost", () => {
     );
     expect(error).toBeInstanceOf(TypeError);
     expect(error).not.toBeInstanceOf(NotSent);
+  });
+});
+
+describe("without a dashboard session (x1gs.3.31)", () => {
+  /** A token route that answers 401 as the hearth does without a session, with a body that is not the page's words. */
+  const noSession = async (input: string): Promise<Response> =>
+    input === TOKEN_ROUTE
+      ? Response.json(
+          { ok: false, data: null, error: "the hearth's own words" },
+          { status: 401 },
+        )
+      : Response.json({ ok: true, data: 1, error: null });
+
+  test("a post fails as NotSent saying how to open the dashboard from its launcher, and nothing is posted", async () => {
+    const calls: string[] = [];
+    const post = createOperatorPost(async (input, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      return noSession(input);
+    });
+    const error = await post("/__agent-forge/beads", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(NotSent);
+    expect(error).toHaveProperty("message", NO_SESSION_ERROR);
+    expect(NO_SESSION_ERROR).toContain("bun run dashboard");
+    expect(NO_SESSION_ERROR).toContain("bun run dashboard:open");
+    expect(calls).toEqual([`GET ${TOKEN_ROUTE}`]);
+  });
+
+  test("the 401's body is read away before the post fails: an answer left unread stays open in the browser", async () => {
+    const answers: Response[] = [];
+    const post = createOperatorPost(async (input) => {
+      const answer = await noSession(input);
+      answers.push(answer);
+      return answer;
+    });
+    await post("/__agent-forge/beads", {}).catch(() => undefined);
+    expect(answers.map((answer) => answer.bodyUsed)).toEqual([true]);
+  });
+
+  test("after a 403 the token is asked for once more; a 401 then fails the post as NotSent, with no further request", async () => {
+    const calls: string[] = [];
+    let tokenAsks = 0;
+    const post = createOperatorPost(async (input, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input === TOKEN_ROUTE && tokenAsks++ === 0)
+        return Response.json({ ok: true, data: { token: "t" }, error: null });
+      if (input === TOKEN_ROUTE) return noSession(input);
+      return Response.json(
+        { ok: false, data: null, error: "token" },
+        { status: 403 },
+      );
+    });
+    const error = await post("/__agent-forge/x", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toHaveProperty("message", NO_SESSION_ERROR);
+    expect(calls).toEqual([
+      `GET ${TOKEN_ROUTE}`,
+      "POST /__agent-forge/x",
+      `GET ${TOKEN_ROUTE}`,
+    ]);
+  });
+
+  test("the client asks for the token only once its launch has settled", async () => {
+    const order: string[] = [];
+    let settle = (): void => {};
+    const launch = new Promise<void>((done) => {
+      settle = done;
+    });
+    const client = createOperatorClient(
+      async (input) => {
+        order.push(input);
+        return Response.json({ ok: true, data: { token: "t" }, error: null });
+      },
+      {
+        ready: async () => {
+          await launch;
+          order.push("launch settled");
+        },
+      },
+    );
+    const posted = client.post("/__agent-forge/x", {});
+    await new Promise((done) => setTimeout(done, 20));
+    expect(order).toEqual([]);
+    settle();
+    await posted;
+    expect(order).toEqual(["launch settled", TOKEN_ROUTE, "/__agent-forge/x"]);
+  });
+});
+
+/** A stand-in for the page's storage of its session key: what was set, in order. */
+function keyStore(initial: string | null = null) {
+  const store = {
+    held: initial === null ? ([] as string[]) : [initial],
+    get: () => store.held.at(-1) ?? null,
+    set: (key: string) => {
+      store.held.push(key);
+    },
+  };
+  return store;
+}
+
+const KEY = "ef".repeat(32);
+
+describe("the session key (x1gs.3.31)", () => {
+  test("the token request carries the key read from storage when it is made: after another tab's launch replaced it, the next one carries the new key", async () => {
+    const keys = keyStore("01".repeat(32));
+    const sentKeys: Array<string | null> = [];
+    let answers = 0;
+    const client = createOperatorClient(
+      async (input, init) => {
+        if (input === TOKEN_ROUTE) {
+          sentKeys.push(new Headers(init?.headers).get(SESSION_KEY_HEADER));
+          // The first is refused (the cookie is another tab's by now), the second served.
+          return answers++ === 0
+            ? Response.json(
+                { ok: false, data: null, error: "no session" },
+                { status: 401 },
+              )
+            : Response.json({ ok: true, data: { token: "t" }, error: null });
+        }
+        return Response.json({ ok: true, data: 1, error: null });
+      },
+      { sessionKeys: keys },
+    );
+    const first = await client
+      .post("/__agent-forge/x", {})
+      .catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(NotSent);
+    keys.set("02".repeat(32));
+    expect((await client.post("/__agent-forge/x", {})).status).toBe(200);
+    expect(sentKeys).toEqual(["01".repeat(32), "02".repeat(32)]);
+  });
+
+  test("with no key in storage the token request carries none, and the action fails as NotSent with how to relaunch", async () => {
+    const sent: Array<string | null> = [];
+    const post = createOperatorClient(
+      async (input, init) => {
+        sent.push(new Headers(init?.headers).get(SESSION_KEY_HEADER));
+        return input === TOKEN_ROUTE
+          ? Response.json(
+              { ok: false, data: null, error: "x" },
+              { status: 401 },
+            )
+          : Response.json({ ok: true, data: 1, error: null });
+      },
+      { sessionKeys: keyStore() },
+    ).post;
+    const error = await post("/__agent-forge/x", {}).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toHaveProperty("message", NO_SESSION_ERROR);
+    expect(sent).toEqual([null]);
+  });
+
+  test("an exchange that answers no key, or one of another shape, is refused and keeps nothing; a refused exchange keeps nothing", async () => {
+    for (const data of [{}, { key: "short" }, { key: KEY.toUpperCase() }]) {
+      const keys = keyStore();
+      const outcome = await beginLaunch(
+        {
+          location: {
+            hash: `#launch=${"ab".repeat(32)}`,
+            pathname: "/",
+            search: "",
+          },
+          history: { state: null, replaceState: () => undefined },
+        },
+        {
+          fetch: async () => Response.json({ ok: true, data, error: null }),
+          sessionKeys: keys,
+        },
+      );
+      expect({ data, outcome, held: keys.held }).toEqual({
+        data,
+        outcome: {
+          state: "refused",
+          error: "The control plane answered no session key",
+        },
+        held: [],
+      });
+    }
+  });
+});
+
+describe("the launch fragment", () => {
+  const SECRET = "ab".repeat(32);
+
+  test("takeLaunchSecret takes the secret and keeps the route part and every other parameter as it was", () => {
+    expect(takeLaunchSecret(`#launch=${SECRET}`)).toEqual({
+      secret: SECRET,
+      hash: "",
+    });
+    expect(takeLaunchSecret(`#/workbench?launch=${SECRET}`)).toEqual({
+      secret: SECRET,
+      hash: "#/workbench",
+    });
+    expect(
+      takeLaunchSecret(`#/timeline?bead=x-1&launch=${SECRET}&kind=a%2Cb`),
+    ).toEqual({ secret: SECRET, hash: "#/timeline?bead=x-1&kind=a%2Cb" });
+    expect(takeLaunchSecret(`#/timeline?launch=${SECRET}&kind=a,b`)).toEqual({
+      secret: SECRET,
+      hash: "#/timeline?kind=a,b",
+    });
+  });
+
+  test("takeLaunchSecret leaves a fragment with no secret as it was, and gives none for an empty or a repeated one, which it still strips", () => {
+    for (const hash of [
+      "",
+      "#",
+      "#/workbench",
+      "#/timeline?bead=x-1",
+      "#af-main",
+      "#/timeline?launched=1",
+    ])
+      expect(takeLaunchSecret(hash)).toEqual({ secret: null, hash });
+    expect(takeLaunchSecret("#/workbench?launch=")).toEqual({
+      secret: null,
+      hash: "#/workbench",
+    });
+    expect(
+      takeLaunchSecret(`#/workbench?launch=${SECRET}&launch=${SECRET}`),
+    ).toEqual({ secret: null, hash: "#/workbench" });
+  });
+
+  /** A page at `hash`, whose address bar and history are recorded. */
+  function page(hash: string) {
+    const replaced: string[] = [];
+    const location = { hash, pathname: "/index.html", search: "?x=1" };
+    return {
+      replaced,
+      location,
+      history: {
+        state: { kept: true },
+        replaceState(data: unknown, _unused: string, url?: string) {
+          expect(data).toEqual({ kept: true });
+          const next = url ?? "";
+          replaced.push(next);
+          location.hash = next.includes("#")
+            ? next.slice(next.indexOf("#"))
+            : "";
+        },
+      },
+    };
+  }
+
+  test("beginLaunch removes the secret from the address bar before the exchange is answered, keeping the route, then posts it once, same-origin, to the session route, and keeps the session key it answers in the page's storage", async () => {
+    const at = page(`#/timeline?bead=x-1&launch=${SECRET}`);
+    const keys = keyStore();
+    const sent: Array<{
+      url: string;
+      init: RequestInit | undefined;
+      hash: string;
+    }> = [];
+    const outcome = await beginLaunch(at, {
+      fetch: async (url, init) => {
+        sent.push({ url, init, hash: at.location.hash });
+        return Response.json({ ok: true, data: { key: KEY }, error: null });
+      },
+      sessionKeys: keys,
+    });
+    expect(outcome).toEqual({ state: "exchanged" });
+    expect(keys.held).toEqual([KEY]);
+    expect(at.replaced).toEqual(["/index.html?x=1#/timeline?bead=x-1"]);
+    expect(sent).toEqual([
+      {
+        url: SESSION_ROUTE,
+        init: {
+          method: "POST",
+          headers: { [LAUNCH_HEADER]: SECRET, [SURFACE_HEADER]: "ui" },
+          credentials: "same-origin",
+        },
+        // Already gone from the address bar when the request left.
+        hash: "#/timeline?bead=x-1",
+      },
+    ]);
+  });
+
+  test("beginLaunch on a page with no secret changes nothing and sends nothing; on a static copy it strips the secret and sends nothing", async () => {
+    const plain = page("#/workbench");
+    const sent: string[] = [];
+    const record = async (url: string): Promise<Response> => {
+      sent.push(url);
+      return Response.json({ ok: true, data: {}, error: null });
+    };
+    expect(await beginLaunch(plain, { fetch: record })).toEqual({
+      state: "none",
+    });
+    expect(plain.replaced).toEqual([]);
+    const copy = page(`#launch=${SECRET}`);
+    expect(
+      await beginLaunch(copy, { fetch: record, staticCopy: true }),
+    ).toEqual({ state: "none" });
+    expect(copy.replaced).toEqual(["/index.html?x=1"]);
+    expect(sent).toEqual([]);
+  });
+
+  test("startPageLaunch exchanges the secret the page was opened with, and one a later fragment-only navigation brings; launchSettled answers the latest", async () => {
+    const at = page(`#launch=${SECRET}`);
+    const listeners: Array<() => void> = [];
+    const sent: string[] = [];
+    const win = {
+      ...at,
+      addEventListener: (_type: "hashchange", listener: () => void) => {
+        listeners.push(listener);
+      },
+    };
+    const keys = keyStore();
+    const fetchImpl = async (
+      url: string,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const secret = new Headers(init?.headers).get(LAUNCH_HEADER) ?? url;
+      sent.push(secret);
+      // A key of its own for each exchange.
+      return Response.json({
+        ok: true,
+        data: { key: secret.split("").reverse().join("") },
+        error: null,
+      });
+    };
+    expect(
+      await startPageLaunch(win, { fetch: fetchImpl, sessionKeys: keys }),
+    ).toEqual({
+      state: "exchanged",
+    });
+    expect(listeners).toHaveLength(1);
+    // A fragment with no secret changes nothing.
+    at.location.hash = "#/workbench";
+    listeners[0]?.();
+    expect(at.replaced).toEqual(["/index.html?x=1"]);
+    // The same tab given another launch link: only the fragment changed.
+    const next = "cd".repeat(32);
+    at.location.hash = `#/workbench?launch=${next}`;
+    listeners[0]?.();
+    expect(at.replaced).toEqual([
+      "/index.html?x=1",
+      "/index.html?x=1#/workbench",
+    ]);
+    expect(await launchSettled()).toEqual({ state: "exchanged" });
+    expect(sent).toEqual([SECRET, next]);
+    // The later launch's key replaced the first's.
+    expect(keys.held).toEqual(["ba".repeat(32), "dc".repeat(32)]);
+  });
+
+  test("beginLaunch reports a refused or failed exchange in the hearth's words, keeps no key, and never rejects", async () => {
+    const keys = keyStore();
+    const refused = await beginLaunch(page(`#launch=${SECRET}`), {
+      fetch: async () =>
+        Response.json(
+          {
+            ok: false,
+            data: { key: KEY },
+            error: "This launch link is not valid",
+          },
+          { status: 403 },
+        ),
+      sessionKeys: keys,
+    });
+    expect(keys.held).toEqual([]);
+    expect(refused).toEqual({
+      state: "refused",
+      error: "This launch link is not valid",
+    });
+    const failed = await beginLaunch(page(`#launch=${SECRET}`), {
+      fetch: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    expect(failed).toEqual({ state: "refused", error: "Failed to fetch" });
   });
 });

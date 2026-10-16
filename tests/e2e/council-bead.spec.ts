@@ -1,10 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
-import {
-  OPERATOR_HEADER,
-  SURFACE_HEADER,
-  TOKEN_ROUTE,
-} from "../../scripts/hearth/paths";
+import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import { openSettled } from "./fixtures";
+import { pageToken } from "./launch-link";
 import { createFromBuilder, requireStandIn, standInCalls } from "./stand-in";
 
 /**
@@ -120,15 +117,13 @@ test("a bead is previewed before it is sent: the page lists each part a run woul
     )
     .toEqual(["council.run.started", "council.run.finished"]);
   // A stored run is read with the operator token (x1gs.7.7), as the page reads it.
+  const token = await pageToken(page);
   const job = await page.evaluate(
-    async ({ url, tokenRoute, header }) => {
-      const token = (await (await fetch(tokenRoute)).json()).data.token;
-      return (await (await fetch(url, { headers: { [header]: token } })).json())
-        .data;
-    },
+    async ({ url, token, header }) =>
+      (await (await fetch(url, { headers: { [header]: token } })).json()).data,
     {
       url: `${API}/council-api/runs/${encodeURIComponent(runId)}`,
-      tokenRoute: TOKEN_ROUTE,
+      token,
       header: OPERATOR_HEADER,
     },
   );

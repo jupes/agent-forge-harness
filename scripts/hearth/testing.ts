@@ -23,7 +23,14 @@ import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { childOf } from "../scheduler/queue-fixture";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
-import { OPERATOR_HEADER } from "./paths";
+import {
+  LAUNCH_HEADER,
+  LAUNCH_ROUTE,
+  OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
+  SESSION_ROUTE,
+  SURFACE_HEADER,
+} from "./paths";
 import type { BdResult } from "./routes/dev-api";
 import {
   createHearth,
@@ -327,6 +334,8 @@ export interface TestHearthOptions {
    * lays one out (a `.git` file naming `<main>/.git/worktrees/<id>`).
    */
   linkedWorktree?: boolean;
+  /** The clock launch secrets and sessions are timed by (`HearthOptions.launchNow`). */
+  launchNow?: () => number;
 }
 
 export async function startTestHearth(
@@ -362,6 +371,7 @@ export async function startTestHearth(
       ? { councilLedger: operatorCouncilLedger({ path: ledger }) }
       : {}),
     councilRunCommand: commands.run,
+    ...(options.launchNow ? { launchNow: options.launchNow } : {}),
     api: {
       ledgerPath: ledger,
       runBd: (args, options) => bd.run(args, options),
@@ -519,6 +529,121 @@ export async function openEventStream(
     close: () => controller.abort(),
   };
   return client;
+}
+
+/** An answer of the control plane: its status, its envelope and its `Set-Cookie`. */
+export interface LaunchAnswer {
+  status: number;
+  body: {
+    ok: boolean;
+    data: Record<string, unknown> | null;
+    error: string | null;
+  };
+  setCookie: string | null;
+}
+
+async function launchAnswer(response: Response): Promise<LaunchAnswer> {
+  return {
+    status: response.status,
+    body: (await response.json()) as LaunchAnswer["body"],
+    setCookie: response.headers.get("set-cookie"),
+  };
+}
+
+/**
+ * `POST /launch` at `base` (the hearth's or the dashboard's origin) with the
+ * operator token, as the launcher does. `headers` replace the defaults.
+ */
+export async function mintLaunch(
+  base: string,
+  token: string | null,
+  headers: Record<string, string> = {},
+): Promise<LaunchAnswer> {
+  return launchAnswer(
+    await fetch(`${base}${LAUNCH_ROUTE}`, {
+      method: "POST",
+      headers: {
+        ...(token !== null ? { [OPERATOR_HEADER]: token } : {}),
+        [SURFACE_HEADER]: "cli",
+        ...headers,
+      },
+    }),
+  );
+}
+
+/**
+ * `POST /session` at `base` with `secret`, as the page does: declaring `base`
+ * as its origin unless `headers` say otherwise.
+ */
+export async function exchangeLaunch(
+  base: string,
+  secret: string,
+  headers: Record<string, string> = { Origin: base },
+): Promise<LaunchAnswer> {
+  return launchAnswer(
+    await fetch(`${base}${SESSION_ROUTE}`, {
+      method: "POST",
+      headers: { [LAUNCH_HEADER]: secret, [SURFACE_HEADER]: "ui", ...headers },
+    }),
+  );
+}
+
+/** The `name=value` pair a `Set-Cookie` value sets: what a browser sends back. */
+export function cookiePair(setCookie: string | null): string {
+  const pair = (setCookie ?? "").split(";")[0] ?? "";
+  if (!pair.includes("=")) throw new Error("no cookie was set");
+  return pair;
+}
+
+/** A dashboard session as a page holds it: the cookie pair its browser sends, and the key it keeps. */
+export interface HeldSession {
+  /** `name=value`, what goes in `Cookie`. */
+  cookie: string;
+  /** What goes in `SESSION_KEY_HEADER`. */
+  key: string;
+}
+
+/** The session key an exchange's answer carries. */
+export function sessionKeyOf(answer: LaunchAnswer): string {
+  const key = answer.body.data?.["key"];
+  if (typeof key !== "string") throw new Error("no session key was answered");
+  return key;
+}
+
+/** What a page sends to the token route for `session`: its cookie and its key. */
+export function sessionHeaders(session: HeldSession): Record<string, string> {
+  return { Cookie: session.cookie, [SESSION_KEY_HEADER]: session.key };
+}
+
+/** `sessionHeaders` as raw header lines. */
+export function sessionLines(session: HeldSession): string[] {
+  return Object.entries(sessionHeaders(session)).map(
+    ([name, value]) => `${name}: ${value}`,
+  );
+}
+
+/**
+ * A dashboard session at `base`, the whole flow a page goes through: a launch
+ * secret minted with `token`, exchanged as the page does. What the page then
+ * holds: the cookie and the key.
+ */
+export async function dashboardSession(
+  base: string,
+  token: string,
+): Promise<HeldSession> {
+  const minted = await mintLaunch(base, token);
+  const secret = minted.body.data?.["secret"];
+  if (minted.status !== 200 || typeof secret !== "string")
+    throw new Error(`no launch secret was minted (${minted.status})`);
+  const exchanged = await exchangeLaunch(base, secret);
+  if (exchanged.status !== 200)
+    throw new Error(
+      `the launch secret was not exchanged (${exchanged.status})`,
+    );
+  return {
+    cookie: cookiePair(exchanged.setCookie),
+    key: sessionKeyOf(exchanged),
+  };
 }
 
 /**

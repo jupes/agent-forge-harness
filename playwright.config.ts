@@ -12,6 +12,7 @@ import {
   HEARTH_URL,
   NODE_DIR,
   refuseAReachableBd,
+  STORAGE_STATE,
   standInEnvironment,
 } from "./tests/e2e/servers";
 
@@ -66,6 +67,9 @@ export default defineConfig({
 
   use: {
     baseURL: DASHBOARD_URL,
+    // The dashboard session global setup got from a launch link: without it
+    // a page gets no operator token (x1gs.3.31). `launch.spec.ts` clears it.
+    storageState: STORAGE_STATE,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },

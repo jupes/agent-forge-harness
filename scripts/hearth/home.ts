@@ -28,3 +28,21 @@ export function lockPath(home: string, root: string): string {
 export function tokenPath(home: string, root: string): string {
   return join(home, "tokens", `${rootKey(root)}.token`);
 }
+
+/**
+ * The dashboard sessions of this root's hearth (hashes and expiry, never a
+ * session value), beside its token file and protected the same way. Unlike
+ * the token file it outlives the hearth: a page keeps its session across a
+ * restart of the hearth (`launch.ts`).
+ */
+export function sessionsPath(home: string, root: string): string {
+  return join(home, "tokens", `${rootKey(root)}.sessions.json`);
+}
+
+/**
+ * Where a running dashboard for this root says where it listens, so that
+ * `bun run dashboard:open` can print a launch link for it. Holds no secret.
+ */
+export function dashboardRecordPath(home: string, root: string): string {
+  return join(home, "dashboards", `${rootKey(root)}.json`);
+}
