@@ -48,6 +48,9 @@ import {
   dashboardSession,
   exchangeLaunch,
   openEventStream,
+  sessionHeaders,
+  sessionKeyOf,
+  sessionLines,
   startTestHearth,
 } from "./testing";
 import {
@@ -571,7 +574,7 @@ test(
   "through the proxy, a GET that sends Origin, Sec-Fetch-Site or Host twice, in either order or with one value twice, is refused by the guard on the token, health, dev-api, council-api and sessions paths, and is not served the token, a dashboard session notwithstanding",
   async () => {
     const { url, token } = await fixture();
-    const cookie = `Cookie: ${await dashboardSession(url, token)}`;
+    const session = sessionLines(await dashboardSession(url, token));
     const host = `Host: ${new URL(url).host}`;
     const origin = `Origin: ${url}`;
     const site = "Sec-Fetch-Site: same-origin";
@@ -608,7 +611,7 @@ test(
     const refusals: unknown[] = [];
     for (const [path] of PROXIED_GETS) {
       for (const [label, lines] of repeats) {
-        const answer = await rawGet(url, path, [...lines, cookie]);
+        const answer = await rawGet(url, path, [...lines, ...session]);
         let error: unknown = null;
         try {
           error = (JSON.parse(answer.body) as { error: unknown }).error;
@@ -644,7 +647,7 @@ test(
       `Host: ${new URL(url).host}`,
       `Origin: ${url}`,
       "Sec-Fetch-Site: same-origin",
-      `Cookie: ${await dashboardSession(url, token)}`,
+      ...sessionLines(await dashboardSession(url, token)),
     ];
     const variants: Array<[string, string[]]> = [
       ["each once", once],
@@ -675,14 +678,12 @@ test(
 );
 
 test(
-  "x1gs.3.31 through the proxy: a request declaring the dashboard's origin gets no token without a session (401); the launch flow's Set-Cookie names the API prefix and no Domain, so it stays on the dashboard's own host, and the token route answers a request that carries it",
+  "x1gs.3.31 through the proxy: a request declaring the dashboard's origin gets no token without a session (401); the launch flow's Set-Cookie names the API prefix and no Domain, so it stays on the dashboard's own host; its cookie alone gets no token, and with the key the exchange answered, the token route answers",
   async () => {
     const { url, token, home, root } = await fixture();
-    const ask = (cookie: string | null) =>
-      fetch(`${url}${TOKEN_ROUTE}`, {
-        headers: { Origin: url, ...(cookie ? { Cookie: cookie } : {}) },
-      });
-    const bare = await ask(null);
+    const ask = (headers: Record<string, string>) =>
+      fetch(`${url}${TOKEN_ROUTE}`, { headers: { Origin: url, ...headers } });
+    const bare = await ask({});
     const bareBody = await bare.text();
     expect({
       status: bare.status,
@@ -704,7 +705,15 @@ test(
     expect(exchanged.setCookie).toBe(
       `${name}=${value}; Path=/__agent-forge; HttpOnly; SameSite=Strict`,
     );
-    const served = await ask(cookiePair(exchanged.setCookie));
+    const cookieOnly = await ask({ Cookie: cookiePair(exchanged.setCookie) });
+    expect(cookieOnly.status).toBe(401);
+    await cookieOnly.body?.cancel();
+    const served = await ask(
+      sessionHeaders({
+        cookie: cookiePair(exchanged.setCookie),
+        key: sessionKeyOf(exchanged),
+      }),
+    );
     expect(served.status).toBe(200);
     expect(
       ((await served.json()) as { data: { token: string } }).data.token,

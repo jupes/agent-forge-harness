@@ -35,8 +35,12 @@ import {
 import { createHearth, type StartedHearth } from "./server";
 import {
   cookiePair,
+  dashboardSession,
   exchangeLaunch,
+  type HeldSession,
   mintLaunch,
+  sessionHeaders,
+  sessionKeyOf,
   startTestHearth,
   type TestHearth,
 } from "./testing";
@@ -145,29 +149,62 @@ describe("launch secrets", () => {
 });
 
 describe("sessions", () => {
-  test("a session is 256 bits of fresh hex, good for seven days, and its file holds its hash and expiry, never the value", () => {
+  test("a session is a cookie value and a key, each 256 bits of fresh hex and distinct, good for seven days; its file holds their hashes and the expiry, never either value", () => {
     const time = clock();
     const file = sessionsPath(temp("af-launch-home-"), "/r");
     const store = createSessionStore(file, { now: time.now });
     const session = store.create();
     const other = store.create();
-    expect(session.value).toMatch(HEX_256);
-    expect(other.value).not.toBe(session.value);
+    const values = [session.value, session.key, other.value, other.key];
+    for (const value of values) expect(value).toMatch(HEX_256);
+    expect(new Set(values).size).toBe(4);
     expect(SESSION_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
     expect(session.expiresAt).toBe(
       new Date(time.start + SESSION_TTL_MS).toISOString(),
     );
-    expect(store.valid([session.value])).toBe(true);
+    expect(store.valid([session.value], [session.key])).toBe(true);
     const written = readFileSync(file, "utf8");
-    expect(written).not.toContain(session.value);
-    expect(written).not.toContain(other.value);
+    for (const value of values) expect(written).not.toContain(value);
     expect(JSON.parse(written)).toEqual({
-      version: 1,
+      version: 2,
       sessions: [
-        { hash: sha256(session.value), expiresAt: session.expiresAt },
-        { hash: sha256(other.value), expiresAt: other.expiresAt },
+        {
+          hash: sha256(session.value),
+          keyHash: sha256(session.key),
+          expiresAt: session.expiresAt,
+        },
+        {
+          hash: sha256(other.value),
+          keyHash: sha256(other.key),
+          expiresAt: other.expiresAt,
+        },
       ],
     });
+  });
+
+  test("x1gs.3.31: a cookie value is a session only with its own key: not with none, a wrong one, or another session's; nor a key without its cookie", () => {
+    const store = createSessionStore(
+      sessionsPath(temp("af-launch-home-"), "/r"),
+    );
+    const one = store.create();
+    const two = store.create();
+    expect({
+      none: store.valid([one.value], []),
+      wrong: store.valid([one.value], ["0".repeat(64)]),
+      others: store.valid([one.value], [two.key]),
+      crossed: store.valid([two.value], [one.key]),
+      keyAlone: store.valid([], [one.key]),
+      swapped: store.valid([one.key], [one.value]),
+    }).toEqual({
+      none: false,
+      wrong: false,
+      others: false,
+      crossed: false,
+      keyAlone: false,
+      swapped: false,
+    });
+    expect(store.valid([one.value], [one.key])).toBe(true);
+    expect(store.valid([two.value], [two.key])).toBe(true);
   });
 
   test("a session survives a new store on the same file, as a hearth started again reads it; it is good until a millisecond before its expiry and refused at it", () => {
@@ -175,26 +212,31 @@ describe("sessions", () => {
     const file = sessionsPath(temp("af-launch-home-"), "/r");
     const session = createSessionStore(file, { now: time.now }).create();
     const again = createSessionStore(file, { now: time.now });
-    expect(again.valid([session.value])).toBe(true);
+    expect(again.valid([session.value], [session.key])).toBe(true);
     time.set(time.start + SESSION_TTL_MS - 1);
-    expect(again.valid([session.value])).toBe(true);
+    expect(again.valid([session.value], [session.key])).toBe(true);
     time.set(time.start + SESSION_TTL_MS);
-    expect(again.valid([session.value])).toBe(false);
+    expect(again.valid([session.value], [session.key])).toBe(false);
   });
 
-  test("another value, one of the wrong length or charset, or none at all is not a session", () => {
+  test("another value, one of the wrong length or charset, or none at all is not a session, nor is the key given as another of those", () => {
     const store = createSessionStore(
       sessionsPath(temp("af-launch-home-"), "/r"),
     );
-    const { value } = store.create();
+    const { value, key } = store.create();
     for (const wrong of notTheSecret(value))
-      expect({ wrong, valid: store.valid([wrong]) }).toEqual({
+      expect({ wrong, valid: store.valid([wrong], [key]) }).toEqual({
         wrong,
         valid: false,
       });
-    expect(store.valid([])).toBe(false);
+    for (const wrong of notTheSecret(key))
+      expect({ wrong, valid: store.valid([value], [wrong]) }).toEqual({
+        wrong,
+        valid: false,
+      });
+    expect(store.valid([], [])).toBe(false);
     // One good value among others is a session: a browser can send two cookies of one name.
-    expect(store.valid(["0".repeat(64), value])).toBe(true);
+    expect(store.valid(["0".repeat(64), value], [key])).toBe(true);
   });
 
   test("the sessions file is created beside the token file, readable by this OS user only (mode 0600 where the file system keeps modes, as the token file)", () => {
@@ -208,23 +250,37 @@ describe("sessions", () => {
     }
   });
 
-  test("a sessions file that is not JSON, or of another shape, holds no session, and the next session replaces it", () => {
+  test("a sessions file that is not JSON, of another shape, or of the version before keys holds no session, and the next session replaces it", () => {
     const file = sessionsPath(temp("af-launch-home-"), "/r");
     mkdirSync(dirname(file), { recursive: true });
     const store = createSessionStore(file);
+    const cookie = "1".repeat(64);
+    const key = "2".repeat(64);
+    const future = new Date(Date.now() + 60_000).toISOString();
     for (const content of [
       "{not json",
-      JSON.stringify({ version: 2, sessions: [] }),
+      JSON.stringify({ version: 3, sessions: [] }),
+      JSON.stringify({
+        version: 2,
+        sessions: [{ hash: "zz", keyHash: "zz", expiresAt: "never" }],
+      }),
+      // A session written before keys: its cookie alone no longer opens it.
       JSON.stringify({
         version: 1,
-        sessions: [{ hash: "zz", expiresAt: "never" }],
+        sessions: [{ hash: sha256(cookie), expiresAt: future }],
+      }),
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          { hash: sha256(cookie), keyHash: sha256(key), expiresAt: future },
+        ],
       }),
     ]) {
       writeFileSync(file, content);
-      expect(store.valid(["0".repeat(64)])).toBe(false);
+      expect(store.valid([cookie], [key])).toBe(false);
     }
-    const { value } = store.create();
-    expect(store.valid([value])).toBe(true);
+    const { value, key: made } = store.create();
+    expect(store.valid([value], [made])).toBe(true);
     expect(
       (JSON.parse(readFileSync(file, "utf8")) as { sessions: unknown[] })
         .sessions,
@@ -247,7 +303,7 @@ describe("sessions", () => {
     ).sessions.map((entry) => entry.hash);
     expect(kept).toEqual([sha256(b.value), sha256(c.value)]);
     expect(kept).not.toContain(sha256(expired.value));
-    expect(store.valid([a.value])).toBe(false);
+    expect(store.valid([a.value], [a.key])).toBe(false);
   });
 });
 
@@ -382,14 +438,17 @@ async function mintedSecret(h: TestHearth): Promise<string> {
   return secret;
 }
 
-/** A token request declaring the hearth's origin with `cookie`: its status, and whether the token came back. */
+/** A token request declaring the hearth's origin with `session`: its status, and whether the token came back. */
 async function tokenWith(
   url: string,
   token: string,
-  cookie: string | null,
+  session: HeldSession | null,
 ): Promise<{ status: number; token: boolean; error: string | null }> {
   const answer = await fetch(`${url}${TOKEN_ROUTE}`, {
-    headers: { Origin: url, ...(cookie !== null ? { Cookie: cookie } : {}) },
+    headers: {
+      Origin: url,
+      ...(session !== null ? sessionHeaders(session) : {}),
+    },
   });
   const body = await answer.text();
   return {
@@ -442,32 +501,45 @@ describe("POST /launch", () => {
 });
 
 describe("POST /session", () => {
-  test("exchanges a launch secret once: a session cookie set exactly as specified, recorded with nothing of either value; the same secret again is 403 and sets no cookie", async () => {
+  test("exchanges a launch secret once: a session cookie set exactly as specified and, in the body, a session key, fresh and distinct from the cookie, the secret and the token; recorded with nothing of any of them; the same secret again is 403 and sets no cookie and gives no key", async () => {
     const h = await hearth();
     const secret = await mintedSecret(h);
     const first = await exchangeLaunch(h.hearth.url, secret);
     expect(first.status).toBe(200);
     const name = sessionCookieName(h.home, h.root);
     const value = cookiePair(first.setCookie).slice(name.length + 1);
-    expect(value).toMatch(HEX_256);
-    expect(value).not.toBe(secret);
-    expect(value).not.toBe(h.hearth.token);
+    const key = sessionKeyOf(first);
+    for (const fresh of [value, key]) expect(fresh).toMatch(HEX_256);
+    expect(new Set([value, key, secret, h.hearth.token]).size).toBe(4);
     // Spelled out, not built with `sessionCookie`, so a change there shows here.
     expect(first.setCookie).toBe(
       `${name}=${value}; Path=/__agent-forge; HttpOnly; SameSite=Strict`,
     );
     const second = await exchangeLaunch(h.hearth.url, secret);
-    expect({ status: second.status, setCookie: second.setCookie }).toEqual({
-      status: 403,
-      setCookie: null,
-    });
+    expect({
+      status: second.status,
+      setCookie: second.setCookie,
+      data: second.body.data,
+    }).toEqual({ status: 403, setCookie: null, data: null });
     expect(second.body.error).toContain("bun run dashboard:open");
+    // Another exchange gives another pair.
+    const again = await exchangeLaunch(h.hearth.url, await mintedSecret(h));
+    expect(
+      new Set([
+        value,
+        key,
+        cookiePair(again.setCookie).slice(name.length + 1),
+        sessionKeyOf(again),
+      ]).size,
+    ).toBe(4);
     const rows = h.events(["operator.action"]);
     expect(rows.map((row) => row.payload)).toEqual([
       { action: "dashboard.launch", surface: "cli" },
       { action: "dashboard.session", surface: "ui" },
+      { action: "dashboard.launch", surface: "cli" },
+      { action: "dashboard.session", surface: "ui" },
     ]);
-    for (const held of [secret, value])
+    for (const held of [secret, value, key])
       expect(JSON.stringify(rows)).not.toContain(held);
   });
 
@@ -532,21 +604,52 @@ describe("POST /session", () => {
 });
 
 describe("GET /token with a session", () => {
-  test("the session a launch link gave is served the token; the secret it came from is not a session", async () => {
+  test("the session a launch link gave, its cookie and its key, is served the token; the secret it came from is not a session", async () => {
     const h = await hearth();
     const secret = await mintedSecret(h);
-    const cookie = cookiePair(
-      (await exchangeLaunch(h.hearth.url, secret)).setCookie,
-    );
-    expect(await tokenWith(h.hearth.url, h.hearth.token, cookie)).toEqual({
+    const exchanged = await exchangeLaunch(h.hearth.url, secret);
+    const session = {
+      cookie: cookiePair(exchanged.setCookie),
+      key: sessionKeyOf(exchanged),
+    };
+    expect(await tokenWith(h.hearth.url, h.hearth.token, session)).toEqual({
       status: 200,
       token: true,
       error: null,
     });
     const name = sessionCookieName(h.home, h.root);
     expect(
-      await tokenWith(h.hearth.url, h.hearth.token, `${name}=${secret}`),
+      await tokenWith(h.hearth.url, h.hearth.token, {
+        cookie: `${name}=${secret}`,
+        key: session.key,
+      }),
     ).toEqual({ status: 401, token: false, error: NO_SESSION_ERROR });
+  });
+
+  test("x1gs.3.31: a valid cookie with no key, a wrong key or another session's key gets no token; the matching pair does", async () => {
+    const h = await hearth();
+    const one = await dashboardSession(h.hearth.url, h.hearth.token);
+    const two = await dashboardSession(h.hearth.url, h.hearth.token);
+    const refused = { status: 401, token: false, error: NO_SESSION_ERROR };
+    const noKey = await fetch(`${h.hearth.url}${TOKEN_ROUTE}`, {
+      headers: { Origin: h.hearth.url, Cookie: one.cookie },
+    });
+    expect({
+      status: noKey.status,
+      error: ((await noKey.json()) as { error: unknown }).error,
+    }).toEqual({ status: 401, error: NO_SESSION_ERROR });
+    for (const key of ["0".repeat(64), two.key])
+      expect(
+        await tokenWith(h.hearth.url, h.hearth.token, {
+          cookie: one.cookie,
+          key,
+        }),
+      ).toEqual(refused);
+    expect(await tokenWith(h.hearth.url, h.hearth.token, one)).toEqual({
+      status: 200,
+      token: true,
+      error: null,
+    });
   });
 
   test("a session survives a restart of the hearth, which serves it the token it minted; an expired session is refused", async () => {
@@ -567,26 +670,22 @@ describe("GET /token with a session", () => {
     };
     cleanup.push(() => closeLedger(join(home, "ledger.db")));
     const first = await started();
-    let cookie: string;
+    let session: HeldSession;
     try {
-      const minted = await mintLaunch(first.url, first.token);
-      cookie = cookiePair(
-        (await exchangeLaunch(first.url, String(minted.body.data?.["secret"])))
-          .setCookie,
-      );
+      session = await dashboardSession(first.url, first.token);
     } finally {
       await first.close();
     }
     const second = await started();
     try {
       expect(second.token).not.toBe(first.token);
-      expect(await tokenWith(second.url, second.token, cookie)).toEqual({
+      expect(await tokenWith(second.url, second.token, session)).toEqual({
         status: 200,
         token: true,
         error: null,
       });
       time.set(time.start + SESSION_TTL_MS);
-      expect(await tokenWith(second.url, second.token, cookie)).toEqual({
+      expect(await tokenWith(second.url, second.token, session)).toEqual({
         status: 401,
         token: false,
         error: NO_SESSION_ERROR,
@@ -599,26 +698,23 @@ describe("GET /token with a session", () => {
   test("a session of another root's hearth, with that hearth's cookie name or this one's, is not a session here", async () => {
     const one = await hearth();
     const two = await hearth();
-    const [name, value] = (
-      await (async () => {
-        const secret = await mintedSecret(two);
-        return cookiePair(
-          (await exchangeLaunch(two.hearth.url, secret)).setCookie,
-        );
-      })()
-    ).split("=");
+    const theirs = await dashboardSession(two.hearth.url, two.hearth.token);
+    const [name, value] = theirs.cookie.split("=");
     for (const cookie of [
       `${name}=${value}`,
       `${sessionCookieName(one.home, one.root)}=${value}`,
     ])
-      expect(await tokenWith(one.hearth.url, one.hearth.token, cookie)).toEqual(
-        { status: 401, token: false, error: NO_SESSION_ERROR },
-      );
+      expect(
+        await tokenWith(one.hearth.url, one.hearth.token, {
+          cookie,
+          key: theirs.key,
+        }),
+      ).toEqual({ status: 401, token: false, error: NO_SESSION_ERROR });
   });
 });
 
 describe("what is written", () => {
-  test("no launch secret, session value or token appears in the ledger, the audit rows, the sessions file, or anything written to stdout, stderr or the console", async () => {
+  test("no launch secret, session value, session key or token appears in the ledger, the audit rows, the sessions file, or anything written to stdout, stderr or the console", async () => {
     const h = await hearth();
     const written: string[] = [];
     const restore: Array<() => void> = [];
@@ -644,16 +740,19 @@ describe("what is written", () => {
     }
     let secret = "";
     let value = "";
+    let key = "";
     try {
       secret = await mintedSecret(h);
       const exchanged = await exchangeLaunch(h.hearth.url, secret);
       value = cookiePair(exchanged.setCookie).split("=")[1] ?? "";
-      await tokenWith(
-        h.hearth.url,
-        h.hearth.token,
-        cookiePair(exchanged.setCookie),
-      );
+      key = sessionKeyOf(exchanged);
+      const session = { cookie: cookiePair(exchanged.setCookie), key };
+      await tokenWith(h.hearth.url, h.hearth.token, session);
       // A refusal of each kind too.
+      await tokenWith(h.hearth.url, h.hearth.token, {
+        cookie: session.cookie,
+        key: "0".repeat(64),
+      });
       await exchangeLaunch(h.hearth.url, secret);
       await mintLaunch(h.hearth.url, "0".repeat(64));
     } finally {
@@ -661,6 +760,7 @@ describe("what is written", () => {
     }
     expect(secret).toMatch(HEX_256);
     expect(value).toMatch(HEX_256);
+    expect(key).toMatch(HEX_256);
     const ledger = [h.ledger, `${h.ledger}-wal`]
       .filter((file) => existsSync(file))
       .map((file) => readFileSync(file, "latin1"))
@@ -675,6 +775,7 @@ describe("what is written", () => {
       for (const [what, held] of Object.entries({
         secret,
         value,
+        key,
         token: h.hearth.token,
       }))
         expect({ place, what, found: text.includes(held) }).toEqual({

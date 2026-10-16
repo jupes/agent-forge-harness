@@ -35,7 +35,12 @@ import type { GitRun } from "../scheduler/worktrees";
 import type { ActionRoute, ApiRoute } from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
-import { HEALTH_ROUTE, OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
+import {
+  HEALTH_ROUTE,
+  OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
+  SURFACE_HEADER,
+} from "./paths";
 import type { BdResult } from "./routes/dev-api";
 import {
   startTestHearth,
@@ -1427,7 +1432,11 @@ describe("the operator token", () => {
         }
       }
       const served = await fetch(`${h.api}/token`, {
-        headers: { ...h.headers(), Cookie: cookie },
+        headers: {
+          ...h.headers(),
+          Cookie: cookie,
+          [SESSION_KEY_HEADER]: session.key,
+        },
       });
       expect({ label, status: served.status }).toEqual({ label, status: 503 });
     }

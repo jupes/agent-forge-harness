@@ -16,16 +16,23 @@
  *    (`#launch=<secret>`). The page sends it once, same-origin, to
  *    `POST /session`. Any request there that presents a secret spends it,
  *    before anything else about the request is looked at and whether or not
- *    the exchange succeeds. A good exchange answers a session cookie: fresh
- *    randomness (never the secret or the token), HttpOnly, SameSite=Strict,
- *    scoped to the API prefix, named for this hearth's home and root.
- * 3. `GET /token` answers only a request that carries a valid session cookie,
- *    on top of the front door and the declared same origin.
+ *    the exchange succeeds. A good exchange answers a session cookie (fresh
+ *    randomness, never the secret or the token; HttpOnly, SameSite=Strict,
+ *    scoped to the API prefix, named for this hearth's home and root) and,
+ *    in its body, a session key (fresh randomness too), which the page keeps
+ *    in its origin's `localStorage`.
+ * 3. `GET /token` answers only a request that carries both halves of one
+ *    session, the cookie and the key in `SESSION_KEY_HEADER`, on top of the
+ *    front door and the declared same origin. A browser sends the cookie to
+ *    every port of the host, so a page served by another program on another
+ *    loopback port can have its own server receive it; that page cannot read
+ *    the dashboard origin's storage, so it never has the key.
  *
- * Sessions are kept as hashes with an absolute expiry (`SESSION_TTL_MS`, 7
- * days, not extended by use) in a file beside the token file, written as the
- * token file is: the dashboard restarts a stopped hearth without the page
- * knowing, and the page keeps its session across that restart.
+ * Sessions are kept as hashes (of the cookie value and of the key) with an
+ * absolute expiry (`SESSION_TTL_MS`, 7 days, not extended by use) in a file
+ * beside the token file, written as the token file is: the dashboard restarts
+ * a stopped hearth without the page knowing, and the page keeps its session
+ * across that restart.
  *
  * Scripts, CLIs and the MCP server keep reading the token file. Every route
  * that changes something keeps requiring the token.
@@ -50,6 +57,7 @@ import {
   LAUNCH_ROUTE,
   OPEN_COMMAND,
   OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
   SURFACE_HEADER,
 } from "./paths";
 import { tokenMatches, writeOwnerOnly } from "./token";
@@ -159,29 +167,51 @@ export function createLaunchSecrets(
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 
+/**
+ * A session is two values, both fresh randomness, both needed: the cookie's
+ * value, and a key the page keeps in `localStorage` and sends in
+ * `SESSION_KEY_HEADER`. A browser sends the cookie to every port of the host
+ * (cookies are not kept per port), so a page another program serves on
+ * another loopback port can have its own server receive it. The key belongs
+ * to the dashboard's origin, port included: that page cannot read it, so the
+ * cookie it received is worth nothing without it.
+ */
 export interface CreatedSession {
   /** The cookie's value. Never stored: the file holds its hash. */
   value: string;
+  /** The session key, answered in the exchange's body. Never stored: the file holds its hash. */
+  key: string;
   expiresAt: string;
 }
 
 export interface SessionStore {
   create(): CreatedSession;
-  /** Whether one of `presented` is a session that has not expired. */
-  valid(presented: readonly string[]): boolean;
+  /**
+   * Whether one of `cookies` and one of `keys` are the cookie value and the
+   * key of the same session, and it has not expired.
+   */
+  valid(cookies: readonly string[], keys: readonly string[]): boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The version of the sessions file; a file of another (an older one, whose sessions had no key) holds none. */
+const SESSIONS_VERSION = 2;
+
+interface StoredSession {
+  hash: Buffer;
+  keyHash: Buffer;
+  expiresAt: number;
+}
+
 /**
- * The sessions in `file`, by hash and expiry. A file that is missing, not
- * JSON or of another shape holds none; an entry of another shape is skipped.
+ * The sessions in `file`, by hash, key hash and expiry. A file that is
+ * missing, not JSON or of another shape or version holds none; an entry of
+ * another shape is skipped.
  */
-function readSessions(
-  file: string,
-): Array<{ hash: Buffer; expiresAt: number }> {
+function readSessions(file: string): StoredSession[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(file, "utf8"));
@@ -190,27 +220,33 @@ function readSessions(
   }
   if (
     !isRecord(parsed) ||
-    parsed["version"] !== 1 ||
+    parsed["version"] !== SESSIONS_VERSION ||
     !Array.isArray(parsed["sessions"])
   )
     return [];
-  const sessions: Array<{ hash: Buffer; expiresAt: number }> = [];
+  const sessions: StoredSession[] = [];
   for (const item of parsed["sessions"]) {
     if (!isRecord(item)) continue;
-    const { hash, expiresAt } = item;
+    const { hash, keyHash, expiresAt } = item;
     if (typeof hash !== "string" || !HASH_SHAPE.test(hash)) continue;
+    if (typeof keyHash !== "string" || !HASH_SHAPE.test(keyHash)) continue;
     if (typeof expiresAt !== "string") continue;
     const at = Date.parse(expiresAt);
     if (!Number.isFinite(at)) continue;
-    sessions.push({ hash: Buffer.from(hash, "hex"), expiresAt: at });
+    sessions.push({
+      hash: Buffer.from(hash, "hex"),
+      keyHash: Buffer.from(keyHash, "hex"),
+      expiresAt: at,
+    });
   }
   return sessions;
 }
 
 /**
- * The sessions of one hearth, kept in `file` (`sessionsPath`): a hash and an
- * absolute expiry for each, never a session value. The file is read on every
- * check, so a hearth started again honours what the last one created.
+ * The sessions of one hearth, kept in `file` (`sessionsPath`): for each, the
+ * hash of its cookie value, the hash of its key and an absolute expiry, never
+ * a value or a key. The file is read on every check, so a hearth started
+ * again honours what the last one created.
  */
 export function createSessionStore(
   file: string,
@@ -223,10 +259,11 @@ export function createSessionStore(
     create() {
       const at = now();
       const value = freshSecret();
+      const key = freshSecret();
       const expiresAt = at + ttl;
       const kept = [
         ...readSessions(file).filter((entry) => entry.expiresAt > at),
-        { hash: hashOf(value), expiresAt },
+        { hash: hashOf(value), keyHash: hashOf(key), expiresAt },
       ]
         .sort((a, b) => a.expiresAt - b.expiresAt)
         .slice(-max);
@@ -234,9 +271,10 @@ export function createSessionStore(
         file,
         `${JSON.stringify(
           {
-            version: 1,
+            version: SESSIONS_VERSION,
             sessions: kept.map((entry) => ({
               hash: entry.hash.toString("hex"),
+              keyHash: entry.keyHash.toString("hex"),
               expiresAt: new Date(entry.expiresAt).toISOString(),
             })),
           },
@@ -244,19 +282,28 @@ export function createSessionStore(
           2,
         )}\n`,
       );
-      return { value, expiresAt: new Date(expiresAt).toISOString() };
+      return { value, key, expiresAt: new Date(expiresAt).toISOString() };
     },
-    valid(presented) {
-      const hashes = presented.filter(isSecretShaped).map(hashOf);
-      if (hashes.length === 0) return false;
+    valid(cookies, keys) {
+      const cookieHashes = cookies.filter(isSecretShaped).map(hashOf);
+      const keyHashes = keys.filter(isSecretShaped).map(hashOf);
+      if (cookieHashes.length === 0 || keyHashes.length === 0) return false;
       const at = now();
       const sessions = readSessions(file);
-      const found = matches(
+      const cookieFound = matches(
         sessions.map((entry) => entry.hash),
-        hashes,
+        cookieHashes,
       );
+      const keyFound = matches(
+        sessions.map((entry) => entry.keyHash),
+        keyHashes,
+      );
+      // Both of the same session: one session's cookie with another's key is no session.
       return sessions.some(
-        (entry, index) => found[index] === true && entry.expiresAt > at,
+        (entry, index) =>
+          cookieFound[index] === true &&
+          keyFound[index] === true &&
+          entry.expiresAt > at,
       );
     },
   };
@@ -363,7 +410,10 @@ export interface LaunchRoutes {
     res: ServerResponse,
     live: boolean,
   ): Promise<void>;
-  /** Whether the request carries a valid session cookie. */
+  /**
+   * Whether the request carries a session: its cookie, and its key in
+   * `SESSION_KEY_HEADER`, sent once, both of the same unexpired session.
+   */
   hasSession(req: IncomingMessage): boolean;
 }
 
@@ -484,11 +534,20 @@ export function launchRoutes(deps: LaunchRouteDeps): LaunchRoutes {
         "Set-Cookie",
         sessionCookie(deps.cookieName, session.value),
       );
-      return reply(res, 200, { expiresAt: session.expiresAt });
+      // The key goes in the body, which only a page of this origin can read
+      // (the dev server answers no CORS), and the page keeps it in its
+      // origin's storage.
+      return reply(res, 200, {
+        expiresAt: session.expiresAt,
+        key: session.key,
+      });
     },
 
     hasSession(req) {
-      return deps.sessions.valid(presentedCookies(req, deps.cookieName));
+      const keys = rawValues(req, SESSION_KEY_HEADER);
+      // The key sent once: a request that sends two is refused, whatever they hold.
+      if (keys.length !== 1) return false;
+      return deps.sessions.valid(presentedCookies(req, deps.cookieName), keys);
     },
   };
 }

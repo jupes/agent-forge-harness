@@ -27,6 +27,7 @@ import {
   LAUNCH_HEADER,
   LAUNCH_ROUTE,
   OPERATOR_HEADER,
+  SESSION_KEY_HEADER,
   SESSION_ROUTE,
   SURFACE_HEADER,
 } from "./paths";
@@ -594,15 +595,42 @@ export function cookiePair(setCookie: string | null): string {
   return pair;
 }
 
+/** A dashboard session as a page holds it: the cookie pair its browser sends, and the key it keeps. */
+export interface HeldSession {
+  /** `name=value`, what goes in `Cookie`. */
+  cookie: string;
+  /** What goes in `SESSION_KEY_HEADER`. */
+  key: string;
+}
+
+/** The session key an exchange's answer carries. */
+export function sessionKeyOf(answer: LaunchAnswer): string {
+  const key = answer.body.data?.["key"];
+  if (typeof key !== "string") throw new Error("no session key was answered");
+  return key;
+}
+
+/** What a page sends to the token route for `session`: its cookie and its key. */
+export function sessionHeaders(session: HeldSession): Record<string, string> {
+  return { Cookie: session.cookie, [SESSION_KEY_HEADER]: session.key };
+}
+
+/** `sessionHeaders` as raw header lines. */
+export function sessionLines(session: HeldSession): string[] {
+  return Object.entries(sessionHeaders(session)).map(
+    ([name, value]) => `${name}: ${value}`,
+  );
+}
+
 /**
  * A dashboard session at `base`, the whole flow a page goes through: a launch
- * secret minted with `token`, exchanged as the page does. The `Cookie` header
- * that carries it.
+ * secret minted with `token`, exchanged as the page does. What the page then
+ * holds: the cookie and the key.
  */
 export async function dashboardSession(
   base: string,
   token: string,
-): Promise<string> {
+): Promise<HeldSession> {
   const minted = await mintLaunch(base, token);
   const secret = minted.body.data?.["secret"];
   if (minted.status !== 200 || typeof secret !== "string")
@@ -612,7 +640,10 @@ export async function dashboardSession(
     throw new Error(
       `the launch secret was not exchanged (${exchanged.status})`,
     );
-  return cookiePair(exchanged.setCookie);
+  return {
+    cookie: cookiePair(exchanged.setCookie),
+    key: sessionKeyOf(exchanged),
+  };
 }
 
 /**

@@ -26,6 +26,20 @@ export const SURFACE_HEADER = "x-agent-forge-surface";
 export const LAUNCH_HEADER = "x-agent-forge-launch";
 
 /**
+ * Carries the session key to `TOKEN_ROUTE`: the second half of a dashboard
+ * session, beside its cookie. Lower case, as `node:http` reports it.
+ */
+export const SESSION_KEY_HEADER = "x-agent-forge-session-key";
+
+/**
+ * Where the page keeps its session key: `localStorage`, which belongs to the
+ * dashboard's origin, port included. A page on another port of the same host
+ * is sent the session cookie (cookies are kept per host) but cannot read
+ * this.
+ */
+export const SESSION_KEY_STORAGE = "agent-forge-session-key";
+
+/**
  * The key a launch link carries its secret under, in the URL's fragment:
  * `#launch=<secret>`, or `#/<route>?…&launch=<secret>` with a route. Never in
  * the query, so the secret reaches no server log and no `Referer`.
