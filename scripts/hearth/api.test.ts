@@ -2720,6 +2720,62 @@ describe("/eligibility", () => {
     ).toBeUndefined();
   });
 
+  test("a queued bead whose reservation a live shift's worktree still holds waits for that run, naming the shift (waitsOnShift), as the hearth's shift records say", async () => {
+    const h = await start();
+    const shiftId = "shift-20261015-120000-0e1a";
+    writeShiftRecord(join(h.home, SHIFTS_DIR), {
+      shiftId,
+      pid: process.pid,
+      workspace: h.workspace,
+      startedAt: "2026-10-15T12:00:00.000Z",
+      deadline: "2026-10-15T14:00:00.000Z",
+      state: "running",
+      options: {
+        concurrency: 2,
+        forMs: 7_200_000,
+        maxBeads: 4,
+        maxUsd: 10,
+        repairs: 0,
+      },
+      spentUsd: 0,
+      unpriced: 0,
+      beads: [],
+    });
+    const worktree = `${h.workspace}/trees/${shiftId}-1`;
+    h.append({
+      kind: "reservation.acquired",
+      beadId: "q-1",
+      payload: { worktree, globs: ["src/**"] },
+    });
+    h.bd.list = listed([
+      {
+        id: "q-1",
+        title: "q-1",
+        status: "open",
+        priority: 2,
+        issue_type: "task",
+        labels: ["queue:queued"],
+        metadata: { queue_state: "queued" },
+        description: "## Files\nsrc/**\n",
+      },
+    ]);
+    const response = await get(h, "/eligibility");
+    expect(response.status).toBe(200);
+    const data = (
+      await envelope<{
+        eligible: Array<{ id: string }>;
+        waiting: Array<{ id: string; why: string; waitsOnShift?: string }>;
+      }>(response)
+    ).data;
+    expect(data?.eligible).toEqual([]);
+    expect(data?.waiting).toEqual([
+      expect.objectContaining({ id: "q-1", waitsOnShift: shiftId }),
+    ]);
+    expect(data?.waiting[0]?.why).toBe(
+      `its earlier run in ${worktree} (shift ${shiftId}) has not ended: it starts again once that run releases its reservation (if that shift is gone and its pid names another program now, bun run forge:reservations release q-1 ${worktree} frees it)`,
+    );
+  });
+
   test("answers 502 when bd fails, not an empty queue", async () => {
     const h = await start();
     h.bd.list = { status: 1, stdout: "", stderr: "Error: database is locked" };

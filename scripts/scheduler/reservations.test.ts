@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendEvent } from "../ledger/append";
@@ -15,6 +15,7 @@ import {
   reservationFor,
   reserve,
 } from "./reservations";
+import { writeShiftRecord } from "./shift-store";
 import { comparablePath } from "./worktrees";
 
 /**
@@ -469,4 +470,122 @@ describe("reserve and release, in the ledger", () => {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }
   }, 60_000);
+});
+
+describe("reserve given the shift records: a bead another shift's worktree still holds (x1gs.5.4.13)", () => {
+  const home = mkdtempSync(join(tmpdir(), "af reserve shift "));
+  const shiftsDir = join(home, "shifts");
+  afterAll(() => {
+    closeLedger(join(home, "ledger.db"));
+    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+  });
+  const shift = {
+    live: "shift-20261015-120000-0001",
+    dead: "shift-20261015-120000-0002",
+    stopped: "shift-20261015-120000-0003",
+    none: "shift-20261015-120000-0004",
+    asking: "shift-20261015-120000-0005",
+  } as const;
+  let n = 0;
+  /** A main checkout of its own, its shift records written once. */
+  function rig() {
+    const main = join(home, `main ${++n}`);
+    mkdirSync(main, { recursive: true });
+    const workspace = comparablePath(main);
+    const record = (shiftId: string, pid: number, stopped = false) =>
+      writeShiftRecord(shiftsDir, {
+        shiftId,
+        pid,
+        workspace,
+        startedAt: "2026-10-15T12:00:00.000Z",
+        deadline: "2026-10-15T14:00:00.000Z",
+        state: stopped ? "stopped" : "running",
+        options: {
+          concurrency: 2,
+          forMs: 7_200_000,
+          maxBeads: 4,
+          maxUsd: 10,
+          repairs: 0,
+        },
+        spentUsd: 0,
+        unpriced: 0,
+        beads: [],
+      });
+    record(shift.live, process.pid);
+    // No process has this id (shift-recover.test.ts uses it as dead too).
+    record(shift.dead, 2_000_000_000);
+    record(shift.stopped, process.pid, true);
+    const plain: ReservationDeps = {
+      workspace,
+      ledgerPath: join(home, "ledger.db"),
+      lockFile: join(home, "queue-lock.db"),
+    };
+    return {
+      tree: (name: string) => join(main, "trees", name),
+      plain,
+      guarded: { ...plain, shiftsDir },
+      held: () =>
+        activeReservations({ workspace }, { path: plain.ledgerPath }).length,
+    };
+  }
+  const A = "agent-forge-harness-a1";
+
+  test("is refused while that shift is live, dead or unrecorded here, naming its worktree and the shift; nothing is written", async () => {
+    for (const holder of [shift.live, shift.dead, shift.none]) {
+      const r = rig();
+      const first = r.tree(`${holder}-1`);
+      expect(
+        (
+          await reserve(
+            { beadId: A, worktree: first, globs: ["src/**"] },
+            r.plain,
+          )
+        ).ok,
+      ).toBe(true);
+      const second = await reserve(
+        {
+          beadId: A,
+          worktree: r.tree(`${shift.asking}-1`),
+          globs: ["src/**"],
+        },
+        r.guarded,
+      );
+      expect({ holder, kind: second.ok ? "ok" : second.kind }).toEqual({
+        holder,
+        kind: "conflict",
+      });
+      expect(second.ok ? "" : second.error).toContain(comparablePath(first));
+      expect(second.ok ? "" : second.error).toContain(`shift ${holder}`);
+      expect(r.held()).toBe(1);
+    }
+  });
+
+  test("is not refused for a stopped shift's leftover, a worktree made outside any shift, another worktree of the asking shift, or without the shift records", async () => {
+    for (const [held, deps] of [
+      [`${shift.stopped}-1`, "guarded"],
+      ["by-hand", "guarded"],
+      [`${shift.asking}-2`, "guarded"],
+      [`${shift.live}-1`, "plain"],
+    ] as const) {
+      const r = rig();
+      expect(
+        (
+          await reserve(
+            { beadId: A, worktree: r.tree(held), globs: ["src/**"] },
+            r.plain,
+          )
+        ).ok,
+      ).toBe(true);
+      const second = await reserve(
+        {
+          beadId: A,
+          worktree: r.tree(`${shift.asking}-1`),
+          globs: ["src/**"],
+        },
+        r[deps],
+      );
+      expect({ held, deps, ok: second.ok }).toEqual({ held, deps, ok: true });
+      expect(r.held()).toBe(2);
+    }
+  });
 });

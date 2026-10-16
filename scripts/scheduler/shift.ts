@@ -18,9 +18,10 @@
  * else, every worktree starting at the commit it named), the bounds
  * (concurrency, time, beads admitted, spend: each the caller's, else the
  * config's `[shift]`), the host throttle (`[shift] throttle`), repairs,
- * noticing a bead the operator paused or halted, the draft pull request of a
- * bead that reached `review` (`shift-pr.ts`), the `worklog:` comments on each
- * bead it ran, and stopping: every child is aborted (its tree killed by the
+ * noticing a bead the operator paused or halted (or that another run started
+ * since), the draft pull request of a bead that reached `review`
+ * (`shift-pr.ts`), the `worklog:` comments on each bead it ran, and
+ * stopping: every child is aborted (its tree killed by the
  * supervisor) and awaited, its bead put back in `queued` and its reservation
  * released before `shift.stopped` is recorded. It never merges and pushes
  * nothing but a bead's own shift branch.
@@ -51,6 +52,7 @@ import { isValidSlug } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import type { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
 import { createQueue, queueStateOf, smithFor } from "./queue";
@@ -64,6 +66,7 @@ import {
   RUN_PR_BODY,
   type ToolRun,
 } from "./shift-pr";
+import { runOwnership } from "./shift-recover";
 import {
   mintShiftId,
   type ShiftBeadRecord,
@@ -219,6 +222,8 @@ export const SHIFT_ENDINGS = {
     "Every run failed; the bead was halted, and the operator's queue action is the way out.",
   unmoved:
     "A queue move after its run did not go through, so it may still be in running; the shift record says which.",
+  taken:
+    "Another run started it while this one ran, so the shift stopped its own run and left the bead, still running, to that one.",
   noStep: "the pull request step failed before it finished",
 } as const;
 
@@ -290,6 +295,12 @@ export interface ShiftDeps {
   /** What `runExec` is given besides the run itself: the environment, the home, adapter and command overrides. */
   exec?: Pick<ExecDeps, "env" | "home" | "adapters" | "command"> | undefined;
   appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
+  /**
+   * The ledger's `queryEvents`, through which the pause watch reads whose
+   * start of a running bead is the newest; the ledger's own by default. A
+   * test gives one that fails.
+   */
+  queryEvents?: typeof queryEvents | undefined;
   /** An in-process stop: as an operator's stop request. */
   signal?: AbortSignal | undefined;
   now?: (() => Date) | undefined;
@@ -401,6 +412,8 @@ interface Slot {
   leftWhy?: string;
   /** The queue state the operator left it in, as the shift read it. */
   leftWhere?: string;
+  /** The run whose start, newer than this one's, the watch found: the bead is that run's now. */
+  takenBy?: string;
   /** Why it went back to queued, for its end comment. */
   released?: "stopped" | "notStarted" | "failed";
   /** How its pull request step ended; "failed" when the step itself threw. */
@@ -423,10 +436,13 @@ function endWhy(slot: Slot): string {
   if (entry.outcome === "released")
     return SHIFT_ENDINGS[slot.released ?? "stopped"];
   if (entry.outcome === "halted") return SHIFT_ENDINGS.halted;
-  if (entry.outcome === "left")
+  if (entry.outcome === "left") {
+    if (slot.stopKind === "left" && slot.takenBy !== undefined)
+      return SHIFT_ENDINGS.taken;
     return slot.stopKind === "left" && slot.leftWhere !== undefined
       ? `It was moved while it ran (it is ${slot.leftWhere}) and was left as it is.`
       : SHIFT_ENDINGS.unmoved;
+  }
   return `It ended ${entry.outcome}.`;
 }
 
@@ -562,11 +578,14 @@ export async function runShift(
       appendEvent: appendFor(runId),
       lockFile: deps.lockFile,
     });
+  // With the shift records: a bead another shift's worktree still holds is
+  // not reserved again here, so no second run of it starts (`heldByShift`).
   const storeFor = (runId: string): ReservationDeps => ({
     workspace,
     ledgerPath: deps.ledgerPath,
     appendEvent: appendFor(runId),
     lockFile: deps.lockFile,
+    shiftsDir: deps.shiftsDir,
   });
 
   const slots = new Map<string, Slot>();
@@ -937,7 +956,10 @@ export async function runShift(
     });
   }
 
-  /** Read back each bead being run; one the operator moved is let go. */
+  /**
+   * Read back each bead being run; one the operator moved, or one another
+   * run started since, is let go.
+   */
   async function watch(): Promise<void> {
     for (const slot of [...slots.values()]) {
       if (slot.stopKind !== undefined) continue;
@@ -945,7 +967,29 @@ export async function runShift(
       // A read that fails says nothing about the bead: it runs on.
       if (!shown.ok) continue;
       const standing = queueStateOf(shown.value);
-      if (standing.kind === "state" && standing.state === "running") continue;
+      if (standing.kind === "state" && standing.state === "running") {
+        // Running, but perhaps by another run's start (paused, resumed and
+        // started again before this read): the ledger's newest move of it
+        // says whose. Only that evidence stops this run; a ledger that
+        // cannot be read, or that is missing this run's own start, says
+        // nothing, and it runs on.
+        const owner = runOwnership(
+          {
+            workspace,
+            ledgerPath: deps.ledgerPath,
+            queryEvents: deps.queryEvents,
+          },
+          slot.entry.beadId,
+          slot.entry.runId,
+        );
+        if (owner.owned || owner.startedBy === undefined) continue;
+        slot.stopKind = "left";
+        slot.leftWhere = `${QUEUE_LABEL_PREFIX}running`;
+        slot.takenBy = owner.startedBy;
+        slot.leftWhy = `another run (${owner.startedBy}) started the bead while this one ran: this run was stopped, and the bead left to that one`;
+        slot.controller.abort("bead started by another run");
+        continue;
+      }
       const where =
         standing.kind === "state"
           ? `${QUEUE_LABEL_PREFIX}${standing.state}`
@@ -999,6 +1043,7 @@ export async function runShift(
           runBd: deps.runBd,
           ledgerPath: deps.ledgerPath,
           host: { busy: false },
+          shiftsDir: deps.shiftsDir,
         });
         if (!read.ok) {
           readFailures++;

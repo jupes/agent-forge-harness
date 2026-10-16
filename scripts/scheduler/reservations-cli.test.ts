@@ -8,6 +8,7 @@ import { closeLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
 import type { QueuedBead } from "./eligibility";
 import { type CliDeps, cliDeps, runCli } from "./reservations-cli";
+import { writeShiftRecord } from "./shift-store";
 
 const home = mkdtempSync(join(tmpdir(), "af-res-cli-"));
 afterAll(() => {
@@ -59,7 +60,12 @@ const bead = (id: string, globs: string[]): QueuedBead => ({
 /** What the commands under test answer, by field; each test reads the ones its command has. */
 interface Answered {
   eligible: Array<{ id: string }>;
-  waiting: Array<{ id: string; why: string; waitsOn?: string }>;
+  waiting: Array<{
+    id: string;
+    why: string;
+    waitsOn?: string;
+    waitsOnShift?: string;
+  }>;
   reservation: { globs: string[] };
   reservations: Array<{ beadId: string }>;
   stale: unknown[];
@@ -137,7 +143,41 @@ describe("forge:eligible and forge:reservations", () => {
       });
   });
 
-  test("bd runs in the main checkout of a linked worktree; the ledger and lock are the harness home's", () => {
+  test("eligible reads the shift records: a queued bead whose reservation a live shift's worktree holds waits for that run", async () => {
+    const A = "agent-forge-harness-a1";
+    const shiftId = "shift-20261015-120000-0c1a";
+    const d = deps([bead(A, ["src/**"])]);
+    const shiftsDir = join(home, `shifts-${n}`);
+    writeShiftRecord(shiftsDir, {
+      shiftId,
+      pid: process.pid,
+      workspace: d.workspace,
+      startedAt: "2026-10-15T12:00:00.000Z",
+      deadline: "2026-10-15T14:00:00.000Z",
+      state: "running",
+      options: {
+        concurrency: 2,
+        forMs: 7_200_000,
+        maxBeads: 4,
+        maxUsd: 10,
+        repairs: 0,
+      },
+      spentUsd: 0,
+      unpriced: 0,
+      beads: [],
+    });
+    const tree = join(d.root, "trees", `${shiftId}-1`);
+    expect((await run(["reserve", A, tree], d)).exit).toBe(0);
+    const answer = await run(["eligible"], { ...d, shiftsDir });
+    expect(answer.out.data.eligible).toEqual([]);
+    expect(answer.out.data.waiting[0]).toMatchObject({
+      id: A,
+      waitsOnShift: shiftId,
+    });
+    expect(answer.out.data.waiting[0]?.why).toContain("has not ended");
+  });
+
+  test("bd runs in the main checkout of a linked worktree; the ledger, lock and shift records are the harness home's", () => {
     const main = join(home, "main");
     const linked = join(main, "trees", "wt");
     mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
@@ -152,6 +192,7 @@ describe("forge:eligible and forge:reservations", () => {
     expect(made.bdRoot).toBe(main);
     expect(made.ledgerPath).toBe(join(home, "forge-home", "ledger.db"));
     expect(made.lockFile).toBe(join(home, "forge-home", "queue-lock.db"));
+    expect(made.shiftsDir).toBe(join(home, "forge-home", "shifts"));
   });
 
   test("as a process, a usage error prints the envelope and exits 1, touching no tracker", () => {

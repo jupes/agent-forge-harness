@@ -33,6 +33,7 @@ import { activeReservations } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { readEligibility, staleOf } from "./eligibility";
 import { release, reservationFor, reserve } from "./reservations";
+import { SHIFTS_DIR } from "./shift-store";
 
 const USAGE =
   "eligible [--busy <reason>] | list | reserve <bead> <worktree> [--session <id>] | release <bead> <worktree>";
@@ -47,9 +48,11 @@ export interface CliDeps {
   runBd: BdRunner;
   ledgerPath: string;
   lockFile: string;
+  /** The shift records `eligible` reads (`<home>/shifts`), as the shift and the hearth do. */
+  shiftsDir?: string | undefined;
 }
 
-/** The real dependencies for `cwd`: bd in the main checkout, the harness home's ledger and lock. */
+/** The real dependencies for `cwd`: bd in the main checkout, the harness home's ledger, lock and shift records. */
 export function cliDeps(
   cwd: string,
   env: Env = process.env,
@@ -62,6 +65,7 @@ export function cliDeps(
     runBd: bdRunner(bdRoot),
     ledgerPath: ledgerPath(env),
     lockFile: join(agentForgeHome(env), QUEUE_LOCK_FILE),
+    shiftsDir: join(agentForgeHome(env), SHIFTS_DIR),
   };
 }
 
@@ -167,6 +171,7 @@ export async function runCli(
       runBd: deps.runBd,
       ledgerPath: deps.ledgerPath,
       host: reason !== undefined ? { busy: true, reason } : { busy: false },
+      shiftsDir: deps.shiftsDir,
     });
     return read.ok ? done(read.value) : failed(read.error);
   }

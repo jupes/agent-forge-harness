@@ -68,6 +68,8 @@ export interface ReadDeps {
   configHome?: string | undefined;
   /** Runs git for the worktree registry; defaults to the real one. */
   git?: GitRun | undefined;
+  /** The shift records (`<home>/shifts`): eligibility reads how a shift whose worktree holds a queued bead's reservation stands. */
+  shiftsDir?: string | undefined;
 }
 
 /**
@@ -681,7 +683,8 @@ export function workspaceReads(deps: ReadDeps) {
   /**
    * Which queued beads may start now, and why the others wait
    * (`scripts/scheduler/eligibility.ts`): the Workbench's conflict badges.
-   * Not a stream collection: it costs three bd calls, and is read when a page
+   * Not a stream collection: it costs two or three bd calls and a read of the
+   * shift records a queued bead's reservation names, and is read when a page
    * asks for it.
    */
   const readEligible = coalesced(async () => {
@@ -693,6 +696,7 @@ export function workspaceReads(deps: ReadDeps) {
       runBd: deps.runBd,
       ledgerPath: deps.ledgerPath,
       host: { busy: false },
+      shiftsDir: deps.shiftsDir,
     });
   });
   const eligibility: ReadRoute<null> = {

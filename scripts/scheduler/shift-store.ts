@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { comparableCheckout } from "../forge/runs";
 
 /** The directory under the harness home (`AGENT_FORGE_HOME`) that holds the shift records. */
 export const SHIFTS_DIR = "shifts";
@@ -31,6 +32,56 @@ const SHIFT_ID = /^shift-\d{8}-\d{6}-[0-9a-f]{4}$/;
 
 export function isShiftId(value: unknown): value is string {
   return typeof value === "string" && SHIFT_ID.test(value);
+}
+
+/** A shift's worktree directory: `<shift-id>-<n>`, nothing after the digits. */
+const SHIFT_WORKTREE = /^(shift-\d{8}-\d{6}-[0-9a-f]{4})-[0-9]+$/;
+
+/**
+ * The shift a worktree was made for, by its place and name, or null: a shift
+ * makes each of its worktrees at `<main>/trees/<shift-id>-<n>` (`runShift`).
+ * `trees` is `<main>/trees` and `worktree` the path, both already in one
+ * spelling (`comparablePath`, which this module does not import: the ledger's
+ * queries import it).
+ */
+export function shiftOfWorktree(
+  trees: string,
+  worktree: string,
+): string | null {
+  if (!worktree.startsWith(`${trees}/`)) return null;
+  return SHIFT_WORKTREE.exec(worktree.slice(trees.length + 1))?.[1] ?? null;
+}
+
+/**
+ * How a shift stands, as a reader outside its process can tell:
+ * - `live`: its record says running and its process is running (a pid the
+ *   system gave to another program after the shift ended reads as live too,
+ *   as it does for recovery);
+ * - `dead`: its record says running and its process has ended without
+ *   stopping it (`forge:shift recover` is the way back);
+ * - `stopped`: its record says it stopped, which it writes only once every
+ *   run it started has ended;
+ * - `unknown`: no record of it for this workspace can be read here (another
+ *   harness home, a record removed, or a pid that is no process id).
+ */
+export type ShiftStanding = "live" | "dead" | "stopped" | "unknown";
+
+/** How the shift `id` of `workspace` stands, from its record in `dir`. Reads only. */
+export function shiftStanding(
+  dir: string,
+  id: string,
+  workspace: string,
+): ShiftStanding {
+  const record = readShiftRecord(dir, id);
+  if (
+    record === null ||
+    typeof record.workspace !== "string" ||
+    comparableCheckout(record.workspace) !== comparableCheckout(workspace)
+  )
+    return "unknown";
+  if (record.state === "stopped") return "stopped";
+  if (!isProcessId(record.pid)) return "unknown";
+  return processAlive(record.pid) ? "live" : "dead";
 }
 
 const pad = (value: number, width = 2): string =>

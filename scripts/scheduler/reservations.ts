@@ -17,12 +17,14 @@
  * is read as the directory too.
  */
 
+import { join } from "node:path";
 import type { LedgerEventInput, Reservation } from "../../types/hearth";
 import { isBeadId } from "../hearth/tracker-write";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { activeReservations } from "../ledger/query";
 import { parseFileMap } from "./filemap";
 import { withQueueLock } from "./queue-lock";
+import { shiftOfWorktree, shiftStanding } from "./shift-store";
 import { comparablePath, isSessionId } from "./worktrees";
 
 // ── Overlap ─────────────────────────────────────────────────────────────────
@@ -224,6 +226,13 @@ export interface ReservationDeps {
   /** The queue lock's file: the same one queue moves take, so a move and a reservation never interleave. */
   lockFile: string;
   lockWaitMs?: number | undefined;
+  /**
+   * The shift records (`<home>/shifts`). Given (a shift gives its own),
+   * `reserve` refuses a bead that another shift's worktree still holds while
+   * that shift has not stopped (`heldByShift`); absent, the same bead in
+   * another worktree is never a conflict.
+   */
+  shiftsDir?: string | undefined;
 }
 
 export type ReservationFailure =
@@ -285,13 +294,48 @@ function append(deps: ReservationDeps, event: LedgerEventInput): string | null {
 }
 
 /**
+ * The reservation of `beadId` that another shift's worktree holds while that
+ * shift has not stopped (its record says running, or none of it is read
+ * here), or null. A shift releases a run's reservation only once the run has
+ * ended, so such a hold means that run may still be going. Not counted: a
+ * worktree made outside any shift, one of `worktree`'s own shift, and a
+ * stopped shift's leftover. Reads the shift records.
+ */
+export function heldByShift(
+  active: readonly Reservation[],
+  request: { beadId: string; worktree: string },
+  context: { workspace: string; shiftsDir: string },
+): { reservation: Reservation; shiftId: string; standing: string } | null {
+  const trees = comparablePath(join(context.workspace, "trees"));
+  const own = shiftOfWorktree(trees, comparablePath(request.worktree));
+  for (const reservation of active) {
+    if (reservation.beadId !== request.beadId) continue;
+    const shiftId = shiftOfWorktree(
+      trees,
+      comparablePath(reservation.worktree),
+    );
+    if (shiftId === null || shiftId === own) continue;
+    const standing = shiftStanding(
+      context.shiftsDir,
+      shiftId,
+      context.workspace,
+    );
+    if (standing !== "stopped") return { reservation, shiftId, standing };
+  }
+  return null;
+}
+
+/**
  * Reserve `globs` for a bead's work in `worktree`. Under the queue lock, the
  * ledger's active reservations are read, and the reservation is refused when
  * another bead's overlaps it; the same reservation again is already held, and
- * the same bead and worktree with other globs must be released first. The
- * worktree is stored in one spelling (`comparablePath`), so a release in any
- * other finds it. A reservation of a closed bead still counts here: free it
- * with `release` (`readEligibility` reports such reservations as stale).
+ * the same bead and worktree with other globs must be released first. Given
+ * `shiftsDir`, it is also refused while another shift's worktree still holds
+ * the same bead (`heldByShift`): its run there may not have ended, so a second
+ * run must not start (`x1gs.5.4.13`). The worktree is stored in one spelling
+ * (`comparablePath`), so a release in any other finds it. A reservation of a
+ * closed bead still counts here: free it with `release` (`readEligibility`
+ * reports such reservations as stale).
  */
 export async function reserve(
   request: {
@@ -329,6 +373,17 @@ export async function reserve(
             "conflict",
             `${request.beadId} already holds other globs in ${mine.worktree} (${mine.globs.join(", ")}); release them first`,
           );
+    if (deps.shiftsDir !== undefined) {
+      const held = heldByShift(active, request, {
+        workspace: deps.workspace,
+        shiftsDir: deps.shiftsDir,
+      });
+      if (held !== null)
+        return refused(
+          "conflict",
+          `${request.beadId} is still held in ${held.reservation.worktree}, a worktree of shift ${held.shiftId} (${held.standing}), whose run of it may not have ended; nothing was reserved`,
+        );
+    }
     for (const other of active) {
       if (other.beadId === request.beadId) continue;
       const pair = overlapOf(globs, other.globs);
