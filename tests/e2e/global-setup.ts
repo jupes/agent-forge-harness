@@ -2,7 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chromium } from "@playwright/test";
 import { loopbackProxyVariable } from "../../scripts/hearth/loopback";
+import { LAUNCH_KEY, SESSION_ROUTE } from "../../scripts/hearth/paths";
+import { launchLink } from "./launch-link";
 import { sweepFinishedRunHomes } from "./run-homes";
 import {
   BD_STAND_IN_BIN,
@@ -11,7 +14,42 @@ import {
   bunPath,
   GIT_STAND_IN_SOURCE,
   HEARTH_HOME,
+  STORAGE_STATE,
 } from "./servers";
+
+/**
+ * Open the dashboard once through its real launch flow, in a browser, and
+ * keep the session it was given for every spec (`use.storageState` in
+ * `playwright.config.ts`): the page gets the operator token only with that
+ * session (`x1gs.3.31`). The link is minted as `bun run dashboard:open`
+ * mints one, from the suite's hearth's token file; the page takes the secret
+ * out of its fragment and exchanges it, as for the operator. A run that
+ * cannot get a session stops here, before any spec runs without one.
+ */
+async function saveLaunchedSession(): Promise<void> {
+  const link = await launchLink();
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const exchanged = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === SESSION_ROUTE,
+    );
+    await page.goto(link, { waitUntil: "load" });
+    const answer = await exchanged;
+    if (answer.status() !== 200)
+      throw new Error(
+        `The suite's dashboard did not exchange its launch link (HTTP ${answer.status()}): ${await answer.text()}`,
+      );
+    if (new URL(page.url()).hash.includes(`${LAUNCH_KEY}=`))
+      throw new Error("The launch secret was left in the page's address");
+    await context.storageState({ path: STORAGE_STATE });
+  } finally {
+    await browser.close();
+  }
+}
 
 /**
  * Build the stand-in for `bd` before any test runs.
@@ -36,8 +74,11 @@ import {
  * First it removes the homes of earlier runs that are over
  * (`sweepFinishedRunHomes`): on Windows a run's teardown cannot remove its
  * own. That never stops the run.
+ *
+ * Last, once the stand-ins answer, it opens the dashboard from a launch link
+ * and saves the session that gave it (`saveLaunchedSession`).
  */
-export default function globalSetup(): void {
+export default async function globalSetup(): Promise<void> {
   // The helpers ask the hearth on 127.0.0.1 with Node's fetch, which sends
   // that to HTTP_PROXY when NODE_USE_ENV_PROXY is on: the operator token with it.
   const proxied = loopbackProxyVariable(process.env, "node");
@@ -98,4 +139,6 @@ export default function globalSetup(): void {
     throw new Error(
       `The stand-in for git was built but does not answer (exit ${listed.status}): ${listed.stdout}${listed.stderr}`,
     );
+
+  await saveLaunchedSession();
 }

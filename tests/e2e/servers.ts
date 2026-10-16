@@ -46,6 +46,13 @@ export const HEARTH_HOME = (process.env["AGENT_FORGE_E2E_HOME"] ||= join(
 ));
 
 /**
+ * The browser state every spec's page starts with: the dashboard session
+ * global setup got by opening the dashboard from a launch link
+ * (`launch-link.ts`). In the run's home, so it goes with the run.
+ */
+export const STORAGE_STATE = join(HEARTH_HOME, "storage-state.json");
+
+/**
  * Whether `path` has the shape of a home this module generates: the only kind
  * the teardown may delete. It goes by shape alone, so any other place
  * `AGENT_FORGE_E2E_HOME` points at is used and left alone — and one that has
