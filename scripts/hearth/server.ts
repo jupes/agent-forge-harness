@@ -455,8 +455,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     });
     lockTaken = claimed.kind === "acquired";
     // Written only once the lock is ours, so a losing racer never overwrites the
-    // winner's token file.
-    if (lockTaken) token = createToken(tokenFile);
+    // winner's token file. Where it cannot be made readable by this user only
+    // (`writeOwnerOnly`), nothing is written and the start fails, leaving
+    // nothing behind (below): `bun run hearth` prints why and exits 1.
+    if (lockTaken) token = mintToken(tokenFile, home);
     return { port, claimed };
   };
   let begun: { port: number; claimed: AcquireResult };
@@ -494,6 +496,18 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       await stop();
     },
   };
+}
+
+/** `createToken`, its refusal naming the home it was refused under. */
+function mintToken(tokenFile: string, home: string): string {
+  try {
+    return createToken(tokenFile);
+  } catch (error) {
+    throw new Error(
+      `The hearth will not start with home ${home}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 function argValue(argv: string[], flag: string): string | undefined {

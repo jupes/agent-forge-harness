@@ -30,7 +30,7 @@ import {
 } from "./launch";
 import { API_PREFIX } from "./paths";
 import { createSupervisor, type HearthSupervisor } from "./supervisor";
-import { readToken, writeOwnerOnly } from "./token";
+import { readToken, writeNonSecret } from "./token";
 
 /** The plugin's name, by which the dashboard's other plugins find its `api`. */
 export const HEARTH_PLUGIN_NAME = "agent-forge-hearth";
@@ -239,7 +239,9 @@ export function hearthPlugin(
             root: resolve(root),
             url,
           };
-          writeOwnerOnly(record, `${JSON.stringify(written)}\n`);
+          // No secret in it, and written under Node, where no Windows ACL
+          // can be set: not `writeOwnerOnly`, which would refuse there.
+          writeNonSecret(record, `${JSON.stringify(written)}\n`);
         } catch {
           // Without it, `dashboard:open` says no dashboard is running and takes `--url`.
         }
