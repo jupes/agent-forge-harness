@@ -4,10 +4,10 @@
  * (`x1gs.3.31`).
  *
  * The root of trust is the token file, which only the OS user who started the
- * hearth can read (mode 0600; on Windows the profile directory's ACL). The
- * token route used to serve the token to any request that passed the front
- * door and declared the hearth's own `Origin`: headers any local program can
- * set, another OS user's included. Now:
+ * hearth can read (`writeOwnerOnly`: mode 0600, on Windows an owner-only
+ * DACL). The token route used to serve the token to any request that passed
+ * the front door and declared the hearth's own `Origin`: headers any local
+ * program can set, another OS user's included. Now:
  *
  * 1. A holder of the token mints a launch secret (`POST /launch`): 256 random
  *    bits, good for `LAUNCH_TTL_MS` and for one use. Only its hash is kept, in
