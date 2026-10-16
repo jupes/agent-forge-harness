@@ -9,6 +9,11 @@
  * handlers. Every mutation goes through it: a POST needs the token, and the
  * token is honoured only while the file the lock names still holds what this
  * hearth minted.
+ *
+ * A page gets the token from the token route only with a dashboard session,
+ * which it gets once by exchanging a launch secret minted with the token
+ * (`launch.ts`): the launch, session and token routes are served here, before
+ * the table.
  */
 
 import { rmSync } from "node:fs";
@@ -34,7 +39,13 @@ import {
   hasAmbiguousPath,
   isDeclaredSameOrigin,
 } from "./gate";
-import { hearthHome, lockPath, tokenPath } from "./home";
+import { hearthHome, lockPath, sessionsPath, tokenPath } from "./home";
+import {
+  createLaunchSecrets,
+  createSessionStore,
+  launchRoutes,
+  sessionCookieName,
+} from "./launch";
 import {
   type AcquireResult,
   acquireLock,
@@ -42,7 +53,14 @@ import {
   readLock,
   releaseLock,
 } from "./lock";
-import { API_PREFIX, HEALTH_ROUTE, TOKEN_ROUTE } from "./paths";
+import {
+  API_PREFIX,
+  HEALTH_ROUTE,
+  LAUNCH_ROUTE,
+  NO_SESSION_ERROR,
+  SESSION_ROUTE,
+  TOKEN_ROUTE,
+} from "./paths";
 import { councilHttpHandler } from "./routes/council";
 import {
   type BdRunner,
@@ -97,6 +115,12 @@ export interface HearthOptions {
    * the hearth while it is still starting; a throw fails the start.
    */
   onListening?: (port: number) => void | Promise<void>;
+  /**
+   * The clock launch secrets and dashboard sessions are timed by
+   * (`launch.ts`), in milliseconds; the system's by default. A test hands in
+   * its own to see one expire.
+   */
+  launchNow?: () => number;
 }
 
 /**
@@ -249,6 +273,18 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
   const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
+  // The dashboard's session (`launch.ts`): launch secrets live in this
+  // process only; sessions in a file beside the token file, so a page keeps
+  // its session when the dashboard starts this hearth again.
+  const clock = options.launchNow ? { now: options.launchNow } : {};
+  const launch = launchRoutes({
+    launches: createLaunchSecrets(clock),
+    sessions: createSessionStore(sessionsPath(home, root), clock),
+    cookieName: sessionCookieName(home, root),
+    expectedToken,
+    appendEvent: append,
+    workspace,
+  });
   // Under the same home: a shift given it keeps its record and stop request there.
   const shiftsDir = join(home, SHIFTS_DIR);
   // A shift this hearth starts runs in its root with its home, so it takes
@@ -296,6 +332,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   );
 
   const server: Server = createServer((req, res) => {
+    const pathname = (req.url ?? "").split("?")[0] ?? "";
+    // A launch secret presented to the exchange is spent before anything
+    // else about the request is looked at, the front door included.
+    const launchLive = pathname === SESSION_ROUTE ? launch.spend(req) : false;
     const origin = frontDoorOrigin(req);
     if (origin === null) {
       reply(
@@ -306,9 +346,19 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       );
       return;
     }
-    const pathname = (req.url ?? "").split("?")[0] ?? "";
     if (hasAmbiguousPath(pathname)) {
       return reply(res, 400, null, "Unsupported path");
+    }
+    const failed = (): void => {
+      if (!res.headersSent) reply(res, 500, null, "The request failed");
+    };
+    if (pathname === LAUNCH_ROUTE) {
+      launch.mint(req, res).catch(failed);
+      return;
+    }
+    if (pathname === SESSION_ROUTE) {
+      launch.exchange(req, res, launchLive).catch(failed);
+      return;
     }
     if (pathname === TOKEN_ROUTE) {
       if (req.method !== "GET")
@@ -321,6 +371,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
           "The token is served only to a same-origin request",
         );
       }
+      // Only to a page that holds a session from a launch link: declaring the
+      // hearth's origin is something any local program can do.
+      if (!launch.hasSession(req))
+        return reply(res, 401, null, NO_SESSION_ERROR);
       // Never serve a token the check would refuse.
       const current = expectedToken();
       if (current === null) {

@@ -1,6 +1,22 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
+
+/** Mode 0600 where the file system keeps POSIX modes; a no-op elsewhere. */
+function ownerOnly(file: string): void {
+  try {
+    chmodSync(file, 0o600);
+  } catch {
+    // Best effort: filesystems without POSIX modes reject chmod.
+  }
+}
 
 /**
  * Create a fresh per-boot operator token and write it to `file`.
@@ -12,12 +28,27 @@ export function createToken(file: string): string {
   const token = randomBytes(32).toString("hex");
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${token}\n`, { mode: 0o600 });
-  try {
-    chmodSync(file, 0o600);
-  } catch {
-    // Best effort: filesystems without POSIX modes reject chmod.
-  }
+  ownerOnly(file);
   return token;
+}
+
+/**
+ * Replace `file` with `content`, readable by this OS user only, as the token
+ * file is: created with mode 0600 (on Windows the protection is the profile
+ * directory's ACL). Written to a new file beside it and renamed over it, so a
+ * reader sees the old content or the new, never part of either.
+ */
+export function writeOwnerOnly(file: string, content: string): void {
+  mkdirSync(dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(temp, content, { mode: 0o600, flag: "wx" });
+    ownerOnly(temp);
+    renameSync(temp, file);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 export function readToken(file: string): string | null {
