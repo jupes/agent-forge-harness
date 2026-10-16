@@ -526,3 +526,13 @@ export function nativeWindowsAcl(): WindowsAcl {
   native ??= nativeAcl(openApi(bunFfi()));
   return native;
 }
+
+/** Whether this runtime has `bun:ffi`: under Bun it does, under Node it does not. */
+export function hasBunFfi(): boolean {
+  try {
+    bunFfi();
+    return true;
+  } catch {
+    return false;
+  }
+}

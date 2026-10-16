@@ -89,6 +89,8 @@ export async function freshLaunchLink(options: OpenOptions): Promise<string> {
     );
   try {
     const minted = await requestLaunch({
+      home: options.home,
+      root,
       port: lock.port,
       token,
       surface: "cli",

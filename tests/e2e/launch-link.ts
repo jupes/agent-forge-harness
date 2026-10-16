@@ -46,6 +46,8 @@ export async function launchLink(
   options: { route?: string; document?: string } = {},
 ): Promise<string> {
   const { secret } = await requestLaunch({
+    home: HEARTH_HOME,
+    root: process.cwd(),
     port: HEARTH_PORT,
     token: hearthToken(),
     surface: "cli",

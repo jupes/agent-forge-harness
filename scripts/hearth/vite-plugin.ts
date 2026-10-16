@@ -209,7 +209,13 @@ export function hearthPlugin(
       const token = readToken(tokenPath(home, root));
       if (token === null)
         throw new Error("the control plane's token file could not be read");
-      const minted = await requestLaunch({ port, token, surface: "cli" });
+      const minted = await requestLaunch({
+        home,
+        root,
+        port,
+        token,
+        surface: "cli",
+      });
       return launchUrl(checked, minted.secret);
     },
   };
