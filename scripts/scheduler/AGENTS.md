@@ -215,6 +215,15 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   is stored as `comparablePath` (lowercased on Windows). A release repeats the held event's worktree
   and globs exactly, because the ledger folds on those strings. Join stored worktrees to the registry
   only through `comparablePath`.
+- Given `shiftsDir` (a shift gives its own; `forge:reservations reserve` by hand does not), `reserve`
+  also refuses, as `conflict`, a bead that a worktree of another shift still holds while that shift
+  has not stopped (`heldByShift`: its record says running, its process alive or not, or no record
+  of it is read). This is where a second run of one bead is stopped (`x1gs.5.4.13`, the shift
+  section): a shift reserves a run's worktree before the run and releases it only after, and starts
+  no run without it, so of two shifts that both claimed a bead only one can run it. Not refused: a
+  worktree made outside any shift, another worktree of the asking shift, and a stopped shift's
+  leftover (it wrote `stopped` only once every run had ended). The check reads one record and asks
+  after one pid per such hold, under the queue lock.
 - `eligibility` is pure:
   - **Order:** `planBundles` layers over `blocks`/`requires` edges, then priority, then natural
     id. Beads in progress are walked first (they are running, and claim their current map before
@@ -239,13 +248,17 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     that reservation is released, with `waitsOnShift` naming the shift, unless the shift's record
     says it stopped. A pause and a resume can both land before the shift running the bead reads it
     back (the queue section), leaving it `queued` while that run goes on; a shift releases a run's
-    reservation only once the run has ended, so the bead waits exactly as long as the run can. The
-    `why` follows the shift's standing (`shiftStanding`): live, its earlier run "has not ended";
-    dead (its process ended without stopping it), `forge:shift recover <id>` frees it; no record
-    read (another harness home, or a reader given no `shiftsDir`), how the reservation is freed. The
-    check comes after the epic, host and blocked checks and before every other; what the bead holds
-    has claimed already, so nothing jumps it, and every other bead is answered as it would be
-    without the shifts (`eligibility-invariants.test.ts` checks both).
+    reservation only once the run has ended, so the bead waits exactly as long as the run can. This
+    is the operator's view, and it keeps shifts from trying a bead `reserve` would refuse them
+    (the guard itself is `reserve`, above). The `why` follows the shift's standing
+    (`shiftStanding`): live, its earlier run "has not ended", and how to free the reservation by
+    hand (`forge:reservations release <bead> <worktree>`) once the operator knows that shift is
+    gone, since a pid the system gave to another program reads as live (and `forge:shift recover`
+    refuses it as alive); dead (its process ended without stopping it), `forge:shift recover <id>`
+    frees it; no record read (another harness home, or a reader given no `shiftsDir`), how the
+    reservation is freed. The check comes after the epic, host and blocked checks and before every
+    other; what the bead holds has claimed already, so nothing jumps it, and every other bead is
+    answered as it would be without the shifts (`eligibility-invariants.test.ts` checks both).
   - A shift's own read is not exempt: its own bead in that state waits too, which changes nothing
     it does, since a shift never starts a bead twice (`setAside`), and keeps one answer for every
     reader.
@@ -261,8 +274,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
 - `readEligibility` and the CLI run bd in the main checkout (`localStateRoot`). A bd failure is an
   error, never an empty queue. `bd show` answers for partial ids, so only rows with exactly the asked
   id count. Exit 1 with "no issues found" means all the asked ids are gone. With `shiftsDir`
-  (`<home>/shifts`; the shift and the hearth pass it, `forge:eligible` does not yet) it reads one
-  record, and asks after one pid, per shift whose worktree holds a queued bead's reservation.
+  (`<home>/shifts`; the shift, the hearth and `forge:eligible` pass it) it reads one record, and
+  asks after one pid, per shift whose worktree holds a queued bead's reservation.
 - **Not covered:**
   - A reservation outlives a shift that dies holding it until `forge:shift recover` frees it (the
     shift section). `forge:reservations list` shows it and `release` frees one by hand.
@@ -382,17 +395,33 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   operator put it (`left`). Resuming it puts it in `queued` (the queue section): this shift has set
   it aside and does not start it again; a later shift does. A resume made before the read-back
   noticed the pause leaves the bead `queued` while its run still runs, until the next read-back
-  stops it. In that window no other shift starts it (`x1gs.5.4.13`): its reservation in this
-  shift's worktree makes it wait in eligibility (the eligibility section) until this run has
-  ended and released it.
-- A bead read back as `running` is also checked against the ledger (`runOwnership`, recovery's
-  rule): when its newest recorded queue move is a start carrying another run's id, another run has
-  it (a shift that acted on an eligibility read older than this shift's claim, or one let in by a
-  reservation released by hand), and this shift stops its own run as `left`
-  without touching the bead (end comment `SHIFT_ENDINGS.taken`). Only that evidence stops a run: a
-  ledger that cannot be read, a newest move of this run's own, and a start that names no run (an
-  operator's, by hand) let it run on, so a start event the ledger failed to store never stops a
-  healthy run. One ledger query per running bead per `pollMs`.
+  stops it.
+- No second run of one bead starts while a run of it goes on (`x1gs.5.4.13`). The guard is
+  `reserve` (the reservations section): a shift reserves its worktree before a run and releases it
+  only after, and its `reserve` of a bead another shift's worktree still holds is refused. A shift
+  whose reserve is refused gives the bead back to `queued` (`release`, as for any step that fails),
+  sets it aside and runs nothing, so two runs never overlap. It holds whichever shift claims
+  first, and whatever eligibility read a shift acted on:
+  - paused and resumed between a shift's `start` and its `reserve`, the bead is started and
+    reserved by a second shift: the first one's reserve is refused, and its give-back moves the
+    bead out of the second one's `running`;
+  - a second shift acting on an eligibility read older than the first one's claim starts it after
+    a pause and resume: the second one's reserve is refused;
+  - the same when the ledger did not store that second start.
+  The shift whose run went on reads the bead back out of `running` on its next tick and lets its
+  run go as `left`: the restart the operator's pause and resume asked for. The bead ends `queued`
+  and is eligible again once that run has released its reservation. Meanwhile eligibility lists it
+  as waiting on that shift (`waitsOnShift`), which is what the operator sees. Releasing a live
+  shift's reservation by hand (`forge:reservations release`) takes this guard away while its run
+  goes on: do it only for a shift that is gone.
+- Defence in depth: a bead read back as `running` is also checked against the ledger
+  (`runOwnership`, recovery's rule). When its newest recorded queue move is a start carrying
+  another run's id, another run has it (one let in by a reservation released by hand, say), and
+  this shift stops its own run as `left` without touching the bead (end comment
+  `SHIFT_ENDINGS.taken`). Only that evidence stops a run: a ledger that cannot be read
+  (`ShiftDeps.queryEvents` lets a test make it fail), a newest move of this run's own, and a start
+  that names no run (an operator's, by hand) let it run on, so a start event the ledger failed to
+  store never stops a healthy run. One ledger query per running bead per `pollMs`.
 - Each bead's events carry its run id (`<bead>-<shift-id>`, else `<shift-id>-<n>`): the moves and
   reservations through an `appendEvent` that adds it, the session through `--run`. `forge:audit
   --run <id>` shows one bead from claim to release, and `forge:audit --shift <id>` shows the whole
@@ -423,7 +452,9 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   `POST /shifts/:id/recover`): the way back for a shift whose process ended without stopping it
   (Ctrl-C, a crash, a kill). Its runs died with it (the supervisor's exit hook, the tree guard),
   but its beads stay `running`, their reservations held, its record `running` and no
-  `shift.stopped` is written.
+  `shift.stopped` is written. Until it is recovered, those reservations also refuse every other
+  shift's `reserve` of their beads (`heldByShift`), even of a bead the operator paused and resumed:
+  recovering (or `forge:reservations release` by hand) is what lets another shift run them.
   - Refused, with nothing written by the recovery (no bd call, no event, no file; the hearth's
     audit row is the runner's): an id that is not a shift's; no
     record, or the record of another workspace (`not-found`: bd runs on this workspace's tracker);
@@ -435,8 +466,9 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     other (a fraction, `2**32 + pid`), which `processAlive` reads as dead, and 0 and -1 name a
     group, not a process. `readShiftRecord` and `GET /shifts` are unchanged. A pid the system
     gave to another program after the shift ended reads as alive too: such a shift is not recovered
-    until that process ends, and the refusal says so. Nothing guesses whether a live pid is the
-    shift's.
+    until that process ends, and the refusal says so, and says the reservations it holds can be
+    freed by hand meanwhile (`forge:reservations list`, then `release`). Nothing guesses whether a
+    live pid is the shift's.
   - The beads it may still hold: every entry of the record with outcome `running`, and every bead
     whose `bead.transitioned` events carry one of this shift's run ids (`forge:audit --shift`'s
     rule) with no entry or a `set-aside` one. The second covers a bead claimed between two saves of

@@ -683,7 +683,8 @@ export function workspaceReads(deps: ReadDeps) {
   /**
    * Which queued beads may start now, and why the others wait
    * (`scripts/scheduler/eligibility.ts`): the Workbench's conflict badges.
-   * Not a stream collection: it costs three bd calls, and is read when a page
+   * Not a stream collection: it costs two or three bd calls and a read of the
+   * shift records a queued bead's reservation names, and is read when a page
    * asks for it.
    */
   const readEligible = coalesced(async () => {
