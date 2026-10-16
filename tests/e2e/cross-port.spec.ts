@@ -1,9 +1,13 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, type Page, type Response, test } from "@playwright/test";
-import { TOKEN_ROUTE } from "../../scripts/hearth/paths";
+import {
+  SESSION_KEY_HEADER,
+  SESSION_KEY_STORAGE,
+  TOKEN_ROUTE,
+} from "../../scripts/hearth/paths";
 import { openSettled } from "./fixtures";
-import { hearthToken } from "./launch-link";
+import { hearthToken, tokenFromPage } from "./launch-link";
 import { DASHBOARD_URL } from "./servers";
 
 /**
@@ -12,27 +16,35 @@ import { DASHBOARD_URL } from "./servers";
  *
  * A browser keeps a cookie per host, not per port, and a page on another
  * port of 127.0.0.1 is same-site: SameSite=Strict still sends the session
- * cookie with that page's requests to the dashboard. So the cookie alone does
- * not stop such a page. These tests show what does: the hearth refuses each
- * request a page of another origin can make to the token route (403, the
- * front door: an `Origin` of another port, or `Sec-Fetch-Site: same-site`),
- * and the browser lets the page read nothing of an answer either way.
+ * cookie with that page's requests to the dashboard, and with its requests to
+ * its own server's `/__agent-forge/…` paths, so that server receives the
+ * cookie's value. So the cookie alone stops nothing. What does: the session's
+ * other half, its key, is in the dashboard origin's `localStorage`, which a
+ * page of another port cannot read, and the token route needs both; the
+ * hearth refuses each request a page of another origin can make to the token
+ * route (403, the front door: an `Origin` of another port, or
+ * `Sec-Fetch-Site: same-site`); and the browser lets the page read nothing of
+ * an answer either way.
  *
  * The dashboard's dev server answers no CORS at all (`server.cors: false` in
  * `vite.dashboard.config.ts`): Vite's default reflected a loopback `Origin`,
  * which let such a page read what the dev server serves without any cookie.
  *
  * The other page is served by a small server this spec starts on a port the
- * system picks. The runner runs under Node, so it is `node:http`.
+ * system picks, which records what it receives. The runner runs under Node,
+ * so it is `node:http`.
  */
 
 const TOKEN_URL = `${DASHBOARD_URL}${TOKEN_ROUTE}`;
 
 let other: Server | null = null;
 let otherUrl = "";
+/** What the other port's server received: each request's path and `Cookie` header. */
+const received: Array<{ url: string; cookie: string }> = [];
 
 test.beforeAll(async () => {
-  const server = createServer((_req, res) => {
+  const server = createServer((req, res) => {
+    received.push({ url: req.url ?? "", cookie: req.headers.cookie ?? "" });
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(
       "<!doctype html><title>Another program</title><p>A page on another port.</p>",
@@ -134,12 +146,64 @@ test("the session is held: a page of the dashboard's own origin is served the to
   page,
 }) => {
   await openSettled(page, "/index.html#/workbench");
-  const served = await page.evaluate(async (url) => {
-    const response = await fetch(url);
-    return { status: response.status, body: await response.text() };
-  }, TOKEN_ROUTE);
+  const served = await tokenFromPage(page);
   expect(served.status).toBe(200);
   expect(served.body).toContain(hearthToken());
+});
+
+test("x1gs.3.31: the session cookie reaches a server on another loopback port, which a page of its own makes ask its own /__agent-forge path; that stolen cookie, sent to the real dashboard with a forged same Origin, gets no token: the key stays in the dashboard origin's storage", async ({
+  page,
+  context,
+}) => {
+  const token = hearthToken();
+  received.length = 0;
+  await openSettled(page, otherUrl);
+  const asked = await page.evaluate(
+    async () => (await fetch("/__agent-forge/x")).status,
+  );
+  expect(asked).toBe(200);
+  const stolen =
+    received.find((request) => request.url === "/__agent-forge/x")?.cookie ??
+    "";
+  expect(stolen).toMatch(/^agent_forge_session_[0-9a-f]{16}=[0-9a-f]{64}$/);
+  // The other origin's storage holds no key of the dashboard's.
+  expect(
+    await page.evaluate(
+      (storage) => window.localStorage.getItem(storage),
+      SESSION_KEY_STORAGE,
+    ),
+  ).toBeNull();
+
+  // A raw client, as another program would send it: the hearth's Origin, forged, and the stolen cookie.
+  const thief = await fetch(TOKEN_URL, {
+    headers: { Origin: DASHBOARD_URL, Cookie: stolen },
+  });
+  const thiefBody = await thief.text();
+  expect({
+    status: thief.status,
+    token: thiefBody.includes(token),
+  }).toEqual({ status: 401, token: false });
+
+  // The control: the same cookie with the key the dashboard's own page holds is served, so the key is what the thief lacks.
+  const dashboard = await context.newPage();
+  await openSettled(dashboard, "/index.html#/workbench");
+  const key =
+    (await dashboard.evaluate(
+      (storage) => window.localStorage.getItem(storage),
+      SESSION_KEY_STORAGE,
+    )) ?? "";
+  expect(key).toMatch(/^[0-9a-f]{64}$/);
+  const withKey = await fetch(TOKEN_URL, {
+    headers: {
+      Origin: DASHBOARD_URL,
+      Cookie: stolen,
+      [SESSION_KEY_HEADER]: key,
+    },
+  });
+  expect({
+    status: withKey.status,
+    token: (await withKey.text()).includes(token),
+  }).toEqual({ status: 200, token: true });
 });
 
 test("a page on another loopback port that fetches the token route with credentials (cors) is refused by the hearth, 403, though the browser sent the session, and reads nothing", async ({

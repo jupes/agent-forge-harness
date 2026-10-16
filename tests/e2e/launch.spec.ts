@@ -2,12 +2,18 @@ import { expect, type Page, test } from "@playwright/test";
 import {
   LAUNCH_KEY,
   NO_SESSION_ERROR,
+  SESSION_KEY_STORAGE,
   SESSION_ROUTE,
-  TOKEN_ROUTE,
 } from "../../scripts/hearth/paths";
 import { openSettled } from "./fixtures";
-import { hearthToken, launchLink } from "./launch-link";
-import { createButton, isList, requireStandIn, standInCalls } from "./stand-in";
+import { hearthToken, launchLink, tokenFromPage } from "./launch-link";
+import {
+  createButton,
+  createFromBuilder,
+  isList,
+  requireStandIn,
+  standInCalls,
+} from "./stand-in";
 
 /**
  * The dashboard's session (`x1gs.3.31`), in a browser that has none: these
@@ -17,12 +23,12 @@ import { createButton, isList, requireStandIn, standInCalls } from "./stand-in";
  */
 test.use({ storageState: { cookies: [], origins: [] } });
 
-/** A token request from the page, same-origin, as the page's own client makes it. */
-function tokenFromPage(page: Page): Promise<{ status: number; body: string }> {
-  return page.evaluate(async (url) => {
-    const response = await fetch(url);
-    return { status: response.status, body: await response.text() };
-  }, TOKEN_ROUTE);
+/** The session key the page's origin holds now, or null. */
+function heldKey(page: Page): Promise<string | null> {
+  return page.evaluate(
+    (storage) => window.localStorage.getItem(storage),
+    SESSION_KEY_STORAGE,
+  );
 }
 
 /** The page's next exchange of a launch secret. */
@@ -59,6 +65,10 @@ test("a bare URL gets no operator token (401, how to relaunch); the launch link,
   expect((await exchanged).status()).toBe(200);
   expect(new URL(page.url()).hash).toBe("#/timeline?bead=e2e-launch");
   expect(page.url()).not.toContain(secret);
+  // The session's key: in the origin's storage, never in the address.
+  const key = (await heldKey(page)) ?? "";
+  expect(key).toMatch(/^[0-9a-f]{64}$/);
+  expect(page.url()).not.toContain(key);
 
   const cookies = await context.cookies();
   expect(
@@ -69,7 +79,10 @@ test("a bare URL gets no operator token (401, how to relaunch); the launch link,
       sameSite: cookie.sameSite,
       secure: cookie.secure,
       browserSession: cookie.expires === -1,
-      value: cookie.value === secret || cookie.value === token,
+      value:
+        cookie.value === secret ||
+        cookie.value === token ||
+        cookie.value === key,
     })),
   ).toEqual([
     {
@@ -159,4 +172,34 @@ test("the Council page opened from a launch link takes the secret out of its add
   expect(
     (JSON.parse(served.body) as { data: { token: string } }).data.token,
   ).toBe(hearthToken());
+});
+
+test("two tabs, the second opened with a fresh launch link, which replaces the session's cookie and key: both tabs' own clients keep getting the token, the first's included", async ({
+  page,
+  context,
+}) => {
+  const first = nextExchange(page);
+  await openSettled(page, await launchLink({ route: "/bead-builder" }));
+  expect((await first).status()).toBe(200);
+  const firstKey = await heldKey(page);
+  expect(firstKey).toMatch(/^[0-9a-f]{64}$/);
+  await requireStandIn(page);
+
+  const tab = await context.newPage();
+  const second = nextExchange(tab);
+  await openSettled(tab, await launchLink({ route: "/bead-builder" }));
+  expect((await second).status()).toBe(200);
+  const secondKey = await heldKey(tab);
+  expect(secondKey).toMatch(/^[0-9a-f]{64}$/);
+  expect(secondKey).not.toBe(firstKey);
+  // One origin, one storage: the first tab now holds the second launch's key.
+  expect(await heldKey(page)).toBe(secondKey);
+
+  // The first tab has not asked for the token yet: its client asks now, with
+  // the second launch's cookie and the key it reads at that moment.
+  const made = [
+    await createFromBuilder(page, "Two tabs: the first"),
+    await createFromBuilder(tab, "Two tabs: the second"),
+  ];
+  expect(made.map((id) => /^e2e-\d+$/.test(id))).toEqual([true, true]);
 });

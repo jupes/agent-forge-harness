@@ -7,6 +7,7 @@ import {
   TOKEN_ROUTE,
 } from "../../scripts/hearth/paths";
 import { BEADS, openSettled, reloadSettled, stubSnapshot } from "./fixtures";
+import { pageToken } from "./launch-link";
 import { BD_STAND_IN_STATE } from "./servers";
 import {
   createButton,
@@ -194,12 +195,7 @@ test("create, claim and comment from the bead builder go through the control pla
   await requireStandIn(page);
   const callsBefore = standInCalls().length;
   const lastEvent = (await recorded(page)).at(-1)?.id ?? 0;
-  const token = await page.evaluate(async (url) => {
-    const body = (await (await fetch(url)).json()) as {
-      data: { token: string };
-    };
-    return body.data.token;
-  }, TOKEN_ROUTE);
+  const token = await pageToken(page);
 
   // A parent: an epic, so the type that reaches bd is not the default.
   await page.selectOption("#bb-type", "epic");

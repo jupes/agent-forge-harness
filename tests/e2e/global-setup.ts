@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "@playwright/test";
 import { loopbackProxyVariable } from "../../scripts/hearth/loopback";
-import { LAUNCH_KEY, SESSION_ROUTE } from "../../scripts/hearth/paths";
+import {
+  LAUNCH_KEY,
+  SESSION_KEY_STORAGE,
+  SESSION_ROUTE,
+} from "../../scripts/hearth/paths";
 import { launchLink } from "./launch-link";
 import { sweepFinishedRunHomes } from "./run-homes";
 import {
@@ -45,6 +49,13 @@ async function saveLaunchedSession(): Promise<void> {
       );
     if (new URL(page.url()).hash.includes(`${LAUNCH_KEY}=`))
       throw new Error("The launch secret was left in the page's address");
+    // The session's other half, the key, in the origin's storage: the saved
+    // state carries it with the cookie (Playwright saves localStorage per origin).
+    await page.waitForFunction(
+      (storage) => window.localStorage.getItem(storage) !== null,
+      SESSION_KEY_STORAGE,
+      { timeout: 10_000 },
+    );
     await context.storageState({ path: STORAGE_STATE });
   } finally {
     await browser.close();
