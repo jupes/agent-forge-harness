@@ -30,6 +30,7 @@ import type { OperatorEnvelope, StreamSnapshot } from "../../types/hearth";
 import { HEARTH_PLUGIN } from "../dashboard/dashboard-url";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
+import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { dashboardRecordPath, tokenPath } from "./home";
 import { readDashboardRecord, sessionCookieName } from "./launch";
@@ -716,15 +717,45 @@ test(
   "the hearth plugin's launchLink is the base it is given with a fresh secret in the fragment, which the session route exchanges once",
   async () => {
     const { url, plugin } = await fixture();
-    const link = await plugin.launchLink("http://localhost:4321/");
-    const match = /^http:\/\/localhost:4321\/#launch=([0-9a-f]{64})$/.exec(
+    const link = await plugin.launchLink("http://127.0.0.1:4321/");
+    const match = /^http:\/\/127\.0\.0\.1:4321\/#launch=([0-9a-f]{64})$/.exec(
       link,
     );
     expect(match).not.toBeNull();
     const secret = match?.[1] ?? "";
-    expect(await plugin.launchLink("http://localhost:4321/")).not.toBe(link);
+    expect(await plugin.launchLink("http://127.0.0.1:4321/")).not.toBe(link);
     expect((await exchangeLaunch(url, secret)).status).toBe(200);
     expect((await exchangeLaunch(url, secret)).status).toBe(403);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test(
+  "x1gs.3.31: the hearth plugin's launchLink refuses a base that names localhost, or an address off this machine, before any secret is minted",
+  async () => {
+    const { plugin, ledger, root } = await fixture();
+    const minted = (): number =>
+      queryEvents(
+        {
+          workspace: resolveCheckout(root).workspace,
+          kinds: ["operator.action"],
+        },
+        { path: ledger },
+      ).length;
+    const before = minted();
+    for (const base of [
+      "http://localhost:4321/",
+      "http://192.168.1.20:4321/",
+    ]) {
+      const refused = await plugin
+        .launchLink(base)
+        .catch((error: unknown) => error);
+      expect({ base, refused: String(refused) }).toEqual({
+        base,
+        refused: expect.stringContaining("never a name that resolves"),
+      });
+    }
+    expect(minted()).toBe(before);
   },
   FIXTURE_TIMEOUT_MS,
 );
@@ -735,12 +766,12 @@ test(
     const { plugin, home, root } = await fixture();
     rmSync(tokenPath(home, root), { force: true });
     const missing = await plugin
-      .launchLink("http://localhost:4321/")
+      .launchLink("http://127.0.0.1:4321/")
       .catch((error: unknown) => error);
     expect(missing).toBeInstanceOf(Error);
     expect(String(missing)).toContain("token file could not be read");
     const early = await hearthPlugin(root, { home })
-      .api.launchLink("http://localhost:4321/")
+      .api.launchLink("http://127.0.0.1:4321/")
       .catch((error: unknown) => error);
     expect(String(early)).toContain("has not started its control plane");
   },
@@ -748,14 +779,14 @@ test(
 );
 
 test(
-  "a listening dashboard records where it listens for dashboard:open (localhost and its port, its pid and root) and removes the record when it closes",
+  "a listening dashboard records where it listens for dashboard:open (the address it bound, 127.0.0.1, and its port, its pid and root) and removes the record when it closes",
   async () => {
     const { vite, url, home, root } = await fixture();
     const record = dashboardRecordPath(home, root);
     expect(readDashboardRecord(record)).toEqual({
       pid: process.pid,
       root: resolve(root),
-      url: `http://localhost:${new URL(url).port}/`,
+      url: `http://127.0.0.1:${new URL(url).port}/`,
     });
     await vite.close();
     expect(existsSync(record)).toBe(false);

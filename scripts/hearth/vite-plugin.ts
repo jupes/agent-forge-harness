@@ -23,6 +23,7 @@ import { isLoopbackAddress } from "./gate";
 import { dashboardRecordPath, hearthHome, tokenPath } from "./home";
 import {
   type DashboardRecord,
+  launchBase,
   launchUrl,
   readDashboardRecord,
   requestLaunch,
@@ -198,6 +199,9 @@ export function hearthPlugin(
   let attached: HearthSupervisor | null = null;
   const api: HearthPluginApi = {
     async launchLink(base) {
+      // Before anything is minted: a link that names `localhost`, or an
+      // address off this machine, is never printed (`launchBase`).
+      const checked = launchBase(base);
       if (attached === null)
         throw new Error("the dashboard has not started its control plane yet");
       // Asked as a proxied request asks, so a hearth started again is found.
@@ -206,7 +210,7 @@ export function hearthPlugin(
       if (token === null)
         throw new Error("the control plane's token file could not be read");
       const minted = await requestLaunch({ port, token, surface: "cli" });
-      return launchUrl(base, minted.secret);
+      return launchUrl(checked, minted.secret);
     },
   };
   return {

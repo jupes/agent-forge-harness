@@ -17,13 +17,20 @@ const at = (address: string, port: number, family = "IPv4"): AddressInfo => ({
 });
 
 describe("the dashboard's URL, from the address the dev server bound", () => {
-  test("a loopback or wildcard address is printed as localhost, with the bound port", () => {
-    expect(dashboardUrl(at("127.0.0.1", 8787))).toBe("http://localhost:8787/");
-    expect(dashboardUrl(at("0.0.0.0", 8788))).toBe("http://localhost:8788/");
-    expect(dashboardUrl(at("::1", 8789, "IPv6"))).toBe(
-      "http://localhost:8789/",
-    );
-    expect(dashboardUrl(at("::", 8790, "IPv6"))).toBe("http://localhost:8790/");
+  test("x1gs.3.31: a loopback address is printed as that address, a wildcard as its family's loopback address, never localhost, with the bound port", () => {
+    const urls = [
+      dashboardUrl(at("127.0.0.1", 8787)),
+      dashboardUrl(at("0.0.0.0", 8788)),
+      dashboardUrl(at("::1", 8789, "IPv6")),
+      dashboardUrl(at("::", 8790, "IPv6")),
+    ];
+    expect(urls).toEqual([
+      "http://127.0.0.1:8787/",
+      "http://127.0.0.1:8788/",
+      "http://[::1]:8789/",
+      "http://[::1]:8790/",
+    ]);
+    for (const url of urls) expect(url).not.toContain("localhost");
   });
 
   test("any other address is printed as it is, an IPv6 one in brackets so it stays a URL", () => {
@@ -116,7 +123,7 @@ describe("the dev server says where the dashboard is once it listens", () => {
       const { port } = http.address() as AddressInfo;
       expect(port).toBeGreaterThan(0);
       const ready = lines.filter((line) => line.includes("Dashboard ready"));
-      expect(ready).toEqual([`  Dashboard ready: http://localhost:${port}/`]);
+      expect(ready).toEqual([`  Dashboard ready: http://127.0.0.1:${port}/`]);
     } finally {
       await new Promise<void>((done) => http.close(() => done()));
     }
@@ -142,9 +149,9 @@ describe("the dev server says where the dashboard is once it listens", () => {
     );
     await listening(http, async (port) => {
       await lineCount(lines, 2);
-      expect(bases).toEqual([`http://localhost:${port}/`]);
+      expect(bases).toEqual([`http://127.0.0.1:${port}/`]);
       expect(lines).toEqual([
-        `  Dashboard ready: http://localhost:${port}/#launch=${"c".repeat(64)}`,
+        `  Dashboard ready: http://127.0.0.1:${port}/#launch=${"c".repeat(64)}`,
         LAUNCH_NOTE,
       ]);
     });
@@ -166,7 +173,7 @@ describe("the dev server says where the dashboard is once it listens", () => {
     await listening(http, async (port) => {
       await lineCount(lines, 2);
       expect(lines).toEqual([
-        `  Dashboard ready: http://localhost:${port}/`,
+        `  Dashboard ready: http://127.0.0.1:${port}/`,
         "warn:  No launch link (the control plane's token file could not be read): the page reads, but sends no operator action until it is opened from one. For one: bun run dashboard:open",
       ]);
     });
@@ -176,10 +183,10 @@ describe("the dev server says where the dashboard is once it listens", () => {
 describe("announceDashboard", () => {
   test("without the hearth plugin, one line with the bare URL", async () => {
     const lines: string[] = [];
-    await announceDashboard("http://localhost:1/", null, {
+    await announceDashboard("http://127.0.0.1:1/", null, {
       info: (message) => lines.push(message),
       warn: (message) => lines.push(`warn:${message}`),
     });
-    expect(lines).toEqual(["  Dashboard ready: http://localhost:1/"]);
+    expect(lines).toEqual(["  Dashboard ready: http://127.0.0.1:1/"]);
   });
 });

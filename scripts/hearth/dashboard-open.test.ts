@@ -30,7 +30,7 @@ function record(
   const written: DashboardRecord = {
     pid: process.pid,
     root: resolve(h.root),
-    url: "http://localhost:4321/",
+    url: "http://127.0.0.1:4321/",
     ...fields,
   };
   writeOwnerOnly(
@@ -58,7 +58,7 @@ async function run(
   return { code, out, err };
 }
 
-const LINK = /^http:\/\/localhost:4321\/#launch=([0-9a-f]{64})\n$/;
+const LINK = /^http:\/\/127\.0\.0\.1:4321\/#launch=([0-9a-f]{64})\n$/;
 
 describe("bun run dashboard:open", () => {
   test("prints a fresh launch link on the address the running dashboard recorded, and nothing else; its secret is exchanged once, and each run mints another", async () => {
@@ -91,7 +91,7 @@ describe("bun run dashboard:open", () => {
     }
   });
 
-  test("--url names the base on this machine; an address off this machine, or not http, is refused", async () => {
+  test("x1gs.3.31: --url names the base, 127.0.0.1 or [::1]; localhost, an address off this machine, or not http, is refused", async () => {
     const h = await hearth();
     const named = await run(
       ["--root", h.root, "--url", "http://127.0.0.1:9999/somewhere"],
@@ -101,10 +101,16 @@ describe("bun run dashboard:open", () => {
     expect(named.out).toMatch(
       /^http:\/\/127\.0\.0\.1:9999\/#launch=[0-9a-f]{64}\n$/,
     );
+    const six = await run(
+      ["--root", h.root, "--url", "http://[::1]:9999/"],
+      h.home,
+    );
+    expect(six.out).toMatch(/^http:\/\/\[::1\]:9999\/#launch=[0-9a-f]{64}\n$/);
     for (const url of [
+      "http://localhost:4321/",
       "http://evil.example:4321/",
-      "https://localhost:4321/",
-      "localhost:4321",
+      "https://127.0.0.1:4321/",
+      "127.0.0.1:4321",
     ]) {
       const refused = await run(["--root", h.root, "--url", url], h.home);
       expect({ url, code: refused.code, out: refused.out }).toEqual({
@@ -112,7 +118,20 @@ describe("bun run dashboard:open", () => {
         code: 1,
         out: "",
       });
+      expect(refused.err).toStartWith("--url: ");
+      expect(refused.err).toContain("A launch link carries a secret");
     }
+  });
+
+  test("x1gs.3.31: a dashboard record that names localhost (an older dashboard's) gets no link, and says to restart the dashboard", async () => {
+    const h = await hearth();
+    record(h, { url: "http://localhost:4321/" });
+    const answer = await run(["--root", h.root], h.home);
+    expect({ code: answer.code, out: answer.out }).toEqual({
+      code: 1,
+      out: "",
+    });
+    expect(answer.err).toContain("restart it with bun run dashboard");
   });
 
   test("with no control plane answering for the root it says so and exits 1", async () => {

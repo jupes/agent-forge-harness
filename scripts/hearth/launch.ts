@@ -552,9 +552,36 @@ export async function requestLaunch(
   );
 }
 
-/** The dashboard at `base`, opened with `secret` in its fragment. */
+/**
+ * The hosts a launch link may name: the loopback addresses themselves. Never
+ * a name that resolves, such as `localhost`: a browser may resolve it to an
+ * address the dashboard does not listen on (`::1` when it bound `127.0.0.1`),
+ * where any program, another OS user's included, can listen, be handed the
+ * link and read the secret from its fragment (`x1gs.3.31`).
+ */
+const LAUNCH_HOSTS = new Set(["127.0.0.1", "[::1]"]);
+
+/**
+ * `base` as the root a launch link is built on (`http://127.0.0.1:<port>/` or
+ * `http://[::1]:<port>/`); throws, saying why, for any other host or scheme.
+ */
+export function launchBase(base: string): string {
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    throw new Error(`${base} is not a URL`);
+  }
+  if (url.protocol !== "http:" || !LAUNCH_HOSTS.has(url.hostname))
+    throw new Error(
+      `a launch link names the address the dashboard listens on, http://127.0.0.1 or http://[::1], never a name that resolves: not ${url.protocol}//${url.host}`,
+    );
+  return `${url.origin}/`;
+}
+
+/** The dashboard at `base` (a `launchBase`), opened with `secret` in its fragment. */
 export function launchUrl(base: string, secret: string): string {
-  const url = new URL(base);
+  const url = new URL(launchBase(base));
   url.hash = `${LAUNCH_KEY}=${secret}`;
   return url.toString();
 }

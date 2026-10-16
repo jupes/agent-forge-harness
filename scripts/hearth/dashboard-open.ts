@@ -10,23 +10,26 @@
  * read, and asks the hearth over its own loopback socket.
  *
  * Where the dashboard listens comes from the record the running dashboard
- * wrote (`dashboardRecordPath`), so the link names the host the dashboard
- * printed, the host the session cookie will be set for; `--url` names another
- * base on this machine. `--root` is the checkout (the working directory by
- * default). The link is printed on stdout and nothing else is; why there is
- * none goes to stderr, with exit code 1.
+ * wrote (`dashboardRecordPath`): the address it bound, which the link names
+ * and the session cookie is then set for. `--url` names another base, which
+ * must be `http://127.0.0.1:<port>` or `http://[::1]:<port>`, never a name
+ * that resolves (`launchBase` says why). `--root` is the checkout (the working
+ * directory by default). The link is printed on stdout and nothing else is;
+ * why there is none goes to stderr, with exit code 1.
  */
 
 import { resolve } from "node:path";
 import { isMain } from "../is-main";
 import { dashboardRecordPath, hearthHome, lockPath, tokenPath } from "./home";
-import { launchUrl, readDashboardRecord, requestLaunch } from "./launch";
+import {
+  launchBase,
+  launchUrl,
+  readDashboardRecord,
+  requestLaunch,
+} from "./launch";
 import { isPidAlive, readLock } from "./lock";
 import { type Exchange, healthProblem, loopbackExchange } from "./loopback";
 import { readToken } from "./token";
-
-/** Host names that are this machine: a link is printed only for one of them. */
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export interface OpenOptions {
   root: string;
@@ -41,19 +44,15 @@ export interface OpenOptions {
 /** Why no link can be printed, in words for the operator. */
 export class NoLaunchLink extends Error {}
 
-/** The base a link is built on: an http URL on this machine, path `/`. */
-function loopbackBase(url: string): string {
-  let parsed: URL;
+/** The base a link is built on (`launchBase`), or why not, for the operator. */
+function checkedBase(url: string, from: string): string {
   try {
-    parsed = new URL(url);
-  } catch {
-    throw new NoLaunchLink(`--url ${url} is not a URL`);
-  }
-  if (parsed.protocol !== "http:" || !LOOPBACK_HOSTS.has(parsed.hostname))
+    return launchBase(url);
+  } catch (error) {
     throw new NoLaunchLink(
-      `--url must be an http URL on this machine (localhost, 127.0.0.1 or [::1]): a launch link carries a secret`,
+      `${from}: ${error instanceof Error ? error.message : String(error)}. A launch link carries a secret.`,
     );
-  return `${parsed.origin}/`;
+  }
 }
 
 /** A fresh launch link for the dashboard of `options.root`. */
@@ -61,14 +60,17 @@ export async function freshLaunchLink(options: OpenOptions): Promise<string> {
   const root = resolve(options.root);
   const alive = options.isAlive ?? isPidAlive;
   let base: string;
-  if (options.url !== undefined) base = loopbackBase(options.url);
+  if (options.url !== undefined) base = checkedBase(options.url, "--url");
   else {
     const record = readDashboardRecord(dashboardRecordPath(options.home, root));
     if (record === null || !alive(record.pid))
       throw new NoLaunchLink(
-        `No dashboard is running for ${root}. Start one with: bun run dashboard (it prints a launch link), or pass --url <the dashboard's address>.`,
+        `No dashboard is running for ${root}. Start one with: bun run dashboard (it prints a launch link), or pass --url http://127.0.0.1:<its port>.`,
       );
-    base = loopbackBase(record.url);
+    base = checkedBase(
+      record.url,
+      "The running dashboard is not bound to a loopback address (restart it with bun run dashboard)",
+    );
   }
   const lock = readLock(lockPath(options.home, root));
   const exchange = options.exchange ?? loopbackExchange;

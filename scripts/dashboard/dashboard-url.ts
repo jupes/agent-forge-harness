@@ -1,19 +1,22 @@
 /**
  * One line that says where the dashboard is, once the dev server listens.
  *
- * Vite's own banner names the address it bound (127.0.0.1 by default, which
- * some terminals do not make a link of), and with `strictPort: false` the
- * port is not always the one asked for: Vite takes the next free one. The
- * line is written from the address the server actually bound, after it
- * bound it.
+ * With `strictPort: false` the port is not always the one asked for: Vite
+ * takes the next free one. The line is written from the address the server
+ * actually bound, after it bound it.
  *
  * With the hearth plugin in the server (`hearthPlugin`), the line is a launch
  * link: the URL with a one-time secret in its fragment, which the page
  * exchanges for its dashboard session (`scripts/hearth/launch.ts`). Without a
- * session the page reads but gets no operator token. The link uses the very
- * host this line always printed, `localhost` for this machine, because a
- * browser keeps the session cookie for the host it opened: a page opened at
- * `127.0.0.1` holds no cookie set at `localhost`.
+ * session the page reads but gets no operator token.
+ *
+ * The URL names the very address the server bound (`127.0.0.1` by default),
+ * never a name such as `localhost` (`x1gs.3.31`). A browser may resolve
+ * `localhost` to `::1` first, where this server does not listen and any
+ * program, another OS user's included, can: that program's page would be
+ * handed the link, read the secret from its fragment and exchange it first.
+ * A browser also keeps the session cookie for the host it opened, so the page
+ * must be opened at the address printed.
  */
 
 import type { AddressInfo } from "node:net";
@@ -22,8 +25,11 @@ import { LAUNCH_TTL_MS } from "../hearth/launch";
 import { OPEN_COMMAND } from "../hearth/paths";
 import type { HearthPluginApi } from "../hearth/vite-plugin";
 
-/** Addresses that mean "this machine": written as localhost, which every terminal makes a link of. */
-const THIS_MACHINE = new Set(["127.0.0.1", "::1", "0.0.0.0", "::"]);
+/** The wildcard addresses, written as the loopback address of their family, on which a server bound to them also answers. */
+const WILDCARD_AS_LOOPBACK: Readonly<Record<string, string>> = {
+  "0.0.0.0": "127.0.0.1",
+  "::": "::1",
+};
 
 /**
  * The hearth plugin's name. Must be `HEARTH_PLUGIN_NAME` of
@@ -37,17 +43,16 @@ export const LAUNCH_NOTE = `  (a one-time link, good for ${LAUNCH_TTL_MS / 60_00
 
 /**
  * The dashboard's URL for the address a server is listening on, or null for
- * one that is not listening on a port (a pipe, or not listening at all).
+ * one that is not listening on a port (a pipe, or not listening at all). The
+ * host is that address itself, never a name; a wildcard address is written
+ * as its family's loopback address.
  */
 export function dashboardUrl(
   address: AddressInfo | string | null,
 ): string | null {
   if (address === null || typeof address === "string") return null;
-  const host = THIS_MACHINE.has(address.address)
-    ? "localhost"
-    : address.address.includes(":")
-      ? `[${address.address}]`
-      : address.address;
+  const bound = WILDCARD_AS_LOOPBACK[address.address] ?? address.address;
+  const host = bound.includes(":") ? `[${bound}]` : bound;
   return `http://${host}:${address.port}/`;
 }
 

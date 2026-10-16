@@ -18,6 +18,8 @@ import {
   createLaunchSecrets,
   createSessionStore,
   LAUNCH_TTL_MS,
+  launchBase,
+  launchUrl,
   SESSION_TTL_MS,
   sessionCookie,
   sessionCookieName,
@@ -246,6 +248,50 @@ describe("sessions", () => {
     expect(kept).toEqual([sha256(b.value), sha256(c.value)]);
     expect(kept).not.toContain(sha256(expired.value));
     expect(store.valid([a.value])).toBe(false);
+  });
+});
+
+describe("the launch link", () => {
+  const SECRET = "d".repeat(64);
+
+  test("x1gs.3.31: names 127.0.0.1 or [::1] itself, over http, with the secret in the fragment", () => {
+    expect(launchUrl("http://127.0.0.1:8787/", SECRET)).toBe(
+      `http://127.0.0.1:8787/#launch=${SECRET}`,
+    );
+    expect(launchUrl("http://[::1]:8787", SECRET)).toBe(
+      `http://[::1]:8787/#launch=${SECRET}`,
+    );
+    // The root, whatever path or query the base had: the secret is never in a query.
+    expect(launchUrl("http://127.0.0.1:8787/x?y=1#z", SECRET)).toBe(
+      `http://127.0.0.1:8787/#launch=${SECRET}`,
+    );
+  });
+
+  test("x1gs.3.31: is never built on localhost or any other name a browser resolves, on an address off this machine, or over another scheme", () => {
+    for (const base of [
+      "http://localhost:8787/",
+      "http://LOCALHOST:8787/",
+      "http://localhost.:8787/",
+      "http://dashboard.localhost:8787/",
+      "http://evil.example:8787/",
+      "http://192.168.1.20:8787/",
+      "http://127.0.0.2:8787/",
+      "https://127.0.0.1:8787/",
+      "127.0.0.1:8787",
+    ]) {
+      const refused = (() => {
+        try {
+          return launchUrl(base, SECRET);
+        } catch (error) {
+          return error instanceof Error ? error : new Error(String(error));
+        }
+      })();
+      expect({ base, refused: refused instanceof Error }).toEqual({
+        base,
+        refused: true,
+      });
+      expect(() => launchBase(base)).toThrow();
+    }
   });
 });
 
