@@ -10,7 +10,14 @@
  * read from a temp home.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,6 +29,7 @@ import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { childOf } from "../scheduler/queue-fixture";
+import { makeOwnerOnly } from "./acl-windows";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
 import {
   LAUNCH_HEADER,
@@ -338,10 +346,88 @@ export interface TestHearthOptions {
   launchNow?: () => number;
 }
 
+// ── Windows ACLs as the system's own tools show them ───────────────────────
+
+const SYSTEM32 = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32");
+
+/** A program in System32 by its absolute path, with argv only; throws unless it exits 0. */
+export function system32(program: string, args: string[]): string {
+  const result = Bun.spawnSync([join(SYSTEM32, program), ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0)
+    throw new Error(
+      `${program} exited ${result.exitCode}: ${result.stdout.toString()}${result.stderr.toString()}`,
+    );
+  return result.stdout.toString();
+}
+
+/** This user's SID as `whoami` prints it, not as the code under test reads it. */
+export function whoamiSid(): string {
+  const line = system32("whoami.exe", ["/user", "/fo", "csv", "/nh"]).trim();
+  const sid = /^"[^"]*","(S-1-\d+(?:-\d+)+)"$/.exec(line)?.[1];
+  if (sid === undefined) throw new Error("whoami printed no SID");
+  return sid;
+}
+
+/** What SDDL calls by a short name, for the trustees these tests meet. */
+const SDDL_ALIASES: Record<string, string> = {
+  SY: "S-1-5-18",
+  BU: "S-1-5-32-545",
+  WD: "S-1-1-0",
+  AU: "S-1-5-11",
+  BA: "S-1-5-32-544",
+  OW: "S-1-3-4",
+};
+
+export interface IcaclsAce {
+  type: string;
+  flags: string;
+  rights: string;
+  sid: string;
+}
+
+/**
+ * `path`'s DACL as `icacls /save` writes it: SDDL, with SIDs as SIDs whatever
+ * the system's language. Saved to a file in `scratch`, outside the folders
+ * under test.
+ */
+export function icaclsDacl(
+  path: string,
+  scratch: string,
+): { protected: boolean; aces: IcaclsAce[] } {
+  const saved = join(scratch, `${randomUUID()}.acl`);
+  system32("icacls.exe", [path, "/save", saved]);
+  const sddl = readFileSync(saved).toString("utf16le").split(/\r?\n/)[1] ?? "";
+  rmSync(saved);
+  const match = /^D:([A-Z]*)((?:\([^)]*\))*)$/.exec(sddl);
+  if (match === null) throw new Error(`icacls saved no DACL for ${path}`);
+  const aces = [...(match[2] ?? "").matchAll(/\(([^)]*)\)/g)].map((ace) => {
+    const [type = "", flags = "", rights = "", , , sid = ""] = (
+      ace[1] ?? ""
+    ).split(";");
+    return { type, flags, rights, sid: SDDL_ALIASES[sid] ?? sid };
+  });
+  return { protected: (match[1] ?? "").includes("P"), aces };
+}
+
+/**
+ * A temp directory readable and writable by this user only, as a hearth home
+ * must be (`home-guard.ts`): on Windows the OS temp folder can let others
+ * write what is created in it, and a process this file is loaded in need not
+ * have run the test preload that gives it a temp folder of its own.
+ */
+export function privateTempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  if (process.platform === "win32") makeOwnerOnly(dir, "directory");
+  return dir;
+}
+
 export async function startTestHearth(
   options: TestHearthOptions = {},
 ): Promise<TestHearth> {
-  const home = mkdtempSync(join(tmpdir(), "af-api-home-"));
+  const home = privateTempDir("af-api-home-");
   const root = mkdtempSync(join(tmpdir(), "af-api-root-"));
   const configHome = mkdtempSync(join(tmpdir(), "af-api-user-"));
   let main: string | undefined;

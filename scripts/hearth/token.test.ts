@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -26,7 +25,13 @@ import {
 } from "./acl-windows";
 import { dashboardRecordPath, lockPath, sessionsPath, tokenPath } from "./home";
 import { createHearth } from "./server";
-import { fakeBd, fakeCommands } from "./testing";
+import {
+  fakeBd,
+  fakeCommands,
+  icaclsDacl,
+  system32,
+  whoamiSid,
+} from "./testing";
 import {
   createToken,
   OWNER_ONLY_FIX,
@@ -304,75 +309,11 @@ test("writeNonSecret replaces the file through a temp file it leaves nothing of"
 
 // ── Windows, for real (runs only on Windows) ───────────────────────────────
 
-const SYSTEM32 = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32");
-
-/** A program in System32 by its absolute path, with argv only; throws unless it exits 0. */
-function system32(program: string, args: string[]): string {
-  const result = Bun.spawnSync([join(SYSTEM32, program), ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (result.exitCode !== 0)
-    throw new Error(
-      `${program} exited ${result.exitCode}: ${result.stdout.toString()}${result.stderr.toString()}`,
-    );
-  return result.stdout.toString();
-}
-
-/** This user's SID as `whoami` prints it, not as the code under test reads it. */
-function whoamiSid(): string {
-  const line = system32("whoami.exe", ["/user", "/fo", "csv", "/nh"]).trim();
-  const sid = /^"[^"]*","(S-1-\d+(?:-\d+)+)"$/.exec(line)?.[1];
-  if (sid === undefined) throw new Error("whoami printed no SID");
-  return sid;
-}
-
 /** A temp home that lets Users read everything created under it, inherited. */
 function looseHome(): string {
   const home = temp("af-acl-home");
   system32("icacls.exe", [home, "/grant", `*${USERS_SID}:(OI)(CI)(R)`]);
   return home;
-}
-
-/** What SDDL calls by a short name, for the trustees these tests meet. */
-const SDDL_ALIASES: Record<string, string> = {
-  SY: SYSTEM_SID,
-  BU: USERS_SID,
-  WD: "S-1-1-0",
-  AU: "S-1-5-11",
-  BA: "S-1-5-32-544",
-  OW: "S-1-3-4",
-};
-
-interface IcaclsAce {
-  type: string;
-  flags: string;
-  rights: string;
-  sid: string;
-}
-
-/**
- * `path`'s DACL as `icacls /save` writes it: SDDL, with SIDs as SIDs whatever
- * the system's language. Saved to a file in `scratch`, outside the folders
- * under test.
- */
-function icaclsDacl(
-  path: string,
-  scratch: string,
-): { protected: boolean; aces: IcaclsAce[] } {
-  const saved = join(scratch, `${randomUUID()}.acl`);
-  system32("icacls.exe", [path, "/save", saved]);
-  const sddl = readFileSync(saved).toString("utf16le").split(/\r?\n/)[1] ?? "";
-  rmSync(saved);
-  const match = /^D:([A-Z]*)((?:\([^)]*\))*)$/.exec(sddl);
-  if (match === null) throw new Error(`icacls saved no DACL for ${path}`);
-  const aces = [...(match[2] ?? "").matchAll(/\(([^)]*)\)/g)].map((ace) => {
-    const [type = "", flags = "", rights = "", , , sid = ""] = (
-      ace[1] ?? ""
-    ).split(";");
-    return { type, flags, rights, sid: SDDL_ALIASES[sid] ?? sid };
-  });
-  return { protected: (match[1] ?? "").includes("P"), aces };
 }
 
 /** Asserted twice: through the reader the code verifies with, and through icacls. */
