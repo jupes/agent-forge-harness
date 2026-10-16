@@ -50,6 +50,11 @@ export default defineConfig({
     port: Number(process.env["PORT"] ?? "8787"),
     strictPort: false,
     host: process.env["DASHBOARD_HOST"] ?? "127.0.0.1",
+    // No CORS answer at all. Vite's default reflects a loopback Origin in
+    // Access-Control-Allow-Origin, which lets a page on another loopback port
+    // read what this server serves: the Beads snapshot (private bead text),
+    // source files, and the hearth's answers it proxies (x1gs.3.31).
+    cors: false,
   },
   plugins: [
     preact({

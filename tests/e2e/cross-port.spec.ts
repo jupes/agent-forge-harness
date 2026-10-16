@@ -18,6 +18,10 @@ import { DASHBOARD_URL } from "./servers";
  * front door: an `Origin` of another port, or `Sec-Fetch-Site: same-site`),
  * and the browser lets the page read nothing of an answer either way.
  *
+ * The dashboard's dev server answers no CORS at all (`server.cors: false` in
+ * `vite.dashboard.config.ts`): Vite's default reflected a loopback `Origin`,
+ * which let such a page read what the dev server serves without any cookie.
+ *
  * The other page is served by a small server this spec starts on a port the
  * system picks. The runner runs under Node, so it is `node:http`.
  */
@@ -240,4 +244,38 @@ test("a page on another loopback port that opens the token route in a window, or
   }).toEqual({ status: 403, sentSession: true });
   await page.waitForLoadState("load");
   expect(await page.textContent("body")).not.toContain(token);
+});
+
+test("a page on another loopback port reads nothing the dashboard's dev server serves: not the page, not a source file, not the Beads snapshot the issue views load, not a hearth read it proxies", async ({
+  page,
+}) => {
+  await openSettled(page, otherUrl);
+  // The snapshot is generated and gitignored, so it may be absent (404, as in
+  // CI): an answer of any status the page could read would fail this too.
+  const paths = [
+    "/index.html",
+    "/js/operator.ts",
+    "/data/beads.json",
+    "/__agent-forge/health",
+  ];
+  const reads = await page.evaluate(
+    async ({ base, paths }) => {
+      const read: Record<string, string> = {};
+      for (const path of paths) {
+        try {
+          const response = await fetch(`${base}${path}`);
+          read[path] = `read ${response.status}`;
+        } catch (error) {
+          read[path] = String(error);
+        }
+      }
+      return read;
+    },
+    { base: DASHBOARD_URL, paths },
+  );
+  expect(reads).toEqual(
+    Object.fromEntries(
+      paths.map((path) => [path, "TypeError: Failed to fetch"]),
+    ),
+  );
 });
