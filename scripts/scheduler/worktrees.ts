@@ -43,6 +43,7 @@ import {
 import { readSessionMirror } from "../ledger/identity";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
+import { resetSpawnClock } from "../spawn-clock";
 
 // ── git ─────────────────────────────────────────────────────────────────────
 
@@ -64,41 +65,17 @@ export type GitRun = (
 const READ_MS = 5_000;
 const WRITE_MS = 30_000;
 
-/**
- * Whether a run ended with ETIMEDOUT before its time limit could have passed.
- * Bun 1.3.10 on Windows kills a synchronous spawn at once, and reports it
- * timed out, when more than its time limit has passed since the process's
- * previous timed spawn, whether it sat idle or busy meanwhile, so a hearth
- * asked for its worktrees after a quiet spell would answer 502. The run
- * straight after is timed truly.
- */
-const timedOutEarly = (
-  error: Error | undefined,
-  elapsedMs: number,
-  timeoutMs: number,
-): boolean =>
-  (error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" &&
-  elapsedMs < timeoutMs / 2;
-
 export const gitRun: GitRun = (args, cwd, timeoutMs = WRITE_MS) => {
-  const spawn = () => {
-    const started = performance.now();
-    const result = spawnSync("git", [...args], {
-      cwd,
-      encoding: "utf8",
-      timeout: timeoutMs,
-      windowsHide: true,
-    });
-    return { result, elapsedMs: performance.now() - started };
-  };
-  const first = spawn();
-  const { result } = timedOutEarly(
-    first.result.error,
-    first.elapsedMs,
-    timeoutMs,
-  )
-    ? spawn()
-    : first;
+  // Under Bun a timed synchronous spawn is otherwise given its limit less the
+  // time since the last one ended (`spawn-clock.ts`): git, run once, gets all
+  // of `timeoutMs`.
+  resetSpawnClock();
+  const result = spawnSync("git", [...args], {
+    cwd,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
   return {
     status: result.error ? null : result.status,
     stdout: result.stdout ?? "",

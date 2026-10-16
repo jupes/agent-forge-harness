@@ -223,21 +223,60 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
+/**
+ * Under Bun 1.3.10 a timed synchronous spawn was given its limit less the time
+ * since the previous one ended (`spawn-clock.ts`). Each test first runs git
+ * once, so the run under test follows a timed spawn whatever ran before it,
+ * also when the test runs alone, then waits out a gap.
+ */
 describe("gitRun", () => {
-  // Bun 1.3.10 on Windows timed the second run out at once, before git could
-  // answer: more than its time limit had passed since the first.
+  /** A git alias that runs `script` in the shell git uses for `!` aliases. */
+  const alias = (script: string): string[] => [
+    "-c",
+    `alias.under-test=!${script}`,
+    "under-test",
+  ];
+
   test("answers when more than its time limit has passed since the last run, rather than timing out before git could run", async () => {
-    const limitMs = 1_000;
-    // The first timed spawn of a process was never cut short, so the run
-    // under test is a second one, even when this test runs alone.
+    const limitMs = 500;
     expect(gitRun(["--version"], tmpdir(), limitMs).status).toBe(0);
-    // Three times the limit: at one and a half times, Bun did not misfire.
     await Bun.sleep(limitMs * 3);
     const result = gitRun(["--version"], tmpdir(), limitMs);
     expect({ status: result.status, stdout: result.stdout }).toEqual({
       status: 0,
       stdout: expect.stringMatching(/^git version /),
     });
+  });
+
+  test("gives a command its whole time limit after a gap shorter than half the limit: one that takes two thirds of it finishes", async () => {
+    const dir = repo();
+    const limitMs = 3_000;
+    expect(gitRun(["--version"], dir, limitMs).status).toBe(0);
+    // Without the clock reset this run was killed about 1.8 s in.
+    await Bun.sleep(limitMs * 0.4);
+    const result = gitRun(alias("sleep 2 && echo done"), dir, limitMs);
+    expect({ status: result.status, stdout: result.stdout.trim() }).toEqual({
+      status: 0,
+      stdout: "done",
+    });
+  });
+
+  test("runs a command that changes something exactly once, after a gap that left too little of the limit", async () => {
+    const dir = repo();
+    const limitMs = 3_000;
+    expect(gitRun(["--version"], dir, limitMs).status).toBe(0);
+    // Without the clock reset this run was killed about 0.75 s in, after its
+    // write: a run that was then repeated wrote twice.
+    await Bun.sleep(limitMs * 0.75);
+    const result = gitRun(
+      alias("echo ran >> marker.txt && sleep 1"),
+      dir,
+      limitMs,
+    );
+    expect({
+      status: result.status,
+      marker: readFileSync(join(dir, "marker.txt"), "utf8"),
+    }).toEqual({ status: 0, marker: "ran\n" });
   });
 });
 
