@@ -109,6 +109,11 @@ export interface LaunchPage {
   };
 }
 
+/** What `startPageLaunch` needs of the page: also its `hashchange` event. */
+export interface LaunchWindow extends LaunchPage {
+  addEventListener(type: "hashchange", listener: () => void): void;
+}
+
 export interface LaunchOptions {
   fetch?: Fetch;
   /** A static copy: the secret is taken out of the address bar and nothing is sent (no hearth is behind it). */
@@ -175,12 +180,22 @@ let launched: Promise<LaunchOutcome> = Promise.resolve({ state: "none" });
  * The page's launch: called once by the app's boot, before anything reads
  * the hash. The page's operator client waits for it before it asks for the
  * token.
+ *
+ * A launch link opened in a tab already showing the dashboard at the same
+ * path does not load the page again: only the fragment changes. So the page
+ * also looks for a secret on every `hashchange`. Its listener is added here,
+ * before the app renders, so it runs before the router's and the Timeline's
+ * listeners, which then read the fragment without the secret.
  */
 export function startPageLaunch(
-  page: LaunchPage = window,
+  page: LaunchWindow = window,
   options: LaunchOptions = { staticCopy: servedStatically() },
 ): Promise<LaunchOutcome> {
   launched = beginLaunch(page, options);
+  page.addEventListener("hashchange", () => {
+    if (takeLaunchSecret(page.location.hash).hash !== page.location.hash)
+      launched = beginLaunch(page, options);
+  });
   return launched;
 }
 

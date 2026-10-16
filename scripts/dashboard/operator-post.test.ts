@@ -4,7 +4,9 @@ import {
   beginLaunch,
   createOperatorClient,
   createOperatorPost,
+  launchSettled,
   NotSent,
+  startPageLaunch,
   takeLaunchSecret,
 } from "../../docs/js/operator";
 import {
@@ -511,6 +513,43 @@ describe("the launch fragment", () => {
     ).toEqual({ state: "none" });
     expect(copy.replaced).toEqual(["/index.html?x=1"]);
     expect(sent).toEqual([]);
+  });
+
+  test("startPageLaunch exchanges the secret the page was opened with, and one a later fragment-only navigation brings; launchSettled answers the latest", async () => {
+    const at = page(`#launch=${SECRET}`);
+    const listeners: Array<() => void> = [];
+    const sent: string[] = [];
+    const win = {
+      ...at,
+      addEventListener: (_type: "hashchange", listener: () => void) => {
+        listeners.push(listener);
+      },
+    };
+    const fetchImpl = async (
+      url: string,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      sent.push(new Headers(init?.headers).get(LAUNCH_HEADER) ?? url);
+      return Response.json({ ok: true, data: {}, error: null });
+    };
+    expect(await startPageLaunch(win, { fetch: fetchImpl })).toEqual({
+      state: "exchanged",
+    });
+    expect(listeners).toHaveLength(1);
+    // A fragment with no secret changes nothing.
+    at.location.hash = "#/workbench";
+    listeners[0]?.();
+    expect(at.replaced).toEqual(["/index.html?x=1"]);
+    // The same tab given another launch link: only the fragment changed.
+    const next = "cd".repeat(32);
+    at.location.hash = `#/workbench?launch=${next}`;
+    listeners[0]?.();
+    expect(at.replaced).toEqual([
+      "/index.html?x=1",
+      "/index.html?x=1#/workbench",
+    ]);
+    expect(await launchSettled()).toEqual({ state: "exchanged" });
+    expect(sent).toEqual([SECRET, next]);
   });
 
   test("beginLaunch reports a refused or failed exchange in the hearth's words, and never rejects", async () => {
