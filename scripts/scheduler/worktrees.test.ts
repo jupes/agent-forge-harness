@@ -248,6 +248,20 @@ describe("gitRun", () => {
     });
   });
 
+  test("still runs git when the clock reset cannot start its child (no executable at process.execPath)", () => {
+    const real = process.execPath;
+    process.execPath = join(tmpdir(), "no such bun.exe");
+    try {
+      const result = gitRun(["--version"], tmpdir(), 5_000);
+      expect({ status: result.status, stdout: result.stdout }).toEqual({
+        status: 0,
+        stdout: expect.stringMatching(/^git version /),
+      });
+    } finally {
+      process.execPath = real;
+    }
+  });
+
   test("gives a command its whole time limit after a gap shorter than half the limit: one that takes two thirds of it finishes", async () => {
     const dir = repo();
     const limitMs = 3_000;
