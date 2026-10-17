@@ -64,17 +64,20 @@ export function failureBlocks(output: string): string {
 
 /** A line of the source excerpt bun prints above a test's error. */
 const EXCERPT = /^\s*\d+ \| /;
+/** A source excerpt ends at bun's caret, unlike excerpt-shaped diff lines. */
+const CARET = /^\s*\^\s*$/;
 /**
  * The line bun prints an error under: `error: ` for an `Error` or an expect
  * failure, the error's name for a subclass (`TypeError: `, `RangeError: `).
  */
 const ERROR_LINE = /^(\w*Error|error): /;
 
-/** The first line of the source excerpt that ends at or above line `from`, or null when there is none. */
-function lastExcerpt(before: readonly string[], from: number): number | null {
-  for (let k = from; k >= 0; k--) {
-    if (!EXCERPT.test(before[k] ?? "")) continue;
-    let first = k;
+/** The first line of the last source excerpt followed immediately by bun's caret, or null. */
+function lastExcerpt(before: readonly string[]): number | null {
+  for (let k = before.length - 1; k > 0; k--) {
+    if (!CARET.test(before[k] ?? "") || !EXCERPT.test(before[k - 1] ?? ""))
+      continue;
+    let first = k - 1;
     while (first > 0 && EXCERPT.test(before[first - 1] ?? "")) first--;
     return first;
   }
@@ -83,15 +86,16 @@ function lastExcerpt(before: readonly string[], from: number): number | null {
 
 /**
  * Where bun's own report of a failure starts in the lines before its `(fail)`
- * line: the last source excerpt above the last error line, else that error
- * line; with no error line, the last source excerpt; null when there is
- * neither. What comes before it is the test's own output.
+ * line: the last caret-backed source excerpt, else the last known error
+ * line, else null. The caret anchors custom error names and non-Error throws
+ * even when the test's own output contains error-like noise.
  */
 function reportStart(before: readonly string[]): number | null {
+  const excerpt = lastExcerpt(before);
+  if (excerpt !== null) return excerpt;
   for (let k = before.length - 1; k >= 0; k--)
-    if (ERROR_LINE.test(before[k] ?? ""))
-      return lastExcerpt(before, k - 1) ?? k;
-  return lastExcerpt(before, before.length - 1);
+    if (ERROR_LINE.test(before[k] ?? "")) return k;
+  return null;
 }
 
 /**

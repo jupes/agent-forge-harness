@@ -25,28 +25,52 @@
  * hold other things, and setting its ACL would reach them too. The refusal
  * says how to make it the user's own.
  *
- * Under Node (the dashboard's Vite) there is no `bun:ffi` to read a Windows
- * ACL with, so the same check runs under Bun in a child process
- * (`checkHomeInBun`, through `home-guard-cli.ts`), as the dashboard already
- * starts the hearth with `bun`.
+ * What is judged is what is used (`x1gs.3.38`). A client reads the lock (and
+ * `dashboard:open` the dashboard record) through `readHomeFile`, which checks
+ * and reads in one act: on Windows the folder the home's path reaches is
+ * opened once and judged through that handle (so a junction is judged by its
+ * target, and its own ACL, who may point it elsewhere, by its path), and the
+ * file is opened relative to that handle and judged and read through its own.
+ * A folder above the home renamed, or a junction pointed elsewhere, after
+ * that open changes nothing that is read; one renamed before it is judged as
+ * the folder it is, and a folder someone else made is theirs and refused. On
+ * POSIX the file is judged from its own open descriptor: a file another user
+ * made is theirs. `requestLaunch` reads the lock so once more just before it
+ * sends the token, and sends it only to the port that lock names.
  *
- * Not covered: the folders above the home. A home inside a folder others may
- * rename or replace is not protected by its own ACL.
+ * Under Node (the dashboard's Vite) there is no `bun:ffi` to read a Windows
+ * ACL with, so the same check and read run under Bun in a child process
+ * (`checkHomeInBun`, through `home-guard-cli.ts`), as the dashboard already
+ * starts the hearth with `bun`. The child hands back the text it read, and
+ * is trusted only with its answer to a nonce of that call: exit code 0 alone
+ * is not an answer.
+ *
+ * Not covered (`scripts/hearth/AGENTS.md` has the detail): the hearth and
+ * the supervisor write their own files by path, and the folders above the
+ * home are not judged, so whoever may rename one of them can have the token
+ * written into a folder of theirs at hearth start; a file this user owns
+ * whose content and permissions someone else chose (a same-user sandboxed
+ * process can make one).
  */
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
   renameSync,
   rmSync,
   type Stats,
   statSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { resetSpawnClock } from "../spawn-clock";
-
 import {
   type AclReading,
   type AclTarget,
@@ -56,6 +80,7 @@ import {
   SYSTEM_SID,
   type WindowsAcl,
 } from "./acl-windows";
+import { type HearthLock, parseLock } from "./lock";
 
 export const ADMINISTRATORS_SID = "S-1-5-32-544";
 const CREATOR_OWNER_SID = "S-1-3-0";
@@ -199,23 +224,261 @@ function homeFix(
   return `${DEFAULT_HOME_FIX}, or make this folder yours only, by running: ${commands.join(" then ")}`;
 }
 
-function lockFix(lock: string, windows: boolean): string {
-  return `Delete it (a hearth writes it again when it starts): ${windows ? "del" : "rm"} "${lock}"`;
+function fileFix(file: string, windows: boolean): string {
+  const who = isLockFile(file)
+    ? "a hearth writes it again when it starts"
+    : "the dashboard writes it again when it starts";
+  return `Delete it (${who}): ${windows ? "del" : "rm"} "${file}"`;
 }
 
-/** The finding for `path` by the rules of `platform`, or null; throws when it cannot be read. */
-function findingFor(
-  path: string,
-  target: AclTarget,
-  windows: boolean,
-  acl: WindowsAcl | null,
-): WriteFinding | null {
-  if (!windows) {
-    const uid = process.getuid?.() ?? 0;
-    return posixWriteFinding(statSync(path), uid);
+function isLockFile(file: string): boolean {
+  return file.endsWith(".lock");
+}
+
+/** The most a file in the home that a client reads (a lock, a dashboard record) may hold. */
+export const MAX_HOME_FILE_BYTES = 65_536;
+
+/**
+ * What a client may use from a file in the hearth home (`readHomeFile`):
+ * its text, read in the same breath as the check, or why nothing in it is
+ * to be used. `text` is null when there is no such file (or no home), and
+ * always when there is a problem.
+ */
+export type HomeRead =
+  | { problem: string; text: null }
+  | { problem: null; text: string | null };
+
+function refused(problem: string): HomeRead {
+  return { problem, text: null };
+}
+
+const WRITE_RISK =
+  "Anyone who can write it can point a client at a port of their own and be sent the operator token";
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function uncheckable(home: string, error: unknown): HomeRead {
+  return refused(
+    `The hearth home ${home} could not be checked (${reasonOf(error)}), so nothing in it is trusted. ${DEFAULT_HOME_FIX}.`,
+  );
+}
+
+/** `file` as a name relative to `home`, or null when it is not in it. */
+function nameInHome(home: string, file: string): string | null {
+  const name = relative(home, file);
+  return name === "" || name.startsWith("..") || isAbsolute(name) ? null : name;
+}
+
+/** The folder `home` leads to, for words only: what is judged is what its handle holds. */
+function leadsTo(home: string): string | null {
+  try {
+    const real = realpathSync.native(home);
+    return comparablePath(real) === comparablePath(home) ? null : real;
+  } catch {
+    return null;
   }
-  if (acl === null) throw new Error("no Windows ACL functions");
-  return windowsWriteFinding(acl.read(path), target, acl.userSid());
+}
+
+function comparablePath(path: string): string {
+  const resolved = resolve(path);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * The check and the read of `file` in `home`, as one act: what is judged is
+ * what is read (`x1gs.3.38`). A client reads the lock (or the dashboard
+ * record) through this, never by a path of its own after a check, so a folder
+ * above the home renamed, or a junction pointed elsewhere, between a check
+ * and a read cannot hand it a file nobody judged.
+ *
+ * - Windows: the home as its path names it (a junction's own ACL: who may
+ *   point it elsewhere); then the folder the path reaches, opened once, its
+ *   owner and DACL read through that handle (a junction's target); then
+ *   `file`, opened relative to that handle and through no junction or link,
+ *   its owner and DACL and its bytes read through its own handle. Each by the
+ *   rules of `windowsWriteFinding`.
+ * - POSIX: the home's mode and owner (a symbolic link followed), then `file`
+ *   opened without following a link, its mode and owner read from the open
+ *   descriptor, and its bytes from it. A file another user made is theirs,
+ *   and cannot be made this user's.
+ *
+ * `file` must be in `home`; without it only the home is checked. A home that
+ * does not exist holds nothing: no problem and no text. A file of more than
+ * `MAX_HOME_FILE_BYTES`, or not UTF-8, is a refusal. Under Node on Windows it
+ * runs under Bun in a child (`checkHomeInBun`), which hands back the text.
+ */
+export function readHomeFile(
+  home: string,
+  file?: string,
+  options: HomeCheckOptions = {},
+): HomeRead {
+  if (!existsSync(home)) return { problem: null, text: null };
+  const windows = (options.platform ?? process.platform) === "win32";
+  const name = file === undefined ? null : nameInHome(home, file);
+  if (file !== undefined && name === null)
+    return refused(
+      `${file} is not in the hearth home ${home}, so it is not trusted.`,
+    );
+  if (windows && options.acl === undefined && !hasBunFfi())
+    return checkHomeInBun(home, file);
+  return windows
+    ? readWindowsHomeFile(home, file, name, options.acl)
+    : readPosixHomeFile(home, file);
+}
+
+function homeRefusal(
+  home: string,
+  finding: WriteFinding,
+  windows: boolean,
+  userSid: string | null,
+): HomeRead {
+  return refused(
+    `The hearth home ${home} can be written by others: ${finding.reason}. ${WRITE_RISK}. ${homeFix(home, finding, windows, userSid)}.`,
+  );
+}
+
+function fileRefusal(
+  file: string,
+  finding: WriteFinding,
+  windows: boolean,
+): HomeRead {
+  return refused(
+    `The ${isLockFile(file) ? "lock file" : "file"} ${file} in the hearth home can be written by others: ${finding.reason}. ${WRITE_RISK}. ${fileFix(file, windows)}.`,
+  );
+}
+
+function decoded(file: string, bytes: Uint8Array, windows: boolean): HomeRead {
+  try {
+    return { problem: null, text: UTF8.decode(bytes) };
+  } catch {
+    return refused(
+      `The file ${file} in the hearth home is not text, so it is not trusted. ${fileFix(file, windows)}.`,
+    );
+  }
+}
+
+function readWindowsHomeFile(
+  home: string,
+  file: string | undefined,
+  name: string | null,
+  given: WindowsAcl | undefined,
+): HomeRead {
+  let userSid: string | null = null;
+  try {
+    const acl = given ?? nativeWindowsAcl();
+    userSid = acl.userSid();
+    // The home as its path names it: for a junction, who may point it elsewhere.
+    const own = windowsWriteFinding(acl.read(home), "directory", userSid);
+    if (own !== null) return homeRefusal(home, own, true, userSid);
+    if (acl.readInFolder === undefined)
+      throw new Error("these ACL functions cannot read through a handle");
+    const read = acl.readInFolder(home, name, MAX_HOME_FILE_BYTES);
+    // Removed meanwhile: it holds nothing.
+    if (read === null) return { problem: null, text: null };
+    const reached = windowsWriteFinding(read.folder, "directory", userSid);
+    if (reached !== null) {
+      const real = leadsTo(home);
+      return real === null
+        ? homeRefusal(home, reached, true, userSid)
+        : refused(
+            `The hearth home ${home} leads to ${real}, which can be written by others: ${reached.reason}. ${WRITE_RISK}. ${homeFix(real, reached, true, userSid)}.`,
+          );
+    }
+    if (read.file === null || file === undefined)
+      return { problem: null, text: null };
+    const finding = windowsWriteFinding(read.file.reading, "file", userSid);
+    if (finding !== null) return fileRefusal(file, finding, true);
+    return decoded(file, read.file.bytes, true);
+  } catch (error) {
+    return uncheckable(home, error);
+  }
+}
+
+function readPosixHomeFile(home: string, file: string | undefined): HomeRead {
+  const uid = process.getuid?.() ?? 0;
+  try {
+    const finding = posixWriteFinding(statSync(home), uid);
+    if (finding !== null) return homeRefusal(home, finding, false, null);
+  } catch (error) {
+    // Removed meanwhile: it holds nothing.
+    if (!existsSync(home)) return { problem: null, text: null };
+    return uncheckable(home, error);
+  }
+  if (file === undefined) return { problem: null, text: null };
+  let fd: number;
+  try {
+    // Without following a link, and without waiting on a FIFO someone left in its place.
+    fd = openSync(
+      file,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    // None there, as a hearth that closes removes its lock: nothing to trust.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { problem: null, text: null };
+    return refused(
+      `The file ${file} in the hearth home could not be read (${reasonOf(error)}), so it is not trusted. ${fileFix(file, false)}.`,
+    );
+  }
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile())
+      return refused(
+        `${file} in the hearth home is not a file, so it is not trusted. ${fileFix(file, false)}.`,
+      );
+    const finding = posixWriteFinding(stats, uid);
+    if (finding !== null) return fileRefusal(file, finding, false);
+    if (stats.size > MAX_HOME_FILE_BYTES)
+      return refused(
+        `The file ${file} in the hearth home is larger than ${MAX_HOME_FILE_BYTES} bytes, so it is not trusted. ${fileFix(file, false)}.`,
+      );
+    const bytes = Buffer.alloc(MAX_HOME_FILE_BYTES + 1);
+    let at = 0;
+    for (;;) {
+      const got = readSync(fd, bytes, at, bytes.length - at, null);
+      if (got === 0) break;
+      at += got;
+      if (at > MAX_HOME_FILE_BYTES)
+        return refused(
+          `The file ${file} in the hearth home is larger than ${MAX_HOME_FILE_BYTES} bytes, so it is not trusted. ${fileFix(file, false)}.`,
+        );
+    }
+    return decoded(file, bytes.subarray(0, at), false);
+  } catch (error) {
+    return refused(
+      `The file ${file} in the hearth home could not be read (${reasonOf(error)}), so it is not trusted. ${fileFix(file, false)}.`,
+    );
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** A lock read by `readHomeLock`: the lock (null when there is none, or it is not one), or why it is not used. */
+export type HomeLockRead =
+  | { problem: string; lock: null }
+  | { problem: null; lock: HearthLock | null };
+
+/**
+ * The lock file `file` in `home` read with `readHomeFile`: what a client
+ * that sends the operator token to the port a lock names reads it with.
+ */
+export function readHomeLock(
+  home: string,
+  file: string,
+  options: HomeCheckOptions = {},
+): HomeLockRead {
+  const read = readHomeFile(home, file, options);
+  if (read.problem !== null) return { problem: read.problem, lock: null };
+  return {
+    problem: null,
+    lock: read.text === null ? null : parseLock(read.text),
+  };
 }
 
 /**
@@ -224,39 +487,15 @@ function findingFor(
  * someone other than this user, SYSTEM and the Administrators. Null when
  * neither can, and for a home that does not exist, which holds no lock to
  * trust. The answer names the path, who can write it, and the fix. A home
- * that cannot be read is a refusal too.
+ * that cannot be read is a refusal too. `readHomeFile`'s check, without the
+ * text: a client that goes on to use the lock reads it with `readHomeFile`.
  */
 export function homeWriteProblem(
   home: string,
   lock?: string,
   options: HomeCheckOptions = {},
 ): string | null {
-  if (!existsSync(home)) return null;
-  const windows = (options.platform ?? process.platform) === "win32";
-  if (windows && options.acl === undefined && !hasBunFfi())
-    return checkHomeInBun(home, lock);
-  let acl: WindowsAcl | null = null;
-  let userSid: string | null = null;
-  try {
-    if (windows) acl = options.acl ?? nativeWindowsAcl();
-    userSid = acl?.userSid() ?? null;
-    const finding = findingFor(home, "directory", windows, acl);
-    if (finding !== null)
-      return `The hearth home ${home} can be written by others: ${finding.reason}. Anyone who can write it can point a client at a port of their own and be sent the operator token. ${homeFix(home, finding, windows, userSid)}.`;
-  } catch (error) {
-    return `The hearth home ${home} could not be checked (${error instanceof Error ? error.message : String(error)}), so nothing in it is trusted. ${DEFAULT_HOME_FIX}.`;
-  }
-  if (lock === undefined || !existsSync(lock)) return null;
-  try {
-    const finding = findingFor(lock, "file", windows, acl);
-    if (finding !== null)
-      return `The lock file ${lock} in the hearth home can be written by others: ${finding.reason}. Anyone who can write it can point a client at a port of their own and be sent the operator token. ${lockFix(lock, windows)}.`;
-  } catch (error) {
-    // Removed meanwhile, as a hearth that closes removes it: no lock to trust.
-    if (!existsSync(lock)) return null;
-    return `The lock file ${lock} could not be checked (${error instanceof Error ? error.message : String(error)}), so it is not trusted. ${lockFix(lock, windows)}.`;
-  }
-  return null;
+  return readHomeFile(home, lock, options).problem;
 }
 
 /** The exit code of `home-guard-cli.ts` when it found a problem; its text is on stdout. */
@@ -285,16 +524,58 @@ function bunExecutable(): string {
 }
 
 /**
- * `homeWriteProblem` run under Bun in a child process: how a runtime without
- * `bun:ffi` (the dashboard's Vite, under Node) reads a Windows ACL. A child
- * that cannot run or answers otherwise is a refusal.
+ * The first line of `home-guard-cli.ts`'s answer when nothing in the home is
+ * a problem, followed by the nonce it was given. Exit code 0 alone is not
+ * that answer (`x1gs.3.38`): a program that is not the check, or a check
+ * whose entry was never run, exits 0 too.
+ */
+export const GUARD_ANSWER = "agent-forge home-guard: trusted";
+const NONCE = /^[0-9a-f]{32}$/;
+const ANSWER =
+  /^agent-forge home-guard: trusted ([0-9a-f]{32})\n(?:none|file ([A-Za-z0-9+/]*={0,2}))\n$/;
+
+/**
+ * What `home-guard-cli.ts` prints when the check passed: `GUARD_ANSWER` and
+ * the nonce, then `none`, or `file` and the file's text in base64.
+ */
+export function guardAnswer(nonce: string, text: string | null): string {
+  const payload =
+    text === null ? "none" : `file ${Buffer.from(text).toString("base64")}`;
+  return `${GUARD_ANSWER} ${nonce}\n${payload}\n`;
+}
+
+/** The text `stdout` hands back when it is the answer to `nonce`; undefined when it is not. */
+function answered(stdout: string, nonce: string): string | null | undefined {
+  const match = ANSWER.exec(stdout);
+  if (match === null || match[1] !== nonce) return undefined;
+  const encoded = match[2];
+  if (encoded === undefined) return null;
+  const bytes = Buffer.from(encoded, "base64");
+  // Only base64 that decodes to exactly what was sent.
+  if (bytes.toString("base64") !== encoded) return undefined;
+  try {
+    return UTF8.decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `readHomeFile` run under Bun in a child process: how a runtime without
+ * `bun:ffi` (the dashboard's Vite, under Node) reads a Windows ACL. The child
+ * reads `file` itself, through the handle it judged, and hands its text back,
+ * so this process uses what was checked and never reads the file by its path.
+ * Trusted only with the child's answer to a nonce of this call
+ * (`guardAnswer`); a child that cannot run, exits 0 without that answer, or
+ * answers anything else is a refusal.
  */
 export function checkHomeInBun(
   home: string,
-  lock: string | undefined,
-): string | null {
+  file: string | undefined,
+): HomeRead {
   const program = bunExecutable();
-  const args = [GUARD_CLI, home, ...(lock === undefined ? [] : [lock])];
+  const nonce = randomBytes(16).toString("hex");
+  const args = [GUARD_CLI, nonce, home, ...(file === undefined ? [] : [file])];
   const cwd = dirname(GUARD_CLI);
   resetSpawnClock();
   const result = spawnSync(program, args, {
@@ -302,15 +583,29 @@ export function checkHomeInBun(
     encoding: "utf8",
     windowsHide: true,
     timeout: 30_000,
+    maxBuffer: 4 * MAX_HOME_FILE_BYTES,
   });
-  if (result.status === 0) return null;
-  const said = (result.stdout ?? "").trim();
-  if (result.status === PROBLEM_EXIT && said !== "") return said;
+  const stdout = result.stdout ?? "";
+  if (result.status === 0 && result.error === undefined) {
+    const text = answered(stdout, nonce);
+    if (text !== undefined) return { problem: null, text };
+  }
+  const said = stdout.trim();
+  if (result.status === PROBLEM_EXIT && said !== "") return refused(said);
   const why =
     result.error !== undefined
       ? `bun could not be run: ${result.error.message}`
-      : `the check under bun exited ${result.status ?? "on a signal"}`;
-  return `The hearth home ${home} could not be checked (${why}), so nothing in it is trusted. ${DEFAULT_HOME_FIX}.`;
+      : result.status === 0
+        ? "the check under bun exited 0 without its answer"
+        : `the check under bun exited ${result.status ?? "on a signal"}`;
+  return refused(
+    `The hearth home ${home} could not be checked (${why}), so nothing in it is trusted. ${DEFAULT_HOME_FIX}.`,
+  );
+}
+
+/** Whether `nonce` is one `checkHomeInBun` sends: the CLI answers no other. */
+export function isGuardNonce(nonce: string): boolean {
+  return NONCE.test(nonce);
 }
 
 /** Thrown when a home is not the user's own: its message is `homeWriteProblem`'s. */
