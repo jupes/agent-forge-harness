@@ -5,6 +5,7 @@ import {
   buildBdCreateCommand,
   titleWithRepo,
 } from "@docs/bead-builder";
+import { findUsableShell } from "./test-shell";
 
 const base = {
   title: "My bead",
@@ -16,8 +17,19 @@ const base = {
   labels: "",
 };
 
-const sh = Bun.which("sh");
-const bash = Bun.which("bash");
+const sh = findUsableShell("sh");
+const bash = findUsableShell("bash");
+for (const [name, shell] of [
+  ["sh", sh],
+  ["bash", bash],
+]) {
+  if (!shell)
+    console.warn(
+      `Skipping ${name} argument checks: no shell executed the probe successfully${
+        process.platform === "win32" ? " (including installed Git Bash)" : ""
+      }.`,
+    );
+}
 
 /**
  * Run a built command through a shell with `bd` replaced by a shell function,
