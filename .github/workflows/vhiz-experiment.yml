@@ -25,3 +25,5 @@ jobs:
           bun-version: 1.3.10
       - run: bun install --frozen-lockfile
       - run: bun scripts/vhiz-experiment.ts worktrees
+        env:
+          VHIZ_NOTE: "worktrees.test.ts with maintenance.auto false in makeRepo"

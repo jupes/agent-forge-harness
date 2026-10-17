@@ -193,18 +193,31 @@ function race(label: string, home: string, extra: string[][], n: number): void {
     writeFileSync(join(dir, "readme.txt"), "scratch\n");
     g(dir, "add", ".");
     g(dir, "commit", "-q", "-m", "first");
-    const right = new Set(walk(join(dir, ".git")));
-    try {
-      cpSync(dir, join(root, "copy"), { recursive: true });
-    } catch (error) {
-      failed++;
-      if (failed <= 3)
-        console.log(`${label}: copy ${i} failed: ${String(error)}`);
+    if (i % 2 === 0) {
+      try {
+        cpSync(dir, join(root, "copy"), { recursive: true });
+      } catch (error) {
+        failed++;
+        if (failed <= 3)
+          console.log(`${label}: copy ${i} failed: ${String(error)}`);
+      }
+    } else {
+      // Poll .git for 500 ms: every name seen that is not there at the end.
+      const seenNames = new Set<string>();
+      const until = performance.now() + 500;
+      while (performance.now() < until) {
+        try {
+          for (const name of walk(join(dir, ".git"))) seenNames.add(name);
+        } catch {
+          // A directory gone mid-walk.
+        }
+      }
+      Bun.sleepSync(500);
+      const later = new Set(walk(join(dir, ".git")));
+      for (const name of seenNames)
+        if (!later.has(name))
+          transient.set(name, (transient.get(name) ?? 0) + 1);
     }
-    Bun.sleepSync(1000);
-    const later = new Set(walk(join(dir, ".git")));
-    for (const name of right)
-      if (!later.has(name)) transient.set(name, (transient.get(name) ?? 0) + 1);
     rmSync(root, { recursive: true, force: true });
   }
   console.log(
@@ -222,14 +235,42 @@ async function main(): Promise<void> {
     console.log(
       `system config:\n${g0(["config", "--system", "--list", "--show-origin"])}`,
     );
-    const scratch = mkdtempSync(join(tmpdir(), "scratch home "));
-    race("real HOME", process.env.HOME ?? "", [], 40);
-    race("scratch HOME", scratch, [], 40);
+    // What a commit starts.
+    const t = mkdtempSync(join(tmpdir(), "trace "));
+    for (const args of [
+      ["init", "-q", "-b", "master"],
+      ["config", "user.email", "t@example.invalid"],
+      ["config", "user.name", "t"],
+    ])
+      spawnSync("git", args, { cwd: t });
+    writeFileSync(join(t, "a.txt"), "a\n");
+    spawnSync("git", ["add", "."], { cwd: t });
+    const traced = spawnSync("git", ["commit", "-q", "-m", "first"], {
+      cwd: t,
+      env: { ...process.env, GIT_TRACE: "1" },
+      encoding: "utf8",
+    });
+    console.log(`GIT_TRACE of the commit:\n${traced.stderr}`);
+    // Four racers at once per variant, so each runs under the others' load.
+    for (const variant of ["default", "maintenance-off"]) {
+      const kids = Array.from({ length: 4 }, () =>
+        Bun.spawn(
+          [process.execPath, import.meta.path, "race-worker", variant],
+          { stdout: "inherit", stderr: "inherit" },
+        ),
+      );
+      await Promise.all(kids.map((k) => k.exited));
+    }
+  }
+  if (part === "race-worker") {
+    const variant = process.argv[3] ?? "default";
     race(
-      "scratch HOME, maintenance.auto false",
-      scratch,
-      [["config", "maintenance.auto", "false"]],
-      40,
+      variant,
+      process.env.HOME ?? "",
+      variant === "maintenance-off"
+        ? [["config", "maintenance.auto", "false"]]
+        : [],
+      60,
     );
   }
   if (part === "worktrees") {

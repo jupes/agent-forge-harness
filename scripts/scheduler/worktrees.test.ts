@@ -87,6 +87,7 @@ function makeRepo(ignoreTrees: boolean): string {
   git(dir, "config", "user.email", "test@example.invalid");
   git(dir, "config", "user.name", "worktree test");
   git(dir, "config", "commit.gpgsign", "false");
+  git(dir, "config", "maintenance.auto", "false");
   writeFileSync(
     join(dir, ".gitignore"),
     `${ignoreTrees ? "trees/\n" : ""}.agent-forge-session\n.tmp/\n`,
