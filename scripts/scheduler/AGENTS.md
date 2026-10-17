@@ -314,19 +314,44 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   the runs (and the pull request step), whatever happened, and the end comment is posted after it.
   The worktree is kept: it holds the work.
 - A queue move of the shift's own after the claim (`submit`, `release`, `halt`, the give-back of an
-  admit that failed included) that fails as `busy`, `failed` or `unknown` (bd failed, or ended
-  with no exit status: killed, as a terminal's Ctrl-C kills the shift's own `bd` on Linux and
-  macOS) is made again, `SETTLE_TRIES` (3) times in all, `SETTLE_RETRY_MS` (200 ms) apart
-  (`x1gs.5.4.16`). Never blindly: the move reads the bead under the queue lock before it writes,
-  so a bead the failed try did move is no longer `running` and the next try is refused (its entry
-  ends `left`, and that move has no `bead.transitioned`: a gap `forge:queue reconcile` reports); and each
-  later try writes only while the ledger says this run still owns the bead (`ownedOnly` in
-  `shift-recover.ts`, recovery's own guard on `runOwnership`, read inside the lock just before
-  the write), so a bead another run started meanwhile is left to that run and the try writes
-  nothing. A refusal, a bead gone and a conflict are final. The entry's `error` lists each try;
-  one that never went through ends `left`, and unless another run's start took the bead it says
-  the bead may still be `running` with no run, and that a pause and a resume put it back in
-  `queued`.
+  admit that failed included) that fails as `failed` or `unknown` (bd failed, or ended with no exit
+  status: killed, as a terminal's Ctrl-C kills the shift's own `bd` on Linux and macOS) is made
+  again, `SETTLE_TRIES` (3) times in all, `SETTLE_RETRY_MS` (200 ms) apart (`x1gs.5.4.16`).
+  - **Bounded:** the tries after the first share `SETTLE_RETRY_BUDGET_MS` (4 s). It caps their
+    queue-lock wait and every bd call they make (the runner's `timeoutMs`), and no try starts once
+    it is spent. So they add at most about 4.4 s to whatever the first try took. The first try is
+    as before: up to the lock's 10 s wait, or bd's 30 s limit per call.
+  - **Not after `busy`:** that answer has already waited the whole lock wait, so the lock is
+    stuck. Three such tries (about 30.4 s) would outlast the CLI's 30 s Ctrl-C grace
+    (`INTERRUPT_GRACE_MS`) and end the process 130 with its record `running`.
+  - **Never blindly:**
+    - The move reads the bead under the queue lock before it writes, so a bead an earlier try did
+      move is no longer `running`, and the try is refused without writing.
+    - Each later try writes only while the ledger says this run still owns the bead. The check is
+      `ownedOnly` in `shift-recover.ts`, recovery's own guard on `runOwnership`, read inside the
+      lock just before the write. A bead another run started meanwhile is left to that run, and
+      the try writes nothing.
+  - **A try the queue refused** reads the bead back:
+    - Found at the move's target (`review`, `queued`, `halted`) with no queue move recorded since
+      this run's start, an earlier try wrote it although bd did not confirm it. The move counts:
+      the entry gets the move's outcome, and a `submit` goes on to its pull request step. That
+      move has no `bead.transitioned`, a gap `forge:queue reconcile` reports.
+    - Found anywhere else, it is left there, and the end comment says where it was found.
+  - **Final:** a bead gone and a conflict.
+  - **What the entry says:** its `error` lists each try. A move that never went through ends
+    `left`, and its end comment names the reason: another run's start (`SHIFT_ENDINGS.takenAfter`),
+    the state the bead was found in, or `unmoved`. Unless another run's start took the bead, or it
+    was found elsewhere, the entry also says the bead may still be `running` with no run, and that
+    a pause and a resume put it back in `queued`.
+  - **Ownership is the ledger's word:**
+    - A start of this run whose `bead.transitioned` was not stored (the move answered
+      `recorded: false`) leaves an older move as the newest. Every try after the first is then
+      vetoed, which fails safe: the bead is left as a ledger that cannot be read leaves it.
+    - The other way round: the ledger can still name this run, a stale owner, while the bead is
+      another run's. That needs two moves with no event. First the bead leaves `running` with no
+      event: an operator's move whose append failed, or an earlier try of this run whose write
+      bd did not confirm. Then another run starts it, and that start's append fails too. A later
+      try of this run then takes the bead from that run. Recovery's rule has the same gap.
 - Runs: a success is `submit` (to `review`), then the pull request step. A failure is repaired, the
   next run told how the one before ended, up to `repairs` more runs, then `halt`. A run stopped by
   the shift, or timed out at the shift's deadline, is `release` (back to `queued`). A run `runExec`
@@ -600,11 +625,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     bead back is made again (`x1gs.5.4.16`, above): the signal is delivered once, so the `bd`
     started after it is not killed. The process groups are not changed here; the tests answer the
     first try as a killed `bd` (no exit status), and no real signal is sent to a real `bd`.
-  - A queue move after the claim that fails every try (bd failing across all three, which are
-    two 200 ms pauses apart, or a ledger that cannot be read, which lets no try after the first
-    write) leaves the bead
-    `running` with no run: the entry says so and names the way out, a pause and a resume (the
-    operator's queue actions). `forge:shift recover` does not help: it refuses a live shift, and
+  - A queue move after the claim that never goes through leaves the bead `running` with no run.
+    The cases: bd failing on every try; a lock still busy after the first try's whole wait; the
+    4 s for the tries after the first spent; a ledger that cannot be read, so no try after the
+    first may write; this run's own start not stored. The entry says so and names the way out, a
+    pause and a resume (the operator's queue actions). `forge:shift recover` does not help: it refuses a live shift, and
     a stopped one. In the race above it is the refused shift's start that is the newest move, so
     the other shift's watch has let its own run go.
   - Untested: how the double wrapper (`bun run forge:shift` starting `bun scripts/…/shift-cli.ts`)
@@ -628,7 +653,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   4-thread Windows runner, in the isolation re-run, a step can take hundreds of ms): it stops the
   shift by its signal once the fake run has started, or moves the shift's clock (`ShiftDeps.now`)
   once what it waits for has happened (the time cap once both runs have started; a busy host once
-  it was sampled three times). Its kill
+  it was sampled three times). A held queue lock is a raw `BEGIN EXCLUSIVE` on the lock file, with
+  `ShiftDeps.lockWaitMs` short (the shift's moves and reservations take it; 10 s otherwise). Its kill
   test runs the Claude adapter on the fake binary behind a guard that refuses a spawn without the
   override. `shift-pr.test.ts` runs the base and the pull request step with real git on a scratch
   repository whose origin is a bare repository in the OS temp dir, and the real `pr:check`.
