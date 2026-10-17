@@ -45,9 +45,12 @@
  * is trusted only with its answer to a nonce of that call: exit code 0 alone
  * is not an answer.
  *
- * Not covered (`scripts/hearth/AGENTS.md` has the detail): the hearth writes
- * its own files by path, and the folders above the home are not judged; a
- * file this user wrote whose permissions someone else could once change.
+ * Not covered (`scripts/hearth/AGENTS.md` has the detail): the hearth and
+ * the supervisor write their own files by path, and the folders above the
+ * home are not judged, so whoever may rename one of them can have the token
+ * written into a folder of theirs at hearth start; a file this user owns
+ * whose content and permissions someone else chose (a same-user sandboxed
+ * process can make one).
  */
 
 import { spawnSync } from "node:child_process";
