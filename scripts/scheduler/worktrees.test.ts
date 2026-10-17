@@ -285,13 +285,21 @@ describe("gitRun", () => {
     }
   });
 
-  test("gives a command its whole time limit after a gap shorter than half the limit: one that takes two thirds of it finishes", async () => {
+  /**
+   * The command sleeps 4.5 s, more than the 4.1 s the gap leaves without the
+   * clock reset, and 3 s inside the limit for git, its shell and `sleep` to
+   * start. With a 3 s limit and a 2 s sleep that margin was 1 s, and in the
+   * isolation re-run on the 4-thread windows-latest runner, where one git
+   * call took hundreds of ms, the command was stopped at the limit
+   * (agent-forge-harness-vhiz, CI run 38993942691 attempt 2).
+   */
+  test("gives a command its whole time limit after a gap shorter than half the limit: one that needs more than the gap left finishes", async () => {
     const dir = repo();
-    const limitMs = 3_000;
+    const limitMs = 7_500;
     expect(gitRun(["--version"], dir, limitMs).status).toBe(0);
-    // Without the clock reset this run was killed about 1.8 s in.
-    await Bun.sleep(limitMs * 0.4);
-    const result = gitRun(alias("sleep 2 && echo done"), dir, limitMs);
+    // Without the clock reset this run was killed about 4.1 s in.
+    await Bun.sleep(limitMs * 0.45);
+    const result = gitRun(alias("sleep 4.5 && echo done"), dir, limitMs);
     expect({ status: result.status, stdout: result.stdout.trim() }).toEqual({
       status: 0,
       stdout: "done",
