@@ -791,6 +791,25 @@ describe("sweepCorrelations", () => {
     expect(existsSync(join(dir, "run-1.json"))).toBe(true);
   });
 
+  test("a draft dated one second in the future has age zero and is kept", () => {
+    const { checkout } = sandbox();
+    const draft = draftFile(checkout, "future.json.4242.tmp", 0);
+    const future = new Date(Date.now() + 1_000);
+    utimesSync(join(checkout, draft), future, future);
+    const result = sweepRuns(checkout, { issues: issues(), apply: true });
+    expect(result.candidates).toEqual([
+      {
+        path: draft,
+        taskId: "",
+        ageDays: 0,
+        action: "skip",
+        reason: "a writer's draft, age 0d < TTL 14d",
+      },
+    ]);
+    expect(result.deleted).toEqual([]);
+    expect(existsSync(join(checkout, draft))).toBe(true);
+  });
+
   test("a draft is swept beside the correlation it was for: the draft goes on its age, the correlation waits for its bead to close", () => {
     const { checkout } = sandbox();
     const held = agedCorrelation(checkout, "run-1", "bead-open", 30);
