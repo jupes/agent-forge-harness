@@ -43,6 +43,7 @@ import {
 import { readSessionMirror } from "../ledger/identity";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
+import { resetSpawnClock } from "../spawn-clock";
 
 // ── git ─────────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,10 @@ const READ_MS = 5_000;
 const WRITE_MS = 30_000;
 
 export const gitRun: GitRun = (args, cwd, timeoutMs = WRITE_MS) => {
+  // Under Bun a timed synchronous spawn is otherwise given its limit less the
+  // time since the last one ended (`spawn-clock.ts`): git, run once, gets all
+  // of `timeoutMs`.
+  resetSpawnClock();
   const result = spawnSync("git", [...args], {
     cwd,
     encoding: "utf8",
