@@ -39,8 +39,8 @@ import { comparableCheckout } from "../forge/runs";
 import { isMain } from "../is-main";
 import { resolveCheckout } from "../ledger/workspace";
 import { hearthHome, lockPath, tokenPath } from "./home";
-import { homeWriteProblem } from "./home-guard";
-import { type HearthLock, isPidAlive, readLock } from "./lock";
+import { readHomeLock } from "./home-guard";
+import { type HearthLock, isPidAlive, readLock, sameLock } from "./lock";
 import {
   type Exchange,
   healthProblem,
@@ -316,8 +316,11 @@ async function unusable(
 ): Promise<string | null> {
   // A home, or a lock file, that others can write lets them name a port of
   // their own and be sent the token (`home-guard.ts`): nothing in it is used.
-  const exposed = homeWriteProblem(home, join(home, file));
-  if (exposed !== null) return exposed;
+  // The lock is read again as it is checked, and used only when that read is
+  // the lock this server found: what was checked is what is used (`x1gs.3.38`).
+  const read = readHomeLock(home, join(home, file));
+  if (read.problem !== null) return read.problem;
+  if (!sameLock(read.lock, lock)) return "it changed while it was read";
   // A hearth writes its lock under the name of the root inside it, and names
   // the token file of that root in this home. A lock that says otherwise was
   // not written by a hearth of this home.

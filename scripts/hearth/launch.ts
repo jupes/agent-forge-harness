@@ -41,6 +41,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { dirname, resolve } from "node:path";
 import {
   type LedgerEventInput,
   OPERATOR_SURFACES,
@@ -49,7 +50,7 @@ import {
 import type { AppendResult } from "../ledger/append";
 import { isDeclaredSameOrigin } from "./gate";
 import { lockPath, rootKey } from "./home";
-import { homeWriteProblem } from "./home-guard";
+import { readHomeFile, readHomeLock } from "./home-guard";
 import { type Exchange, loopbackExchange } from "./loopback";
 import {
   API_PREFIX,
@@ -212,10 +213,11 @@ interface StoredSession {
  * missing, not JSON or of another shape or version holds none; an entry of
  * another shape is skipped.
  */
-function readSessions(file: string): StoredSession[] {
+function parseSessions(text: string | null): StoredSession[] {
+  if (text === null) return [];
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return [];
   }
@@ -248,22 +250,40 @@ function readSessions(file: string): StoredSession[] {
  * hash of its cookie value, the hash of its key and an absolute expiry, never
  * a value or a key. The file is read on every check, so a hearth started
  * again honours what the last one created.
+ *
+ * Read with the check, in one act (`readHomeFile`, `x1gs.3.38`): a sessions
+ * file is what the token route trusts, and one read by its path could be
+ * someone else's, in a folder above the home swapped in for the read, naming
+ * a session whose cookie and key they made. A file the check refuses holds
+ * no session for `valid`, and `create` refuses rather than carry what it
+ * read into the file it writes. `home` is the hearth home the file is in:
+ * by default the folder above `tokens/` (`sessionsPath`).
  */
 export function createSessionStore(
   file: string,
-  options: Clocked & { ttlMs?: number; max?: number } = {},
+  options: Clocked & { ttlMs?: number; max?: number; home?: string } = {},
 ): SessionStore {
   const now = options.now ?? Date.now;
   const ttl = options.ttlMs ?? SESSION_TTL_MS;
   const max = options.max ?? MAX_SESSIONS;
+  const home = options.home ?? dirname(dirname(file));
+  /** The sessions in the file, read with the check, or why it is not trusted. */
+  const readSessions = (): StoredSession[] | { problem: string } => {
+    const read = readHomeFile(home, file);
+    return read.problem !== null
+      ? { problem: read.problem }
+      : parseSessions(read.text);
+  };
   return {
     create() {
       const at = now();
       const value = freshSecret();
       const key = freshSecret();
       const expiresAt = at + ttl;
+      const stored = readSessions();
+      if (!Array.isArray(stored)) throw new Error(stored.problem);
       const kept = [
-        ...readSessions(file).filter((entry) => entry.expiresAt > at),
+        ...stored.filter((entry) => entry.expiresAt > at),
         { hash: hashOf(value), keyHash: hashOf(key), expiresAt },
       ]
         .sort((a, b) => a.expiresAt - b.expiresAt)
@@ -290,7 +310,9 @@ export function createSessionStore(
       const keyHashes = keys.filter(isSecretShaped).map(hashOf);
       if (cookieHashes.length === 0 || keyHashes.length === 0) return false;
       const at = now();
-      const sessions = readSessions(file);
+      const stored = readSessions();
+      // A file the check refuses holds no session.
+      const sessions = Array.isArray(stored) ? stored : [];
       const cookieFound = matches(
         sessions.map((entry) => entry.hash),
         cookieHashes,
@@ -562,8 +584,9 @@ const MINT_MAX_BYTES = 16_384;
 export interface RequestLaunchOptions {
   /**
    * The hearth home and the checkout root the port was found for: the home,
-   * and the lock file of that root in it, are checked first
-   * (`homeWriteProblem`), and nothing is sent when others can write either.
+   * and the lock file of that root in it, are checked and read first
+   * (`readHomeLock`), and nothing is sent when others can write either, or
+   * when that lock names another port.
    */
   home: string;
   root: string;
@@ -580,17 +603,26 @@ export interface RequestLaunchOptions {
  * Mint a launch secret from the hearth on `port`. The error says why not in
  * the hearth's words, never with the token. Nothing is sent from a home, or
  * with a lock file, that others can write: whoever can write them can name
- * the port (`home-guard.ts`).
+ * the port (`home-guard.ts`). And nothing is sent to a port the lock of
+ * `root` in the home does not name, read as it is checked (`readHomeLock`),
+ * here, just before the token goes: a port found earlier from a lock that was
+ * swapped back since is not sent the token (`x1gs.3.38`).
  */
 export async function requestLaunch(
   options: RequestLaunchOptions,
 ): Promise<MintedLaunch> {
-  const problem = homeWriteProblem(
-    options.home,
-    lockPath(options.home, options.root),
-  );
-  if (problem !== null)
-    throw new Error(`Refusing to send the operator token: ${problem}`);
+  const file = lockPath(options.home, options.root);
+  const read = readHomeLock(options.home, file);
+  if (read.problem !== null)
+    throw new Error(`Refusing to send the operator token: ${read.problem}`);
+  if (read.lock === null)
+    throw new Error(
+      `Refusing to send the operator token: there is no lock file of a hearth for ${resolve(options.root)} in ${options.home} (${file})`,
+    );
+  if (read.lock.port !== options.port)
+    throw new Error(
+      `Refusing to send the operator token: the lock file ${file} names port ${read.lock.port}, not ${options.port}`,
+    );
   const answer = await (options.exchange ?? loopbackExchange)({
     port: options.port,
     method: "POST",
@@ -676,9 +708,18 @@ export interface DashboardRecord {
 
 /** The record in `file`, or null when there is none or it is of another shape. */
 export function readDashboardRecord(file: string): DashboardRecord | null {
+  try {
+    return parseDashboardRecord(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The record in the text of a record file, or null when it is of another shape. */
+export function parseDashboardRecord(text: string): DashboardRecord | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
