@@ -260,10 +260,16 @@ describe("gitRun", () => {
     "under-test",
   ];
 
+  /**
+   * A gap just past the limit: without the clock reset git is killed at
+   * once, and with it `git --version` has the whole 2 s, room for the
+   * hundreds of ms one git call took in the isolation re-run on the
+   * windows-latest runner (a 500 ms limit left too little; vhiz).
+   */
   test("answers when more than its time limit has passed since the last run, rather than timing out before git could run", async () => {
-    const limitMs = 500;
+    const limitMs = 2_000;
     expect(gitRun(["--version"], tmpdir(), limitMs).status).toBe(0);
-    await Bun.sleep(limitMs * 3);
+    await Bun.sleep(limitMs * 1.1);
     const result = gitRun(["--version"], tmpdir(), limitMs);
     expect({ status: result.status, stdout: result.stdout }).toEqual({
       status: 0,
@@ -306,13 +312,18 @@ describe("gitRun", () => {
     });
   });
 
+  /**
+   * The command needs more than 1 s, more than the 0.8 s the gap leaves
+   * without the clock reset, and leaves 3 s of its 4 s limit for git, its
+   * shell, `echo` and `sleep` to start (with a 3 s limit that was 2 s; vhiz).
+   */
   test("runs a command that changes something exactly once, after a gap that left too little of the limit", async () => {
     const dir = repo();
-    const limitMs = 3_000;
+    const limitMs = 4_000;
     expect(gitRun(["--version"], dir, limitMs).status).toBe(0);
-    // Without the clock reset this run was killed about 0.75 s in, after its
+    // Without the clock reset this run was killed about 0.8 s in, after its
     // write: a run that was then repeated wrote twice.
-    await Bun.sleep(limitMs * 0.75);
+    await Bun.sleep(limitMs * 0.8);
     const result = gitRun(
       alias("echo ran >> marker.txt && sleep 1"),
       dir,
