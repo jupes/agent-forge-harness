@@ -64,6 +64,14 @@ const prepared = new Map<boolean, string>();
  *
  * Each call is a copy of one repository made the first time it is asked for,
  * so a test starts no git process to get it. No test is given the original.
+ *
+ * That repository has `maintenance.auto` off (agent-forge-harness-vhiz). A
+ * commit otherwise starts `git maintenance run --auto --detach`, which goes on
+ * after the commit returns and creates and removes `objects/maintenance.lock`.
+ * The copy made straight after can list that file and then fail to open it
+ * (ENOENT). On ubuntu-latest with four copies of this file running at once,
+ * as the isolation re-run in `scripts/ledger/test-isolation.test.ts` runs
+ * them, 31 of 240 runs failed that way; none of 160 with the setting.
  */
 function repo(ignoreTrees = true): string {
   let source = prepared.get(ignoreTrees);
@@ -203,6 +211,20 @@ describe("parsePorcelainZ", () => {
     ).toBe(true);
     expect(parsePorcelainZ("")).toEqual([]);
   });
+});
+
+test("a commit in the repository repo() copies starts no background maintenance, which would write into it while the next copy is made", () => {
+  const dir = repo();
+  writeFileSync(join(dir, "more.txt"), "more\n");
+  git(dir, "add", ".");
+  const traced = spawnSync("git", ["commit", "-q", "-m", "more"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_TRACE: "1" },
+  });
+  expect(traced.status).toBe(0);
+  expect(traced.stderr).toContain("built-in: git commit");
+  expect(traced.stderr).not.toContain("maintenance");
 });
 
 describe("comparablePath", () => {
