@@ -211,8 +211,9 @@ describe("the verdict comment", () => {
 });
 
 describe("a council run the hearth started on a bead", () => {
-  test("start refuses outcome words as run ids in any case before starting a run", async () => {
+  test("start refuses an outcome word as a run id, in any case, before starting a run: no run is stored or recorded, and nothing reaches bd or the council's runner", async () => {
     const h = await start();
+    h.commands.answer = beadReads(["demo-7"]);
     for (const runId of [
       "PASS",
       "pass",
@@ -225,13 +226,57 @@ describe("a council run the hearth started on a bead", () => {
       "UnReAdAbLe",
     ]) {
       const response = await post(h, "/council/runs", {
-        sourceType: "text",
-        source: "Review this text",
+        sourceType: "bead",
+        source: "demo-7",
         runId,
       });
-      expect(response.status).toBe(400);
+      expect({
+        runId,
+        status: response.status,
+        body: await response.json(),
+      }).toMatchObject({
+        runId,
+        status: 400,
+        body: { error: "runId must not be a council outcome word" },
+      });
+      const read = await fetch(`${h.api}/council-api/runs/${runId}`, {
+        headers: { [OPERATOR_HEADER]: h.hearth.token },
+      });
+      expect(((await read.json()) as { data: unknown }).data).toBeNull();
     }
+    expect(h.events(["council.run.started"])).toEqual([]);
+    expect(h.bd.calls).toEqual([]);
+    expect(h.commands.calls).toEqual([]);
   });
+
+  test("an id that only starts with an outcome word is still a run id: it starts, is read and is cancelled", async () => {
+    const h = await start();
+    let release = () => {};
+    const hold = new Promise<void>((done) => {
+      release = done;
+    });
+    // Each run is held in its first read of the bead until it is cancelled.
+    h.commands.answer = beadReads(["demo-7"], hold);
+    const ids = ["PASS-1", "pass-review"];
+    for (const runId of ids)
+      await startRun(h, { sourceType: "bead", source: "demo-7", runId });
+    for (let i = 0; i < 200 && h.commands.calls.length < ids.length; i++)
+      await new Promise((done) => setTimeout(done, 10));
+    for (const runId of ids) {
+      expect((await job(h, runId)).runId).toBe(runId);
+      const cancelled = await post(h, `/council/runs/${runId}/cancel`, {});
+      expect({ runId, status: cancelled.status }).toEqual({
+        runId,
+        status: 200,
+      });
+    }
+    release();
+    for (const runId of ids)
+      expect({ runId, status: (await ended(h, runId)).status }).toEqual({
+        runId,
+        status: "cancelled",
+      });
+  }, 20_000);
 
   test("that completes posts its verdict to the bead once, through the API's bd, after the run's finished event, and records the write as the comment row does", async () => {
     const h = await start();
