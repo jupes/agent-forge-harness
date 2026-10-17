@@ -17,6 +17,7 @@ interface Job {
   steps: Step[];
 }
 const workflow: {
+  env: Record<string, string>;
   concurrency: { group: string; "cancel-in-progress": string };
   jobs: Record<string, Job>;
 } = parse(
@@ -26,7 +27,7 @@ const workflow: {
   ),
 );
 
-test("PRs share a cancellation group; each push has a unique group, including pending runs", () => {
+test("the concurrency group is the PR number for pull requests and the run id for pushes, and only pull requests cancel", () => {
   expect(workflow.concurrency.group).toBe(
     "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
   );
@@ -35,7 +36,18 @@ test("PRs share a cancellation group; each push has a unique group, including pe
   );
 });
 
-test("every dependency install restores the OS and lockfile keyed Bun download cache first", () => {
+test("one workflow-level Bun version feeds every setup-bun step", () => {
+  expect(workflow.env["BUN_VERSION"]).toMatch(/^\d+\.\d+\.\d+$/);
+  const setups = Object.values(workflow.jobs).flatMap((job) =>
+    job.steps.filter((step) => step.uses === "oven-sh/setup-bun@v2"),
+  );
+  expect(setups).toHaveLength(3);
+  for (const step of setups) {
+    expect(step.with?.["bun-version"]).toBe("${{ env.BUN_VERSION }}");
+  }
+});
+
+test("every dependency install first restores a Bun download cache keyed by OS, that Bun version and the lockfile", () => {
   const installs = Object.values(workflow.jobs).filter((job) =>
     job.steps.some((step) => step.run === "bun install --frozen-lockfile"),
   );
@@ -47,7 +59,7 @@ test("every dependency install restores the OS and lockfile keyed Bun download c
     expect(cache).toBeGreaterThanOrEqual(0);
     expect(job.steps[cache]?.uses).toBe("actions/cache@v4");
     expect(job.steps[cache]?.with?.["key"]).toBe(
-      "bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}",
+      "bun-${{ runner.os }}-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}",
     );
     expect(cache).toBeLessThan(
       job.steps.findIndex(
@@ -57,7 +69,7 @@ test("every dependency install restores the OS and lockfile keyed Bun download c
   }
 });
 
-test("three independent shards preserve all results and a stable failure-propagating check", () => {
+test("the workflow declares a 3-shard matrix, per-shard artifacts and an aggregate that requires every shard's success", () => {
   const shards = workflow.jobs["e2e"];
   expect(shards?.strategy).toEqual({
     "fail-fast": false,
