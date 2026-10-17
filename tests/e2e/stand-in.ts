@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page } from "@playwright/test";
-import { readState, writeState } from "./bd-stand-in-state";
+import { readState, withStateLock, writeState } from "./bd-stand-in-state";
 import { BD_STAND_IN_BIN, BD_STAND_IN_STATE } from "./servers";
 
 const API = "/__agent-forge";
@@ -73,16 +73,18 @@ export async function requireStandIn(page: Page): Promise<void> {
  * backing metadata are written to the stand-in's issues directly.
  */
 export function seedProposed(id: string): void {
-  const issues = readState(BD_STAND_IN_STATE);
-  const issue = issues[id];
-  if (issue === undefined)
-    throw new Error(`the stand-in has no issue ${id} to propose`);
-  issues[id] = {
-    ...issue,
-    labels: [...(issue.labels ?? []), "queue:proposed"],
-    metadata: { ...(issue.metadata ?? {}), queue_state: "proposed" },
-  };
-  writeState(BD_STAND_IN_STATE, issues);
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const issues = readState(BD_STAND_IN_STATE);
+    const issue = issues[id];
+    if (issue === undefined)
+      throw new Error(`the stand-in has no issue ${id} to propose`);
+    issues[id] = {
+      ...issue,
+      labels: [...(issue.labels ?? []), "queue:proposed"],
+      metadata: { ...(issue.metadata ?? {}), queue_state: "proposed" },
+    };
+    writeState(BD_STAND_IN_STATE, issues);
+  });
 }
 
 export const createButton = (page: Page) =>
