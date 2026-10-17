@@ -41,6 +41,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { resolve } from "node:path";
 import {
   type LedgerEventInput,
   OPERATOR_SURFACES,
@@ -49,7 +50,7 @@ import {
 import type { AppendResult } from "../ledger/append";
 import { isDeclaredSameOrigin } from "./gate";
 import { lockPath, rootKey } from "./home";
-import { homeWriteProblem } from "./home-guard";
+import { readHomeLock } from "./home-guard";
 import { type Exchange, loopbackExchange } from "./loopback";
 import {
   API_PREFIX,
@@ -562,8 +563,9 @@ const MINT_MAX_BYTES = 16_384;
 export interface RequestLaunchOptions {
   /**
    * The hearth home and the checkout root the port was found for: the home,
-   * and the lock file of that root in it, are checked first
-   * (`homeWriteProblem`), and nothing is sent when others can write either.
+   * and the lock file of that root in it, are checked and read first
+   * (`readHomeLock`), and nothing is sent when others can write either, or
+   * when that lock names another port.
    */
   home: string;
   root: string;
@@ -580,17 +582,26 @@ export interface RequestLaunchOptions {
  * Mint a launch secret from the hearth on `port`. The error says why not in
  * the hearth's words, never with the token. Nothing is sent from a home, or
  * with a lock file, that others can write: whoever can write them can name
- * the port (`home-guard.ts`).
+ * the port (`home-guard.ts`). And nothing is sent to a port the lock of
+ * `root` in the home does not name, read as it is checked (`readHomeLock`),
+ * here, just before the token goes: a port found earlier from a lock that was
+ * swapped back since is not sent the token (`x1gs.3.38`).
  */
 export async function requestLaunch(
   options: RequestLaunchOptions,
 ): Promise<MintedLaunch> {
-  const problem = homeWriteProblem(
-    options.home,
-    lockPath(options.home, options.root),
-  );
-  if (problem !== null)
-    throw new Error(`Refusing to send the operator token: ${problem}`);
+  const file = lockPath(options.home, options.root);
+  const read = readHomeLock(options.home, file);
+  if (read.problem !== null)
+    throw new Error(`Refusing to send the operator token: ${read.problem}`);
+  if (read.lock === null)
+    throw new Error(
+      `Refusing to send the operator token: there is no lock file of a hearth for ${resolve(options.root)} in ${options.home} (${file})`,
+    );
+  if (read.lock.port !== options.port)
+    throw new Error(
+      `Refusing to send the operator token: the lock file ${file} names port ${read.lock.port}, not ${options.port}`,
+    );
   const answer = await (options.exchange ?? loopbackExchange)({
     port: options.port,
     method: "POST",
@@ -676,9 +687,18 @@ export interface DashboardRecord {
 
 /** The record in `file`, or null when there is none or it is of another shape. */
 export function readDashboardRecord(file: string): DashboardRecord | null {
+  try {
+    return parseDashboardRecord(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The record in the text of a record file, or null when it is of another shape. */
+export function parseDashboardRecord(text: string): DashboardRecord | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }

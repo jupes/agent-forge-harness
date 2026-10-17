@@ -34,9 +34,37 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * The lock at `path`, read by its path with no check: for the hearth's own
+ * bookkeeping. A client that sends the operator token to the port a lock
+ * names reads it with `readHomeFile` (`home-guard.ts`) and parses it with
+ * `parseLock`.
+ */
 export function readLock(path: string): HearthLock | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return parseLock(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Whether two locks name the same hearth: every field the hearth wrote. */
+export function sameLock(a: HearthLock | null, b: HearthLock | null): boolean {
+  return (
+    a !== null &&
+    b !== null &&
+    a.pid === b.pid &&
+    a.port === b.port &&
+    a.root === b.root &&
+    a.startedAt === b.startedAt &&
+    a.tokenFile === b.tokenFile
+  );
+}
+
+/** A lock from the text of a lock file, or null when it is not one. */
+export function parseLock(text: string): HearthLock | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null) return null;
     const candidate = parsed as Record<string, unknown>;
     if (
