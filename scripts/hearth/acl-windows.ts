@@ -26,6 +26,7 @@
  */
 
 import type * as BunFfi from "bun:ffi";
+import { existsSync } from "node:fs";
 
 type Pointer = BunFfi.Pointer;
 
@@ -52,14 +53,46 @@ export interface AclReading {
   entries: AclEntry[] | null;
 }
 
+/** A file read through one handle: its owner and DACL, and its bytes. */
+export interface OpenedFile {
+  reading: AclReading;
+  bytes: Uint8Array;
+}
+
+/** A folder and a file in it, each judged and read through its own handle (`readInFolder`). */
+export interface FolderRead {
+  /** The owner and DACL of the folder the path reaches: a junction's target, not the junction. */
+  folder: AclReading;
+  /** Null when no file was asked for, or there is none of that name. */
+  file: OpenedFile | null;
+}
+
 /** What `makeOwnerOnly` asks of Windows; a test hands in its own. */
 export interface WindowsAcl {
   /** This process's user, `S-1-…`. */
   userSid(): string;
   /** Replace `path`'s DACL with the owner-only one and make this user its owner. Throws on an API error. */
   apply(path: string, target: AclTarget): void;
-  /** `path`'s owner and DACL. Throws on an API error. */
+  /** `path`'s owner and DACL. Throws on an API error. A junction's are its own, not its target's. */
   read(path: string): AclReading;
+  /**
+   * The folder `folder` reaches, opened once (a junction or link on the way
+   * followed): its owner and DACL read through that handle, and, when `name`
+   * is given, the file of that name opened relative to that same handle,
+   * never by a path again, with its owner, DACL and up to `maxBytes` bytes
+   * read through its own handle. Null when `folder` does not exist. Throws
+   * on an API error and on a file larger than `maxBytes`.
+   *
+   * What a folder above `folder` is renamed to, or which folder a junction
+   * names, after the folder is opened changes nothing that is read: the
+   * handle holds the folder object itself (`home-guard.ts`, `x1gs.3.38`).
+   * Optional: a test's own ACL functions need not read files.
+   */
+  readInFolder?(
+    folder: string,
+    name: string | null,
+    maxBytes: number,
+  ): FolderRead | null;
 }
 
 export const SYSTEM_SID = "S-1-5-18";
@@ -335,7 +368,11 @@ export function bunFfi(
   return ffi as typeof BunFfi;
 }
 
-/** Both are known DLLs: Windows loads them from System32, whatever the current folder holds. */
+/**
+ * advapi32 and kernel32 are known DLLs, and ntdll is loaded into every
+ * process before anything else: Windows takes each from System32, whatever
+ * the current folder holds.
+ */
 function openApi(ffi: typeof BunFfi) {
   const { dlopen, FFIType } = ffi;
   const advapi32 = dlopen("advapi32.dll", {
@@ -372,12 +409,61 @@ function openApi(ffi: typeof BunFfi) {
       ],
       returns: FFIType.u32,
     },
+    GetSecurityInfo: {
+      args: [
+        FFIType.u64,
+        FFIType.i32,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+      ],
+      returns: FFIType.u32,
+    },
   }).symbols;
   const kernel32 = dlopen("kernel32.dll", {
     CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
     LocalFree: { args: [FFIType.ptr], returns: FFIType.ptr },
+    CreateFileW: {
+      args: [
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.u32,
+        FFIType.ptr,
+      ],
+      returns: FFIType.u64,
+    },
+    GetFileSizeEx: { args: [FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    ReadFile: {
+      args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
   }).symbols;
-  return { advapi32, kernel32, ffi };
+  // Opens a file relative to a folder's handle: kernel32 has no such call.
+  const ntdll = dlopen("ntdll.dll", {
+    NtCreateFile: {
+      args: [
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.u32,
+        FFIType.u32,
+        FFIType.u32,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u32,
+      ],
+      returns: FFIType.i32,
+    },
+  }).symbols;
+  return { advapi32, kernel32, ntdll, ffi };
 }
 
 type Api = ReturnType<typeof openApi>;
@@ -477,46 +563,210 @@ function nativeAcl(api: Api): WindowsAcl {
       if (owned !== 0) throw apiError("to make this user its owner", owned);
     },
     read(path) {
-      const name = wide(path);
-      const owner = new BigUint64Array(1);
-      const dacl = new BigUint64Array(1);
-      const descriptor = new BigUint64Array(1);
+      const out = securityOut();
       const got = api.advapi32.GetNamedSecurityInfoW(
-        name,
+        wide(path),
         SE_FILE_OBJECT,
         OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-        owner,
+        out.owner,
         null,
-        dacl,
+        out.dacl,
         null,
-        descriptor,
+        out.descriptor,
       );
       if (got !== 0) throw apiError("to read its ACL", got);
-      const sd = address(descriptor);
+      return descriptorReading(api, out);
+    },
+    readInFolder(folder, name, maxBytes) {
+      const dir = BigInt(
+        api.kernel32.CreateFileW(
+          wide(folder),
+          (READ_CONTROL | FILE_TRAVERSE | SYNCHRONIZE) >>> 0,
+          FILE_SHARE_ALL,
+          null,
+          OPEN_EXISTING,
+          FILE_FLAG_BACKUP_SEMANTICS,
+          null,
+        ),
+      );
+      if (dir === INVALID_HANDLE) {
+        // The error code is not read: the runtime may have overwritten it by now.
+        if (!existsSync(folder)) return null;
+        throw new Error(`Windows refused to open the folder ${folder}`);
+      }
       try {
-        // A self-relative security descriptor: revision, padding, then the control word.
-        const { read } = api.ffi;
-        const control = read.u16(sd, 2);
-        const ownerAt = address(owner);
-        const daclAt = address(dacl);
-        const ownerSid =
-          ownerAt === 0
-            ? null
-            : sidText(copyOut(api, ownerAt, 8 + 4 * read.u8(ownerAt, 1)));
-        const entries =
-          (control & SE_DACL_PRESENT) !== 0 && daclAt !== 0
-            ? parseDacl(copyOut(api, daclAt, read.u16(daclAt, 2)))
-            : null;
         return {
-          owner: ownerSid,
-          protected: (control & SE_DACL_PROTECTED) !== 0,
-          entries,
+          folder: handleReading(api, dir),
+          file: name === null ? null : readRelative(api, dir, name, maxBytes),
         };
       } finally {
-        if (sd !== 0) api.kernel32.LocalFree(sd);
+        api.kernel32.CloseHandle(dir);
       }
     },
   };
+}
+
+// ── Reading through a handle ───────────────────────────────────────────────
+
+const READ_CONTROL = 0x20000;
+const SYNCHRONIZE = 0x100000;
+const FILE_READ_DATA = 0x1;
+const FILE_TRAVERSE = 0x20;
+const FILE_READ_ATTRIBUTES = 0x80;
+/** `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`: a reader never stops the hearth renaming its files. */
+const FILE_SHARE_ALL = 0x7;
+const OPEN_EXISTING = 3;
+/** Needed to open a folder at all. */
+const FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+const INVALID_HANDLE = 0xffffffffffffffffn;
+/** `NtCreateFile`'s `FILE_OPEN`: only a file that exists. */
+const FILE_OPEN = 1;
+const FILE_SYNCHRONOUS_IO_NONALERT = 0x20;
+const FILE_NON_DIRECTORY_FILE = 0x40;
+/** Names compare as Windows compares them elsewhere. */
+const OBJ_CASE_INSENSITIVE = 0x40;
+/** No junction, link or other reparse point in the name is followed: one there is an error. */
+const OBJ_DONT_REPARSE = 0x1000;
+const STATUS_OBJECT_NAME_NOT_FOUND = 0xc0000034;
+const STATUS_OBJECT_PATH_NOT_FOUND = 0xc000003a;
+
+/** The out-parameters a security call fills. */
+function securityOut() {
+  return {
+    owner: new BigUint64Array(1),
+    dacl: new BigUint64Array(1),
+    descriptor: new BigUint64Array(1),
+  };
+}
+
+/** The owner and DACL a security call wrote into `out`; frees the descriptor. */
+function descriptorReading(
+  api: Api,
+  out: ReturnType<typeof securityOut>,
+): AclReading {
+  const sd = address(out.descriptor);
+  try {
+    // A self-relative security descriptor: revision, padding, then the control word.
+    const { read } = api.ffi;
+    const control = read.u16(sd, 2);
+    const ownerAt = address(out.owner);
+    const daclAt = address(out.dacl);
+    const ownerSid =
+      ownerAt === 0
+        ? null
+        : sidText(copyOut(api, ownerAt, 8 + 4 * read.u8(ownerAt, 1)));
+    const entries =
+      (control & SE_DACL_PRESENT) !== 0 && daclAt !== 0
+        ? parseDacl(copyOut(api, daclAt, read.u16(daclAt, 2)))
+        : null;
+    return {
+      owner: ownerSid,
+      protected: (control & SE_DACL_PROTECTED) !== 0,
+      entries,
+    };
+  } finally {
+    if (sd !== 0) api.kernel32.LocalFree(sd);
+  }
+}
+
+/** The owner and DACL of what `handle` holds open. */
+function handleReading(api: Api, handle: bigint): AclReading {
+  const out = securityOut();
+  const got = api.advapi32.GetSecurityInfo(
+    handle,
+    SE_FILE_OBJECT,
+    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    out.owner,
+    null,
+    out.dacl,
+    null,
+    out.descriptor,
+  );
+  if (got !== 0) throw apiError("to read its ACL", got);
+  return descriptorReading(api, out);
+}
+
+/**
+ * The file `name` (one or more names joined by `\`) in the folder `dir` holds
+ * open, opened relative to that handle and through no reparse point: its
+ * owner and DACL and its bytes, each read through the one handle. Null when
+ * there is no such file.
+ */
+function readRelative(
+  api: Api,
+  dir: bigint,
+  name: string,
+  maxBytes: number,
+): OpenedFile | null {
+  const { ptr } = api.ffi;
+  const text = Buffer.from(name.replaceAll("/", "\\"), "utf16le");
+  if (text.length === 0 || text.length > 0xfffe)
+    throw new Error(`not a file name: ${name}`);
+  // UNICODE_STRING: Length, MaximumLength (in bytes), padding, then Buffer.
+  const unicode = new Uint8Array(16);
+  const unicodeView = new DataView(unicode.buffer);
+  unicodeView.setUint16(0, text.length, true);
+  unicodeView.setUint16(2, text.length, true);
+  unicodeView.setBigUint64(8, BigInt(ptr(text)), true);
+  // OBJECT_ATTRIBUTES on 64-bit Windows: 48 bytes.
+  const attributes = new Uint8Array(48);
+  const view = new DataView(attributes.buffer);
+  view.setUint32(0, 48, true);
+  view.setBigUint64(8, dir, true);
+  view.setBigUint64(16, BigInt(ptr(unicode)), true);
+  view.setUint32(24, OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE, true);
+  const status = new Uint8Array(16);
+  const opened = new BigUint64Array(1);
+  // What the structures point into must outlive the call: held here until it returns.
+  const held: unknown[] = [text, unicode];
+  const result =
+    api.ntdll.NtCreateFile(
+      opened,
+      (FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE) >>>
+        0,
+      attributes,
+      status,
+      null,
+      0,
+      FILE_SHARE_ALL,
+      FILE_OPEN,
+      FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+      null,
+      0,
+    ) >>> 0;
+  held.length = 0;
+  if (
+    result === STATUS_OBJECT_NAME_NOT_FOUND ||
+    result === STATUS_OBJECT_PATH_NOT_FOUND
+  )
+    return null;
+  if (result !== 0)
+    throw new Error(
+      `Windows refused to open ${name} in the folder (status 0x${result.toString(16)})`,
+    );
+  const file = opened[0] ?? 0n;
+  try {
+    const reading = handleReading(api, file);
+    const size = new BigInt64Array(1);
+    if (api.kernel32.GetFileSizeEx(file, size) === 0)
+      throw new Error(`Windows refused to give the size of ${name}`);
+    const length = Number(size[0] ?? 0n);
+    if (length > maxBytes)
+      throw new Error(`${name} is larger than ${maxBytes} bytes`);
+    const bytes = new Uint8Array(length);
+    const done = new Uint32Array(1);
+    let at = 0;
+    while (at < length) {
+      const chunk = bytes.subarray(at);
+      if (api.kernel32.ReadFile(file, chunk, chunk.length, done, null) === 0)
+        throw new Error(`Windows refused to read ${name}`);
+      if ((done[0] ?? 0) === 0) break;
+      at += done[0] ?? 0;
+    }
+    return { reading, bytes: bytes.subarray(0, at) };
+  } finally {
+    api.kernel32.CloseHandle(file);
+  }
 }
 
 let native: WindowsAcl | undefined;

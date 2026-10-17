@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
@@ -34,9 +35,37 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * The lock at `path`, read by its path with no check: for the hearth's own
+ * bookkeeping. A client that sends the operator token to the port a lock
+ * names reads it with `readHomeFile` (`home-guard.ts`) and parses it with
+ * `parseLock`.
+ */
 export function readLock(path: string): HearthLock | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return parseLock(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Whether two locks name the same hearth: every field the hearth wrote. */
+export function sameLock(a: HearthLock | null, b: HearthLock | null): boolean {
+  return (
+    a !== null &&
+    b !== null &&
+    a.pid === b.pid &&
+    a.port === b.port &&
+    a.root === b.root &&
+    a.startedAt === b.startedAt &&
+    a.tokenFile === b.tokenFile
+  );
+}
+
+/** A lock from the text of a lock file, or null when it is not one. */
+export function parseLock(text: string): HearthLock | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null) return null;
     const candidate = parsed as Record<string, unknown>;
     if (
@@ -88,17 +117,33 @@ export function acquireLock(path: string, lock: HearthLock): AcquireResult {
   throw new Error(`Could not acquire hearth lock at ${path}`);
 }
 
-/** Rewrite the lock in place (write-then-rename) with a patch applied. */
+/**
+ * Rewrite the lock (write-then-rename) as `lock` with a patch applied:
+ * `lock` is the one the caller read with the check (`readHomeLock`), and
+ * nothing read here by the path goes into what is written (`x1gs.3.38`). A
+ * lock read again by its path could be someone else's: a folder above the
+ * home swapped in for that read and back for the write would have this
+ * user's own process write their port into the home, as a file of this
+ * user's, which every check passes. The path is read only to leave alone a
+ * lock that no longer names that hearth (closed, or started again). Null
+ * then; the lock written otherwise. The temp file is new (`wx`), named at
+ * random and, where modes count, this user's only.
+ */
 export function updateLock(
   path: string,
+  lock: HearthLock,
   patch: Partial<Pick<HearthLock, "supervisor">>,
 ): HearthLock | null {
-  const current = readLock(path);
-  if (!current) return null;
-  const next = { ...current, ...patch };
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(next));
-  renameSync(temp, path);
+  if (!sameLock(readLock(path), lock)) return null;
+  const next = { ...lock, ...patch };
+  const temp = `${path}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+  writeFileSync(temp, JSON.stringify(next), { flag: "wx", mode: 0o600 });
+  try {
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
   return next;
 }
 

@@ -21,13 +21,14 @@
 import { resolve } from "node:path";
 import { isMain } from "../is-main";
 import { dashboardRecordPath, hearthHome, lockPath, tokenPath } from "./home";
+import { readHomeFile, readHomeLock } from "./home-guard";
 import {
   launchBase,
   launchUrl,
-  readDashboardRecord,
+  parseDashboardRecord,
   requestLaunch,
 } from "./launch";
-import { isPidAlive, readLock } from "./lock";
+import { isPidAlive } from "./lock";
 import { type Exchange, healthProblem, loopbackExchange } from "./loopback";
 import { readToken } from "./token";
 
@@ -62,7 +63,13 @@ export async function freshLaunchLink(options: OpenOptions): Promise<string> {
   let base: string;
   if (options.url !== undefined) base = checkedBase(options.url, "--url");
   else {
-    const record = readDashboardRecord(dashboardRecordPath(options.home, root));
+    // Read as it is checked: whoever can write the record names where the link, and its secret, go.
+    const read = readHomeFile(
+      options.home,
+      dashboardRecordPath(options.home, root),
+    );
+    if (read.problem !== null) throw new NoLaunchLink(read.problem);
+    const record = read.text === null ? null : parseDashboardRecord(read.text);
     if (record === null || !alive(record.pid))
       throw new NoLaunchLink(
         `No dashboard is running for ${root}. Start one with: bun run dashboard (it prints a launch link), or pass --url http://127.0.0.1:<its port>.`,
@@ -72,7 +79,11 @@ export async function freshLaunchLink(options: OpenOptions): Promise<string> {
       "The running dashboard is not bound to a loopback address (restart it with bun run dashboard)",
     );
   }
-  const lock = readLock(lockPath(options.home, root));
+  // Read as it is checked, before its port is asked anything (`x1gs.3.38`);
+  // `requestLaunch` reads it so again, and sends nothing unless it still names that port.
+  const read = readHomeLock(options.home, lockPath(options.home, root));
+  if (read.problem !== null) throw new NoLaunchLink(read.problem);
+  const lock = read.lock;
   const exchange = options.exchange ?? loopbackExchange;
   const problem =
     lock === null || resolve(lock.root) !== root
