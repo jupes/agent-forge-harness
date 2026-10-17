@@ -141,6 +141,23 @@ describe("failureBlocks", () => {
     expect(block.endsWith("[cut]\n(fail) a > long")).toBe(true);
   });
 
+  test("diff lines that look like source excerpts cannot displace the error report", () => {
+    const diff = Array.from(
+      { length: 200 },
+      (_, i) => `  ${i} | looks like an excerpt`,
+    );
+    const block = failureBlocks(
+      [...noise, ...excerpt, ...diff, "(fail) a > excerpt-like diff"].join(
+        "\n",
+      ),
+    );
+    expect(block.startsWith(`[cut]\n${excerpt.join("\n")}\n${diff[0]}`)).toBe(
+      true,
+    );
+    expect(block.endsWith("[cut]\n(fail) a > excerpt-like diff")).toBe(true);
+    expect(block.length).toBeLessThan(4_200);
+  });
+
   test("a timeout note is kept once, with its own test, not again with the next failure", () => {
     const output = [
       "(fail) a > slow [101.00ms]",

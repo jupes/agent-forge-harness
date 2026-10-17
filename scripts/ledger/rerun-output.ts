@@ -68,19 +68,26 @@ const ERROR_LINE = /^error: /;
 
 /**
  * Where bun's own report of a failure starts in the lines before its `(fail)`
- * line: the source excerpt it prints last, else the last `error:` line; null
+ * line: the last source excerpt above the last `error:` line, else that error;
+ * null
  * when there is neither. What comes before it is the test's own output.
  */
 function reportStart(before: readonly string[]): number | null {
+  let error: number | null = null;
   for (let k = before.length - 1; k >= 0; k--) {
+    if (ERROR_LINE.test(before[k] ?? "")) {
+      error = k;
+      break;
+    }
+  }
+  if (error === null) return null;
+  for (let k = error - 1; k >= 0; k--) {
     if (!EXCERPT.test(before[k] ?? "")) continue;
     let first = k;
     while (first > 0 && EXCERPT.test(before[first - 1] ?? "")) first--;
     return first;
   }
-  for (let k = before.length - 1; k >= 0; k--)
-    if (ERROR_LINE.test(before[k] ?? "")) return k;
-  return null;
+  return error;
 }
 
 /**
