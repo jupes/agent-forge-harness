@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -536,6 +537,60 @@ test("the check run under Bun in a child process, as the dashboard under Node ru
   expect(checkHomeInBun(home, undefined)).toBe(homeWriteProblem(home));
   expect(checkHomeInBun(own, undefined)).toBeNull();
 }, 30_000);
+
+test("checkHomeInBun gives a slow check its whole limit after a shorter gap", async () => {
+  const home = temp("af-guard-clock");
+  const executable = join(home, ON_WINDOWS ? "check.exe" : "check");
+  const real = process.execPath;
+  const build = Bun.spawn(
+    [
+      real,
+      "build",
+      "--compile",
+      join(import.meta.dir, "..", "fixtures", "spawn-clock-home-check.ts"),
+      "--outfile",
+      executable,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [exitCode, stderr] = await Promise.all([
+    build.exited,
+    new Response(build.stderr).text(),
+    new Response(build.stdout).text(),
+  ]);
+  expect({ exitCode, stderr }).toEqual({
+    exitCode: 0,
+    stderr: expect.any(String),
+  });
+  // The real 30 s limit must allow a 22 s check even after 12 s idle.
+  // Without a reset, Windows kills the check about 18 s in.
+  const run = Bun.spawn(
+    [
+      real,
+      join(import.meta.dir, "..", "fixtures", "spawn-clock-caller.ts"),
+      "home",
+      executable,
+      home,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [status, stdout, error] = await Promise.all([
+    run.exited,
+    new Response(run.stdout).text(),
+    new Response(run.stderr).text(),
+  ]);
+  expect({ status, error }).toEqual({ status: 0, error: "" });
+  let problem: unknown;
+  try {
+    problem = JSON.parse(stdout);
+  } catch {
+    throw new Error(`the home-check driver printed invalid JSON: ${stdout}`);
+  }
+  expect(problem).toBeNull();
+  expect(readFileSync(join(home, "checked.txt"), "utf8")).toBe(
+    "started\nfinished\n",
+  );
+}, 90_000);
 
 // ── A home the hearth creates ──────────────────────────────────────────────
 

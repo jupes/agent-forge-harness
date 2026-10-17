@@ -30,6 +30,7 @@ import {
   handleSessionStart,
   hookDeps,
 } from "../../scripts/ledger/hook-events";
+import { resetSpawnClock } from "../../scripts/spawn-clock";
 import { getSessionLogPath } from "./utils/constants";
 import {
   type HookInput,
@@ -58,6 +59,7 @@ function run(
   args: readonly string[],
   withStderr = false,
 ): string {
+  resetSpawnClock();
   const result = spawnSync(file, [...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

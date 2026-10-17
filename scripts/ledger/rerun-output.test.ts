@@ -141,6 +141,71 @@ describe("failureBlocks", () => {
     expect(block.endsWith("[cut]\n(fail) a > long")).toBe(true);
   });
 
+  test("diff lines that look like source excerpts cannot displace the error report", () => {
+    const diff = Array.from(
+      { length: 200 },
+      (_, i) => `  ${i} | looks like an excerpt`,
+    );
+    const block = failureBlocks(
+      [...noise, ...excerpt, ...diff, "(fail) a > excerpt-like diff"].join(
+        "\n",
+      ),
+    );
+    expect(block.startsWith(`[cut]\n${excerpt.join("\n")}\n${diff[0]}`)).toBe(
+      true,
+    );
+    expect(block.endsWith("[cut]\n(fail) a > excerpt-like diff")).toBe(true);
+    expect(block.length).toBeLessThan(4_200);
+  });
+
+  /**
+   * Bun 1.3.10's report of a test that threw `new TypeError(...)`: the
+   * excerpt, then the error's name, with no `error:` line.
+   */
+  const typeErrorReport = [
+    "2 | ",
+    '3 | test("throws a type error", () => {',
+    "6 |   const value = 1;",
+    '7 |   throw new TypeError("bad type here " + value);',
+    "                                                  ^",
+    "TypeError: bad type here 1",
+    "      at <anonymous> (/home/runner/work/agent-forge-harness/scripts/sample.test.ts:7:47)",
+    "(fail) throws a type error",
+  ];
+
+  test("a TypeError after a child's earlier error: line and a long stderr keeps its excerpt and its TypeError line", () => {
+    const output = [
+      "error: pathspec 'gone' did not match any file(s) known to git",
+      ...noise,
+      ...typeErrorReport,
+    ].join("\n");
+    expect(output.length).toBeGreaterThan(4_000);
+    expect(failureBlocks(output)).toBe(
+      ["[cut]", ...typeErrorReport].join("\n"),
+    );
+  });
+
+  test("a TypeError after a long stderr with no error: line keeps its report, without the stderr", () => {
+    const output = [...noise, ...typeErrorReport].join("\n");
+    expect(output.length).toBeGreaterThan(4_000);
+    expect(failureBlocks(output)).toBe(
+      ["[cut]", ...typeErrorReport].join("\n"),
+    );
+  });
+
+  test("an error whose name does not end in Error, after a long stderr, keeps its report from the excerpt", () => {
+    const report = [
+      "10 |   throw e;",
+      "             ^",
+      "Refusal: refused",
+      "      at <anonymous> (/home/runner/work/agent-forge-harness/scripts/sample.test.ts:10:9)",
+      "(fail) custom name",
+    ];
+    expect(failureBlocks([...noise, ...report].join("\n"))).toBe(
+      ["[cut]", ...report].join("\n"),
+    );
+  });
+
   test("a timeout note is kept once, with its own test, not again with the next failure", () => {
     const output = [
       "(fail) a > slow [101.00ms]",
