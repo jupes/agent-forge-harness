@@ -8,12 +8,14 @@
  *
  * - `done`: the control plane answered `ok: true`.
  * - `refused`: nothing was changed. The control plane refused in its own
- *   words, or no operator token could be had (`NotSent`), so no request left
- *   the page or only one a 403 turned away.
+ *   words with a 4xx or a 503 (its "nothing was done"), or no operator token
+ *   could be had (`NotSent`), so no request left the page or only one a 403
+ *   turned away.
  * - `unknown`: the request may have been acted on. It was sent and then
  *   failed (no answer within the deadline, the connection dropped), or it was
- *   answered with a 504, or with something that is not the control plane's
- *   envelope. The page must not offer the same action again as if nothing
+ *   answered with any other 5xx (504 is the control plane's "not known"; a
+ *   500 or 502 can come part way through), or with something that is not the
+ *   control plane's envelope. The page must not offer the same action again as if nothing
  *   happened: a second council start is a second paid run, a second review a
  *   second comment. It says how to check, and holds the action until it has
  *   read the state again or the operator says they have checked.
@@ -74,8 +76,12 @@ export async function actionOutcome(
       state: "unknown",
       message: `The answer (HTTP ${response.status}) did not come from the control plane. ${check}`,
     };
-  // 504 is the one status the control plane uses for "outcome not known".
-  if (response.status === 504)
+  // 504 is the status the control plane uses for "outcome not known", and 503
+  // the one it uses for "nothing was done" (the audit row could not be
+  // written, the token is not ready). Any other 5xx is a failure part way
+  // through, which may come after the change was made (a `bd` killed after
+  // writing answers 502 on a route that does not say 504): not known either.
+  if (response.status >= 500 && response.status !== 503)
     return {
       state: "unknown",
       message: `${sentence(error ?? "The control plane could not tell whether it was done")} ${check}`,

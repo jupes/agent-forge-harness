@@ -47,6 +47,24 @@ describe("actionOutcome", () => {
     ).toEqual({ state: "refused", message: "Already running" });
   });
 
+  test.each([
+    [409, "refused"],
+    [503, "refused"],
+    [500, "unknown"],
+    [502, "unknown"],
+  ] as const)("an envelope with HTTP %i is %s: only a 4xx or the 503 the control plane sends for 'nothing was done' changed nothing", async (status, state) => {
+    const error = `bd comments add failed (HTTP ${status})`;
+    const outcome = await actionOutcome(
+      async () => envelope(status, { ok: false, data: null, error }),
+      CHECK,
+    );
+    expect(outcome.state).toBe(state);
+    expect(outcome).toHaveProperty(
+      "message",
+      state === "refused" ? error : `${error}. ${CHECK}`,
+    );
+  });
+
   test("no operator token (NotSent) is refused: nothing left the page", async () => {
     const outcome = await actionOutcome(async () => {
       throw new NotSent("no session");
