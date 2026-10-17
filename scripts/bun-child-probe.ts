@@ -1,4 +1,10 @@
-/** Bounded, opt-in probe: bun run scripts/bun-child-probe.ts <bun> [count] [parallel] [seed] */
+/**
+ * Detects a Bun child that exits 0 without running: each child writes a unique token to a marker
+ * file, stdout and stderr, and the probe classifies it as complete, exit-zero-without-witness,
+ * witness-mismatch, nonzero, timeout or probe error, for both `bun -e` and `bun run <file>`.
+ * Run: bun run scripts/bun-child-probe.ts <bun> [count] [parallel 1..16] [seed]
+ * Oct 2026: 4,800 children on Bun 1.3.10 and 1.4.3, no reproduction; see bead ieqd.
+ */
 import { readFileSync, writeFileSync } from "node:fs";
 import { arch, cpus, release } from "node:os";
 import { join, resolve } from "node:path";
