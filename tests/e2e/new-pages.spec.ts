@@ -224,6 +224,40 @@ test.describe("Forge run", () => {
     );
   });
 
+  test("a review whose answer never came may have been recorded: the page says how to check and holds both buttons until the operator says they checked", async ({
+    page,
+  }) => {
+    await stubForgeRun(page);
+    let sent = 0;
+    // The request leaves the page and no answer comes back: as when the
+    // control plane acted and its answer arrived after the page's deadline.
+    await page.route("**/__agent-forge/dev-api/forge-run/review", (route) => {
+      sent++;
+      return route.abort("timedout");
+    });
+    await openSettled(page, FORGE_RUN);
+    const approve = page.getByRole("button", { name: "Approve checkpoint" });
+    await page.fill("#forge-review-note", "Checked the primitives.");
+    await approve.click();
+
+    const result = page.locator(".af-review-result");
+    await expect(result).toHaveAttribute("data-outcome", "unknown");
+    await expect(result).toContainText("may have been recorded");
+    await expect(result).toContainText("bd show demo-primitives");
+    // No blind retry: neither button sends a second comment.
+    await expect(approve).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Request changes" }),
+    ).toBeDisabled();
+    expect(sent).toBe(1);
+
+    await page
+      .getByRole("button", { name: "I have checked the comments" })
+      .click();
+    await expect(result).toHaveCount(0);
+    await expect(approve).toBeEnabled();
+  });
+
   test("shows the newest quality-gate run for this checkout and forge run", async ({
     page,
   }) => {

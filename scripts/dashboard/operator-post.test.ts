@@ -27,6 +27,194 @@ interface Call {
 }
 
 /**
+ * `promise`, or a failure after `ms` of real time. A hung-request test whose
+ * deadline regressed would otherwise wait on a promise that never settles,
+ * and bun's per-test timeout does not end it: the run hangs instead of
+ * failing. The real timer here does fire, and the test fails in seconds.
+ */
+async function within<T>(
+  promise: Promise<T>,
+  what: string,
+  ms = 2_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, fail) => {
+        timer = setTimeout(
+          () => fail(new Error(`${what} did not settle within ${ms} ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+describe("bounded operator requests", () => {
+  test("successful streams stay streaming and keep caller cancellation after the header timer is cleared", async () => {
+    const timers = new Set<() => void>();
+    let streamSignal: AbortSignal | null | undefined;
+    const body = new ReadableStream<Uint8Array<ArrayBuffer>>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(": open\n\n"));
+      },
+    });
+    const client = createOperatorClient(
+      async (url, init) => {
+        if (url === TOKEN_ROUTE)
+          return Response.json({ ok: true, data: { token: "t" }, error: null });
+        streamSignal = init?.signal;
+        return new Response(body, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+      {
+        timers: {
+          set(run) {
+            timers.add(run);
+            return run;
+          },
+          clear(handle) {
+            for (const timer of timers)
+              if (timer === handle) timers.delete(timer);
+          },
+        },
+      },
+    );
+    const controller = new AbortController();
+    const response = await client.read("/events", {
+      headers: { Accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    expect(timers.size).toBe(0);
+    expect(response.body).toBe(body);
+    const reader = response.body?.getReader();
+    expect(new TextDecoder().decode((await reader?.read())?.value)).toBe(
+      ": open\n\n",
+    );
+    controller.abort();
+    expect(streamSignal?.aborted).toBe(true);
+    await reader?.cancel();
+  });
+
+  test("no-body answers preserve status and headers without manufacturing a body", async () => {
+    const client = createOperatorClient(async (url) =>
+      url === TOKEN_ROUTE
+        ? Response.json({ ok: true, data: { token: "t" }, error: null })
+        : new Response(null, {
+            status: 204,
+            statusText: "No Content",
+            headers: { "x-result": "saved" },
+          }),
+    );
+    const response = await client.post("/save", {});
+    expect(response.status).toBe(204);
+    expect(response.statusText).toBe("No Content");
+    expect(response.headers.get("x-result")).toBe("saved");
+    expect(response.body).toBeNull();
+  });
+
+  test("a launch that never answers is refused within its bound and keeps no session key", async () => {
+    let expire = () => {};
+    let signal: AbortSignal | null | undefined;
+    const keys = keyStore();
+    const pending = beginLaunch(
+      {
+        location: { hash: "#launch=secret", pathname: "/", search: "" },
+        history: { state: null, replaceState() {} },
+      },
+      {
+        fetch: async (_url, init) => {
+          signal = init?.signal;
+          return new Promise<Response>(() => {});
+        },
+        sessionKeys: keys,
+        timers: {
+          set(run) {
+            expire = run;
+            return 1;
+          },
+          clear() {},
+        },
+      },
+    );
+    expire();
+    expect(await within(pending, "the launch")).toEqual({
+      state: "refused",
+      error: "The control plane did not answer within 45 s.",
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(keys.held).toEqual([]);
+  });
+
+  test.each([
+    "token",
+    "post",
+    "read",
+  ] as const)("hung %s headers or body settle and do not retry", async (kind) => {
+    for (const bodyOnly of [false, true]) {
+      let expire = () => {};
+      let cleared = 0;
+      const calls: string[] = [];
+      let signal: AbortSignal | null | undefined;
+      let reached = () => {};
+      const hanging = new Promise<void>((done) => {
+        reached = done;
+      });
+      const client = createOperatorClient(
+        async (url, init) => {
+          calls.push(url);
+          if (kind !== "token" && url === TOKEN_ROUTE)
+            return Response.json({
+              ok: true,
+              data: { token: "t" },
+              error: null,
+            });
+          signal = init?.signal;
+          reached();
+          return bodyOnly
+            ? new Response(new ReadableStream({ start() {} }))
+            : new Promise<Response>(() => {});
+        },
+        {
+          timeoutMs: 45_000,
+          timers: {
+            set(run) {
+              expire = run;
+              return 1;
+            },
+            clear() {
+              cleared++;
+            },
+          },
+        },
+      );
+      const pending = (
+        kind === "read" ? client.read("/runs") : client.post("/runs", {})
+      ).catch((error: unknown) => error);
+      await within(hanging, `the ${kind} request`);
+      await Promise.resolve();
+      expire();
+      const error = await within(pending, `the hung ${kind}`);
+      expect(error).toBeInstanceOf(Error);
+      expect(error instanceof NotSent).toBe(kind === "token");
+      expect(error).toHaveProperty(
+        "message",
+        "The control plane did not answer within 45 s.",
+      );
+      expect(signal?.aborted).toBe(true);
+      expect(calls).toEqual(
+        kind === "token" ? [TOKEN_ROUTE] : [TOKEN_ROUTE, "/runs"],
+      );
+      expect(cleared).toBe(kind === "token" ? 1 : 2);
+    }
+  });
+});
+
+/**
  * A stand-in hearth: serves whatever token is current, and accepts a POST only
  * when it carries that token.
  */
@@ -93,7 +281,8 @@ describe("operatorRead", () => {
       { accept: "text/event-stream", [OPERATOR_HEADER]: "t-1" },
     ]);
     expect(hearth.reads().map((call) => call.body)).toEqual([null, null]);
-    expect(signals.at(-1)).toBe(controller.signal);
+    controller.abort();
+    expect(signals.at(-1)?.aborted).toBe(true);
   });
 
   test("shares the poster's token: a post and a read fetch it once", async () => {
@@ -598,6 +787,7 @@ describe("the launch fragment", () => {
           method: "POST",
           headers: { [LAUNCH_HEADER]: SECRET, [SURFACE_HEADER]: "ui" },
           credentials: "same-origin",
+          signal: expect.any(AbortSignal),
         },
         // Already gone from the address bar when the request left.
         hash: "#/timeline?bead=x-1",

@@ -14,6 +14,7 @@ import {
 } from "../../../scripts/dashboard/forge-run-model";
 import type { BeadsPayload } from "../../../types/beads";
 import type { LedgerEventKind } from "../../../types/hearth";
+import { type ActionOutcome, actionOutcome } from "../action-outcome";
 import { Button } from "../ds/Button";
 import { Card } from "../ds/Card";
 import { EmptyState } from "../ds/EmptyState";
@@ -603,9 +604,14 @@ function ReviewActions({
   const [selectedId, setSelectedId] = useState(checkpoints[0]?.id ?? "");
   const [note, setNote] = useState("");
   const [pending, setPending] = useState<string | null>(null);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(
-    null,
-  );
+  const [result, setResult] = useState<{
+    outcome: ActionOutcome["state"];
+    message: string;
+  } | null>(null);
+  // A review whose outcome is not known holds both buttons until the operator
+  // says they have checked the bead's comments: no blind second comment.
+  const held = result?.outcome === "unknown";
+  const busy = pending !== null || held;
 
   const selected =
     checkpoints.find((checkpoint) => checkpoint.id === selectedId) ??
@@ -617,28 +623,24 @@ function ReviewActions({
     setPending(decision);
     setResult(null);
     try {
-      const response = await operatorPost(REVIEW_URL, {
-        issueId: target.id,
-        decision,
-        note,
-      });
-      const envelope = (await response.json()) as {
-        ok: boolean;
-        error: string | null;
-      };
-      if (!response.ok || !envelope.ok) {
-        throw new Error(envelope.error ?? `HTTP ${response.status}`);
+      const outcome = await actionOutcome(
+        () =>
+          operatorPost(REVIEW_URL, {
+            issueId: target.id,
+            decision,
+            note,
+          }),
+        `The review may have been recorded: check the comments on ${target.id} with \`bd show ${target.id}\` before reviewing again.`,
+      );
+      if (outcome.state === "done") {
+        setResult({
+          outcome: "done",
+          message: `Recorded a review: comment on ${target.id}. Refresh the snapshot to see it in the issue's history.`,
+        });
+        setNote("");
+        return;
       }
-      setResult({
-        ok: true,
-        message: `Recorded a review: comment on ${target.id}. Refresh the snapshot to see it in the issue's history.`,
-      });
-      setNote("");
-    } catch (cause) {
-      setResult({
-        ok: false,
-        message: cause instanceof Error ? cause.message : String(cause),
-      });
+      setResult({ outcome: outcome.state, message: outcome.message });
     } finally {
       setPending(null);
     }
@@ -665,7 +667,7 @@ function ReviewActions({
           <Select
             id="forge-review-checkpoint"
             value={target.id}
-            disabled={pending !== null}
+            disabled={busy}
             onChange={(event) => {
               setSelectedId(event.currentTarget.value);
               setResult(null);
@@ -686,20 +688,20 @@ function ReviewActions({
           rows={3}
           placeholder="What you checked, or what needs to change"
           onInput={(event) => setNote(event.currentTarget.value)}
-          disabled={pending !== null}
+          disabled={busy}
         />
       </Field>
       <div class="af-button-row">
         <Button
           variant="primary"
           icon="check-circle-fill"
-          disabled={pending !== null}
+          disabled={busy}
           onClick={() => void record("approve")}
         >
           {pending === "approve" ? "Recording…" : "Approve checkpoint"}
         </Button>
         <Button
-          disabled={pending !== null || !note.trim()}
+          disabled={busy || !note.trim()}
           onClick={() => void record("request-changes")}
         >
           {pending === "request-changes" ? "Recording…" : "Request changes"}
@@ -708,10 +710,18 @@ function ReviewActions({
       {result ? (
         <p
           role="status"
-          class={`af-review-result${result.ok ? "" : " is-error"}`}
+          class={`af-review-result${result.outcome === "done" ? "" : " is-error"}`}
+          data-outcome={result.outcome}
         >
           {result.message}
         </p>
+      ) : null}
+      {held ? (
+        <div class="af-button-row">
+          <Button onClick={() => setResult(null)}>
+            I have checked the comments: review again
+          </Button>
+        </div>
       ) : null}
     </section>
   );

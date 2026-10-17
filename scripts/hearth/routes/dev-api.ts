@@ -35,6 +35,7 @@ import {
 import { runStatePath } from "../../forge/runs";
 import { listRuns } from "../../forge/runs-store";
 import { type GitRun, listWorktrees } from "../../scheduler/worktrees";
+import { neverStarted } from "../tracker-write";
 
 export const DEV_API = "/__agent-forge/dev-api";
 
@@ -268,6 +269,16 @@ export async function applyReview(
   }
 
   const added = await runBd(["comments", "add", review.issueId, review.body]);
+  // No exit status: a call killed at the runner's limit may already have
+  // written the comment. 504 is the one status that means "the outcome is
+  // not known", as the Beads and queue rows answer; only a bd that never
+  // became a process, or one that ran and refused, changed nothing.
+  if (added.status === null && !neverStarted(added)) {
+    return fail(
+      504,
+      `bd comments add did not finish: it was stopped before it answered, or it never started. The review may have been recorded: check with \`bd show ${review.issueId}\` before trying again.`,
+    );
+  }
   if (added.status !== 0) {
     return fail(502, `bd comments add failed: ${failureReason(added)}`);
   }

@@ -161,6 +161,43 @@ describe("applyReview", () => {
     expect(added.status).toBe(502);
     expect(added.body.error).toContain("database is locked");
   });
+
+  test("a comment whose bd is killed at the runner's limit may have been written: 504, the status for an outcome nobody knows, never 502", async () => {
+    // The stand-in for `bd comments add` is this Bun, told to outlive a short
+    // limit, so the real runner kills it: a slow tracker that may already
+    // have written the comment.
+    const killing = bdRunner(tempRoot(), process.execPath);
+    const shown = fakeBd("in_progress");
+    const calls: string[][] = [];
+    const reply = await applyReview(
+      { issueId: "a-1", decision: "approve" },
+      (args) => {
+        calls.push(args);
+        return args[0] === "show"
+          ? shown.run(args)
+          : killing(["-e", "await Bun.sleep(30_000)"], { timeoutMs: 300 });
+      },
+    );
+    expect(calls.map((args) => args.slice(0, 2))).toEqual([
+      ["show", "a-1"],
+      ["comments", "add"],
+    ]);
+    expect(reply.status).toBe(504);
+    expect(reply.body.ok).toBe(false);
+    expect(reply.body.error).toContain("did not finish");
+    expect(reply.body.error).toContain("`bd show a-1`");
+  });
+
+  test("a bd that never became a process wrote nothing: still 502", async () => {
+    const reply = await applyReview(
+      { issueId: "a-1", decision: "approve" },
+      fakeBd("in_progress", {
+        comments: { status: null, stdout: "", stderr: "spawn bd ENOENT" },
+      }).run,
+    );
+    expect(reply.status).toBe(502);
+    expect(reply.body.error).toContain("spawn bd ENOENT");
+  });
 });
 
 describe("bdRunner", () => {
