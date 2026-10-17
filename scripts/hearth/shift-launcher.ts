@@ -6,9 +6,8 @@
  * takes the same queue lock and writes the same ledger and shifts directory
  * the hearth reads. The child cannot outlive the hearth: an `exit` hook ends
  * its tree, and the tree guard (`scripts/executors/tree-guard.ts`) ends it for
- * a hearth killed outright. It is not started through `supervise`, whose
- * signal handler would kill it before the hearth's `close()` could ask it to
- * stop (`superviseShift`). No time limit is set: the shift's own deadline
+ * a hearth killed outright. It is not started through `supervise`
+ * (`superviseShift` says why). No time limit is set: the shift's own deadline
  * ends it.
  *
  * What the hearth knows of a shift it started is held here, in memory, for as
@@ -147,10 +146,11 @@ async function tail(
 }
 
 /**
- * The real launcher. Not `supervise()` (`scripts/executors/supervisor.ts`):
- * that installs a `SIGINT`/`SIGTERM` handler that kills every supervised
- * child and exits 130 at once, so the hearth's own shutdown would never get to
- * ask its shifts to stop (`x1gs.5.4.14` is that handler's own change). What
+ * The real launcher. Not `supervise()` (`scripts/executors/supervisor.ts`),
+ * which is made for a provider run: a prompt on stdin, stdout read a line at
+ * a time, a time limit. Its `SIGINT`/`SIGTERM` handler, which kills every
+ * supervised child and exits 130, waits for the hearth now that the hearth
+ * owns those signals (`closeOnSignal` in `server.ts`, `x1gs.5.4.14`). What
  * `supervise` gives that is kept: an argument array and no shell, the tree
  * guard (`guardTree`) for a hearth killed outright, `killTree` for the whole
  * tree, and an `exit` hook. The child gets its own process group outside

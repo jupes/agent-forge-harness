@@ -28,6 +28,7 @@ import type {
 import { type CommandRunner, runLocalCommand } from "../council/pr-source";
 import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import { ownInterrupts } from "../executors/supervisor";
 import { isMain } from "../is-main";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
@@ -556,28 +557,30 @@ export const INTERRUPTED_EXIT = 130;
  * signal while that runs does not wait: the tree of every shift still running
  * is ended at once (`endLiveShifts`) and the hearth exits
  * `INTERRUPTED_EXIT` (130, as an interrupted command does). A shift ended so
- * needs `forge:shift recover`. Nothing else in the hearth may listen for those
- * signals and exit first: the shift launcher does not use `supervise()`, whose
- * handler would (`shift-launcher.ts`). A hearth ended with no chance to run
- * code (`SIGKILL`; on Windows, `TerminateProcess`, which is how the dashboard
- * ends it) never gets here.
+ * needs `forge:shift recover`. The hearth is the process's interrupt owner
+ * (`ownInterrupts`, `scripts/executors/supervisor.ts`), so the supervisor's
+ * own handler, which a child run through `supervise()` in this process would
+ * install and which kills every supervised child and exits 130 at once, waits
+ * for it: what `supervise()` started is ended by the exit hook once the hearth
+ * exits. Returns the release of that ownership. A hearth ended with no chance
+ * to run code (`SIGKILL`; on Windows, `TerminateProcess`, which is how the
+ * dashboard ends it) never gets here.
  */
 export function closeOnSignal(
   hearth: StartedHearth,
   exit: (code: number) => void = (code) => process.exit(code),
-): void {
+): () => void {
   let closing = false;
-  const shutdown = (): void => {
+  return ownInterrupts(() => {
     if (closing) {
       endLiveShifts();
       exit(INTERRUPTED_EXIT);
-      return;
+      return true;
     }
     closing = true;
     void hearth.close().finally(() => exit(0));
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+    return true;
+  });
 }
 
 if (isMain(import.meta)) {

@@ -569,16 +569,20 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
  * then `closeOnSignal`, the shutdown `main()` installs. Its launcher is the
  * real one, given the stand-in, with the real tree guard or, when asked
  * (`none`), one that guards nothing, so that only the exit hook can end the
- * shift. It prints where it listens and what it uses, then reads its stdin a
+ * shift. Asked (`supervised`), it also runs a child through `supervise()`
+ * (the fake provider, hanging), as any provider run made in the hearth's own
+ * process would: that installs the supervisor's own SIGINT and SIGTERM
+ * handler. It prints where it listens and what it uses, then reads its stdin a
  * line at a time: `signal` emits the signal it was given (`process.emit`: no
  * signal can be sent to a process on Windows), and `exit` calls
  * `process.exit(3)`, a way out that skips `close()`.
  */
 const HEARTH_MAIN = (standIn: string) => `
+import { supervise } from ${JSON.stringify(join(import.meta.dir, "..", "executors", "supervisor.ts"))};
 import { closeOnSignal } from ${JSON.stringify(join(import.meta.dir, "server.ts"))};
 import { superviseShift } from ${JSON.stringify(join(import.meta.dir, "shift-launcher.ts"))};
 import { startTestHearth } from ${JSON.stringify(join(import.meta.dir, "testing.ts"))};
-const [signal = "", guard = "real"] = process.argv.slice(2);
+const [signal = "", guard = "real", extra = ""] = process.argv.slice(2);
 const unguarded = () => ({ release: () => undefined });
 const h = await startTestHearth({
   api: {
@@ -590,7 +594,15 @@ const h = await startTestHearth({
   },
 });
 closeOnSignal(h.hearth);
-console.log(JSON.stringify({ api: h.api, url: h.hearth.url, token: h.hearth.token, home: h.home, root: h.root, configHome: h.configHome, workspace: h.workspace }));
+const supervised = extra === "supervised"
+  ? supervise({
+      command: [process.execPath, ${JSON.stringify(join(import.meta.dir, "..", "executors", "fixtures", "fake-cli.ts"))}, "--fake-mode", "hang"],
+      cwd: h.root,
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+    }).pid
+  : null;
+console.log(JSON.stringify({ api: h.api, url: h.hearth.url, token: h.hearth.token, home: h.home, root: h.root, configHome: h.configHome, workspace: h.workspace, supervised }));
 const decoder = new TextDecoder();
 let text = "";
 for await (const chunk of Bun.stdin.stream()) {
@@ -615,6 +627,8 @@ interface HearthWhere {
   root: string;
   configHome: string;
   workspace: string;
+  /** The pid of the child it runs through `supervise()`, when asked to. */
+  supervised: number | null;
 }
 
 /** A shift a hearth process started, once its record says it runs. */
@@ -626,13 +640,17 @@ interface StartedShift {
 }
 
 /** Start `HEARTH_MAIN` in a bun process of its own and read where it listens. */
-async function hearthProcess(signal: string, guard: "real" | "none" = "real") {
+async function hearthProcess(
+  signal: string,
+  guard: "real" | "none" = "real",
+  extra: "" | "supervised" = "",
+) {
   const dir = scratch();
   const standIn = join(dir, "stand-in.ts");
   const main = join(dir, "hearth-main.ts");
   writeFileSync(standIn, STAND_IN);
   writeFileSync(main, HEARTH_MAIN(standIn));
-  const proc = Bun.spawn([process.execPath, main, signal, guard], {
+  const proc = Bun.spawn([process.execPath, main, signal, guard, extra], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -649,6 +667,7 @@ async function hearthProcess(signal: string, guard: "real" | "none" = "real") {
   const where = JSON.parse(first.split(/\r?\n/)[0] ?? "") as HearthWhere;
   for (const made of [where.home, where.root, where.configHome])
     dirs.push(made);
+  if (where.supervised !== null) left.push(where.supervised);
   return {
     proc,
     where,
@@ -733,6 +752,29 @@ describe("a hearth that gets SIGINT or SIGTERM", () => {
           reason: "operator",
         });
         expect(processAlive(shift.pid)).toBe(false);
+      } finally {
+        hearth.cleanup();
+      }
+    }, 40_000);
+
+  for (const signal of ["SIGTERM", "SIGINT"])
+    test(`${signal} in a hearth that also runs a child through supervise() still runs its close first: the shift it started stops on its own, the supervised child is ended, and the hearth exits 0`, async () => {
+      // supervise() installs a handler that kills and exits 130 at once; the
+      // hearth owns the signal (ownInterrupts), so that handler waits for it.
+      const hearth = await hearthProcess(signal, "real", "supervised");
+      const supervised = hearth.where.supervised ?? 0;
+      try {
+        expect(processAlive(supervised)).toBe(true);
+        const shift = await hearth.startShift("run");
+        hearth.send("signal");
+        expect(await hearth.proc.exited).toBe(0);
+        const shifts = join(hearth.where.home, SHIFTS_DIR);
+        expect(existsSync(join(shifts, `${shift.id}.stop`))).toBe(true);
+        expect(readShiftRecord(shifts, shift.id)).toMatchObject({
+          state: "stopped",
+          reason: "operator",
+        });
+        await gone(shift.pid, supervised);
       } finally {
         hearth.cleanup();
       }
