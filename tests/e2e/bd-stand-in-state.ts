@@ -53,8 +53,9 @@ const errorCode = (error: unknown): string =>
   String((error as { code?: unknown } | null)?.code ?? "");
 
 /**
- * An ownerless lock may be recovered after this long. A lock names its holder
- * and is judged by that holder's process instead (`holderGone`).
+ * A lock that holds something but no readable owner may be recovered after
+ * this long. An empty lock is recovered at once (`stale`), and a lock that
+ * names its holder is judged by that holder's process (`holderGone`).
  */
 export const STALE_LOCK_MS = 30_000;
 
@@ -76,7 +77,7 @@ export const OWNED_LOCK_MS = 5 * 60_000;
 export interface LockOptions {
   /** How long to wait for the lock before giving up. */
   waitMs?: number;
-  /** How old an ownerless lock must be before it is broken. */
+  /** How old a nonempty lock with no readable owner must be before it is broken. */
   staleMs?: number;
   /** Make the lock's directory; tests replace it to make it fail. */
   mkdir?: (path: string) => void;
@@ -132,10 +133,11 @@ function readOwner(lock: string): Holding | undefined {
     ) as LockOwner;
     return { owner, file };
   } catch {
-    // Gone, or emptied by a remover between listing and reading: the lock's
-    // own age decides. A lock is published with its witness already inside,
-    // so an ownerless one is a breaker whose remover was killed after the
-    // unlink, or a legacy lock taken by a holder that died before writing it.
+    // Gone, or emptied by a remover between listing and reading: `stale`
+    // looks again. A lock is published with its witness already inside, so
+    // an ownerless one is a release or break killed after its unlink (empty:
+    // removed at once), or a legacy lock taken by a holder that died before
+    // writing its owner.
     return undefined;
   }
 }
@@ -261,11 +263,25 @@ function holderGone(owner: LockOwner): boolean {
   return Date.now() - owner.at > OWNED_LOCK_MS;
 }
 
-/** Whether the lock was left by a holder that died; false when it is gone. */
+/**
+ * Whether the lock was left by a holder that died; false when it is gone.
+ *
+ * An empty lock is broken at once. Every holding is published with its owner
+ * already inside (`publish` renames a populated candidate into place), and
+ * only the end of a holding unlinks that owner: a holder's release after its
+ * work, or a breaker that judged the holder gone. So an empty lock is a
+ * release or a break killed between its unlink and its `rmdir`, never a live
+ * holder; and the removal is a nonrecursive `rmdir`, which fails on a lock a
+ * new holder has published since. (A holder of the earlier format, which made
+ * the directory and then wrote `owner.json`, was empty while it took the lock;
+ * the two formats never share a run home: see `LEGACY_OWNER`.) Age decides
+ * only for a lock that holds something other than a readable owner.
+ */
 function stale(lock: string, staleMs: number): boolean {
   const held = readOwner(lock);
   if (held !== undefined) return holderGone(held.owner);
   try {
+    if (readdirSync(lock).length === 0) return true;
     return Date.now() - statSync(lock).mtimeMs > staleMs;
   } catch {
     return false;
@@ -323,8 +339,9 @@ function publish(
     withRetries(() =>
       writeFileSync(join(candidate, ownerName(owner)), JSON.stringify(taken)),
     );
-    // POSIX rename can replace an empty directory. Respect the age of
-    // ownerless locks too; competing new publications are always nonempty.
+    // POSIX rename can replace an empty directory: an empty lock is left to
+    // a breaker, which removes it under the break lock; competing new
+    // publications are always nonempty.
     if (existsSync(lock))
       throw Object.assign(new Error("lock held"), { code: "EEXIST" });
     renameSync(candidate, lock);
@@ -369,7 +386,15 @@ function breakIfStale(
     step?.("break-owned", breaker);
     const held = readOwner(lock);
     if (held ? holderGone(held.owner) : stale(lock, staleMs))
-      removeLock(lock, held?.file, step);
+      // A lock with no readable owner that is old enough to break can still
+      // hold an earlier-format owner left half written: it goes too, or the
+      // nonrecursive rmdir would fail on it every time.
+      removeLock(
+        lock,
+        held?.file ??
+          (existsSync(join(lock, LEGACY_OWNER)) ? LEGACY_OWNER : undefined),
+        step,
+      );
   } finally {
     removeLock(breaker, ownerName(owner), step);
   }
@@ -385,7 +410,9 @@ function breakIfStale(
  * waiter waits on those as well. A holder killed before its `finally` runs
  * leaves the lock behind; the owner it wrote inside lets a waiter break it
  * once the holder's process is gone, or once its pid names a process that
- * started later (`holderGone`). Age alone recovers an ownerless lock.
+ * started later (`holderGone`). An empty lock, left by a release or break
+ * killed between its unlink and its `rmdir`, is removed at once; age alone
+ * recovers only a nonempty lock with no readable owner.
  */
 export function withStateLock<T>(
   dir: string,

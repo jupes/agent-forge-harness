@@ -365,6 +365,18 @@ describe("withStateLock", () => {
     expect(readdirSync(old)).toEqual([]);
   });
 
+  test("an empty main lock (a release or break killed between its unlink and its rmdir) is removed at once, not after the age bound", () => {
+    const dir = scratch();
+    // Fresh: its age alone would keep it for STALE_LOCK_MS.
+    mkdirSync(join(dir, "state.lock"));
+    const started = Date.now();
+    expect(withStateLock(dir, () => "entered", { waitMs: 3_000 })).toBe(
+      "entered",
+    );
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   test("a lock in the earlier format (one owner.json) left by a dead holder is broken and removed", async () => {
     const dir = scratch();
     const lock = join(dir, "state.lock");
@@ -400,7 +412,7 @@ describe("withStateLock", () => {
     }
   });
 
-  test("an owned lock is not broken by staleMs; only an old lock with no owner is", () => {
+  test("an owned lock is not broken by staleMs; only an old lock with no readable owner is", () => {
     const old = { pid: process.pid, at: Date.now() - 5_000, token: "old" };
     const dir = scratch();
     const held = plantLock(dir, old);
@@ -409,8 +421,15 @@ describe("withStateLock", () => {
     ).toThrow("timed out");
     expect(JSON.parse(readFileSync(ownerPath(held, old), "utf8"))).toEqual(old);
 
+    // Not empty (an empty lock is removed at once): an earlier-format owner
+    // half written, as a holder killed while writing it leaves it. While
+    // fresh it is left alone; that holder may still be finishing the write.
     const ownerless = scratch();
     const lock = plantLock(ownerless);
+    writeFileSync(join(lock, "owner.json"), '{"pid":');
+    expect(() =>
+      withStateLock(ownerless, () => "never", { waitMs: 300 }),
+    ).toThrow("timed out");
     const then = new Date(Date.now() - 5_000);
     utimesSync(lock, then, then);
     expect(
