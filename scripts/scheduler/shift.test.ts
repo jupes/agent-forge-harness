@@ -1652,6 +1652,79 @@ describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races
     ]);
     expect(r.reservations()).toBe(0);
   });
+
+  test("a last run that fails as the shift stops is released, and the record, the result and the end comment say it failed and was not halted", async () => {
+    // As above, with no repair left: without the stop it would be halted.
+    const stop = new AbortController();
+    let sampled = 0;
+    let freeHost: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      freeHost = done;
+    });
+    const r = rig([queued("t-1")], () => "hang", {
+      signal: stop.signal,
+      sampleHost: async () => {
+        sampled++;
+        if (sampled > 1) await held;
+        return { busy: false };
+      },
+    });
+    const running = shift(r, { concurrency: 2, repairs: 0 });
+    try {
+      await until(() => r.fake.runs.length === 1 && sampled > 1);
+      stop.abort("SIGINT");
+      r.fake.endRun(0, 1);
+      await until(() => r.labels("t-1")[0] !== "queue:running");
+    } finally {
+      freeHost();
+    }
+    const done = await running;
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    const [entry] = done.record.beads;
+    expect(entry).toMatchObject({ outcome: "released", attempts: 1 });
+    expect(entry?.error).toStartWith(
+      "run 1 failed as the shift was stopping, and was not repaired or halted: ",
+    );
+    expect(
+      readShiftRecord(r.deps.shiftsDir, done.shiftId)?.beads[0]?.error,
+    ).toBe(entry?.error);
+    expect(r.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${done.shiftId} ended this bead after 1 run: released. ${SHIFT_ENDINGS.failedStopping}`,
+    );
+  });
+
+  test("a stop that lands while a bead is being admitted admits nothing further: the bead is given back to queued, with no reservation, worktree, comment or run", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    // The stop arrives while bd writes the bead's start, as a Ctrl-C would.
+    r.intercept = (args) => {
+      if (
+        args[0] === "update" &&
+        args.some((arg) => arg.includes("queue:running"))
+      )
+        stop.abort("SIGINT");
+      return undefined;
+    };
+    const done = await shift(r);
+    expect(stop.signal.aborted).toBe(true);
+    expect(done.reason).toBe("operator");
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(done.record.beads).toMatchObject([
+      {
+        beadId: "t-1",
+        outcome: "set-aside",
+        attempts: 0,
+        error: "the shift was stopped before its run started",
+      },
+    ]);
+    expect(r.fake.runs).toHaveLength(0);
+    expect(r.startPoints).toEqual([]);
+    expect(r.comments("t-1")).toEqual([]);
+    expect(r.reservations()).toBe(0);
+    expect(
+      r.events().filter((event) => event.kind === "reservation.acquired"),
+    ).toEqual([]);
+  });
 });
 
 describe("forge:shift — stopping kills what it started (Claude adapter, fake binary)", () => {
