@@ -741,3 +741,54 @@ test("whitespace-only normalization still detects newly formed PEM markers", () 
     }
   }
 });
+
+test("redacts the complete value around malformed UTF-16 and BOM", () => {
+  const text = "OPENAI_API_KEY=ValueHead_V\udb40\ufeff\uddefalueTail";
+  const result = redactSecrets(text);
+  expect(result.text).not.toContain("ValueHead");
+  expect(result.text).not.toContain("alueTail");
+});
+
+test("malformed UTF-16 cannot hide invisibles or assignment value fragments", () => {
+  for (const surrogate of ["\ud800", "\udb40", "\udbff", "\uddef"]) {
+    for (const invisible of [
+      "\0",
+      "\v",
+      "\r",
+      "\u0085",
+      "\u00ad",
+      "\u034f",
+      "\u061c",
+      "\u115f",
+      "\u17b4",
+      "\u180b",
+      "\u200b",
+      "\u202e",
+      "\u2060",
+      "\u3164",
+      "\ufe0f",
+      "\ufeff",
+      "\uffa0",
+      "\ufff0",
+      "\u{1bca0}",
+      "\u{1d173}",
+      "\u{e0020}",
+    ]) {
+      for (const prefix of ["", `sk-${"Q7a".repeat(10)}`]) {
+        const text = `${prefix}OPENAI_API_KEY=ValueHead_${surrogate}${invisible}ValueTail`;
+        const result = redactSecrets(text);
+        expect(result.text).not.toContain("ValueHead");
+        expect(result.text).not.toContain("ValueTail");
+        expect(redactSecrets(result.text)).toEqual({
+          text: result.text,
+          redactions: [],
+        });
+      }
+      const ordinary = `work${surrogate}${invisible} note task-queue-state-machine-v2`;
+      expect(redactSecrets(ordinary)).toEqual({
+        text: ordinary,
+        redactions: [],
+      });
+    }
+  }
+});

@@ -647,7 +647,7 @@ describe("ledger invisible assignment boundary", () => {
     for (const prefix of ["", `sk-${"Q7a".repeat(10)}`]) {
       test(`stores no value fragments or secret join IDs (${JSON.stringify(invisible)}, glued=${prefix !== ""})`, () => {
         const path = tempLedger();
-        const value = "ValueHead_" + "9aZ".repeat(8) + "_ValueTail";
+        const value = "ValueHead_" + "9aZ".repeat(8) + "\ud800\ufeff_ValueTail";
         const text = `${prefix}OPENAI_API_KEY${invisible}=${value}`;
         expect(
           appendEvent(

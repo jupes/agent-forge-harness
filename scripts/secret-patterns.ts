@@ -365,6 +365,10 @@ function classOf(ranges: ReadonlyArray<readonly [number, number]>): string {
 }
 
 const HIDDEN = new RegExp(classOf(HIDDEN_RANGES), "gu");
+// Bun's Unicode range regex can skip a BMP invisible after an unpaired high
+// surrogate. Isolate code points for malformed UTF-16 before matching them.
+const MALFORMED_UTF16 =
+  /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
 /**
  * What the form with the invisible characters taken out removes: every
@@ -394,7 +398,8 @@ const HAS_REMOVED = new RegExp(REMOVED_SOURCE, "u");
 function withoutInvisible(
   value: string,
 ): { text: string; origin: number[] } | null {
-  if (!HAS_REMOVED.test(value)) return null;
+  const malformed = MALFORMED_UTF16.test(value);
+  if (!malformed && !HAS_REMOVED.test(value)) return null;
   const origin: number[] = [];
   let text = "";
   let kept = 0;
@@ -402,12 +407,25 @@ function withoutInvisible(
     text += value.slice(kept, until);
     for (let at = kept; at < until; at += 1) origin.push(at);
   };
-  for (const match of value.matchAll(REMOVED)) {
+  const matches = malformed ? invisibleMatches(value) : value.matchAll(REMOVED);
+  for (const match of matches) {
     keep(match.index);
     kept = match.index + match[0].length;
   }
   keep(value.length);
-  return { text, origin };
+  return text === value ? null : { text, origin };
+}
+
+/** Matches in malformed text, isolated so the engine cannot skip a BMP character. */
+function* invisibleMatches(
+  value: string,
+): Generator<{ 0: string; index: number }> {
+  let index = 0;
+  for (const char of value) {
+    if (!(char === "\r" && value[index + 1] === "\n") && char.match(REMOVED))
+      yield { 0: char, index };
+    index += char.length;
+  }
 }
 
 /**
@@ -419,6 +437,10 @@ function withoutInvisible(
  * ring the bell.
  */
 export function withoutControls(value: string): string {
+  if (MALFORMED_UTF16.test(value))
+    return Array.from(value, (char) =>
+      char.replace(HIDDEN, (hidden) => " ".repeat(hidden.length)),
+    ).join("");
   return value.replace(HIDDEN, (char) => " ".repeat(char.length));
 }
 
@@ -533,7 +555,7 @@ export function redactWritten(value: string): Redacted {
   // both forms identically except PEM markers, whose spaces are literal.
   // Keep this inventory check in sync when adding patterns; actual removed
   // characters always take the mapped union path below.
-  if (!HAS_REMOVED.test(value)) {
+  if (!MALFORMED_UTF16.test(value) && !HAS_REMOVED.test(value)) {
     const writtenKeys = privateKeySpans(value);
     const shownKeys = privateKeySpans(shown);
     if (
