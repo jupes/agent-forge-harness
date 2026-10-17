@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -304,6 +310,50 @@ test.skipIf(!ON_WINDOWS)(
     temps.push(root);
     expect(() => makeOwnerOnly(join(root, "missing"), "file")).toThrow(
       "could not be made readable by this OS user only: Windows refused to set its ACL (error 2, the file was not found)",
+    );
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows: readInFolder judges the folder a junction leads to, and reads a file relative to that folder's handle, through no junction in its name (x1gs.3.38)",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "af acl native "));
+    temps.push(root);
+    const target = join(root, "target");
+    mkdirSync(join(target, "sub"), { recursive: true });
+    writeFileSync(join(target, "a.lock"), "lock text");
+    writeFileSync(join(target, "sub", "b.json"), "{}");
+    const link = join(root, "link");
+    symlinkSync(target, link, "junction");
+    // A junction inside the folder, to a folder that holds an a.lock of its own.
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "a.lock"), "another");
+    symlinkSync(elsewhere, join(target, "loop"), "junction");
+    makeOwnerOnly(target, "directory");
+    const acl = nativeWindowsAcl();
+    const read = acl.readInFolder?.(link, "a.lock", 1024);
+    // The target's DACL, not the junction's, which inherited from the folder above.
+    expect(read?.folder).toEqual(acl.read(target));
+    expect(read?.folder).not.toEqual(acl.read(link));
+    // The file's own owner and DACL (an elevated process's files belong to the Administrators).
+    expect(read?.file?.reading).toEqual(acl.read(join(target, "a.lock")));
+    expect(new TextDecoder().decode(read?.file?.bytes)).toBe("lock text");
+    expect(
+      new TextDecoder().decode(
+        acl.readInFolder?.(link, "sub\\b.json", 1024)?.file?.bytes,
+      ),
+    ).toBe("{}");
+    expect(acl.readInFolder?.(link, "missing.lock", 1024)?.file).toBeNull();
+    expect(acl.readInFolder?.(link, null, 1024)?.file).toBeNull();
+    expect(
+      acl.readInFolder?.(join(root, "missing"), "a.lock", 1024),
+    ).toBeNull();
+    expect(() => acl.readInFolder?.(link, "loop\\a.lock", 1024)).toThrow(
+      "Windows refused to open loop\\a.lock in the folder (status 0xc000050b)",
+    );
+    expect(() => acl.readInFolder?.(link, "a.lock", 4)).toThrow(
+      "a.lock is larger than 4 bytes",
     );
   },
 );
