@@ -5,7 +5,15 @@
  * Part B: the isolation re-run, repeated, printing every failing file's whole output.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { importGraph } from "./import-graph";
@@ -13,10 +21,18 @@ import { resetSpawnClock } from "./spawn-clock";
 
 const part = process.argv[2] ?? "all";
 
+const g0 = (args: string[]): string => {
+  const r = spawnSync("git", args, { encoding: "utf8" });
+  return `${r.stdout}${r.stderr}`;
+};
+
 function sweep(): void {
   console.log(`# spawn clock sweep, ${process.platform}, bun ${Bun.version}`);
   const limit = 2000;
-  const run = (label: string, fn: () => { status: number | null; detail: string }) => {
+  const run = (
+    label: string,
+    fn: () => { status: number | null; detail: string },
+  ) => {
     const t0 = performance.now();
     const r = fn();
     const ms = Math.round(performance.now() - t0);
@@ -27,7 +43,10 @@ function sweep(): void {
     Bun.sleepSync(gap);
     run(`node spawnSync sleep 1.5, limit ${limit}, gap ${gap}`, () => {
       const r = spawnSync("sleep", ["1.5"], { timeout: limit });
-      return { status: r.status, detail: `signal ${r.signal}, error ${(r.error as NodeJS.ErrnoException | undefined)?.code ?? "none"}` };
+      return {
+        status: r.status,
+        detail: `signal ${r.signal}, error ${(r.error as NodeJS.ErrnoException | undefined)?.code ?? "none"}`,
+      };
     });
   }
   for (const gap of [0, 1000, 1800, 3000]) {
@@ -42,17 +61,29 @@ function sweep(): void {
     spawnSync("true");
     Bun.sleepSync(gap);
     resetSpawnClock();
-    run(`reset, then node spawnSync sleep 1.5, limit ${limit}, gap ${gap}`, () => {
-      const r = spawnSync("sleep", ["1.5"], { timeout: limit });
-      return { status: r.status, detail: `signal ${r.signal}, error ${(r.error as NodeJS.ErrnoException | undefined)?.code ?? "none"}` };
-    });
+    run(
+      `reset, then node spawnSync sleep 1.5, limit ${limit}, gap ${gap}`,
+      () => {
+        const r = spawnSync("sleep", ["1.5"], { timeout: limit });
+        return {
+          status: r.status,
+          detail: `signal ${r.signal}, error ${(r.error as NodeJS.ErrnoException | undefined)?.code ?? "none"}`,
+        };
+      },
+    );
   }
   // The tujw repro: a timed git --version, an async wait past the limit, the same again.
   spawnSync("git", ["--version"], { timeout: limit });
   Bun.sleepSync(3000);
   run("node spawnSync git --version, limit 2000, after 3000 ms", () => {
-    const r = spawnSync("git", ["--version"], { timeout: limit, encoding: "utf8" });
-    return { status: r.status, detail: `stdout ${JSON.stringify(r.stdout)}, error ${(r.error as NodeJS.ErrnoException | undefined)?.code ?? "none"}` };
+    const r = spawnSync("git", ["--version"], {
+      timeout: limit,
+      encoding: "utf8",
+    });
+    return {
+      status: r.status,
+      detail: `stdout ${JSON.stringify(r.stdout)}, error ${(r.error as NodeJS.ErrnoException | undefined)?.code ?? "none"}`,
+    };
   });
 }
 
@@ -62,7 +93,8 @@ const SPAWNS =
 function testFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) return entry.name === "node_modules" ? [] : testFiles(path);
+    if (entry.isDirectory())
+      return entry.name === "node_modules" ? [] : testFiles(path);
     return entry.name.endsWith(".test.ts") ? [path] : [];
   });
 }
@@ -83,31 +115,45 @@ function spawning(): string[] {
     .sort();
 }
 
-async function rerun(files: string[], round: string): Promise<number> {
+async function rerun(
+  files: string[],
+  round: string,
+  scratchHome = true,
+): Promise<number> {
   const scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined || key === "AGENT_FORGE_HOME") continue;
     env[key] = value;
   }
-  env.HOME = scratch;
-  env.USERPROFILE = scratch;
-  env.AGENT_FORGE_ISOLATION_HOME = join(scratch, ".agent-forge");
+  if (scratchHome) {
+    env.HOME = scratch;
+    env.USERPROFILE = scratch;
+    env.AGENT_FORGE_ISOLATION_HOME = join(scratch, ".agent-forge");
+  }
   const queue = [...files];
   let failures = 0;
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
-      const child = Bun.spawn([process.execPath, "test", "--timeout", "15000", `./${file}`], {
-        cwd: REPO,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [o, e] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      const child = Bun.spawn(
+        [process.execPath, "test", "--timeout", "15000", `./${file}`],
+        {
+          cwd: REPO,
+          env,
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const [o, e] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
       const code = await child.exited;
       if (code !== 0) {
         failures++;
-        console.log(`\n===== ${round}: FAILED ${file} exit ${code} =====\n${o}${e}\n===== end ${file} =====`);
+        console.log(
+          `\n===== ${round}: FAILED ${file} exit ${code} =====\n${o}${e}\n===== end ${file} =====`,
+        );
       }
     }
   };
@@ -115,8 +161,87 @@ async function rerun(files: string[], round: string): Promise<number> {
   return failures;
 }
 
+/**
+ * Make a repository the way worktrees.test.ts makeRepo does, then copy it at
+ * once, `n` times; count the copies that fail, and list the names in .git
+ * that were there straight after the commit and gone 1 s later.
+ */
+function race(label: string, home: string, extra: string[][], n: number): void {
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  const g = (cwd: string, ...args: string[]) => {
+    const r = spawnSync("git", args, { cwd, env, encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+  let failed = 0;
+  const transient = new Map<string, number>();
+  const walk = (d: string, base = d): string[] =>
+    readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? walk(join(d, e.name), base)
+        : [relative(base, join(d, e.name))],
+    );
+  for (let i = 0; i < n; i++) {
+    const root = mkdtempSync(join(tmpdir(), "race "));
+    const dir = join(root, "repo x");
+    mkdirSync(dir);
+    g(dir, "init", "-q", "-b", "master");
+    g(dir, "config", "user.email", "test@example.invalid");
+    g(dir, "config", "user.name", "worktree test");
+    g(dir, "config", "commit.gpgsign", "false");
+    for (const args of extra) g(dir, ...args);
+    writeFileSync(join(dir, "readme.txt"), "scratch\n");
+    g(dir, "add", ".");
+    g(dir, "commit", "-q", "-m", "first");
+    const right = new Set(walk(join(dir, ".git")));
+    try {
+      cpSync(dir, join(root, "copy"), { recursive: true });
+    } catch (error) {
+      failed++;
+      if (failed <= 3)
+        console.log(`${label}: copy ${i} failed: ${String(error)}`);
+    }
+    Bun.sleepSync(1000);
+    const later = new Set(walk(join(dir, ".git")));
+    for (const name of right)
+      if (!later.has(name)) transient.set(name, (transient.get(name) ?? 0) + 1);
+    rmSync(root, { recursive: true, force: true });
+  }
+  console.log(
+    `# race ${label}: ${failed}/${n} copies failed; gone within 1 s: ${JSON.stringify(Object.fromEntries(transient))}`,
+  );
+}
+
 async function main(): Promise<void> {
   if (part === "sweep" || part === "all") sweep();
+  if (part === "race" || part === "all") {
+    console.log(g0(["--version"]));
+    console.log(
+      `global config (real HOME):\n${g0(["config", "--global", "--list", "--show-origin"])}`,
+    );
+    console.log(
+      `system config:\n${g0(["config", "--system", "--list", "--show-origin"])}`,
+    );
+    const scratch = mkdtempSync(join(tmpdir(), "scratch home "));
+    race("real HOME", process.env.HOME ?? "", [], 40);
+    race("scratch HOME", scratch, [], 40);
+    race(
+      "scratch HOME, maintenance.auto false",
+      scratch,
+      [["config", "maintenance.auto", "false"]],
+      40,
+    );
+  }
+  if (part === "worktrees") {
+    const alone = Array.from(
+      { length: 80 },
+      () => "scripts/scheduler/worktrees.test.ts",
+    );
+    const s = await rerun(alone, "worktrees, scratch HOME");
+    console.log(`# worktrees.test.ts x80, scratch HOME: ${s} failing`);
+    const r = await rerun(alone, "worktrees, real HOME", false);
+    console.log(`# worktrees.test.ts x80, real HOME: ${r} failing`);
+  }
   if (part === "rerun" || part === "all") {
     const files = spawning();
     console.log(`# ${files.length} spawning files`);
@@ -124,9 +249,14 @@ async function main(): Promise<void> {
     for (let i = 1; i <= rounds; i++) {
       const t0 = performance.now();
       const n = await rerun(files, `full round ${i}`);
-      console.log(`# full round ${i}: ${n} failing files, ${Math.round(performance.now() - t0)} ms`);
+      console.log(
+        `# full round ${i}: ${n} failing files, ${Math.round(performance.now() - t0)} ms`,
+      );
     }
-    const alone = Array.from({ length: 80 }, () => "scripts/scheduler/worktrees.test.ts");
+    const alone = Array.from(
+      { length: 80 },
+      () => "scripts/scheduler/worktrees.test.ts",
+    );
     const n = await rerun(alone, "worktrees only");
     console.log(`# worktrees.test.ts x80, 4 at a time: ${n} failing`);
   }
