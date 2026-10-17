@@ -375,7 +375,10 @@ function classifyScratchFile(
   } catch {
     return null;
   }
-  const ageDays = Math.floor((input.nowMs - modified) / 86_400_000);
+  const ageDays = Math.max(
+    0,
+    Math.floor((input.nowMs - modified) / 86_400_000),
+  );
   const never = kind === "draft" ? "a correlation" : "a verdict";
   return ageDays < input.ttlDays
     ? {

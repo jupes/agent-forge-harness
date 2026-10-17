@@ -13,6 +13,7 @@ import { execFileSync } from "child_process";
 import { isAbsolute } from "path";
 import type { CloseGateIssueType } from "./close-testing-attestation";
 import type { BeadsIssueId } from "./run-correlation";
+import { resetSpawnClock } from "./spawn-clock";
 
 export type ExecFile = (
   file: string,
@@ -56,6 +57,7 @@ export const execFileNoShell: ExecFile = (file, args, opts = {}) => {
     };
   }
   try {
+    resetSpawnClock();
     const output = execFileSync(program, [...args], {
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       encoding: "utf8",
