@@ -64,30 +64,33 @@ export function failureBlocks(output: string): string {
 
 /** A line of the source excerpt bun prints above a test's error. */
 const EXCERPT = /^\s*\d+ \| /;
-const ERROR_LINE = /^error: /;
-
 /**
- * Where bun's own report of a failure starts in the lines before its `(fail)`
- * line: the last source excerpt above the last `error:` line, else that error;
- * null
- * when there is neither. What comes before it is the test's own output.
+ * The line bun prints an error under: `error: ` for an `Error` or an expect
+ * failure, the error's name for a subclass (`TypeError: `, `RangeError: `).
  */
-function reportStart(before: readonly string[]): number | null {
-  let error: number | null = null;
-  for (let k = before.length - 1; k >= 0; k--) {
-    if (ERROR_LINE.test(before[k] ?? "")) {
-      error = k;
-      break;
-    }
-  }
-  if (error === null) return null;
-  for (let k = error - 1; k >= 0; k--) {
+const ERROR_LINE = /^(\w*Error|error): /;
+
+/** The first line of the source excerpt that ends at or above line `from`, or null when there is none. */
+function lastExcerpt(before: readonly string[], from: number): number | null {
+  for (let k = from; k >= 0; k--) {
     if (!EXCERPT.test(before[k] ?? "")) continue;
     let first = k;
     while (first > 0 && EXCERPT.test(before[first - 1] ?? "")) first--;
     return first;
   }
-  return error;
+  return null;
+}
+
+/**
+ * Where bun's own report of a failure starts in the lines before its `(fail)`
+ * line: the last source excerpt above the last error line, else that error
+ * line; with no error line, the last source excerpt; null when there is
+ * neither. What comes before it is the test's own output.
+ */
+function reportStart(before: readonly string[]): number | null {
+  for (let k = before.length - 1; k >= 0; k--)
+    if (ERROR_LINE.test(before[k] ?? "")) return lastExcerpt(before, k - 1) ?? k;
+  return lastExcerpt(before, before.length - 1);
 }
 
 /**
