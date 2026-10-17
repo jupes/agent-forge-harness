@@ -157,6 +157,40 @@ describe("execFileNoShell (the runner bd is called through)", () => {
       rmSync(dir, { recursive: true, force: true });
   });
 
+  test("gives the bd runner its whole limit after a shorter gap", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gate beads clock "));
+    temporary.push(cwd);
+    const command = join(cwd, "slow-answer.ts");
+    writeFileSync(
+      command,
+      "Bun.sleepSync(2200); process.stdout.write('done');",
+    );
+    // Without a reset, Windows stops the command about 1.8 s in.
+    const run = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "fixtures", "spawn-clock-caller.ts"),
+        "beads",
+        command,
+        cwd,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [status, stdout, stderr] = await Promise.all([
+      run.exited,
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+    ]);
+    expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
+    let result: unknown;
+    try {
+      result = JSON.parse(stdout);
+    } catch {
+      throw new Error(`the bd-runner driver printed invalid JSON: ${stdout}`);
+    }
+    expect(result).toEqual({ ok: true, output: "done" });
+  }, 15_000);
+
   test("hands each argument to an executable verbatim, shell syntax included", () => {
     const cwd = mkdtempSync(join(tmpdir(), "gate beads test "));
     temporary.push(cwd);
