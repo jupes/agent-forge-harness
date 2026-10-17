@@ -26,7 +26,7 @@ import { claudeAdapter } from "./claude";
 import { createCodexAdapter } from "./codex";
 import { buildChildEnv } from "./env";
 import { liveChildCount } from "./supervisor";
-import type { ExecutorAdapter, SpawnRequest } from "./types";
+import type { ExecResult, ExecutorAdapter, SpawnRequest } from "./types";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -128,14 +128,38 @@ async function run(
   })();
   const result = await handle.done;
   await collecting;
-  const dump = existsSync(dumpFile)
-    ? JSON.parse(readFileSync(dumpFile, "utf8"))
-    : undefined;
+  const dump = readChildJson(dumpFile, result);
   // What a script run inside the child attached to (`--fake-attach`).
-  const attached: Attach | undefined = existsSync(attachFile)
-    ? JSON.parse(readFileSync(attachFile, "utf8"))
-    : undefined;
+  const attached: Attach | undefined = readChildJson(attachFile, result);
   return { events, result, dump, attached, worktree, root, handle };
+}
+
+/**
+ * A JSON file the stand-in CLI wrote, or undefined when it wrote none. A file
+ * that is there but is not JSON fails with how the child ended and the file's
+ * size (not its content: the dump holds the child's environment), so the
+ * failure names its cause.
+ */
+function readChildJson(
+  file: string,
+  exit: ExecResult,
+): ReturnType<typeof JSON.parse> {
+  if (!existsSync(file)) return undefined;
+  const text = readFileSync(file, "utf8");
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `${file} is not JSON (${text.length} characters: ${(error as Error).message}); the child ended with ${JSON.stringify(
+        {
+          exitCode: exit.exitCode,
+          timedOut: exit.timedOut,
+          stopped: exit.stopped,
+          stderr: exit.stderr,
+        },
+      )}`,
+    );
+  }
 }
 
 /** The flags that make the stand-in CLI report `id` and record what a script inside it attaches to. */

@@ -59,7 +59,7 @@
  *                 exit 0 with the child still running
  */
 
-import { existsSync, writeFileSync } from "fs";
+import { existsSync } from "fs";
 import { dirname, join } from "path";
 import {
   readSessionMirror,
@@ -67,6 +67,7 @@ import {
   SESSION_MIRROR_FILE,
 } from "../../ledger/identity";
 import { resolveCheckout } from "../../ledger/workspace";
+import { writeWhole } from "./write-whole";
 
 const argv = process.argv.slice(2);
 const flag = (name: string): string | undefined => {
@@ -89,7 +90,9 @@ if (argv.includes("--version")) {
 
 const stdin = await new Response(Bun.stdin.stream()).text();
 if (dump) {
-  writeFileSync(
+  // Whole or not there: a hung child is killed at its timeout, which can land
+  // while this is being written (`write-whole.ts`).
+  writeWhole(
     dump,
     JSON.stringify({
       cwd: process.cwd(),
@@ -124,7 +127,7 @@ async function recordAttach(): Promise<void> {
     env: process.env,
     path: join(dirname(attach), "attach-ledger.db"),
   });
-  writeFileSync(attach, JSON.stringify(attached));
+  writeWhole(attach, JSON.stringify(attached));
 }
 
 function claudeTool(name: string, input: unknown) {
