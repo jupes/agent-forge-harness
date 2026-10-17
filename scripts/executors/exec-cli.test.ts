@@ -567,6 +567,61 @@ describe("forge:exec", () => {
   });
 });
 
+describe("forge:exec interrupted (a process of its own, fake binary)", () => {
+  // forge:exec's Ctrl-C is unchanged by the shift's (x1gs.5.4.14): no owner
+  // takes the signal, so it does not wait for the run. The signal is emitted
+  // in the process (`fixtures/exec-parent.ts`): on Windows no signal can be
+  // sent to another process without ending it outright.
+  for (const signal of ["SIGINT", "SIGTERM"])
+    test(`${signal} while the provider runs exits 130 at once, prints no result and leaves the provider not running`, async () => {
+      const dir = scratchDir("forge exec int ");
+      ledgers.push(join(dir, "home", "ledger.db"));
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          join(import.meta.dir, "fixtures", "exec-parent.ts"),
+          dir,
+        ],
+        { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+      );
+      let pid: number | undefined;
+      try {
+        const dump = join(dir, "dump.json");
+        const deadline = Date.now() + 10_000;
+        while (pid === undefined && Date.now() < deadline) {
+          try {
+            pid = (JSON.parse(readFileSync(dump, "utf8")) as { pid: number })
+              .pid;
+          } catch {
+            await Bun.sleep(25);
+          }
+        }
+        if (pid === undefined) throw new Error("the fake provider never ran");
+        expect(processRuns(pid)).toBe(true);
+        child.stdin.write(`${signal}\n`);
+        child.stdin.flush();
+        expect(await child.exited).toBe(130);
+        expect(await new Response(child.stdout).text()).toBe("");
+        const gone = Date.now() + 3000;
+        while (processRuns(pid) && Date.now() < gone) await Bun.sleep(25);
+        expect(processRuns(pid)).toBe(false);
+      } finally {
+        if (child.exitCode === null) child.kill();
+        if (pid !== undefined && processRuns(pid)) process.kill(pid);
+      }
+    }, 20_000);
+});
+
+/** Whether a process with this pid is running. */
+function processRuns(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("forge:exec --run when the run correlation is refused (fake binary)", () => {
   test("a run held by another bead: the child still runs, its ledger rows and adapter variables carry --bead and --run, and the correlation file keeps the other bead", async () => {
     const { root, worktree, ledger, deps } = setup();

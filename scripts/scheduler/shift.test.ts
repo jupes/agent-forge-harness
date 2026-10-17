@@ -115,6 +115,8 @@ function fakeAdapter(
   onSpawn: (request: SpawnRequest) => void = () => undefined,
 ) {
   const runs: FakeRun[] = [];
+  /** How to end each run from outside, by its index in `runs`. */
+  const enders: Array<(how: Partial<ExecResult>) => void> = [];
   let live = 0;
   let maxLive = 0;
   const attempts = new Map<string, number>();
@@ -160,6 +162,7 @@ function fakeAdapter(
           ...how,
         });
       };
+      enders.push(end);
       if (step !== "hang") {
         cost = step.costUsd;
         timers.push(
@@ -226,6 +229,12 @@ function fakeAdapter(
     adapter,
     runs,
     maxLive: () => maxLive,
+    /** End run `index` (a `hang` one, say) now, as a provider that exited with `exitCode`. */
+    endRun(index: number, exitCode: number): void {
+      const end = enders[index];
+      if (end === undefined) throw new Error(`no run ${index}`);
+      end({ exitCode });
+    },
   };
 }
 
@@ -1094,8 +1103,16 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
       `worklog: shift ${h.shiftId} ended this bead after 2 runs: halted. Every run failed; the bead was halted, and the operator's queue action is the way out.`,
     );
 
-    const released = rig([queued("t-1")], () => "hang");
-    const rel = await shift(released, { forMs: 400 });
+    // Stopped once its run has started, not by a short `forMs`: a 400 ms
+    // shift could run out before the run began on a loaded runner (pkcg).
+    const stopReleased = new AbortController();
+    const released = rig([queued("t-1")], () => "hang", {
+      signal: stopReleased.signal,
+    });
+    const releasing = shift(released);
+    await until(() => released.fake.runs.length === 1);
+    stopReleased.abort("operator");
+    const rel = await releasing;
     expect(released.comments("t-1").at(-1)).toBe(
       `worklog: shift ${rel.shiftId} ended this bead after 1 run: released. The shift stopped its run (its time ran out, or it was asked to stop) and put the bead back in queued.`,
     );
@@ -1592,6 +1609,129 @@ describe("forge:shift — a bead resumed before its shift read it back (x1gs.5.4
     expect(done.reason).toBe("operator");
     expect(done.record.beads[0]).toMatchObject({ outcome: "released" });
     expect(r.labels("t-1")).toEqual(["queue:queued"]);
+  });
+});
+
+describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races", () => {
+  test("a run that fails after the in-process stop, before the shift has stopped it, is released to queued: it is neither repaired nor halted, nothing more is started, and the shift ends operator", async () => {
+    // On Windows a console Ctrl-C reaches the provider as well as the shift,
+    // so a run can end failed after the shift's signal but before the loop
+    // has stopped it. The loop is held in its host sample here, so it cannot
+    // stop the run first.
+    const stop = new AbortController();
+    let sampled = 0;
+    let freeHost: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      freeHost = done;
+    });
+    const r = rig([queued("t-1"), queued("t-2")], () => "hang", {
+      signal: stop.signal,
+      sampleHost: async () => {
+        sampled++;
+        if (sampled > 1) await held;
+        return { busy: false };
+      },
+    });
+    const running = shift(r, { concurrency: 2, repairs: 2 });
+    try {
+      await until(() => r.fake.runs.length === 1 && sampled > 1);
+      stop.abort("SIGINT");
+      // The provider dies of the same Ctrl-C: its run ends failed on its own.
+      const run = r.fake.runs[0];
+      expect(run?.endedAt).toBeUndefined();
+      r.fake.endRun(0, 1);
+      // Settled one way or another: given back, halted, or a repair started.
+      await until(
+        () => r.labels("t-1")[0] !== "queue:running" || r.fake.runs.length > 1,
+      );
+      expect(r.fake.runs).toHaveLength(1);
+    } finally {
+      freeHost();
+    }
+    const done = await running;
+    expect(done.reason).toBe("operator");
+    // The host sample the loop was held in ended after the stop: t-2 is
+    // eligible, and is not started.
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-1"]);
+    expect(r.labels("t-2")).toEqual(["queue:queued"]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(done.record.beads).toMatchObject([
+      { beadId: "t-1", outcome: "released", attempts: 1 },
+    ]);
+    expect(r.reservations()).toBe(0);
+  });
+
+  test("a last run that fails as the shift stops is released, and the record, the result and the end comment say it failed and was not halted", async () => {
+    // As above, with no repair left: without the stop it would be halted.
+    const stop = new AbortController();
+    let sampled = 0;
+    let freeHost: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      freeHost = done;
+    });
+    const r = rig([queued("t-1")], () => "hang", {
+      signal: stop.signal,
+      sampleHost: async () => {
+        sampled++;
+        if (sampled > 1) await held;
+        return { busy: false };
+      },
+    });
+    const running = shift(r, { concurrency: 2, repairs: 0 });
+    try {
+      await until(() => r.fake.runs.length === 1 && sampled > 1);
+      stop.abort("SIGINT");
+      r.fake.endRun(0, 1);
+      await until(() => r.labels("t-1")[0] !== "queue:running");
+    } finally {
+      freeHost();
+    }
+    const done = await running;
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    const [entry] = done.record.beads;
+    expect(entry).toMatchObject({ outcome: "released", attempts: 1 });
+    expect(entry?.error).toStartWith(
+      "run 1 failed as the shift was stopping, and was not repaired or halted: ",
+    );
+    expect(
+      readShiftRecord(r.deps.shiftsDir, done.shiftId)?.beads[0]?.error,
+    ).toBe(entry?.error);
+    expect(r.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${done.shiftId} ended this bead after 1 run: released. ${SHIFT_ENDINGS.failedStopping}`,
+    );
+  });
+
+  test("a stop that lands while a bead is being admitted admits nothing further: the bead is given back to queued, with no reservation, worktree, comment or run", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    // The stop arrives while bd writes the bead's start, as a Ctrl-C would.
+    r.intercept = (args) => {
+      if (
+        args[0] === "update" &&
+        args.some((arg) => arg.includes("queue:running"))
+      )
+        stop.abort("SIGINT");
+      return undefined;
+    };
+    const done = await shift(r);
+    expect(stop.signal.aborted).toBe(true);
+    expect(done.reason).toBe("operator");
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(done.record.beads).toMatchObject([
+      {
+        beadId: "t-1",
+        outcome: "set-aside",
+        attempts: 0,
+        error: "the shift was stopped before its run started",
+      },
+    ]);
+    expect(r.fake.runs).toHaveLength(0);
+    expect(r.startPoints).toEqual([]);
+    expect(r.comments("t-1")).toEqual([]);
+    expect(r.reservations()).toBe(0);
+    expect(
+      r.events().filter((event) => event.kind === "reservation.acquired"),
+    ).toEqual([]);
   });
 });
 

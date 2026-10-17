@@ -1,9 +1,11 @@
 /**
  * Runs one child process with a timeout, a stop(), and a guarantee that it does
  * not outlive the harness. Every live child is registered; a parent `exit`
- * (including a crash or Ctrl-C) kills the whole tree synchronously. A harness
- * killed outright runs no exit hook: each child's tree is guarded for that
- * case as it starts (`tree-guard.ts`).
+ * (including a crash or Ctrl-C) kills the whole tree synchronously. A
+ * `SIGINT` or `SIGTERM` does the same and exits 130, unless an interrupt owner
+ * (`ownInterrupts`) has dealt with it. A harness killed outright runs no exit
+ * hook: each child's tree is guarded for that case as it starts
+ * (`tree-guard.ts`).
  */
 
 import { guardTree } from "./tree-guard";
@@ -60,16 +62,62 @@ export function liveChildCount(): number {
   return live.size;
 }
 
+/** The signals the supervisor listens for. */
+export type InterruptSignal = "SIGINT" | "SIGTERM";
+
+/**
+ * Given each `SIGINT` or `SIGTERM` first. True means it has dealt with the
+ * signal: the supervisor then kills nothing and does not exit. False (or a
+ * throw) leaves the signal to the supervisor: every supervised child's tree
+ * is killed and the process exits 130.
+ */
+export type InterruptOwner = (signal: InterruptSignal) => boolean;
+
+/** The registered owner, wrapped so that each registration is told apart. */
+let owner: { take: InterruptOwner } | null = null;
+
+function onInterrupt(signal: InterruptSignal): void {
+  const current = owner;
+  let handled = false;
+  try {
+    handled = current !== null && current.take(signal);
+  } catch {
+    // An owner that fails has not dealt with the signal.
+  }
+  if (handled) return;
+  killAllLive();
+  process.exit(130);
+}
+
+/**
+ * Make `take` the owner of this process's `SIGINT` and `SIGTERM` until the
+ * function it returns is called. The supervisor's listeners are installed at
+ * once, so the owner is asked even before any child is supervised. There is
+ * one owner at a time: registering while one is registered throws, so an
+ * owner is never replaced by accident. The returned release removes this
+ * registration only (a second call, or one after another owner registered,
+ * does nothing). With no owner, a signal kills every supervised child's tree
+ * and exits 130, as `forge:exec` does.
+ */
+export function ownInterrupts(take: InterruptOwner): () => void {
+  if (owner !== null)
+    throw new Error(
+      "an interrupt owner is registered already: release it before registering another",
+    );
+  hookParentExit();
+  const registration = { take };
+  owner = registration;
+  return () => {
+    if (owner === registration) owner = null;
+  };
+}
+
 function hookParentExit(): void {
   if (hooked) return;
   hooked = true;
   process.on("exit", killAllLive);
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, () => {
-      killAllLive();
-      process.exit(130);
-    });
-  }
+  for (const signal of ["SIGINT", "SIGTERM"] as const)
+    process.on(signal, () => onInterrupt(signal));
 }
 
 async function pumpLines(

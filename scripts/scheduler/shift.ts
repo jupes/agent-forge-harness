@@ -217,6 +217,8 @@ export const SHIFT_ENDINGS = {
   stopped:
     "The shift stopped its run (its time ran out, or it was asked to stop) and put the bead back in queued.",
   notStarted: "Its run could not be started; the bead is back in queued.",
+  failedStopping:
+    "Its last run failed as the shift was stopping; the bead was put back in queued, not repaired or halted, and the shift record says how the run failed.",
   failed: "The shift failed while running it and put the bead back in queued.",
   halted:
     "Every run failed; the bead was halted, and the operator's queue action is the way out.",
@@ -415,7 +417,7 @@ interface Slot {
   /** The run whose start, newer than this one's, the watch found: the bead is that run's now. */
   takenBy?: string;
   /** Why it went back to queued, for its end comment. */
-  released?: "stopped" | "notStarted" | "failed";
+  released?: "stopped" | "notStarted" | "failed" | "failedStopping";
   /** How its pull request step ended; "failed" when the step itself threw. */
   pr?: PullRequestOutcome | "failed";
   done?: Promise<void>;
@@ -491,6 +493,13 @@ export async function runShift(
       error: `the base could not be fetched (${based.error}); nothing was started`,
     };
   const baseSha = based.value.sha;
+  // Stopped before anything is written (a Ctrl-C while the base was
+  // fetched): no record, no event, nothing to give back.
+  if (deps.signal?.aborted)
+    return {
+      ok: false,
+      error: `the shift was stopped before it started (${typeof deps.signal.reason === "string" ? deps.signal.reason : "stopped"}); nothing was started`,
+    };
 
   const now = deps.now ?? (() => new Date());
   const clock = () => now().getTime();
@@ -758,9 +767,15 @@ export async function runShift(
     const { entry } = slot;
     let lastFailure: string | undefined;
     let deadlineHit = false;
+    // The shift's own stop counts before the loop has passed it on to this
+    // run: a run that ends failed meanwhile (on Windows a console Ctrl-C
+    // reaches the provider too) is given back, never repaired or halted,
+    // and how it failed is written on the entry.
+    const stopping = () =>
+      slot.controller.signal.aborted || deps.signal?.aborted === true;
     try {
       for (let attempt = 1; attempt <= options.repairs + 1; attempt++) {
-        if (slot.controller.signal.aborted) break;
+        if (stopping()) break;
         const left = deadline - clock();
         if (left <= 0) {
           deadlineHit = true;
@@ -792,7 +807,21 @@ export async function runShift(
           if (entry.outcome === "review") await pullRequest(slot);
           return;
         }
-        if (slot.controller.signal.aborted || run.stopped) break;
+        if (stopping() && !run.stopped) {
+          // It ended on its own, not by the stop: say how, since the bead is
+          // given back rather than repaired or halted.
+          if (run.notStarted) {
+            note(entry, `the run was not started: ${run.error ?? "no reason"}`);
+            slot.released = "notStarted";
+          } else {
+            note(
+              entry,
+              `run ${attempt} failed as the shift was stopping, and was not repaired or halted: ${run.error ?? "the run failed"}`,
+            );
+            slot.released = "failedStopping";
+          }
+        }
+        if (stopping() || run.stopped) break;
         if (run.timedOut && timeoutMs === left) {
           deadlineHit = true;
           break;
@@ -810,7 +839,7 @@ export async function runShift(
         note(entry, slot.leftWhy ?? "the bead left the running state");
         return;
       }
-      if (slot.controller.signal.aborted || deadlineHit) {
+      if (stopping() || deadlineHit) {
         await settle(entry, "release", "released");
         return;
       }
@@ -879,9 +908,15 @@ export async function runShift(
       await settle(entry, "release", "set-aside");
       save();
     };
+    // A stop that lands while the bead is admitted (each await below) admits
+    // nothing further: what was taken is given back, and no run starts.
+    const stopped = () => deps.signal?.aborted === true;
+    const STOPPED_BEFORE = "the shift was stopped before its run started";
+    if (stopped()) return giveBack(STOPPED_BEFORE);
 
     const shown = await showBead(deps.runBd, bead.id);
     if (!shown.ok) return giveBack(`smith: ${shown.error}`);
+    if (stopped()) return giveBack(STOPPED_BEFORE);
     const resolution =
       options.smith !== undefined
         ? resolveSmith(config, { explicit: options.smith })
@@ -901,6 +936,17 @@ export async function runShift(
       storeFor(entry.runId),
     );
     if (!reserved.ok) return giveBack(`reservation: ${reserved.error}`);
+    // The last check: `makeWorktree` is synchronous, so nothing can land
+    // between here and the started comment. A stop during that comment
+    // reaches `work`, which gives the bead back before any run.
+    if (stopped()) {
+      const freed = await release(
+        { beadId: bead.id, worktree: planned },
+        storeFor(entry.runId),
+      );
+      if (!freed.ok) note(entry, `reservation: ${freed.error}`);
+      return giveBack(STOPPED_BEFORE);
+    }
 
     let made: ReturnType<ShiftDeps["makeWorktree"]>;
     try {
@@ -1063,9 +1109,15 @@ export async function runShift(
           nothingEligible = true;
           break;
         }
+        // Stopped while the host was sampled or the queue read: start nothing.
+        if (deps.signal?.aborted) break;
         await admit(next);
       }
       if (reason !== null) break;
+      if (deps.signal?.aborted) {
+        reason = "operator";
+        break;
+      }
 
       if (slots.size === 0) {
         if (admitted >= options.maxBeads) reason = "count";

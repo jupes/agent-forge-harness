@@ -98,6 +98,20 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   SIGTERM is checked on Linux and macOS only — on Windows a signal from another process ends it outright — so it has
   not been run on the Windows machine this was written on. Observed there (Bun 1.3.10): the provider itself did not
   outlive the harness even with the hook removed, but a child it started detached did, unless the hook ran.
+- The interrupt owner (`ownInterrupts`, `x1gs.5.4.14`): a process may register one function that is given each
+  `SIGINT` and `SIGTERM` first. When it answers `true` (dealt with) the supervisor kills nothing and does not exit;
+  `false`, or a throw, leaves the signal to the supervisor's default above (kill every supervised tree, exit 130).
+  Registering installs the supervisor's listeners at once, so the owner is asked before any child is supervised.
+  One owner at a time: registering while one is registered throws, so nothing replaces an owner by accident. The
+  function `ownInterrupts` returns releases that registration only, once (a stale release never drops a later
+  owner); a test that registers one releases it. Two owners exist: `forge:shift run` (`shiftCliMain`,
+  `scripts/scheduler/AGENTS.md`: the first signal stops the shift cleanly, the second is declined) and the hearth
+  (`closeOnSignal`, `scripts/hearth/AGENTS.md`). `forge:exec` registers none, so its Ctrl-C is unchanged: it exits
+  130 at once without waiting for the run. `supervisor.test.ts` emits the signals (`process.emit`, the only way to
+  run a handler from a test on Windows) in the stand-in harness, with no owner, an owner that answers handled
+  (nothing killed, nothing exits; after its release the next signal kills and exits 130) and one that declines;
+  `exec-cli.test.ts` emits them in a stand-in `forge:exec` (`fixtures/exec-parent.ts`) running the fake binary:
+  exit 130, no result printed, the provider gone.
 - A harness killed outright (SIGKILL, TerminateProcess) runs no hook, so `supervise` guards each child's tree as it
   starts (`tree-guard.ts`). On Windows the child is assigned at once to a job object of its own with kill-on-close and
   no breakaway (kernel32 through `bun:ffi`); what it starts afterwards is in the job, and the system ends the job when

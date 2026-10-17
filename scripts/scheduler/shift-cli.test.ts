@@ -14,11 +14,12 @@ import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { claudeAdapter } from "../executors/claude";
+import { ownInterrupts } from "../executors/supervisor";
 import type { ExecutorAdapter } from "../executors/types";
 import type { BdRunner } from "../hearth/routes/dev-api";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
-import { activeReservations } from "../ledger/query";
+import { activeReservations, queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import type { HostProbe } from "./host-load";
 import { createQueue } from "./queue";
@@ -29,9 +30,11 @@ import {
 } from "./queue-fixture";
 import { reserve } from "./reservations";
 import type { ShiftDeps } from "./shift";
-import { runShiftCli, shiftCliDeps } from "./shift-cli";
+import { interruptShift, runShiftCli, shiftCliDeps } from "./shift-cli";
 import { RUN_PR_BODY } from "./shift-pr";
 import {
+  listShiftRecords,
+  processAlive,
   readShiftRecord,
   type ShiftRecord,
   writeShiftRecord,
@@ -44,6 +47,11 @@ const FAKE = join(
   "executors",
   "fixtures",
   "fake-cli.ts",
+);
+const INTERRUPTIBLE = join(
+  import.meta.dir,
+  "fixtures",
+  "interruptible-shift.ts",
 );
 
 const roots: string[] = [];
@@ -643,6 +651,265 @@ describe("forge:shift", () => {
     expect((await runShiftCli(["dance"], deps, io)).exit).toBe(1);
     expect((await runShiftCli([], deps, io)).exit).toBe(1);
   });
+});
+
+/**
+ * `forge:shift run` in a process of its own (`fixtures/interruptible-shift.ts`:
+ * the CLI's main with hermetic dependencies and the fake binary as its run),
+ * driven by signals emitted in it.
+ */
+async function interruptible(
+  mode: "run" | "stuck" | "early" | "slow-fetch",
+  graceMs: number,
+) {
+  const dir = scratch();
+  const home = join(dir, "home");
+  const ledger = join(home, "ledger.db");
+  ledgers.push(ledger);
+  const proc = Bun.spawn(
+    [process.execPath, INTERRUPTIBLE, dir, mode, String(graceMs)],
+    {
+      env: { ...process.env, AGENT_FORGE_HOME: home },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  let stderr = "";
+  const stderrRead = (async () => {
+    const decoder = new TextDecoder();
+    const reader = proc.stderr.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      stderr += decoder.decode(value, { stream: true });
+    }
+  })();
+  const stdout = new Response(proc.stdout).text();
+  let fakePid: number | undefined;
+  const workspace = () => resolveCheckout(join(dir, "root")).workspace;
+  return {
+    proc,
+    home,
+    /** The pid of the fake provider, once the shift's run has started it. */
+    async ran(): Promise<number> {
+      const dump = join(dir, "dump.json");
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline && proc.exitCode === null) {
+        try {
+          fakePid = (JSON.parse(readFileSync(dump, "utf8")) as { pid: number })
+            .pid;
+          return fakePid;
+        } catch {
+          await Bun.sleep(25);
+        }
+      }
+      throw new Error(`the shift's run never started; stderr: ${stderr}`);
+    },
+    send(signal: string): void {
+      proc.stdin.write(`${signal}\n`);
+      proc.stdin.flush();
+    },
+    stderr: () => stderr,
+    async until(text: string): Promise<void> {
+      const deadline = Date.now() + 30_000;
+      while (!stderr.includes(text)) {
+        if (Date.now() > deadline)
+          throw new Error(`stderr never said ${text}: ${stderr}`);
+        await Bun.sleep(25);
+      }
+    },
+    /** What it printed on stdout and stderr, once it has exited. */
+    async printed(): Promise<{ stdout: string; stderr: string }> {
+      await stderrRead;
+      return { stdout: await stdout, stderr };
+    },
+    labels: (): Record<string, string[]> =>
+      JSON.parse(readFileSync(join(dir, "labels.json"), "utf8")) as Record<
+        string,
+        string[]
+      >,
+    reservations: () =>
+      activeReservations({ workspace: workspace() }, { path: ledger }),
+    events: () =>
+      existsSync(ledger)
+        ? queryEvents({ workspace: workspace() }, { path: ledger })
+        : [],
+    records: () => listShiftRecords(join(home, "shifts")),
+    fakePid: () => fakePid,
+    /** End what a failed test left running. */
+    cleanup(): void {
+      if (proc.exitCode === null) proc.kill();
+      if (fakePid !== undefined && processAlive(fakePid)) process.kill(fakePid);
+    },
+  };
+}
+
+describe("interruptShift", () => {
+  test("owns the process's signals until it is released, and then leaves nothing registered", () => {
+    const said: string[] = [];
+    const interrupt = interruptShift(
+      { say: (line) => said.push(line), exit: () => undefined },
+      () => ({ id: undefined, recorded: false }),
+      1_000,
+    );
+    try {
+      expect(interrupt.signal.aborted).toBe(false);
+      expect(() => ownInterrupts(() => true)).toThrow(
+        "an interrupt owner is registered already",
+      );
+    } finally {
+      interrupt.release();
+    }
+    ownInterrupts(() => true)();
+    expect(said).toEqual([]);
+  });
+});
+
+describe("forge:shift run interrupted (a process of its own, fake binary)", () => {
+  for (const signal of ["SIGINT", "SIGTERM"])
+    test(`a first ${signal} stops the shift as forge:shift stop does: the run is stopped, its bead back in queued, its reservation freed, shift.stopped recorded, and the process prints the record and exits 0`, async () => {
+      const shift = await interruptible("run", 60_000);
+      try {
+        const pid = await shift.ran();
+        expect(processAlive(pid)).toBe(true);
+        expect(shift.labels()["int-1"]).toEqual(["queue:running"]);
+        expect(shift.reservations()).toHaveLength(1);
+        shift.send(signal);
+        expect(await shift.proc.exited).toBe(0);
+        const { stdout, stderr } = await shift.printed();
+        const [record] = shift.records();
+        const shiftId = record?.shiftId ?? "";
+        expect(stderr).toContain(
+          `forge:shift: ${signal}: stopping shift ${shiftId}: its runs are stopped and their beads put back in queued (up to 60s). Press Ctrl-C again to exit now.`,
+        );
+        expect(JSON.parse(stdout)).toMatchObject({
+          ok: true,
+          data: { shiftId, reason: "operator", recorded: true },
+        });
+        expect(record).toMatchObject({
+          state: "stopped",
+          reason: "operator",
+          beads: [{ beadId: "int-1", outcome: "released" }],
+        });
+        expect(shift.labels()["int-1"]).toEqual(["queue:queued"]);
+        expect(shift.reservations()).toEqual([]);
+        expect(
+          shift
+            .events()
+            .filter((event) => event.kind === "shift.stopped")
+            .map((event) => event.payload),
+        ).toEqual([{ shiftId, reason: "operator" }]);
+        expect(processAlive(pid)).toBe(false);
+      } finally {
+        shift.cleanup();
+      }
+    }, 90_000);
+
+  test("a second signal while the shift stops exits 130 at once, long before the deadline: what the stop had not given back stays held for forge:shift recover", async () => {
+    // The stop can never give the bead back (`stuck`), and its deadline is a minute away.
+    const shift = await interruptible("stuck", 60_000);
+    try {
+      await shift.ran();
+      shift.send("SIGINT");
+      await shift.until("forge:shift: SIGINT: stopping shift");
+      const began = Date.now();
+      shift.send("SIGINT");
+      expect(await shift.proc.exited).toBe(130);
+      expect(Date.now() - began).toBeLessThan(20_000);
+      const { stdout, stderr } = await shift.printed();
+      const [record] = shift.records();
+      const shiftId = record?.shiftId ?? "";
+      expect(stdout).toBe("");
+      expect(stderr).toContain(
+        `forge:shift: SIGINT again: exiting now. What the shift still holds stays held: bun run forge:shift recover ${shiftId} gives it back.`,
+      );
+      expect(record?.state).toBe("running");
+      expect(shift.labels()["int-1"]).toEqual(["queue:running"]);
+      expect(processAlive(shift.fakePid() ?? 0)).toBe(false);
+    } finally {
+      shift.cleanup();
+    }
+  }, 90_000);
+
+  test("a stop that does not end by the deadline is cut short: the process says so and exits 130", async () => {
+    const shift = await interruptible("stuck", 1_500);
+    try {
+      await shift.ran();
+      const began = Date.now();
+      shift.send("SIGINT");
+      expect(await shift.proc.exited).toBe(130);
+      expect(Date.now() - began).toBeGreaterThanOrEqual(1_500);
+      const { stdout, stderr } = await shift.printed();
+      const [record] = shift.records();
+      const shiftId = record?.shiftId ?? "";
+      expect(stdout).toBe("");
+      expect(stderr).toContain(
+        `forge:shift: shift ${shiftId} did not stop within 1.5s: exiting now. What the shift still holds stays held: bun run forge:shift recover ${shiftId} gives it back.`,
+      );
+      expect(record?.state).toBe("running");
+      expect(processAlive(shift.fakePid() ?? 0)).toBe(false);
+    } finally {
+      shift.cleanup();
+    }
+  }, 90_000);
+
+  test("a signal while a slow base fetch outlasts the deadline: the notices say nothing was started and offer no recover, since there is no record to recover", async () => {
+    const shift = await interruptible("slow-fetch", 1_500);
+    try {
+      const fetching = join(shift.home, "..", "fetching");
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(fetching)) {
+        if (Date.now() > deadline || shift.proc.exitCode !== null)
+          throw new Error(`the fetch never began: ${shift.stderr()}`);
+        await Bun.sleep(25);
+      }
+      shift.send("SIGINT");
+      expect(await shift.proc.exited).toBe(130);
+      const { stdout, stderr } = await shift.printed();
+      const [announced] = stderr.split(/\r?\n/);
+      const shiftId = (JSON.parse(announced ?? "{}") as { shiftId: string })
+        .shiftId;
+      expect(stdout).toBe("");
+      expect(shift.records()).toEqual([]);
+      expect(stderr).toContain(
+        `forge:shift: SIGINT: stopping shift ${shiftId} before it has started: nothing will be started (up to 1.5s). Press Ctrl-C again to exit now.`,
+      );
+      expect(stderr).toContain(
+        `forge:shift: shift ${shiftId} did not stop within 1.5s: exiting now. Nothing was started: it had not written its record.`,
+      );
+      expect(stderr).not.toContain("forge:shift recover");
+    } finally {
+      shift.cleanup();
+    }
+  }, 90_000);
+
+  test("a signal before the shift has started (while its base is fetched) starts nothing: no record, no shift.started, no run, the bead still queued, and the process exits 1", async () => {
+    const shift = await interruptible("early", 60_000);
+    try {
+      // A shift that ignored the signal would run on: give up on it well
+      // inside the test's own limit.
+      expect(
+        await Promise.race([
+          shift.proc.exited,
+          Bun.sleep(45_000).then(() => "still running"),
+        ]),
+      ).toBe(1);
+      const { stdout } = await shift.printed();
+      expect(JSON.parse(stdout)).toEqual({
+        ok: false,
+        data: null,
+        error:
+          "the shift was stopped before it started (SIGINT); nothing was started",
+      });
+      expect(shift.records()).toEqual([]);
+      expect(shift.events()).toEqual([]);
+      expect(shift.fakePid()).toBeUndefined();
+      expect(shift.labels()["int-1"]).toEqual(["queue:queued"]);
+    } finally {
+      shift.cleanup();
+    }
+  }, 90_000);
 });
 
 describe("forge:shift recover", () => {
