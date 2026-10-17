@@ -87,6 +87,7 @@ import {
   isShiftId,
   listShiftRecords,
   mintShiftId,
+  readShiftRecord,
   requestStop,
   SHIFTS_DIR,
   shiftIdInUse,
@@ -349,21 +350,26 @@ export interface ShiftInterrupt {
  * starts the deadline: a stop not over by `graceMs` is cut short (every
  * supervised run killed, exit 130). A second is left to the supervisor,
  * which kills every supervised run and exits 130 at once. Each notice names
- * the shift once `shiftId()` knows it.
+ * the shift once `shift()` knows its id, and offers `forge:shift recover`
+ * only once its record is written: before that the shift has started
+ * nothing, and a signal then means it never will (`runShift` refuses a
+ * stopped shift before writing its record), so there is nothing to recover.
  */
 export function interruptShift(
   io: Pick<ShiftMainIo, "say" | "exit">,
-  shiftId: () => string | undefined,
+  shift: () => { id: string | undefined; recorded: boolean },
   graceMs: number = INTERRUPT_GRACE_MS,
 ): ShiftInterrupt {
   const controller = new AbortController();
   let deadline: ReturnType<typeof setTimeout> | undefined;
   const seconds = `${graceMs / 1000}s`;
+  const named = (id: string | undefined): string =>
+    id === undefined ? "the shift" : `shift ${id}`;
   const left = (): string => {
-    const id = shiftId();
-    return id === undefined
-      ? ""
-      : ` What the shift still holds stays held: bun run forge:shift recover ${id} gives it back.`;
+    const { id, recorded } = shift();
+    return recorded && id !== undefined
+      ? ` What the shift still holds stays held: bun run forge:shift recover ${id} gives it back.`
+      : " Nothing was started: it had not written its record.";
   };
   const release = ownInterrupts((signal) => {
     if (controller.signal.aborted) {
@@ -371,12 +377,15 @@ export function interruptShift(
       return false;
     }
     controller.abort(signal);
+    const { id, recorded } = shift();
     io.say(
-      `forge:shift: ${signal}: stopping shift ${shiftId() ?? "(not started)"}: its runs are stopped and their beads put back in queued (up to ${seconds}). Press Ctrl-C again to exit now.`,
+      recorded
+        ? `forge:shift: ${signal}: stopping ${named(id)}: its runs are stopped and their beads put back in queued (up to ${seconds}). Press Ctrl-C again to exit now.`
+        : `forge:shift: ${signal}: stopping ${named(id)} before it has started: nothing will be started (up to ${seconds}). Press Ctrl-C again to exit now.`,
     );
     deadline = setTimeout(() => {
       io.say(
-        `forge:shift: shift ${shiftId() ?? "(not started)"} did not stop within ${seconds}: exiting now.${left()}`,
+        `forge:shift: ${named(shift().id)} did not stop within ${seconds}: exiting now.${left()}`,
       );
       killAllLive();
       io.exit(INTERRUPTED_EXIT);
@@ -417,7 +426,16 @@ export async function shiftCliMain(
   };
   const interrupt =
     argv[0] === "run"
-      ? interruptShift(io, () => shiftId, options.graceMs)
+      ? interruptShift(
+          io,
+          () => ({
+            id: shiftId,
+            recorded:
+              shiftId !== undefined &&
+              readShiftRecord(deps.shiftsDir, shiftId) !== null,
+          }),
+          options.graceMs,
+        )
       : null;
   let result: CliResult;
   try {

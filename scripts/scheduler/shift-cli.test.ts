@@ -658,7 +658,10 @@ describe("forge:shift", () => {
  * the CLI's main with hermetic dependencies and the fake binary as its run),
  * driven by signals emitted in it.
  */
-async function interruptible(mode: "run" | "stuck" | "early", graceMs: number) {
+async function interruptible(
+  mode: "run" | "stuck" | "early" | "slow-fetch",
+  graceMs: number,
+) {
   const dir = scratch();
   const home = join(dir, "home");
   const ledger = join(home, "ledger.db");
@@ -747,7 +750,7 @@ describe("interruptShift", () => {
     const said: string[] = [];
     const interrupt = interruptShift(
       { say: (line) => said.push(line), exit: () => undefined },
-      () => undefined,
+      () => ({ id: undefined, recorded: false }),
       1_000,
     );
     try {
@@ -846,6 +849,36 @@ describe("forge:shift run interrupted (a process of its own, fake binary)", () =
       );
       expect(record?.state).toBe("running");
       expect(processAlive(shift.fakePid() ?? 0)).toBe(false);
+    } finally {
+      shift.cleanup();
+    }
+  }, 90_000);
+
+  test("a signal while a slow base fetch outlasts the deadline: the notices say nothing was started and offer no recover, since there is no record to recover", async () => {
+    const shift = await interruptible("slow-fetch", 1_500);
+    try {
+      const fetching = join(shift.home, "..", "fetching");
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(fetching)) {
+        if (Date.now() > deadline || shift.proc.exitCode !== null)
+          throw new Error(`the fetch never began: ${shift.stderr()}`);
+        await Bun.sleep(25);
+      }
+      shift.send("SIGINT");
+      expect(await shift.proc.exited).toBe(130);
+      const { stdout, stderr } = await shift.printed();
+      const [announced] = stderr.split(/\r?\n/);
+      const shiftId = (JSON.parse(announced ?? "{}") as { shiftId: string })
+        .shiftId;
+      expect(stdout).toBe("");
+      expect(shift.records()).toEqual([]);
+      expect(stderr).toContain(
+        `forge:shift: SIGINT: stopping shift ${shiftId} before it has started: nothing will be started (up to 1.5s). Press Ctrl-C again to exit now.`,
+      );
+      expect(stderr).toContain(
+        `forge:shift: shift ${shiftId} did not stop within 1.5s: exiting now. Nothing was started: it had not written its record.`,
+      );
+      expect(stderr).not.toContain("forge:shift recover");
     } finally {
       shift.cleanup();
     }

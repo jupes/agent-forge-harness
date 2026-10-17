@@ -394,9 +394,21 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   again once a host sample or an eligibility read has come back (a stop meanwhile admits nothing
   more and ends `operator`, not `drained`), and a run that ends failed after it, before the loop has
   stopped that run, is released to `queued`, never repaired or halted (on Windows a console Ctrl-C
-  reaches the provider as well as the shift). A signal already aborted once the base is fetched
-  refuses the shift as a failed start would: nothing written, `the shift was stopped before it
-  started (<reason>); nothing was started`.
+  reaches the provider as well as the shift). Such a run's failure is not hidden: its entry's
+  `error` says `run <n> failed as the shift was stopping, and was not repaired or halted: <why>` and
+  its end comment gives `SHIFT_ENDINGS.failedStopping`. Released rather than halted because the
+  shift cannot tell a run the same Ctrl-C ended from one that failed of itself, and the same holds
+  for a run that ends failed after `forge:shift stop` aborted it: a halt would need the operator's
+  queue action for what may be the operator's own interrupt, and a release costs one more try with
+  the record saying why. A signal already aborted once the base is fetched refuses the shift as a
+  failed start would: nothing written, `the shift was stopped before it started (<reason>); nothing
+  was started`. A signal that lands while a bead is admitted admits nothing further: it is checked
+  after the start move, after the smith's read and after the reserve, and what was taken is given
+  back (the reservation released, the bead released to `queued`, its entry `set-aside` with `the
+  shift was stopped before its run started`), with no worktree and no comment. After the reserve
+  nothing can land until the started comment (`makeWorktree` is synchronous); a signal during that
+  comment reaches the run's own check, which gives the bead back before any run, with its end
+  comment.
 - Ctrl-C (`x1gs.5.4.14`): `shiftCliMain` (the CLI's main) makes `run` the process's interrupt owner
   (`ownInterrupts`, `scripts/executors/AGENTS.md`) from before its base is fetched until the shift
   has stopped, and passes the owner's `AbortSignal` as `ShiftDeps.signal`. The first `SIGINT` or
@@ -405,7 +417,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   `forge:shift: <signal>: stopping shift <id>: … (up to 30s). Press Ctrl-C again to exit now.` The
   process then prints the record and exits 0, as a shift stopped by `stop` does. A second signal is
   declined to the supervisor: every run's tree is killed and the process exits 130 at once, saying
-  that what the shift holds stays held for `forge:shift recover <id>`. The bound: a stop not over
+  that what the shift holds stays held for `forge:shift recover <id>`. That hint is given only once
+  the shift's record is written: a signal before it (a slow base fetch, which may take git's 2
+  minutes, longer than the bound) means the shift will start nothing, and every notice says so
+  (`stopping shift <id> before it has started: nothing will be started`, then `Nothing was started:
+  it had not written its record`) instead of naming a recover that would find no shift. The bound: a stop not over
   within `INTERRUPT_GRACE_MS` (30 s, the hearth's `SHIFT_STOP_GRACE_MS`) is cut short the same way,
   saying so, so a run that will not stop (or a `bd` that never answers) cannot hang the process. A
   signal before the record (while the base is fetched) starts nothing and exits 1. After the shift
@@ -413,7 +429,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   (130), and the other commands (`stop`, `recover`, `list`) register no owner. `shift-cli.test.ts`
   runs `fixtures/interruptible-shift.ts` (the real main, hermetic dependencies, the fake binary as
   the run, signals emitted with `process.emit`) for each case: a first `SIGINT` and a first `SIGTERM`,
-  a second signal while the stop hangs, the deadline, and a signal while the base is fetched.
+  a second signal while the stop hangs, the deadline, a signal while the base is fetched, and one
+  while a fetch outlasts the deadline.
 - A bead the operator pauses or halts while it runs is found by reading each running bead back
   every `pollMs`; its run is stopped, its reservation freed, and its queue state left as the
   operator put it (`left`). Resuming it puts it in `queued` (the queue section): this shift has set
@@ -555,6 +572,14 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - On Windows a console Ctrl-C also reaches the provider, which may end on its own before the
     shift's handler has run; such a run is seen as failed. If that is seen before the shift's
     signal (they arrive together), the run is repaired or halted as any failure is.
+  - Inferred, untested: on Linux and macOS a terminal's Ctrl-C signals the whole foreground
+    process group. Only the provider is in a group of its own (`supervise` starts it detached); the
+    shift's own `bd`, `git` and `gh` children (`bdRunner` uses `execFile` without `detached`) are in
+    the shift's group and get the signal too. A `bd update` killed that way while the stop gives a
+    bead back can leave the bead `running` with no run, the end state `x1gs.5.4.16` is about.
+    The process groups are not changed here.
+  - Untested: how the double wrapper (`bun run forge:shift` starting `bun scripts/…/shift-cli.ts`)
+    passes a real Ctrl-C on; the tests run the CLI's main directly and emit the signal in it.
   - The shift does not run `bd update --claim`; the run's own workflow does.
   - A base that moves during a shift is not fetched again; a remote other than `origin`.
   - Uncommitted changes in a worktree are not in its pull request, and nothing says so.

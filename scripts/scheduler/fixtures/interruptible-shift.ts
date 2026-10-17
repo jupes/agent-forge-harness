@@ -26,6 +26,8 @@
  *           so the shift can never give its bead back: its stop hangs
  *   early   the fetch of the base emits SIGINT itself, before the shift has
  *           written anything, and then answers
+ *   slow-fetch  the fetch of the base writes `<dir>/fetching` and never
+ *           answers, as a fetch slower than the interrupt's deadline
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -103,6 +105,10 @@ const answered = (stdout: string) => ({ status: 0, stdout, stderr: "" });
 const git: ToolRun = async (args) => {
   if (args[0] === "fetch") {
     if (mode === "early") emit("SIGINT");
+    if (mode === "slow-fetch") {
+      writeFileSync(join(dir, "fetching"), "");
+      return new Promise<never>(() => undefined);
+    }
     return answered("");
   }
   if (args[0] === "rev-parse") return answered(`${"b".repeat(40)}\n`);
