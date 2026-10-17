@@ -13,7 +13,7 @@
 
 /** How much of the end of the output is kept. */
 export const TAIL_CHARS = 1_500;
-/** How much of one failing test's lines is kept: its first part, where the error and the diff's start are. */
+/** How much of one failing test's lines is kept; when they are longer, bun's report of the failure is kept first (`keep`). */
 export const BLOCK_CHARS = 4_000;
 /** How much of all the failing tests' lines is kept. */
 export const BLOCKS_CHARS = 12_000;
@@ -32,11 +32,11 @@ function cut(text: string, limit: number, note: string): string {
 }
 
 /**
- * For each failing test, once, the lines bun printed for it: those since the
- * last boundary line, its `(fail)` line, and a timeout note after it. Blocks
- * are separated by a blank line, and a block with no line of its own beyond a
- * `(fail)` already given (the summary's list) is left out. Empty when no test
- * failed.
+ * For each failing test, once, the lines printed for it: those since the
+ * last boundary line or timeout note (cut by `keep`), its `(fail)` line, and
+ * a timeout note after it. Blocks are separated by a blank line; a `(fail)`
+ * line already given (the summary's list) gives no second block. Empty when
+ * no test failed.
  */
 export function failureBlocks(output: string): string {
   const lines = output.replace(COLOUR, "").split(/\r?\n/);
@@ -46,23 +46,68 @@ export function failureBlocks(output: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
     if (!BOUNDARY.test(line)) continue;
+    const note = lines[i + 1];
+    const noted = note !== undefined && TIMEOUT_NOTE.test(note);
     if (FAIL.test(line) && !given.has(line)) {
       given.add(line);
-      const own = lines.slice(start, i + 1);
-      const note = lines[i + 1];
-      if (note !== undefined && TIMEOUT_NOTE.test(note)) own.push(note);
-      const fail = own.indexOf(line);
-      const before = own.slice(0, fail).join("\n");
-      const after = own.slice(fail).join("\n");
-      blocks.push(
-        before === ""
-          ? after
-          : `${cut(before, BLOCK_CHARS - after.length, "[cut]")}\n${after}`,
-      );
+      const after = (noted ? [line, note] : [line]).join("\n");
+      const before = lines.slice(start, i);
+      const kept = keep(before, Math.max(0, BLOCK_CHARS - after.length));
+      blocks.push(kept === "" ? after : `${kept}\n${after}`);
     }
+    // The note belongs to this test: the next block starts after it.
+    if (noted) i++;
     start = i + 1;
   }
   return cut(blocks.join("\n\n"), BLOCKS_CHARS, "[more failures cut]");
+}
+
+/** A line of the source excerpt bun prints above a test's error. */
+const EXCERPT = /^\s*\d+ \| /;
+const ERROR_LINE = /^error: /;
+
+/**
+ * Where bun's own report of a failure starts in the lines before its `(fail)`
+ * line: the source excerpt it prints last, else the last `error:` line; null
+ * when there is neither. What comes before it is the test's own output.
+ */
+function reportStart(before: readonly string[]): number | null {
+  for (let k = before.length - 1; k >= 0; k--) {
+    if (!EXCERPT.test(before[k] ?? "")) continue;
+    let first = k;
+    while (first > 0 && EXCERPT.test(before[first - 1] ?? "")) first--;
+    return first;
+  }
+  for (let k = before.length - 1; k >= 0; k--)
+    if (ERROR_LINE.test(before[k] ?? "")) return k;
+  return null;
+}
+
+/**
+ * The lines before a `(fail)` line, in at most `budget` characters: all of
+ * them when they fit; else bun's report, from its start (`reportStart`), so
+ * the error and the diff's start are kept whatever the test printed before
+ * it; else, with no report to find, the lines nearest the `(fail)` line.
+ * Anything left out is marked `[cut]`.
+ */
+function keep(before: readonly string[], budget: number): string {
+  const all = before.join("\n");
+  if (all.length <= budget) return all;
+  const from = reportStart(before);
+  if (from !== null) {
+    const report = before.slice(from).join("\n");
+    const head = from > 0 ? "[cut]\n" : "";
+    return `${head}${cut(report, Math.max(0, budget - head.length), "[cut]")}`;
+  }
+  const end: string[] = [];
+  let used = 0;
+  for (let k = before.length - 1; k >= 0; k--) {
+    const line = before[k] ?? "";
+    if (used + line.length + 1 > budget) break;
+    end.unshift(line);
+    used += line.length + 1;
+  }
+  return ["[cut]", ...end].join("\n");
 }
 
 /** What a failing re-run file's message carries: its failing tests' blocks, and the end of its output. */

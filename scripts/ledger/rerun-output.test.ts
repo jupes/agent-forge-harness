@@ -95,14 +95,85 @@ describe("failureBlocks", () => {
     ).toBe("");
   });
 
-  test("a very long failure is cut, and so is the whole, each saying so", () => {
+  /** What a test printed to stderr before bun reported its failure: more than one block holds. */
+  const noise = Array.from(
+    { length: 120 },
+    (_, i) => `[hearth] request ${i} answered 200 in 3 ms`,
+  );
+  const excerpt = [
+    "211 |     expect(comparablePath(dir)).toBe(comparablePath(top(dir)));",
+    "                                     ^",
+    "error: expect(received).toBe(expected)",
+  ];
+
+  test("a test that printed more than a block's worth before bun's report keeps the report: from the source excerpt, error and diff included", () => {
+    expect(noise.join("\n").length).toBeGreaterThan(4_000);
+    const output = [
+      ...noise,
+      ...excerpt,
+      "",
+      'Expected: "/tmp/wt abc/repo x"',
+      'Received: "/home/runner/work/agent-forge-harness"',
+      "(fail) a > noisy",
+    ].join("\n");
+    expect(failureBlocks(output)).toBe(
+      [
+        "[cut]",
+        ...excerpt,
+        "",
+        'Expected: "/tmp/wt abc/repo x"',
+        'Received: "/home/runner/work/agent-forge-harness"',
+        "(fail) a > noisy",
+      ].join("\n"),
+    );
+  });
+
+  test("a long diff after a long stderr keeps the error and the diff's start, and the (fail) line", () => {
+    const diff = Array.from({ length: 400 }, (_, i) => `+   "line ${i}",`);
+    const block = failureBlocks(
+      [...noise, ...excerpt, ...diff, "(fail) a > long"].join("\n"),
+    );
+    expect(block.length).toBeLessThan(4_200);
+    expect(
+      block.startsWith(`[cut]\n${excerpt.join("\n")}\n+   "line 0",`),
+    ).toBe(true);
+    expect(block).not.toContain("[hearth]");
+    expect(block.endsWith("[cut]\n(fail) a > long")).toBe(true);
+  });
+
+  test("a timeout note is kept once, with its own test, not again with the next failure", () => {
+    const output = [
+      "(fail) a > slow [101.00ms]",
+      "  ^ this test timed out after 100ms.",
+      "error: boom",
+      "(fail) a > broken [1.00ms]",
+    ].join("\n");
+    expect(failureBlocks(output)).toBe(
+      [
+        "(fail) a > slow [101.00ms]",
+        "  ^ this test timed out after 100ms.",
+        "",
+        "error: boom",
+        "(fail) a > broken [1.00ms]",
+      ].join("\n"),
+    );
+  });
+
+  test("a (fail) line longer than a block keeps none of the lines before it", () => {
+    const name = `(fail) a > ${"very long name ".repeat(400)}`;
+    expect(name.length).toBeGreaterThan(4_000);
+    expect(failureBlocks([...noise.slice(0, 60), name].join("\n"))).toBe(
+      `[cut]\n${name}`,
+    );
+  });
+
+  test("a very long failure with no error line keeps its end, next to the (fail) line, and the whole is cut too, each saying so", () => {
     const diff = Array.from({ length: 400 }, (_, i) => `+   "line ${i}",`);
     const one = [...diff, "(fail) a > long"].join("\n");
     const block = failureBlocks(one);
     expect(block.length).toBeLessThan(4_200);
-    expect(block.startsWith('+   "line 0",')).toBe(true);
-    expect(block.endsWith("(fail) a > long")).toBe(true);
-    expect(block).toContain("[cut]");
+    expect(block.startsWith("[cut]\n")).toBe(true);
+    expect(block.endsWith('+   "line 399",\n(fail) a > long')).toBe(true);
 
     const many = Array.from({ length: 10 }, (_, i) =>
       [...diff, `(fail) a > long ${i}`].join("\n"),
