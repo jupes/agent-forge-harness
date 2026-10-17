@@ -332,12 +332,12 @@ test.skipIf(!ON_WINDOWS)(
     symlinkSync(elsewhere, join(target, "loop"), "junction");
     makeOwnerOnly(target, "directory");
     const acl = nativeWindowsAcl();
-    const user = acl.userSid();
     const read = acl.readInFolder?.(link, "a.lock", 1024);
     // The target's DACL, not the junction's, which inherited from the folder above.
     expect(read?.folder).toEqual(acl.read(target));
     expect(read?.folder).not.toEqual(acl.read(link));
-    expect(read?.file?.reading.owner).toBe(user);
+    // The file's own owner and DACL (an elevated process's files belong to the Administrators).
+    expect(read?.file?.reading).toEqual(acl.read(join(target, "a.lock")));
     expect(new TextDecoder().decode(read?.file?.bytes)).toBe("lock text");
     expect(
       new TextDecoder().decode(
