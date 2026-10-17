@@ -24,7 +24,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { redactSecrets, type SecretSpan, secretSpans } from "./secret-patterns";
+import {
+  redactSecrets,
+  redactWrittenForm,
+  type SecretSpan,
+  secretSpans,
+} from "./secret-patterns";
 
 const ORIGINAL: readonly RegExp[] = [
   /sk-ant-[A-Za-z0-9_-]{20,}/g,
@@ -569,7 +574,7 @@ describe("where the secrets are", () => {
     "plain words",
   ];
 
-  test("the spans, written over with their markers, give exactly what redactSecrets gives, in the text's own positions", () => {
+  test("the spans, written over with their markers, give exactly the written-form redaction, in the text's own positions", () => {
     const corpus = [
       ...PREFIXES.flatMap(([, prefix]) =>
         KEYS.map((key) => `${prefix}${key} trailing`),
@@ -605,7 +610,7 @@ describe("where the secrets are", () => {
       }
       expect({ text, written: written(text, spans) }).toEqual({
         text,
-        written: redactSecrets(text).text,
+        written: redactWrittenForm(text).text,
       });
     }
     // The corpus is not mostly clean text: most of it holds something to find.
@@ -631,4 +636,108 @@ describe("where the secrets are", () => {
     expect(performance.now() - started).toBeLessThan(SCAN_BUDGET_MS * 4);
     expect(spans.length).toBe(Math.ceil(MEGABYTE / (OPENAI.length + 1)));
   });
+});
+
+describe("shared redaction across invisible forms", () => {
+  const hidden = [
+    "\0",
+    "\v",
+    "\f",
+    "\r",
+    "\u0085",
+    "\u00ad",
+    "\u034f",
+    "\u061c",
+    "\u115f",
+    "\u17b4",
+    "\u180b",
+    "\u200b",
+    "\u202e",
+    "\u2060",
+    "\u3164",
+    "\ufe0f",
+    "\ufeff",
+    "\uffa0",
+    "\ufff0",
+    "\u{1bca0}",
+    "\u{1d173}",
+    "\u{e0020}",
+  ];
+  const value = "ValueHead_" + "9aZ".repeat(8) + "_ValueTail";
+  for (const invisible of hidden) {
+    test(`redacts glued assignments, split names, values and keys through ${JSON.stringify(invisible)}`, () => {
+      for (const provider of [
+        "OPENAI",
+        "ANTHROPIC",
+        "DEEPSEEK",
+        "DASHSCOPE",
+        "OPENROUTER",
+      ]) {
+        for (const prefix of ["", `sk-${"Q7a".repeat(10)}`]) {
+          for (const text of [
+            `${prefix}${provider}_API_KEY${invisible}=${value}`,
+            `${prefix}${provider}_API${invisible}_KEY=${value}`,
+            `${prefix}${provider}_API_KEY=${value.slice(0, 12)}${invisible}${value.slice(12)}`,
+          ]) {
+            const before = `😀before${invisible} `,
+              after = ` after${invisible}😀`;
+            const result = redactSecrets(before + text + after);
+            expect(result.text.startsWith(before)).toBe(true);
+            expect(result.text.endsWith(after)).toBe(true);
+            expect(result.text).not.toContain("ValueHead");
+            expect(result.text).not.toContain("ValueTail");
+            expect(redactSecrets(result.text)).toEqual({
+              text: result.text,
+              redactions: [],
+            });
+          }
+        }
+      }
+      const key = `ghp_${"Z9a".repeat(12)}`;
+      expect(
+        redactSecrets(key.slice(0, 10) + invisible + key.slice(10)).text,
+      ).toBe("[REDACTED:github-token]");
+      const password = "PassHead" + invisible + "PassTail";
+      const url = redactSecrets(`https://user:${password}@example.com`);
+      expect(url.text).not.toContain("PassHead");
+      expect(url.text).not.toContain("PassTail");
+      const block = `${beginLine("RSA ")}\n${value}\n${endLine("RSA ")}`;
+      expect(
+        redactSecrets(block.replace("PRIVATE", `PRI${invisible}VATE`)).text,
+      ).not.toContain("ValueHead");
+      const ordinary = `work${invisible} note 😀 task-queue-state-machine-v2`;
+      expect(redactSecrets(ordinary)).toEqual({
+        text: ordinary,
+        redactions: [],
+      });
+    });
+  }
+});
+
+test("whitespace-only normalization still detects newly formed PEM markers", () => {
+  for (const type of KEY_TYPES) {
+    for (const whitespace of ["\t", "\n", "\r\n"]) {
+      for (const marker of [beginLine(type), endLine(type)]) {
+        for (let at = 0; at < marker.length; at++) {
+          if (marker[at] !== " ") continue;
+          const split = marker.slice(0, at) + whitespace + marker.slice(at + 1);
+          const text = marker.includes("BEGIN")
+            ? `${split}\nValueHead_9aZ_ValueTail`
+            : `ValueHead_9aZ_ValueTail\n${split}`;
+          const result = redactSecrets(text);
+          if (whitespace === "\r\n") {
+            // Two code units become two spaces, never one marker space.
+            expect(result).toEqual({ text, redactions: [] });
+            continue;
+          }
+          expect(result.text).not.toContain("ValueHead");
+          expect(result.text).not.toContain("ValueTail");
+          expect(result.redactions).toContainEqual({
+            kind: "private-key",
+            count: 1,
+          });
+        }
+      }
+    }
+  }
 });
