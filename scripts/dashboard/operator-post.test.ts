@@ -26,6 +26,33 @@ interface Call {
   body: string | null;
 }
 
+/**
+ * `promise`, or a failure after `ms` of real time. A hung-request test whose
+ * deadline regressed would otherwise wait on a promise that never settles,
+ * and bun's per-test timeout does not end it: the run hangs instead of
+ * failing. The real timer here does fire, and the test fails in seconds.
+ */
+async function within<T>(
+  promise: Promise<T>,
+  what: string,
+  ms = 2_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, fail) => {
+        timer = setTimeout(
+          () => fail(new Error(`${what} did not settle within ${ms} ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 describe("bounded operator requests", () => {
   test("successful streams stay streaming and keep caller cancellation after the header timer is cleared", async () => {
     const timers = new Set<() => void>();
@@ -115,7 +142,7 @@ describe("bounded operator requests", () => {
       },
     );
     expire();
-    expect(await pending).toEqual({
+    expect(await within(pending, "the launch")).toEqual({
       state: "refused",
       error: "The control plane did not answer within 45 s.",
     });
@@ -168,10 +195,10 @@ describe("bounded operator requests", () => {
       const pending = (
         kind === "read" ? client.read("/runs") : client.post("/runs", {})
       ).catch((error: unknown) => error);
-      await hanging;
+      await within(hanging, `the ${kind} request`);
       await Promise.resolve();
       expire();
-      const error = await pending;
+      const error = await within(pending, `the hung ${kind}`);
       expect(error).toBeInstanceOf(Error);
       expect(error instanceof NotSent).toBe(kind === "token");
       expect(error).toHaveProperty(
