@@ -15,6 +15,7 @@
  */
 
 import { execFileSync } from "child_process";
+import { resetSpawnClock } from "../spawn-clock";
 import {
   type BdCreateJson,
   parseBdCreateJsonOutput,
@@ -55,6 +56,7 @@ function execBd(
   args: string[],
 ): { ok: true; stdout: string } | { ok: false; error: string } {
   try {
+    resetSpawnClock();
     const stdout = execFileSync("bd", args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -174,6 +176,7 @@ function depEnsure(
     return { ok: true };
   }
   try {
+    resetSpawnClock();
     execFileSync("bd", ["dep", "add", blocked, dependsOn], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
