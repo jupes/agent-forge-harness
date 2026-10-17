@@ -87,6 +87,8 @@ export const SILENCE_MS = 45_000;
  * one failure and a retry, which joins the same start.
  */
 export const ANSWER_MS = 10_000;
+/** First snapshot: the hearth's 15 s queue read plus 5 s to deliver it. Comments do not extend this. */
+export const SNAPSHOT_MS = 20_000;
 /**
  * A stream that has been open this long and is then heard from works; only
  * then do earlier failures stop counting. A live hearth sends a byte at least
@@ -469,13 +471,13 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     }
   };
 
-  const receive = (message: SseMessage): void => {
+  const receive = (message: SseMessage): boolean => {
     let data: unknown;
     try {
       data = JSON.parse(message.data);
     } catch {
       // Not ours to read; the stream carries on.
-      return;
+      return false;
     }
     if (message.event === "snapshot" && isSnapshot(data)) {
       // A snapshot replaces everything, so nothing older is worth applying.
@@ -484,11 +486,13 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       rowFailures = 0;
       batchTimer = stop(batchTimer);
       setState(applySnapshot(state, data));
+      return true;
     } else if (message.event === "delta" && isLedgerEvent(data)) {
       waiting.push(data);
       if (waiting.length >= BATCH_MAX) flush();
       else if (batchTimer === null) batchTimer = timers.set(flush, BATCH_MS);
     }
+    return false;
   };
 
   const drop = (): void => {
@@ -533,6 +537,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     const current = (): boolean => mine === generation;
     let openedAt: number | null = null;
     let works = false;
+    const resumeFrom = askAfresh ? null : state.cursor;
+    let awaitingSnapshot = resumeFrom === null;
     /**
      * Bytes arrived. Staying open and still being heard from is what shows a
      * stream that works. Neither the bare open nor a first message is: a
@@ -540,12 +546,12 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
      * over and over, must still run out.
      */
     const heard = (): void => {
+      if (awaitingSnapshot) return;
       watchSilence();
       if (works || openedAt === null || now() - openedAt < STABLE_MS) return;
       works = true;
       failures = 0;
     };
-    const resumeFrom = askAfresh ? null : state.cursor;
     askAfresh = false;
     // Timed from the request: a hearth that hangs never answers it. A resume
     // that gets no answer is asked for next without its id: a hearth started
@@ -560,7 +566,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       onOpen() {
         if (!current()) return;
         openedAt = now();
-        watchSilence();
+        watchSilence(awaitingSnapshot ? SNAPSHOT_MS : SILENCE_MS);
         // A resume shows what the page already has; a first open waits for its snapshot.
         if (state.cursor !== null) setState(withStatus(state, "live"));
         // Anything but the first connection of the page follows a gap, in which a
@@ -575,8 +581,11 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       },
       onMessage(message) {
         if (!current()) return;
-        heard();
-        receive(message);
+        const first = awaitingSnapshot;
+        if (receive(message) && first) {
+          awaitingSnapshot = false;
+          watchSilence();
+        } else heard();
       },
       onEnd(outcome) {
         if (!current()) return;

@@ -154,6 +154,13 @@ test("setup component preserves start validation and active-review locking", () 
   expect(text(active)).toContain("Stop review");
 });
 
+test("a start whose outcome is not known holds Convene: no blind second run", () => {
+  const convene = (tree: ComponentChildren) =>
+    button(tree, "Convene council")?.props.disabled;
+  expect(convene(setup())).toBe(false);
+  expect(convene(setup({ held: true }))).toBe(true);
+});
+
 test("the source list offers a Beads issue, and a bead is entered on one line", () => {
   const options = nodes(setup()).filter((node) => node.type === "option");
   expect(options.map((node) => node.props.value)).toContain("bead");

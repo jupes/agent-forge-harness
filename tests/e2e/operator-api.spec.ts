@@ -170,6 +170,63 @@ test("the Council page starts a run with the operator token and follows it to it
   });
 });
 
+test("a start whose answer never came may have started a run: the page says so and holds Convene until it has read the runs list again", async ({
+  page,
+}) => {
+  await openSettled(page, "/council.html");
+  await page.fill(
+    "#council-source",
+    "Evaluate this plan for missing evidence.",
+  );
+  // Installed after the page's first read: every read of the list from here
+  // is the page reading it again. The first such read fails; the second is
+  // held until the test lets it through to the hearth.
+  let posts = 0;
+  const reads: Array<() => Promise<void>> = [];
+  await page.route(`**${API}/council-api/runs`, (route) => {
+    if (route.request().method() === "POST") {
+      posts++;
+      // The request leaves the page and no answer comes back: as when the
+      // hearth started the run and its answer arrived after the deadline.
+      return route.abort("timedout");
+    }
+    if (reads.length === 0) {
+      reads.push(async () => {});
+      return route.abort("failed");
+    }
+    return new Promise<void>((done) => {
+      reads.push(async () => {
+        await route.continue();
+        done();
+      });
+    });
+  });
+  const convene = page.getByRole("button", { name: "Convene council" });
+  await expect(convene).toBeEnabled();
+  await convene.click();
+
+  await expect(page.getByRole("alert")).toContainText(
+    "The council run may have started: look for it in the runs list before convening again.",
+  );
+  // The read again failed: Convene stays held, and the page offers the read.
+  const readAgain = page.getByRole("button", {
+    name: "Read the runs list again",
+  });
+  await expect(readAgain).toBeVisible();
+  await expect(convene).toBeDisabled();
+
+  await readAgain.click();
+  await expect(page.locator("[data-recheck='reading']")).toBeVisible();
+  await expect(convene).toBeDisabled();
+  await expect.poll(() => reads.length).toBe(2);
+  await reads[1]?.();
+
+  // Read again: the list is the hearth's, and Convene is offered once more.
+  await expect(page.locator("[data-recheck]")).toHaveCount(0);
+  await expect(convene).toBeEnabled();
+  expect(posts).toBe(1);
+});
+
 test("a stored run opens on the Council page, which reads it with the operator token; a read from the page without the token is refused and carries nothing of the run", async ({
   page,
 }) => {

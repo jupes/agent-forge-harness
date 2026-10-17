@@ -36,6 +36,7 @@ import {
   RETRY_BASE_MS,
   readOperatorRoute,
   SILENCE_MS,
+  SNAPSHOT_MS,
   type SseMessage,
   STABLE_MS,
   type StreamClient,
@@ -1143,9 +1144,13 @@ describe("client: reconnect", () => {
   });
 
   /** Five failures in a row: one more turns live updates off. */
-  function oneFailureFromOff(random?: () => number) {
+  function oneFailureFromOff(random?: () => number, resumed = false) {
     const page = harness(random ?? (() => 0));
     page.client.subscribe(() => undefined);
+    if (resumed) {
+      page.wire.current.open();
+      page.wire.current.snapshot({ cursor: 10 });
+    }
     for (let attempt = 1; attempt < MAX_FAILURES; attempt++) {
       page.wire.current.end("failed");
       page.clock.advance(LONGEST_RETRY_MS);
@@ -1154,7 +1159,7 @@ describe("client: reconnect", () => {
   }
 
   test("a quiet resumed stream that stays open past STABLE_MS without a byte does not reset the count", () => {
-    const { wire, client, clock } = oneFailureFromOff();
+    const { wire, client, clock } = oneFailureFromOff(undefined, true);
     // A stream opens and says nothing, until just before a live hearth's first keepalive.
     wire.current.open();
     clock.advance(STREAM_KEEPALIVE_MS - 1);
@@ -1166,7 +1171,7 @@ describe("client: reconnect", () => {
   });
 
   test("a quiet resumed stream resets the count when its first keepalive arrives, after STABLE_MS", () => {
-    const { wire, client, clock } = oneFailureFromOff();
+    const { wire, client, clock } = oneFailureFromOff(undefined, true);
     wire.current.open();
     // Measured on a real hearth: a resumed stream's first byte is its keepalive, 15 s after it opens.
     clock.advance(STREAM_KEEPALIVE_MS);
@@ -1287,17 +1292,32 @@ describe("client: reconnect", () => {
     expect(wire.current.lastEventId).toBe(12);
   });
 
-  test("an answer that comes just inside the limit is not given up; once open, the stream has the silence limit", () => {
+  test("an answer just inside the limit still has time for its first snapshot", () => {
     const { wire, client, clock } = harness(() => 0);
     client.subscribe(() => undefined);
     clock.advance(ANSWER_MS - 1);
     wire.current.open();
-    // Open, and quiet: no answer limit now, the silence limit.
-    clock.advance(SILENCE_MS - 1);
+    // Open, and quiet: the first snapshot has its own limit.
+    clock.advance(SNAPSHOT_MS - 1);
     expect(wire.connections).toHaveLength(1);
     expect(wire.current.closed).toBe(false);
     wire.current.snapshot({ cursor: 10 });
     expect(client.getState().status).toBe("live");
+  });
+
+  test("comments cannot extend the absolute first snapshot deadline or reset failures", () => {
+    const { wire, client, clock } = oneFailureFromOff();
+    wire.current.open();
+    clock.advance(SNAPSHOT_MS - 1);
+    wire.current.keepalive();
+    expect(wire.current.closed).toBe(false);
+    clock.advance(1);
+    expect(wire.current.closed).toBe(true);
+    expect(client.getState()).toMatchObject({
+      status: "off",
+      offReason: "lost",
+    });
+    expect(clock.waits()).toEqual([]);
   });
 
   test("requests that never answer turn live updates off after six, within six limits and the longest waits between them", () => {
@@ -2771,7 +2791,7 @@ describe("client against a stand-in hearth that hangs", () => {
     }
   }, 20_000);
 
-  test("one that opens each stream with ': open' and then hangs: that first byte does not reset the count, and the page runs out after six silences", async () => {
+  test("one that opens each stream with ': open' and then hangs: gives up within 135.5 seconds", async () => {
     const hearth = await hungHearth("open");
     const clock = standInClock();
     let answered = 0;
@@ -2795,7 +2815,7 @@ describe("client against a stand-in hearth that hangs", () => {
         await eventually(() => answered === attempt);
         await new Promise((done) => setTimeout(done, 50));
         expect(client.getState().status).not.toBe("off");
-        clock.advance(SILENCE_MS);
+        clock.advance(SNAPSHOT_MS);
         await eventually(() => hearth.closed.size === attempt);
         const [wait] = clock.waits();
         if (wait !== undefined) clock.advance(wait);
@@ -2805,7 +2825,10 @@ describe("client against a stand-in hearth that hangs", () => {
         offReason: "lost",
       });
       expect(noticeOf(client)).toContain("Live updates stopped");
-      expect(clock.now()).toBeLessThanOrEqual(GIVE_UP_BOUND_MS);
+      expect(clock.now()).toBeLessThanOrEqual(
+        MAX_FAILURES * SNAPSHOT_MS + 15_500,
+      );
+      expect(clock.now()).toBeLessThan(140_000);
     } finally {
       leave();
       await hearth.close();

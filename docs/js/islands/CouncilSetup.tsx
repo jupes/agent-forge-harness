@@ -36,6 +36,11 @@ type Props = {
   profiles: ProfileChoice[];
   active: boolean;
   starting: boolean;
+  /**
+   * Convene is held: a start was sent and its outcome is not known, so a run
+   * may have begun. Released once the page has read the runs list again.
+   */
+  held?: boolean;
   /** The last preview asked for; shown only while it is of this draft. */
   preview: CouncilPreviewState;
   onChange: (patch: Partial<CouncilDraft>) => void;
@@ -118,6 +123,7 @@ export function CouncilSetup({
   profiles,
   active,
   starting,
+  held = false,
   preview,
   onChange,
   onStart,
@@ -320,6 +326,7 @@ export function CouncilSetup({
             disabled={
               active ||
               starting ||
+              held ||
               !ready ||
               !source.trim() ||
               !previewAllowsSend(preview, draft) ||
