@@ -51,6 +51,7 @@ import { join, relative, resolve, sep } from "path";
 import { importGraph } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
 import { ledgerHome, ledgerPath } from "./paths";
+import { rerunReport } from "./rerun-output";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const TEST_ROOT = join(REPO, "scripts");
@@ -92,10 +93,14 @@ const RERUN_LIMIT_MS = process.platform === "win32" ? 600_000 : 180_000;
  */
 const RERUN_TEST_TIMEOUT = "15000";
 
-/** A re-run file whose `bun test` did not exit 0, with the end of its output. */
+/**
+ * A re-run file whose `bun test` did not exit 0: its failing tests' own lines
+ * (error and diff) and the end of its output (`rerun-output.ts`).
+ */
 interface FailedRerun {
   file: string;
   exitCode: number;
+  failures: string;
   tail: string;
 }
 
@@ -134,11 +139,7 @@ async function rerunEach(
       ]);
       const exitCode = await child.exited;
       if (exitCode !== 0)
-        failed.push({
-          file,
-          exitCode,
-          tail: `${stdout}${stderr}`.slice(-1500),
-        });
+        failed.push({ file, exitCode, ...rerunReport(`${stdout}${stderr}`) });
     }
   };
   await Promise.all(Array.from({ length: RERUN_WORKERS }, worker));
@@ -175,6 +176,8 @@ function spawningTestFiles(): string[] {
 
 interface Rerun {
   exitCode: number;
+  /** The failing tests' own lines, for a failure message. */
+  failures: string;
   /** The end of the run's output, for a failure message. */
   tail: string;
   /** What `<scratch>/.agent-forge` holds after the run, or null when it was never created. */
@@ -233,7 +236,7 @@ async function rerunWithScratchHome(files: string[]): Promise<Rerun> {
     const exitCode = await child.exited;
     return {
       exitCode,
-      tail: `${stdout}${stderr}`.slice(-1500),
+      ...rerunReport(`${stdout}${stderr}`),
       home: existsSync(home) ? readdirSync(home).sort() : null,
       sessions: sessionsIn(join(home, "ledger.db")),
     };
@@ -310,11 +313,17 @@ describe("the test suite and the ledger under the user's home", () => {
   );
 
   test("a test file that starts children with no home variable and no AGENT_FORGE_HOME, through Bun.spawn and through node:child_process, and runs an emitter in each, is caught by the re-run: both emitters' events land in the scratch .agent-forge", async () => {
-    const { exitCode, tail, home, sessions } = await rerunWithScratchHome([
-      HOME_LESS_CHILD,
-    ]);
-    expect({ exitCode, tail, home: home !== null, sessions }).toEqual({
+    const { exitCode, failures, tail, home, sessions } =
+      await rerunWithScratchHome([HOME_LESS_CHILD]);
+    expect({
+      exitCode,
+      failures,
+      tail,
+      home: home !== null,
+      sessions,
+    }).toEqual({
       exitCode: 0,
+      failures: "",
       tail: expect.any(String),
       home: true,
       sessions: ["home-less-bun-spawn", "home-less-child-process"],
