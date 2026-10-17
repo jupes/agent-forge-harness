@@ -223,7 +223,8 @@ describe("the writer's draft names (what a writer killed before the rename leave
       );
     }
 
-    // A refused rename cleans up the same draft path the name rule accepts.
+    // A refused rename leaves nothing beside the target: the writer removed
+    // its own draft, so no draft is left for the name rule to match.
     const dir = checkout();
     mkdirSync(join(dir, RUN_CORRELATIONS_DIR, "run-1.json"), {
       recursive: true,
@@ -232,6 +233,27 @@ describe("the writer's draft names (what a writer killed before the rename leave
     expect(readdirSync(join(dir, RUN_CORRELATIONS_DIR))).toEqual([
       "run-1.json",
     ]);
+  });
+
+  test("the real writer's draft is <run>.json.<pid>.tmp: a directory planted there fails the write, the write error is reported and the directory stays", () => {
+    const dir = checkout();
+    const name = `run-1.json.${process.pid}.tmp`;
+    const planted = join(dir, RUN_CORRELATIONS_DIR, name);
+    mkdirSync(planted, { recursive: true });
+    expect(isCorrelationDraftFile(name)).toBe(true);
+
+    const result = init(dir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The write opens the draft path and fails there; removing a directory
+      // fails too, and that second error must not replace the first.
+      expect(result.error).toContain("could not write");
+      expect(result.error).toContain(name);
+      expect(result.error).toMatch(/\bopen '/);
+      expect(result.error).not.toContain("unlink");
+    }
+    expect(existsSync(planted)).toBe(true);
+    expect(readdirSync(join(dir, RUN_CORRELATIONS_DIR))).toEqual([name]);
   });
 
   test("only <valid run id>.json.<digits>.tmp is a draft: a correlation and every near miss are not", () => {

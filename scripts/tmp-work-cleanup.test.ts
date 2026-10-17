@@ -744,8 +744,8 @@ describe("sweepCorrelations", () => {
   test("a draft from a writer killed before the rename is removed on its age alone: a young one is kept, an old one goes whatever its bead's status", () => {
     const { checkout } = sandbox();
     const dir = join(checkout, RUN_CORRELATIONS_DIR);
-    // Plant the partial draft a killed writer cannot clean up. A caught write
-    // or rename error now removes the writer's own draft immediately.
+    // Plant the partial draft a killed writer cannot clean up. A writer that
+    // catches its write or rename error removes its own draft itself.
     mkdirSync(join(dir, "run-1.json"), { recursive: true });
     const draft = draftFile(checkout, "run-1.json.4242.tmp", 1 / 24);
     const open = issues(mkOpen("bead-open"));
