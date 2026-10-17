@@ -69,6 +69,21 @@ function plant(file: string, over: Record<string, unknown> = {}): void {
 }
 
 describe("initRunCorrelation (the launcher boundary)", () => {
+  test("a failed rename removes its own draft and preserves other writers' drafts", () => {
+    const dir = checkout();
+    const correlations = join(dir, RUN_CORRELATIONS_DIR);
+    mkdirSync(join(correlations, "run-1.json"), { recursive: true });
+    const other = "run-1.json.99999999.tmp";
+    writeFileSync(join(correlations, other), "another writer");
+    const result = init(dir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("could not write");
+    expect(readdirSync(correlations).sort()).toEqual(["run-1.json", other]);
+    expect(readFileSync(join(correlations, other), "utf8")).toBe(
+      "another writer",
+    );
+  });
+
   test("writes one validated file for the run inside the checkout and returns the pointer to hand on", () => {
     const dir = checkout();
     const made = init(dir);
@@ -208,18 +223,37 @@ describe("the writer's draft names (what a writer killed before the rename leave
       );
     }
 
-    // The real writer, stopped between the write and the rename: a directory
-    // sits where the file goes, so the rename fails and the draft stays.
+    // A refused rename leaves nothing beside the target: the writer removed
+    // its own draft, so no draft is left for the name rule to match.
     const dir = checkout();
     mkdirSync(join(dir, RUN_CORRELATIONS_DIR, "run-1.json"), {
       recursive: true,
     });
     expect(init(dir).ok).toBe(false);
-    const left = readdirSync(join(dir, RUN_CORRELATIONS_DIR)).filter(
-      (name) => name !== "run-1.json",
-    );
-    expect(left).toEqual([`run-1.json.${process.pid}.tmp`]);
-    expect(isCorrelationDraftFile(left[0] ?? "")).toBe(true);
+    expect(readdirSync(join(dir, RUN_CORRELATIONS_DIR))).toEqual([
+      "run-1.json",
+    ]);
+  });
+
+  test("the real writer's draft is <run>.json.<pid>.tmp: a directory planted there fails the write, the write error is reported and the directory stays", () => {
+    const dir = checkout();
+    const name = `run-1.json.${process.pid}.tmp`;
+    const planted = join(dir, RUN_CORRELATIONS_DIR, name);
+    mkdirSync(planted, { recursive: true });
+    expect(isCorrelationDraftFile(name)).toBe(true);
+
+    const result = init(dir);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The write opens the draft path and fails there; removing a directory
+      // fails too, and that second error must not replace the first.
+      expect(result.error).toContain("could not write");
+      expect(result.error).toContain(name);
+      expect(result.error).toMatch(/\bopen '/);
+      expect(result.error).not.toContain("unlink");
+    }
+    expect(existsSync(planted)).toBe(true);
+    expect(readdirSync(join(dir, RUN_CORRELATIONS_DIR))).toEqual([name]);
   });
 
   test("only <valid run id>.json.<digits>.tmp is a draft: a correlation and every near miss are not", () => {

@@ -157,6 +157,45 @@ describe("execFileNoShell (the runner bd is called through)", () => {
       rmSync(dir, { recursive: true, force: true });
   });
 
+  test("gives the bd runner its whole limit after a shorter gap", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gate beads clock "));
+    temporary.push(cwd);
+    const command = join(cwd, "slow-answer.ts");
+    writeFileSync(
+      command,
+      "Bun.sleepSync(5000); process.stdout.write('done');",
+    );
+    // Budget: the driver idles 4 s after its seed spawn, then runs this 5 s
+    // command under an 8 s limit. Without a reset, Windows counts the gap
+    // against the limit, leaving at most 8 - 4 = 4 s: the command is killed
+    // at least 1 s before its sleep alone could end, however idle the host.
+    // With the reset it gets the whole 8 s, which leaves 8 - 5 = 3 s for bun
+    // to start and transpile the command on a busy runner.
+    const run = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "fixtures", "spawn-clock-caller.ts"),
+        "beads",
+        command,
+        cwd,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [status, stdout, stderr] = await Promise.all([
+      run.exited,
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+    ]);
+    expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
+    let result: unknown;
+    try {
+      result = JSON.parse(stdout);
+    } catch {
+      throw new Error(`the bd-runner driver printed invalid JSON: ${stdout}`);
+    }
+    expect(result).toEqual({ ok: true, output: "done" });
+  }, 30_000);
+
   test("hands each argument to an executable verbatim, shell syntax included", () => {
     const cwd = mkdtempSync(join(tmpdir(), "gate beads test "));
     temporary.push(cwd);

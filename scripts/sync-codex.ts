@@ -105,13 +105,6 @@ function mirrorSkills(): string[] {
     const dest = join(AGENTS_SKILLS, name);
     cpSync(src, dest, { recursive: true });
 
-    // Codex requires SKILL.md. One skill ships as `<name>.md` — add an alias.
-    if (!existsSync(join(dest, "SKILL.md"))) {
-      const alt = join(dest, `${name}.md`);
-      if (existsSync(alt)) {
-        cpSync(alt, join(dest, "SKILL.md"));
-      }
-    }
     copied.push(name);
   }
   return copied;

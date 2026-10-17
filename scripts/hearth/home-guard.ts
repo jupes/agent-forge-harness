@@ -45,6 +45,7 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { resetSpawnClock } from "../spawn-clock";
 
 import {
   type AclReading,
@@ -292,16 +293,16 @@ export function checkHomeInBun(
   home: string,
   lock: string | undefined,
 ): string | null {
-  const result = spawnSync(
-    bunExecutable(),
-    [GUARD_CLI, home, ...(lock === undefined ? [] : [lock])],
-    {
-      cwd: dirname(GUARD_CLI),
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 30_000,
-    },
-  );
+  const program = bunExecutable();
+  const args = [GUARD_CLI, home, ...(lock === undefined ? [] : [lock])];
+  const cwd = dirname(GUARD_CLI);
+  resetSpawnClock();
+  const result = spawnSync(program, args, {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 30_000,
+  });
   if (result.status === 0) return null;
   const said = (result.stdout ?? "").trim();
   if (result.status === PROBLEM_EXIT && said !== "") return said;

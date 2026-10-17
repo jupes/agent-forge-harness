@@ -168,7 +168,6 @@ export const SKILLS: readonly SkillEntry[] = [
     name: "ui-screenshot",
     summary:
       "Auto-capture UI screenshots for PRs using Playwright MCP browser tools.",
-    notLoaded: true,
   },
   {
     name: "zoom-out",

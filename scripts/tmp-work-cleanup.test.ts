@@ -741,22 +741,13 @@ describe("sweepCorrelations", () => {
     return `${RUN_CORRELATIONS_DIR}/${name}`;
   }
 
-  test("the draft the real writer leaves when it dies before the rename is removed on its age alone: a young one is kept, an old one goes whatever its bead's status", () => {
+  test("a draft from a writer killed before the rename is removed on its age alone: a young one is kept, an old one goes whatever its bead's status", () => {
     const { checkout } = sandbox();
     const dir = join(checkout, RUN_CORRELATIONS_DIR);
-    // A directory where the file goes: the writer fills its draft and then
-    // cannot rename it into place, which is the state a writer killed between
-    // the two steps leaves behind.
+    // Plant the partial draft a killed writer cannot clean up. A writer that
+    // catches its write or rename error removes its own draft itself.
     mkdirSync(join(dir, "run-1.json"), { recursive: true });
-    const failed = initRunCorrelation({
-      checkout,
-      beadsIssueId: "bead-open",
-      executionRunId: "run-1",
-    });
-    expect(failed.ok).toBe(false);
-    const left = readdirSync(dir).filter((name) => name.endsWith(".tmp"));
-    expect(left).toHaveLength(1);
-    const draft = `${RUN_CORRELATIONS_DIR}/${left[0]}`;
+    const draft = draftFile(checkout, "run-1.json.4242.tmp", 1 / 24);
     const open = issues(mkOpen("bead-open"));
 
     // A writer that started a moment ago may be about to rename it.
