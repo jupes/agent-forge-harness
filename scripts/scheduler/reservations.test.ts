@@ -521,6 +521,7 @@ describe("reserve given the shift records: a bead another shift's worktree still
       lockFile: join(home, "queue-lock.db"),
     };
     return {
+      main,
       tree: (name: string) => join(main, "trees", name),
       plain,
       guarded: { ...plain, shiftsDir },
@@ -585,6 +586,37 @@ describe("reserve given the shift records: a bead another shift's worktree still
         r[deps],
       );
       expect({ held, deps, ok: second.ok }).toEqual({ held, deps, ok: true });
+      expect(r.held()).toBe(2);
+    }
+  });
+
+  test("a worktree named as a live shift's (<shift-id>-<n>) is that shift's only directly under <main>/trees/: one by hand anywhere else is not refused (x1gs.5.4.16)", async () => {
+    const name = `${shift.live}-1`;
+    for (const where of [
+      [name],
+      ["elsewhere", name],
+      ["trees", "nested", name],
+      ["trees-old", name],
+    ]) {
+      const r = rig();
+      const byHand = join(r.main, ...where);
+      expect(
+        (
+          await reserve(
+            { beadId: A, worktree: byHand, globs: ["src/**"] },
+            r.plain,
+          )
+        ).ok,
+      ).toBe(true);
+      const second = await reserve(
+        {
+          beadId: A,
+          worktree: r.tree(`${shift.asking}-1`),
+          globs: ["src/**"],
+        },
+        r.guarded,
+      );
+      expect({ where, ok: second.ok }).toEqual({ where, ok: true });
       expect(r.held()).toBe(2);
     }
   });

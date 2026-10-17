@@ -380,6 +380,35 @@ export function runOwnership(
   };
 }
 
+/**
+ * `runBd` for one queue move of `beadId` that is made only while the run
+ * still owns the bead: each `update` of it asks `ownership()` first (inside
+ * the queue lock, since the move runs there, just before the write) and, once
+ * the run does not own it, is answered as refused without running bd, which
+ * the move reports as "nothing was changed". `veto()` is that answer, or null.
+ * Recovery's release and a shift's second try of a move (`shift.ts`) use it.
+ */
+export function ownedOnly(
+  runBd: BdRunner,
+  beadId: string,
+  ownership: () => Ownership,
+): { runBd: BdRunner; veto: () => Ownership | null } {
+  let veto: Ownership | null = null;
+  return {
+    runBd: async (args, options) => {
+      if (args[0] === "update" && args.at(-1) === beadId) {
+        const current = ownership();
+        if (!current.owned) {
+          veto = current;
+          return { status: 1, stdout: "", stderr: `Error: ${current.why}\n` };
+        }
+      }
+      return runBd(args, options);
+    },
+    veto: () => veto,
+  };
+}
+
 async function recoverLocked(
   id: string,
   deps: RecoverDeps,
@@ -512,20 +541,10 @@ async function recoverLocked(
     // inside it, so it is either seen here or made after this release. A
     // bead it no longer owns gets no write: the update is answered as
     // refused, which the move reports as "nothing was changed".
-    const guard: { veto: Ownership | null } = { veto: null };
-    const guarded: BdRunner = async (args, options) => {
-      if (args[0] === "update" && args.at(-1) === beadId) {
-        const current = ownership(beadId, runId);
-        if (!current.owned) {
-          guard.veto = current;
-          return { status: 1, stdout: "", stderr: `Error: ${current.why}\n` };
-        }
-      }
-      return deps.runBd(args, options);
-    };
+    const guard = ownedOnly(deps.runBd, beadId, () => ownership(beadId, runId));
     const moved = await createQueue({
       workspace,
-      runBd: guarded,
+      runBd: guard.runBd,
       appendEvent: appendFor(runId),
       lockFile: deps.lockFile,
     }).move(beadId, "release", "scheduler");
@@ -556,7 +575,7 @@ async function recoverLocked(
       beads.push(done);
       continue;
     }
-    const { veto } = guard;
+    const veto = guard.veto();
     // Refused by the table (it is not running), gone, or left with two
     // labels: nothing a second try changes. Busy, a bd failure, an unknown
     // write: try again.
