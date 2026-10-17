@@ -13,6 +13,7 @@
  * the real implementation (argument arrays, never a shell string).
  */
 import { execFileSync } from "node:child_process";
+import { resetSpawnClock } from "../spawn-clock";
 import { parseBdCreateJsonOutput, parseJsonLoose } from "./bd-json-parse";
 
 export type PlanIssueType =
@@ -318,6 +319,7 @@ export function renderPlanMarkdown(
 }
 
 function execBd(args: string[]): string {
+  resetSpawnClock();
   return execFileSync("bd", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

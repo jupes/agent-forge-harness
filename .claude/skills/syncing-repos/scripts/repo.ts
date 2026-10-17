@@ -13,6 +13,7 @@
 import { execSync, spawnSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
+import { resetSpawnClock } from "../../../../scripts/spawn-clock";
 import { type RepoConfig, selectRepos } from "./repo-select";
 
 interface RepoRegistry {
@@ -60,6 +61,7 @@ function loadRepos(): RepoConfig[] {
 
 function run(cmd: string, cwd?: string): { ok: boolean; output: string } {
   try {
+    resetSpawnClock();
     const output = execSync(cmd, {
       cwd: cwd ?? process.cwd(),
       encoding: "utf8",

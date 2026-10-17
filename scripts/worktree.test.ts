@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorktreeResult } from "../types/beads";
+import { resetSpawnClock } from "./spawn-clock";
 
 const SCRIPT = resolve(import.meta.dir, "worktree.ts");
 const roots: string[] = [];
@@ -62,6 +63,7 @@ function cli(
   cwd: string,
   ...args: string[]
 ): { exit: number | null; out: WorktreeResult } {
+  resetSpawnClock();
   const result = spawnSync("bun", [SCRIPT, ...args], {
     cwd,
     encoding: "utf8",
