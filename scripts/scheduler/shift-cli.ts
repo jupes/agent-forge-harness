@@ -46,9 +46,13 @@
  *
  * `stop` asks a running shift to stop (the hearth's `POST /shifts/:id/stop`
  * does the same): it stops every run, puts their beads back in `queued`,
- * frees their reservations and records `shift.stopped`. Ctrl-C (or a crash,
- * or a kill) ends the runs too, but leaves their beads `running`, their
- * reservations held and the record `running`: prefer `stop`. `recover` (the
+ * frees their reservations and records `shift.stopped`. The first Ctrl-C
+ * (`SIGINT`) or `SIGTERM` of `run` does the same in-process, says so on
+ * stderr and exits 0 once the shift has stopped; a second, or a stop not over
+ * within `INTERRUPT_GRACE_MS` (30 s), ends the runs and exits 130 at once
+ * (`shiftCliMain`). A crash, a kill or that second signal ends the runs but
+ * leaves their beads `running`, their reservations held and the record
+ * `running`. `recover` (the
  * hearth's `POST /shifts/:id/recover` does the same) is the way back once the
  * shift's process has ended: it puts back in `queued` each bead the shift
  * still owns (its newest recorded queue move is this shift's start of it;
@@ -68,6 +72,7 @@ import { join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
 import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
 import { parseDuration, shiftLength } from "../config/load";
+import { killAllLive, ownInterrupts } from "../executors/supervisor";
 import { bdRunner, localStateRoot } from "../hearth/routes/dev-api";
 import { QUEUE_LOCK_FILE } from "../hearth/routes/queue";
 import { isMain } from "../is-main";
@@ -305,11 +310,129 @@ export async function runShiftCli(
   );
 }
 
+/**
+ * How long the first `SIGINT` or `SIGTERM` gives `run` to stop its shift
+ * before its runs are killed and it exits 130: as long as the hearth gives a
+ * shift it asked to stop (`SHIFT_STOP_GRACE_MS`).
+ */
+export const INTERRUPT_GRACE_MS = 30_000;
+
+/** The exit code of a `run` cut short by a second signal or the deadline. */
+export const INTERRUPTED_EXIT = 130;
+
+export interface ShiftMainIo extends ShiftCliIo {
+  /** Where the interrupt's notices go (stderr). */
+  say(line: string): void;
+  /** Where the result goes (stdout). */
+  print(text: string): void;
+  exit(code: number): void;
+}
+
+const processIo: ShiftMainIo = {
+  announce: (line) => process.stderr.write(`${line}\n`),
+  say: (line) => process.stderr.write(`${line}\n`),
+  print: (text) => console.log(text),
+  exit: (code) => process.exit(code),
+};
+
+export interface ShiftInterrupt {
+  /** Aborted by the first signal: `ShiftDeps.signal`. */
+  signal: AbortSignal;
+  /** Give the signals back (to the supervisor's default) and drop the deadline. */
+  release(): void;
+}
+
+/**
+ * Own this process's `SIGINT` and `SIGTERM` for one `run`
+ * (`ownInterrupts`, scripts/executors/supervisor.ts). The first aborts
+ * `signal`, which stops the shift as `forge:shift stop` does, says so, and
+ * starts the deadline: a stop not over by `graceMs` is cut short (every
+ * supervised run killed, exit 130). A second is left to the supervisor,
+ * which kills every supervised run and exits 130 at once. Each notice names
+ * the shift once `shiftId()` knows it.
+ */
+export function interruptShift(
+  io: Pick<ShiftMainIo, "say" | "exit">,
+  shiftId: () => string | undefined,
+  graceMs: number = INTERRUPT_GRACE_MS,
+): ShiftInterrupt {
+  const controller = new AbortController();
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const seconds = `${graceMs / 1000}s`;
+  const left = (): string => {
+    const id = shiftId();
+    return id === undefined
+      ? ""
+      : ` What the shift still holds stays held: bun run forge:shift recover ${id} gives it back.`;
+  };
+  const release = ownInterrupts((signal) => {
+    if (controller.signal.aborted) {
+      io.say(`forge:shift: ${signal} again: exiting now.${left()}`);
+      return false;
+    }
+    controller.abort(signal);
+    io.say(
+      `forge:shift: ${signal}: stopping shift ${shiftId() ?? "(not started)"}: its runs are stopped and their beads put back in queued (up to ${seconds}). Press Ctrl-C again to exit now.`,
+    );
+    deadline = setTimeout(() => {
+      io.say(
+        `forge:shift: shift ${shiftId() ?? "(not started)"} did not stop within ${seconds}: exiting now.${left()}`,
+      );
+      killAllLive();
+      io.exit(INTERRUPTED_EXIT);
+    }, graceMs);
+    return true;
+  });
+  return {
+    signal: controller.signal,
+    release() {
+      release();
+      clearTimeout(deadline);
+    },
+  };
+}
+
+/**
+ * The CLI as `bun run forge:shift` runs it: the result printed, the process
+ * ended with its exit code. For `run`, the first `SIGINT` or `SIGTERM` stops
+ * the shift (`interruptShift`) from before its base is fetched until it has
+ * stopped; outside that window, and for every other command, a signal ends
+ * the process at once as before.
+ */
+export async function shiftCliMain(
+  argv: readonly string[],
+  deps: ShiftDeps,
+  options: { io?: ShiftMainIo; graceMs?: number } = {},
+): Promise<void> {
+  const io = options.io ?? processIo;
+  let shiftId: string | undefined;
+  const announce = (line: string): void => {
+    try {
+      const announced = (JSON.parse(line) as { shiftId?: unknown }).shiftId;
+      if (typeof announced === "string") shiftId = announced;
+    } catch {
+      // Not the announce line: nothing to learn from it.
+    }
+    io.announce(line);
+  };
+  const interrupt =
+    argv[0] === "run"
+      ? interruptShift(io, () => shiftId, options.graceMs)
+      : null;
+  let result: CliResult;
+  try {
+    result = await runShiftCli(
+      argv,
+      interrupt === null ? deps : { ...deps, signal: interrupt.signal },
+      { announce },
+    );
+  } finally {
+    interrupt?.release();
+  }
+  io.print(JSON.stringify(result.out, null, 2));
+  io.exit(result.exit);
+}
+
 if (isMain(import.meta)) {
-  const result = await runShiftCli(
-    process.argv.slice(2),
-    shiftCliDeps(process.cwd()),
-  );
-  console.log(JSON.stringify(result.out, null, 2));
-  process.exit(result.exit);
+  await shiftCliMain(process.argv.slice(2), shiftCliDeps(process.cwd()));
 }

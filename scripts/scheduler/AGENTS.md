@@ -390,6 +390,30 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   itself (`halted`). On every one, each run is aborted and awaited, its bead released and its
   reservation freed, before `shift.stopped`. `shift.started` comes before anything else, and a
   ledger that does not store it starts nothing.
+- The in-process signal (`ShiftDeps.signal`) wins over everything after it: the loop checks it
+  again once a host sample or an eligibility read has come back (a stop meanwhile admits nothing
+  more and ends `operator`, not `drained`), and a run that ends failed after it, before the loop has
+  stopped that run, is released to `queued`, never repaired or halted (on Windows a console Ctrl-C
+  reaches the provider as well as the shift). A signal already aborted once the base is fetched
+  refuses the shift as a failed start would: nothing written, `the shift was stopped before it
+  started (<reason>); nothing was started`.
+- Ctrl-C (`x1gs.5.4.14`): `shiftCliMain` (the CLI's main) makes `run` the process's interrupt owner
+  (`ownInterrupts`, `scripts/executors/AGENTS.md`) from before its base is fetched until the shift
+  has stopped, and passes the owner's `AbortSignal` as `ShiftDeps.signal`. The first `SIGINT` or
+  `SIGTERM` aborts it, so the shift stops exactly as `forge:shift stop` stops it (runs stopped, beads
+  back to `queued`, reservations freed, `shift.stopped` with reason `operator`), and writes to stderr
+  `forge:shift: <signal>: stopping shift <id>: … (up to 30s). Press Ctrl-C again to exit now.` The
+  process then prints the record and exits 0, as a shift stopped by `stop` does. A second signal is
+  declined to the supervisor: every run's tree is killed and the process exits 130 at once, saying
+  that what the shift holds stays held for `forge:shift recover <id>`. The bound: a stop not over
+  within `INTERRUPT_GRACE_MS` (30 s, the hearth's `SHIFT_STOP_GRACE_MS`) is cut short the same way,
+  saying so, so a run that will not stop (or a `bd` that never answers) cannot hang the process. A
+  signal before the record (while the base is fetched) starts nothing and exits 1. After the shift
+  has stopped the owner is released: a signal while the result is printed ends the process at once
+  (130), and the other commands (`stop`, `recover`, `list`) register no owner. `shift-cli.test.ts`
+  runs `fixtures/interruptible-shift.ts` (the real main, hermetic dependencies, the fake binary as
+  the run, signals emitted with `process.emit`) for each case: a first `SIGINT` and a first `SIGTERM`,
+  a second signal while the stop hangs, the deadline, and a signal while the base is fetched.
 - A bead the operator pauses or halts while it runs is found by reading each running bead back
   every `pollMs`; its run is stopped, its reservation freed, and its queue state left as the
   operator put it (`left`). Resuming it puts it in `queued` (the queue section): this shift has set
@@ -450,7 +474,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   shift like any other: its record, its stop and its recovery are the ones above.
 - Recovery (`shift-recover.ts`, `recoverShift`, called by `forge:shift recover <id>` and
   `POST /shifts/:id/recover`): the way back for a shift whose process ended without stopping it
-  (Ctrl-C, a crash, a kill). Its runs died with it (the supervisor's exit hook, the tree guard),
+  (a second Ctrl-C, a stop past its deadline, a crash, a kill). Its runs died with it (the
+  supervisor's exit hook, the tree guard),
   but its beads stay `running`, their reservations held, its record `running` and no
   `shift.stopped` is written. Until it is recovered, those reservations also refuse every other
   shift's `reserve` of their beads (`heldByShift`), even of a bead the operator paused and resumed:
@@ -520,10 +545,16 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   prompt tells it not to push, open a pull request or merge, and the Claude adapter's tool
   allowlist has no `git push` and no `gh`.
 - **Not covered:**
-  - A shift that dies (Ctrl-C, a crash, a kill) does not clean up after itself: the supervisor
-    kills its runs' process trees, and its beads stay `running` and its reservations held until
-    `forge:shift recover` (above). Prefer `forge:shift stop`: Ctrl-C exits at once (the
-    supervisor's signal handler, shared with `forge:exec`).
+  - A shift that dies (a second Ctrl-C, a stop past its deadline, a crash, a kill) does not clean
+    up after itself: the supervisor kills its runs' process trees, and its beads stay `running` and
+    its reservations held until `forge:shift recover` (above).
+  - A signal no handler sees: `SIGKILL`, and on Windows `TerminateProcess`, which is how the
+    dashboard ends the hearth and how `Subprocess.kill` ends any process there. A real console
+    Ctrl-C has not been sent in a test (Windows cannot send one to a child process); the tests emit
+    the signal in the process.
+  - On Windows a console Ctrl-C also reaches the provider, which may end on its own before the
+    shift's handler has run; such a run is seen as failed. If that is seen before the shift's
+    signal (they arrive together), the run is repaired or halted as any failure is.
   - The shift does not run `bd update --claim`; the run's own workflow does.
   - A base that moves during a shift is not fetched again; a remote other than `origin`.
   - Uncommitted changes in a worktree are not in its pull request, and nothing says so.
@@ -532,8 +563,10 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   - A shift the hearth started is asked to stop when the hearth closes (its `close()`, which
     `SIGINT` and `SIGTERM` run), but dies at once with a hearth killed outright: on Windows that
     is how the dashboard ends the hearth (`TerminateProcess`, which runs no code), and the tree
-    guard then ends the shift. Such a shift, and one ended by a console Ctrl-C on Windows (which
-    reaches the shift too), needs `forge:shift recover`.
+    guard then ends the shift. Such a shift needs `forge:shift recover`. A console Ctrl-C on
+    Windows reaches the shift too, which stops itself as on its own first Ctrl-C (above), while
+    the hearth's close asks it to stop; that combination is inferred from the two, each tested
+    with an emitted signal, and has not been run.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
   shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record
   their calls and answer as the test says, and a fake adapter whose runs the test scripts. Its kill
