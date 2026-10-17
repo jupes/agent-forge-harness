@@ -3,12 +3,14 @@ import type {
   CouncilPreview,
   CouncilServiceJob,
 } from "../../../scripts/council/service";
+import { actionOutcome } from "../action-outcome";
 import { type CouncilPreviewState, previewKey } from "../council-preview";
 import {
   councilRunEventsUrl,
   followCouncilRun,
   isActive,
 } from "../council-run-follow";
+import { Button } from "../ds/Button";
 import { EmptyState } from "../ds/EmptyState";
 import { operatorPost, operatorRead } from "../operator";
 import { fetchTransport } from "../use-stream";
@@ -39,15 +41,22 @@ async function dataOf<T>(response: Response): Promise<T> {
   return envelope.data;
 }
 
-async function request<T>(path: string, input?: unknown): Promise<T> {
-  // A request with a body starts or cancels a run: an operator action. A read
-  // carries the operator token too: a stored run holds what was reviewed.
-  return dataOf<T>(
-    input === undefined
-      ? await operatorRead(`${API}${path}`)
-      : await operatorPost(`${API}${path}`, input),
-  );
+/**
+ * A read of the council service. It carries the operator token: a stored run
+ * holds what was reviewed. Starting and cancelling a run are operator actions,
+ * posted with `actionOutcome`, which says when their outcome is not known.
+ */
+async function request<T>(path: string): Promise<T> {
+  return dataOf<T>(await operatorRead(`${API}${path}`));
 }
+
+/** What a start whose outcome is not known ends with: what may have happened and how to see it. */
+const START_NOT_KNOWN =
+  "The council run may have started: look for it in the runs list before convening again.";
+
+/** What a cancel whose outcome is not known ends with. */
+const CANCEL_NOT_KNOWN =
+  "The run may be stopping: its status, read again below, says whether it is.";
 
 /** The source kinds a link may preselect (`?sourceType=…&source=…`). */
 const LINKED_KINDS = new Set(["plan", "bead"]);
@@ -69,6 +78,12 @@ export function CouncilIsland() {
   const [error, setError] = useState("");
   const [available, setAvailable] = useState<boolean | null>(null);
   const [starting, setStarting] = useState(false);
+  /**
+   * A start was sent and its outcome is not known: Convene is held while the
+   * runs list is read again ("reading"), and stays held if that read fails
+   * ("failed") until a read succeeds.
+   */
+  const [recheck, setRecheck] = useState<"reading" | "failed" | null>(null);
   const [preview, setPreview] = useState<CouncilPreviewState>({
     status: "idle",
   });
@@ -136,25 +151,50 @@ export function CouncilIsland() {
     return () => follower.close();
   }, [job?.runId, job?.status]);
 
+  /**
+   * Read the runs list again after a start whose outcome is not known. Convene
+   * stays held until this read succeeds: the run it may have started is then
+   * in the list, and the operator can see it before convening again.
+   */
+  async function recheckRuns(): Promise<void> {
+    setRecheck("reading");
+    try {
+      setHistory(await request<CouncilServiceJob[]>("/runs"));
+      setRecheck(null);
+    } catch {
+      setRecheck("failed");
+    }
+  }
+
   async function start(): Promise<void> {
     setError("");
     setStarting(true);
     try {
       const maxUsd = optionalBudget(budget);
-      const snapshot = await request<CouncilServiceJob>("/runs", {
-        sourceType,
-        source,
-        profile: profilePath,
-        ...(maxUsd === undefined ? {} : { maxUsd }),
-        redactSecrets,
-      });
+      const outcome = await actionOutcome(
+        () =>
+          operatorPost(`${API}/runs`, {
+            sourceType,
+            source,
+            profile: profilePath,
+            ...(maxUsd === undefined ? {} : { maxUsd }),
+            redactSecrets,
+          }),
+        START_NOT_KNOWN,
+      );
+      if (outcome.state !== "done") {
+        setError(outcome.message);
+        // No blind retry: a second start would be a second paid run.
+        if (outcome.state === "unknown") void recheckRuns();
+        return;
+      }
+      // justification: an `ok: true` answer of the start route is the job it started.
+      const snapshot = outcome.data as CouncilServiceJob;
       setJob(snapshot);
       setHistory((items) => [snapshot, ...items]);
       const url = new URL(window.location.href);
       url.search = new URLSearchParams({ run: snapshot.runId }).toString();
       window.history.replaceState(null, "", url);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setStarting(false);
     }
@@ -195,11 +235,18 @@ export function CouncilIsland() {
 
   async function cancel(): Promise<void> {
     if (!job) return;
-    try {
-      await request(`/runs/${encodeURIComponent(job.runId)}/cancel`, {});
-    } catch (reason) {
-      setError(String(reason));
-    }
+    const runId = job.runId;
+    const outcome = await actionOutcome(
+      () => operatorPost(`${API}/runs/${encodeURIComponent(runId)}/cancel`, {}),
+      CANCEL_NOT_KNOWN,
+    );
+    if (outcome.state === "done") return;
+    setError(outcome.message);
+    // The run's own status says whether the cancel arrived: read it again.
+    if (outcome.state === "unknown")
+      void request<CouncilServiceJob>(`/runs/${encodeURIComponent(runId)}`)
+        .then(setJob)
+        .catch(() => {});
   }
 
   if (available === null)
@@ -227,11 +274,26 @@ export function CouncilIsland() {
             {error}
           </p>
         ) : null}
+        {recheck !== null ? (
+          <p class="af-notice" role="status" data-recheck={recheck}>
+            {recheck === "reading" ? (
+              "Convene is held while the runs list is read again."
+            ) : (
+              <>
+                Convene is held: the runs list could not be read again.{" "}
+                <Button onClick={() => void recheckRuns()}>
+                  Read the runs list again
+                </Button>
+              </>
+            )}
+          </p>
+        ) : null}
         <CouncilSetup
           draft={draft}
           profiles={profiles}
           active={active}
           starting={starting}
+          held={recheck !== null}
           preview={preview}
           onChange={(patch) => {
             setDraft((value) => ({ ...value, ...patch }));
