@@ -115,6 +115,8 @@ function fakeAdapter(
   onSpawn: (request: SpawnRequest) => void = () => undefined,
 ) {
   const runs: FakeRun[] = [];
+  /** How to end each run from outside, by its index in `runs`. */
+  const enders: Array<(how: Partial<ExecResult>) => void> = [];
   let live = 0;
   let maxLive = 0;
   const attempts = new Map<string, number>();
@@ -160,6 +162,7 @@ function fakeAdapter(
           ...how,
         });
       };
+      enders.push(end);
       if (step !== "hang") {
         cost = step.costUsd;
         timers.push(
@@ -226,6 +229,12 @@ function fakeAdapter(
     adapter,
     runs,
     maxLive: () => maxLive,
+    /** End run `index` (a `hang` one, say) now, as a provider that exited with `exitCode`. */
+    endRun(index: number, exitCode: number): void {
+      const end = enders[index];
+      if (end === undefined) throw new Error(`no run ${index}`);
+      end({ exitCode });
+    },
   };
 }
 
@@ -1592,6 +1601,56 @@ describe("forge:shift — a bead resumed before its shift read it back (x1gs.5.4
     expect(done.reason).toBe("operator");
     expect(done.record.beads[0]).toMatchObject({ outcome: "released" });
     expect(r.labels("t-1")).toEqual(["queue:queued"]);
+  });
+});
+
+describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races", () => {
+  test("a run that fails after the in-process stop, before the shift has stopped it, is released to queued: it is neither repaired nor halted, nothing more is started, and the shift ends operator", async () => {
+    // On Windows a console Ctrl-C reaches the provider as well as the shift,
+    // so a run can end failed after the shift's signal but before the loop
+    // has stopped it. The loop is held in its host sample here, so it cannot
+    // stop the run first.
+    const stop = new AbortController();
+    let sampled = 0;
+    let freeHost: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      freeHost = done;
+    });
+    const r = rig([queued("t-1"), queued("t-2")], () => "hang", {
+      signal: stop.signal,
+      sampleHost: async () => {
+        sampled++;
+        if (sampled > 1) await held;
+        return { busy: false };
+      },
+    });
+    const running = shift(r, { concurrency: 2, repairs: 2 });
+    try {
+      await until(() => r.fake.runs.length === 1 && sampled > 1);
+      stop.abort("SIGINT");
+      // The provider dies of the same Ctrl-C: its run ends failed on its own.
+      const run = r.fake.runs[0];
+      expect(run?.endedAt).toBeUndefined();
+      r.fake.endRun(0, 1);
+      // Settled one way or another: given back, halted, or a repair started.
+      await until(
+        () => r.labels("t-1")[0] !== "queue:running" || r.fake.runs.length > 1,
+      );
+      expect(r.fake.runs).toHaveLength(1);
+    } finally {
+      freeHost();
+    }
+    const done = await running;
+    expect(done.reason).toBe("operator");
+    // The host sample the loop was held in ended after the stop: t-2 is
+    // eligible, and is not started.
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-1"]);
+    expect(r.labels("t-2")).toEqual(["queue:queued"]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(done.record.beads).toMatchObject([
+      { beadId: "t-1", outcome: "released", attempts: 1 },
+    ]);
+    expect(r.reservations()).toBe(0);
   });
 });
 

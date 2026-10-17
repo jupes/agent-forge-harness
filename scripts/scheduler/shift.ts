@@ -491,6 +491,13 @@ export async function runShift(
       error: `the base could not be fetched (${based.error}); nothing was started`,
     };
   const baseSha = based.value.sha;
+  // Stopped before anything is written (a Ctrl-C while the base was
+  // fetched): no record, no event, nothing to give back.
+  if (deps.signal?.aborted)
+    return {
+      ok: false,
+      error: `the shift was stopped before it started (${typeof deps.signal.reason === "string" ? deps.signal.reason : "stopped"}); nothing was started`,
+    };
 
   const now = deps.now ?? (() => new Date());
   const clock = () => now().getTime();
@@ -758,9 +765,14 @@ export async function runShift(
     const { entry } = slot;
     let lastFailure: string | undefined;
     let deadlineHit = false;
+    // The shift's own stop counts before the loop has passed it on to this
+    // run: a run that ends failed meanwhile (on Windows a console Ctrl-C
+    // reaches the provider too) is given back, never repaired or halted.
+    const stopping = () =>
+      slot.controller.signal.aborted || deps.signal?.aborted === true;
     try {
       for (let attempt = 1; attempt <= options.repairs + 1; attempt++) {
-        if (slot.controller.signal.aborted) break;
+        if (stopping()) break;
         const left = deadline - clock();
         if (left <= 0) {
           deadlineHit = true;
@@ -792,7 +804,7 @@ export async function runShift(
           if (entry.outcome === "review") await pullRequest(slot);
           return;
         }
-        if (slot.controller.signal.aborted || run.stopped) break;
+        if (stopping() || run.stopped) break;
         if (run.timedOut && timeoutMs === left) {
           deadlineHit = true;
           break;
@@ -810,7 +822,7 @@ export async function runShift(
         note(entry, slot.leftWhy ?? "the bead left the running state");
         return;
       }
-      if (slot.controller.signal.aborted || deadlineHit) {
+      if (stopping() || deadlineHit) {
         await settle(entry, "release", "released");
         return;
       }
@@ -1063,9 +1075,15 @@ export async function runShift(
           nothingEligible = true;
           break;
         }
+        // Stopped while the host was sampled or the queue read: start nothing.
+        if (deps.signal?.aborted) break;
         await admit(next);
       }
       if (reason !== null) break;
+      if (deps.signal?.aborted) {
+        reason = "operator";
+        break;
+      }
 
       if (slots.size === 0) {
         if (admitted >= options.maxBeads) reason = "count";
