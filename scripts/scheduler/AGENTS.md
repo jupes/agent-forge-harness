@@ -223,7 +223,10 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   no run without it, so of two shifts that both claimed a bead only one can run it. Not refused: a
   worktree made outside any shift, another worktree of the asking shift, and a stopped shift's
   leftover (it wrote `stopped` only once every run had ended). The check reads one record and asks
-  after one pid per such hold, under the queue lock.
+  after one pid per such hold, under the queue lock. A worktree is a shift's only when it is
+  directly under `<main>/trees/` and named `<shift-id>-<n>` (`shiftOfWorktree`): one by hand with
+  such a name anywhere else (`<main>/<name>`, `<main>/trees/x/<name>`, `<main>/trees-old/<name>`)
+  is not, and `reservations.test.ts` checks it (it fails when the name alone is matched).
 - `eligibility` is pure:
   - **Order:** `planBundles` layers over `blocks`/`requires` edges, then priority, then natural
     id. Beads in progress are walked first (they are running, and claim their current map before
@@ -310,6 +313,20 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   sets the bead aside for the rest of the shift. The reservation is released in a `finally` after
   the runs (and the pull request step), whatever happened, and the end comment is posted after it.
   The worktree is kept: it holds the work.
+- A queue move of the shift's own after the claim (`submit`, `release`, `halt`, the give-back of an
+  admit that failed included) that fails as `busy`, `failed` or `unknown` (bd failed, or ended
+  with no exit status: killed, as a terminal's Ctrl-C kills the shift's own `bd` on Linux and
+  macOS) is made again, `SETTLE_TRIES` (3) times in all, `SETTLE_RETRY_MS` (200 ms) apart
+  (`x1gs.5.4.16`). Never blindly: the move reads the bead under the queue lock before it writes,
+  so a bead the failed try did move is no longer `running` and the next try is refused (its entry
+  ends `left`, and that move has no `bead.transitioned`: a gap `forge:queue reconcile` reports); and each
+  later try writes only while the ledger says this run still owns the bead (`ownedOnly` in
+  `shift-recover.ts`, recovery's own guard on `runOwnership`, read inside the lock just before
+  the write), so a bead another run started meanwhile is left to that run and the try writes
+  nothing. A refusal, a bead gone and a conflict are final. The entry's `error` lists each try;
+  one that never went through ends `left`, and unless another run's start took the bead it says
+  the bead may still be `running` with no run, and that a pause and a resume put it back in
+  `queued`.
 - Runs: a success is `submit` (to `review`), then the pull request step. A failure is repaired, the
   next run told how the one before ended, up to `repairs` more runs, then `halt`. A run stopped by
   the shift, or timed out at the shift's deadline, is `release` (back to `queued`). A run `runExec`
@@ -450,7 +467,11 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     a pause and resume: the second one's reserve is refused;
   - the same when the ledger did not store that second start.
   The shift whose run went on reads the bead back out of `running` on its next tick and lets its
-  run go as `left`: the restart the operator's pause and resume asked for. The bead ends `queued`
+  run go as `left`: the restart the operator's pause and resume asked for. A give-back that fails
+  is made again (above). Until it goes through, the refused shift's start is the bead's newest
+  move, so a watch of the other shift that reads it then lets its run go as `taken`; either way
+  the next try puts the bead in `queued`. Only a give-back that fails every try leaves it `running`
+  with no run (not covered, below). The bead ends `queued`
   and is eligible again once that run has released its reservation. Meanwhile eligibility lists it
   as waiting on that shift (`waitsOnShift`), which is what the operator sees. Releasing a live
   shift's reservation by hand (`forge:reservations release`) takes this guard away while its run
@@ -576,8 +597,16 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     process group. Only the provider is in a group of its own (`supervise` starts it detached); the
     shift's own `bd`, `git` and `gh` children (`bdRunner` uses `execFile` without `detached`) are in
     the shift's group and get the signal too. A `bd update` killed that way while the stop gives a
-    bead back can leave the bead `running` with no run, the end state `x1gs.5.4.16` is about.
-    The process groups are not changed here.
+    bead back is made again (`x1gs.5.4.16`, above): the signal is delivered once, so the `bd`
+    started after it is not killed. The process groups are not changed here; the tests answer the
+    first try as a killed `bd` (no exit status), and no real signal is sent to a real `bd`.
+  - A queue move after the claim that fails every try (bd failing across all three, which are
+    two 200 ms pauses apart, or a ledger that cannot be read, which lets no try after the first
+    write) leaves the bead
+    `running` with no run: the entry says so and names the way out, a pause and a resume (the
+    operator's queue actions). `forge:shift recover` does not help: it refuses a live shift, and
+    a stopped one. In the race above it is the refused shift's start that is the newest move, so
+    the other shift's watch has let its own run go.
   - Untested: how the double wrapper (`bun run forge:shift` starting `bun scripts/…/shift-cli.ts`)
     passes a real Ctrl-C on; the tests run the CLI's main directly and emit the signal in it.
   - The shift does not run `bd update --claim`; the run's own workflow does.

@@ -55,7 +55,12 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import type { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
-import { createQueue, queueStateOf, smithFor } from "./queue";
+import {
+  createQueue,
+  type QueueFailure,
+  queueStateOf,
+  smithFor,
+} from "./queue";
 import { type ReservationDeps, release, reserve } from "./reservations";
 import {
   fetchBase,
@@ -66,7 +71,7 @@ import {
   RUN_PR_BODY,
   type ToolRun,
 } from "./shift-pr";
-import { runOwnership } from "./shift-recover";
+import { type Ownership, ownedOnly, runOwnership } from "./shift-recover";
 import {
   mintShiftId,
   type ShiftBeadRecord,
@@ -126,6 +131,16 @@ const LIMITS = {
 } as const;
 
 const SMITH_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * A queue move of the shift's own (`submit`, `release`, `halt`) is made at
+ * most this many times, this far apart, and made again only after a failure
+ * of one of these kinds: bd failed or was killed (`unknown`: no exit status),
+ * or the lock was busy. A refusal, a bead gone or a conflict is final.
+ */
+const SETTLE_TRIES = 3;
+const SETTLE_RETRY_MS = 200;
+const SETTLE_AGAIN: readonly QueueFailure[] = ["busy", "failed", "unknown"];
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -628,22 +643,85 @@ export async function runShift(
       entry.error === undefined ? error : `${entry.error}; ${error}`;
   };
 
-  /** Move the bead on as the scheduler; a move that does not go through leaves it, and says so. */
+  /**
+   * Move the bead on as the scheduler; a move that does not go through leaves
+   * it, and says so. A move that failed in a way a second one may not (`bd`
+   * killed, as a terminal's Ctrl-C kills the shift's own `bd` on Linux and
+   * macOS; a bd failure; a busy lock) is made again, up to `SETTLE_TRIES` in
+   * all, never blindly: the move reads the bead under the queue lock first
+   * (one whose first write did land is not running any more, and is refused),
+   * and the write is made only while the ledger says this run still owns it
+   * (`ownedOnly`, recovery's rule, read inside that lock), so a bead another
+   * run started meanwhile is left to that run (x1gs.5.4.16).
+   */
   async function settle(
     entry: ShiftBeadRecord,
     action: "submit" | "release" | "halt",
     outcome: ShiftBeadRecord["outcome"],
   ): Promise<void> {
-    const moved = await queueFor(entry.runId).move(
+    let moved = await queueFor(entry.runId).move(
       entry.beadId,
       action,
       "scheduler",
     );
-    if (moved.ok) entry.outcome = outcome;
-    else {
-      entry.outcome = "left";
-      note(entry, `${action}: ${moved.error}`);
+    const failed: string[] = [];
+    let veto: Ownership | null = null;
+    for (
+      let tried = 1;
+      !moved.ok && tried < SETTLE_TRIES && SETTLE_AGAIN.includes(moved.kind);
+      tried++
+    ) {
+      failed.push(`try ${tried}: ${moved.error}`);
+      await new Promise((done) => setTimeout(done, SETTLE_RETRY_MS));
+      const guard = ownedOnly(deps.runBd, entry.beadId, () =>
+        runOwnership(
+          {
+            workspace,
+            ledgerPath: deps.ledgerPath,
+            queryEvents: deps.queryEvents,
+          },
+          entry.beadId,
+          entry.runId,
+        ),
+      );
+      moved = await createQueue({
+        workspace,
+        runBd: guard.runBd,
+        appendEvent: appendFor(entry.runId),
+        lockFile: deps.lockFile,
+      }).move(entry.beadId, action, "scheduler");
+      veto = guard.veto();
+      if (veto !== null) break;
     }
+    if (moved.ok) {
+      entry.outcome = outcome;
+      if (failed.length > 0)
+        note(
+          entry,
+          `${action}: ${failed.join("; ")}; try ${failed.length + 1} went through`,
+        );
+      return;
+    }
+    entry.outcome = "left";
+    if (failed.length === 0) {
+      note(entry, `${action}: ${moved.error}`);
+      return;
+    }
+    const last =
+      veto !== null && !veto.owned
+        ? `not made again: ${veto.why}`
+        : `try ${failed.length + 1}: ${moved.error}`;
+    // Still running, as far as the shift can tell, and not by another run's
+    // start: it may have no run now. (A move the table refused found it in
+    // another state.) The operator's way out is a pause and a resume.
+    const stuck =
+      veto !== null && !veto.owned
+        ? veto.startedBy === undefined
+        : SETTLE_AGAIN.includes(moved.kind);
+    const hint = stuck
+      ? `; it may still be ${QUEUE_LABEL_PREFIX}running with no run: a pause and a resume (the operator's queue actions) put it back in queued`
+      : "";
+    note(entry, `${action}: ${failed.join("; ")}; ${last}${hint}`);
   }
 
   /** Post one `worklog:` comment on the bead; one that fails is written on its entry and stops nothing. */

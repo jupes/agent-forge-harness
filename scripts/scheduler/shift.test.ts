@@ -1374,6 +1374,82 @@ describe("forge:shift — a bead resumed before its shift read it back (x1gs.5.4
       },
     );
 
+  test("P1', P2 with the second shift's give-back failing once (x1gs.5.4.16): it reads the ledger, finds its own start the newest, and moves the bead again, so the bead ends queued and never running with no run", async () => {
+    const A = "shift-20261016-140000-0a31";
+    const B = "shift-20261016-140000-0b32";
+    const r = rig(
+      [queued("t-1", "src/t-1/**", { parent: { id: "ep-9" } })],
+      () => "hang",
+    );
+    let skewA = 0;
+    const gate = gated(
+      r,
+      (args) => args[0] === "show" && args.at(-1) === "t-1",
+    );
+    // B's first give-back of t-1 dies before bd answers, as a `bd update`
+    // a terminal's Ctrl-C reaches does: no exit status, nothing written.
+    const giveBacks: string[][] = [];
+    const runB: BdRunner = async (args) => {
+      if (
+        args[0] === "update" &&
+        args.at(-1) === "t-1" &&
+        args.includes("--add-label=queue:queued")
+      ) {
+        giveBacks.push(args);
+        if (giveBacks.length === 1)
+          return {
+            status: null,
+            stdout: "",
+            stderr: "Command failed: bd update (killed by SIGINT)",
+          };
+      }
+      return gate.runBd(args);
+    };
+    const stopA = new AbortController();
+    const stopB = new AbortController();
+    const b = background(
+      { concurrency: 1, epic: "ep-9" },
+      { ...r.deps, shiftId: B, runBd: runB, signal: stopB.signal },
+    );
+    let a: ReturnType<typeof background> | undefined;
+    try {
+      await until(() => gate.state.held);
+      a = background(
+        { concurrency: 1, maxBeads: 1, pollMs: 60_000 },
+        {
+          ...r.deps,
+          shiftId: A,
+          signal: stopA.signal,
+          now: () => new Date(Date.now() + skewA),
+        },
+      );
+      await until(() => r.fake.runs.length === 1);
+      const operator = operatorQueue(r);
+      expect((await operator.move("t-1", "pause", "operator")).ok).toBe(true);
+      expect((await operator.move("t-1", "resume", "operator")).ok).toBe(true);
+      gate.open();
+      const second = await ended(b.outcome);
+      expect(second.record.beads[0]).toMatchObject({ outcome: "set-aside" });
+      expect(second.record.beads[0]?.error).toContain(`shift ${A} (live)`);
+      expect(second.record.beads[0]?.error).toContain("did not finish");
+      expect(giveBacks).toHaveLength(2);
+      // Given back by B's second try, before A's watch has read it again.
+      expect(r.labels("t-1")).toEqual(["queue:queued"]);
+      skewA += 60_000;
+      const first = await ended(a.outcome);
+      expect(first.record.beads[0]).toMatchObject({ outcome: "left" });
+      expect(first.record.beads[0]?.error).toContain("queue:queued");
+    } finally {
+      stopA.abort();
+      stopB.abort();
+      await b.outcome.catch(() => undefined);
+      await a?.outcome.catch(() => undefined);
+    }
+    expect(r.fake.runs).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+  });
+
   test("a ledger read that fails tells the watch nothing: a healthy run read back as running goes on", async () => {
     let skew = 0;
     let reads = 0;
@@ -1699,6 +1775,149 @@ describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races
     expect(r.comments("t-1").at(-1)).toBe(
       `worklog: shift ${done.shiftId} ended this bead after 1 run: released. ${SHIFT_ENDINGS.failedStopping}`,
     );
+  });
+
+  /**
+   * The shift's give-backs of `id` (`update … --add-label=queue:queued`), the
+   * first answered as a bd the stop's signal killed: nothing written, or with
+   * `landed` the write made first.
+   */
+  function killedOnce(
+    r: Rig,
+    id: string,
+    then: () => void = () => undefined,
+    landed = false,
+  ) {
+    const giveBacks: string[][] = [];
+    r.intercept = (args) => {
+      if (
+        args[0] !== "update" ||
+        args.at(-1) !== id ||
+        !args.includes("--add-label=queue:queued")
+      )
+        return undefined;
+      giveBacks.push(args);
+      if (giveBacks.length > 1) return undefined;
+      then();
+      if (landed) r.tracker.answer(args);
+      return {
+        status: null,
+        stdout: "",
+        stderr: "Command failed: bd update (killed by SIGINT)",
+      };
+    };
+    return giveBacks;
+  }
+
+  test("a give-back the stop's own Ctrl-C kills (x1gs.5.4.16, a terminal signals the shift's bd too): the shift reads the ledger, finds its own start the newest, and moves the bead again, so it ends released to queued, never running with no run", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    const giveBacks = killedOnce(r, "t-1");
+    const running = shift(r);
+    await until(() => r.fake.runs.length === 1);
+    stop.abort("SIGINT");
+    const done = await running;
+    expect(done.reason).toBe("operator");
+    expect(giveBacks).toHaveLength(2);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    const [entry] = done.record.beads;
+    expect(entry).toMatchObject({ outcome: "released", attempts: 1 });
+    expect(entry?.error).toContain("release: try 1: bd update did not finish");
+    expect(entry?.error).toContain("try 2 went through");
+    expect(r.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${done.shiftId} ended this bead after 1 run: released. ${SHIFT_ENDINGS.stopped}`,
+    );
+    expect(r.reservations()).toBe(0);
+    // One release recorded, by this run: the killed try wrote nothing.
+    expect(
+      r
+        .events({ runId: entry?.runId ?? "" })
+        .filter(
+          (event) =>
+            event.kind === "bead.transitioned" &&
+            (event.payload as { to?: string }).to === "queued",
+        ),
+    ).toHaveLength(1);
+  });
+
+  test("a give-back whose bd was killed after it wrote is not written again (x1gs.5.4.16): the second try reads the bead, finds it queued, and is refused, and the record does not call it stuck", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    // The write lands, then bd dies before it answers.
+    const giveBacks = killedOnce(r, "t-1", () => undefined, true);
+    const running = shift(r);
+    await until(() => r.fake.runs.length === 1);
+    stop.abort("SIGINT");
+    const done = await running;
+    expect(done.reason).toBe("operator");
+    expect(giveBacks).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    const [entry] = done.record.beads;
+    expect(entry).toMatchObject({ outcome: "left" });
+    expect(entry?.error).toContain("try 2: t-1 is queue:queued");
+    expect(entry?.error).not.toContain("with no run");
+  });
+
+  test("a give-back bd refuses every time is made three times in all, then left with the record saying the bead may be running with no run, and the way out (x1gs.5.4.16)", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    const giveBacks: string[][] = [];
+    r.intercept = (args) => {
+      if (
+        args[0] !== "update" ||
+        args.at(-1) !== "t-1" ||
+        !args.includes("--add-label=queue:queued")
+      )
+        return undefined;
+      giveBacks.push(args);
+      return { status: 1, stdout: "", stderr: "Error: database is locked\n" };
+    };
+    const running = shift(r);
+    await until(() => r.fake.runs.length === 1);
+    stop.abort("SIGINT");
+    const done = await running;
+    expect(done.reason).toBe("operator");
+    expect(giveBacks).toHaveLength(3);
+    expect(r.labels("t-1")).toEqual(["queue:running"]);
+    const [entry] = done.record.beads;
+    expect(entry).toMatchObject({ outcome: "left" });
+    expect(entry?.error).toBe(
+      "release: try 1: bd update failed: database is locked. Nothing was changed.; try 2: bd update failed: database is locked. Nothing was changed.; try 3: bd update failed: database is locked. Nothing was changed.; it may still be queue:running with no run: a pause and a resume (the operator's queue actions) put it back in queued",
+    );
+    expect(r.comments("t-1").at(-1)).toBe(
+      `worklog: shift ${done.shiftId} ended this bead after 1 run: left. ${SHIFT_ENDINGS.unmoved}`,
+    );
+  });
+
+  test("a give-back is never made again blindly (x1gs.5.4.16): once the ledger says another run started the bead after the try that failed, the second try writes nothing and the bead is left running for that run", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    const other = "t-1-shift-20261016-150000-0c41";
+    // Between the two tries another shift's start of t-1 is recorded.
+    const giveBacks = killedOnce(r, "t-1", () => {
+      appendEvent(
+        {
+          kind: "bead.transitioned",
+          workspace: r.workspace,
+          beadId: "t-1",
+          runId: other,
+          payload: { from: "queued", to: "running", reason: "start:scheduler" },
+        },
+        { path: r.ledger },
+      );
+    });
+    const running = shift(r);
+    await until(() => r.fake.runs.length === 1);
+    stop.abort("SIGINT");
+    const done = await running;
+    expect(done.reason).toBe("operator");
+    // The second try was answered before bd: no update reached the tracker.
+    expect(giveBacks).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual(["queue:running"]);
+    const [entry] = done.record.beads;
+    expect(entry).toMatchObject({ outcome: "left" });
+    expect(entry?.error).toContain(`run ${other}`);
+    expect(entry?.error).not.toContain("with no run");
   });
 
   test("a stop that lands while a bead is being admitted admits nothing further: the bead is given back to queued, with no reservation, worktree, comment or run", async () => {
