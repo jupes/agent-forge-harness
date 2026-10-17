@@ -7,11 +7,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -59,11 +62,184 @@ function plantLock(
   const lock = join(dir, "state.lock");
   mkdirSync(lock);
   if (owner !== undefined)
-    writeFileSync(join(lock, "owner.json"), JSON.stringify(owner));
+    writeFileSync(ownerPath(lock, owner), JSON.stringify(owner));
   return lock;
 }
 
+const ownerPath = (
+  lock: string,
+  owner: { pid: number; token: string },
+): string => join(lock, `owner-${owner.pid}-${owner.token}.json`);
+
 describe("withStateLock", () => {
+  test.each([
+    "remove-owner",
+    "remove-empty",
+  ] as const)("a delayed %s cannot remove a fresh breaker or main holder", async (phase) => {
+    const dir = scratch();
+    const dead = { pid: await exitedPid(), at: Date.now(), token: "dead" };
+    const lock = plantLock(dir, dead);
+    const breaker = `${lock}.break`;
+    mkdirSync(breaker);
+    writeFileSync(ownerPath(breaker, dead), JSON.stringify(dead));
+    const fresh = { pid: process.pid, at: Date.now(), token: "fresh-breaker" };
+    let interleaved = false;
+    expect(() =>
+      withStateLock(dir, () => "never", {
+        waitMs: 100,
+        step(at, path) {
+          if (path !== breaker || at !== phase || interleaved) return;
+          interleaved = true;
+          // The first waiter finishes clearing the dead breaker, and a third
+          // publishes its populated breaker before this delayed waiter resumes.
+          if (phase === "remove-owner") unlinkSync(ownerPath(breaker, dead));
+          rmdirSync(breaker);
+          mkdirSync(breaker);
+          writeFileSync(ownerPath(breaker, fresh), JSON.stringify(fresh));
+        },
+      }),
+    ).toThrow("timed out");
+    expect(interleaved).toBe(true);
+    expect(JSON.parse(readFileSync(ownerPath(breaker, fresh), "utf8"))).toEqual(
+      fresh,
+    );
+    expect(JSON.parse(readFileSync(ownerPath(lock, dead), "utf8"))).toEqual(
+      dead,
+    );
+  });
+
+  test("an empty breaker left after unlink is recovered without waiting for the age bound", async () => {
+    const dir = scratch();
+    const lock = plantLock(dir, {
+      pid: await exitedPid(),
+      at: Date.now(),
+      token: "dead",
+    });
+    mkdirSync(`${lock}.break`);
+    const start = Date.now();
+    expect(withStateLock(dir, () => "entered", { waitMs: 2000 })).toBe(
+      "entered",
+    );
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test("killed holders and breakers recover promptly under multiprocess contention, with execution and overlap witnesses", async () => {
+    const dir = scratch();
+    const work = scratch();
+    const worker = join(work, "chaos.ts");
+    const module = join(
+      import.meta.dir,
+      "..",
+      "..",
+      "tests",
+      "e2e",
+      "bd-stand-in-state.ts",
+    );
+    writeFileSync(
+      worker,
+      `
+      import { closeSync, existsSync, openSync, rmSync, writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      import { readState, withStateLock, writeState } from ${JSON.stringify(module)};
+      const [dir, mode, witness] = process.argv.slice(2);
+      const pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+      writeFileSync(witness + ".started", String(process.pid));
+      if (mode === "holder") withStateLock(dir, () => { writeFileSync(witness, "held"); pause(); });
+      else if (mode === "breaker") withStateLock(dir, () => { throw new Error("breaker entered transaction"); }, {
+        step(phase) { if (phase === "break-owned") { writeFileSync(witness, "breaking"); pause(); } }
+      });
+      else {
+        while (!existsSync(join(dir, "go"))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        let overlaps = 0;
+        for (let i = 0; i < 30; i++) withStateLock(dir, () => {
+          let marker;
+          try { marker = openSync(join(dir, "inside"), "wx"); } catch { overlaps++; }
+          const count = Number(readState(dir)["c"]?.title ?? "0") + 1;
+          writeState(dir, { c: { id: "c", title: String(count), issue_type: "task", priority: 2, status: "open", created_at: "", updated_at: "" } });
+          if (marker !== undefined) { closeSync(marker); rmSync(join(dir, "inside")); }
+        }, { waitMs: 20000 });
+        writeFileSync(witness, JSON.stringify({ pid: process.pid, transactions: 30, overlaps }));
+      }
+    `,
+    );
+    const children: ReturnType<typeof Bun.spawn>[] = [];
+    const launch = (mode: string, name: string) => {
+      const witness = join(work, name);
+      const child = Bun.spawn([process.execPath, worker, dir, mode, witness], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      children.push(child);
+      return { child, witness };
+    };
+    const waitFor = async (path: string) => {
+      const until = Date.now() + 10000;
+      while (!existsSync(path)) {
+        if (Date.now() > until)
+          throw new Error(`missing execution witness: ${path}`);
+        await new Promise((done) => setTimeout(done, 10));
+      }
+    };
+    try {
+      const holder = launch("holder", "holder");
+      await waitFor(holder.witness);
+      expect(readFileSync(holder.witness, "utf8")).toBe("held");
+      holder.child.kill("SIGKILL");
+      await holder.child.exited;
+      const breaker = launch("breaker", "breaker");
+      await waitFor(breaker.witness);
+      expect(readFileSync(breaker.witness, "utf8")).toBe("breaking");
+      const owner = JSON.parse(
+        readFileSync(
+          join(
+            dir,
+            "state.lock.break",
+            readdirSync(join(dir, "state.lock.break"))[0] ?? "missing",
+          ),
+          "utf8",
+        ),
+      );
+      expect(owner.pid).toBe(breaker.child.pid);
+      expect(owner.token).toBeString();
+      breaker.child.kill("SIGKILL");
+      await breaker.child.exited;
+      const survivors = Array.from({ length: 8 }, (_, i) =>
+        launch("writer", `writer-${i}`),
+      );
+      await Promise.all(
+        survivors.map(({ witness }) => waitFor(`${witness}.started`)),
+      );
+      const start = Date.now();
+      writeFileSync(join(dir, "go"), "go");
+      const results = await Promise.all(
+        survivors.map(async ({ child, witness }) => {
+          const [code, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stderr).text(),
+          ]);
+          expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+          // Exit zero alone cannot prove Bun executed the worker under load.
+          return JSON.parse(readFileSync(witness, "utf8"));
+        }),
+      );
+      expect(results).toEqual(
+        survivors.map(({ child }) => ({
+          pid: child.pid,
+          transactions: 30,
+          overlaps: 0,
+        })),
+      );
+      expect(readState(dir)["c"]?.title).toBe("240");
+      expect(Date.now() - start).toBeLessThan(20000);
+      expect(readdirSync(dir).sort()).toEqual(["go", "issues.json"]);
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.all(children.map((child) => child.exited));
+    }
+  }, 60000);
+
   test("the state lock is released when a transaction throws", () => {
     const dir = scratch();
     expect(() =>
@@ -117,14 +293,14 @@ describe("withStateLock", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  test("a lock older than the stale bound is broken although its holder's process runs, and so is an old lock with no owner written", () => {
+  test("an old live holder is never age-broken; only an old lock with no owner is", () => {
     const old = { pid: process.pid, at: Date.now() - 5_000, token: "old" };
     const dir = scratch();
-    plantLock(dir, old);
-    expect(
-      withStateLock(dir, () => "entered", { waitMs: 3_000, staleMs: 1_000 }),
-    ).toBe("entered");
-    expect(readdirSync(dir)).toEqual([]);
+    const held = plantLock(dir, old);
+    expect(() =>
+      withStateLock(dir, () => "never", { waitMs: 100, staleMs: 1 }),
+    ).toThrow("timed out");
+    expect(JSON.parse(readFileSync(ownerPath(held, old), "utf8"))).toEqual(old);
 
     const ownerless = scratch();
     const lock = plantLock(ownerless);
@@ -146,7 +322,7 @@ describe("withStateLock", () => {
     expect(() => withStateLock(dir, () => "never", { waitMs: 300 })).toThrow(
       "timed out waiting for stand-in state lock",
     );
-    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(
+    expect(JSON.parse(readFileSync(ownerPath(lock, live), "utf8"))).toEqual(
       live,
     );
   });
@@ -155,13 +331,14 @@ describe("withStateLock", () => {
     const dir = scratch();
     const other = { pid: process.pid, at: Date.now(), token: "other" };
     withStateLock(dir, () => {
-      writeFileSync(
-        join(dir, "state.lock", "owner.json"),
-        JSON.stringify(other),
-      );
+      const lock = join(dir, "state.lock");
+      for (const file of readdirSync(lock)) unlinkSync(join(lock, file));
+      writeFileSync(ownerPath(lock, other), JSON.stringify(other));
     });
     expect(
-      JSON.parse(readFileSync(join(dir, "state.lock", "owner.json"), "utf8")),
+      JSON.parse(
+        readFileSync(ownerPath(join(dir, "state.lock"), other), "utf8"),
+      ),
     ).toEqual(other);
   });
 

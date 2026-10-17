@@ -15,11 +15,13 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmdirSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -50,19 +52,23 @@ const errorCode = (error: unknown): string =>
   String((error as { code?: unknown } | null)?.code ?? "");
 
 /**
- * A lock held this long was left by a holder that died without removing it.
- * A real transaction reads and replaces two small files: a few seconds at
- * most, even when every read and replace is retried to its bound.
+ * Ownerless legacy locks may be recovered after this long. A named live
+ * process is never age-broken: a paused holder may still finish its work.
  */
 export const STALE_LOCK_MS = 30_000;
 
 export interface LockOptions {
   /** How long to wait for the lock before giving up. */
   waitMs?: number;
-  /** How old a lock must be before it is broken although its holder runs. */
+  /** How old an ownerless legacy lock must be before it is broken. */
   staleMs?: number;
   /** Make the lock's directory; tests replace it to make it fail. */
   mkdir?: (path: string) => void;
+  /** Test interleavings and crash points; absent in the browser stand-in. */
+  step?: (
+    phase: "break-owned" | "remove-owner" | "remove-empty",
+    lock: string,
+  ) => void;
 }
 
 /** Who holds the lock, written inside it, so a waiter can tell a dead holder. */
@@ -74,12 +80,15 @@ interface LockOwner {
   token: string;
 }
 
-const ownerFile = (lock: string): string => join(lock, "owner.json");
+const ownerFile = (lock: string, owner: LockOwner): string =>
+  join(lock, `owner-${owner.pid}-${owner.token}.json`);
 
 function readOwner(lock: string): LockOwner | undefined {
   try {
+    const file = readdirSync(lock).find((name) => name.startsWith("owner-"));
+    if (!file) return undefined;
     return JSON.parse(
-      withRetries(() => readFileSync(ownerFile(lock), "utf8")),
+      withRetries(() => readFileSync(join(lock, file), "utf8")),
     ) as LockOwner;
   } catch {
     // None yet (taken a moment ago, or by a holder that died before writing
@@ -110,28 +119,56 @@ function stale(lock: string, staleMs: number): boolean {
       return false;
     }
   }
-  return (
-    Date.now() - since > staleMs || (owner !== undefined && !running(owner.pid))
-  );
+  return owner === undefined
+    ? Date.now() - since > staleMs
+    : !running(owner.pid);
 }
 
 /**
- * Remove the lock and its owner. Only the lock's maker writes its owner, and
- * no one can make the lock again until it is gone, so a directory found not
- * empty holds only the owner just removed: on Windows a waiter that is still
- * reading it keeps it there until it closes it. Emptying is tried again then.
+ * Unlink only this holding's unique witness, then remove only an empty
+ * directory. A delayed remover cannot empty or remove a fresh publication.
  */
-function removeLock(lock: string): void {
+function removeLock(
+  lock: string,
+  owner: LockOwner | undefined,
+  step?: LockOptions["step"],
+): void {
   try {
-    withRetries(
-      () => {
-        rmSync(ownerFile(lock), { force: true });
-        rmdirSync(lock);
-      },
-      { codes: [...RETRIABLE, "ENOTEMPTY"] },
-    );
+    if (owner) {
+      step?.("remove-owner", lock);
+      // Only one remover can unlink this holding's unique witness. A loser
+      // must not go on to remove a different holding's owner or directory.
+      withRetries(() => unlinkSync(ownerFile(lock, owner)));
+    }
+    step?.("remove-empty", lock);
+    withRetries(() => rmdirSync(lock));
   } catch (error) {
-    if (errorCode(error) !== "ENOENT") throw error;
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(error)))
+      throw error;
+  }
+}
+
+/** Publish a nonempty directory in one step, so stale rmdir cannot delete a fresh holder. */
+function publish(
+  lock: string,
+  owner: LockOwner,
+  mkdir: (path: string) => void = (path) => mkdirSync(path),
+): void {
+  const candidate = `${lock}.candidate-${owner.token}`;
+  try {
+    mkdir(candidate);
+    withRetries(() =>
+      writeFileSync(ownerFile(candidate, owner), JSON.stringify(owner)),
+    );
+    // POSIX rename can replace an empty directory. Respect the age of legacy
+    // ownerless locks too; competing new publications are always nonempty.
+    if (existsSync(lock))
+      throw Object.assign(new Error("lock held"), { code: "EEXIST" });
+    renameSync(candidate, lock);
+  } finally {
+    // Canonical locks are never recursively removed. A process killed before
+    // publication can leave this harmless sibling for run-home cleanup.
+    rmSync(candidate, { recursive: true, force: true, maxRetries: 5 });
   }
 }
 
@@ -141,39 +178,49 @@ function removeLock(lock: string): void {
  * stale cannot both remove it: the second finds the lock gone, or a live
  * holder's new one, and leaves it.
  */
-function breakIfStale(lock: string, staleMs: number): void {
+function breakIfStale(
+  lock: string,
+  staleMs: number,
+  step?: LockOptions["step"],
+): void {
+  if (!stale(lock, staleMs)) return;
   const breaker = `${lock}.break`;
+  const owner: LockOwner = {
+    pid: process.pid,
+    at: Date.now(),
+    token: randomUUID(),
+  };
   try {
-    mkdirSync(breaker);
+    publish(breaker, owner);
   } catch (error) {
-    // Another waiter is breaking it. A breaker that died doing so (it holds
-    // its lock for a moment) is cleared once it is as old as a stale lock.
-    if (errorCode(error) === "EEXIST")
-      try {
-        if (Date.now() - statSync(breaker).mtimeMs > staleMs)
-          rmdirSync(breaker);
-      } catch {
-        // Cleared by another waiter meanwhile.
-      }
+    if (!["EEXIST", "ENOTEMPTY", ...RETRIABLE].includes(errorCode(error)))
+      throw error;
+    const held = readOwner(breaker);
+    // An empty breaker can be a remover killed after unlink. Fresh breakers
+    // are published nonempty, so rmdir is safe without an age wait.
+    if (!held || !running(held.pid)) removeLock(breaker, held, step);
     return;
   }
   try {
-    if (stale(lock, staleMs)) removeLock(lock);
+    step?.("break-owned", breaker);
+    const held = readOwner(lock);
+    if (held ? !running(held.pid) : stale(lock, staleMs))
+      removeLock(lock, held, step);
   } finally {
-    withRetries(() => rmdirSync(breaker));
+    removeLock(breaker, owner, step);
   }
 }
 
 /**
  * Serialize a whole read/modify/write transaction across stand-in processes.
  *
- * The lock is a directory: making it is the one step that can succeed for
- * only one process. While another holds it, making it fails with `EEXIST`;
+ * The lock is a populated directory: publishing it is the one step that can
+ * succeed for only one process. While another holds it, publication fails;
  * on Windows it can also fail with a sharing error (`EPERM`, `EBUSY`,
  * `EACCES`) while the last holder's directory is still being removed, so a
  * waiter waits on those as well. A holder killed before its `finally` runs
  * leaves the lock behind; the owner it wrote inside lets a waiter break it
- * once the holder's process is gone or the lock is older than `staleMs`.
+ * once the holder's process is gone. Age recovers only ownerless legacy locks.
  */
 export function withStateLock<T>(
   dir: string,
@@ -182,36 +229,32 @@ export function withStateLock<T>(
     waitMs = 5_000,
     staleMs = STALE_LOCK_MS,
     mkdir = (path) => mkdirSync(path),
+    step,
   }: LockOptions = {},
 ): T {
   const lock = join(dir, "state.lock");
   const token = `${process.pid}-${randomUUID()}`;
+  const owner: LockOwner = { pid: process.pid, at: Date.now(), token };
   const deadline = Date.now() + waitMs;
   for (;;) {
     try {
-      mkdir(lock);
+      publish(lock, owner, mkdir);
       break;
     } catch (error) {
       const code = errorCode(error);
-      if (code !== "EEXIST" && !RETRIABLE.has(code)) throw error;
-      if (code === "EEXIST") breakIfStale(lock, staleMs);
+      if (code !== "EEXIST" && code !== "ENOTEMPTY" && !RETRIABLE.has(code))
+        throw error;
+      breakIfStale(lock, staleMs, step);
       if (Date.now() >= deadline)
         throw new Error(`timed out waiting for stand-in state lock: ${lock}`);
       pause(25);
     }
   }
   try {
-    const owner: LockOwner = { pid: process.pid, at: Date.now(), token };
-    withRetries(() => writeFileSync(ownerFile(lock), JSON.stringify(owner)));
-  } catch (error) {
-    removeLock(lock);
-    throw error;
-  }
-  try {
     return work();
   } finally {
     // Not ours to remove when a waiter broke it as stale and another took it.
-    if (readOwner(lock)?.token === token) removeLock(lock);
+    removeLock(lock, owner, step);
   }
 }
 
