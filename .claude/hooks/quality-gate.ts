@@ -92,6 +92,7 @@ import {
   type RunCorrelation,
 } from "../../scripts/run-correlation";
 import { pointedRunCorrelationAnywhere } from "../../scripts/run-correlation-store";
+import { resetSpawnClock } from "../../scripts/spawn-clock";
 import type { EvaluatorIdentity, Smith } from "../../types/hearth";
 import { getQualityGateLogPath } from "./utils/constants";
 import { type HookStdin, readHookStdin } from "./utils/hook-input";
@@ -841,6 +842,7 @@ export function unrecordedVerdict(
 
 function run(cmd: string, cwd?: string): { ok: boolean; output: string } {
   try {
+    resetSpawnClock();
     const output = execSync(cmd, {
       cwd: cwd ?? process.cwd(),
       encoding: "utf8",
