@@ -6,7 +6,7 @@ import { execFileNoShell } from "../quality-gate-beads";
 const [kind, program, cwd] = process.argv.slice(2);
 if ((kind !== "home" && kind !== "beads") || !program || !cwd)
   throw new Error("expected home|beads, a program and a working directory");
-const gapMs = kind === "home" ? 12_000 : 1_200;
+const gapMs = kind === "home" ? 12_000 : 4_000;
 const real = process.execPath;
 if (spawnSync(real, ["--version"]).status !== 0)
   throw new Error("the earlier synchronous spawn failed");
@@ -21,6 +21,6 @@ if (kind === "home") {
   }
 } else {
   process.stdout.write(
-    JSON.stringify(execFileNoShell(real, [program], { cwd, timeoutMs: 3_000 })),
+    JSON.stringify(execFileNoShell(real, [program], { cwd, timeoutMs: 8_000 })),
   );
 }

@@ -163,9 +163,14 @@ describe("execFileNoShell (the runner bd is called through)", () => {
     const command = join(cwd, "slow-answer.ts");
     writeFileSync(
       command,
-      "Bun.sleepSync(2200); process.stdout.write('done');",
+      "Bun.sleepSync(5000); process.stdout.write('done');",
     );
-    // Without a reset, Windows stops the command about 1.8 s in.
+    // Budget: the driver idles 4 s after its seed spawn, then runs this 5 s
+    // command under an 8 s limit. Without a reset, Windows counts the gap
+    // against the limit, leaving at most 8 - 4 = 4 s: the command is killed
+    // at least 1 s before its sleep alone could end, however idle the host.
+    // With the reset it gets the whole 8 s, which leaves 8 - 5 = 3 s for bun
+    // to start and transpile the command on a busy runner.
     const run = Bun.spawn(
       [
         process.execPath,
@@ -189,7 +194,7 @@ describe("execFileNoShell (the runner bd is called through)", () => {
       throw new Error(`the bd-runner driver printed invalid JSON: ${stdout}`);
     }
     expect(result).toEqual({ ok: true, output: "done" });
-  }, 15_000);
+  }, 30_000);
 
   test("hands each argument to an executable verbatim, shell syntax included", () => {
     const cwd = mkdtempSync(join(tmpdir(), "gate beads test "));
