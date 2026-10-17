@@ -14,12 +14,13 @@ import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lockPath } from "./home";
-import { homeWriteProblem } from "./home-guard";
+import { readHomeLock } from "./home-guard";
 import {
   type HearthLock,
   isPidAlive,
   readLock,
   releaseLock,
+  sameLock,
   updateLock,
 } from "./lock";
 import { healthProblem, healthReport } from "./loopback";
@@ -69,32 +70,38 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
   const file = lockPath(options.home, root);
   const timeout = options.startTimeoutMs ?? 20_000;
   let preferredPort: number | undefined;
+  /** The lock this supervisor attached to, as it was read with the check. */
+  let attached: HearthLock | null = null;
   let inflight: Promise<number> | null = null;
 
   /**
-   * Refuses a home, or a lock file, that others can write: they could name
-   * the port the dashboard proxies the page's requests to, the operator token
-   * with them (`home-guard.ts`). Checked before a lock is trusted. The same
-   * check the hearth makes at start, so a home it would refuse is refused
-   * here with its words, before a hearth is started at all.
+   * The lock, read as it is checked (`readHomeLock`). Refuses a home, or a
+   * lock file, that others can write: they could name the port the dashboard
+   * proxies the page's requests to, the operator token with them
+   * (`home-guard.ts`). The same check the hearth makes at start, so a home
+   * it would refuse is refused here with its words, before a hearth is
+   * started at all. A port is taken only from a lock read so: what was
+   * checked is what is used (`x1gs.3.38`).
    */
-  function refuseUnlessPrivate(): void {
-    const problem = homeWriteProblem(options.home, file);
-    if (problem !== null)
+  function trustedLock(): HearthLock | null {
+    const read = readHomeLock(options.home, file);
+    if (read.problem !== null)
       throw new Error(
-        `Refusing to use the control plane for ${root}: ${problem}`,
+        `Refusing to use the control plane for ${root}: ${read.problem}`,
       );
+    return read.lock;
   }
 
   async function attachOrStart(): Promise<number> {
-    refuseUnlessPrivate();
-    const current = readLock(file);
+    const current = trustedLock();
     if (
       current &&
       resolve(current.root) === root &&
       (await isHealthy(current))
     ) {
-      updateLock(file, { supervisor: options.id });
+      // The lock checked above, never one read again by the path (`updateLock`).
+      updateLock(file, current, { supervisor: options.id });
+      attached = current;
       preferredPort = current.port;
       return current.port;
     }
@@ -130,12 +137,17 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       if (failed) throw failed;
-      const lock = readLock(file);
-      if (lock && lock.pid !== current?.pid && (await isHealthy(lock))) {
-        refuseUnlessPrivate();
-        updateLock(file, { supervisor: options.id });
-        preferredPort = lock.port;
-        return lock.port;
+      const seen = readLock(file);
+      if (seen && seen.pid !== current?.pid && (await isHealthy(seen))) {
+        // Asked of a lock read by its path, to wait cheaply: used only once
+        // the lock read as it is checked is that same lock.
+        const lock = trustedLock();
+        if (lock !== null && sameLock(lock, seen)) {
+          updateLock(file, lock, { supervisor: options.id });
+          attached = lock;
+          preferredPort = lock.port;
+          return lock.port;
+        }
       }
       await sleep(100);
     }
@@ -145,11 +157,15 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
   return {
     ensure() {
       // Fast path once attached: a cheap pid check per request, no HTTP probe.
-      const attached = readLock(file);
+      // Only while the lock at the path is still the one checked at attach,
+      // and that hearth's own pid is alive: a lock put there since, naming
+      // this port and some other live pid, cannot hide that the hearth ended
+      // and let another program take its port (`x1gs.3.38`).
       if (
         preferredPort !== undefined &&
-        attached?.port === preferredPort &&
-        resolve(attached.root) === root &&
+        attached !== null &&
+        attached.port === preferredPort &&
+        sameLock(readLock(file), attached) &&
         isPidAlive(attached.pid)
       ) {
         return Promise.resolve(preferredPort);
@@ -161,7 +177,13 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
       return inflight;
     },
     async stopIfOwner() {
-      const lock = readLock(file);
+      // It ends the pid the lock names: read as it is checked, and never from a home others can write.
+      let lock: HearthLock | null;
+      try {
+        lock = trustedLock();
+      } catch {
+        return;
+      }
       if (!lock || lock.supervisor !== options.id) return;
       const report = isPidAlive(lock.pid)
         ? await healthReport(lock)

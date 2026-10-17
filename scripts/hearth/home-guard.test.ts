@@ -1,12 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -20,12 +24,13 @@ import {
   type AclReading,
   FILE_ALL_ACCESS,
   INHERITED_ACE,
+  makeOwnerOnly,
   nativeWindowsAcl,
   SYSTEM_SID,
   type WindowsAcl,
 } from "./acl-windows";
 import { freshLaunchLink, NoLaunchLink } from "./dashboard-open";
-import { lockPath, tokenPath } from "./home";
+import { lockPath, sessionsPath, tokenPath } from "./home";
 import {
   ADMINISTRATORS_SID,
   checkHomeInBun,
@@ -34,8 +39,9 @@ import {
   posixWriteFinding,
   windowsWriteFinding,
 } from "./home-guard";
-import { requestLaunch } from "./launch";
-import type { HearthLock } from "./lock";
+import { createSessionStore, requestLaunch } from "./launch";
+import { type HearthLock, readLock } from "./lock";
+import type { Exchange } from "./loopback";
 import { createHearthMcpServer } from "./mcp";
 import { HEALTH_ROUTE, OPERATOR_HEADER } from "./paths";
 import { createHearth } from "./server";
@@ -199,15 +205,30 @@ test("posixWriteFinding refuses a group- or world-writable mode and another user
   });
 });
 
-/** Windows' ACL functions as a test arranges them: one reading per path. */
+/**
+ * Windows' ACL functions as a test arranges them: one reading per path, the
+ * same through a handle; a file read through one holds `{}`.
+ */
 function readings(byPath: Record<string, AclReading>): WindowsAcl {
+  const read = (path: string): AclReading => {
+    const found = byPath[path];
+    if (found === undefined) throw new Error(`no reading for ${path}`);
+    return found;
+  };
   return {
     userSid: () => USER,
     apply: () => undefined,
-    read(path) {
-      const found = byPath[path];
-      if (found === undefined) throw new Error(`no reading for ${path}`);
-      return found;
+    read,
+    readInFolder(folder, name) {
+      if (!existsSync(folder)) return null;
+      const file = name === null ? null : join(folder, name);
+      return {
+        folder: read(folder),
+        file:
+          file === null || !existsSync(file)
+            ? null
+            : { reading: read(file), bytes: new TextEncoder().encode("{}") },
+      };
     },
   };
 }
@@ -534,8 +555,8 @@ test("bun run hearth in a home others may write exits 1, saying who may write it
 test("the check run under Bun in a child process, as the dashboard under Node runs it, says what the check in this process says", () => {
   const home = writableHome();
   const own = temp("af-guard-home");
-  expect(checkHomeInBun(home, undefined)).toBe(homeWriteProblem(home));
-  expect(checkHomeInBun(own, undefined)).toBeNull();
+  expect(checkHomeInBun(home, undefined).problem).toBe(homeWriteProblem(home));
+  expect(checkHomeInBun(own, undefined).problem).toBeNull();
 }, 30_000);
 
 test("checkHomeInBun gives a slow check its whole limit after a shorter gap", async () => {
@@ -591,6 +612,366 @@ test("checkHomeInBun gives a slow check its whole limit after a shorter gap", as
     "started\nfinished\n",
   );
 }, 90_000);
+
+// ── x1gs.3.38: what is judged is what is used ──────────────────────────────
+
+/** `scripts/fixtures/home-check-stand-in.ts` compiled, under the name that picks how it answers. */
+async function homeCheckStandIn(mode: "silent" | "stale"): Promise<string> {
+  const dir = temp("af-guard-stand-in");
+  const program = join(
+    dir,
+    ON_WINDOWS ? `stand-in-${mode}.exe` : `stand-in-${mode}`,
+  );
+  const build = Bun.spawn(
+    [
+      process.execPath,
+      "build",
+      "--compile",
+      join(import.meta.dir, "..", "fixtures", "home-check-stand-in.ts"),
+      "--outfile",
+      program,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [exitCode, stderr] = await Promise.all([
+    build.exited,
+    new Response(build.stderr).text(),
+    new Response(build.stdout).text(),
+  ]);
+  expect({ exitCode, stderr }).toEqual({
+    exitCode: 0,
+    stderr: expect.any(String),
+  });
+  return program;
+}
+
+test("checkHomeInBun trusts only the check's own answer: a program in bun's place that exits 0 with nothing, or with an answer to another request, is a refusal", async () => {
+  const own = temp("af-guard-home");
+  const real = process.execPath;
+  const said: Record<string, string | null> = {};
+  for (const mode of ["silent", "stale"] as const) {
+    const program = await homeCheckStandIn(mode);
+    // What the stand-in prints, so that a refusal below is for what it said.
+    const printed = Bun.spawnSync([program]).stdout.toString();
+    expect({ mode, printed }).toEqual({
+      mode,
+      printed:
+        mode === "stale"
+          ? `agent-forge home-guard: trusted ${"0".repeat(32)}\nnone\n`
+          : "",
+    });
+    process.execPath = program;
+    try {
+      said[mode] = checkHomeInBun(own, undefined).problem;
+    } finally {
+      process.execPath = real;
+    }
+  }
+  for (const mode of ["silent", "stale"])
+    expect({ mode, said: said[mode] }).toEqual({
+      mode,
+      said: `The hearth home ${own} could not be checked (the check under bun exited 0 without its answer), so nothing in it is trusted. Use the default home (leave AGENT_FORGE_HOME unset: ~/.agent-forge, in your user profile).`,
+    });
+  // The check itself still answers, and is trusted, with the text of the file it read.
+  expect(checkHomeInBun(own, undefined)).toEqual({ problem: null, text: null });
+  const lock = join(own, "hearth-000000000000.lock");
+  writeFileSync(lock, '{"port":1}\n');
+  expect(checkHomeInBun(own, lock)).toEqual({
+    problem: null,
+    text: '{"port":1}\n',
+  });
+  expect(checkHomeInBun(own, join(own, "missing.lock"))).toEqual({
+    problem: null,
+    text: null,
+  });
+}, 90_000);
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows: a home that is a junction is judged by the folder it leads to: a target others may write is refused, here and under Bun in a child, and requestLaunch sends nothing to a lock in it that is owner-only itself",
+  async () => {
+    const base = temp("af-guard-junction");
+    const target = join(base, "target");
+    mkdirSync(target);
+    openToOthers(target, true);
+    const home = join(base, "home");
+    symlinkSync(target, home, "junction");
+    // The premise: the junction's own ACL, which reading its path returns, lets nobody else write.
+    expect(
+      windowsWriteFinding(
+        nativeWindowsAcl().read(home),
+        "directory",
+        whoamiSid(),
+      ),
+    ).toBeNull();
+    const root = checkout();
+    const listener = await standIn(process.pid, root);
+    // Planted in the target (Bun's recursive mkdir does not pass through a junction).
+    plant(target, root, listener.port);
+    // A lock that is owner-only itself, in a target others may write.
+    makeOwnerOnly(lockPath(target, root), "file");
+    expect(existsSync(lockPath(home, root))).toBe(true);
+
+    const problem = homeWriteProblem(home);
+    expect(problem).toStartWith(
+      `The hearth home ${home} leads to ${realpathSync.native(target)}, which can be written by others: ${WHO_WRITES}`,
+    );
+    expect(problem).toContain(
+      `icacls "${realpathSync.native(target)}" /inheritance:r`,
+    );
+    expect(checkHomeInBun(home, undefined).problem).toBe(problem);
+
+    let refused = "";
+    try {
+      await requestLaunch({
+        home,
+        root,
+        port: listener.port,
+        token: FABRICATED_TOKEN,
+      });
+    } catch (error) {
+      refused = (error as Error).message;
+    }
+    expect(operatorHeadersSent(listener)).toEqual([]);
+    expect(refused).toStartWith(
+      `Refusing to send the operator token: The hearth home ${home} leads to`,
+    );
+  },
+  30_000,
+);
+
+test("requestLaunch sends the token only to the port the lock in the home names: another port, or no lock at all, is refused and sent nothing", async () => {
+  const home = temp("af-guard-home");
+  const root = checkout();
+  const named = await standIn(process.pid, root);
+  const other = await standIn(process.pid, root);
+
+  const refusals: string[] = [];
+  for (const planted of [false, true]) {
+    if (planted) plant(home, root, named.port);
+    try {
+      await requestLaunch({
+        home,
+        root,
+        port: other.port,
+        token: FABRICATED_TOKEN,
+      });
+      refusals.push("sent");
+    } catch (error) {
+      refusals.push((error as Error).message);
+    }
+  }
+  expect(operatorHeadersSent(other)).toEqual([]);
+  expect(refusals).toEqual([
+    `Refusing to send the operator token: there is no lock file of a hearth for ${resolve(root)} in ${home} (${lockPath(home, root)})`,
+    `Refusing to send the operator token: the lock file ${lockPath(home, root)} names port ${named.port}, not ${other.port}`,
+  ]);
+  // The port it names is sent the token.
+  await requestLaunch({
+    home,
+    root,
+    port: named.port,
+    token: FABRICATED_TOKEN,
+  });
+  expect(operatorHeadersSent(named)).toEqual([FABRICATED_TOKEN]);
+});
+
+test("the lock is judged by what was read through the handle it was read with (Windows rules, handed in): a lock its path calls owner-only, read through a handle that says others may write it, is refused", () => {
+  const home = temp("af-guard-fake");
+  const lock = join(home, "hearth-000000000000.lock");
+  writeFileSync(lock, "{}");
+  const acl: WindowsAcl = {
+    ...readings({
+      [home]: reading(OWNER_ONLY),
+      // A second look at the path, as a swapped-back folder would show it.
+      [lock]: reading(OWNER_ONLY),
+    }),
+    readInFolder: (folder, name) => ({
+      folder: reading(OWNER_ONLY),
+      file:
+        name === null
+          ? null
+          : {
+              reading: reading([
+                ...OWNER_ONLY,
+                entry("S-1-5-21-9-9-9-1002", MODIFY, { flags: 0x10 }),
+              ]),
+              bytes: new TextEncoder().encode(`{"read":"${folder}"}`),
+            },
+    }),
+  };
+  expect(homeWriteProblem(home, lock, { platform: "win32", acl })).toBe(
+    `The lock file ${lock} in the hearth home can be written by others: S-1-5-21-9-9-9-1002 may FILE_WRITE_DATA, FILE_APPEND_DATA, DELETE (inherited). Anyone who can write it can point a client at a port of their own and be sent the operator token. Delete it (a hearth writes it again when it starts): del "${lock}".`,
+  );
+});
+
+test("a folder above the home swapped while dashboard:open reads the lock and back before the token is sent: the lock it read is the one judged, and its port is sent nothing", async () => {
+  const base = temp("af-guard-swap");
+  const home = join(base, "home");
+  const saved = join(base, "saved");
+  const theirs = join(base, "theirs");
+  const root = checkout();
+  // The real home: this user's own, with the token and a lock naming the hearth.
+  mkdirSync(home);
+  const hearthPort = 1;
+  plant(home, root, hearthPort);
+  // Theirs: a lock naming their port, in a file others may write (as one they made would be).
+  mkdirSync(theirs);
+  const theirPort = 2;
+  plant(theirs, root, theirPort);
+  openToOthers(lockPath(theirs, root), false);
+
+  const sent: Array<{ port: number; target: string; token?: string }> = [];
+  let swappedBack = false;
+  const exchange: Exchange = async (request) => {
+    const token = request.headers[OPERATOR_HEADER];
+    sent.push({
+      port: request.port,
+      target: request.target,
+      ...(token === undefined ? {} : { token }),
+    });
+    if (request.target === HEALTH_ROUTE) {
+      // Theirs answers its health check, and the real home is put back.
+      if (!swappedBack) {
+        renameSync(home, theirs);
+        renameSync(saved, home);
+        swappedBack = true;
+      }
+      return {
+        status: 200,
+        body: JSON.stringify({
+          ok: true,
+          data: { pid: process.pid, root },
+          error: null,
+        }),
+      };
+    }
+    return {
+      status: 200,
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          secret: "1".repeat(64),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        error: null,
+      }),
+    };
+  };
+
+  renameSync(home, saved);
+  renameSync(theirs, home);
+  let opened = "";
+  try {
+    opened = await freshLaunchLink({
+      home,
+      root,
+      url: "http://127.0.0.1:4321/",
+      exchange,
+    });
+  } catch (error) {
+    expect(error).toBeInstanceOf(NoLaunchLink);
+    opened = (error as Error).message;
+  }
+  expect(sent.filter((request) => request.token !== undefined)).toEqual([]);
+  expect(opened).toStartWith(
+    `The lock file ${lockPath(home, root)} in the hearth home can be written by others`,
+  );
+});
+
+test("the supervisor writes back only the lock it checked: a folder above the home swapped in while it asks the hearth's health is never given a lock of this user's naming their port", async () => {
+  const base = temp("af-guard-swap");
+  const home = join(base, "home");
+  const saved = join(base, "saved");
+  const theirs = join(base, "theirs");
+  const root = checkout();
+  mkdirSync(home);
+  mkdirSync(theirs);
+  // The hearth: answers its health as the lock names it, and while it is
+  // asked, their folder is put in the home's place.
+  let swapped = false;
+  const server = createServer((req, res) => {
+    req.resume();
+    if (req.url === HEALTH_ROUTE && !swapped) {
+      renameSync(home, saved);
+      renameSync(theirs, home);
+      swapped = true;
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        ok: true,
+        data: { pid: process.pid, root },
+        error: null,
+      }),
+    );
+  });
+  servers.push(server);
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const hearthPort = (server.address() as AddressInfo).port;
+  plant(home, root, hearthPort);
+  const theirPort = hearthPort === 2 ? 3 : 2;
+  plant(theirs, root, theirPort);
+
+  const port = await createSupervisor({ root, home, id: "swap-test" }).ensure();
+  expect(swapped).toBe(true);
+  expect(port).toBe(hearthPort);
+  // Every lock this supervisor wrote (marked with its id), wherever its path led.
+  const written = [lockPath(home, root), lockPath(saved, root)]
+    .map((file) => readLock(file))
+    .filter((lock) => lock?.supervisor === "swap-test")
+    .map((lock) => lock?.port);
+  expect(written.filter((written) => written !== hearthPort)).toEqual([]);
+});
+
+test("the hearth's sessions are read with the check: a sessions file in a folder swapped in above the home is no session, and a new session is not stored over it", () => {
+  const base = temp("af-guard-swap");
+  const home = join(base, "home");
+  const saved = join(base, "saved");
+  const theirs = join(base, "theirs");
+  mkdirSync(home);
+  mkdirSync(join(theirs, "tokens"), { recursive: true });
+  // Theirs: a session whose cookie and key they made, in a file others may write.
+  const value = "a".repeat(64);
+  const key = "b".repeat(64);
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const planted = sessionsPath(theirs, "/r");
+  writeFileSync(
+    planted,
+    JSON.stringify({
+      version: 2,
+      sessions: [
+        {
+          hash: sha(value),
+          keyHash: sha(key),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ],
+    }),
+  );
+  openToOthers(planted, false);
+  // The store's clock is read just before each read of the file: their folder goes in then.
+  const now = (): number => {
+    if (existsSync(theirs)) {
+      renameSync(home, saved);
+      renameSync(theirs, home);
+    }
+    return Date.now();
+  };
+  const store = createSessionStore(sessionsPath(home, "/r"), { now });
+  const valid = store.valid([value], [key]);
+  let created = "";
+  try {
+    store.create();
+    created = "a session was stored";
+  } catch (error) {
+    created = (error as Error).message;
+  }
+  const refusal = `The file ${sessionsPath(home, "/r")} in the hearth home can be written by others`;
+  expect({
+    valid,
+    created: created.startsWith(refusal) ? refusal : created,
+  }).toEqual({ valid: false, created: refusal });
+});
 
 // ── A home the hearth creates ──────────────────────────────────────────────
 

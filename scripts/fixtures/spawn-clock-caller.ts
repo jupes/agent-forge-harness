@@ -15,7 +15,9 @@ await Bun.sleep(gapMs);
 if (kind === "home") {
   process.execPath = program;
   try {
-    process.stdout.write(JSON.stringify(checkHomeInBun(cwd, undefined)));
+    process.stdout.write(
+      JSON.stringify(checkHomeInBun(cwd, undefined).problem),
+    );
   } finally {
     process.execPath = real;
   }
