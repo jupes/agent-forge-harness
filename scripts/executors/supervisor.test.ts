@@ -4,6 +4,7 @@ import {
   killAllLive,
   killTree,
   liveChildCount,
+  ownInterrupts,
   STDERR_TAIL_CHARS,
   supervise,
 } from "./supervisor";
@@ -134,6 +135,130 @@ describe("supervise: the harness process ends while it supervises a provider (ru
       });
     },
   );
+});
+
+/**
+ * The stand-in harness, driven a line at a time: `send` writes one line to
+ * its stdin, and `next` reads the next line it prints on stdout.
+ */
+async function drivenParent() {
+  const parent = Bun.spawn([process.execPath, PARENT], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const reader = parent.stdout.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  const next = async (): Promise<Record<string, unknown>> => {
+    while (!text.includes("\n")) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error(`the stand-in printed no more lines: ${text}`);
+      text += decoder.decode(value, { stream: true });
+    }
+    const end = text.indexOf("\n");
+    const line = text.slice(0, end).trim();
+    text = text.slice(end + 1);
+    return JSON.parse(line) as Record<string, unknown>;
+  };
+  const pids = (await next()) as { pid: number; childPid: number };
+  return {
+    parent,
+    pids,
+    next,
+    send(line: string): void {
+      parent.stdin.write(`${line}\n`);
+      parent.stdin.flush();
+    },
+    /** End what a failed test left running. */
+    cleanup(): void {
+      for (const pid of [pids.pid, pids.childPid])
+        if (running(pid)) killTree(pid);
+      if (parent.exitCode === null) parent.kill();
+    },
+  };
+}
+
+describe("supervise: SIGINT and SIGTERM, with and without an interrupt owner (run in a process of its own)", () => {
+  // forge:exec registers no owner: this is its Ctrl-C. The signal is emitted
+  // in the harness (`process.emit`), which on Windows is the only way to run
+  // its handler from a test; a real SIGTERM is checked above, elsewhere.
+  for (const signal of ["SIGINT", "SIGTERM"])
+    test(`with no interrupt owner (forge:exec), ${signal} kills the provider's tree and exits 130 at once`, async () => {
+      const driven = await drivenParent();
+      try {
+        driven.send(signal);
+        expect(await driven.parent.exited).toBe(130);
+        expect(await goneWithin(driven.pids.pid, 3000)).toBe(true);
+        expect(await goneWithin(driven.pids.childPid, 3000)).toBe(true);
+      } finally {
+        driven.cleanup();
+      }
+    });
+
+  test("an owner that answers handled is given the signal, and nothing is killed and nothing exits; once it is released, the next signal kills the tree and exits 130", async () => {
+    const driven = await drivenParent();
+    try {
+      driven.send("own");
+      expect(await driven.next()).toEqual({ done: "own" });
+      driven.send("SIGTERM");
+      expect(await driven.next()).toEqual({ handled: "SIGTERM" });
+      expect(await driven.next()).toEqual({ done: "SIGTERM" });
+      driven.send("SIGINT");
+      expect(await driven.next()).toEqual({ handled: "SIGINT" });
+      expect(await driven.next()).toEqual({ done: "SIGINT" });
+      expect(driven.parent.exitCode).toBeNull();
+      expect(running(driven.pids.pid)).toBe(true);
+      expect(running(driven.pids.childPid)).toBe(true);
+      driven.send("release");
+      expect(await driven.next()).toEqual({ done: "release" });
+      driven.send("SIGINT");
+      expect(await driven.parent.exited).toBe(130);
+      expect(await goneWithin(driven.pids.pid, 3000)).toBe(true);
+      expect(await goneWithin(driven.pids.childPid, 3000)).toBe(true);
+    } finally {
+      driven.cleanup();
+    }
+  });
+
+  test("an owner that answers not handled leaves the signal to the supervisor: the tree is killed and the process exits 130", async () => {
+    const driven = await drivenParent();
+    try {
+      driven.send("decline");
+      expect(await driven.next()).toEqual({ done: "decline" });
+      driven.send("SIGINT");
+      expect(await driven.parent.exited).toBe(130);
+      expect(await goneWithin(driven.pids.pid, 3000)).toBe(true);
+      expect(await goneWithin(driven.pids.childPid, 3000)).toBe(true);
+    } finally {
+      driven.cleanup();
+    }
+  });
+});
+
+describe("ownInterrupts", () => {
+  test("one owner at a time: a second registration is refused until the first is released, and a release is its own owner's only, once", () => {
+    const first = ownInterrupts(() => true);
+    try {
+      expect(() => ownInterrupts(() => true)).toThrow(
+        "an interrupt owner is registered already",
+      );
+    } finally {
+      first();
+    }
+    const second = ownInterrupts(() => true);
+    try {
+      // The first owner's release, again: it must not drop the second.
+      first();
+      expect(() => ownInterrupts(() => true)).toThrow(
+        "an interrupt owner is registered already",
+      );
+    } finally {
+      second();
+    }
+    // Released: a new owner can register, and is released at once.
+    ownInterrupts(() => true)();
+  });
 });
 
 describe("supervise", () => {
