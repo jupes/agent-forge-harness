@@ -38,9 +38,48 @@ import {
   SURFACE_HEADER,
   TOKEN_ROUTE,
 } from "../../scripts/hearth/paths";
-import { STATIC_COPY_ERROR, servedStatically } from "./hearth-read";
+import {
+  type HearthReadOptions,
+  readHearth,
+  STATIC_COPY_ERROR,
+  servedStatically,
+} from "./hearth-read";
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** Bound ordinary answers including their bodies; streams retain their caller's lifetime. */
+function boundedFetch(fetchImpl: Fetch, options: HearthReadOptions): Fetch {
+  return (url, init = {}) =>
+    readHearth(
+      url,
+      async (response) => {
+        if (
+          new Headers(init.headers).get("accept") === "text/event-stream" &&
+          response.ok &&
+          response.headers.get("content-type")?.startsWith("text/event-stream")
+        )
+          return response;
+        const body =
+          response.body === null ? null : await response.arrayBuffer();
+        return new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      },
+      {
+        ...options,
+        fetch: (input, bounded) =>
+          fetchImpl(input, {
+            ...init,
+            signal:
+              init.signal && bounded?.signal
+                ? AbortSignal.any([init.signal, bounded.signal])
+                : (bounded?.signal ?? null),
+          }),
+      },
+    );
+}
 
 // ── The session key ─────────────────────────────────────────────────────────
 
@@ -155,7 +194,8 @@ export interface LaunchWindow extends LaunchPage {
   addEventListener(type: "hashchange", listener: () => void): void;
 }
 
-export interface LaunchOptions {
+export interface LaunchOptions
+  extends Pick<HearthReadOptions, "timeoutMs" | "timers"> {
   fetch?: Fetch;
   /** A static copy: the secret is taken out of the address bar and nothing is sent (no hearth is behind it). */
   staticCopy?: boolean;
@@ -225,7 +265,10 @@ export function beginLaunch(
     return Promise.resolve({ state: "none" });
   return exchangeLaunch(
     taken.secret,
-    options.fetch ?? ((input, init) => fetch(input, init)),
+    boundedFetch(
+      options.fetch ?? ((input, init) => fetch(input, init)),
+      options,
+    ),
     options.sessionKeys ?? pageSessionKeys,
   );
 }
@@ -313,7 +356,8 @@ async function fetchToken(
   return token;
 }
 
-export interface OperatorClientOptions {
+export interface OperatorClientOptions
+  extends Pick<HearthReadOptions, "timeoutMs" | "timers"> {
   /** A static copy: no token is asked for and nothing is sent; every request fails as `NotSent`. */
   staticCopy?: boolean;
   /**
@@ -330,6 +374,7 @@ export function createOperatorClient(
   fetchImpl: Fetch = (input, init) => fetch(input, init),
   options: OperatorClientOptions = {},
 ): OperatorClient {
+  fetchImpl = boundedFetch(fetchImpl, options);
   let token: Promise<string> | null = null;
 
   const currentToken = (): Promise<string> => {
