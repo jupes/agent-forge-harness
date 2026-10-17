@@ -58,6 +58,7 @@ The browser suite for the dashboard: `bun run verify:ui` (Playwright, Chromium, 
 
 - CI runs three jobs with `bun run verify:ui -- --shard=1/3` (then `2/3`, `3/3`). Each job starts its own servers and temporary hearth home. Keep `workers: 1`, `fullyParallel: false`, `maxFailures` and `forbidOnly`: sharding splits files between jobs without making tests concurrent inside a job. No spec may depend on state left by another spec file.
 - Before changing shard assignment, compare the test identities from unsharded `--list` with all three shard lists: their union must match exactly, with no duplicates. Run every shard alone once to catch cross-file dependencies. The matrix keeps running other shards after a failure; the aggregate succeeds only when all shards succeed, including when a shard is skipped or cancelled.
+- Verified on 2026-10-17: the default selection has 271 tests, split 96 / 89 / 86 across the three shards; comparing full list identities found zero duplicates and zero missing or extra tests. Recompute these counts when adding specs: file-level sharding can give uneven job durations even when test counts are close.
 
 ## Notes
 
