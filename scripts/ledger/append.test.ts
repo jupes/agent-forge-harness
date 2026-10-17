@@ -641,3 +641,34 @@ describe("an append that finds the ledger busy", () => {
     expect(attempts).toBe(1);
   });
 });
+
+describe("ledger invisible assignment boundary", () => {
+  for (const invisible of ["\u200b", "\u00ad", "\u2060", "\u{e0020}"]) {
+    for (const prefix of ["", `sk-${"Q7a".repeat(10)}`]) {
+      test(`stores no value fragments or secret join IDs (${JSON.stringify(invisible)}, glued=${prefix !== ""})`, () => {
+        const path = tempLedger();
+        const value = "ValueHead_" + "9aZ".repeat(8) + "\ud800\ufeff_ValueTail";
+        const text = `${prefix}OPENAI_API_KEY${invisible}=${value}`;
+        expect(
+          appendEvent(
+            {
+              kind: "verdict.bound",
+              workspace: "w",
+              payload: { verdict: "fail", summary: text },
+              executor: { provider: text, model: text },
+            },
+            { path },
+          ).ok,
+        ).toBe(true);
+        const stored = JSON.stringify(rawRows(path));
+        expect(stored).not.toContain("ValueHead");
+        expect(stored).not.toContain("ValueTail");
+        expect(stored).toContain("[REDACTED:");
+        expect(appendEvent({ ...toolCall, runId: text }, { path }).ok).toBe(
+          false,
+        );
+        expect(rawRows(path)).toHaveLength(1);
+      });
+    }
+  }
+});
