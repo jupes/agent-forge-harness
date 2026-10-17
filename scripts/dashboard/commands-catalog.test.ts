@@ -252,16 +252,6 @@ describe("parseSkillFile", () => {
     });
   });
 
-  test("a skill in a file not named SKILL.md is marked not loaded: Claude Code reads only SKILL.md", () => {
-    const text = "---\nname: ui-shot\ndescription: Takes shots.\n---\n";
-    expect(parseSkillFile("ui-shot/ui-shot.md", text)).toEqual({
-      ok: true,
-      entry: { name: "ui-shot", summary: "Takes shots.", notLoaded: true },
-    });
-    const loaded = parseSkillFile("ui-shot/SKILL.md", text);
-    expect(loaded.ok && "notLoaded" in loaded.entry).toBe(false);
-  });
-
   test("reads a description folded over several lines", () => {
     expect(
       parseSkillFile(
@@ -333,29 +323,29 @@ describe("skillsFromDir", () => {
   const skill = (name: string) =>
     `---\nname: ${name}\ndescription: Does ${name}. Use when asked.\n---\n`;
 
-  test("lists each folder's skill by name, reading <folder>.md where a folder has no SKILL.md, and skips plain files", () => {
+  test("lists each folder's SKILL.md by name and skips plain files", () => {
     const root = scratchRoot();
     write(root, "zoom-out/SKILL.md", skill("zoom-out"));
     write(root, "alpha/SKILL.md", skill("alpha"));
-    write(root, "ui-shot/ui-shot.md", skill("ui-shot"));
+    write(root, "ui-shot/SKILL.md", skill("ui-shot"));
     write(root, "ATTRIBUTION.md", "Credits.\n");
     expect(skillsFromDir(root)).toEqual({
       entries: [
         { name: "alpha", summary: "Does alpha." },
-        { name: "ui-shot", summary: "Does ui-shot.", notLoaded: true },
+        { name: "ui-shot", summary: "Does ui-shot." },
         { name: "zoom-out", summary: "Does zoom-out." },
       ],
       errors: [],
     });
   });
 
-  test("a folder with neither SKILL.md nor <folder>.md is an error that names it; the others are still listed", () => {
+  test("a folder without SKILL.md is an error even when it has <folder>.md; the others are still listed", () => {
     const root = scratchRoot();
     write(root, "alpha/SKILL.md", skill("alpha"));
-    write(root, "empty/notes.txt", "nothing\n");
+    write(root, "empty/empty.md", skill("empty"));
     expect(skillsFromDir(root)).toEqual({
       entries: [{ name: "alpha", summary: "Does alpha." }],
-      errors: ["empty: the folder has neither SKILL.md nor empty.md"],
+      errors: ["empty: the folder has no SKILL.md"],
     });
   });
 

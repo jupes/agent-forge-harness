@@ -9,8 +9,8 @@
  * heading is `# /<name> — <description>`, `<name>` being the file's own name.
  * A skill's frontmatter holds `name` (the folder's name) and `description`; the
  * row shows the description without its "Use when ..." trigger text, cut to
- * `SUMMARY_LIMIT` characters (see `summarizeDescription`), and is marked
- * `notLoaded` when the file is not named `SKILL.md`.
+ * `SUMMARY_LIMIT` characters (see `summarizeDescription`). A skill folder with
+ * no `SKILL.md` is an error.
  *
  * The rows are written to `docs/js/generated/commands.ts` and
  * `docs/js/generated/skills.ts`, which the page imports, so the page needs no
@@ -46,8 +46,6 @@ export interface SkillEntry {
   name: string;
   /** The description without its trigger text, cut to `SUMMARY_LIMIT`. */
   summary: string;
-  /** Set only when the skill's file is not named `SKILL.md`, the one file Claude Code loads. */
-  notLoaded?: true;
 }
 
 /** The generated modules, relative to the harness root. */
@@ -225,17 +223,12 @@ export function parseSkillFile(file: string, text: string): Parsed<SkillEntry> {
     entry: {
       name,
       summary: summarizeDescription(description),
-      ...(file.split("/")[1] === "SKILL.md"
-        ? {}
-        : { notLoaded: true as const }),
     },
   };
 }
 
 /**
- * Every folder under `dir`, by skill name. A skill is the folder's `SKILL.md`,
- * or `<folder>.md` where it has none (`scripts/sync-codex.ts` aliases that file
- * to `SKILL.md` for Codex).
+ * Every folder under `dir`, by skill name. A skill is the folder's `SKILL.md`.
  */
 export function skillsFromDir(dir: string): {
   entries: SkillEntry[];
@@ -248,13 +241,9 @@ export function skillsFromDir(dir: string): {
     .map((entry) => entry.name)
     .sort();
   for (const folder of folders) {
-    const file = ["SKILL.md", `${folder}.md`].find((candidate) =>
-      existsSync(join(dir, folder, candidate)),
-    );
-    if (file === undefined) {
-      errors.push(
-        `${folder}: the folder has neither SKILL.md nor ${folder}.md`,
-      );
+    const file = "SKILL.md";
+    if (!existsSync(join(dir, folder, file))) {
+      errors.push(`${folder}: the folder has no SKILL.md`);
       continue;
     }
     const parsed = parseSkillFile(
@@ -363,7 +352,6 @@ export function renderSkillsModule(entries: readonly SkillEntry[]): string {
     entries.map((entry) => [
       ["name", entry.name],
       ["summary", entry.summary],
-      ...(entry.notLoaded ? ([["notLoaded", true]] as const) : []),
     ]),
   );
 }
