@@ -1103,8 +1103,16 @@ describe("forge:shift — the base, the draft pull request and the worklog comme
       `worklog: shift ${h.shiftId} ended this bead after 2 runs: halted. Every run failed; the bead was halted, and the operator's queue action is the way out.`,
     );
 
-    const released = rig([queued("t-1")], () => "hang");
-    const rel = await shift(released, { forMs: 400 });
+    // Stopped once its run has started, not by a short `forMs`: a 400 ms
+    // shift could run out before the run began on a loaded runner (pkcg).
+    const stopReleased = new AbortController();
+    const released = rig([queued("t-1")], () => "hang", {
+      signal: stopReleased.signal,
+    });
+    const releasing = shift(released);
+    await until(() => released.fake.runs.length === 1);
+    stopReleased.abort("operator");
+    const rel = await releasing;
     expect(released.comments("t-1").at(-1)).toBe(
       `worklog: shift ${rel.shiftId} ended this bead after 1 run: released. The shift stopped its run (its time ran out, or it was asked to stop) and put the bead back in queued.`,
     );
