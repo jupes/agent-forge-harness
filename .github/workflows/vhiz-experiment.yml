@@ -1,0 +1,29 @@
+name: vhiz experiment (temporary)
+on:
+  push:
+    branches: [claude/vhiz-isolation-flake]
+permissions:
+  contents: read
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/vhiz-experiment.ts sweep
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/vhiz-experiment.ts rerun
+        env:
+          VHIZ_ROUNDS: "8"
