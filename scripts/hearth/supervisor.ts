@@ -70,6 +70,8 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
   const file = lockPath(options.home, root);
   const timeout = options.startTimeoutMs ?? 20_000;
   let preferredPort: number | undefined;
+  /** The lock this supervisor attached to, as it was read with the check. */
+  let attached: HearthLock | null = null;
   let inflight: Promise<number> | null = null;
 
   /**
@@ -97,7 +99,9 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
       resolve(current.root) === root &&
       (await isHealthy(current))
     ) {
-      updateLock(file, { supervisor: options.id });
+      // The lock checked above, never one read again by the path (`updateLock`).
+      updateLock(file, current, { supervisor: options.id });
+      attached = current;
       preferredPort = current.port;
       return current.port;
     }
@@ -139,7 +143,8 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
         // the lock read as it is checked is that same lock.
         const lock = trustedLock();
         if (lock !== null && sameLock(lock, seen)) {
-          updateLock(file, { supervisor: options.id });
+          updateLock(file, lock, { supervisor: options.id });
+          attached = lock;
           preferredPort = lock.port;
           return lock.port;
         }
@@ -152,11 +157,15 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
   return {
     ensure() {
       // Fast path once attached: a cheap pid check per request, no HTTP probe.
-      const attached = readLock(file);
+      // Only while the lock at the path is still the one checked at attach,
+      // and that hearth's own pid is alive: a lock put there since, naming
+      // this port and some other live pid, cannot hide that the hearth ended
+      // and let another program take its port (`x1gs.3.38`).
       if (
         preferredPort !== undefined &&
-        attached?.port === preferredPort &&
-        resolve(attached.root) === root &&
+        attached !== null &&
+        attached.port === preferredPort &&
+        sameLock(readLock(file), attached) &&
         isPidAlive(attached.pid)
       ) {
         return Promise.resolve(preferredPort);

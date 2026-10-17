@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -29,7 +30,7 @@ import {
   type WindowsAcl,
 } from "./acl-windows";
 import { freshLaunchLink, NoLaunchLink } from "./dashboard-open";
-import { lockPath, tokenPath } from "./home";
+import { lockPath, sessionsPath, tokenPath } from "./home";
 import {
   ADMINISTRATORS_SID,
   checkHomeInBun,
@@ -38,8 +39,8 @@ import {
   posixWriteFinding,
   windowsWriteFinding,
 } from "./home-guard";
-import { requestLaunch } from "./launch";
-import type { HearthLock } from "./lock";
+import { createSessionStore, requestLaunch } from "./launch";
+import { type HearthLock, readLock } from "./lock";
 import type { Exchange } from "./loopback";
 import { createHearthMcpServer } from "./mcp";
 import { HEALTH_ROUTE, OPERATOR_HEADER } from "./paths";
@@ -875,6 +876,101 @@ test("a folder above the home swapped while dashboard:open reads the lock and ba
   expect(opened).toStartWith(
     `The lock file ${lockPath(home, root)} in the hearth home can be written by others`,
   );
+});
+
+test("the supervisor writes back only the lock it checked: a folder above the home swapped in while it asks the hearth's health is never given a lock of this user's naming their port", async () => {
+  const base = temp("af-guard-swap");
+  const home = join(base, "home");
+  const saved = join(base, "saved");
+  const theirs = join(base, "theirs");
+  const root = checkout();
+  mkdirSync(home);
+  mkdirSync(theirs);
+  // The hearth: answers its health as the lock names it, and while it is
+  // asked, their folder is put in the home's place.
+  let swapped = false;
+  const server = createServer((req, res) => {
+    req.resume();
+    if (req.url === HEALTH_ROUTE && !swapped) {
+      renameSync(home, saved);
+      renameSync(theirs, home);
+      swapped = true;
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        ok: true,
+        data: { pid: process.pid, root },
+        error: null,
+      }),
+    );
+  });
+  servers.push(server);
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const hearthPort = (server.address() as AddressInfo).port;
+  plant(home, root, hearthPort);
+  const theirPort = hearthPort === 2 ? 3 : 2;
+  plant(theirs, root, theirPort);
+
+  const port = await createSupervisor({ root, home, id: "swap-test" }).ensure();
+  expect(swapped).toBe(true);
+  expect(port).toBe(hearthPort);
+  // Every lock this supervisor wrote (marked with its id), wherever its path led.
+  const written = [lockPath(home, root), lockPath(saved, root)]
+    .map((file) => readLock(file))
+    .filter((lock) => lock?.supervisor === "swap-test")
+    .map((lock) => lock?.port);
+  expect(written.filter((written) => written !== hearthPort)).toEqual([]);
+});
+
+test("the hearth's sessions are read with the check: a sessions file in a folder swapped in above the home is no session, and a new session is not stored over it", () => {
+  const base = temp("af-guard-swap");
+  const home = join(base, "home");
+  const saved = join(base, "saved");
+  const theirs = join(base, "theirs");
+  mkdirSync(home);
+  mkdirSync(join(theirs, "tokens"), { recursive: true });
+  // Theirs: a session whose cookie and key they made, in a file others may write.
+  const value = "a".repeat(64);
+  const key = "b".repeat(64);
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const planted = sessionsPath(theirs, "/r");
+  writeFileSync(
+    planted,
+    JSON.stringify({
+      version: 2,
+      sessions: [
+        {
+          hash: sha(value),
+          keyHash: sha(key),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ],
+    }),
+  );
+  openToOthers(planted, false);
+  // The store's clock is read just before each read of the file: their folder goes in then.
+  const now = (): number => {
+    if (existsSync(theirs)) {
+      renameSync(home, saved);
+      renameSync(theirs, home);
+    }
+    return Date.now();
+  };
+  const store = createSessionStore(sessionsPath(home, "/r"), { now });
+  const valid = store.valid([value], [key]);
+  let created = "";
+  try {
+    store.create();
+    created = "a session was stored";
+  } catch (error) {
+    created = (error as Error).message;
+  }
+  const refusal = `The file ${sessionsPath(home, "/r")} in the hearth home can be written by others`;
+  expect({
+    valid,
+    created: created.startsWith(refusal) ? refusal : created,
+  }).toEqual({ valid: false, created: refusal });
 });
 
 // ── A home the hearth creates ──────────────────────────────────────────────
