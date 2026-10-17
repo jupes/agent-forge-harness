@@ -21,6 +21,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  OWNED_LOCK_MS,
+  processStarted,
   readComments,
   readState,
   type StandInState,
@@ -57,7 +59,7 @@ async function exitedPid(): Promise<number> {
 /** Leave a lock in `dir` as a holder that never released it would. */
 function plantLock(
   dir: string,
-  owner?: { pid: number; at: number; token: string },
+  owner?: { pid: number; at: number; token: string; started?: string },
 ): string {
   const lock = join(dir, "state.lock");
   mkdirSync(lock);
@@ -203,6 +205,8 @@ describe("withStateLock", () => {
       );
       expect(owner.pid).toBe(breaker.child.pid);
       expect(owner.token).toBeString();
+      // The real process's start, so a later process given its pid is told apart.
+      expect(owner.started).toBe(processStarted(breaker.child.pid));
       breaker.child.kill("SIGKILL");
       await breaker.child.exited;
       const survivors = Array.from({ length: 8 }, (_, i) =>
@@ -293,7 +297,110 @@ describe("withStateLock", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  test("an old live holder is never age-broken; only an old lock with no owner is", () => {
+  // Where no start can be read (macOS) the age bound decides instead (the
+  // OWNED_LOCK_MS test below); Linux and Windows read one (processStarted test).
+  test.skipIf(processStarted(process.pid) === undefined)(
+    "a lock whose pid now names a different process (the holder died and its pid was reused) is broken at once",
+    () => {
+      const dir = scratch();
+      // This test's own process is running, but it is not the process that
+      // started at the recorded time: as a killed holder's pid handed on.
+      const reused = {
+        pid: process.pid,
+        at: Date.now(),
+        token: "reused",
+        started: "0",
+      };
+      plantLock(dir, reused);
+      const started = Date.now();
+      expect(withStateLock(dir, () => "entered", { waitMs: 3_000 })).toBe(
+        "entered",
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(readdirSync(dir)).toEqual([]);
+    },
+  );
+
+  test.skipIf(processStarted(process.pid) === undefined)(
+    "a live holder whose recorded start matches its process is not age-broken, however old its lock",
+    () => {
+      const dir = scratch();
+      const live = {
+        pid: process.pid,
+        at: Date.now() - 2 * OWNED_LOCK_MS,
+        token: "live-old",
+        started: processStarted(process.pid) ?? "unread",
+      };
+      const lock = plantLock(dir, live);
+      expect(() =>
+        withStateLock(dir, () => "never", { waitMs: 300, staleMs: 1 }),
+      ).toThrow("timed out waiting for stand-in state lock");
+      expect(JSON.parse(readFileSync(ownerPath(lock, live), "utf8"))).toEqual(
+        live,
+      );
+    },
+  );
+
+  test("a running pid whose start cannot be compared is trusted for OWNED_LOCK_MS, then broken", () => {
+    // As a holder under Node on Windows records it: no start time.
+    const fresh = { pid: process.pid, at: Date.now() - 60_000, token: "fresh" };
+    const kept = scratch();
+    const lock = plantLock(kept, fresh);
+    expect(() => withStateLock(kept, () => "never", { waitMs: 300 })).toThrow(
+      "timed out waiting for stand-in state lock",
+    );
+    expect(JSON.parse(readFileSync(ownerPath(lock, fresh), "utf8"))).toEqual(
+      fresh,
+    );
+
+    const old = scratch();
+    plantLock(old, {
+      pid: process.pid,
+      at: Date.now() - OWNED_LOCK_MS - 1_000,
+      token: "old",
+    });
+    expect(withStateLock(old, () => "entered", { waitMs: 3_000 })).toBe(
+      "entered",
+    );
+    expect(readdirSync(old)).toEqual([]);
+  });
+
+  test("a lock in the earlier format (one owner.json) left by a dead holder is broken and removed", async () => {
+    const dir = scratch();
+    const lock = join(dir, "state.lock");
+    mkdirSync(lock);
+    writeFileSync(
+      join(lock, "owner.json"),
+      JSON.stringify({ pid: await exitedPid(), at: Date.now(), token: "old" }),
+    );
+    expect(withStateLock(dir, () => "entered", { waitMs: 3_000 })).toBe(
+      "entered",
+    );
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test("processStarted reads one start for a process on Linux and Windows, the same each time, and another for a different process", async () => {
+    const own = processStarted(process.pid);
+    if (process.platform === "linux" || process.platform === "win32")
+      expect(own).toBeString();
+    if (own === undefined) return;
+    expect(processStarted(process.pid)).toBe(own);
+    const child = Bun.spawn([process.execPath, "-e", "await Bun.sleep(5000)"], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const other = processStarted(child.pid);
+      expect(other).toBeString();
+      expect(other).not.toBe(own);
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  });
+
+  test("an owned lock is not broken by staleMs; only an old lock with no owner is", () => {
     const old = { pid: process.pid, at: Date.now() - 5_000, token: "old" };
     const dir = scratch();
     const held = plantLock(dir, old);

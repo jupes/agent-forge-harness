@@ -11,6 +11,7 @@
  * read/modify/write transaction so simultaneous writers cannot lose updates.
  */
 
+import type * as BunFfi from "bun:ffi";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -52,15 +53,30 @@ const errorCode = (error: unknown): string =>
   String((error as { code?: unknown } | null)?.code ?? "");
 
 /**
- * Ownerless legacy locks may be recovered after this long. A named live
- * process is never age-broken: a paused holder may still finish its work.
+ * An ownerless lock may be recovered after this long. A lock names its holder
+ * and is judged by that holder's process instead (`holderGone`).
  */
 export const STALE_LOCK_MS = 30_000;
+
+/**
+ * How old an owned lock must be before it is broken although a process with
+ * its pid runs, used only when that process's start time cannot be compared
+ * with the one the holder recorded: under Node on Windows (Playwright's
+ * workers), on macOS, or when the OS will not say. Then a holder killed
+ * mid-transaction whose pid Windows hands to another process would otherwise
+ * wedge the lock for the rest of the run. A real transaction reads and
+ * replaces two small files, a few seconds at most even with every retry spent,
+ * so five minutes breaks only a holder that is paused, never one at work; the
+ * cost is that a holder stopped for longer (a debugger) can lose its lock.
+ * Where the start times compare (Linux, and Bun on Windows: the stand-in
+ * itself and the unit tests) a live holder is never age-broken.
+ */
+export const OWNED_LOCK_MS = 5 * 60_000;
 
 export interface LockOptions {
   /** How long to wait for the lock before giving up. */
   waitMs?: number;
-  /** How old an ownerless legacy lock must be before it is broken. */
+  /** How old an ownerless lock must be before it is broken. */
   staleMs?: number;
   /** Make the lock's directory; tests replace it to make it fail. */
   mkdir?: (path: string) => void;
@@ -78,21 +94,48 @@ interface LockOwner {
   at: number;
   /** This holding of the lock: a release removes the lock only while it is still this one. */
   token: string;
+  /**
+   * When the holder's process started, as `processStarted` read it: compared
+   * with the start of whatever process has the pid now, so a pid handed to a
+   * later process is not taken for the holder. Absent where it cannot be read.
+   */
+  started?: string;
 }
 
-const ownerFile = (lock: string, owner: LockOwner): string =>
-  join(lock, `owner-${owner.pid}-${owner.token}.json`);
+/** The owner witness of one holding: unique, so only one remover can unlink it. */
+const ownerName = (owner: LockOwner): string =>
+  `owner-${owner.pid}-${owner.token}.json`;
 
-function readOwner(lock: string): LockOwner | undefined {
+/**
+ * The owner file before the witnesses were named by holding. Each browser run
+ * makes a fresh home (`HEARTH_HOME` in `servers.ts`), so a lock in this format
+ * meets this code only in a home reused across versions (`AGENT_FORGE_E2E_HOME`
+ * set by hand). It is read and removed like a witness so such a lock is judged
+ * by its holder and cannot wedge removal with `ENOTEMPTY`.
+ */
+const LEGACY_OWNER = "owner.json";
+
+/** A lock's owner, and the name of the file inside the lock that holds it. */
+interface Holding {
+  owner: LockOwner;
+  file: string;
+}
+
+function readOwner(lock: string): Holding | undefined {
   try {
-    const file = readdirSync(lock).find((name) => name.startsWith("owner-"));
+    const file = readdirSync(lock).find(
+      (name) => name.startsWith("owner-") || name === LEGACY_OWNER,
+    );
     if (!file) return undefined;
-    return JSON.parse(
+    const owner = JSON.parse(
       withRetries(() => readFileSync(join(lock, file), "utf8")),
     ) as LockOwner;
+    return { owner, file };
   } catch {
-    // None yet (taken a moment ago, or by a holder that died before writing
-    // it), or half written: the lock's own age decides.
+    // Gone, or emptied by a remover between listing and reading: the lock's
+    // own age decides. A lock is published with its witness already inside,
+    // so an ownerless one is a breaker whose remover was killed after the
+    // unlink, or a legacy lock taken by a holder that died before writing it.
     return undefined;
   }
 }
@@ -107,38 +150,145 @@ function running(pid: number): boolean {
   }
 }
 
-/** Whether the lock was left by a holder that died; false when it is gone. */
-function stale(lock: string, staleMs: number): boolean {
-  const owner = readOwner(lock);
-  let since: number;
-  if (owner !== undefined) since = owner.at;
-  else {
+/** `PROCESS_QUERY_LIMITED_INFORMATION`: enough for `GetProcessTimes`. */
+const QUERY_LIMITED = 0x1000;
+
+/** kernel32's process-time calls; kernel32 is a known DLL, loaded from System32. */
+function openKernel32(ffi: typeof BunFfi) {
+  const { dlopen, FFIType } = ffi;
+  const { symbols } = dlopen("kernel32.dll", {
+    OpenProcess: {
+      args: [FFIType.u32, FFIType.i32, FFIType.u32],
+      returns: FFIType.ptr,
+    },
+    GetProcessTimes: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 },
+  });
+  return { api: symbols, ptr: ffi.ptr };
+}
+
+let kernel32: ReturnType<typeof openKernel32> | null | undefined;
+
+/**
+ * kernel32 through `bun:ffi`, loaded once; null under Node, where `bun:ffi`
+ * is not found. Looked up rather than imported, as
+ * `scripts/hearth/acl-windows.ts` does: Playwright loads this module under
+ * Node, and importing a `bun:` module there fails as the module loads.
+ */
+function processTimes(): ReturnType<typeof openKernel32> | null {
+  if (kernel32 !== undefined) return kernel32;
+  kernel32 = null;
+  const ffi =
+    typeof process.getBuiltinModule === "function"
+      ? (process.getBuiltinModule("bun:ffi") as object | undefined)
+      : undefined;
+  if (ffi === undefined || !("dlopen" in ffi)) return kernel32;
+  try {
+    // The runtime's own `bun:ffi`, checked above: the lookup's type cannot name it.
+    kernel32 = openKernel32(ffi as typeof BunFfi);
+  } catch {
+    kernel32 = null;
+  }
+  return kernel32;
+}
+
+/**
+ * When process `pid` started, as an opaque string only compared for equality
+ * with another reading; undefined when it cannot be read (no such process, a
+ * process the OS will not open for us, or a platform with no cheap source).
+ * A process that has exited while another still holds a handle to it (or an
+ * unreaped zombie on Linux) keeps its start: `running` is what says it ended.
+ *
+ * - Linux: field 22 of `/proc/<pid>/stat`, the start in clock ticks after
+ *   boot. The command name before it is in parentheses and may hold spaces,
+ *   so the fields are counted from the last `)`.
+ * - Windows under Bun: the creation `FILETIME` from `GetProcessTimes`, through
+ *   `bun:ffi`. A few microseconds; no child process.
+ * - Windows under Node, and macOS: undefined. Spawning `wmic`, PowerShell or
+ *   `ps` per judgement costs tens to hundreds of milliseconds a poll.
+ */
+export function processStarted(pid: number): string | undefined {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === "linux") {
     try {
-      since = statSync(lock).mtimeMs;
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fields = stat
+        .slice(stat.lastIndexOf(")") + 1)
+        .trim()
+        .split(/\s+/);
+      // fields[0] is field 3 (state), so field 22 (starttime) is fields[19].
+      const ticks = fields[19];
+      return ticks !== undefined && /^\d+$/.test(ticks) ? ticks : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
-  return owner === undefined
-    ? Date.now() - since > staleMs
-    : !running(owner.pid);
+  if (process.platform !== "win32") return undefined;
+  const windows = processTimes();
+  if (windows === null) return undefined;
+  const handle = windows.api.OpenProcess(QUERY_LIMITED, 0, pid);
+  if (handle === null) return undefined;
+  try {
+    // Creation, exit, kernel and user time: four FILETIMEs.
+    const times = new BigUint64Array(4);
+    const read = windows.api.GetProcessTimes(
+      handle,
+      windows.ptr(times, 0),
+      windows.ptr(times, 8),
+      windows.ptr(times, 16),
+      windows.ptr(times, 24),
+    );
+    return read !== 0 && times[0] !== 0n ? String(times[0]) : undefined;
+  } finally {
+    windows.api.CloseHandle(handle);
+  }
+}
+
+/**
+ * Whether the process that wrote `owner` is gone: no process has its pid, or
+ * the one that has it started at a different time than the holder recorded
+ * (the holder died and the pid was handed on). When the start times cannot
+ * be compared, a running pid is trusted for `OWNED_LOCK_MS` from the taking.
+ */
+function holderGone(owner: LockOwner): boolean {
+  if (!running(owner.pid)) return true;
+  const now =
+    owner.started === undefined ? undefined : processStarted(owner.pid);
+  if (now !== undefined) return now !== owner.started;
+  return Date.now() - owner.at > OWNED_LOCK_MS;
+}
+
+/** Whether the lock was left by a holder that died; false when it is gone. */
+function stale(lock: string, staleMs: number): boolean {
+  const held = readOwner(lock);
+  if (held !== undefined) return holderGone(held.owner);
+  try {
+    return Date.now() - statSync(lock).mtimeMs > staleMs;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Unlink only this holding's unique witness, then remove only an empty
  * directory. A delayed remover cannot empty or remove a fresh publication.
+ * `witness` is the owner file's name inside `lock`; undefined for a lock
+ * judged ownerless.
  */
 function removeLock(
   lock: string,
-  owner: LockOwner | undefined,
+  witness: string | undefined,
   step?: LockOptions["step"],
 ): void {
   try {
-    if (owner) {
+    if (witness !== undefined) {
       step?.("remove-owner", lock);
       // Only one remover can unlink this holding's unique witness. A loser
       // must not go on to remove a different holding's owner or directory.
-      withRetries(() => unlinkSync(ownerFile(lock, owner)));
+      withRetries(() => unlinkSync(join(lock, witness)));
     }
     step?.("remove-empty", lock);
     withRetries(() => rmdirSync(lock));
@@ -146,6 +296,17 @@ function removeLock(
     if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(error)))
       throw error;
   }
+}
+
+/** This process's start, read once: null until then. */
+let ownStart: string | undefined | null = null;
+
+/** An owner record for a holding by this process, with its start when it can be read. */
+function holding(token: string): LockOwner {
+  if (ownStart === null) ownStart = processStarted(process.pid);
+  const owner: LockOwner = { pid: process.pid, at: Date.now(), token };
+  if (ownStart !== undefined) owner.started = ownStart;
+  return owner;
 }
 
 /** Publish a nonempty directory in one step, so stale rmdir cannot delete a fresh holder. */
@@ -157,17 +318,24 @@ function publish(
   const candidate = `${lock}.candidate-${owner.token}`;
   try {
     mkdir(candidate);
+    // Stamped as it is written: a waiter may have waited before this attempt.
+    const taken: LockOwner = { ...owner, at: Date.now() };
     withRetries(() =>
-      writeFileSync(ownerFile(candidate, owner), JSON.stringify(owner)),
+      writeFileSync(join(candidate, ownerName(owner)), JSON.stringify(taken)),
     );
-    // POSIX rename can replace an empty directory. Respect the age of legacy
+    // POSIX rename can replace an empty directory. Respect the age of
     // ownerless locks too; competing new publications are always nonempty.
     if (existsSync(lock))
       throw Object.assign(new Error("lock held"), { code: "EEXIST" });
     renameSync(candidate, lock);
   } finally {
-    // Canonical locks are never recursively removed. A process killed before
-    // publication can leave this harmless sibling for run-home cleanup.
+    // Canonical locks are never recursively removed; only this attempt's own
+    // candidate is. A process killed between making the candidate and this
+    // line leaves a `<lock>.candidate-<token>` directory beside the lock.
+    // It is harmless: no one reads it (owners are read only inside the lock
+    // itself), its name is unique so no later attempt collides with it, and
+    // it lives in the run's home, which teardown removes with everything in
+    // it (`global-teardown.ts`; `sweepFinishedRunHomes` for a run that died).
     rmSync(candidate, { recursive: true, force: true, maxRetries: 5 });
   }
 }
@@ -185,11 +353,7 @@ function breakIfStale(
 ): void {
   if (!stale(lock, staleMs)) return;
   const breaker = `${lock}.break`;
-  const owner: LockOwner = {
-    pid: process.pid,
-    at: Date.now(),
-    token: randomUUID(),
-  };
+  const owner = holding(randomUUID());
   try {
     publish(breaker, owner);
   } catch (error) {
@@ -198,16 +362,16 @@ function breakIfStale(
     const held = readOwner(breaker);
     // An empty breaker can be a remover killed after unlink. Fresh breakers
     // are published nonempty, so rmdir is safe without an age wait.
-    if (!held || !running(held.pid)) removeLock(breaker, held, step);
+    if (!held || holderGone(held.owner)) removeLock(breaker, held?.file, step);
     return;
   }
   try {
     step?.("break-owned", breaker);
     const held = readOwner(lock);
-    if (held ? !running(held.pid) : stale(lock, staleMs))
-      removeLock(lock, held, step);
+    if (held ? holderGone(held.owner) : stale(lock, staleMs))
+      removeLock(lock, held?.file, step);
   } finally {
-    removeLock(breaker, owner, step);
+    removeLock(breaker, ownerName(owner), step);
   }
 }
 
@@ -220,7 +384,8 @@ function breakIfStale(
  * `EACCES`) while the last holder's directory is still being removed, so a
  * waiter waits on those as well. A holder killed before its `finally` runs
  * leaves the lock behind; the owner it wrote inside lets a waiter break it
- * once the holder's process is gone. Age recovers only ownerless legacy locks.
+ * once the holder's process is gone, or once its pid names a process that
+ * started later (`holderGone`). Age alone recovers an ownerless lock.
  */
 export function withStateLock<T>(
   dir: string,
@@ -233,8 +398,7 @@ export function withStateLock<T>(
   }: LockOptions = {},
 ): T {
   const lock = join(dir, "state.lock");
-  const token = `${process.pid}-${randomUUID()}`;
-  const owner: LockOwner = { pid: process.pid, at: Date.now(), token };
+  const owner = holding(`${process.pid}-${randomUUID()}`);
   const deadline = Date.now() + waitMs;
   for (;;) {
     try {
@@ -254,7 +418,7 @@ export function withStateLock<T>(
     return work();
   } finally {
     // Not ours to remove when a waiter broke it as stale and another took it.
-    removeLock(lock, owner, step);
+    removeLock(lock, ownerName(owner), step);
   }
 }
 
