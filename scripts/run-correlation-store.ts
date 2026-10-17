@@ -19,6 +19,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
@@ -210,13 +211,18 @@ export function initRunCorrelation(input: {
       };
     }
   }
+  const draft = correlationDraftPath(path, process.pid);
   try {
     mkdirSync(dirname(path), { recursive: true });
     // Written beside the target and renamed, so a reader never sees half a file.
-    const draft = correlationDraftPath(path, process.pid);
     writeFileSync(draft, `${JSON.stringify(made.value, null, 2)}\n`);
     renameSync(draft, path);
   } catch (error) {
+    try {
+      unlinkSync(draft);
+    } catch {
+      // Best effort: preserve the original write error if cleanup fails too.
+    }
     return {
       ok: false,
       error: `could not write ${relative}: ${message(error)}`,
