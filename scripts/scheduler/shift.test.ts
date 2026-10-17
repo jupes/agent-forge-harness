@@ -507,10 +507,11 @@ describe("forge:shift — the loop, on a fake adapter", () => {
 
   test("the time cap: at --for every run is stopped, its bead put back in queued and its reservation released, and the shift ends elapsed", async () => {
     // The shift's clock stands still until both runs have started, then
-    // reaches --for: the cap is the shift's own clock, never a race of the
-    // wall clock against the runs' start (on the windows-latest runner a cap
-    // of 1 s ended the shift before either had started, and 3 s is the same
-    // race on a runner slow enough: pkcg).
+    // reaches --for, so the shift's own deadline cannot pass before the runs
+    // start (on the windows-latest runner a cap of 1 s ended the shift before
+    // either had started, and 3 s is the same race on a runner slow enough:
+    // pkcg). Each run is still given 3 s of the wall clock as its timeout; a
+    // run that reaches it is released at the deadline just the same.
     const forMs = 3_000;
     const frozen = Date.now();
     let skew = 0;
@@ -519,7 +520,7 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     });
     const began = Date.now();
     const running = shift(r, { concurrency: 2, forMs });
-    await until(() => r.fake.runs.length === 2);
+    await until(() => r.fake.runs.length === 2, 15_000);
     skew = forMs;
     const done = await running;
     expect(done.reason).toBe("elapsed");
