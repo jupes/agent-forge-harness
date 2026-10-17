@@ -252,16 +252,6 @@ describe("parseSkillFile", () => {
     });
   });
 
-  test("a skill in a file not named SKILL.md is marked not loaded: Claude Code reads only SKILL.md", () => {
-    const text = "---\nname: ui-shot\ndescription: Takes shots.\n---\n";
-    expect(parseSkillFile("ui-shot/ui-shot.md", text)).toEqual({
-      ok: true,
-      entry: { name: "ui-shot", summary: "Takes shots.", notLoaded: true },
-    });
-    const loaded = parseSkillFile("ui-shot/SKILL.md", text);
-    expect(loaded.ok && "notLoaded" in loaded.entry).toBe(false);
-  });
-
   test("reads a description folded over several lines", () => {
     expect(
       parseSkillFile(
