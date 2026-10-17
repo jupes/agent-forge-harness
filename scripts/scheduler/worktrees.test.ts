@@ -64,6 +64,14 @@ const prepared = new Map<boolean, string>();
  *
  * Each call is a copy of one repository made the first time it is asked for,
  * so a test starts no git process to get it. No test is given the original.
+ *
+ * That repository has `maintenance.auto` off (agent-forge-harness-vhiz). A
+ * commit otherwise starts `git maintenance run --auto --detach`, which goes on
+ * after the commit returns and creates and removes `objects/maintenance.lock`.
+ * The copy made straight after can list that file and then fail to open it
+ * (ENOENT). On ubuntu-latest with four copies of this file running at once,
+ * as the isolation re-run in `scripts/ledger/test-isolation.test.ts` runs
+ * them, 31 of 240 runs failed that way; none of 160 with the setting.
  */
 function repo(ignoreTrees = true): string {
   let source = prepared.get(ignoreTrees);
@@ -87,6 +95,7 @@ function makeRepo(ignoreTrees: boolean): string {
   git(dir, "config", "user.email", "test@example.invalid");
   git(dir, "config", "user.name", "worktree test");
   git(dir, "config", "commit.gpgsign", "false");
+  git(dir, "config", "maintenance.auto", "false");
   writeFileSync(
     join(dir, ".gitignore"),
     `${ignoreTrees ? "trees/\n" : ""}.agent-forge-session\n.tmp/\n`,
@@ -204,6 +213,20 @@ describe("parsePorcelainZ", () => {
   });
 });
 
+test("a commit in the repository repo() copies starts no background maintenance, which would write into it while the next copy is made", () => {
+  const dir = repo();
+  writeFileSync(join(dir, "more.txt"), "more\n");
+  git(dir, "add", ".");
+  const traced = spawnSync("git", ["commit", "-q", "-m", "more"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_TRACE: "1" },
+  });
+  expect(traced.status).toBe(0);
+  expect(traced.stderr).toContain("built-in: git commit");
+  expect(traced.stderr).not.toContain("maintenance");
+});
+
 describe("comparablePath", () => {
   test("an 8.3 short path, backslashes and drive case all meet git's spelling; a gone path still compares", () => {
     const dir = repo();
@@ -237,10 +260,16 @@ describe("gitRun", () => {
     "under-test",
   ];
 
+  /**
+   * A gap just past the limit: without the clock reset git is killed at
+   * once, and with it `git --version` has the whole 2 s, room for the
+   * hundreds of ms one git call took in the isolation re-run on the
+   * windows-latest runner (a 500 ms limit left too little; vhiz).
+   */
   test("answers when more than its time limit has passed since the last run, rather than timing out before git could run", async () => {
-    const limitMs = 500;
+    const limitMs = 2_000;
     expect(gitRun(["--version"], tmpdir(), limitMs).status).toBe(0);
-    await Bun.sleep(limitMs * 3);
+    await Bun.sleep(limitMs * 1.1);
     const result = gitRun(["--version"], tmpdir(), limitMs);
     expect({ status: result.status, stdout: result.stdout }).toEqual({
       status: 0,
@@ -262,26 +291,39 @@ describe("gitRun", () => {
     }
   });
 
-  test("gives a command its whole time limit after a gap shorter than half the limit: one that takes two thirds of it finishes", async () => {
+  /**
+   * The command sleeps 4.5 s, more than the 4.1 s the gap leaves without the
+   * clock reset, and 3 s inside the limit for git, its shell and `sleep` to
+   * start. With a 3 s limit and a 2 s sleep that margin was 1 s, and in the
+   * isolation re-run on the 4-thread windows-latest runner, where one git
+   * call took hundreds of ms, the command was stopped at the limit
+   * (agent-forge-harness-vhiz, CI run 38993942691 attempt 2).
+   */
+  test("gives a command its whole time limit after a gap shorter than half the limit: one that needs more than the gap left finishes", async () => {
     const dir = repo();
-    const limitMs = 3_000;
+    const limitMs = 7_500;
     expect(gitRun(["--version"], dir, limitMs).status).toBe(0);
-    // Without the clock reset this run was killed about 1.8 s in.
-    await Bun.sleep(limitMs * 0.4);
-    const result = gitRun(alias("sleep 2 && echo done"), dir, limitMs);
+    // Without the clock reset this run was killed about 4.1 s in.
+    await Bun.sleep(limitMs * 0.45);
+    const result = gitRun(alias("sleep 4.5 && echo done"), dir, limitMs);
     expect({ status: result.status, stdout: result.stdout.trim() }).toEqual({
       status: 0,
       stdout: "done",
     });
   });
 
+  /**
+   * The command needs more than 1 s, more than the 0.8 s the gap leaves
+   * without the clock reset, and leaves 3 s of its 4 s limit for git, its
+   * shell, `echo` and `sleep` to start (with a 3 s limit that was 2 s; vhiz).
+   */
   test("runs a command that changes something exactly once, after a gap that left too little of the limit", async () => {
     const dir = repo();
-    const limitMs = 3_000;
+    const limitMs = 4_000;
     expect(gitRun(["--version"], dir, limitMs).status).toBe(0);
-    // Without the clock reset this run was killed about 0.75 s in, after its
+    // Without the clock reset this run was killed about 0.8 s in, after its
     // write: a run that was then repeated wrote twice.
-    await Bun.sleep(limitMs * 0.75);
+    await Bun.sleep(limitMs * 0.8);
     const result = gitRun(
       alias("echo ran >> marker.txt && sleep 1"),
       dir,
