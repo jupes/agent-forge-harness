@@ -6,7 +6,15 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,7 +40,30 @@ afterAll(() => {
 const sharing = (code: string) =>
   Object.assign(new Error(`${code}: busy`), { code });
 
-describe("withRetries", () => {
+/** A pid that was a process's and is no longer: one that has exited. */
+async function exitedPid(): Promise<number> {
+  const child = Bun.spawn([process.execPath, "-e", ""], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  await child.exited;
+  return child.pid;
+}
+
+/** Leave a lock in `dir` as a holder that never released it would. */
+function plantLock(
+  dir: string,
+  owner?: { pid: number; at: number; token: string },
+): string {
+  const lock = join(dir, "state.lock");
+  mkdirSync(lock);
+  if (owner !== undefined)
+    writeFileSync(join(lock, "owner.json"), JSON.stringify(owner));
+  return lock;
+}
+
+describe("withStateLock", () => {
   test("the state lock is released when a transaction throws", () => {
     const dir = scratch();
     expect(() =>
@@ -44,6 +75,153 @@ describe("withRetries", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  test("a sharing error from making the lock is waited out, as a held lock is, and any other error is thrown at once", () => {
+    const dir = scratch();
+    const codes = ["EPERM", "EACCES", "EBUSY"];
+    let calls = 0;
+    const value = withStateLock(dir, () => "entered", {
+      mkdir: (path) => {
+        const code = codes[calls++];
+        if (code !== undefined) throw sharing(code);
+        mkdirSync(path);
+      },
+    });
+    expect({ value, calls }).toEqual({ value: "entered", calls: 4 });
+    expect(readdirSync(dir)).toEqual([]);
+
+    expect(() =>
+      withStateLock(dir, () => "never", {
+        mkdir: () => {
+          throw sharing("ENOENT");
+        },
+      }),
+    ).toThrow("ENOENT");
+    expect(() =>
+      withStateLock(dir, () => "never", {
+        waitMs: 100,
+        mkdir: () => {
+          throw sharing("EPERM");
+        },
+      }),
+    ).toThrow("timed out waiting for stand-in state lock");
+  });
+
+  test("a lock left by a holder whose process has exited is broken at once, and the transaction runs", async () => {
+    const dir = scratch();
+    plantLock(dir, { pid: await exitedPid(), at: Date.now(), token: "dead" });
+    const started = Date.now();
+    expect(withStateLock(dir, () => "entered", { waitMs: 3_000 })).toBe(
+      "entered",
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test("a lock older than the stale bound is broken although its holder's process runs, and so is an old lock with no owner written", () => {
+    const old = { pid: process.pid, at: Date.now() - 5_000, token: "old" };
+    const dir = scratch();
+    plantLock(dir, old);
+    expect(
+      withStateLock(dir, () => "entered", { waitMs: 3_000, staleMs: 1_000 }),
+    ).toBe("entered");
+    expect(readdirSync(dir)).toEqual([]);
+
+    const ownerless = scratch();
+    const lock = plantLock(ownerless);
+    const then = new Date(Date.now() - 5_000);
+    utimesSync(lock, then, then);
+    expect(
+      withStateLock(ownerless, () => "entered", {
+        waitMs: 3_000,
+        staleMs: 1_000,
+      }),
+    ).toBe("entered");
+    expect(readdirSync(ownerless)).toEqual([]);
+  });
+
+  test("a fresh lock of a running process is not broken: the waiter times out and the lock is left as it was", () => {
+    const dir = scratch();
+    const live = { pid: process.pid, at: Date.now(), token: "live" };
+    const lock = plantLock(dir, live);
+    expect(() => withStateLock(dir, () => "never", { waitMs: 300 })).toThrow(
+      "timed out waiting for stand-in state lock",
+    );
+    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(
+      live,
+    );
+  });
+
+  test("a holder whose lock was broken and taken by another does not remove the other's lock", () => {
+    const dir = scratch();
+    const other = { pid: process.pid, at: Date.now(), token: "other" };
+    withStateLock(dir, () => {
+      writeFileSync(
+        join(dir, "state.lock", "owner.json"),
+        JSON.stringify(other),
+      );
+    });
+    expect(
+      JSON.parse(readFileSync(join(dir, "state.lock", "owner.json"), "utf8")),
+    ).toEqual(other);
+  });
+
+  test("processes that all find one stale lock break it once between them: no two are ever inside together and no write is lost", async () => {
+    const dir = scratch();
+    const work = scratch();
+    plantLock(dir, { pid: await exitedPid(), at: Date.now(), token: "dead" });
+    const worker = join(work, "worker.ts");
+    // Each transaction makes a marker only one process can make, so a second
+    // process inside the lock at the same time is counted.
+    writeFileSync(
+      worker,
+      `import { closeSync, openSync, rmSync, writeFileSync } from "node:fs";
+       import { join } from "node:path";
+       import { readState, withStateLock, writeState } from ${JSON.stringify(
+         join(
+           import.meta.dir,
+           "..",
+           "..",
+           "tests",
+           "e2e",
+           "bd-stand-in-state.ts",
+         ),
+       )};
+       const dir = process.argv[2];
+       let overlaps = 0;
+       for (let i = 0; i < 20; i++)
+         withStateLock(dir, () => {
+           let marker;
+           try { marker = openSync(join(dir, "inside"), "wx"); } catch { overlaps++; }
+           const count = Number(readState(dir)["c"]?.title ?? "0") + 1;
+           writeState(dir, { c: { id: "c", title: String(count), issue_type: "task", priority: 2, status: "open", created_at: "", updated_at: "" } });
+           if (marker !== undefined) { closeSync(marker); rmSync(join(dir, "inside")); }
+         }, { waitMs: 20_000 });
+       console.log(JSON.stringify({ overlaps }));`,
+    );
+    const children = Array.from({ length: 8 }, () =>
+      Bun.spawn([process.execPath, worker, dir], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    );
+    const results = await Promise.all(
+      children.map(async (child) => {
+        const [code, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        return code === 0 ? JSON.parse(stdout) : { code, stdout, stderr };
+      }),
+    );
+    expect(results).toEqual(Array.from({ length: 8 }, () => ({ overlaps: 0 })));
+    expect(readState(dir)["c"]?.title).toBe(String(8 * 20));
+    expect(readdirSync(dir)).toEqual(["issues.json"]);
+  }, 60_000);
+});
+
+describe("withRetries", () => {
   test("tries again after a sharing error, and answers what the work answers once it succeeds", () => {
     let calls = 0;
     const value = withRetries(
@@ -184,7 +362,23 @@ describe("the stand-in's comments, and its create under a parent", () => {
   test("concurrent adds and creates wait for the state lock and preserve every write", async () => {
     const dir = scratch();
     writeState(dir, { "e2e-1": issue("e2e-1") });
-    const children: ReturnType<typeof Bun.spawn>[] = [];
+    const spawnStandIn = (args: string[]) =>
+      Bun.spawn([process.execPath, STAND_IN, ...args], {
+        env: { ...process.env, BD_STAND_IN_STATE: dir },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    const children: ReturnType<typeof spawnStandIn>[] = [];
+    /** 0 for a child that succeeded; what it printed, for one that did not. */
+    const outcome = async (child: ReturnType<typeof spawnStandIn>) => {
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return code === 0 ? 0 : { code, stdout, stderr };
+    };
     try {
       withStateLock(dir, () => {
         for (const args of [
@@ -192,24 +386,16 @@ describe("the stand-in's comments, and its create under a parent", () => {
           ["comments", "add", "--json", "--", "e2e-1", "second"],
           ["create", "--title=first", "--type=task", "--priority=2", "--json"],
           ["create", "--title=second", "--type=task", "--priority=2", "--json"],
-        ]) {
-          children.push(
-            Bun.spawn([process.execPath, STAND_IN, ...args], {
-              env: { ...process.env, BD_STAND_IN_STATE: dir },
-              stdout: "pipe",
-              stderr: "pipe",
-            }),
-          );
-        }
+        ])
+          children.push(spawnStandIn(args));
         // Give all children time to reach the held lock. Without a transaction
         // lock they write immediately, even though the fixture owns the lock.
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
         expect(readState(dir)).toEqual({ "e2e-1": issue("e2e-1") });
         expect(readComments(dir)).toEqual({});
       });
-      expect(await Promise.all(children.map((child) => child.exited))).toEqual([
-        0, 0, 0, 0,
-      ]);
+      // A child that failed shows its exit code and what it printed.
+      expect(await Promise.all(children.map(outcome))).toEqual([0, 0, 0, 0]);
       expect(
         readComments(dir)
           ["e2e-1"]?.map((comment) => comment.text)
