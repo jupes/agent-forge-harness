@@ -14,6 +14,7 @@ import {
   readState,
   type StandInState,
   withRetries,
+  withStateLock,
   writeState,
 } from "../../tests/e2e/bd-stand-in-state";
 
@@ -32,6 +33,17 @@ const sharing = (code: string) =>
   Object.assign(new Error(`${code}: busy`), { code });
 
 describe("withRetries", () => {
+  test("the state lock is released when a transaction throws", () => {
+    const dir = scratch();
+    expect(() =>
+      withStateLock(dir, () => {
+        throw new Error("write failed");
+      }),
+    ).toThrow("write failed");
+    expect(withStateLock(dir, () => "next writer")).toBe("next writer");
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   test("tries again after a sharing error, and answers what the work answers once it succeeds", () => {
     let calls = 0;
     const value = withRetries(
@@ -168,6 +180,56 @@ describe("the stand-in's comments, and its create under a parent", () => {
     created_at: "2026-10-12T00:00:00Z",
     updated_at: "2026-10-12T00:00:00Z",
   });
+
+  test("concurrent adds and creates wait for the state lock and preserve every write", async () => {
+    const dir = scratch();
+    writeState(dir, { "e2e-1": issue("e2e-1") });
+    const children: ReturnType<typeof Bun.spawn>[] = [];
+    try {
+      withStateLock(dir, () => {
+        for (const args of [
+          ["comments", "add", "--json", "--", "e2e-1", "first"],
+          ["comments", "add", "--json", "--", "e2e-1", "second"],
+          ["create", "--title=first", "--type=task", "--priority=2", "--json"],
+          ["create", "--title=second", "--type=task", "--priority=2", "--json"],
+        ]) {
+          children.push(
+            Bun.spawn([process.execPath, STAND_IN, ...args], {
+              env: { ...process.env, BD_STAND_IN_STATE: dir },
+              stdout: "pipe",
+              stderr: "pipe",
+            }),
+          );
+        }
+        // Give all children time to reach the held lock. Without a transaction
+        // lock they write immediately, even though the fixture owns the lock.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+        expect(readState(dir)).toEqual({ "e2e-1": issue("e2e-1") });
+        expect(readComments(dir)).toEqual({});
+      });
+      expect(await Promise.all(children.map((child) => child.exited))).toEqual([
+        0, 0, 0, 0,
+      ]);
+      expect(
+        readComments(dir)
+          ["e2e-1"]?.map((comment) => comment.text)
+          .sort(),
+      ).toEqual(["first", "second"]);
+      expect(
+        Object.values(readState(dir))
+          .map((value) => value.title)
+          .sort(),
+      ).toEqual(["e2e-1", "first", "second"]);
+      expect(readdirSync(dir).sort()).toEqual([
+        "calls.jsonl",
+        "comments.json",
+        "issues.json",
+      ]);
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.all(children.map((child) => child.exited));
+    }
+  }, 15_000);
 
   test("what `comments add` writes is printed back by the comments read, oldest first and as bd prints it; an issue with none prints none, and the issues are left as they were", () => {
     const dir = scratch();

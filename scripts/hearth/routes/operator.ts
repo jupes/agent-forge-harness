@@ -151,6 +151,8 @@ function councilStart(request: RouteRequest): ValidationResult<CouncilStart> {
         } as const)
       : councilRunId(body["runId"]);
   if (!runId.ok) return runId;
+  if (/^(PASS|FAIL|UNREADABLE)$/i.test(runId.value))
+    return fail("runId must not be a council outcome word");
   return { ok: true, value: { ...input, runId: runId.value } };
 }
 

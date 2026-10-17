@@ -14,7 +14,7 @@ import type {
   OperatorEnvelope,
   SmithsView,
 } from "../../types/hearth";
-import { readState, writeState } from "./bd-stand-in-state";
+import { readState, withStateLock, writeState } from "./bd-stand-in-state";
 import { openSettled, reloadSettled } from "./fixtures";
 import { collectErrors } from "./routes";
 import { BD_STAND_IN_STATE } from "./servers";
@@ -37,18 +37,20 @@ function seedQueue(
   labels: string[],
   metadata?: Record<string, string>,
 ): void {
-  const issues = readState(BD_STAND_IN_STATE);
-  const issue = issues[id];
-  if (issue === undefined)
-    throw new Error(`the stand-in has no issue ${id} to label`);
-  issues[id] = {
-    ...issue,
-    labels: [...(issue.labels ?? []), ...labels],
-    ...(metadata !== undefined
-      ? { metadata: { ...(issue.metadata ?? {}), ...metadata } }
-      : {}),
-  };
-  writeState(BD_STAND_IN_STATE, issues);
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const issues = readState(BD_STAND_IN_STATE);
+    const issue = issues[id];
+    if (issue === undefined)
+      throw new Error(`the stand-in has no issue ${id} to label`);
+    issues[id] = {
+      ...issue,
+      labels: [...(issue.labels ?? []), ...labels],
+      ...(metadata !== undefined
+        ? { metadata: { ...(issue.metadata ?? {}), ...metadata } }
+        : {}),
+    };
+    writeState(BD_STAND_IN_STATE, issues);
+  });
 }
 
 /** The queue actions recorded for a bead, as `operator.action` rows name them. */

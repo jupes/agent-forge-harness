@@ -7,12 +7,16 @@
  * process has open fails now and then with `EPERM`, `EBUSY` or `EACCES`
  * (measured: most renames fail while a reader loops), so each read and each
  * replace is tried again, a bounded number of times, before it fails.
+ * Stand-in commands and fixture helpers hold `withStateLock` across the whole
+ * read/modify/write transaction so simultaneous writers cannot lose updates.
  */
 
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -37,6 +41,28 @@ export interface RetryOptions {
 const pause = (ms: number): void => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
+
+/** Serialize a whole read/modify/write transaction across stand-in processes. */
+export function withStateLock<T>(dir: string, work: () => T): T {
+  const lock = join(dir, "state.lock");
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline)
+        throw new Error(`timed out waiting for stand-in state lock: ${lock}`);
+      pause(25);
+    }
+  }
+  try {
+    return work();
+  } finally {
+    withRetries(() => rmdirSync(lock));
+  }
+}
 
 /**
  * Run `work`, again after a short wait while it fails with a sharing error,
@@ -99,7 +125,7 @@ export function readState(dir: string, options?: RetryOptions): StandInState {
   return readJson<StandInState>(stateFile(dir), {}, options);
 }
 
-/** Replace the stand-in's issues whole. */
+/** Replace the stand-in's issues whole; hold withStateLock when modifying existing state. */
 export function writeState(
   dir: string,
   state: StandInState,
@@ -116,7 +142,7 @@ export function readComments(
   return readJson<StandInComments>(commentsFile(dir), {}, options);
 }
 
-/** Replace the stand-in's comments whole. */
+/** Replace the stand-in's comments whole; hold withStateLock when modifying existing state. */
 export function writeComments(
   dir: string,
   comments: StandInComments,

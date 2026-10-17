@@ -211,6 +211,28 @@ describe("the verdict comment", () => {
 });
 
 describe("a council run the hearth started on a bead", () => {
+  test("start refuses outcome words as run ids in any case before starting a run", async () => {
+    const h = await start();
+    for (const runId of [
+      "PASS",
+      "pass",
+      "PaSs",
+      "FAIL",
+      "fail",
+      "FaIl",
+      "UNREADABLE",
+      "unreadable",
+      "UnReAdAbLe",
+    ]) {
+      const response = await post(h, "/council/runs", {
+        sourceType: "text",
+        source: "Review this text",
+        runId,
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
   test("that completes posts its verdict to the bead once, through the API's bd, after the run's finished event, and records the write as the comment row does", async () => {
     const h = await start();
     h.commands.answer = beadReads(["demo-7"]);
