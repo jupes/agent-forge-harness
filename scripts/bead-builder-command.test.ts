@@ -25,7 +25,9 @@ for (const [name, shell] of [
 ]) {
   if (!shell)
     console.warn(
-      `Skipping ${name} argument checks: no shell executed the probe successfully (including installed Git Bash on Windows).`,
+      `Skipping ${name} argument checks: no shell executed the probe successfully${
+        process.platform === "win32" ? " (including installed Git Bash)" : ""
+      }.`,
     );
 }
 

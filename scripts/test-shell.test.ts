@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { findUsableShell } from "./test-shell";
+import { findUsableShell, PROBE_TIMEOUT_MS } from "./test-shell";
 
 describe("usable shell discovery", () => {
   const gitBash = join("installed", "Git", "bin", "bash.exe");
@@ -40,7 +40,8 @@ describe("usable shell discovery", () => {
           probe: (shell) => {
             if (shell === gitBash)
               return { exitCode: 0, stdout: "forge-shell-probe-ok" };
-            if (failure === "timeout") throw new Error("timed out");
+            // A timed-out Bun.spawnSync returns a null exit code and no output; it does not throw.
+            if (failure === "timeout") return { exitCode: null, stdout: "" };
             return {
               exitCode: failure === "nonzero" ? 1 : 0,
               stdout:
@@ -68,4 +69,19 @@ describe("usable shell discovery", () => {
       }),
     ).toBeNull();
   });
+
+  test("the real probe gets its whole time limit after a synchronous spawn that ended longer ago than the limit", () => {
+    // An untimed spawn first, so this baseline does not depend on the clock.
+    Bun.spawnSync([process.execPath, "--version"]);
+    const baseline = findUsableShell("sh");
+    if (!baseline) {
+      console.warn(
+        "Skipping the spawn-clock check: no sh executed the probe on this machine.",
+      );
+      return;
+    }
+    Bun.spawnSync([process.execPath, "--version"]);
+    Bun.sleepSync(PROBE_TIMEOUT_MS + 500);
+    expect(findUsableShell("sh")).toBe(baseline);
+  }, 30_000);
 });

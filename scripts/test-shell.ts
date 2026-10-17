@@ -1,13 +1,21 @@
 import { join } from "node:path";
+import { resetSpawnClock } from "./spawn-clock";
 
 const marker = "forge-shell-probe-ok";
 const script = `printf '%s' '${marker}'\n`;
 
+/**
+ * How long a candidate shell gets to run the probe. A cold WSL launcher took
+ * 1.88 s once, so the limit leaves room well above that.
+ */
+export const PROBE_TIMEOUT_MS = 5_000;
+
+/** A probe that runs out of time reports `exitCode: null`, as `Bun.spawnSync` does. */
 type Probe = (
   shell: string,
   script: string,
 ) => {
-  exitCode: number;
+  exitCode: number | null;
   stdout: string;
 };
 
@@ -35,9 +43,12 @@ export function findUsableShell(
   const probe: Probe =
     options.probe ??
     ((shell, input) => {
+      const stdin = new TextEncoder().encode(input);
+      // Without this, Bun's timed synchronous spawn loses the time since the previous one ended.
+      resetSpawnClock();
       const result = Bun.spawnSync([shell], {
-        stdin: new TextEncoder().encode(input),
-        timeout: 2_000,
+        stdin,
+        timeout: PROBE_TIMEOUT_MS,
       });
       return { exitCode: result.exitCode, stdout: result.stdout.toString() };
     });
@@ -47,7 +58,7 @@ export function findUsableShell(
       const result = probe(candidate, script);
       if (result.exitCode === 0 && result.stdout === marker) return candidate;
     } catch {
-      // Missing executables and timed-out launchers are unavailable candidates.
+      // A candidate that cannot be started is unavailable.
     }
   }
   return null;
