@@ -188,6 +188,8 @@ interface Fixture {
   pushed: unknown[];
   /** How many times the hearth plugin has asked for the hearth's port. */
   ensured: () => number;
+  /** The rebuild plugin's `whenWatching`: settles once `.beads/` is watched. */
+  watching: () => Promise<boolean>;
   /** Close the dev server (cleanup closes it too). */
   close: () => Promise<void>;
 }
@@ -196,6 +198,8 @@ async function fixture(
   options: {
     initialBuild?: boolean;
     beadsDir?: boolean;
+    /** Files written under `.beads/` (made if need be) before the server starts. */
+    beadsFiles?: Record<string, string>;
     timeoutMs?: number;
     waitMs?: number;
     /**
@@ -203,12 +207,19 @@ async function fixture(
      * rebuild as `vite.dashboard.config.ts` wires it.
      */
     hearth?: TestHearth;
+    /**
+     * Runs as the server is configured, right after the rebuild plugin: its
+     * watcher has been started, and has not yet read `.beads/`.
+     */
+    whileArming?: (root: string) => void;
   } = {},
 ): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "af-rebuild-root-"));
   const box = mkdtempSync(join(tmpdir(), "af-rebuild-box-"));
   writeFileSync(join(box, "gate.mjs"), GATE);
-  if (options.beadsDir) mkdirSync(join(root, ".beads"));
+  if (options.beadsDir || options.beadsFiles) mkdirSync(join(root, ".beads"));
+  for (const [name, text] of Object.entries(options.beadsFiles ?? {}))
+    writeFileSync(join(root, ".beads", name), text);
   const pushed: unknown[] = [];
   const rebuildPages = rebuildPagesPlugin({
     root,
@@ -240,6 +251,16 @@ async function fixture(
       recordPushes(pushed),
       pingPlugin(),
       rebuildPages,
+      ...(options.whileArming
+        ? [
+            {
+              name: "while-arming",
+              configureServer() {
+                options.whileArming?.(root);
+              },
+            } satisfies Plugin,
+          ]
+        : []),
       ...(hearth
         ? [
             hearthPlugin(root, {
@@ -280,6 +301,7 @@ async function fixture(
     box,
     pushed,
     ensured: () => ensured,
+    watching: () => rebuildPages.api.whenWatching(),
     close,
   };
 }
@@ -505,7 +527,13 @@ describe("rebuilds the dev server starts on its own", () => {
   }, 15_000);
 
   test("a file change under .beads/ starts a rebuild without blocking the server, and the page is told the snapshot was rebuilt after it, without a full reload", async () => {
-    const { url, root, box, pushed } = await fixture({ beadsDir: true });
+    const { url, root, box, pushed, watching } = await fixture({
+      beadsDir: true,
+    });
+    // Written once the watcher is armed, so the watcher itself must see it:
+    // the check made at arming found nothing to rebuild.
+    expect(await watching()).toBe(true);
+    expect(runs(box)).toEqual([]);
 
     writeFileSync(join(root, ".beads", "issues.jsonl"), "{}\n");
     await waitFor("the rebuild to start", () => runs(box).includes("start"));
@@ -519,6 +547,57 @@ describe("rebuilds the dev server starts on its own", () => {
     );
     expect(reloads(pushed)).toBe(0);
     expect(runs(box)).toEqual(["start", "end"]);
+  }, 15_000);
+
+  test("czqf: a file written under .beads/ while the watcher is being armed, before it has read the directory, still starts one rebuild, and the page is told after it", async () => {
+    const { box, pushed, watching } = await fixture({
+      beadsDir: true,
+      whileArming: (root) =>
+        writeFileSync(join(root, ".beads", "issues.jsonl"), "{}\n"),
+    });
+
+    await waitFor("the rebuild to start", () => runs(box).includes("start"));
+    expect(await watching()).toBe(true);
+
+    release(box);
+    await waitFor(
+      "a snapshot-rebuilt push",
+      () => rebuiltNotices(pushed) === 1,
+    );
+    expect(reloads(pushed)).toBe(0);
+    expect(runs(box)).toEqual(["start", "end"]);
+  }, 15_000);
+
+  test("czqf: a file already under .beads/ that is rewritten while the watcher is being armed starts one rebuild", async () => {
+    const { box, pushed, watching } = await fixture({
+      beadsFiles: { "issues.jsonl": "{}\n" },
+      // Another size, as a tracker write changes the export.
+      whileArming: (root) =>
+        writeFileSync(join(root, ".beads", "issues.jsonl"), "{}\n{}\n"),
+    });
+
+    await waitFor("the rebuild to start", () => runs(box).includes("start"));
+    expect(await watching()).toBe(true);
+
+    release(box);
+    await waitFor(
+      "a snapshot-rebuilt push",
+      () => rebuiltNotices(pushed) === 1,
+    );
+    expect(runs(box)).toEqual(["start", "end"]);
+  }, 15_000);
+
+  test("czqf: a file the watcher ignores, written while it is being armed, starts no rebuild", async () => {
+    const { box, watching } = await fixture({
+      beadsDir: true,
+      whileArming: (root) =>
+        writeFileSync(join(root, ".beads", "last-touched"), "now\n"),
+    });
+
+    expect(await watching()).toBe(true);
+    // Twice the rebuild's own pause.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(runs(box)).toEqual([]);
   }, 15_000);
 
   test("a claim sent through the dashboard's proxy to the hearth starts a rebuild with no .beads/ directory, and the page is told the snapshot was rebuilt after it, without a full reload", async () => {

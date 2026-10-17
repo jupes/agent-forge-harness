@@ -23,7 +23,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import chokidar from "chokidar";
 import type { Plugin } from "vite";
@@ -137,6 +137,98 @@ export interface RebuildPagesApi {
    * debounced with those changes. Does nothing before the dev server has started or after it closed.
    */
   rebuildSoon(): void;
+  /**
+   * Settles once the latest dev server's `.beads/` watcher is armed and has
+   * compared `.beads/` with what it held before arming: true then; false
+   * when there is no `.beads/` to watch, or the server closed first. A
+   * change made after it settles is seen by the watcher itself.
+   */
+  whenWatching(): Promise<boolean>;
+}
+
+/**
+ * Files under `.beads/` that change without a tracker write: the watcher
+ * ignores them, and so does the check made when it is armed.
+ */
+const IGNORED_NAMES = [
+  "dolt-server.log",
+  "dolt-server.pid",
+  "dolt-server.port",
+  ".exclusive-lock",
+  "sync-state.json",
+  "push-state.json",
+  "interactions.jsonl",
+  "last-touched",
+];
+const IGNORED_PREFIX = "bd.sock";
+/** How deep under `.beads/` the watcher and the check look. */
+const WATCH_DEPTH = 10;
+
+const isIgnoredName = (name: string): boolean =>
+  IGNORED_NAMES.includes(name) || name.startsWith(IGNORED_PREFIX);
+
+/**
+ * Each file under `dir` that the watcher would report, with its size and
+ * modification time. Two listings that differ mean a file was added,
+ * removed or rewritten between them. A file rewritten with the same size in
+ * the same clock tick is not told apart.
+ */
+function listWatchedFiles(dir: string): Map<string, string> {
+  const files = new Map<string, string>();
+  const walk = (at: string, depth: number): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(at, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (isIgnoredName(entry.name)) continue;
+      const full = path.join(at, entry.name);
+      if (entry.isDirectory()) {
+        if (depth < WATCH_DEPTH) walk(full, depth + 1);
+        continue;
+      }
+      try {
+        const stats = statSync(full);
+        files.set(full, `${stats.size}:${stats.mtimeMs}`);
+      } catch {
+        // Removed while listed: absent, as it is now.
+      }
+    }
+  };
+  walk(dir, 0);
+  return files;
+}
+
+function sameListing(a: Map<string, string>, b: Map<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [file, stamp] of a) if (b.get(file) !== stamp) return false;
+  return true;
+}
+
+/** One server's `whenWatching` answer, settled once: the first call wins. */
+interface WatchingAnswer {
+  promise: Promise<boolean>;
+  settle(armed: boolean): void;
+  settled(): boolean;
+}
+
+function watchingAnswer(): WatchingAnswer {
+  let settled = false;
+  let resolve: (armed: boolean) => void = () => {};
+  const promise = new Promise<boolean>((done) => {
+    resolve = done;
+  });
+  return {
+    promise,
+    settle(armed) {
+      if (settled) return;
+      settled = true;
+      resolve(armed);
+    },
+    settled: () => settled,
+  };
 }
 
 export function rebuildPagesPlugin(
@@ -150,6 +242,8 @@ export function rebuildPagesPlugin(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   /** Set while the dev server runs. */
   let rebuildSoon: (() => void) | null = null;
+  /** The latest server's `whenWatching` answer. */
+  let watching = watchingAnswer();
 
   return {
     name: "agent-forge-rebuild-pages",
@@ -159,8 +253,14 @@ export function rebuildPagesPlugin(
       rebuildSoon() {
         rebuildSoon?.();
       },
+      whenWatching() {
+        return watching.promise;
+      },
     },
     configureServer(server) {
+      // A restart configures the next server: its answer is a new one.
+      if (watching.settled()) watching = watchingAnswer();
+      const thisWatching = watching;
       const queue = createRebuildQueue(() =>
         runBuild(command, root, timeoutMs),
       );
@@ -245,31 +345,37 @@ export function rebuildPagesPlugin(
         // A restart configures the next server before this one closes.
         if (rebuildSoon === schedule) rebuildSoon = null;
         if (debounce) clearTimeout(debounce);
+        thisWatching.settle(false);
       });
 
       const beadsDir = path.join(root, ".beads");
-      if (!existsSync(beadsDir)) return;
+      if (!existsSync(beadsDir)) {
+        thisWatching.settle(false);
+        return;
+      }
 
+      // The watcher is armed only after it has read the directory: a file
+      // written before then is part of what it starts from (`ignoreInitial`)
+      // or is not seen at all. What `.beads/` held before arming is compared
+      // with what it holds once armed, and a difference is rebuilt (czqf).
+      const before = listWatchedFiles(beadsDir);
       const watcher = chokidar.watch(beadsDir, {
         ignoreInitial: true,
-        depth: 10,
+        depth: WATCH_DEPTH,
         awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
         ignored: [
-          "**/dolt-server.log",
-          "**/dolt-server.pid",
-          "**/dolt-server.port",
-          "**/bd.sock*",
-          "**/.exclusive-lock",
-          "**/sync-state.json",
-          "**/push-state.json",
-          "**/interactions.jsonl",
-          "**/last-touched",
+          ...IGNORED_NAMES.map((name) => `**/${name}`),
+          `**/${IGNORED_PREFIX}*`,
         ],
       });
 
       watcher.on("add", schedule);
       watcher.on("change", schedule);
       watcher.on("unlink", schedule);
+      watcher.once("ready", () => {
+        if (!sameListing(before, listWatchedFiles(beadsDir))) schedule();
+        thisWatching.settle(true);
+      });
 
       server.httpServer?.on("close", () => {
         void watcher.close();
