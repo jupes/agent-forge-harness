@@ -623,7 +623,12 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     with an emitted signal, and has not been run.
 - Tests: `shift.test.ts` drives the loop with the queue fixture (and `answerQueueList` for the list
   shapes), a temp ledger, lock and home, plain directories as worktrees, a git and a gh that record
-  their calls and answer as the test says, and a fake adapter whose runs the test scripts. Its kill
+  their calls and answer as the test says, and a fake adapter whose runs the test scripts. No test
+  ends a shift with a short wall-clock `forMs` that races the shift's own steps (`pkcg`: on the
+  4-thread Windows runner, in the isolation re-run, a step can take hundreds of ms): it stops the
+  shift by its signal once the fake run has started, or moves the shift's clock (`ShiftDeps.now`)
+  once what it waits for has happened (the time cap once both runs have started; a busy host once
+  it was sampled three times). Its kill
   test runs the Claude adapter on the fake binary behind a guard that refuses a spawn without the
   override. `shift-pr.test.ts` runs the base and the pull request step with real git on a scratch
   repository whose origin is a bare repository in the OS temp dir, and the real `pr:check`.

@@ -505,12 +505,22 @@ describe("forge:shift — the loop, on a fake adapter", () => {
   });
 
   test("the time cap: at --for every run is stopped, its bead put back in queued and its reservation released, and the shift ends elapsed", async () => {
-    const r = rig([queued("t-1"), queued("t-2")], () => "hang");
-    // Long enough for both runs to start first: on the windows-latest CI
-    // runner a cap of 1 s ended the shift before either had started.
+    // The shift's clock stands still until both runs have started, then
+    // reaches --for: the cap is the shift's own clock, never a race of the
+    // wall clock against the runs' start (on the windows-latest runner a cap
+    // of 1 s ended the shift before either had started, and 3 s is the same
+    // race on a runner slow enough: pkcg).
     const forMs = 3_000;
+    const frozen = Date.now();
+    let skew = 0;
+    const r = rig([queued("t-1"), queued("t-2")], () => "hang", {
+      now: () => new Date(frozen + skew),
+    });
     const began = Date.now();
-    const done = await shift(r, { concurrency: 2, forMs });
+    const running = shift(r, { concurrency: 2, forMs });
+    await until(() => r.fake.runs.length === 2);
+    skew = forMs;
+    const done = await running;
     expect(done.reason).toBe("elapsed");
     expect(Date.now() - began).toBeLessThan(forMs + 5_000);
     expect(r.fake.runs).toHaveLength(2);
@@ -621,13 +631,23 @@ describe("forge:shift — the loop, on a fake adapter", () => {
   });
 
   test("a busy host admits nothing: the shift waits rather than drain, and ends at its time", async () => {
+    // The shift's clock reaches its time once the host has been found busy
+    // three times, not after 200 ms of the wall clock: on a loaded runner
+    // those could pass before the first sample, and the shift end without
+    // having waited at all (pkcg).
+    const forMs = 60_000;
+    let skew = 0;
+    let samples = 0;
     const r = rig([queued("t-1")], undefined, {
-      sampleHost: async () => ({
-        busy: true,
-        reason: "CPU 99% is at or above 85%",
-      }),
+      now: () => new Date(Date.now() + skew),
+      sampleHost: async () => {
+        samples++;
+        if (samples === 3) skew = forMs;
+        return { busy: true, reason: "CPU 99% is at or above 85%" };
+      },
     });
-    const done = await shift(r, { forMs: 200 });
+    const done = await shift(r, { forMs });
+    expect(samples).toBeGreaterThanOrEqual(3);
     expect(done.reason).toBe("elapsed");
     expect(r.fake.runs).toHaveLength(0);
     expect(r.tracker.updates()).toEqual([]);
