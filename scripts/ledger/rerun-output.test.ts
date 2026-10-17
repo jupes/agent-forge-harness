@@ -166,7 +166,7 @@ describe("failureBlocks", () => {
     "2 | ",
     '3 | test("throws a type error", () => {',
     "6 |   const value = 1;",
-    "7 |   throw new TypeError(`bad type here ${value}`);",
+    '7 |   throw new TypeError("bad type here " + value);',
     "                                                  ^",
     "TypeError: bad type here 1",
     "      at <anonymous> (/home/runner/work/agent-forge-harness/scripts/sample.test.ts:7:47)",

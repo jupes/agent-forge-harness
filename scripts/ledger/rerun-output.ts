@@ -89,7 +89,8 @@ function lastExcerpt(before: readonly string[], from: number): number | null {
  */
 function reportStart(before: readonly string[]): number | null {
   for (let k = before.length - 1; k >= 0; k--)
-    if (ERROR_LINE.test(before[k] ?? "")) return lastExcerpt(before, k - 1) ?? k;
+    if (ERROR_LINE.test(before[k] ?? ""))
+      return lastExcerpt(before, k - 1) ?? k;
   return lastExcerpt(before, before.length - 1);
 }
 
