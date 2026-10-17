@@ -206,6 +206,63 @@ describe("failureBlocks", () => {
     );
   });
 
+  for (const error of ["Refusal: refused", "error"]) {
+    for (const logged of ["error:", "TypeError:", "GitError:", "Error:"]) {
+      test(`${error} after long stderr and ${logged} noise keeps the caret-backed report`, () => {
+        const report = [
+          "8 |   const value = { code: 7 };",
+          "9 |   throw value;",
+          "            ^   ",
+          error,
+          "      at <anonymous> (/tmp/sample.test.ts:9:9)",
+          "(fail) report after error-like noise",
+        ];
+        const output = [`${logged} child process failed`, ...noise, ...report];
+        expect(output.join("\n").length).toBeGreaterThan(4_000);
+        expect(failureBlocks(output.join("\n"))).toBe(
+          ["[cut]", ...report].join("\n"),
+        );
+      });
+    }
+  }
+
+  test("the last caret-backed excerpt wins over an earlier report and excerpt-like diff without a caret", () => {
+    const report = [
+      "10 |   throw value;",
+      "             ^",
+      "Refusal: refused",
+    ];
+    const diff = Array.from(
+      { length: 200 },
+      (_, i) => `  ${i} | looks like an excerpt`,
+    );
+    const block = failureBlocks(
+      [...excerpt, ...noise, ...report, ...diff, "(fail) last report"].join(
+        "\n",
+      ),
+    );
+    expect(block.startsWith(`[cut]\n${report.join("\n")}\n${diff[0]}`)).toBe(
+      true,
+    );
+    expect(block.endsWith("[cut]\n(fail) last report")).toBe(true);
+    expect(block.length).toBeLessThan(4_200);
+  });
+
+  for (const error of ["TypeError: bad type", "error: failed"]) {
+    test(`without a caret-backed excerpt, ${error} is kept without excerpt-like noise`, () => {
+      const report = [error, "      at <anonymous> (/tmp/sample.test.ts:9:9)"];
+      const block = failureBlocks(
+        [
+          ...noise,
+          "9 | logged diff, not source",
+          ...report,
+          "(fail) no excerpt",
+        ].join("\n"),
+      );
+      expect(block).toBe(["[cut]", ...report, "(fail) no excerpt"].join("\n"));
+    });
+  }
+
   test("a timeout note is kept once, with its own test, not again with the next failure", () => {
     const output = [
       "(fail) a > slow [101.00ms]",
