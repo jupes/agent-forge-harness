@@ -202,10 +202,6 @@ function credentialForm(value: string): {
 
 const TOKEN_STOP = /[\s"'?,;&#{}[\]<>:=]/;
 const FRAGMENT_BREAK = /[\t\r\n\u2028\u2029"']/;
-function startsRecord(text: string, end: number): boolean {
-  while (/["' \t]/.test(text[end] ?? "")) end++;
-  return text[end] === ":" || text[end] === "=";
-}
 /** Space and structural punctuation end a value. Quotes/newlines join token
  * fragments only until a new assignment/record (name followed by : or =).
  * Thus an ambiguous bare word on the next line is conservatively concealed.
@@ -218,7 +214,9 @@ function credentialEnd(text: string, start: number): number {
     while (FRAGMENT_BREAK.test(text[next] ?? "")) next++;
     let end = next;
     while (end < text.length && !TOKEN_STOP.test(text[end] ?? "")) end++;
-    if (end === next || startsRecord(text, end)) break;
+    let sign = end;
+    while (text[sign] === " " || text[sign] === "\t") sign++;
+    if (end === next || text[sign] === ":" || text[sign] === "=") break;
     at = end;
   }
   return at;
@@ -231,30 +229,32 @@ function contextualSpans(
   const form = credentialForm(text),
     value = form.text;
   const label = bearer
-    ? new RegExp(
-        [..."authorization"].join("[\\t\\r\\n]*") +
-          `[\\t\\r\\n ]*["']?[\\t\\r\\n ]*:[\\t\\r\\n ]*["']?` +
-          [..."bearer"].join("[\\t\\r\\n]*") +
-          "[\\t\\r\\n ]+",
-        "gi",
-      )
+    ? /authorization[\t\r\n ]*["']?[\t\r\n ]*:[\t\r\n ]*["']?bearer[\t\r\n ]+/gi
     : /a[\t\r\n]*p[\t\r\n]*i[\t\r\n]*_[\t\r\n]*k[\t\r\n]*e[\t\r\n]*y/gi;
   const spans: Array<[number, number]> = [];
   for (let match = label.exec(value); match; match = label.exec(value)) {
     let start = match.index,
       at = label.lastIndex;
+    let nextRecord = false;
     if (!bearer) {
       if (value[at] === '"' || value[at] === "'") at++;
       const beforeSpace = at;
       while (/\s/.test(value[at] ?? "")) at++;
       if (value[at] === ":" || value[at] === "=") {
         at++;
+        const afterSign = at;
         while (/\s/.test(value[at] ?? "")) at++;
+        nextRecord = /[\r\n\u2028\u2029]/.test(value.slice(afterSign, at));
       } else if (at === beforeSpace) continue;
+      else nextRecord = true;
       if (value[at] === '"' || value[at] === "'") at++;
     }
     const end = credentialEnd(value, at);
-    if (end === at || startsRecord(value, end)) continue;
+    if (
+      end === at ||
+      (nextRecord && (value[end] === ":" || value[end] === "="))
+    )
+      continue;
     if (!bearer)
       while (start > 0 && /[a-z0-9_]/i.test(value[start - 1] ?? "")) start--;
     spans.push([form.from?.[start] ?? start, form.to?.[end - 1] ?? end]);
@@ -700,16 +700,12 @@ function secretsInAnyForm(value: string): {
           end: (joined.origin[span.end - 1] ?? span.end - 1) + 1,
         }));
   const others = [...seen, ...whole];
-  // Each list is ordered and nonoverlapping: sweep written coverage once per
-  // additional form rather than rescanning every written span for every hit.
-  const othersAddMore = [seen, whole].some((spans) => {
-    let at = 0;
-    return spans.some((span) => {
-      while ((written[at]?.end ?? Infinity) <= span.start) at++;
-      const cover = written[at];
-      return !cover || cover.start > span.start || cover.end < span.end;
-    });
-  });
+  const othersAddMore = others.some(
+    (span) =>
+      !written.some(
+        (cover) => cover.start <= span.start && span.end <= cover.end,
+      ),
+  );
   const found = [...written, ...others].sort(
     (a, b) => a.start - b.start || b.end - a.end,
   );
