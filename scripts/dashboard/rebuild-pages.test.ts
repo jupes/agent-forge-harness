@@ -25,12 +25,15 @@ import { SNAPSHOT_REBUILT_EVENT } from "./snapshot-events";
  * waits until the test writes `release` (or gives up after `waitMs` and exits
  * 1), then logs "end". A build that blocks the dev server's thread can never
  * be released, because the test that would release it runs on that thread.
+ * Given a third argument, it writes that file as it starts and again just
+ * before it ends: a build whose own bd call rewrote `.beads/last-touched`.
  */
 const GATE = `
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const [box, waitMs] = process.argv.slice(2);
+const [box, waitMs, touch] = process.argv.slice(2);
 appendFileSync(join(box, "runs.log"), "start\\n");
+if (touch) writeFileSync(touch, "build start\\n");
 const deadline = Date.now() + Number(waitMs);
 while (!existsSync(join(box, "release"))) {
   if (Date.now() > deadline) {
@@ -39,6 +42,7 @@ while (!existsSync(join(box, "release"))) {
   }
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
+if (touch) writeFileSync(touch, "build end\\n");
 appendFileSync(join(box, "runs.log"), "end\\n");
 console.log("gate: built");
 `;
@@ -212,6 +216,8 @@ async function fixture(
      * watcher has been started, and has not yet read `.beads/`.
      */
     whileArming?: (root: string) => void;
+    /** The stand-in build rewrites `.beads/last-touched` as it runs. */
+    buildTouchesLastTouched?: boolean;
   } = {},
 ): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "af-rebuild-root-"));
@@ -225,7 +231,14 @@ async function fixture(
     root,
     command: {
       file: process.execPath,
-      args: [join(box, "gate.mjs"), box, String(options.waitMs ?? 3000)],
+      args: [
+        join(box, "gate.mjs"),
+        box,
+        String(options.waitMs ?? 3000),
+        ...(options.buildTouchesLastTouched
+          ? [join(root, ".beads", "last-touched")]
+          : []),
+      ],
     },
     initialBuild: options.initialBuild ?? false,
     ...(options.timeoutMs !== undefined
@@ -587,17 +600,76 @@ describe("rebuilds the dev server starts on its own", () => {
     expect(runs(box)).toEqual(["start", "end"]);
   }, 15_000);
 
-  test("czqf: a file the watcher ignores, written while it is being armed, starts no rebuild", async () => {
+  test("czqf: the check made at arming skips the noise files: the Dolt server's log, written while the watcher is being armed, starts no rebuild", async () => {
     const { box, watching } = await fixture({
       beadsDir: true,
       whileArming: (root) =>
-        writeFileSync(join(root, ".beads", "last-touched"), "now\n"),
+        writeFileSync(join(root, ".beads", "dolt-server.log"), "started\n"),
     });
 
     expect(await watching()).toBe(true);
     // Twice the rebuild's own pause.
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(runs(box)).toEqual([]);
+  }, 15_000);
+
+  test("czqf: once the watcher is armed, the noise files (the Dolt server's log, the bd socket, a lock, bd's interactions log, anything under dolt/ or backup/) start no rebuild", async () => {
+    const { root, box, watching } = await fixture({
+      beadsFiles: { "dolt-server.log": "started\n" },
+    });
+    const beads = join(root, ".beads");
+    mkdirSync(join(beads, "dolt"));
+    mkdirSync(join(beads, "backup"));
+    expect(await watching()).toBe(true);
+
+    writeFileSync(join(beads, "dolt-server.log"), "started\nanswered\n");
+    writeFileSync(join(beads, "bd.sock.startlock"), "");
+    writeFileSync(join(beads, ".exclusive-lock"), "");
+    writeFileSync(join(beads, "interactions.jsonl"), "{}\n");
+    writeFileSync(join(beads, "dolt", "journal.idx"), "chunk\n");
+    writeFileSync(join(beads, "backup", "manifest"), "darc\n");
+    // The watcher reports a write once the file has been still for 400 ms,
+    // then waits 700 ms for more: three seconds is well past both.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(runs(box)).toEqual([]);
+  }, 15_000);
+
+  test("czqf: a last-touched write once the watcher is armed starts exactly one rebuild: under a shared Dolt server it is all a terminal bd command leaves under .beads/", async () => {
+    const { root, box, pushed, watching } = await fixture({ beadsDir: true });
+    expect(await watching()).toBe(true);
+
+    writeFileSync(join(root, ".beads", "last-touched"), "demo-task\n");
+    await waitFor("the rebuild to start", () => runs(box).includes("start"));
+    release(box);
+    await waitFor(
+      "a snapshot-rebuilt push",
+      () => rebuiltNotices(pushed) === 1,
+    );
+    // Past the write-settle wait and the pause again: no second build.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(runs(box)).toEqual(["start", "end"]);
+  }, 15_000);
+
+  test("czqf: a build that rewrites last-touched as it starts and as it ends does not start another build", async () => {
+    const { url, root, box, watching } = await fixture({
+      beadsDir: true,
+      buildTouchesLastTouched: true,
+    });
+    expect(await watching()).toBe(true);
+
+    const post = fetch(`${url}${REBUILD_PATH}`, { method: "POST" });
+    await waitFor("the build to start", () => runs(box).includes("start"));
+    // Long enough for the watcher to report the write made at the start.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    release(box);
+    expect((await post).status).toBe(200);
+    expect(readFileSync(join(root, ".beads", "last-touched"), "utf8")).toBe(
+      "build end\n",
+    );
+    // The write made at the end is reported 400 ms after it, and a build it
+    // asked for would start 700 ms after that.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(runs(box)).toEqual(["start", "end"]);
   }, 15_000);
 
   test("a claim sent through the dashboard's proxy to the hearth starts a rebuild with no .beads/ directory, and the page is told the snapshot was rebuilt after it, without a full reload", async () => {
@@ -654,4 +726,42 @@ describe("rebuilds the dev server starts on its own", () => {
     expect(ensured()).toBe(asked);
     expect(runs(box)).toEqual([]);
   }, 20_000);
+});
+
+describe("the plugin in Vite's middleware mode (no server of Vite's own)", () => {
+  test("czqf: .beads/ is watched once armed, and closing Vite stops the watcher: a write made after the close starts no build", async () => {
+    const root = mkdtempSync(join(tmpdir(), "af-rebuild-root-"));
+    const box = mkdtempSync(join(tmpdir(), "af-rebuild-box-"));
+    writeFileSync(join(box, "gate.mjs"), GATE);
+    mkdirSync(join(root, ".beads"));
+    const rebuildPages = rebuildPagesPlugin({
+      root,
+      command: {
+        file: process.execPath,
+        args: [join(box, "gate.mjs"), box, "3000"],
+      },
+      initialBuild: false,
+    });
+    const vite = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      server: { middlewareMode: true, watch: null, hmr: false },
+      plugins: [rebuildPages],
+    });
+    cleanup.push(async () => {
+      writeFileSync(join(box, "release"), "");
+      await vite.close();
+      rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+      rmSync(box, { recursive: true, force: true, maxRetries: 3 });
+    });
+    expect(vite.httpServer).toBeNull();
+    expect(await rebuildPages.api.whenWatching()).toBe(true);
+
+    await vite.close();
+    writeFileSync(join(root, ".beads", "issues.jsonl"), "{}\n");
+    // Past the write-settle wait and the rebuild's own pause.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(runs(box)).toEqual([]);
+  }, 15_000);
 });
