@@ -792,3 +792,364 @@ test("malformed UTF-16 cannot hide invisibles or assignment value fragments", ()
     }
   }
 });
+
+// 27mf: contextual labels are enough evidence even for short, non-vendor tokens.
+describe("explicit credential contexts", () => {
+  const fixtures: Array<[string, string]> = [
+    ["JSON provider", '{"OPENAI_API_KEY":"Head9Tail"}'],
+    ["Bearer", "Authorization: Bearer Head9Tail"],
+    ["query", "https://host/?api_key=Head9Tail&next=kept"],
+    ["unlisted GROQ", "GROQ_API_KEY=Head9Tail"],
+    ["unlisted GEMINI", "GEMINI_API_KEY=Head9Tail"],
+    ["bare suffix", "_API_KEY=Head9Tail"],
+    ["generic", "API_KEY=x"],
+    ["encoded separator", "OPENAI_API_KEY%3DHead9Tail"],
+    ["whitespace separator", "OPENAI_API_KEY Head9Tail"],
+    ["compatibility", "ＯＰＥＮＡＩ＿ＡＰＩ＿ＫＥＹ＝Head9Tail"],
+    ["Cyrillic lookalike", "OPENAI_АPI_KEY=Head9Tail"],
+    ["Greek lookalike", "OPENAI_API_ΚΕΥ=Head9Tail"],
+    ["braille separator", "API_KEY\u2800Head9Tail"],
+    ["annotation separator", "API_KEY\ufff9Head9Tail"],
+    ["tab label", "AP\tI_KEY=Head9Tail"],
+    ["LF label", "API_KE\nY=Head9Tail"],
+    ["LF value", "API_KEY=Head9\nTail"],
+    ["short LF head", "API_KEY=H\nTail"],
+    ["line separator value", "API_KEY=Head9\u2028Tail"],
+    ["quoted value fragment", 'API_KEY=Head9"Tail'],
+    ["vendor tab", `sk-${"Q9a".repeat(4)}\t${"Z8b".repeat(4)}`],
+    ["vendor LF", `ghp_${"Q9a".repeat(4)}\n${"Z8b".repeat(4)}`],
+  ];
+  for (const [name, fixture] of fixtures) {
+    test(`27mf ${name}`, () => {
+      const input = `😀℀ %41 before ${fixture} after😀`;
+      const result = redactSecrets(input);
+      expect(result.text.startsWith("😀℀ %41 before ")).toBe(true);
+      expect(result.text.endsWith(" after😀")).toBe(true);
+      expect(result.text).toContain("[REDACTED:");
+      expect(result.text).not.toContain("Head9");
+      expect(result.text).not.toContain("Tail");
+      if (name.startsWith("vendor")) {
+        expect(result.text).not.toContain("Q9a");
+        expect(result.text).not.toContain("Z8b");
+      }
+      expect(redactSecrets(result.text)).toEqual({
+        text: result.text,
+        redactions: [],
+      });
+      const spans = secretSpans(input);
+      let reconstructed = "",
+        kept = 0;
+      for (const span of spans) {
+        expect(span.start).toBeGreaterThanOrEqual(kept);
+        reconstructed +=
+          input.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+        kept = span.end;
+      }
+      expect(reconstructed + input.slice(kept)).toBe(
+        redactWrittenForm(input).text,
+      );
+    });
+  }
+  test("keeps empty values, following fields, assignments, and ordinary prose", () => {
+    for (const text of [
+      '{"API_KEY":"","next":"kept"}',
+      "API_KEY='' NEXT=kept",
+      "key value",
+      "mention Bearer here",
+      "ordinary\nmultiline log",
+    ]) {
+      expect(redactSecrets(text)).toEqual({ text, redactions: [] });
+    }
+    for (const text of [
+      '{"API_KEY":"Head9\"Tail","next":"kept"}',
+      "API_KEY=Head9\nTail\nNEXT=kept",
+      "API_KEY=Head9\nTail\nrecord: kept",
+    ]) {
+      const result = redactSecrets(text).text;
+      expect(result).not.toContain("Head9");
+      expect(result).not.toContain("Tail");
+      expect(result).toContain("kept");
+    }
+    expect(redactSecrets("API_KEY is required").text).toContain(" required");
+  });
+});
+
+test("27mf all forms preserve coordinates and following records", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  for (const separator of ["\t", "\n", "\u2028", '"']) {
+    for (const key of [
+      ANTHROPIC,
+      OPENAI,
+      `ghp_${"Z9a".repeat(12)}`,
+      `github_pat_${"Z9a".repeat(12)}_tail`,
+      `AKIA${"A9".repeat(8)}`,
+      `xoxb-${"Z9a".repeat(8)}`,
+    ]) {
+      for (const at of [1, Math.floor(key.length / 2)]) {
+        const fragment = key.slice(0, at) + separator + key.slice(at);
+        for (const redact of [redactSecrets, redactShown]) {
+          const result = redact(`😀prefix ${fragment} after😀`).text;
+          expect(result).not.toContain(key.slice(-10));
+          expect(result).toContain("after😀");
+          expect(redact(result).redactions).toEqual([]);
+        }
+      }
+    }
+  }
+  for (const name of ["ＡＰＩ＿ＫＥＹ", "%41PI_KEY", "API_KE\nY", "АPI_KEY"]) {
+    for (const redact of [redactSecrets, redactShown]) {
+      const result = redact(
+        `😀℀ %41 prefix ${name}=Head9\nTail\nNEXT=kept`,
+      ).text;
+      expect(result).toBe(
+        `😀℀ %41 prefix [REDACTED:provider-api-key-assignment]${redact === redactShown ? " " : "\n"}NEXT=kept`,
+      );
+    }
+  }
+  for (const text of [
+    '{"API_KEY":"","next":"kept"}',
+    "API_KEY=\nNEXT=kept",
+    "API_KEY\nrecord: kept",
+  ]) {
+    expect(redactSecrets(text)).toEqual({ text, redactions: [] });
+  }
+});
+
+test("27mf attack: split authorization labels reject and redact in every entry point", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  const { redactDeep } = await import("./ledger/redact");
+  const { buildContextPackFromParts } = await import("./council/context");
+  for (const input of [
+    "Author\nization: Bearer FakeTail9",
+    "Authorization: Be\tarer FakeTail9",
+    "API_KEY=Before7\nAuthor\nization: Be\tarer: FakeTail9",
+  ]) {
+    for (const redact of [redactSecrets, redactShown])
+      expect(redact(input).text).not.toContain("FakeTail9");
+    expect(JSON.stringify(redactDeep({ note: input }))).not.toContain(
+      "FakeTail9",
+    );
+    expect(() =>
+      buildContextPackFromParts({
+        kind: "bead",
+        displayName: "demo",
+        locator: "demo",
+        parts: [{ label: "head", chunks: [{ text: input }] }],
+      }),
+    ).toThrow("potential secrets detected");
+  }
+});
+
+test("27mf attack: empty values and quoted next records survive all forms", async () => {
+  const { redactShown, withoutControls } = await import("./secret-patterns");
+  for (const input of [
+    "API_KEY=\nNEXT=kept",
+    "API_KEY=\nNEXT =kept",
+    "Authorization: Bearer\nNEXT=kept",
+  ]) {
+    expect(redactSecrets(input)).toEqual({ text: input, redactions: [] });
+    expect(redactShown(input)).toEqual({
+      text: withoutControls(input),
+      redactions: [],
+    });
+  }
+  for (const next of [
+    '"NEXT": "kept"',
+    '"NEXT": ""',
+    "NEXT =kept",
+    "'NEXT' : 'kept'",
+  ]) {
+    const input = `API_KEY=Head9\nTail\n${next}`;
+    for (const redact of [redactSecrets, redactShown]) {
+      expect(redact(input).text).toContain(next);
+      expect(redact(input).text).not.toContain("Tail");
+    }
+  }
+});
+
+test("27mf attack: ordered coverage preserves dense composed-form spans", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  for (const hidden of ["\u200b", "\ud800\ufeff"]) {
+    const input = `API_KEY=x${hidden} `.repeat(1024);
+    for (const redact of [redactSecrets, redactShown]) {
+      const result = redact(input);
+      expect(result.text).not.toContain("API_KEY");
+      expect(result.text).not.toContain("=x");
+      expect(result.text.match(/\[REDACTED:/g)?.length).toBe(1024);
+      expect(result.redactions).toEqual([
+        { kind: "provider-api-key-assignment", count: 1024 },
+      ]);
+      expect(redact(result.text).redactions).toEqual([]);
+    }
+  }
+});
+
+test("27mf attack: credential punctuation is a value, not a fresh record", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  const { redactDeep } = await import("./ledger/redact");
+  const { scanNamed } = await import("./council/context");
+  for (const input of [
+    "Authorization: Bearer abc.def==",
+    "Authorization: Bearer\nFakeHead9/FakeTail9==",
+    'API_KEY="\nFakeHead9/FakeTail9=="',
+    "API_KEY=FakeHead9\nFakeTail9==",
+    'API_KEY=Head9\n"""FakeHead9"=FakeTail9',
+    'API_KEY=Head9\n\'"FakeHead9"=FakeTail9',
+    "API_KEY=FakeHead9=",
+    '{"API_KEY":"FakeHead9:FakeTail9"}',
+    "?api_key=FakeHead9=FakeTail9&next=kept",
+    "Authorization: Bearer FakeHead9:FakeTail9",
+    "API_KEY= FakeHead9=FakeTail9",
+  ]) {
+    for (const redact of [redactSecrets, redactShown]) {
+      const result = redact(input);
+      expect(result.redactions.length).toBeGreaterThan(0);
+      expect(result.text).not.toContain("FakeHead9");
+      expect(result.text).not.toContain("FakeTail9");
+      expect(result.text).not.toContain("abc.def");
+      expect(redact(result.text).redactions).toEqual([]);
+    }
+    expect(() => scanNamed(input, "reject", "fixture", new Map())).toThrow();
+    expect(JSON.stringify(redactDeep({ input }))).not.toMatch(/Fake/);
+    const spans = secretSpans(input);
+    let result = "",
+      kept = 0;
+    for (const span of spans) {
+      result += input.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+      kept = span.end;
+    }
+    expect(result + input.slice(kept)).toBe(redactWrittenForm(input).text);
+  }
+});
+
+test("27mf attack: adjacent credential contexts never consume later labels", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  const { redactDeep } = await import("./ledger/redact");
+  const { scanNamed } = await import("./council/context");
+  const labels = [
+    "API_KEY=",
+    "AP\nI_KEY=",
+    "API_KE\tY=",
+    "Authorization: Bearer ",
+    "Author\nization: Be\tarer ",
+  ];
+  const vendor = (part: string) => `sk-${part}${"Q9a".repeat(8)}`;
+  for (const first of [
+    ...labels.map((label) => label + "Prior8"),
+    vendor("Prior8"),
+  ]) {
+    for (const second of [
+      ...labels.map((label) => label + "FakeTail9"),
+      vendor("FakeTail9"),
+    ]) {
+      for (const between of ["\n", "\t", '"', "\u200b", "\ud800\ufeff"]) {
+        const input = `${first}${between}${second} after😀`;
+        for (const redact of [redactSecrets, redactShown]) {
+          const result = redact(input);
+          expect(result.text).not.toContain("Prior8");
+          expect(result.text).not.toContain("FakeTail9");
+          expect(result.text.endsWith(" after😀")).toBe(true);
+          expect(redact(result.text).redactions).toEqual([]);
+        }
+        expect(JSON.stringify(redactDeep({ input }))).not.toContain(
+          "FakeTail9",
+        );
+        expect(() =>
+          scanNamed(input, "reject", "fixture", new Map()),
+        ).toThrow();
+        let rebuilt = "",
+          kept = 0;
+        for (const span of secretSpans(input)) {
+          expect(span.start).toBeGreaterThanOrEqual(kept);
+          rebuilt += input.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+          kept = span.end;
+        }
+        expect(rebuilt + input.slice(kept)).toBe(redactWrittenForm(input).text);
+      }
+    }
+  }
+});
+
+test("27mf v3: nested candidates cannot erase full initial-token coverage", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  const { redactDeep } = await import("./ledger/redact");
+  const { scanNamed } = await import("./council/context");
+  const labels = [
+    "API_KEY=",
+    "ＡＰＩ＿ＫＥＹ＝",
+    "%41PI_KEY=",
+    "AP\nI_KEY=",
+    "Authorization: Bearer ",
+    "Author\nization: Be\tarer ",
+  ];
+  for (const outer of labels) {
+    for (const inner of labels) {
+      for (const tail of ['""', "", "FakeTail9", 'FakeTail9API_KEY=""']) {
+        for (const head of ["", "FakeHead9"]) {
+          const input = outer + head + inner + tail;
+          for (const redact of [redactSecrets, redactShown]) {
+            const result = redact(input);
+            expect(result.redactions.length).toBeGreaterThan(0);
+            expect(result.text).not.toMatch(/Fake(?:Head9|Tail9)/);
+            expect(redact(result.text).redactions).toEqual([]);
+          }
+          expect(JSON.stringify(redactDeep({ input }))).not.toMatch(
+            /Fake(?:Head9|Tail9)/,
+          );
+          expect(() =>
+            scanNamed(input, "reject", "fixture", new Map()),
+          ).toThrow();
+          expect(secretSpans(input).length).toBeGreaterThan(0);
+          let rebuilt = "",
+            kept = 0;
+          for (const span of secretSpans(input)) {
+            expect(span.start).toBeGreaterThanOrEqual(kept);
+            rebuilt +=
+              input.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+            kept = span.end;
+          }
+          expect(rebuilt + input.slice(kept)).toBe(
+            redactWrittenForm(input).text,
+          );
+        }
+      }
+    }
+  }
+});
+
+test("27mf v3: atomic overlap kinds, counts and full-token endpoints", () => {
+  const key = "sk-proj-" + "Z9a".repeat(12);
+  const examples: Array<[string, string]> = [
+    [`API_KEY=${key}`, "openai-api-key"],
+    [`Authorization: Bearer ${key}`, "openai-api-key"],
+    [`OPENAI_API_KEY=${key}`, "provider-api-key-assignment"],
+    ["Authorization: Bearer API_KEY=FakeHead9", "authorization-bearer"],
+    ["API_KEY=Authorization: Bearer FakeHead9", "authorization-bearer"],
+  ];
+  for (const [input, kind] of examples) {
+    const result = redactSecrets(input);
+    expect(result).toEqual({
+      text: `[REDACTED:${kind}]`,
+      redactions: [{ kind, count: 1 }],
+    });
+    expect(secretSpans(input)).toEqual([{ kind, start: 0, end: input.length }]);
+  }
+  for (const input of [
+    'API_KEY=FakeHead9API_KEY=""',
+    'Authorization: Bearer API_KEY=""',
+    "API_KEY=FakeHead9API_KEY=",
+  ]) {
+    const initialEnd =
+      input.indexOf('"') < 0 ? input.length : input.indexOf('"');
+    expect(secretSpans(input)[0]?.end).toBe(initialEnd);
+    expect(redactSecrets(input).redactions[0]?.count).toBe(1);
+  }
+  expect(
+    redactSecrets("API_KEY=FakeHead9 Authorization: Bearer FakeTail9")
+      .redactions,
+  ).toEqual([
+    { kind: "provider-api-key-assignment", count: 1 },
+    { kind: "authorization-bearer", count: 1 },
+  ]);
+  expect(redactSecrets('{"API_KEY":"","next":"kept"}').redactions).toEqual([]);
+});

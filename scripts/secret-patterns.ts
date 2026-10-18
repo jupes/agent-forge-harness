@@ -44,7 +44,7 @@ function isUppercaseLetter(code: number): boolean {
 
 /**
  * `sk-` in the middle of an ordinary slug such as `task-queue-state-machine-v2`
- * is not a key. The exemption is deliberately narrow — both halves must hold:
+ * is not a key. The exemption is deliberately narrow â€” both halves must hold:
  *
  * - what follows `sk-` is slug-shaped: lowercase letters and digits only, in
  *   hyphen-separated segments shorter than a key body, none of them `sk`
@@ -54,7 +54,7 @@ function isUppercaseLetter(code: number): boolean {
  *   before it, and that run starts the text or follows something that is not
  *   a letter or digit. A letter straight after `\` or `%` belongs to an escape
  *   (`\n`, `\t`, `%s`) and does not count; a run glued to a digit or an
- *   uppercase letter (hex, `%3D`, an ANSI `…31m`) is not a word.
+ *   uppercase letter (hex, `%3D`, an ANSI `â€¦31m`) is not a word.
  *
  * A key after any delimiter, escape, digit, or single letter is therefore
  * still caught, as is any key with a long, mixed-case or underscored body.
@@ -143,6 +143,316 @@ function urlCredentialSpans(text: string): Array<[number, number]> {
   return spans;
 }
 
+// Detection-only compatibility folding, one ASCII percent-escape layer, and a
+// finite Greek/Cyrillic lookalike table for API_KEY / Authorization / Bearer.
+const LOOKALIKES: Record<string, string> = {
+  а: "a",
+  α: "a",
+  р: "p",
+  ρ: "p",
+  і: "i",
+  ι: "i",
+  к: "k",
+  κ: "k",
+  е: "e",
+  ε: "e",
+  у: "y",
+  υ: "y",
+  о: "o",
+  ο: "o",
+  т: "t",
+  τ: "t",
+  н: "h",
+  һ: "h",
+  в: "b",
+  β: "b",
+  г: "r",
+  ζ: "z",
+  ν: "n",
+};
+function credentialForm(value: string): {
+  text: string;
+  from?: number[];
+  to?: number[];
+} {
+  if (!/[%\u0080-\uffff]/.test(value)) return { text: value };
+  const pieces: string[] = [],
+    from: number[] = [],
+    to: number[] = [];
+  for (let at = 0; at < value.length; ) {
+    const start = at;
+    let char = String.fromCodePoint(value.codePointAt(at) ?? 0);
+    at += char.length;
+    if (char === "%" && /^[0-7][0-9a-f]$/i.test(value.slice(at, at + 2))) {
+      char = String.fromCharCode(Number.parseInt(value.slice(at, at + 2), 16));
+      at += 2;
+    }
+    const normalized = char.normalize("NFKC");
+    for (const part of normalized) {
+      const mapped = LOOKALIKES[part.toLowerCase()] ?? part;
+      pieces.push(mapped === "\u2800" || mapped === "\ufff9" ? " " : mapped);
+      for (let unit = 0; unit < mapped.length; unit++) {
+        from.push(start);
+        to.push(at);
+      }
+    }
+  }
+  return { text: pieces.join(""), from, to };
+}
+
+const TOKEN_STOP = /[\s"'?,;&#{}[\]<>:=]/;
+const VALUE_STOP = /[\s"'?,;&#{}[\]<>]/;
+const FRAGMENT_BREAK = /[\t\r\n\u2028\u2029"']/;
+function startsRecord(
+  text: string,
+  start: number,
+  limit = text.length,
+): boolean {
+  // A complete assignment is the deliberate ambiguity boundary for folded
+  // values. Padding and slash-bearing base64 are not assignment grammar.
+  let end = start;
+  const read = (at: number): string => (at < limit ? (text[at] ?? "") : "");
+  while (/[\t\r\n\u2028\u2029]/.test(read(end))) end++;
+  const quote = /["']/.test(read(end)) ? read(end++) : null;
+  if (!/[a-z_]/i.test(read(end))) return false;
+  while (/[a-z0-9_.-]/i.test(read(end))) end++;
+  if (quote && read(end++) !== quote) return false;
+  while (/[ \t]/.test(read(end))) end++;
+  if (read(end) !== ":" && read(end) !== "=") return false;
+  end++;
+  while (/[ \t]/.test(read(end))) end++;
+  const literal = read(end);
+  if (literal !== '"' && literal !== "'")
+    return end < limit && !TOKEN_STOP.test(read(end));
+  // JSON-like literals cannot contain physical line breaks. This also bounds
+  // failed lookahead to one line, with no repeated remaining-suffix scans.
+  while (++end < limit) {
+    if (/[\r\n\u2028\u2029]/.test(read(end))) return false;
+    if (read(end) === literal) return true;
+    if (read(end) === "\\") {
+      if (/[\r\n\u2028\u2029]/.test(read(end + 1))) return false;
+      end++;
+    }
+  }
+  return false;
+}
+/** Space and structural punctuation end a value. Quotes/newlines join token
+ * fragments only until a new assignment/record (name followed by : or =).
+ * Colons and equals belong to an assigned value, including base64 padding;
+ * they signal a record only across a line/fragment or mention boundary.
+ * Thus an ambiguous bare word on the next line is conservatively concealed.
+ */
+function credentialEnd(
+  text: string,
+  start: number,
+  stop = VALUE_STOP,
+  limit = text.length,
+  tokenEnds?: Uint32Array,
+): number {
+  let at = tokenEnds?.[start] ?? start;
+  while (!tokenEnds && at < limit && !stop.test(text[at] ?? "")) at++;
+  while (at < limit && FRAGMENT_BREAK.test(text[at] ?? "")) {
+    let next = at;
+    while (next < limit && FRAGMENT_BREAK.test(text[next] ?? "")) next++;
+    let end = Math.min(tokenEnds?.[next] ?? next, limit);
+    while (!tokenEnds && end < limit && !stop.test(text[end] ?? "")) end++;
+    // Parse from the actual boundary, not the last quote of a skipped run.
+    const record =
+      /["']/.test(text[start - 1] ?? "") &&
+      text[at] === text[start - 1] &&
+      at + 1 < limit &&
+      /[\r\n\u2028\u2029]/.test(text[at + 1] ?? "")
+        ? at + 1
+        : at;
+    if (end === next || startsRecord(text, record, limit)) break;
+    at = end;
+  }
+  return at;
+}
+
+function contextualIntervals(text: string, layout = text): RankedSpan[] {
+  const form = credentialForm(text),
+    value = form.text;
+  const label = new RegExp(
+    "(" +
+      [..."authorization"].join("[\\t\\r\\n]*") +
+      `[\\t\\r\\n ]*["']?[\\t\\r\\n ]*:[\\t\\r\\n ]*["']?` +
+      [..."bearer"].join("[\\t\\r\\n]*") +
+      "[\\t\\r\\n ]*:?[\\t\\r\\n ]+)|a[\\t\\r\\n]*p[\\t\\r\\n]*i[\\t\\r\\n]*_[\\t\\r\\n]*k[\\t\\r\\n]*e[\\t\\r\\n]*y",
+    "gi",
+  );
+  const anchors = Array.from(value.matchAll(label)).flatMap((match) => {
+    const auth = match[1] !== undefined;
+    let at = match.index + match[0].length,
+      boundary = auth ? at - 1 : at;
+    if (auth) while (/\s/.test(value[boundary - 1] ?? "")) boundary--;
+    let mention = false,
+      recordStart = at;
+    if (!auth) {
+      if (/["']/.test(value[at] ?? "")) at++;
+      const beforeSpace = at;
+      while (/\s/.test(value[at] ?? "")) at++;
+      if (value[at] === ":" || value[at] === "=") {
+        boundary = ++at;
+        while (/\s/.test(value[at] ?? "")) at++;
+      } else if (at === beforeSpace) return [];
+      else mention = true;
+      recordStart = at;
+      if (/["']/.test(value[at] ?? "")) at++;
+    }
+    return [
+      {
+        lexicalStart: match.index,
+        valueStart: at,
+        boundary,
+        recordStart,
+        mention,
+        auth,
+      },
+    ];
+  });
+  if (!anchors.length) return [];
+  // All nested values in a token share one end, found once rather than by
+  // rescanning the same suffix for every nested credential label.
+  const tokenEnds = new Uint32Array(value.length + 1),
+    prefixStarts = new Uint32Array(value.length + 1);
+  let tokenEnd = value.length,
+    prefixStart = 0;
+  tokenEnds[value.length] = value.length;
+  for (let at = value.length - 1; at >= 0; at--) {
+    if (VALUE_STOP.test(value[at] ?? "")) tokenEnd = at;
+    tokenEnds[at] = tokenEnd;
+  }
+  for (let at = 0; at < value.length; at++) {
+    if (!/[a-z0-9_]/i.test(value[at] ?? "")) prefixStart = at + 1;
+    prefixStarts[at + 1] = prefixStart;
+  }
+  const spans: RankedSpan[] = [],
+    continued = new Map<string, number>();
+  // Prefix parsing cannot pass the next label's first non-whitespace token:
+  // value starts stay ordered, so their next-delimiter ends are nondecreasing.
+  // This lets one cursor ignore nested anchors inside every protected token.
+  let next = 0;
+  for (const [index, anchor] of anchors.entries()) {
+    const { valueStart, lexicalStart, auth, boundary, recordStart, mention } =
+      anchor;
+    const initialEnd = tokenEnds[valueStart] ?? value.length;
+    next = Math.max(next, index + 1);
+    while (
+      next < anchors.length &&
+      (anchors[next]?.lexicalStart ?? Infinity) <= initialEnd
+    )
+      next++;
+    const limit = anchors[next]?.lexicalStart ?? value.length;
+    const freshLine =
+      /[\r\n\u2028\u2029]/.test(value.slice(boundary, valueStart)) ||
+      /[\r\n\u2028\u2029]/.test(
+        layout.slice(
+          form.from?.[boundary] ?? boundary,
+          form.from?.[valueStart] ?? valueStart,
+        ),
+      );
+    if ((freshLine || mention) && startsRecord(value, recordStart, limit))
+      continue;
+    // Quote state and limit are part of this per-call cache; normalized text
+    // and source layout are fixed for its lifetime. No process-global secrets.
+    const key = `${initialEnd}:${limit}:${value[valueStart - 1] ?? ""}`;
+    let end = continued.get(key);
+    if (end === undefined) {
+      end = credentialEnd(value, valueStart, VALUE_STOP, limit, tokenEnds);
+      continued.set(key, end);
+    }
+    if (end <= valueStart) continue;
+    const start = auth
+      ? lexicalStart
+      : (prefixStarts[lexicalStart] ?? lexicalStart);
+    spans.push({
+      start: form.from?.[start] ?? start,
+      end: form.to?.[end - 1] ?? end,
+      kind: auth ? "authorization-bearer" : "provider-api-key-assignment",
+      priority: SECRET_PATTERNS.length + (auth ? 1 : 2),
+    });
+  }
+  return spans;
+}
+
+type RankedSpan = SecretSpan & { priority: number };
+const FRAGMENT_PREFIXES: Record<string, string[]> = {
+  "anthropic-api-key": ["sk-ant-"],
+  "openai-api-key": ["sk-"],
+  "github-token": ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"],
+  "aws-access-key": ["AKIA"],
+  "slack-token": ["xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-"],
+};
+/** Atomic interval union: legacy precedence, then auth, then new API contexts.
+ * One marker per overlapping component; disjoint contexts retain their kinds.
+ */
+function unionIntervals(found: RankedSpan[]): RankedSpan[] {
+  found.sort(
+    (a, b) => a.start - b.start || b.end - a.end || a.priority - b.priority,
+  );
+  const merged: RankedSpan[] = [];
+  for (const span of found) {
+    const last = merged.at(-1);
+    if (last && span.start < last.end) {
+      last.end = Math.max(last.end, span.end);
+      if (span.priority < last.priority) {
+        last.kind = span.kind;
+        last.priority = span.priority;
+      }
+    } else merged.push({ ...span });
+  }
+  return merged;
+}
+function canonicalSpans(text: string, layout = text): RankedSpan[] {
+  const legacy = legacySpans(text).map((span) => ({
+    ...span,
+    priority: SECRET_PATTERNS.findIndex((secret) => secret.kind === span.kind),
+  }));
+  const fragments = SECRET_PATTERNS.flatMap((secret, priority) => {
+    const prefixes = FRAGMENT_PREFIXES[secret.kind];
+    return prefixes && "pattern" in secret
+      ? fragmentedTokenSpans(text, secret.pattern, prefixes, secret.exempt).map(
+          ([start, end]) => ({ start, end, kind: secret.kind, priority }),
+        )
+      : [];
+  });
+  return unionIntervals([
+    ...legacy,
+    ...fragments,
+    ...contextualIntervals(text, layout),
+  ]);
+}
+
+/** Fragmented vendor tokens use the existing shape and exemption after joining
+ * only tab/newline/quote fragments. Plain-space prose is never joined.
+ */
+function fragmentedTokenSpans(
+  text: string,
+  pattern: RegExp,
+  prefixes: string[],
+  exempt?: SecretPattern["exempt"],
+): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const prefix = new RegExp(
+    prefixes
+      .map((value) => [...value].join(`[\\t\\r\\n\\u2028\\u2029"']*`))
+      .join("|"),
+    "g",
+  );
+  for (let found = prefix.exec(text); found; found = prefix.exec(text)) {
+    const end = credentialEnd(text, found.index, TOKEN_STOP);
+    prefix.lastIndex = Math.max(prefix.lastIndex, end);
+    const token = text.slice(found.index, end);
+    if (!FRAGMENT_BREAK.test(token)) continue;
+    const joined = token.replace(/[\t\r\n\u2028\u2029"']/g, "");
+    const match = new RegExp(`^(?:${pattern.source})$`).exec(joined);
+    if (match && !exempt?.(joined, found.index, text))
+      spans.push([found.index, end]);
+  }
+  return spans;
+}
+
 export const SECRET_PATTERNS: readonly (SecretPattern | SecretFinder)[] = [
   {
     kind: "provider-api-key-assignment",
@@ -182,18 +492,13 @@ export function redactWrittenForm(text: string): {
   text: string;
   redactions: SecretRedaction[];
 } {
-  let sanitized = text;
-  const redactions: SecretRedaction[] = [];
-  for (const secret of SECRET_PATTERNS) {
-    const found =
-      "spans" in secret
-        ? redactSpans(sanitized, secret)
-        : redactMatches(sanitized, secret);
-    sanitized = found.text;
-    if (found.count > 0)
-      redactions.push({ kind: secret.kind, count: found.count });
-  }
-  return { text: sanitized, redactions };
+  return replaceSpans(
+    text,
+    canonicalSpans(text).map((span) => ({
+      ...span,
+      kinds: new Set([span.kind]),
+    })),
+  );
 }
 
 /** A secret the written-form scanner would replace: its kind, and the `[start, end)` it covers in the text it was given. */
@@ -223,14 +528,19 @@ function spansOf(
  * one span for each marker it writes, in order, none overlapping. Writing
  * `[REDACTED:<kind>]` over each span gives exactly what the written-form scanner gives.
  *
- * The patterns are read in the same order and each one reads the text as the
- * ones before it left it, so a later pattern can take in an earlier marker; a
- * span then runs from the start of everything its match covers to the end.
- * Two texts of the same length whose characters correspond one for one (a
- * text and the same text with its invisible characters replaced) give spans
- * that can be laid over each other.
+ * The private legacy engine retains ordered pattern precedence. Contextual
+ * intervals read the immutable input independently; overlapping legacy,
+ * vendor and context intervals then become one component before replacement.
+ * Same-length written/shown forms keep corresponding input coordinates.
  */
 export function secretSpans(text: string): SecretSpan[] {
+  return canonicalSpans(text).map(({ kind, start, end }) => ({
+    kind,
+    start,
+    end,
+  }));
+}
+function legacySpans(text: string): SecretSpan[] {
   let current = text;
   // For each character of `current`, the span of `text` it stands for, and the
   // kind when it belongs to a marker. Made at the first hit: most texts have none.
@@ -289,40 +599,6 @@ export function secretSpans(text: string): SecretSpan[] {
     spans.push({ kind, start, end });
   }
   return spans;
-}
-
-function redactMatches(
-  text: string,
-  secret: SecretPattern,
-): { text: string; count: number } {
-  let count = 0;
-  // None of the patterns has a capture group, so the callback's second and
-  // third arguments are the match's offset and the text being scanned.
-  const redacted = text.replace(
-    secret.pattern,
-    (match: string, offset: number, scanned: string) => {
-      if (secret.exempt?.(match, offset, scanned)) return match;
-      count++;
-      return `[REDACTED:${secret.kind}]`;
-    },
-  );
-  return { text: redacted, count };
-}
-
-function redactSpans(
-  text: string,
-  secret: SecretFinder,
-): { text: string; count: number } {
-  const spans = secret.spans(text);
-  if (spans.length === 0) return { text, count: 0 };
-  const pieces: string[] = [];
-  let kept = 0;
-  for (const [start, end] of spans) {
-    pieces.push(text.slice(kept, start), `[REDACTED:${secret.kind}]`);
-    kept = end;
-  }
-  pieces.push(text.slice(kept));
-  return { text: pieces.join(""), count: spans.length };
 }
 
 /**
@@ -446,7 +722,7 @@ export function withoutControls(value: string): string {
 
 type Redacted = { text: string; redactions: SecretRedaction[] };
 
-type MergedSpan = SecretSpan & { kinds: Set<string> };
+type MergedSpan = RankedSpan & { kinds: Set<string> };
 
 /** `base` with each span replaced by one marker, named by its first find. */
 function replaceSpans(base: string, merged: MergedSpan[]): Redacted {
@@ -497,24 +773,32 @@ function secretsInAnyForm(value: string): {
   if (shown.length !== value.length)
     // By construction never: each code unit replaced is one space.
     throw new Error("the shown form of a text must keep its length");
-  const written = secretSpans(value);
-  const seen = shown === value ? [] : secretSpans(shown);
+  const written = canonicalSpans(value);
+  const seen = shown === value ? [] : canonicalSpans(shown, value);
   const joined = shown === value ? null : withoutInvisible(value);
   const whole =
     joined === null
       ? []
-      : secretSpans(joined.text).map((span) => ({
+      : canonicalSpans(joined.text).map((span) => ({
           kind: span.kind,
+          priority: span.priority,
           start: joined.origin[span.start] ?? span.start,
           end: (joined.origin[span.end - 1] ?? span.end - 1) + 1,
         }));
   const others = [...seen, ...whole];
-  const othersAddMore = others.some(
-    (span) =>
-      !written.some(
-        (cover) => cover.start <= span.start && span.end <= cover.end,
-      ),
-  );
+  const othersAddMore = [seen, whole].some((spans) => {
+    let at = 0;
+    return spans.some((span) => {
+      while ((written[at]?.end ?? Infinity) <= span.start) at++;
+      const cover = written[at];
+      return (
+        !cover ||
+        cover.start > span.start ||
+        cover.end < span.end ||
+        cover.kind !== span.kind
+      );
+    });
+  });
   const found = [...written, ...others].sort(
     (a, b) => a.start - b.start || b.end - a.end,
   );
@@ -523,15 +807,19 @@ function secretsInAnyForm(value: string): {
     const last = merged.at(-1);
     if (last && span.start < last.end) {
       last.end = Math.max(last.end, span.end);
-      last.kinds.add(span.kind);
+      if (span.priority < last.priority) {
+        last.kind = span.kind;
+        last.priority = span.priority;
+        last.kinds = new Set([span.kind]);
+      }
     } else merged.push({ ...span, kinds: new Set([span.kind]) });
   }
   return { shown, written, merged, othersAddMore };
 }
 
 /**
- * `value` as it is shown — every control and invisible formatting character
- * replaced by a space — with every secret the scanner finds in it as written,
+ * `value` as it is shown â€” every control and invisible formatting character
+ * replaced by a space â€” with every secret the scanner finds in it as written,
  * as shown or with the invisible characters taken out, replaced. Overlapping
  * finds become one marker, named by the first.
  */
@@ -542,8 +830,8 @@ export function redactShown(value: string): Redacted {
 }
 
 /**
- * `value` as written — its invisible characters kept, because content is sent
- * as written — with every secret the scanner finds in it as written, as shown
+ * `value` as written â€” its invisible characters kept, because content is sent
+ * as written â€” with every secret the scanner finds in it as written, as shown
  * or with the invisible characters taken out, replaced (see
  * `secretsInAnyForm`). When the other forms find nothing the written one
  * does not, this preserves the raw written-form result and counts.
@@ -551,8 +839,8 @@ export function redactShown(value: string): Redacted {
 export function redactWritten(value: string): Redacted {
   const shown = withoutControls(value);
   if (shown === value) return redactWrittenForm(value);
-  // With only tab/LF/CRLF changed, every pattern and slug exemption treats
-  // both forms identically except PEM markers, whose spaces are literal.
+  // Tab/LF joining as written covers shown contextual/token finds.
+  // PEM markers are exceptional because their spaces are literal.
   // Keep this inventory check in sync when adding patterns; actual removed
   // characters always take the mapped union path below.
   if (!MALFORMED_UTF16.test(value) && !HAS_REMOVED.test(value)) {
