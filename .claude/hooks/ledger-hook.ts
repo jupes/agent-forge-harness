@@ -16,6 +16,7 @@
 
 import { appendFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import { ASYNC_HOOK_APPEND_WAIT_MS } from "../../scripts/ledger/append";
 import {
   type HookDeps,
   handlePrompt,
@@ -62,7 +63,15 @@ async function main(): Promise<void> {
   const name = input.hook_event_name;
   const handler = typeof name === "string" ? HANDLERS[name] : undefined;
   if (handler === undefined) return;
-  handler(input, hookDeps({ env: process.env, cwd: process.cwd() }));
+  handler(
+    input,
+    hookDeps({
+      env: process.env,
+      cwd: process.cwd(),
+      // Registered async: no session waits on this process.
+      appendWaitMs: ASYNC_HOOK_APPEND_WAIT_MS,
+    }),
+  );
 }
 
 main()

@@ -28,6 +28,8 @@ export interface AppendOptions {
   /** The ledger file; defaults to the one under `AGENT_FORGE_HOME` / `~/.agent-forge`. */
   path?: string;
   now?: () => Date;
+  /** How long a busy ledger is retried before the event is refused: 100 ms when not given. */
+  waitMs?: number;
 }
 
 const INSERT = `INSERT OR IGNORE INTO events
@@ -144,20 +146,31 @@ function toRow(
 
 /**
  * How long an append keeps trying a ledger another writer holds: the 50 ms
- * wait plus the one 50 ms retry it always had, now kept by the clock.
+ * wait plus the one 50 ms retry it always had, kept by the clock. The hearth
+ * and the gates append inside their own process and must answer fast.
  */
 const APPEND_WAIT_MS = 100;
+/**
+ * The wait for a hook registered async, which no session waits on. On a loaded
+ * Windows runner each hand-off of the lock between processes was measured at
+ * 20-60 ms, and eight concurrent hooks needed up to 1.3 s.
+ */
+export const ASYNC_HOOK_APPEND_WAIT_MS = 2000;
 /** Integer 1..4 ms pauses: Bun truncates fractional sleepSync arguments. */
 const MAX_RETRY_PAUSE_MS = 4;
 
 /**
- * Insert, retrying a busy ledger with short, jittered pauses until
- * `APPEND_WAIT_MS` have passed. SQLite's own wait is off while it tries: on
- * Windows that wait sleeps whole timer ticks, so writers that met at the lock
- * took it one per tick, and eight hooks' writes outlasted an append's wait.
+ * Insert, retrying a busy ledger with short, jittered pauses until `waitMs`
+ * have passed. SQLite's own wait is off while it tries: on Windows that wait
+ * sleeps whole timer ticks, so writers that met at the lock took it one per
+ * tick.
  */
-function insertPaced(row: Row, path: string | undefined): AppendResult {
-  const deadline = performance.now() + APPEND_WAIT_MS;
+function insertPaced(
+  row: Row,
+  path: string | undefined,
+  waitMs: number,
+): AppendResult {
+  const deadline = performance.now() + waitMs;
   for (;;) {
     try {
       const db = openLedger(path);
@@ -217,7 +230,7 @@ function insert(db: Database, row: Row): AppendResult {
  * redacted; an event whose workspace, bead, run, session or ulid is
  * secret-shaped is refused. A repeated `ulid`, or a second `session.started`
  * for a session, is reported as `duplicate` and stores nothing. An insert that
- * finds the ledger busy is tried again for up to 100 ms, then refused.
+ * finds the ledger busy is tried again for up to 100 ms (`waitMs`), then refused.
  */
 export function appendEvent(
   input: LedgerEventInput,
@@ -228,7 +241,7 @@ export function appendEvent(
     if (!valid.ok) return refuse(valid.error);
     const prepared = toRow(valid.value, opts);
     if (!prepared.ok) return refuse(prepared.error);
-    return insertPaced(prepared.row, opts.path);
+    return insertPaced(prepared.row, opts.path, opts.waitMs ?? APPEND_WAIT_MS);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }

@@ -671,7 +671,7 @@ describe("an append that finds the ledger busy", () => {
     expect(rawRows(path)).toHaveLength(1);
   });
 
-  test("several busy answers inside the append's 100 ms are waited out, each try with SQLite's own busy wait off, and the connection gets its 50 ms wait back", () => {
+  test("several busy answers inside the append's wait are waited out, each try with SQLite's own busy wait off, and the connection gets its 50 ms wait back", () => {
     const path = tempLedger();
     const busy = busyFor(path, 3);
     expect(appendEvent(toolCall, { path }).ok).toBe(true);
@@ -682,7 +682,7 @@ describe("an append that finds the ledger busy", () => {
     expect(rawRows(path)).toHaveLength(1);
   });
 
-  test("a ledger that stays busy is retried until 100 ms have passed, then the event is refused and nothing is stored", () => {
+  test("a ledger that stays busy is retried for its default 100 ms, then the event is refused and nothing is stored", () => {
     const path = tempLedger();
     const busy = busyFor(path, Number.POSITIVE_INFINITY);
     const began = performance.now();
@@ -698,20 +698,20 @@ describe("an append that finds the ledger busy", () => {
     expect(rawRows(path)).toHaveLength(0);
   });
 
-  test("another connection's write lock held throughout: the append gives up after its 100 ms and stores nothing", () => {
+  test("another connection's write lock held throughout: the append given waitMs 300 gives up after 300 ms and stores nothing", () => {
     const path = tempLedger();
     openLedger(path);
     const holder = new Database(path);
     holder.exec("BEGIN IMMEDIATE");
     const began = performance.now();
-    const result = appendEvent(toolCall, { path });
+    const result = appendEvent(toolCall, { path, waitMs: 300 });
     const waited = performance.now() - began;
     holder.exec("ROLLBACK");
     holder.close();
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("locked");
-    expect(waited).toBeGreaterThanOrEqual(100);
-    expect(waited).toBeLessThan(1000);
+    expect(waited).toBeGreaterThanOrEqual(300);
+    expect(waited).toBeLessThan(1500);
     closeLedger(path);
     expect(rawRows(path)).toHaveLength(0);
   });
