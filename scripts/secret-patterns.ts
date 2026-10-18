@@ -487,11 +487,40 @@ export interface SecretRedaction {
   count: number;
 }
 
+/** Without normalization/fragment triggers or any non-URL legacy match, URL
+ * userinfo is the only possible shape. Avoid legacy origin arrays in this case.
+ */
+function redactUrlOnly(text: string): Redacted | null {
+  if (/[^\x20-\x7e]|[%"']|api_key|authorization/i.test(text)) return null;
+  for (const secret of SECRET_PATTERNS) {
+    if (secret.kind === "url-credentials") continue;
+    const found =
+      "pattern" in secret
+        ? new RegExp(
+            secret.pattern.source,
+            secret.pattern.flags.replace("g", ""),
+          ).test(text)
+        : secret.spans(text).length > 0;
+    if (found) return null;
+  }
+  let count = 0;
+  const sanitized = text.replace(new RegExp(URL_USERINFO.source, "g"), () => {
+    count++;
+    return "://[REDACTED:url-credentials]";
+  });
+  return {
+    text: sanitized,
+    redactions: count ? [{ kind: "url-credentials", count }] : [],
+  };
+}
+
 /** Raw written-form primitive: used by secretSpans contract tests and the multi-form scanner. */
 export function redactWrittenForm(text: string): {
   text: string;
   redactions: SecretRedaction[];
 } {
+  const urls = redactUrlOnly(text);
+  if (urls) return urls;
   return replaceSpans(
     text,
     canonicalSpans(text).map((span) => ({

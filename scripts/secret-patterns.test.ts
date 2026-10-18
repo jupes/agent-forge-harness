@@ -1153,3 +1153,42 @@ test("27mf v3: atomic overlap kinds, counts and full-token endpoints", () => {
   ]);
   expect(redactSecrets('{"API_KEY":"","next":"kept"}').redactions).toEqual([]);
 });
+
+test("27mf URL shortcut agrees with canonical spans and preserves guarded contexts", () => {
+  const key = "sk-proj-" + "Z9a".repeat(12);
+  for (const text of [
+    "plain text",
+    "x://u:p@x://u:p@",
+    "https://[REDACTED:url-credentials]@host",
+    "https://user:pass@host/next",
+    `https://user:${key}@host`,
+    'https://user:API_KEY=FakeHead9API_KEY=""@host',
+    "https://user:Authorization: Bearer FakeTail9@host",
+    "API_KEY=FakeHead9",
+    "ＡＰＩ＿ＫＥＹ＝FakeHead9",
+    "%41PI_KEY%3DFakeHead9",
+    "API_KEY=FakeHead9\u200bFakeTail9",
+    "AP\nI_KEY=FakeHead9",
+    "Author\nization: Be\tarer FakeTail9",
+    `ghp_${"Z9a".repeat(12)}`,
+    "-----BEGIN PRIVATE KEY-----payload",
+  ]) {
+    const spans = secretSpans(text),
+      counts = new Map<string, number>();
+    let rebuilt = "",
+      kept = 0;
+    for (const span of spans) {
+      rebuilt += text.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+      kept = span.end;
+      counts.set(span.kind, (counts.get(span.kind) ?? 0) + 1);
+    }
+    expect(redactWrittenForm(text)).toEqual({
+      text: rebuilt + text.slice(kept),
+      redactions: [...counts].map(([kind, count]) => ({ kind, count })),
+    });
+    expect(redactSecrets(redactSecrets(text).text).redactions).toEqual([]);
+  }
+  expect(redactSecrets("x://u:p@x://u:p@").redactions).toEqual([
+    { kind: "url-credentials", count: 2 },
+  ]);
+});
