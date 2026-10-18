@@ -225,7 +225,8 @@ export function initRunCorrelation(input: {
     }
     return {
       ok: false,
-      error: `could not write ${relative}: ${message(error)}`,
+      // Named here: Bun 1.4 on Windows leaves the path out of a failed write.
+      error: `could not write ${relative} (draft ${basename(draft)}): ${message(error)}`,
     };
   }
   return found(made.value);
