@@ -1021,3 +1021,51 @@ test("27mf attack: credential punctuation is a value, not a fresh record", async
     expect(result + input.slice(kept)).toBe(redactWrittenForm(input).text);
   }
 });
+
+test("27mf attack: adjacent credential contexts never consume later labels", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  const { redactDeep } = await import("./ledger/redact");
+  const { scanNamed } = await import("./council/context");
+  const labels = [
+    "API_KEY=",
+    "AP\nI_KEY=",
+    "API_KE\tY=",
+    "Authorization: Bearer ",
+    "Author\nization: Be\tarer ",
+  ];
+  const vendor = (part: string) => `sk-${part}${"Q9a".repeat(8)}`;
+  for (const first of [
+    ...labels.map((label) => label + "Prior8"),
+    vendor("Prior8"),
+  ]) {
+    for (const second of [
+      ...labels.map((label) => label + "FakeTail9"),
+      vendor("FakeTail9"),
+    ]) {
+      for (const between of ["\n", "\t", '"', "\u200b", "\ud800\ufeff"]) {
+        const input = `${first}${between}${second} after😀`;
+        for (const redact of [redactSecrets, redactShown]) {
+          const result = redact(input);
+          expect(result.text).not.toContain("Prior8");
+          expect(result.text).not.toContain("FakeTail9");
+          expect(result.text.endsWith(" after😀")).toBe(true);
+          expect(redact(result.text).redactions).toEqual([]);
+        }
+        expect(JSON.stringify(redactDeep({ input }))).not.toContain(
+          "FakeTail9",
+        );
+        expect(() =>
+          scanNamed(input, "reject", "fixture", new Map()),
+        ).toThrow();
+        let rebuilt = "",
+          kept = 0;
+        for (const span of secretSpans(input)) {
+          expect(span.start).toBeGreaterThanOrEqual(kept);
+          rebuilt += input.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+          kept = span.end;
+        }
+        expect(rebuilt + input.slice(kept)).toBe(redactWrittenForm(input).text);
+      }
+    }
+  }
+});
