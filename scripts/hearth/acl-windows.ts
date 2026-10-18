@@ -93,6 +93,23 @@ export interface WindowsAcl {
     name: string | null,
     maxBytes: number,
   ): FolderRead | null;
+  /**
+   * Make `temp`, a file that must not exist, with the owner-only DACL and
+   * this user as its owner from the moment it is created, so it never has
+   * the ACL of the folder it is made in; write `content` and rename it over
+   * `file`, each through that one handle. Between the write and the rename,
+   * `beforeRename` is called with `temp`. When anything throws, the file is
+   * deleted through the same handle. What a folder on the way is renamed to,
+   * or which folder a junction names, once the file is created can neither
+   * open it under another ACL nor send its bytes elsewhere (`rmo0`).
+   * Optional: a test's own ACL functions need not create files.
+   */
+  createOwnerOnly?(
+    temp: string,
+    file: string,
+    content: Uint8Array,
+    beforeRename?: (temp: string) => void,
+  ): void;
 }
 
 export const SYSTEM_SID = "S-1-5-18";
@@ -155,6 +172,38 @@ export function sidBytes(text: string): Uint8Array {
   }
   for (const [i, sub] of subs.entries()) view.setUint32(8 + 4 * i, sub, true);
   return bytes;
+}
+
+/** In a security descriptor's control word: its parts follow it in one buffer. */
+const SE_SELF_RELATIVE = 0x8000;
+
+/**
+ * The owner-only security descriptor for `target`, self-relative: owned by
+ * `userSid`, with the protected DACL `ownerOnlyDacl` makes. What a file
+ * created with it starts with, before anyone can open it.
+ */
+export function ownerOnlyDescriptor(
+  userSid: string,
+  target: AclTarget,
+): Uint8Array {
+  const owner = sidBytes(userSid);
+  const dacl = ownerOnlyDacl(userSid, target);
+  // The header: revision, padding, control, then the offsets of the owner,
+  // the group, the SACL and the DACL (0: none). A SID is a multiple of 4
+  // bytes long, so the DACL that follows the owner is aligned as it must be.
+  const descriptor = new Uint8Array(20 + owner.length + dacl.length);
+  const view = new DataView(descriptor.buffer);
+  view.setUint8(0, 1);
+  view.setUint16(
+    2,
+    SE_SELF_RELATIVE | SE_DACL_PRESENT | SE_DACL_PROTECTED,
+    true,
+  );
+  view.setUint32(4, 20, true);
+  view.setUint32(16, 20 + owner.length, true);
+  descriptor.set(owner, 20);
+  descriptor.set(dacl, 20 + owner.length);
+  return descriptor;
 }
 
 /** `ACL_REVISION`. */
@@ -439,6 +488,14 @@ function openApi(ffi: typeof BunFfi) {
       returns: FFIType.u64,
     },
     GetFileSizeEx: { args: [FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    WriteFile: {
+      args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    SetFileInformationByHandle: {
+      args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    },
     ReadFile: {
       args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
@@ -603,7 +660,103 @@ function nativeAcl(api: Api): WindowsAcl {
         api.kernel32.CloseHandle(dir);
       }
     },
+    createOwnerOnly(temp, file, content, beforeRename) {
+      createThroughHandle(api, userSid(), temp, file, content, beforeRename);
+    },
   };
+}
+
+// ── Writing through a handle ───────────────────────────────────────────────
+
+const GENERIC_WRITE = 0x40000000;
+const DELETE = 0x10000;
+/** `CreateFileW`'s: only a file that does not exist yet. */
+const CREATE_NEW = 1;
+const FILE_ATTRIBUTE_NORMAL = 0x80;
+const FILE_SHARE_READ = 0x1;
+/** `FILE_INFO_BY_HANDLE_CLASS`'s `FileRenameInfo` and `FileDispositionInfo`. */
+const FILE_RENAME_INFO = 3;
+const FILE_DISPOSITION_INFO = 4;
+
+/**
+ * `createOwnerOnly`: `CreateFileW` with the owner-only descriptor in its
+ * `SECURITY_ATTRIBUTES`, shared for reading only (whoever the DACL lets in:
+ * this user and SYSTEM) while it is open; `WriteFile`;
+ * then `SetFileInformationByHandle` to rename it over `file`, or to delete
+ * it when a step throws.
+ */
+function createThroughHandle(
+  api: Api,
+  userSid: string,
+  temp: string,
+  file: string,
+  content: Uint8Array,
+  beforeRename?: (temp: string) => void,
+): void {
+  const { ptr } = api.ffi;
+  const descriptor = ownerOnlyDescriptor(userSid, "file");
+  // SECURITY_ATTRIBUTES on 64-bit Windows: length, padding, the descriptor's
+  // address, then bInheritHandle (false) and padding.
+  const attributes = new Uint8Array(24);
+  const view = new DataView(attributes.buffer);
+  view.setUint32(0, 24, true);
+  view.setBigUint64(8, BigInt(ptr(descriptor)), true);
+  const held: unknown[] = [descriptor];
+  const handle = BigInt(
+    api.kernel32.CreateFileW(
+      wide(temp),
+      (GENERIC_WRITE | DELETE | SYNCHRONIZE) >>> 0,
+      FILE_SHARE_READ,
+      attributes,
+      CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL,
+      null,
+    ),
+  );
+  held.length = 0;
+  if (handle === INVALID_HANDLE)
+    throw new Error(`Windows refused to create ${temp}`);
+  try {
+    const done = new Uint32Array(1);
+    let at = 0;
+    while (at < content.length) {
+      const chunk = content.subarray(at);
+      if (api.kernel32.WriteFile(handle, chunk, chunk.length, done, null) === 0)
+        throw new Error(`Windows refused to write ${temp}`);
+      if ((done[0] ?? 0) === 0)
+        throw new Error(`Windows wrote nothing to ${temp}`);
+      at += done[0] ?? 0;
+    }
+    beforeRename?.(temp);
+    // FILE_RENAME_INFO: ReplaceIfExists (with padding), RootDirectory (none:
+    // the name is a whole path), the name's length in bytes, then the name.
+    const name = Buffer.from(file, "utf16le");
+    const rename = new Uint8Array(20 + name.length + 2);
+    const renameView = new DataView(rename.buffer);
+    renameView.setUint8(0, 1);
+    renameView.setUint32(16, name.length, true);
+    rename.set(name, 20);
+    if (
+      api.kernel32.SetFileInformationByHandle(
+        handle,
+        FILE_RENAME_INFO,
+        rename,
+        rename.length,
+      ) === 0
+    )
+      throw new Error(`Windows refused to rename ${temp} over ${file}`);
+  } catch (error) {
+    // FILE_DISPOSITION_INFO: DeleteFile, true. Done when the handle closes.
+    api.kernel32.SetFileInformationByHandle(
+      handle,
+      FILE_DISPOSITION_INFO,
+      new Uint8Array([1, 0, 0, 0]),
+      4,
+    );
+    throw error;
+  } finally {
+    api.kernel32.CloseHandle(handle);
+  }
 }
 
 // ── Reading through a handle ───────────────────────────────────────────────
