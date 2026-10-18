@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -580,6 +580,49 @@ describe("a checkout or id whose ordinary name the scanner flags", () => {
 });
 
 describe("an append that finds the ledger busy", () => {
+  test("an already recorded session start is a read-only duplicate even while another writer holds the ledger", () => {
+    const path = tempLedger();
+    const started: LedgerEventInput = {
+      kind: "session.started",
+      workspace: "w",
+      sessionId: "child",
+      payload: { kind: "subagent", parentSessionId: "parent" },
+    };
+    const first = appendEvent(started, { path });
+    expect(first.ok).toBe(true);
+    const holder = new Database(path);
+    holder.exec("BEGIN IMMEDIATE");
+    try {
+      expect(appendEvent(started, { path })).toEqual({
+        ok: true,
+        duplicate: true,
+        ulid: first.ok ? first.ulid : "",
+      });
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
+    expect(rawRows(path)).toHaveLength(1);
+  });
+
+  test("retry jitter survives sleepSync truncating milliseconds to integers", () => {
+    const path = tempLedger();
+    const busy = busyFor(path, 2);
+    const random = spyOn(Math, "random")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0.999);
+    const sleep = spyOn(Bun, "sleepSync");
+    try {
+      expect(appendEvent(toolCall, { path }).ok).toBe(true);
+      // Bun coerces each argument to i32. Fractional 1..2 ms is always 1 ms.
+      expect(sleep.mock.calls.map(([ms]) => Math.trunc(ms))).toEqual([1, 4]);
+      expect(busy.attempts()).toBe(3);
+    } finally {
+      random.mockRestore();
+      sleep.mockRestore();
+    }
+  });
+
   /**
    * Make the ledger's own connection report SQLITE_BUSY for the first `times`
    * inserts. `appendEvent` reuses the connection `openLedger` caches per path,

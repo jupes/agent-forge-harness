@@ -147,8 +147,8 @@ function toRow(
  * wait plus the one 50 ms retry it always had, now kept by the clock.
  */
 const APPEND_WAIT_MS = 100;
-/** The shortest pause between two tries; each pause adds up to as much again at random. */
-const RETRY_PAUSE_MS = 1;
+/** Integer 1..4 ms pauses: Bun truncates fractional sleepSync arguments. */
+const MAX_RETRY_PAUSE_MS = 4;
 
 /**
  * Insert, retrying a busy ledger with short, jittered pauses until
@@ -164,12 +164,27 @@ function insertPaced(row: Row, path: string | undefined): AppendResult {
       return withoutBusyWait(db, () => insert(db, row));
     } catch (error) {
       if (!isBusy(error) || performance.now() >= deadline) throw error;
-      Bun.sleepSync(RETRY_PAUSE_MS * (1 + Math.random()));
+      Bun.sleepSync(1 + Math.floor(Math.random() * MAX_RETRY_PAUSE_MS));
     }
   }
 }
 
+function recordedStart(db: Database, row: Row): AppendResult | null {
+  if (row.kind !== "session.started" || row.sessionId === null) return null;
+  const existing = db
+    .query<{ ulid: string }, [string]>(
+      "SELECT ulid FROM events WHERE session_id = ? AND kind = 'session.started'",
+    )
+    .get(row.sessionId);
+  return existing ? { ok: true, duplicate: true, ulid: existing.ulid } : null;
+}
+
 function insert(db: Database, row: Row): AppendResult {
+  // An ignored AUTOINCREMENT insert still writes sqlite_sequence and needs the
+  // writer lock. Most child starts are already recorded; those need only read.
+  const existing = recordedStart(db, row);
+  if (existing) return existing;
+
   const result = db
     .query(INSERT)
     .run(
@@ -189,17 +204,11 @@ function insert(db: Database, row: Row): AppendResult {
   if (result.changes > 0)
     return { ok: true, id: Number(result.lastInsertRowid), ulid: row.ulid };
 
-  // Ignored: either this ulid is already stored, or the session already has its
-  // one `session.started` (the partial unique index).
-  if (row.kind === "session.started" && row.sessionId !== null) {
-    const existing = db
-      .query<{ ulid: string }, [string]>(
-        "SELECT ulid FROM events WHERE session_id = ? AND kind = 'session.started'",
-      )
-      .get(row.sessionId);
-    if (existing) return { ok: true, duplicate: true, ulid: existing.ulid };
-  }
-  return { ok: true, duplicate: true, ulid: row.ulid };
+  // Another process may have recorded the first start after our read. The
+  // partial unique index still arbitrates that race; return its winning ulid.
+  return (
+    recordedStart(db, row) ?? { ok: true, duplicate: true, ulid: row.ulid }
+  );
 }
 
 /**
