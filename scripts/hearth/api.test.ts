@@ -47,6 +47,7 @@ import {
   type TestHearth,
   type TestHearthOptions,
 } from "./testing";
+import { readToken } from "./token";
 import { validateOperatorEnvelope } from "./validate";
 
 const open: TestHearth[] = [];
@@ -105,6 +106,21 @@ function post(
   });
 }
 
+/**
+ * What the hearth's token file holds against the token the test sends: the
+ * hearth honours its token only while the file still holds it (bu05).
+ */
+function tokenFileState(h: TestHearth): string {
+  const file = tokenPath(h.home, h.root);
+  if (!existsSync(h.home)) return "the hearth's home is gone";
+  if (!existsSync(file)) return "the token file is missing";
+  const held = readToken(file);
+  if (held === null) return "the token file is empty or unreadable";
+  return held === h.hearth.token
+    ? "the token file holds the token sent"
+    : "the token file holds another token";
+}
+
 /** A read of a stored council run: it needs the operator token. */
 function readRuns(h: TestHearth, path = ""): Promise<Response> {
   return fetch(`${h.api}/council-api/runs${path}`, {
@@ -122,7 +138,7 @@ async function councilRunFinished(h: TestHearth, runId: string): Promise<void> {
     const response = await readRuns(h, `/${runId}`);
     if (response.status !== 200)
       throw new Error(
-        `council run ${runId} could not be read: ${response.status} ${await response.text()}`,
+        `council run ${runId} could not be read: ${response.status} ${await response.text()}; ${tokenFileState(h)}`,
       );
     const job = (await response.json()) as { data?: { status?: string } };
     if (job.data?.status !== "running" && job.data?.status !== "cancelling")
