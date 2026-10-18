@@ -143,11 +143,202 @@ function urlCredentialSpans(text: string): Array<[number, number]> {
   return spans;
 }
 
+// Detection-only compatibility folding, one ASCII percent-escape layer, and a
+// finite Greek/Cyrillic lookalike table for API_KEY / Authorization / Bearer.
+const LOOKALIKES: Record<string, string> = {
+  а: "a",
+  α: "a",
+  р: "p",
+  ρ: "p",
+  і: "i",
+  ι: "i",
+  к: "k",
+  κ: "k",
+  е: "e",
+  ε: "e",
+  у: "y",
+  υ: "y",
+  о: "o",
+  ο: "o",
+  т: "t",
+  τ: "t",
+  н: "h",
+  һ: "h",
+  в: "b",
+  β: "b",
+  г: "r",
+  ζ: "z",
+  ν: "n",
+};
+function credentialForm(value: string): {
+  text: string;
+  from?: number[];
+  to?: number[];
+} {
+  if (!/[%\u0080-\uffff]/.test(value)) return { text: value };
+  const pieces: string[] = [],
+    from: number[] = [],
+    to: number[] = [];
+  for (let at = 0; at < value.length; ) {
+    const start = at;
+    let char = String.fromCodePoint(value.codePointAt(at) ?? 0);
+    at += char.length;
+    if (char === "%" && /^[0-7][0-9a-f]$/i.test(value.slice(at, at + 2))) {
+      char = String.fromCharCode(Number.parseInt(value.slice(at, at + 2), 16));
+      at += 2;
+    }
+    const normalized = char.normalize("NFKC");
+    for (const part of normalized) {
+      const mapped = LOOKALIKES[part.toLowerCase()] ?? part;
+      pieces.push(mapped === "\u2800" || mapped === "\ufff9" ? " " : mapped);
+      for (let unit = 0; unit < mapped.length; unit++) {
+        from.push(start);
+        to.push(at);
+      }
+    }
+  }
+  return { text: pieces.join(""), from, to };
+}
+
+const TOKEN_STOP = /[\s"'?,;&#{}[\]<>:=]/;
+const FRAGMENT_BREAK = /[\t\r\n\u2028\u2029"']/;
+/** Space and structural punctuation end a value. Quotes/newlines join token
+ * fragments only until a new assignment/record (name followed by : or =).
+ * Thus an ambiguous bare word on the next line is conservatively concealed.
+ */
+function credentialEnd(text: string, start: number): number {
+  let at = start;
+  while (at < text.length && !TOKEN_STOP.test(text[at] ?? "")) at++;
+  while (FRAGMENT_BREAK.test(text[at] ?? "")) {
+    let next = at;
+    while (FRAGMENT_BREAK.test(text[next] ?? "")) next++;
+    let end = next;
+    while (end < text.length && !TOKEN_STOP.test(text[end] ?? "")) end++;
+    let sign = end;
+    while (text[sign] === " " || text[sign] === "\t") sign++;
+    if (end === next || text[sign] === ":" || text[sign] === "=") break;
+    at = end;
+  }
+  return at;
+}
+
+function contextualSpans(
+  text: string,
+  bearer = false,
+): Array<[number, number]> {
+  const form = credentialForm(text),
+    value = form.text;
+  const label = bearer
+    ? /authorization[\t\r\n ]*["']?[\t\r\n ]*:[\t\r\n ]*["']?bearer[\t\r\n ]+/gi
+    : /a[\t\r\n]*p[\t\r\n]*i[\t\r\n]*_[\t\r\n]*k[\t\r\n]*e[\t\r\n]*y/gi;
+  const spans: Array<[number, number]> = [];
+  for (let match = label.exec(value); match; match = label.exec(value)) {
+    let start = match.index,
+      at = label.lastIndex;
+    let nextRecord = false;
+    if (!bearer) {
+      if (value[at] === '"' || value[at] === "'") at++;
+      const beforeSpace = at;
+      while (/\s/.test(value[at] ?? "")) at++;
+      if (value[at] === ":" || value[at] === "=") {
+        at++;
+        const afterSign = at;
+        while (/\s/.test(value[at] ?? "")) at++;
+        nextRecord = /[\r\n\u2028\u2029]/.test(value.slice(afterSign, at));
+      } else if (at === beforeSpace) continue;
+      else nextRecord = true;
+      if (value[at] === '"' || value[at] === "'") at++;
+    }
+    const end = credentialEnd(value, at);
+    if (
+      end === at ||
+      (nextRecord && (value[end] === ":" || value[end] === "="))
+    )
+      continue;
+    if (!bearer)
+      while (start > 0 && /[a-z0-9_]/i.test(value[start - 1] ?? "")) start--;
+    spans.push([form.from?.[start] ?? start, form.to?.[end - 1] ?? end]);
+    label.lastIndex = end;
+  }
+  return spans;
+}
+
+/** Fragmented vendor tokens use the existing shape and exemption after joining
+ * only tab/newline/quote fragments. Plain-space prose is never joined.
+ */
+function fragmentedTokenSpans(
+  text: string,
+  pattern: RegExp,
+  prefixes: string[],
+  exempt?: SecretPattern["exempt"],
+): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const prefix = new RegExp(
+    prefixes
+      .map((value) => [...value].join(`[\\t\\r\\n\\u2028\\u2029"']*`))
+      .join("|"),
+    "g",
+  );
+  for (let found = prefix.exec(text); found; found = prefix.exec(text)) {
+    const end = credentialEnd(text, found.index);
+    prefix.lastIndex = Math.max(prefix.lastIndex, end);
+    const token = text.slice(found.index, end);
+    if (!FRAGMENT_BREAK.test(token)) continue;
+    const joined = token.replace(/[\t\r\n\u2028\u2029"']/g, "");
+    const match = new RegExp(`^(?:${pattern.source})$`).exec(joined);
+    if (match && !exempt?.(joined, found.index, text))
+      spans.push([found.index, end]);
+  }
+  return spans;
+}
+
 export const SECRET_PATTERNS: readonly (SecretPattern | SecretFinder)[] = [
   {
     kind: "provider-api-key-assignment",
-    pattern:
-      /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|OPENROUTER_API_KEY)\s*[:=]\s*["']?[^\s"']{8,}/gi,
+    spans: contextualSpans,
+  },
+  {
+    kind: "authorization-bearer",
+    spans: (text) => contextualSpans(text, true),
+  },
+  {
+    kind: "anthropic-api-key",
+    spans: (text) =>
+      fragmentedTokenSpans(text, /sk-ant-[A-Za-z0-9_-]{20,}/g, ["sk-ant-"]),
+  },
+  {
+    kind: "openai-api-key",
+    spans: (text) =>
+      fragmentedTokenSpans(
+        text,
+        /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g,
+        ["sk-"],
+        isSlugNotKey,
+      ),
+  },
+  {
+    kind: "github-token",
+    spans: (text) =>
+      fragmentedTokenSpans(
+        text,
+        /gh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9]{20,}\w*/g,
+        ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"],
+      ),
+  },
+  {
+    kind: "aws-access-key",
+    spans: (text) => fragmentedTokenSpans(text, /AKIA[0-9A-Z]{16}/g, ["AKIA"]),
+  },
+  {
+    kind: "slack-token",
+    spans: (text) =>
+      fragmentedTokenSpans(text, /xox(?:b|p|a|r|s)-[A-Za-z0-9-]{10,}/g, [
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+        "xoxr-",
+        "xoxs-",
+      ]),
   },
   { kind: "private-key", spans: privateKeySpans },
   {
@@ -551,8 +742,9 @@ export function redactShown(value: string): Redacted {
 export function redactWritten(value: string): Redacted {
   const shown = withoutControls(value);
   if (shown === value) return redactWrittenForm(value);
-  // With only tab/LF/CRLF changed, every pattern and slug exemption treats
-  // both forms identically except PEM markers, whose spaces are literal.
+  // Turning tab/LF/CRLF into spaces cannot extend a contextual/token find:
+  // those characters join fragments as written, while spaces terminate them.
+  // The exception is PEM markers, whose spaces are literal.
   // Keep this inventory check in sync when adding patterns; actual removed
   // characters always take the mapped union path below.
   if (!MALFORMED_UTF16.test(value) && !HAS_REMOVED.test(value)) {
