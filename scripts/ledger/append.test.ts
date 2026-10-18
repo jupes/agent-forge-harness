@@ -661,6 +661,47 @@ describe("an append that finds the ledger busy", () => {
     }
   }
 
+  for (const waitMs of [NaN, Infinity, -Infinity]) {
+    test(`a non-finite busy wait (${waitMs}) uses the finite default and returns`, async () => {
+      const path = tempLedger();
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `
+        import { Database } from "bun:sqlite";
+        import { appendEvent } from ${JSON.stringify(join(import.meta.dir, "append.ts"))};
+        import { openLedger } from ${JSON.stringify(join(import.meta.dir, "db.ts"))};
+        const path = ${JSON.stringify(path)};
+        openLedger(path);
+        const holder = new Database(path);
+        holder.exec("BEGIN IMMEDIATE");
+        console.log("lock held");
+        const began = performance.now();
+        const result = appendEvent({kind:"tool.called",workspace:"w",payload:{tool:"Bash",argsHash:"fixture"}}, {path, waitMs: ${String(waitMs)}});
+        if (result.ok || !result.error.includes("locked")) throw Error("expected busy refusal");
+        if (performance.now() - began < 100) throw Error("default wait was not used");
+        holder.exec("ROLLBACK");
+        holder.close();
+        console.log("returned busy");
+      `,
+        ],
+        { stdout: "pipe", stderr: "pipe", timeout: 3_000 },
+      );
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, stdout, stderr }).toEqual({
+        code: 0,
+        stdout: "lock held\nreturned busy\n",
+        stderr: "ledger: event not recorded: database is locked\n",
+      });
+      expect(rawRows(path)).toHaveLength(0);
+    }, 5_000);
+  }
+
   test("one busy answer is retried and the event is stored once", () => {
     const path = tempLedger();
     const busy = busyFor(path, 1);

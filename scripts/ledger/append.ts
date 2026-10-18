@@ -28,7 +28,7 @@ export interface AppendOptions {
   /** The ledger file; defaults to the one under `AGENT_FORGE_HOME` / `~/.agent-forge`. */
   path?: string;
   now?: () => Date;
-  /** How long a busy ledger is retried before the event is refused: 100 ms when not given. */
+  /** Busy retry milliseconds, truncated and clamped to zero; absent/non-finite uses 100 ms. */
   waitMs?: number;
 }
 
@@ -241,7 +241,12 @@ export function appendEvent(
     if (!valid.ok) return refuse(valid.error);
     const prepared = toRow(valid.value, opts);
     if (!prepared.ok) return refuse(prepared.error);
-    return insertPaced(prepared.row, opts.path, opts.waitMs ?? APPEND_WAIT_MS);
+    const given = opts.waitMs;
+    const waitMs =
+      typeof given === "number" && Number.isFinite(given)
+        ? Math.max(0, Math.trunc(given))
+        : APPEND_WAIT_MS;
+    return insertPaced(prepared.row, opts.path, waitMs);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }
