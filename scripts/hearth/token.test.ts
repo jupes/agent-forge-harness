@@ -497,7 +497,7 @@ function swappingAcl(file: string): {
 }
 
 test.skipIf(!ON_WINDOWS)(
-  "Windows (rmo0): a tokens folder swapped, after its ACL is checked, for one that lets Everyone read: the token file is owner-only from the moment it exists, so no handle can be taken on it before its ACL is set",
+  "Windows (rmo0): a tokens folder swapped, after its ACL is checked, for one that lets Everyone read: the temp file is owner-only whenever the writer looks at it (no ACL is set by path, and it reads owner-only before the rename), and the token lands owner-only",
   () => {
     const home = temp("af-acl-home");
     const scratch = temp("af-acl-scratch");
@@ -517,6 +517,38 @@ test.skipIf(!ON_WINDOWS)(
       expect(ownerOnlyProblem(reading, "file", user)).toBeNull();
     // Written into the folder swapped in, and owner-only there.
     expect(grantsOthers(dirname(file), scratch)).toBe(true);
+    expectOwnerOnly(file, "file", user, scratch);
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows (rmo0): createOwnerOnly with nothing to write: the file is owner-only right after CreateFileW, in a folder that lets Everyone read what is made in it, and no second handle can write it",
+  () => {
+    const loose = temp("af-acl-loose");
+    system32("icacls.exe", [loose, "/grant", "*S-1-1-0:(OI)(CI)(F)"]);
+    const scratch = temp("af-acl-scratch");
+    const user = whoamiSid();
+    const native = nativeWindowsAcl();
+    const file = join(loose, "secret");
+    const draft = `${file}.tmp`;
+    let seen: AclReading | null = null;
+    let writeRefused = false;
+    native.createOwnerOnly?.(draft, file, new Uint8Array(0), (made) => {
+      // Nothing was written: this runs right after the create.
+      seen = native.read(made);
+      expect(grantsOthers(made, scratch)).toBe(false);
+      try {
+        writeFileSync(made, "x");
+      } catch {
+        writeRefused = true;
+      }
+    });
+    expect(native.createOwnerOnly).toBeDefined();
+    expect(seen).not.toBeNull();
+    expect(
+      ownerOnlyProblem(seen as unknown as AclReading, "file", user),
+    ).toBeNull();
+    expect(writeRefused).toBe(true);
     expectOwnerOnly(file, "file", user, scratch);
   },
 );

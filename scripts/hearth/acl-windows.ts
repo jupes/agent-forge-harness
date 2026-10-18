@@ -26,7 +26,7 @@
  */
 
 import type * as BunFfi from "bun:ffi";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 
 type Pointer = BunFfi.Pointer;
 
@@ -716,6 +716,8 @@ function createThroughHandle(
   held.length = 0;
   if (handle === INVALID_HANDLE)
     throw new Error(`Windows refused to create ${temp}`);
+  // Set when a failed step marked the file for deletion through its handle.
+  let deleteOnClose = true;
   try {
     const done = new Uint32Array(1);
     let at = 0;
@@ -747,15 +749,18 @@ function createThroughHandle(
       throw new Error(`Windows refused to rename ${temp} over ${file}`);
   } catch (error) {
     // FILE_DISPOSITION_INFO: DeleteFile, true. Done when the handle closes.
-    api.kernel32.SetFileInformationByHandle(
-      handle,
-      FILE_DISPOSITION_INFO,
-      new Uint8Array([1, 0, 0, 0]),
-      4,
-    );
+    deleteOnClose =
+      api.kernel32.SetFileInformationByHandle(
+        handle,
+        FILE_DISPOSITION_INFO,
+        new Uint8Array([1, 0, 0, 0]),
+        4,
+      ) !== 0;
     throw error;
   } finally {
     api.kernel32.CloseHandle(handle);
+    // A delete the handle refused: removed by its name instead, best effort.
+    if (!deleteOnClose) rmSync(temp, { force: true });
   }
 }
 
