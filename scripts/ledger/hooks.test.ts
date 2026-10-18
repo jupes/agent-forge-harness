@@ -708,7 +708,7 @@ describe("the hook scripts, given a hook payload on stdin", () => {
   for (const [ledger, feed, round] of (
     ["an already created", "an empty"] as const
   ).flatMap((l) =>
-    (["fixed-a", "fixed-b"] as const).flatMap((f) =>
+    (["100", "2000"] as const).flatMap((f) =>
       [1, 2, 3, 4, 5, 6].map((r) => [l, f, r] as const),
     ),
   )) {
@@ -738,7 +738,7 @@ describe("the hook scripts, given a hook payload on stdin", () => {
               }),
               {
                 AGENT_FORGE_HOOK_DIAG: "1",
-                AGENT_FORGE_DIAG_CLOSE: feed,
+                AGENT_FORGE_DIAG_APPEND_WAIT_MS: feed,
               },
               [],
               "blob",

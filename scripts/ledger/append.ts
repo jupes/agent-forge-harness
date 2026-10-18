@@ -146,7 +146,7 @@ function toRow(
  * How long an append keeps trying a ledger another writer holds: the 50 ms
  * wait plus the one 50 ms retry it always had, now kept by the clock.
  */
-const APPEND_WAIT_MS = 100;
+const APPEND_WAIT_MS = Number(process.env.AGENT_FORGE_DIAG_APPEND_WAIT_MS ?? "100");
 /** The shortest pause between two tries; each pause adds up to as much again at random. */
 const RETRY_PAUSE_MS = 1;
 
