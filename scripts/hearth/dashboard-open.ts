@@ -18,9 +18,10 @@
  * why there is none goes to stderr, with exit code 1.
  */
 
-import { resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { isMain } from "../is-main";
-import { dashboardRecordPath, hearthHome, lockPath, tokenPath } from "./home";
+import { hearthHome, lockPath, rootKey, tokenPath } from "./home";
 import { readHomeFile, readHomeLock } from "./home-guard";
 import {
   launchBase,
@@ -56,6 +57,49 @@ function checkedBase(url: string, from: string): string {
   }
 }
 
+/** Enumerate names only; every candidate's contents still require a checked read. */
+function dashboardBases(
+  home: string,
+  root: string,
+  alive: (pid: number) => boolean,
+): string[] {
+  const check = readHomeFile(home);
+  if (check.problem !== null) throw new NoLaunchLink(check.problem);
+  const folder = join(home, "dashboards");
+  let names: string[];
+  try {
+    names = readdirSync(folder);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const key = rootKey(root);
+  const matching = new RegExp(
+    `^${key}(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\\.json$`,
+  );
+  const bases = new Set<string>();
+  for (const name of names.sort()) {
+    if (!matching.test(name)) continue;
+    const read = readHomeFile(home, join(folder, name));
+    if (read.problem !== null) throw new NoLaunchLink(read.problem);
+    const record = read.text === null ? null : parseDashboardRecord(read.text);
+    const sameRoot =
+      record !== null &&
+      (process.platform === "win32"
+        ? resolve(record.root).toLowerCase() === root.toLowerCase()
+        : resolve(record.root) === root);
+    if (!sameRoot || record === null || !alive(record.pid)) continue;
+    // Dead registrations are ignored, never unlinked by a path after a checked read.
+    bases.add(
+      checkedBase(
+        record.url,
+        "The running dashboard is not bound to a loopback address (restart it with bun run dashboard)",
+      ),
+    );
+  }
+  return [...bases].sort();
+}
+
 /** A fresh launch link for the dashboard of `options.root`. */
 export async function freshLaunchLink(options: OpenOptions): Promise<string> {
   const root = resolve(options.root);
@@ -63,21 +107,17 @@ export async function freshLaunchLink(options: OpenOptions): Promise<string> {
   let base: string;
   if (options.url !== undefined) base = checkedBase(options.url, "--url");
   else {
-    // Read as it is checked: whoever can write the record names where the link, and its secret, go.
-    const read = readHomeFile(
-      options.home,
-      dashboardRecordPath(options.home, root),
-    );
-    if (read.problem !== null) throw new NoLaunchLink(read.problem);
-    const record = read.text === null ? null : parseDashboardRecord(read.text);
-    if (record === null || !alive(record.pid))
+    const bases = dashboardBases(options.home, root, alive);
+    if (bases.length > 1)
+      throw new NoLaunchLink(
+        `Multiple dashboards are running for ${root}:\n${bases.join("\n")}\nSelect one with --url <address>.`,
+      );
+    const found = bases[0];
+    if (found === undefined)
       throw new NoLaunchLink(
         `No dashboard is running for ${root}. Start one with: bun run dashboard (it prints a launch link), or pass --url http://127.0.0.1:<its port>.`,
       );
-    base = checkedBase(
-      record.url,
-      "The running dashboard is not bound to a loopback address (restart it with bun run dashboard)",
-    );
+    base = found;
   }
   // Read as it is checked, before its port is asked anything (`x1gs.3.38`);
   // `requestLaunch` reads it so again, and sends nothing unless it still names that port.
