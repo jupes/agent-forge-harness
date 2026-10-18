@@ -203,34 +203,29 @@ function credentialForm(value: string): {
 const TOKEN_STOP = /[\s"'?,;&#{}[\]<>:=]/;
 const VALUE_STOP = /[\s"'?,;&#{}[\]<>]/;
 const FRAGMENT_BREAK = /[\t\r\n\u2028\u2029"']/;
-function startsRecord(
-  text: string,
-  start: number,
-  limit = text.length,
-): boolean {
+function startsRecord(text: string, start: number): boolean {
   // A complete assignment is the deliberate ambiguity boundary for folded
   // values. Padding and slash-bearing base64 are not assignment grammar.
   let end = start;
-  const read = (at: number): string => (at < limit ? (text[at] ?? "") : "");
-  while (/[\t\r\n\u2028\u2029]/.test(read(end))) end++;
-  const quote = /["']/.test(read(end)) ? read(end++) : null;
-  if (!/[a-z_]/i.test(read(end))) return false;
-  while (/[a-z0-9_.-]/i.test(read(end))) end++;
-  if (quote && read(end++) !== quote) return false;
-  while (/[ \t]/.test(read(end))) end++;
-  if (read(end) !== ":" && read(end) !== "=") return false;
+  while (/[\t\r\n\u2028\u2029]/.test(text[end] ?? "")) end++;
+  const quote = /["']/.test(text[end] ?? "") ? text[end++] : null;
+  if (!/[a-z_]/i.test(text[end] ?? "")) return false;
+  while (/[a-z0-9_.-]/i.test(text[end] ?? "")) end++;
+  if (quote && text[end++] !== quote) return false;
+  while (/[ \t]/.test(text[end] ?? "")) end++;
+  if (text[end] !== ":" && text[end] !== "=") return false;
   end++;
-  while (/[ \t]/.test(read(end))) end++;
-  const literal = read(end);
+  while (/[ \t]/.test(text[end] ?? "")) end++;
+  const literal = text[end];
   if (literal !== '"' && literal !== "'")
-    return end < limit && !TOKEN_STOP.test(read(end));
+    return end < text.length && !TOKEN_STOP.test(text[end] ?? "");
   // JSON-like literals cannot contain physical line breaks. This also bounds
   // failed lookahead to one line, with no repeated remaining-suffix scans.
-  while (++end < limit) {
-    if (/[\r\n\u2028\u2029]/.test(read(end))) return false;
-    if (read(end) === literal) return true;
-    if (read(end) === "\\") {
-      if (/[\r\n\u2028\u2029]/.test(read(end + 1))) return false;
+  while (++end < text.length) {
+    if (/[\r\n\u2028\u2029]/.test(text[end] ?? "")) return false;
+    if (text[end] === literal) return true;
+    if (text[end] === "\\") {
+      if (/[\r\n\u2028\u2029]/.test(text[end + 1] ?? "")) return false;
       end++;
     }
   }
@@ -242,28 +237,22 @@ function startsRecord(
  * they signal a record only across a line/fragment or mention boundary.
  * Thus an ambiguous bare word on the next line is conservatively concealed.
  */
-function credentialEnd(
-  text: string,
-  start: number,
-  stop = VALUE_STOP,
-  limit = text.length,
-): number {
+function credentialEnd(text: string, start: number, stop = VALUE_STOP): number {
   let at = start;
-  while (at < limit && !stop.test(text[at] ?? "")) at++;
-  while (at < limit && FRAGMENT_BREAK.test(text[at] ?? "")) {
+  while (at < text.length && !stop.test(text[at] ?? "")) at++;
+  while (FRAGMENT_BREAK.test(text[at] ?? "")) {
     let next = at;
-    while (next < limit && FRAGMENT_BREAK.test(text[next] ?? "")) next++;
+    while (FRAGMENT_BREAK.test(text[next] ?? "")) next++;
     let end = next;
-    while (end < limit && !stop.test(text[end] ?? "")) end++;
+    while (end < text.length && !stop.test(text[end] ?? "")) end++;
     // Parse from the actual boundary, not the last quote of a skipped run.
     const record =
       /["']/.test(text[start - 1] ?? "") &&
       text[at] === text[start - 1] &&
-      at + 1 < limit &&
       /[\r\n\u2028\u2029]/.test(text[at + 1] ?? "")
         ? at + 1
         : at;
-    if (end === next || startsRecord(text, record, limit)) break;
+    if (end === next || startsRecord(text, record)) break;
     at = end;
   }
   return at;
@@ -276,25 +265,24 @@ function contextualSpans(
 ): Array<[number, number]> {
   const form = credentialForm(text),
     value = form.text;
-  const label = new RegExp(
-    "(" +
-      [..."authorization"].join("[\\t\\r\\n]*") +
-      `[\\t\\r\\n ]*["']?[\\t\\r\\n ]*:[\\t\\r\\n ]*["']?` +
-      [..."bearer"].join("[\\t\\r\\n]*") +
-      "[\\t\\r\\n ]*:?[\\t\\r\\n ]+)|a[\\t\\r\\n]*p[\\t\\r\\n]*i[\\t\\r\\n]*_[\\t\\r\\n]*k[\\t\\r\\n]*e[\\t\\r\\n]*y",
-    "gi",
-  );
-  // Discover BOTH kinds before consuming any values. Discovery never skips
-  // ahead by a value end, so split labels cannot be swallowed by prior values.
-  const anchors = Array.from(value.matchAll(label)).flatMap((match) => {
-    const auth = match[1] !== undefined;
+  const label = bearer
+    ? new RegExp(
+        [..."authorization"].join("[\\t\\r\\n]*") +
+          `[\\t\\r\\n ]*["']?[\\t\\r\\n ]*:[\\t\\r\\n ]*["']?` +
+          [..."bearer"].join("[\\t\\r\\n]*") +
+          "[\\t\\r\\n ]*:?[\\t\\r\\n ]+",
+        "gi",
+      )
+    : /a[\t\r\n]*p[\t\r\n]*i[\t\r\n]*_[\t\r\n]*k[\t\r\n]*e[\t\r\n]*y/gi;
+  const spans: Array<[number, number]> = [];
+  for (let match = label.exec(value); match; match = label.exec(value)) {
     let start = match.index,
-      at = match.index + match[0].length;
-    let boundary = auth ? at - 1 : at;
-    if (auth) while (/\s/.test(value[boundary - 1] ?? "")) boundary--;
+      at = label.lastIndex;
+    let boundary = bearer ? at - 1 : at;
+    if (bearer) while (/\s/.test(value[boundary - 1] ?? "")) boundary--;
     let whitespaceAssignment = false;
     let recordStart = at;
-    if (!auth) {
+    if (!bearer) {
       if (value[at] === '"' || value[at] === "'") at++;
       const beforeSpace = at;
       while (/\s/.test(value[at] ?? "")) at++;
@@ -302,22 +290,12 @@ function contextualSpans(
         at++;
         boundary = at;
         while (/\s/.test(value[at] ?? "")) at++;
-      } else if (at === beforeSpace) return [];
+      } else if (at === beforeSpace) continue;
       else whitespaceAssignment = true;
       recordStart = at;
       if (value[at] === '"' || value[at] === "'") at++;
     }
-    if (!auth)
-      while (start > 0 && /[a-z0-9_]/i.test(value[start - 1] ?? "")) start--;
-    return [{ auth, start, at, boundary, recordStart, whitespaceAssignment }];
-  });
-  const spans: Array<[number, number]> = [];
-  for (const [index, anchor] of anchors.entries()) {
-    if (anchor.auth !== bearer) continue;
-    const { start, at, boundary, recordStart, whitespaceAssignment } = anchor;
-    const limit = anchors[index + 1]?.start ?? value.length;
-    if (at >= limit) continue;
-    const end = credentialEnd(value, at, VALUE_STOP, limit);
+    const end = credentialEnd(value, at);
     // Shown text has spaces where the source had line breaks. Preserve that
     // per-call layout when deciding whether the first token is a new record.
     const lineBoundary =
@@ -328,10 +306,13 @@ function contextualSpans(
     if (
       end === at ||
       ((lineBoundary || whitespaceAssignment) &&
-        startsRecord(value, recordStart, limit))
+        startsRecord(value, recordStart))
     )
       continue;
+    if (!bearer)
+      while (start > 0 && /[a-z0-9_]/i.test(value[start - 1] ?? "")) start--;
     spans.push([form.from?.[start] ?? start, form.to?.[end - 1] ?? end]);
+    label.lastIndex = end;
   }
   return spans;
 }
