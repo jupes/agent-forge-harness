@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
@@ -1829,6 +1829,7 @@ describe("request bounds", () => {
 
 /** What a raw client saw: the answer, and whether the hearth closed the connection. */
 interface RawExchange {
+  headers: string;
   /** 0 when no status line arrived. */
   status: number;
   body: string;
@@ -1881,6 +1882,7 @@ function rawExchange(
       clearTimeout(giveUp);
       const text = received.toString("utf8");
       done({
+        headers: text.slice(0, text.indexOf("\r\n\r\n")),
         status: Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1] ?? 0),
         body: text.slice(text.indexOf("\r\n\r\n") + 4),
         answeredMs,
@@ -2123,6 +2125,38 @@ describe("request bodies (raw socket)", () => {
     expect(seen).toEqual(wanted);
     expect(probes).toEqual([]);
   }, 30_000);
+
+  test("a refused Expect body that was never requested skips the held-body wait and closes even a keep-alive connection", async () => {
+    const { h, probes } = await probed({ api: { bodyTimeoutMs: 60_000 } });
+    const timers = spyOn(globalThis, "setTimeout");
+    try {
+      const answer = await rawExchange(
+        h,
+        [
+          ...headLines(h, {
+            token: "wrong",
+            framing: "Content-Length: 2000000",
+          }),
+          "Expect: 100-continue",
+          "Connection: keep-alive",
+        ],
+        Buffer.alloc(0),
+        5_000,
+      );
+      // Observe scheduling, not elapsed wall time: an unasked body needs no wait.
+      expect(timers.mock.calls.filter((call) => call[1] === 50)).toEqual([]);
+      expect(timers.mock.calls.filter((call) => call[1] === 60_000)).toEqual(
+        [],
+      );
+      expect(answer.status).toBe(403);
+      expect(answer.headers).toMatch(/\r\nconnection: close(?:\r\n|$)/i);
+      expect(answer.closedMs).not.toBeNull();
+      expect(h.events()).toEqual([]);
+      expect(probes).toEqual([]);
+    } finally {
+      timers.mockRestore();
+    }
+  }, 10_000);
 
   test("a request that says Expect: 100-continue is answered on its head, with no 100 Continue and its body never asked for, when it does not declare the hearth's origin, presents a wrong token, declares a Content-Length over the row's cap, is not JSON, comes from another origin or names no route; authorised, it is sent 100 Continue and its body is read and acted on", async () => {
     const { h, probes } = await probed();
