@@ -23,7 +23,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import chokidar from "chokidar";
 import type { Plugin } from "vite";
@@ -39,6 +39,14 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 const OUTPUT_MAX = 8000;
 /** How long a requested rebuild waits for more requests to join it. */
 const DEBOUNCE_MS = 700;
+/**
+ * After a build ends, how long a `last-touched` change is still taken as the
+ * build's own. The watcher reports a change only once the file has been still
+ * for 400 ms (`awaitWriteFinish`, polled every 100 ms); two seconds leaves
+ * room for a loaded machine. A terminal bd command whose only trace is
+ * `last-touched`, run during a build or in this window, is not rebuilt.
+ */
+const SELF_TOUCH_GRACE_MS = 2000;
 
 export interface BuildCommand {
   file: string;
@@ -137,6 +145,149 @@ export interface RebuildPagesApi {
    * debounced with those changes. Does nothing before the dev server has started or after it closed.
    */
   rebuildSoon(): void;
+  /**
+   * Settles once the latest dev server's `.beads/` watcher is armed and has
+   * compared `.beads/` with what it held before arming: true then; false
+   * when there is no `.beads/` to watch, or the server closed first. A
+   * change made after it settles is seen by the watcher itself.
+   */
+  whenWatching(): Promise<boolean>;
+}
+
+/**
+ * Folders directly under `.beads/` that are neither watched nor listed.
+ * - `dolt/`: the embedded Dolt database. Thousands of files that Dolt
+ *   rewrites on its own (journal, chunks, garbage collection), and that a
+ *   tracker write also announces through `last-touched` or the export.
+ * - `backup/`: Dolt backups (`.darc`, a manifest), written on bd's own
+ *   schedule after the writes they copy; over 100 MB in a long-lived tracker.
+ * The pages are built from `bd export` and `issues.jsonl`, never from these.
+ */
+const IGNORED_DIRS = new Set(["dolt", "backup"]);
+
+/**
+ * Files under `.beads/` that change without a tracker write, each with the
+ * reason. The pages show nothing read from any of them.
+ */
+const IGNORED_FILES: readonly {
+  matches: (name: string) => boolean;
+  why: string;
+}[] = [
+  {
+    matches: (name) => name.startsWith("dolt-server."),
+    why: "the Dolt server's log, pid, port and lock",
+  },
+  {
+    matches: (name) => name.startsWith("bd.sock"),
+    why: "the bd daemon's socket and its start lock",
+  },
+  {
+    matches: (name) => name.startsWith("daemon."),
+    why: "the bd daemon's lock, log and pid",
+  },
+  {
+    matches: (name) =>
+      name === ".exclusive-lock" ||
+      name === ".sync.lock" ||
+      name.endsWith(".lock"),
+    why: "locks every bd command takes and drops",
+  },
+  {
+    matches: (name) => name === "sync-state.json" || name === "push-state.json",
+    why: "sync and push bookkeeping, per machine",
+  },
+  {
+    matches: (name) => name === "interactions.jsonl",
+    why: "bd's log of agent interactions, which no page reads",
+  },
+];
+// `last-touched` is watched on purpose. Under a shared Dolt server the
+// database is not under `.beads/`, and a bd command run in a terminal leaves
+// only this file behind: it is how such a write reaches the pages. bd rewrites
+// it on reads too (`bd show`), so a read can cost one debounced rebuild. The
+// build's own bd call does not rewrite it; were one to, `SELF_TOUCH_GRACE_MS`
+// keeps that from starting the next build.
+const LAST_TOUCHED = "last-touched";
+
+/** How deep under `.beads/` the watcher and the check look. */
+const WATCH_DEPTH = 10;
+
+/**
+ * Whether a path under `beadsDir` is left alone by the watcher and by the
+ * check made when it is armed: the one rule both use.
+ */
+export function isIgnoredBeadsPath(beadsDir: string, file: string): boolean {
+  const relative = path.relative(beadsDir, file);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
+    return false;
+  const parts = relative.split(/[\\/]/);
+  if (IGNORED_DIRS.has(parts[0] ?? "")) return true;
+  const name = parts[parts.length - 1] ?? "";
+  return IGNORED_FILES.some((rule) => rule.matches(name));
+}
+
+/**
+ * Each file under `dir` that the watcher would report, with its size and
+ * modification time. Two listings that differ mean a file was added,
+ * removed or rewritten between them. A file rewritten with the same size in
+ * the same clock tick is not told apart.
+ */
+export function listWatchedFiles(dir: string): Map<string, string> {
+  const files = new Map<string, string>();
+  const walk = (at: string, depth: number): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(at, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(at, entry.name);
+      if (isIgnoredBeadsPath(dir, full)) continue;
+      if (entry.isDirectory()) {
+        if (depth < WATCH_DEPTH) walk(full, depth + 1);
+        continue;
+      }
+      try {
+        const stats = statSync(full);
+        files.set(full, `${stats.size}:${stats.mtimeMs}`);
+      } catch {
+        // Removed while listed: absent, as it is now.
+      }
+    }
+  };
+  walk(dir, 0);
+  return files;
+}
+
+function sameListing(a: Map<string, string>, b: Map<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [file, stamp] of a) if (b.get(file) !== stamp) return false;
+  return true;
+}
+
+/** One server's `whenWatching` answer, settled once: the first call wins. */
+interface WatchingAnswer {
+  promise: Promise<boolean>;
+  settle(armed: boolean): void;
+  settled(): boolean;
+}
+
+function watchingAnswer(): WatchingAnswer {
+  let settled = false;
+  let resolve: (armed: boolean) => void = () => {};
+  const promise = new Promise<boolean>((done) => {
+    resolve = done;
+  });
+  return {
+    promise,
+    settle(armed) {
+      if (settled) return;
+      settled = true;
+      resolve(armed);
+    },
+    settled: () => settled,
+  };
 }
 
 export function rebuildPagesPlugin(
@@ -150,6 +301,9 @@ export function rebuildPagesPlugin(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   /** Set while the dev server runs. */
   let rebuildSoon: (() => void) | null = null;
+  /** The latest server's `whenWatching` answer. */
+  let watching = watchingAnswer();
+  let configured = false;
 
   return {
     name: "agent-forge-rebuild-pages",
@@ -159,11 +313,28 @@ export function rebuildPagesPlugin(
       rebuildSoon() {
         rebuildSoon?.();
       },
+      whenWatching() {
+        return watching.promise;
+      },
     },
     configureServer(server) {
-      const queue = createRebuildQueue(() =>
-        runBuild(command, root, timeoutMs),
-      );
+      // Each server has its own answer: a restart configures the next server
+      // before this one closes, and that close must not settle the next one's.
+      if (configured) watching = watchingAnswer();
+      configured = true;
+      const thisWatching = watching;
+      /** Builds running now, and when the last one ended plus the grace. */
+      let building = 0;
+      let quietUntil = 0;
+      const queue = createRebuildQueue(async () => {
+        building++;
+        try {
+          return await runBuild(command, root, timeoutMs);
+        } finally {
+          building--;
+          quietUntil = Date.now() + SELF_TOUCH_GRACE_MS;
+        }
+      });
       /**
        * Rebuild, then tell open pages when the build succeeded. Not a full
        * reload: that would discard what a page holds that is not saved (a
@@ -241,38 +412,68 @@ export function rebuildPagesPlugin(
         }, DEBOUNCE_MS);
       };
       rebuildSoon = schedule;
-      server.httpServer?.on("close", () => {
+
+      const beadsDir = path.join(root, ".beads");
+      let watcher: ReturnType<typeof chokidar.watch> | null = null;
+      let stopped = false;
+      const stop = (): void => {
+        if (stopped) return;
+        stopped = true;
         // A restart configures the next server before this one closes.
         if (rebuildSoon === schedule) rebuildSoon = null;
         if (debounce) clearTimeout(debounce);
-      });
+        thisWatching.settle(false);
+        void watcher?.close();
+      };
+      if (server.httpServer) server.httpServer.on("close", stop);
+      else {
+        // Middleware mode: no server of Vite's own closes, so its close does.
+        const close = server.close.bind(server);
+        server.close = async () => {
+          stop();
+          await close();
+        };
+      }
 
-      const beadsDir = path.join(root, ".beads");
-      if (!existsSync(beadsDir)) return;
+      if (!existsSync(beadsDir)) {
+        thisWatching.settle(false);
+        return;
+      }
 
-      const watcher = chokidar.watch(beadsDir, {
+      // The watcher is armed only after it has read the directory: a file
+      // written before then is part of what it starts from (`ignoreInitial`)
+      // or is not seen at all. What `.beads/` held before arming is compared
+      // with what it holds once armed, and a difference is rebuilt (czqf).
+      const before = listWatchedFiles(beadsDir);
+      watcher = chokidar.watch(beadsDir, {
         ignoreInitial: true,
-        depth: 10,
+        depth: WATCH_DEPTH,
         awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
-        ignored: [
-          "**/dolt-server.log",
-          "**/dolt-server.pid",
-          "**/dolt-server.port",
-          "**/bd.sock*",
-          "**/.exclusive-lock",
-          "**/sync-state.json",
-          "**/push-state.json",
-          "**/interactions.jsonl",
-          "**/last-touched",
-        ],
+        // chokidar 4 matches a string here only as an exact path, so the
+        // rule is a function: the one the listing uses.
+        ignored: (file: string) => isIgnoredBeadsPath(beadsDir, file),
       });
 
-      watcher.on("add", schedule);
-      watcher.on("change", schedule);
+      const changed = (file: string): void => {
+        if (
+          path.basename(file) === LAST_TOUCHED &&
+          (building > 0 || Date.now() < quietUntil)
+        )
+          return;
+        schedule();
+      };
+      watcher.on("add", changed);
+      watcher.on("change", changed);
       watcher.on("unlink", schedule);
-
-      server.httpServer?.on("close", () => {
-        void watcher.close();
+      watcher.once("ready", () => {
+        if (stopped) return;
+        if (!sameListing(before, listWatchedFiles(beadsDir))) schedule();
+        thisWatching.settle(true);
+      });
+      // A directory that cannot be read, or a scan that fails before it is
+      // armed: the answer is false rather than never.
+      watcher.on("error", () => {
+        thisWatching.settle(false);
       });
     },
   };
