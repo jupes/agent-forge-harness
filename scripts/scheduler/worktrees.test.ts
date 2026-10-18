@@ -248,7 +248,9 @@ test.skipIf(process.platform !== "win32")(
 
 /**
  * Under Bun 1.3.10 a timed synchronous spawn was given its limit less the time
- * since the previous one ended (`spawn-clock.ts`). Each test first runs git
+ * since the previous one ended. Bun >=1.4.2 fixes it upstream; older local
+ * runtimes use `spawn-clock.ts`. These remain runtime regressions on CI,
+ * rather than mutation tests of that compatibility guard. Each first runs git
  * once, so the run under test follows a timed spawn whatever ran before it,
  * also when the test runs alone, then waits out a gap.
  */

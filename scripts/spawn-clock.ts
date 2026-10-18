@@ -16,7 +16,11 @@
  */
 
 /**
- * Moves Bun's synchronous-spawn clock to now, by starting and waiting for a
+ * Bun >=1.4.2 refreshes this clock upstream (oven-sh/bun#33935). Keep this
+ * compatibility guard for older local runtimes; the pinned runtime does no
+ * work here. A prerelease is not assumed fixed by the semver range.
+ *
+ * On older Bun, moves the clock to now by starting and waiting for a
  * trivial child with no time limit: `bun --version`, about 20 ms on Windows.
  *
  * `BUN_BE_BUN=1` makes that child Bun itself also when this process is an
@@ -30,6 +34,7 @@
  */
 export function resetSpawnClock(): void {
   if (typeof Bun === "undefined") return;
+  if (Bun.semver.satisfies(Bun.version, ">=1.4.2")) return;
   try {
     Bun.spawnSync([process.execPath, "--version"], {
       env: { ...process.env, BUN_BE_BUN: "1" },
