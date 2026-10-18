@@ -51,7 +51,9 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   temp directory resolves to whatever checkout it sits in — and the adapter writes its session mirror into that
   checkout. Pass `cwd` as well — the default launch directory is the real one, which may hold a live session
   mirror. The fake prints a new session id per run; `--fake-session-id`, `--fake-no-id` and `--fake-attach` (run
-  `resolveAttach` inside the child once its id is mirrored) are in its header.
+  `resolveAttach` inside the child once its id is mirrored) are in its header. It writes its dump and attach files
+  whole or not at all (`fixtures/write-whole.ts`, a draft renamed onto the path): a hung fake killed at its timeout
+  while writing its dump once left an empty file, seen on Windows under load (`gf3s`).
 - The fake binary proves plumbing. What real CLIs have shown, on Windows, each binary run directly with the adapter's
   flags and an allowlisted environment (2026-10-08):
   - The smith's effort is passed in each provider's documented flag — `claude --effort <level>`, `codex exec -c
