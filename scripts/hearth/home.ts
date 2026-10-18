@@ -43,6 +43,22 @@ export function sessionsPath(home: string, root: string): string {
  * Where a running dashboard for this root says where it listens, so that
  * `bun run dashboard:open` can print a launch link for it. Holds no secret.
  */
-export function dashboardRecordPath(home: string, root: string): string {
-  return join(home, "dashboards", `${rootKey(root)}.json`);
+export function dashboardRecordPath(
+  home: string,
+  root: string,
+  instance?: string,
+): string {
+  // Without an instance, the legacy singleton filename remains readable.
+  if (
+    instance !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      instance,
+    )
+  )
+    throw new Error("Invalid dashboard instance id");
+  return join(
+    home,
+    "dashboards",
+    `${rootKey(root)}${instance === undefined ? "" : `-${instance}`}.json`,
+  );
 }

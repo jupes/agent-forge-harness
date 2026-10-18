@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { main } from "./dashboard-open";
+import { freshLaunchLink, main } from "./dashboard-open";
 import { dashboardRecordPath, tokenPath } from "./home";
 import type { DashboardRecord } from "./launch";
 import { exchangeLaunch, startTestHearth, type TestHearth } from "./testing";
@@ -26,17 +33,17 @@ const ENDED_PID = 2_000_000_000;
 function record(
   h: { home: string; root: string },
   fields: Partial<DashboardRecord> = {},
-): void {
+  instance?: string,
+): string {
   const written: DashboardRecord = {
     pid: process.pid,
     root: resolve(h.root),
     url: "http://127.0.0.1:4321/",
     ...fields,
   };
-  writeOwnerOnly(
-    dashboardRecordPath(h.home, h.root),
-    `${JSON.stringify(written)}\n`,
-  );
+  const path = dashboardRecordPath(h.home, h.root, instance);
+  writeOwnerOnly(path, `${JSON.stringify(written)}\n`);
+  return path;
 }
 
 /** `main` with `argv` against `home`: its exit code and what it wrote to each stream. */
@@ -61,6 +68,134 @@ async function run(
 const LINK = /^http:\/\/127\.0\.0\.1:4321\/#launch=([0-9a-f]{64})\n$/;
 
 describe("bun run dashboard:open", () => {
+  test("multiple live dashboards require explicit selection before any exchange, with deterministic plain addresses", async () => {
+    const h = await hearth();
+    record(h, { url: "http://127.0.0.1:9999/" }, randomUUID());
+    record(h, {}, randomUUID());
+    // An unreadable/missing token cannot mask ambiguity; nothing reaches the hearth.
+    rmSync(tokenPath(h.home, h.root));
+    let exchanges = 0;
+    await expect(
+      freshLaunchLink({
+        ...h,
+        exchange: async () => {
+          exchanges++;
+          throw new Error("must not exchange");
+        },
+      }),
+    ).rejects.toThrow(
+      "http://127.0.0.1:4321/\nhttp://127.0.0.1:9999/\nSelect one with --url",
+    );
+    expect(exchanges).toBe(0);
+  });
+
+  test("explicit --url selects a dashboard despite ambiguous registrations", async () => {
+    const h = await hearth();
+    record(h, {}, randomUUID());
+    record(h, { url: "http://127.0.0.1:9999/" }, randomUUID());
+    const selected = await run(
+      ["--root", h.root, "--url", "http://127.0.0.1:9999/"],
+      h.home,
+    );
+    expect(selected.code).toBe(0);
+    expect(selected.out).toStartWith("http://127.0.0.1:9999/#launch=");
+  });
+
+  test("legacy and new registrations of the same canonical address count once", async () => {
+    const h = await hearth();
+    record(h);
+    record(h, { url: "http://127.0.0.1:4321/some/path" }, randomUUID());
+    const answer = await run(["--root", h.root], h.home);
+    expect(answer.code).toBe(0);
+    expect(answer.out).toMatch(LINK);
+  });
+
+  test("dead registrations are ignored but retained; malformed, foreign-root and invalid-PID records cannot select another address", async () => {
+    const h = await hearth();
+    const dead = record(
+      h,
+      { pid: ENDED_PID, url: "http://127.0.0.1:9999/" },
+      randomUUID(),
+    );
+    const deadLegacy = record(h, { pid: ENDED_PID });
+    const malformed = record(h, {}, randomUUID());
+    writeFileSync(malformed, "{broken");
+    record(
+      h,
+      { root: join(h.root, "another"), url: "http://127.0.0.1:9999/" },
+      randomUUID(),
+    );
+    record(h, { pid: -1, url: "http://127.0.0.1:9999/" }, randomUUID());
+    // A different filename namespace is never a candidate, even with matching content.
+    record(
+      { home: h.home, root: join(h.root, "foreign") },
+      { root: h.root, url: "http://127.0.0.1:9999/" },
+      randomUUID(),
+    );
+    const live = record(h, {}, randomUUID());
+    const answer = await run(["--root", h.root], h.home);
+    expect(answer.code).toBe(0);
+    expect(answer.out).toMatch(LINK);
+    for (const path of [dead, deadLegacy, malformed, live])
+      expect(existsSync(path)).toBe(true);
+    rmSync(live);
+    const none = await run(["--root", h.root], h.home);
+    expect(none.err).toContain("No dashboard is running");
+  });
+
+  test("a registration removed after enumeration is benign", async () => {
+    const h = await hearth();
+    record(h, {}, "00000000-0000-0000-0000-000000000000");
+    const vanishing = record(
+      h,
+      { url: "http://127.0.0.1:9999/" },
+      "ffffffff-ffff-ffff-ffff-ffffffffffff",
+    );
+    const answer = await freshLaunchLink({
+      ...h,
+      isAlive: () => {
+        rmSync(vanishing, { force: true });
+        return true;
+      },
+    });
+    expect(answer).toMatch(/^http:\/\/127\.0\.0\.1:4321\/#launch=/);
+  });
+
+  test("a non-loopback live instance refuses discovery without probing or minting", async () => {
+    const h = await hearth();
+    record(h, { url: "http://evil.example:9999/" }, randomUUID());
+    let exchanges = 0;
+    await expect(
+      freshLaunchLink({
+        ...h,
+        exchange: async () => {
+          exchanges++;
+          throw new Error("must not exchange");
+        },
+      }),
+    ).rejects.toThrow("A launch link carries a secret");
+    expect(exchanges).toBe(0);
+  });
+
+  test("an unsafe candidate read refuses discovery rather than trusting another registration", async () => {
+    const h = await hearth();
+    record(h, {}, randomUUID());
+    const unsafe = dashboardRecordPath(h.home, h.root, randomUUID());
+    mkdirSync(unsafe);
+    let exchanges = 0;
+    await expect(
+      freshLaunchLink({
+        ...h,
+        exchange: async () => {
+          exchanges++;
+          throw new Error("must not exchange");
+        },
+      }),
+    ).rejects.toThrow(/not trusted|nothing in it is trusted/);
+    expect(exchanges).toBe(0);
+    expect(existsSync(unsafe)).toBe(true);
+  });
+
   test("prints a fresh launch link on the address the running dashboard recorded, and nothing else; its secret is exchanged once, and each run mints another", async () => {
     const h = await hearth();
     record(h);
