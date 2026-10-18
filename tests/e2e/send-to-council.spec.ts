@@ -153,6 +153,7 @@ test("Send to council from the issue detail panel: the bead is previewed and con
       ["council.run.started", null],
       ["council.run.finished", null],
       ["bead.transitioned", "comment"],
+      ["council.verdict.comment", null],
     ]);
   const finished = (await eventsOf(page, id)).find(
     (event) => event.kind === "council.run.finished",

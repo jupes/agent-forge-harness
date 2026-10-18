@@ -75,7 +75,27 @@ export async function postCouncilVerdict(
   const beadId = input.beadId;
   try {
     const comment = councilVerdictComment(await deps.council.wait(runId));
-    return comment === null ? null : await commentOnBead(deps, beadId, comment);
+    if (comment === null) return null;
+    const reply = await commentOnBead(deps, beadId, comment);
+    // Independent of bead.transitioned: bd can confirm a comment whose ledger
+    // record was lost. Recording this outcome can never repeat the write.
+    try {
+      deps.appendEvent({
+        kind: "council.verdict.comment",
+        workspace: deps.workspace,
+        beadId,
+        payload: {
+          councilRunId: runId,
+          status:
+            reply.status === 201
+              ? "posted"
+              : reply.status === 504
+                ? "unknown"
+                : "refused",
+        },
+      });
+    } catch {}
+    return reply;
   } catch {
     return null;
   }

@@ -243,6 +243,7 @@ export const LEDGER_EVENT_KINDS = [
   "shift.stopped",
   "council.run.started",
   "council.run.finished",
+  "council.verdict.comment",
   "friction.recorded",
   "operator.action",
 ] as const;
@@ -444,6 +445,10 @@ export interface LedgerPayloads {
      * that produced no run, and any row written before this field existed.
      */
     findings?: ReviewFindings;
+  };
+  "council.verdict.comment": {
+    councilRunId: string;
+    status: "posted" | "refused" | "unknown";
   };
   /** The friction itself is a Beads chore; this event links it to its cause. */
   "friction.recorded": { frictionBeadId: string; causeEventUlid?: string };
