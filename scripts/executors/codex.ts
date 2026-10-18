@@ -35,6 +35,7 @@ import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
 import { resolveCheckout } from "../ledger/workspace";
 import {
   createCliAdapter,
+  modelArgs,
   type ParsedLine,
   type ParsedTool,
   usageCounts,
@@ -183,8 +184,7 @@ export function createCodexAdapter(options: CodexOptions = {}) {
       "--json",
       "--sandbox",
       "workspace-write",
-      "--model",
-      request.smith.model,
+      ...modelArgs(request.smith.model),
       "-c",
       `model_reasoning_effort=${request.smith.effort}`,
       "--cd",

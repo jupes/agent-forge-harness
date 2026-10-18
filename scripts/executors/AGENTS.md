@@ -3,6 +3,7 @@
 Adapters that drive provider CLIs headlessly and turn their output into hearth events.
 
 - `cli-adapter.ts` is the shared machinery; `claude.ts` / `codex.ts` supply flags and a line parser only.
+- A smith whose model is `CLI_DEFAULT_MODEL` (`"default"`, `types/hearth.ts`) passes no `--model` (`modelArgs`), so the CLI runs the model its own config names. The built-in `codex-journeyman` uses it (x1gs.4.9): codex refuses `gpt-5-codex` for an account sign-in (HTTP 400), and no one model name was found that both sign-in types accept. The ledger records the smith's model as `default` unless the stream names the model it ran; codex's stream has not been seen to.
 - Before each Codex run, `codex:sync` runs at the top level of the checkout the executor runs in, when that checkout
   is the harness's (its main checkout or a linked worktree of it): Codex reads `.agents/skills/` from there, mirrored
   from that checkout's own `.claude/`. For a checkout of another repository (a sub-repo, `forge:doctor --task`'s

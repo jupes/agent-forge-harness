@@ -119,9 +119,18 @@ export interface VerdictArtifact {
 }
 
 /** A named, configured executor: `[smiths.<name>]` in `agent-forge.toml`. */
+/**
+ * A smith model that names none: the provider CLI runs the model it is
+ * configured with, and no `--model` is passed (`modelArgs`, x1gs.4.9). The
+ * ledger records the smith's model as this word unless the provider's stream
+ * names the model it ran.
+ */
+export const CLI_DEFAULT_MODEL = "default";
+
 export interface Smith {
   name: string;
   provider: Provider;
+  /** The provider's model id, or `CLI_DEFAULT_MODEL`. */
   model: string;
   effort: string;
   enabled: boolean;
