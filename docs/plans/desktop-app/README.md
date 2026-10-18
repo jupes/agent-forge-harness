@@ -1,6 +1,6 @@
 # Agent Forge Desktop — design inputs
 
-Generated: 2026-10-18 · Status: **ready for a Claude Design pass; nothing built yet**
+Generated: 2026-10-18 · Status: **design complete; decisions settled 2026-10-18; nothing built yet**
 
 The desktop app turns the harness into one command center: **projects**, each with a **Forge Keeper** chat (the
 project's owner agent, which can see every bead, run and session and summarizes on request), sessions with Claude,
@@ -11,12 +11,12 @@ features (beads, workbench and shifts, forge runs, council reviews, activity, sm
 |---|---|
 | [`claude-design-prompt.md`](claude-design-prompt.md) | The kickoff prompt and seven follow-up prompts to paste into Claude Design, in order |
 | [`design-brief.md`](design-brief.md) | The supporting brief: product, vocabulary, information architecture, every screen, flows, components, states, visual direction, sample data, and what each provider's CLI offers |
-| [`claude-code-handoff.md`](claude-code-handoff.md) | The handoff to Claude Code: build order, the screen map, the flows to test, the rules, and the decisions to settle first |
+| [`claude-code-handoff.md`](claude-code-handoff.md) | The handoff to Claude Code: build order, the screen map, the flows to test, the rules, and the settled decisions |
 | [`ui-pruning.md`](ui-pruning.md) | What to remove or fold from today's dashboard, with evidence and the order to do it in |
 
 This suite builds on the command-center plan in [`../command-center/`](../command-center/00-README.md). It adds two
 concepts that plan does not have: **projects** and the **Forge Keeper**. It also pushes against the plan in a few
-places, all listed under "Decisions this needs" below. Those need an owner decision before anything is built.
+places, all listed under "Decisions" below. The owner settled them on 2026-10-18.
 
 ## Running it through Claude Design
 
@@ -43,10 +43,11 @@ Designs have no version history: ask Claude to keep a page before it tries anoth
    systems; the dashboard is Preact, so check what it imports before relying on it.
 3. When the design is done, the handoff comes back to Claude Code as a design to build from.
 
-## Decisions this needs
+## Decisions (settled 2026-10-18)
 
-Settle these before anything is built. Record each as a `design:` comment on the epic and an edit to
-`../command-center/05-decisions.md` or `03-target-architecture.md` in the same PR.
+The owner settled these on 2026-10-18. The answers are in [`claude-code-handoff.md`](claude-code-handoff.md) §6 and
+are recorded as items 20–30 in `../command-center/05-decisions.md`, with item 13 amended. The `design:` comment on the
+epic waits until Beads is installed.
 
 1. **Projects** are a new top-level concept above workspaces. Where they are stored (likely the hearth's home,
    `~/.agent-forge/`), and how beads map to them (an epic, a `project:<slug>` label, or both).

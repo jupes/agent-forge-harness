@@ -102,6 +102,7 @@ tooltip ("a tracked work item") on first use.
 │ ⚙    │  ○ Gemini · idle     │                                             │                    │
 │      │ ─ Project ────────── │                                             │                    │
 │      │  Overview            │                                             │                    │
+│      │  Sessions            │                                             │                    │
 │      │  Beads               │                                             │                    │
 │      │  Workbench           │                                             │                    │
 │      │  Runs                │                                             │                    │
@@ -117,7 +118,7 @@ tooltip ("a tracked work item") on first use.
 - **Global rail** (icons with labels on hover): Projects (home), Inbox, Providers & usage, Smiths, Settings.
 - **Project sidebar:** **Forge Keeper** pinned first with an unread dot. Then **Sessions**, live: grouped as Needs
   you / Running / Idle / Observed, each row a provider monogram, a short title, and a status glyph; a "+ New session"
-  button. Then the project's destinations: Overview, Beads, Workbench, Runs, Reviews, Activity, Settings.
+  button. Then the project's destinations: Overview, Sessions, Beads, Workbench, Runs, Reviews, Activity, Settings.
 - **Inspector:** the right panel shows the selected object's details (a bead, a session, a run, an event) without
   leaving the current view. It collapses to give the main view room.
 - **Keeper drawer:** from any project screen, Ctrl/Cmd+J slides the Forge Keeper chat in from the right with the
@@ -361,7 +362,7 @@ Copy CLI command, Pop out window, Archive).
 - **Plan / to-do blocks** when the provider emits them.
 - **Turn footer:** duration, tokens in/out, cost if reported, model actually used (if it differs from the requested
   one, say so: "Requested Opus 5.5 · served Sonnet 5.5").
-- **Inline errors:** usage limit reached ("Claude Opus weekly limit reached; resets Thu 09:00.", with **Continue on another
+- **Inline errors:** usage limit reached ("Claude weekly limit reached; resets Thu 09:00.", with **Continue on another
   provider**), CLI crashed (exit code + stderr tail + **Restart**), network or auth errors with the provider's own words.
 
 **Composer.** Same as §6.7's prompt area, with the provider fixed. A compact options strip above the input shows the
@@ -375,7 +376,7 @@ Files changed, Activity (this session's ledger events), Usage.
   "Observed: running in a terminal on this machine. Activity is live; the conversation stays in the terminal." Shows
   tool activity (names, files, durations: metadata only, since the ledger stores no bodies) and status. Actions: Resume
   here (once it has ended), Activity.
-- **Shift session**: a headless run started by a shift for a bead. Read-only while running ("Started by shift
+- **Shift session**: a headless run started by a shift for a bead. Its turns stream in live, the same as in any session: messages, tool activity and the files it changes, and you can open any turn. Read-only while running ("Started by shift
   `shift-20261018-0900-a1b2` for `x1gs.9.3`"), with Stop; resumable as a chat once it ends.
 - **Teammate / subagent**: breadcrumb to the parent session.
 
@@ -427,7 +428,8 @@ concurrency, beads done / limit, spend / cap (e.g. $3.40 / $10), host load (CPU 
 state (running, throttled, stopping), **Stop**. A shift whose process died shows **Recover**. **Start shift** opens a
 dialog: duration (default 2h), concurrency (1–8, default 2), max beads (default 4), spend cap (default $10), repairs
 (0–10, default 3), epic filter, smith override, base branch, per-run timeout. Each default shows where it came from
-("from agent-forge.toml"). Copy reminds: "Shifts open draft pull requests and never merge."
+("from agent-forge.toml"). Copy reminds: "Shifts open draft pull requests and never merge." Unattended runs, shifts included, wait for local model execution (likely NemoClaw). Until then every run is
+attended, and every turn is visible.
 
 ### 6.11 Runs — P1
 
@@ -482,7 +484,7 @@ tab on beads, runs, sessions and shifts.
 never routes work by quota on its own).
 
 **One card per provider** (Claude, Codex, Gemini, Grok, OpenRouter):
-- Monogram, name, connection: CLI installed (version, path) or "Not found" with install guidance; signed in with a
+- Monogram, name, connection: CLI installed (version, path) or "Not installed" with install guidance; signed in with a
   subscription (plan name), with an API key, or signed out ("Sign in…" opens the provider's own login).
 - **Usage meters** in the provider's own terms (Appendix A says what each one reports): rolling windows with percent
   used and a reset countdown, daily request counts, monthly spend, or a credit balance. Where the provider does not
@@ -541,7 +543,7 @@ see); Integrations (register the Forge MCP tools for Claude Code, Codex and Curs
 ### 6.20 First-run onboarding — P1
 
 1. Welcome: what the app does in three lines.
-2. **Providers:** the app checks each CLI. Each row: found / not found (with the install command to copy) and signed in /
+2. **Providers:** the app checks each CLI. Each row: found / not installed (with the install command to copy) and signed in /
    signed out (with "Sign in…" opening that provider's login). Any provider can be skipped.
 3. **First project:** pick the folder (the harness root is suggested), name it.
 4. **Meet the Keeper:** the Keeper writes its first brief while the user watches; then lands on Overview.
@@ -564,16 +566,16 @@ side.
 
 ## 7. Flows to prototype end to end
 
-1. **Morning check-in.** Projects home shows "Needs you: 3" → open *Agent Forge* → Overview's Keeper brief → ask the
+1. **Morning check-in.** Projects home shows "Needs you: 9" → open *Agent Forge* → Overview's Keeper brief → ask the
    Keeper "What's blocked and why?" → the answer with bead chips → an action card "Approve 2 beads into the queue" →
    Approve → the cards update on the Workbench.
-2. **Put Codex on a bead.** Beads › Ready → select `x1gs.4.4` → **Start session** → composer pre-filled (bead bound,
+2. **Put Codex on a bead.** Beads › Ready → select `x1gs.10.1` → **Start session** → composer pre-filled (bead bound,
    new worktree) → pick Codex, model, reasoning effort, sandbox mode → Start → the session streams tool activity → a
    permission request card → Allow once → files-changed card → **Send to council**.
 3. **Leave it running.** Workbench → approve three beads → **Start shift** (2h, concurrency 2, $10 cap) → shift panel
    live → one bead halts → OS notification → open the halted bead → **Ask the Keeper** "why did this halt?" → the
    Keeper explains from the activity log and proposes a fix bead.
-4. **Choose by headroom.** Usage chip shows Claude's 5-hour window at 82% → Providers & usage → start the next session
+4. **Choose by headroom.** Usage chip shows Claude's 5-hour window at 42% → Providers & usage → start the next session
    on Gemini from the provider card.
 5. **Review a checkpoint.** Runs → active run → checkpoint "Build the primitives" → Send to council → live seats → result
    → Approve checkpoint with a note.
@@ -694,7 +696,7 @@ claude-journeyman 70 / codex-journeyman 30; high = claude-master 100.
 **Usage (Providers & usage, title-bar chip)**
 | Provider | Connected as | What the meters show |
 |---|---|---|
-| Claude | Max plan | 5-hour window 42% used, resets 14:10 · Opus weekly 100% used, resets Thu 09:00 · weekly 61%, resets Thu 09:00 |
+| Claude | Max plan | 5-hour window 42% used, resets 14:10 · weekly, all models, 100% used, resets Thu 09:00 · Fable has its own weekly budget, not used |
 | Codex | ChatGPT Pro | Weekly window 18% used, resets Mon 00:00 (no 5-hour window on Pro) |
 | Gemini | Gemini API key (Gemini CLI) | 212 requests today, counted locally · $1.90 this month |
 | Grok | SuperGrok (Grok Build) | Weekly allowance: not reported by this CLI · 1.2M tokens this week, counted locally |
@@ -767,7 +769,7 @@ do. The design should show each provider in its real shape rather than flatten t
   - Images: sent as content in the input stream; there is no flag for them.
 - **Usage the app can show.** Per run, tokens by model and a cost estimate at list prices, labelled as an estimate
   because a plan is not billed per token. For the plan itself, the stream's rate-limit events say allowed, warning or
-  rejected, with a reset time, and an experimental usage report gives the 5-hour session window and the weekly windows
+  rejected, with a reset time, and an experimental usage report gives the 5-hour session window and the weekly window for all models (Fable has its own weekly budget)
   as percent used with reset times. Running out arrives as a recognizable error ("session limit · resets 3:45pm").
   Show these as reported, marked "experimental" where they are.
 
