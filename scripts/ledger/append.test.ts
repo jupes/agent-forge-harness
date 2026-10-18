@@ -585,19 +585,37 @@ describe("an append that finds the ledger busy", () => {
    * inserts. `appendEvent` reuses the connection `openLedger` caches per path,
    * so this is the connection it writes through.
    */
-  function busyFor(path: string, times: number): { attempts: () => number } {
+  function busyFor(
+    path: string,
+    times: number,
+  ): { attempts: () => number; busyTimeouts: () => number[] } {
     const db = openLedger(path);
     const query = db.query.bind(db);
     let attempts = 0;
+    const busyTimeouts: number[] = [];
     // justification: the wrapper forwards to the real method and only adds a throw.
     db.query = ((sql: string) => {
-      if (sql.trimStart().startsWith("INSERT") && attempts++ < times)
-        throw Object.assign(new Error("database is locked"), {
-          code: "SQLITE_BUSY",
-        });
+      if (sql.trimStart().startsWith("INSERT")) {
+        busyTimeouts.push(busyTimeout(db));
+        if (attempts++ < times)
+          throw Object.assign(new Error("database is locked"), {
+            code: "SQLITE_BUSY",
+          });
+      }
       return query(sql);
     }) as typeof db.query;
-    return { attempts: () => attempts };
+    return { attempts: () => attempts, busyTimeouts: () => busyTimeouts };
+  }
+
+  function busyTimeout(db: Database): number {
+    const statement = db.prepare<{ timeout: number }, []>(
+      "PRAGMA busy_timeout",
+    );
+    try {
+      return statement.get()?.timeout ?? -1;
+    } finally {
+      statement.finalize();
+    }
   }
 
   test("one busy answer is retried and the event is stored once", () => {
@@ -610,13 +628,47 @@ describe("an append that finds the ledger busy", () => {
     expect(rawRows(path)).toHaveLength(1);
   });
 
-  test("a second busy answer is not retried again: the event is refused and nothing is stored", () => {
+  test("several busy answers inside the append's 100 ms are waited out, each try with SQLite's own busy wait off, and the connection gets its 50 ms wait back", () => {
     const path = tempLedger();
-    const busy = busyFor(path, 5);
+    const busy = busyFor(path, 3);
+    expect(appendEvent(toolCall, { path }).ok).toBe(true);
+    expect(busy.attempts()).toBe(4);
+    expect(busy.busyTimeouts()).toEqual([0, 0, 0, 0]);
+    expect(busyTimeout(openLedger(path))).toBe(50);
+    closeLedger(path);
+    expect(rawRows(path)).toHaveLength(1);
+  });
+
+  test("a ledger that stays busy is retried until 100 ms have passed, then the event is refused and nothing is stored", () => {
+    const path = tempLedger();
+    const busy = busyFor(path, Number.POSITIVE_INFINITY);
+    const began = performance.now();
     const result = appendEvent(toolCall, { path });
+    const waited = performance.now() - began;
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("locked");
-    expect(busy.attempts()).toBe(2);
+    expect(waited).toBeGreaterThanOrEqual(100);
+    expect(waited).toBeLessThan(1000);
+    expect(busy.attempts()).toBeGreaterThan(2);
+    expect(busyTimeout(openLedger(path))).toBe(50);
+    closeLedger(path);
+    expect(rawRows(path)).toHaveLength(0);
+  });
+
+  test("another connection's write lock held throughout: the append gives up after its 100 ms and stores nothing", () => {
+    const path = tempLedger();
+    openLedger(path);
+    const holder = new Database(path);
+    holder.exec("BEGIN IMMEDIATE");
+    const began = performance.now();
+    const result = appendEvent(toolCall, { path });
+    const waited = performance.now() - began;
+    holder.exec("ROLLBACK");
+    holder.close();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("locked");
+    expect(waited).toBeGreaterThanOrEqual(100);
+    expect(waited).toBeLessThan(1000);
     closeLedger(path);
     expect(rawRows(path)).toHaveLength(0);
   });

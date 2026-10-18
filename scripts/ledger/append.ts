@@ -7,11 +7,12 @@
  * stderr line.
  */
 
+import type { Database } from "bun:sqlite";
 import type { LedgerEventInput } from "../../types/hearth";
 import { comparableCheckout } from "../forge/runs";
 import { validateLedgerEventInput } from "../hearth/validate";
 import { redactSecrets } from "../secret-patterns";
-import { isBusy, openLedger } from "./db";
+import { isBusy, openLedger, withoutBusyWait } from "./db";
 import { stripPayload } from "./payload-allowlist";
 import { capSummary, redactDeep } from "./redact";
 import { ulid as mintUlid } from "./ulid";
@@ -141,8 +142,34 @@ function toRow(
   };
 }
 
-function insert(row: Row, path: string | undefined): AppendResult {
-  const db = openLedger(path);
+/**
+ * How long an append keeps trying a ledger another writer holds: the 50 ms
+ * wait plus the one 50 ms retry it always had, now kept by the clock.
+ */
+const APPEND_WAIT_MS = 100;
+/** The shortest pause between two tries; each pause adds up to as much again at random. */
+const RETRY_PAUSE_MS = 1;
+
+/**
+ * Insert, retrying a busy ledger with short, jittered pauses until
+ * `APPEND_WAIT_MS` have passed. SQLite's own wait is off while it tries: on
+ * Windows that wait sleeps whole timer ticks, so writers that met at the lock
+ * took it one per tick, and eight hooks' writes outlasted an append's wait.
+ */
+function insertPaced(row: Row, path: string | undefined): AppendResult {
+  const deadline = performance.now() + APPEND_WAIT_MS;
+  for (;;) {
+    try {
+      const db = openLedger(path);
+      return withoutBusyWait(db, () => insert(db, row));
+    } catch (error) {
+      if (!isBusy(error) || performance.now() >= deadline) throw error;
+      Bun.sleepSync(RETRY_PAUSE_MS * (1 + Math.random()));
+    }
+  }
+}
+
+function insert(db: Database, row: Row): AppendResult {
   const result = db
     .query(INSERT)
     .run(
@@ -181,7 +208,7 @@ function insert(row: Row, path: string | undefined): AppendResult {
  * redacted; an event whose workspace, bead, run, session or ulid is
  * secret-shaped is refused. A repeated `ulid`, or a second `session.started`
  * for a session, is reported as `duplicate` and stores nothing. An insert that
- * finds the ledger busy is tried once more, then refused.
+ * finds the ledger busy is tried again for up to 100 ms, then refused.
  */
 export function appendEvent(
   input: LedgerEventInput,
@@ -192,12 +219,7 @@ export function appendEvent(
     if (!valid.ok) return refuse(valid.error);
     const prepared = toRow(valid.value, opts);
     if (!prepared.ok) return refuse(prepared.error);
-    try {
-      return insert(prepared.row, opts.path);
-    } catch (error) {
-      if (!isBusy(error)) throw error;
-      return insert(prepared.row, opts.path);
-    }
+    return insertPaced(prepared.row, opts.path);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }

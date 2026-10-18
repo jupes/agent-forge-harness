@@ -43,10 +43,29 @@ export const LEDGER_SCHEMA_VERSION = MIGRATIONS.length;
 
 /** How long a first open waits for another process that is creating the schema. */
 const MIGRATION_BUSY_MS = 2000;
-/** How long an append waits on a writer before giving up: hooks must stay fast. */
+/**
+ * How long a statement on an open ledger waits on another writer: hooks must
+ * stay fast. SQLite counts this wait in nominal sleeps, and on Windows each
+ * sleep lasts at least one ~15.6 ms timer tick, so the real wait is about
+ * twice this and waiters take the lock in turns of one per tick.
+ */
 const APPEND_BUSY_MS = 50;
 
 const connections = new Map<string, Database>();
+
+/**
+ * Run `work` with SQLite's own busy wait off on `db`, so a lock another
+ * connection holds fails it with SQLITE_BUSY at once and the caller paces its
+ * own retries; the connection's usual wait is restored afterwards.
+ */
+export function withoutBusyWait<T>(db: Database, work: () => T): T {
+  db.exec("PRAGMA busy_timeout = 0");
+  try {
+    return work();
+  } finally {
+    db.exec(`PRAGMA busy_timeout = ${APPEND_BUSY_MS}`);
+  }
+}
 
 function userVersion(db: Database): number {
   const row = db
