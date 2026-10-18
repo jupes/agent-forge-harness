@@ -207,8 +207,7 @@ function startsRecord(text: string, start: number): boolean {
   // A complete assignment is the deliberate ambiguity boundary for folded
   // values. Padding and slash-bearing base64 are not assignment grammar.
   let end = start;
-  while (/[\t\r\n\u2028\u2029]/.test(text[end] ?? "")) end++;
-  const quote = /["']/.test(text[end] ?? "") ? text[end++] : null;
+  const quote = /["']/.test(text[start - 1] ?? "") ? text[start - 1] : null;
   if (!/[a-z_]/i.test(text[end] ?? "")) return false;
   while (/[a-z0-9_.-]/i.test(text[end] ?? "")) end++;
   if (quote && text[end++] !== quote) return false;
@@ -245,14 +244,7 @@ function credentialEnd(text: string, start: number, stop = VALUE_STOP): number {
     while (FRAGMENT_BREAK.test(text[next] ?? "")) next++;
     let end = next;
     while (end < text.length && !stop.test(text[end] ?? "")) end++;
-    // Parse from the actual boundary, not the last quote of a skipped run.
-    const record =
-      /["']/.test(text[start - 1] ?? "") &&
-      text[at] === text[start - 1] &&
-      /[\r\n\u2028\u2029]/.test(text[at + 1] ?? "")
-        ? at + 1
-        : at;
-    if (end === next || startsRecord(text, record)) break;
+    if (end === next || startsRecord(text, next)) break;
     at = end;
   }
   return at;
@@ -281,7 +273,6 @@ function contextualSpans(
     let boundary = bearer ? at - 1 : at;
     if (bearer) while (/\s/.test(value[boundary - 1] ?? "")) boundary--;
     let whitespaceAssignment = false;
-    let recordStart = at;
     if (!bearer) {
       if (value[at] === '"' || value[at] === "'") at++;
       const beforeSpace = at;
@@ -292,7 +283,6 @@ function contextualSpans(
         while (/\s/.test(value[at] ?? "")) at++;
       } else if (at === beforeSpace) continue;
       else whitespaceAssignment = true;
-      recordStart = at;
       if (value[at] === '"' || value[at] === "'") at++;
     }
     const end = credentialEnd(value, at);
@@ -305,8 +295,7 @@ function contextualSpans(
       );
     if (
       end === at ||
-      ((lineBoundary || whitespaceAssignment) &&
-        startsRecord(value, recordStart))
+      ((lineBoundary || whitespaceAssignment) && startsRecord(value, at))
     )
       continue;
     if (!bearer)
