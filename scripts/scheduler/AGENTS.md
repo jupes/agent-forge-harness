@@ -317,10 +317,12 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   admit that failed included) that fails as `failed` or `unknown` (bd failed, or ended with no exit
   status: killed, as a terminal's Ctrl-C kills the shift's own `bd` on Linux and macOS) is made
   again, `SETTLE_TRIES` (3) times in all, `SETTLE_RETRY_MS` (200 ms) apart (`x1gs.5.4.16`).
-  - **Bounded:** all tries share `SETTLE_RETRY_BUDGET_MS` (4 s), including the first. It caps their
-    queue-lock wait and every bd call they make (the runner's `timeoutMs`), and no try starts once
-    it is spent. This also bounds a stop arriving while the first try is in flight: that try no
-    longer has the lock's 10 s wait or bd's 30 s per-call limit. Retry sleeps add at most 400 ms.
+  - **Bounded:** the tries after the first share `SETTLE_RETRY_BUDGET_MS` (4 s), and so does the
+    first once the shift is stopping (its in-process signal aborted, as a Ctrl-C does). It caps
+    their queue-lock wait and every bd call they make (the runner's `timeoutMs`), and no try starts
+    once it is spent; retry sleeps add at most 400 ms. A move made with no stop keeps the lock's
+    10 s wait and bd's 30 s limit on its first try, so a slow tracker does not leave the bead
+    `running` (t1sn). A stop that lands while such a first try is in flight is not shortened.
   - **Not after `busy`:** that answer has already waited the whole lock wait, so the lock is
     stuck. Three such tries (about 30.4 s) would outlast the CLI's 30 s Ctrl-C grace
     (`INTERRUPT_GRACE_MS`) and end the process 130 with its record `running`.

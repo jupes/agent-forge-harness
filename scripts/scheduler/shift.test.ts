@@ -1965,6 +1965,21 @@ describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races
     expect(r.reservations()).toBe(0);
   });
 
+  test("t1sn: a move made with no stop keeps bd's own limit on its first try, so a slow tracker does not leave the bead running", async () => {
+    const r = rig([queued("t-1")]);
+    const answer = r.deps.runBd;
+    const limits: Array<number | undefined> = [];
+    r.deps.runBd = async (args, options) => {
+      if (args[0] === "update" && args.includes("--add-label=queue:review"))
+        limits.push(options?.timeoutMs);
+      return answer(args, options);
+    };
+    const done = await shift(r);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "review" });
+    expect(limits).toHaveLength(1);
+    expect(limits[0] ?? Infinity).toBeGreaterThan(4_000);
+  });
+
   test("a submit whose bd was killed after its write landed (x1gs.5.4.16): the bead is found in review with no queue move recorded since the run's start, so the submit counts and the draft pull request is opened", async () => {
     const r = rig([queued("t-1")]);
     const submits = killedOnce(r, "t-1", { landed: true, to: "review" });

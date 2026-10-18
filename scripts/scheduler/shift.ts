@@ -137,10 +137,10 @@ const SMITH_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * most `SETTLE_TRIES` times, `SETTLE_RETRY_MS` apart, and made again only
  * after bd failed or was killed (`unknown`: no exit status). Not after
  * `busy`: that answer has already waited out the queue lock's whole wait
- * (capped by the shared budget), so another wait would add nothing. A
- * refusal, a bead gone or a conflict is final. Every try
- * shares `SETTLE_RETRY_BUDGET_MS`: it bounds the lock wait and each bd call,
- * including the first try, so a stop arriving during it is bounded too.
+ * (the shared budget once stopping), so another wait would add nothing. A
+ * refusal, a bead gone or a conflict is final. The tries after the first
+ * share `SETTLE_RETRY_BUDGET_MS`: it bounds the lock wait and each bd call.
+ * The first try shares it only once the shift is stopping.
  */
 const SETTLE_TRIES = 3;
 const SETTLE_RETRY_MS = 200;
@@ -703,8 +703,11 @@ export async function runShift(
     action: "submit" | "release" | "halt",
     outcome: ShiftBeadRecord["outcome"],
   ): Promise<Unmoved | null> {
-    // Bound even the first try: a stop can arrive while its bd is running.
-    const until = Date.now() + SETTLE_RETRY_BUDGET_MS;
+    // Once the shift is stopping (a Ctrl-C has `INTERRUPT_GRACE_MS`), the
+    // first try shares the budget too. An ordinary move keeps the lock's whole
+    // wait and bd's own limit: a slow tracker must not leave the bead running.
+    const stopping = deps.signal?.aborted === true;
+    let until = Date.now() + SETTLE_RETRY_BUDGET_MS;
     const left = () => Math.max(1, until - Date.now());
     const bounded: BdRunner = (args, options) =>
       deps.runBd(args, {
@@ -714,13 +717,17 @@ export async function runShift(
           left(),
         ),
       });
-    let moved = await createQueue({
-      workspace,
-      runBd: bounded,
-      appendEvent: appendFor(entry.runId),
-      lockFile: deps.lockFile,
-      lockWaitMs: Math.min(left(), deps.lockWaitMs ?? Infinity),
-    }).move(entry.beadId, action, "scheduler");
+    let moved = await (stopping
+      ? createQueue({
+          workspace,
+          runBd: bounded,
+          appendEvent: appendFor(entry.runId),
+          lockFile: deps.lockFile,
+          lockWaitMs: Math.min(left(), deps.lockWaitMs ?? Infinity),
+        })
+      : queueFor(entry.runId)
+    ).move(entry.beadId, action, "scheduler");
+    if (!stopping) until = Date.now() + SETTLE_RETRY_BUDGET_MS;
     if (moved.ok) {
       entry.outcome = outcome;
       return null;
