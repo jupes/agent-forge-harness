@@ -109,15 +109,29 @@ async function hook(
   stdin: unknown,
   extraEnv: Record<string, string> = {},
   args: string[] = [],
+  feed: "blob" | "pipe" = "blob",
 ): Promise<Ran> {
   const body = typeof stdin === "string" ? stdin : JSON.stringify(stdin);
-  const child = Bun.spawn([process.execPath, "run", script, ...args], {
+  const options = {
     cwd: box.cwd,
     env: childEnv(box, extraEnv),
-    stdin: new Blob([body]),
     stdout: "pipe",
     stderr: "pipe",
-  });
+  } as const;
+  const child =
+    feed === "pipe"
+      ? Bun.spawn([process.execPath, "run", script, ...args], {
+          ...options,
+          stdin: "pipe",
+        })
+      : Bun.spawn([process.execPath, "run", script, ...args], {
+          ...options,
+          stdin: new Blob([body]),
+        });
+  if (feed === "pipe" && typeof child.stdin === "object" && child.stdin) {
+    child.stdin.write(body);
+    void child.stdin.end();
+  }
   const [stdout, stderr] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -691,9 +705,15 @@ describe("the hook scripts, given a hook payload on stdin", () => {
     SPAWN_TIMEOUT_MS,
   );
 
-  for (const ledger of ["an already created", "an empty"] as const) {
+  for (const [ledger, feed, round] of (
+    ["an already created", "an empty"] as const
+  ).flatMap((l) =>
+    (["fixed-a", "fixed-b"] as const).flatMap((f) =>
+      [1, 2, 3, 4, 5, 6].map((r) => [l, f, r] as const),
+    ),
+  )) {
     test(
-      `eight concurrent tool-call hooks for a new subagent against ${ledger} ledger all exit 0, never leave a second session.started and lose at most one tool.called`,
+      `eight concurrent tool-call hooks for a new subagent against ${ledger} ledger all exit 0, never leave a second session.started and lose at most one tool.called [${feed} #${round}]`,
       async () => {
         const box = sandbox();
         if (ledger === "an already created") {
@@ -716,7 +736,22 @@ describe("the hook scripts, given a hook payload on stdin", () => {
                 tool_name: "Grep",
                 tool_input: { pattern: `p-${index}` },
               }),
+              {
+                AGENT_FORGE_HOOK_DIAG: "1",
+                AGENT_FORGE_DIAG_CLOSE: feed,
+              },
+              [],
+              "blob",
             ),
+          ),
+        );
+        const seen = events(box).filter((event) => event.sessionId === "S:A");
+        console.error(
+          `DIAGSUM ledger=${ledger} feed=${feed} round=${round} tool.called=${seen.filter((e) => e.kind === "tool.called").length} started=${seen.filter((e) => e.kind === "session.started").length}`,
+        );
+        runs.forEach((ran, index) =>
+          console.error(
+            `DIAGCHILD ${feed}#${round} child=${index} exit=${ran.exitCode}\n${ran.stderr}`,
           ),
         );
         expect(runs.map((ran) => ran.exitCode)).toEqual(Array(8).fill(0));

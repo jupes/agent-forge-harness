@@ -24,12 +24,22 @@ import {
   hookDeps,
   probeKeys,
 } from "../../scripts/ledger/hook-events";
+import { closeLedger } from "../../scripts/ledger/db";
 import { ledgerHome } from "../../scripts/ledger/paths";
 import {
   type HookInput,
   isAdapterChild,
   readHookInput,
+  readHookStdin,
 } from "./utils/hook-input";
+
+const DIAG = process.env.AGENT_FORGE_HOOK_DIAG === "1";
+function diag(line: string): void {
+  if (DIAG)
+    process.stderr.write(
+      `DIAG pid=${process.pid} t=${Math.round(performance.now())} abs=${Date.now() % 100000} ${line}\n`,
+    );
+}
 
 const HANDLERS: Readonly<
   Record<string, (input: HookInput, deps: HookDeps) => void>
@@ -50,7 +60,23 @@ function probe(input: HookInput): void {
 
 async function main(): Promise<void> {
   if (isAdapterChild()) return;
-  const input = await readHookInput();
+  let input: HookInput | null;
+  if (DIAG) {
+    const began = performance.now();
+    const read = await readHookStdin();
+    const detail =
+      read.kind === "none"
+        ? read.reason
+        : read.kind === "malformed"
+          ? read.error
+          : "ok";
+    diag(
+      `stdin=${read.kind}:${detail} readMs=${Math.round(performance.now() - began)}`,
+    );
+    input = read.kind === "payload" ? read.input : null;
+  } else {
+    input = await readHookInput();
+  }
   if (input === null) return;
   if (process.env.AGENT_FORGE_HOOK_PROBE === "1") {
     try {
@@ -62,11 +88,26 @@ async function main(): Promise<void> {
   const name = input.hook_event_name;
   const handler = typeof name === "string" ? HANDLERS[name] : undefined;
   if (handler === undefined) return;
-  handler(input, hookDeps({ env: process.env, cwd: process.cwd() }));
+  const deps = hookDeps({ env: process.env, cwd: process.cwd() });
+  const append = deps.append;
+  deps.append = (event) => {
+    const began = performance.now();
+    const result = append(event);
+    diag(
+      `append ${event.kind} -> ${JSON.stringify(result)} ms=${Math.round(performance.now() - began)}`,
+    );
+    return result;
+  };
+  handler(input, deps);
+  diag("handler done");
+  const closing = performance.now();
+  if (process.env.AGENT_FORGE_DIAG_CLOSE === "explicit") closeLedger();
+  diag(`closed closeMs=${Math.round(performance.now() - closing)}`);
 }
 
 main()
   .catch((error: unknown) => {
+    diag(`threw ${error instanceof Error ? error.stack : String(error)}`);
     console.error(
       `ledger-hook: ${error instanceof Error ? error.message : String(error)}`,
     );
