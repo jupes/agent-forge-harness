@@ -22,7 +22,7 @@ Save as:
 # Session handoff
 
 ## Continuation ID
-- Beads: <epic or task id>
+- Beads: <epic or task id> (<what it is, in a few plain words>)
 - Branch: <name>
 - Last commit: <sha> — <one-line summary>
 
