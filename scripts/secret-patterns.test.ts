@@ -977,3 +977,36 @@ test("27mf attack: ordered coverage preserves dense composed-form spans", async 
     }
   }
 });
+
+test("27mf attack: credential punctuation is a value, not a fresh record", async () => {
+  const { redactShown } = await import("./secret-patterns");
+  const { redactDeep } = await import("./ledger/redact");
+  const { scanNamed } = await import("./council/context");
+  for (const input of [
+    "Authorization: Bearer abc.def==",
+    "API_KEY=FakeHead9=",
+    '{"API_KEY":"FakeHead9:FakeTail9"}',
+    "?api_key=FakeHead9=FakeTail9&next=kept",
+    "Authorization: Bearer FakeHead9:FakeTail9",
+    "API_KEY= FakeHead9=FakeTail9",
+  ]) {
+    for (const redact of [redactSecrets, redactShown]) {
+      const result = redact(input);
+      expect(result.redactions.length).toBeGreaterThan(0);
+      expect(result.text).not.toContain("FakeHead9");
+      expect(result.text).not.toContain("FakeTail9");
+      expect(result.text).not.toContain("abc.def");
+      expect(redact(result.text).redactions).toEqual([]);
+    }
+    expect(() => scanNamed(input, "reject", "fixture", new Map())).toThrow();
+    expect(JSON.stringify(redactDeep({ input }))).not.toContain("FakeHead9");
+    const spans = secretSpans(input);
+    let result = "",
+      kept = 0;
+    for (const span of spans) {
+      result += input.slice(kept, span.start) + `[REDACTED:${span.kind}]`;
+      kept = span.end;
+    }
+    expect(result + input.slice(kept)).toBe(redactWrittenForm(input).text);
+  }
+});

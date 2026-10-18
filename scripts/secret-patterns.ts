@@ -201,24 +201,29 @@ function credentialForm(value: string): {
 }
 
 const TOKEN_STOP = /[\s"'?,;&#{}[\]<>:=]/;
+const VALUE_STOP = /[\s"'?,;&#{}[\]<>]/;
 const FRAGMENT_BREAK = /[\t\r\n\u2028\u2029"']/;
-function startsRecord(text: string, end: number): boolean {
+function startsRecord(text: string, start: number): boolean {
+  let end = start;
+  while (end < text.length && !TOKEN_STOP.test(text[end] ?? "")) end++;
   while (/["' \t]/.test(text[end] ?? "")) end++;
   return text[end] === ":" || text[end] === "=";
 }
 /** Space and structural punctuation end a value. Quotes/newlines join token
  * fragments only until a new assignment/record (name followed by : or =).
+ * Colons and equals belong to an assigned value, including base64 padding;
+ * they signal a record only across a line/fragment or mention boundary.
  * Thus an ambiguous bare word on the next line is conservatively concealed.
  */
-function credentialEnd(text: string, start: number): number {
+function credentialEnd(text: string, start: number, stop = VALUE_STOP): number {
   let at = start;
-  while (at < text.length && !TOKEN_STOP.test(text[at] ?? "")) at++;
+  while (at < text.length && !stop.test(text[at] ?? "")) at++;
   while (FRAGMENT_BREAK.test(text[at] ?? "")) {
     let next = at;
     while (FRAGMENT_BREAK.test(text[next] ?? "")) next++;
     let end = next;
-    while (end < text.length && !TOKEN_STOP.test(text[end] ?? "")) end++;
-    if (end === next || startsRecord(text, end)) break;
+    while (end < text.length && !stop.test(text[end] ?? "")) end++;
+    if (end === next || startsRecord(text, next)) break;
     at = end;
   }
   return at;
@@ -227,6 +232,7 @@ function credentialEnd(text: string, start: number): number {
 function contextualSpans(
   text: string,
   bearer = false,
+  layout = text,
 ): Array<[number, number]> {
   const form = credentialForm(text),
     value = form.text;
@@ -243,18 +249,34 @@ function contextualSpans(
   for (let match = label.exec(value); match; match = label.exec(value)) {
     let start = match.index,
       at = label.lastIndex;
+    let boundary = bearer ? at - 1 : at;
+    if (bearer) while (/\s/.test(value[boundary - 1] ?? "")) boundary--;
+    let whitespaceAssignment = false;
     if (!bearer) {
       if (value[at] === '"' || value[at] === "'") at++;
       const beforeSpace = at;
       while (/\s/.test(value[at] ?? "")) at++;
       if (value[at] === ":" || value[at] === "=") {
         at++;
+        boundary = at;
         while (/\s/.test(value[at] ?? "")) at++;
       } else if (at === beforeSpace) continue;
+      else whitespaceAssignment = true;
       if (value[at] === '"' || value[at] === "'") at++;
     }
     const end = credentialEnd(value, at);
-    if (end === at || startsRecord(value, end)) continue;
+    // Shown text has spaces where the source had line breaks. Preserve that
+    // per-call layout when deciding whether the first token is a new record.
+    const lineBoundary =
+      /[\r\n\u2028\u2029]/.test(value.slice(boundary, at)) ||
+      /[\r\n\u2028\u2029]/.test(
+        layout.slice(form.from?.[boundary] ?? boundary, form.from?.[at] ?? at),
+      );
+    if (
+      end === at ||
+      ((lineBoundary || whitespaceAssignment) && startsRecord(value, at))
+    )
+      continue;
     if (!bearer)
       while (start > 0 && /[a-z0-9_]/i.test(value[start - 1] ?? "")) start--;
     spans.push([form.from?.[start] ?? start, form.to?.[end - 1] ?? end]);
@@ -280,7 +302,7 @@ function fragmentedTokenSpans(
     "g",
   );
   for (let found = prefix.exec(text); found; found = prefix.exec(text)) {
-    const end = credentialEnd(text, found.index);
+    const end = credentialEnd(text, found.index, TOKEN_STOP);
     prefix.lastIndex = Math.max(prefix.lastIndex, end);
     const token = text.slice(found.index, end);
     if (!FRAGMENT_BREAK.test(token)) continue;
@@ -398,7 +420,17 @@ export interface SecretSpan {
 function spansOf(
   text: string,
   secret: SecretPattern | SecretFinder,
+  layout = text,
 ): Array<[number, number]> {
+  if (
+    secret.kind === "provider-api-key-assignment" ||
+    secret.kind === "authorization-bearer"
+  )
+    return contextualSpans(
+      text,
+      secret.kind === "authorization-bearer",
+      layout,
+    );
   if ("spans" in secret) return secret.spans(text);
   const spans: Array<[number, number]> = [];
   for (const match of text.matchAll(secret.pattern)) {
@@ -422,14 +454,21 @@ function spansOf(
  * that can be laid over each other.
  */
 export function secretSpans(text: string): SecretSpan[] {
+  return locateSecrets(text, text);
+}
+function locateSecrets(text: string, sourceLayout: string): SecretSpan[] {
   let current = text;
+  let layout =
+    sourceLayout === text || !/[\r\n\u2028\u2029]/.test(sourceLayout)
+      ? null
+      : sourceLayout;
   // For each character of `current`, the span of `text` it stands for, and the
   // kind when it belongs to a marker. Made at the first hit: most texts have none.
   let from: number[] | null = null;
   let to: number[] | null = null;
   let kinds: Array<string | null> | null = null;
   for (const secret of SECRET_PATTERNS) {
-    const found = spansOf(current, secret);
+    const found = spansOf(current, secret, layout ?? current);
     if (found.length === 0) continue;
     if (from === null || to === null || kinds === null) {
       from = Array.from({ length: current.length }, (_, at) => at);
@@ -440,9 +479,11 @@ export function secretSpans(text: string): SecretSpan[] {
     const nextTo: number[] = [];
     const nextKinds: Array<string | null> = [];
     const pieces: string[] = [];
+    const layoutPieces: string[] | null = layout === null ? null : [];
     let kept = 0;
     const keep = (until: number): void => {
       pieces.push(current.slice(kept, until));
+      layoutPieces?.push(layout?.slice(kept, until) ?? "");
       for (let at = kept; at < until; at++) {
         nextFrom.push(from?.[at] ?? at);
         nextTo.push(to?.[at] ?? at + 1);
@@ -454,6 +495,7 @@ export function secretSpans(text: string): SecretSpan[] {
       const marker = `[REDACTED:${secret.kind}]`;
       const covered = [from[start] ?? start, to[end - 1] ?? end] as const;
       pieces.push(marker);
+      layoutPieces?.push(marker);
       for (let at = 0; at < marker.length; at++) {
         nextFrom.push(covered[0]);
         nextTo.push(covered[1]);
@@ -463,6 +505,7 @@ export function secretSpans(text: string): SecretSpan[] {
     }
     keep(current.length);
     current = pieces.join("");
+    layout = layoutPieces?.join("") ?? null;
     from = nextFrom;
     to = nextTo;
     kinds = nextKinds;
@@ -689,7 +732,7 @@ function secretsInAnyForm(value: string): {
     // By construction never: each code unit replaced is one space.
     throw new Error("the shown form of a text must keep its length");
   const written = secretSpans(value);
-  const seen = shown === value ? [] : secretSpans(shown);
+  const seen = shown === value ? [] : locateSecrets(shown, value);
   const joined = shown === value ? null : withoutInvisible(value);
   const whole =
     joined === null
