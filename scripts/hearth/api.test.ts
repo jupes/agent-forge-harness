@@ -1187,6 +1187,17 @@ describe("every action row (iterating the table)", () => {
   });
 });
 
+/**
+ * How long a locked ledger may hold the hearth: loose enough for a loaded
+ * machine (de16: a 1.5 s bound on each answer failed under parallel load),
+ * well under what a hearth that waits on the lock takes. Without its zero
+ * first-open wait (`LEDGER_FIRST_OPEN_WAIT_MS`) an action took 12 to 20 s, and
+ * a read row 3 to 6 s; the read limit is for each row that reads the ledger,
+ * summed over the whole matrix.
+ */
+const ACTION_LOCKED_LIMIT_MS = 6_000;
+const READ_LOCKED_LIMIT_MS = 1_500;
+
 /** Hold the write lock on `file` from another connection until `release` is called. */
 function holdWriteLock(file: string): { release(): void } {
   const holder = new Database(file, { create: true });
@@ -1200,12 +1211,17 @@ function holdWriteLock(file: string): { release(): void } {
 }
 
 describe("an action while another connection holds the write lock on the hearth's ledger file", () => {
-  /** Both answers must arrive before the caller releases the write lock. */
+  /**
+   * Both answers must arrive before the caller releases the write lock, and
+   * within `ACTION_LOCKED_LIMIT_MS`.
+   */
   async function actionAndGetWhileLocked(h: TestHearth): Promise<void> {
+    const sent = performance.now();
     const [response, health] = await Promise.all([
       post(h, "/dev-api/forge-run/review", REVIEW),
       fetch(`${h.hearth.url}${HEALTH_ROUTE}`),
     ]);
+    expect(performance.now() - sent).toBeLessThan(ACTION_LOCKED_LIMIT_MS);
     expect(response.status).toBe(503);
     const body = await envelope(response);
     expect(body.ok).toBe(false);
@@ -1322,6 +1338,7 @@ describe("a read row or the stream while another connection holds the write lock
       ok: boolean;
     }> = [];
     try {
+      const sent = performance.now();
       for (const row of rows) {
         const [response, health] = await Promise.all([
           get(h, pathOf(row)).then(answered),
@@ -1334,6 +1351,9 @@ describe("a read row or the stream while another connection holds the write lock
         await health.body?.cancel();
         measured.push({ row: key(row), ...response });
       }
+      expect(performance.now() - sent).toBeLessThan(
+        LEDGER_ROWS.length * READ_LOCKED_LIMIT_MS,
+      );
       // Check locked responses before release; an early release must not
       // turn these error envelopes into successful reads.
       expect(
