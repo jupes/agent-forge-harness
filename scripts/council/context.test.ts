@@ -2982,7 +2982,7 @@ describe("a secret split by invisible characters", () => {
     ],
   ];
 
-  test("a vendor prefix followed by a token across tab or newline is conservatively redacted", () => {
+  test("words on two lines, or either side of a tab, are not joined into a key: a line feed, CR LF and a tab stay when the invisible characters are taken out", () => {
     const word = "abcdefghijklmnopqrstuvwxyz";
     for (const between of ["\n", "\r\n", "\t"]) {
       const text = `The flag reads sk-${between}${word} on the bench.`;
@@ -2990,11 +2990,10 @@ describe("a secret split by invisible characters", () => {
         kind: "bead",
         displayName: "demo",
         locator: "demo",
-        secretPolicy: "redact",
         parts: [{ label: "head", chunks: [{ text }] }],
       });
-      expect(packed.evidence[0]?.content).not.toContain(word);
-      expect(packed.redactions.length).toBeGreaterThan(0);
+      expect(packed.evidence[0]?.content).toBe(text);
+      expect(packed.redactions).toEqual([]);
     }
   });
 
