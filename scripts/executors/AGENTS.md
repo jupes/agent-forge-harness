@@ -59,7 +59,7 @@ Adapters that drive provider CLIs headlessly and turn their output into hearth e
   - The smith's effort is passed in each provider's documented flag — `claude --effort <level>`, `codex exec -c
     model_reasoning_effort=<level>` — and neither has been run against a real CLI: both were added after the runs
     below. The fake binary only shows the arguments arrive. Claude's reference does not say what a model without
-    effort support (`claude-apprentice`'s Haiku 4.5) does with `--effort`.
+    effort support does with `--effort`, nor whether the apprentice smith's model has that support.
   - `claude` 2.1.293 accepts every other flag `claude.ts` passes, with the prompt on stdin, and frames its stream as
     `system` / `assistant` / `result` lines. That run stopped at authentication, so a `tool_use` block has **not**
     been observed from a real CLI; the tool mapping rests on the fake binary.
