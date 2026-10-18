@@ -72,30 +72,45 @@ const CARET = /^\s*\^\s*$/;
  */
 const ERROR_LINE = /^(\w*Error|error): /;
 
-/** The first line of the last source excerpt followed immediately by bun's caret, or null. */
-function lastExcerpt(before: readonly string[]): number | null {
-  for (let k = before.length - 1; k > 0; k--) {
-    if (!CARET.test(before[k] ?? "") || !EXCERPT.test(before[k - 1] ?? ""))
-      continue;
-    let first = k - 1;
-    while (first > 0 && EXCERPT.test(before[first - 1] ?? "")) first--;
-    return first;
-  }
-  return null;
-}
-
 /**
  * Where bun's own report of a failure starts in the lines before its `(fail)`
- * line: the last caret-backed source excerpt, else the last known error
- * line, else null. The caret anchors custom error names and non-Error throws
- * even when the test's own output contains error-like noise.
+ * line: the latest report outside an expect diff. A caret anchors custom
+ * names and non-Error throws; a later caret-less error can supersede it.
+ * Custom names without a caret need a following Bun stack frame.
  */
 function reportStart(before: readonly string[]): number | null {
-  const excerpt = lastExcerpt(before);
-  if (excerpt !== null) return excerpt;
-  for (let k = before.length - 1; k >= 0; k--)
-    if (ERROR_LINE.test(before[k] ?? "")) return k;
-  return null;
+  let start: number | null = null;
+  let caretError = -1;
+  let diff: "awaiting" | "body" | null = null;
+  for (let k = 0; k < before.length; k++) {
+    const line = before[k] ?? "";
+    if (diff !== null) {
+      if (line === "") {
+        if (diff === "body") diff = null;
+      } else diff = "body";
+      continue;
+    }
+    // Bun indents context lines inside multiline diffs, including their error.
+    if (
+      k > 0 &&
+      CARET.test(line) &&
+      EXCERPT.test(before[k - 1] ?? "") &&
+      /^\S/.test(before[k + 1] ?? "")
+    ) {
+      start = k - 1;
+      while (start > 0 && EXCERPT.test(before[start - 1] ?? "")) start--;
+      caretError = k + 1;
+    } else if (
+      k !== caretError &&
+      (ERROR_LINE.test(line) ||
+        (/^\w+: /.test(line) && /^ {6}at /.test(before[k + 1] ?? "")))
+    ) {
+      start = k;
+    }
+    if (/^error: expect\(/.test(line) && before[k + 1] === "")
+      diff = "awaiting";
+  }
+  return start;
 }
 
 /**

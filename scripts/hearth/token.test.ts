@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -447,6 +448,131 @@ test.skipIf(!ON_WINDOWS)(
     expect(seen[0]?.startsWith(`${file}.`)).toBe(true);
     expect(existsSync(seen[0] ?? "")).toBe(false);
     expect(readToken(file)).toBe(token);
+  },
+);
+
+/**
+ * The native ACL functions, with two additions. Once the tokens folder of
+ * `file` has been given its ACL and read back, that folder is swapped for one
+ * that lets Everyone read what is created in it: what whoever may rename a
+ * folder above the home can do between the check and the write. And every
+ * ACL a temp file of `file` has is looked at as the writer reaches it: before
+ * its ACL is set (when it is set by path), and before it is renamed.
+ */
+function swappingAcl(file: string): {
+  acl: WindowsAcl;
+  readings: AclReading[];
+  beforeRename: (temp: string) => void;
+  swapped: () => boolean;
+} {
+  const native = nativeWindowsAcl();
+  const dir = dirname(file);
+  const readings: AclReading[] = [];
+  let swapped = false;
+  const look = (path: string): void => {
+    if (path.startsWith(`${file}.`)) readings.push(native.read(path));
+  };
+  return {
+    acl: {
+      ...native,
+      apply(path, target) {
+        look(path);
+        native.apply(path, target);
+      },
+      read(path) {
+        const reading = native.read(path);
+        if (path === dir && !swapped) {
+          swapped = true;
+          renameSync(dir, `${dir}.checked`);
+          mkdirSync(dir);
+          system32("icacls.exe", [dir, "/grant", "*S-1-1-0:(OI)(CI)(R)"]);
+        }
+        return reading;
+      },
+    },
+    readings,
+    beforeRename: look,
+    swapped: () => swapped,
+  };
+}
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows (rmo0): a tokens folder swapped, after its ACL is checked, for one that lets Everyone read: the temp file is owner-only whenever the writer looks at it (no ACL is set by path, and it reads owner-only before the rename), and the token lands owner-only",
+  () => {
+    const home = temp("af-acl-home");
+    const scratch = temp("af-acl-scratch");
+    const user = whoamiSid();
+    const file = tokenPath(home, "/r");
+    const swap = swappingAcl(file);
+
+    const token = createToken(file, {
+      acl: swap.acl,
+      beforeRename: swap.beforeRename,
+    });
+
+    expect(swap.swapped()).toBe(true);
+    expect(readToken(file)).toBe(token);
+    expect(swap.readings.length).toBeGreaterThan(0);
+    for (const reading of swap.readings)
+      expect(ownerOnlyProblem(reading, "file", user)).toBeNull();
+    // Written into the folder swapped in, and owner-only there.
+    expect(grantsOthers(dirname(file), scratch)).toBe(true);
+    expectOwnerOnly(file, "file", user, scratch);
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows (rmo0): createOwnerOnly with nothing to write: the file is owner-only right after CreateFileW, in a folder that lets Everyone read what is made in it, and no second handle can write it",
+  () => {
+    const loose = temp("af-acl-loose");
+    system32("icacls.exe", [loose, "/grant", "*S-1-1-0:(OI)(CI)(F)"]);
+    const scratch = temp("af-acl-scratch");
+    const user = whoamiSid();
+    const native = nativeWindowsAcl();
+    const file = join(loose, "secret");
+    const draft = `${file}.tmp`;
+    let seen: AclReading | null = null;
+    let writeRefused = false;
+    native.createOwnerOnly?.(draft, file, new Uint8Array(0), (made) => {
+      // Nothing was written: this runs right after the create.
+      seen = native.read(made);
+      expect(grantsOthers(made, scratch)).toBe(false);
+      try {
+        writeFileSync(made, "x");
+      } catch {
+        writeRefused = true;
+      }
+    });
+    expect(native.createOwnerOnly).toBeDefined();
+    expect(seen).not.toBeNull();
+    expect(
+      ownerOnlyProblem(seen as unknown as AclReading, "file", user),
+    ).toBeNull();
+    expect(writeRefused).toBe(true);
+    expectOwnerOnly(file, "file", user, scratch);
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows: a write that fails after the temp file is created leaves nothing of it, and the token file from before as it was",
+  () => {
+    const home = temp("af-acl-home");
+    const file = tokenPath(home, "/r");
+    const before = createToken(file);
+    let message = "";
+    try {
+      createToken(file, {
+        beforeRename() {
+          throw new Error("stopped before the rename");
+        },
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toStartWith(`Refusing to write ${file}: `);
+    expect(message).toContain("stopped before the rename");
+    expect(filesIn(dirname(file))).toEqual([basename(file)]);
+    expect(readToken(file)).toBe(before);
   },
 );
 

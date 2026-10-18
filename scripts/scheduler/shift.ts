@@ -137,11 +137,10 @@ const SMITH_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * most `SETTLE_TRIES` times, `SETTLE_RETRY_MS` apart, and made again only
  * after bd failed or was killed (`unknown`: no exit status). Not after
  * `busy`: that answer has already waited out the queue lock's whole wait
- * (10 s), so the lock is stuck, and three such waits would outlast the stop's
- * 30 s Ctrl-C grace. A refusal, a bead gone or a conflict is final. Every try
- * after the first shares `SETTLE_RETRY_BUDGET_MS`: it bounds their lock wait
- * and each bd call they make, so the tries after the first add at most about
- * 4.4 s to a stop.
+ * (the shared budget once stopping), so another wait would add nothing. A
+ * refusal, a bead gone or a conflict is final. The tries after the first
+ * share `SETTLE_RETRY_BUDGET_MS`: it bounds the lock wait and each bd call.
+ * The first try shares it only once the shift is stopping.
  */
 const SETTLE_TRIES = 3;
 const SETTLE_RETRY_MS = 200;
@@ -445,6 +444,7 @@ async function postComment(
 interface Unmoved {
   takenBy?: string;
   foundAt?: string;
+  notRunning?: boolean;
 }
 
 interface Slot {
@@ -491,6 +491,8 @@ function endWhy(slot: Slot): string {
     if (slot.unmoved?.takenBy !== undefined) return SHIFT_ENDINGS.takenAfter;
     if (slot.unmoved?.foundAt !== undefined)
       return `A queue move after its run was not confirmed by bd, and a second try found it ${slot.unmoved.foundAt}: it was left as it is.`;
+    if (slot.unmoved?.notRunning)
+      return "The queue refused the move because the bead was not running; its exact state could not be read back, so it was left as it is.";
     return slot.stopKind === "left" && slot.leftWhere !== undefined
       ? `It was moved while it ran (it is ${slot.leftWhere}) and was left as it is.`
       : SHIFT_ENDINGS.unmoved;
@@ -701,23 +703,11 @@ export async function runShift(
     action: "submit" | "release" | "halt",
     outcome: ShiftBeadRecord["outcome"],
   ): Promise<Unmoved | null> {
-    let moved = await queueFor(entry.runId).move(
-      entry.beadId,
-      action,
-      "scheduler",
-    );
-    if (moved.ok) {
-      entry.outcome = outcome;
-      return null;
-    }
-    entry.outcome = "left";
-    if (!SETTLE_AGAIN.includes(moved.kind)) {
-      note(entry, `${action}: ${moved.error}`);
-      return {};
-    }
-    // Every try after the first shares one bound: its lock wait and each bd
-    // call it makes, so a stop stays well inside its grace.
-    const until = Date.now() + SETTLE_RETRY_BUDGET_MS;
+    // Once the shift is stopping (a Ctrl-C has `INTERRUPT_GRACE_MS`), the
+    // first try shares the budget too. An ordinary move keeps the lock's whole
+    // wait and bd's own limit: a slow tracker must not leave the bead running.
+    const stopping = deps.signal?.aborted === true;
+    let until = Date.now() + SETTLE_RETRY_BUDGET_MS;
     const left = () => Math.max(1, until - Date.now());
     const bounded: BdRunner = (args, options) =>
       deps.runBd(args, {
@@ -727,6 +717,26 @@ export async function runShift(
           left(),
         ),
       });
+    let moved = await (stopping
+      ? createQueue({
+          workspace,
+          runBd: bounded,
+          appendEvent: appendFor(entry.runId),
+          lockFile: deps.lockFile,
+          lockWaitMs: Math.min(left(), deps.lockWaitMs ?? Infinity),
+        })
+      : queueFor(entry.runId)
+    ).move(entry.beadId, action, "scheduler");
+    if (!stopping) until = Date.now() + SETTLE_RETRY_BUDGET_MS;
+    if (moved.ok) {
+      entry.outcome = outcome;
+      return null;
+    }
+    entry.outcome = "left";
+    if (!SETTLE_AGAIN.includes(moved.kind)) {
+      note(entry, `${action}: ${moved.error}`);
+      return moved.kind === "refused" ? { notRunning: true } : {};
+    }
     const ownership = () =>
       runOwnership(
         {
@@ -812,7 +822,7 @@ export async function runShift(
         return { foundAt: where };
       }
       note(entry, said);
-      return {};
+      return { notRunning: true };
     }
     // Busy, failed or unknown: nothing says it moved. Gone or two labels:
     // it is not running with no run.

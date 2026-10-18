@@ -359,6 +359,10 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     profile: nonEmptyStr,
     budgetUsd: optional(num),
   }),
+  "council.verdict.comment": shape({
+    councilRunId: nonEmptyStr,
+    status: oneOf(["posted", "refused", "unknown"]),
+  }),
   "council.run.finished": shape({
     councilRunId: nonEmptyStr,
     outcome: oneOf(["pass", "fail", "unreadable", "cancelled"]),
