@@ -1,5 +1,6 @@
 import type { CouncilServiceJob } from "../../../scripts/council/service";
 import { CouncilDiscussion } from "./CouncilDiscussion";
+import { CouncilVerdictStatus, verdictBead } from "./CouncilVerdictStatus";
 
 function money(value: number | null | undefined): string {
   return typeof value === "number" ? `$${value.toFixed(4)}` : "Not reported";
@@ -17,6 +18,7 @@ function download(name: string, value: string, type: string): void {
 export function CouncilResult({ job }: { job: CouncilServiceJob }) {
   const run = job.run;
   const active = job.status === "running" || job.status === "cancelling";
+  const bead = verdictBead(job);
   return (
     <section className="af-card council-report" aria-live="polite">
       <div className="run-meta">
@@ -38,6 +40,13 @@ export function CouncilResult({ job }: { job: CouncilServiceJob }) {
         </p>
       )}
       {job.error && <p className="notice error">{job.error}</p>}
+      {bead && (
+        <CouncilVerdictStatus
+          key={`${job.runId}:${job.startedAt}:${bead}`}
+          job={job}
+          bead={bead}
+        />
+      )}
       {job.persistenceError && (
         <p className="notice error">
           The review completed, but its normal artifacts could not be saved:{" "}

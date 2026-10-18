@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { LedgerEvent } from "../../../types/hearth";
+import type { LedgerEvent, LedgerEventInput } from "../../../types/hearth";
 import type { CommandResult, CommandRunner } from "../../council/pr-source";
 import type { CouncilServiceJob } from "../../council/service";
 import type {
@@ -11,7 +11,7 @@ import { hashText } from "../../hash-text";
 import { bdAnswers } from "../bd-answers";
 import { OPERATOR_HEADER } from "../paths";
 import { startTestHearth, type TestHearth } from "../testing";
-import { councilVerdictComment } from "./council-verdict";
+import { councilVerdictComment, postCouncilVerdict } from "./council-verdict";
 
 /**
  * The verdict of a council run on a bead, posted back to the bead by the
@@ -314,6 +314,12 @@ describe("a council run the hearth started on a bead", () => {
       ],
     ]);
     expect(written[0]?.id ?? 0).toBeGreaterThan(finished.id);
+    expect(
+      (await eventsOfKind(h, "council.verdict.comment", 1))[0],
+    ).toMatchObject({
+      beadId: "demo-7",
+      payload: { councilRunId: "verdict-done", status: "posted" },
+    });
     // The council's own reads went to the council's runner, never the API's bd.
     expect(
       h.commands.calls.map(({ command }) => command.slice(0, 3).join(" ")),
@@ -430,4 +436,115 @@ describe("a council run the hearth started on a bead", () => {
       ),
     ).toEqual(["demo-8"]);
   }, 20_000);
+});
+
+describe("verdict write outcome metadata", () => {
+  // justification: the verdict helper reads only these job/run fields.
+  const completed = {
+    runId: "verdict-metadata",
+    status: "completed",
+    startedAt: "2026-10-17T00:00:00Z",
+    updatedAt: "2026-10-17T00:00:00Z",
+    events: [],
+    run: { status: "completed", aggregatedFindings: [] },
+  } as unknown as CouncilServiceJob;
+  for (const [name, result, expected] of [
+    [
+      "confirmed",
+      { status: 0, stdout: JSON.stringify({ issue_id: "demo-7" }), stderr: "" },
+      "posted",
+    ],
+    ["refused", { status: 2, stdout: "", stderr: "refused" }, "refused"],
+    ["unconfirmed", { status: 0, stdout: "{}", stderr: "" }, "unknown"],
+    ["timed out", { status: null, stdout: "", stderr: "" }, "unknown"],
+  ] as const) {
+    for (const throwing of [false, true])
+      test(`${name}: one write despite ${throwing ? "throwing" : "refusing"} ledger`, async () => {
+        let writes = 0;
+        const events: LedgerEventInput[] = [];
+        const reply = await postCouncilVerdict(
+          {
+            workspace: "/workspace",
+            council: { wait: async () => completed },
+            runBd: async () => {
+              writes++;
+              return result;
+            },
+            appendEvent: (event) => {
+              events.push(event);
+              if (throwing) throw new Error("unavailable");
+              return { ok: false, error: "unavailable" };
+            },
+          },
+          { sourceType: "bead", beadId: "demo-7" },
+          completed.runId,
+        );
+        expect(writes).toBe(1);
+        expect(reply?.status).toBe(
+          expected === "posted" ? 201 : expected === "refused" ? 502 : 504,
+        );
+        expect(events.at(-1)).toEqual({
+          kind: "council.verdict.comment",
+          workspace: "/workspace",
+          beadId: "demo-7",
+          payload: { councilRunId: completed.runId, status: expected },
+        });
+      });
+  }
+  test("throwing writer is unknown; throwing appender cannot repeat or reject", async () => {
+    let writes = 0;
+    const events: LedgerEventInput[] = [];
+    await expect(
+      postCouncilVerdict(
+        {
+          workspace: "/workspace",
+          council: { wait: async () => completed },
+          runBd: async () => {
+            writes++;
+            throw new Error("private text");
+          },
+          appendEvent: (event) => {
+            events.push(event);
+            throw new Error("unavailable");
+          },
+        },
+        { sourceType: "bead", beadId: "demo-7" },
+        completed.runId,
+      ),
+    ).resolves.toMatchObject({ status: 504 });
+    expect(writes).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toEqual({
+      councilRunId: completed.runId,
+      status: "unknown",
+    });
+  });
+  test("wait failure fabricates no attempted write or result", async () => {
+    let writes = 0;
+    let records = 0;
+    await expect(
+      postCouncilVerdict(
+        {
+          workspace: "/workspace",
+          council: {
+            wait: async () => {
+              throw new Error("missing");
+            },
+          },
+          runBd: async () => {
+            writes++;
+            throw new Error("must not write");
+          },
+          appendEvent: () => {
+            records++;
+            throw new Error("must not record");
+          },
+        },
+        { sourceType: "bead", beadId: "demo-7" },
+        completed.runId,
+      ),
+    ).resolves.toBeNull();
+    expect(writes).toBe(0);
+    expect(records).toBe(0);
+  });
 });

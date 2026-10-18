@@ -272,6 +272,11 @@ describe("a line per event", () => {
       { councilRunId: "c1", outcome: "fail", costUsd: 0.4 },
       "council c1 finished: fail, $0.40",
     ],
+    [
+      "council.verdict.comment",
+      { councilRunId: "c1", status: "refused" },
+      "council c1 verdict comment: refused",
+    ],
     ["friction.recorded", { frictionBeadId: "b-9" }, "friction filed as b-9"],
     [
       "operator.action",

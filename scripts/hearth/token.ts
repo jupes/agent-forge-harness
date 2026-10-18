@@ -14,6 +14,7 @@ import {
   type AclTarget,
   assertOwnerOnly,
   makeOwnerOnly,
+  nativeWindowsAcl,
   type WindowsAcl,
 } from "./acl-windows";
 
@@ -66,12 +67,17 @@ function replaceFile(
   content: string,
   protect: (path: string, target: AclTarget) => void,
   beforeRename?: (temp: string) => void,
+  create?: (temp: string) => void,
 ): void {
   const dir = dirname(file);
   mkdirSync(dirname(dir), { recursive: true });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   protect(dir, "directory");
   const temp = `${file}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+  if (create !== undefined) {
+    create(temp);
+    return;
+  }
   let fd: number | null = null;
   try {
     fd = openSync(temp, "wx", 0o600);
@@ -107,8 +113,12 @@ function replaceFile(
  * The directory first, then a new temp file beside `file`, made owner-only
  * while it is still empty, then the content, then a rename over `file`: a
  * reader sees the old content or the new, never part of either, and never a
- * file with another ACL. On Windows the renamed file is read back once more,
- * and removed if it is not owner-only.
+ * file with another ACL. On Windows the temp file is created with its
+ * owner-only ACL already set, and written and renamed through that one
+ * handle (`createOwnerOnly`): a folder on the way renamed or swapped after
+ * the directory was checked can neither open it under the ACL of the folder
+ * it is made in nor take its bytes (`rmo0`). The renamed file is read back
+ * once more, and removed if it is not owner-only.
  *
  * The Windows ACL is set through `bun:ffi`, which only Bun has: under Node
  * (the dashboard's Vite) every write here refuses on Windows.
@@ -127,7 +137,30 @@ export function writeOwnerOnly(
       throw refusal(file, error);
     }
   };
-  replaceFile(file, content, protect, options.beforeRename);
+  let create: ((temp: string) => void) | undefined;
+  if (windows) {
+    let acl: WindowsAcl;
+    try {
+      acl = options.acl ?? nativeWindowsAcl();
+    } catch (error) {
+      throw refusal(file, error);
+    }
+    const createOwnerOnly = acl.createOwnerOnly;
+    if (createOwnerOnly !== undefined)
+      create = (temp) => {
+        try {
+          createOwnerOnly(
+            temp,
+            file,
+            Buffer.from(content, "utf8"),
+            options.beforeRename,
+          );
+        } catch (error) {
+          throw refusal(file, error);
+        }
+      };
+  }
+  replaceFile(file, content, protect, options.beforeRename, create);
   if (!windows) return;
   try {
     assertOwnerOnly(file, "file", options.acl);
