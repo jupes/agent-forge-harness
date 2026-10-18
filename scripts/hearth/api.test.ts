@@ -112,11 +112,18 @@ function readRuns(h: TestHearth, path = ""): Promise<Response> {
   });
 }
 
+/**
+ * Wait until the hearth reports the run as ended. A read that is refused
+ * throws with the status and the answer's body, so a failure says which
+ * refusal it was (agent-forge-harness-bu05).
+ */
 async function councilRunFinished(h: TestHearth, runId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
     const response = await readRuns(h, `/${runId}`);
     if (response.status !== 200)
-      throw new Error(`council run ${runId} could not be read`);
+      throw new Error(
+        `council run ${runId} could not be read: ${response.status} ${await response.text()}`,
+      );
     const job = (await response.json()) as { data?: { status?: string } };
     if (job.data?.status !== "running" && job.data?.status !== "cancelling")
       return;
@@ -3232,6 +3239,23 @@ describe("council runs started through the hearth", () => {
     expect(audit?.payload).toMatchObject({ target: job?.runId });
     const events = await councilEvents(h, job?.runId ?? "");
     expect(events[0]?.payload).toMatchObject({ councilRunId: job?.runId });
+  }, 20_000);
+
+  test("a wait on a run the hearth refuses to read fails with the status and the refusal, not only the run id", async () => {
+    const h = await start();
+    await finishedRun(h, "refused-read");
+    // With its token file gone the hearth honours no token, so the read is refused.
+    rmSync(tokenPath(h.home, h.root));
+    const failure = await councilRunFinished(h, "refused-read").then(
+      () => null,
+      (error: unknown) => (error instanceof Error ? error.message : null),
+    );
+    expect(failure).toContain(
+      "council run refused-read could not be read: 403",
+    );
+    expect(failure).toContain(
+      "Reading a stored council run needs the operator token of this control plane",
+    );
   }, 20_000);
 });
 
