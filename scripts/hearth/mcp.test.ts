@@ -32,7 +32,7 @@ import {
 import {
   type AddressInfo,
   createServer as createTcpServer,
-  type Socket,
+  Socket,
 } from "node:net";
 import { tmpdir } from "node:os";
 import {
@@ -3942,19 +3942,46 @@ describe("a body the hearth will not read", () => {
     const foreign = "d".repeat(64);
     tokens.add(foreign);
     writeFileSync(tokenPath(hearth.home, hearth.root), `${foreign}\n`);
-    for (const size of [600_000, 2_000_000]) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const answer = await operator.call("forge_council_start", {
-          sourceType: "text",
-          source: "y".repeat(size),
-          runId: `big-${size}-${attempt}`,
-        });
-        expect({ size, attempt, error: answer.envelope.error }).toEqual({
-          size,
-          attempt,
-          error: "This action needs the operator token of this control plane",
-        });
+    const write = Socket.prototype.write;
+    let bodyWrites = 0;
+    const writes = spyOn(Socket.prototype, "write").mockImplementation(
+      function (
+        this: Socket,
+        chunk: string | Uint8Array,
+        encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+        callback?: (error?: Error | null) => void,
+      ) {
+        if (
+          this.remotePort === hearth.hearth.port &&
+          Buffer.isBuffer(chunk) &&
+          chunk.includes(Buffer.from('"sourceType":"text"'))
+        )
+          bodyWrites++;
+        return typeof encodingOrCallback === "function"
+          ? write.call(this, chunk, undefined, encodingOrCallback)
+          : write.call(this, chunk, encodingOrCallback, callback);
+      },
+    );
+    try {
+      for (const size of [600_000, 2_000_000]) {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const answer = await operator.call("forge_council_start", {
+            sourceType: "text",
+            source: "y".repeat(size),
+            runId: `big-${size}-${attempt}`,
+          });
+          expect({ size, attempt, error: answer.envelope.error }).toEqual({
+            size,
+            attempt,
+            error: "This action needs the operator token of this control plane",
+          });
+        }
       }
+      // The exchange writes a waiting body only on 100 Continue: observing its
+      // actual buffers catches the runtime's automatic 100 without the listener.
+      expect(bodyWrites).toBe(0);
+    } finally {
+      writes.mockRestore();
     }
     expect(hearth.events(["operator.action"])).toEqual([]);
   }, 30_000);

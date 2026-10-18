@@ -124,8 +124,7 @@ export const BODY_TIMEOUT_MS = 10_000;
 /**
  * A refusal whose body has not begun to arrive this long after the refusal was
  * decided is sent without waiting for it (see `serveAction`): a client that
- * said `Expect: 100-continue` was not asked for its body, and one that holds
- * its body back without saying so (an MCP server built before it sent
+ * holds its body back without `Expect` (an MCP server built before it sent
  * `Expect`, for 100 ms) has not sent it yet.
  */
 const HELD_BODY_MS = 50;
@@ -266,6 +265,8 @@ interface RequestBody {
   read(keep: number): Promise<BodyRead>;
   /** Whether any byte of the body has been read yet. */
   started(): boolean;
+  /** Whether an Expect client is still waiting for permission to send its body. */
+  unasked(): boolean;
 }
 
 /**
@@ -289,6 +290,7 @@ function requestBody(
   req.on("error", () => {});
   let reading: Promise<BodyRead> | null = null;
   let started = false;
+  let continued = false;
   const readTo = (keep: number): Promise<BodyRead> =>
     new Promise((done) => {
       const chunks: Buffer[] = [];
@@ -329,12 +331,16 @@ function requestBody(
         reading === null &&
         keep > 0 &&
         req.headers.expect?.toLowerCase() === "100-continue"
-      )
+      ) {
         res.writeContinue();
+        continued = true;
+      }
       reading ??= readTo(keep);
       return reading;
     },
     started: () => started,
+    unasked: () =>
+      req.headers.expect?.toLowerCase() === "100-continue" && !continued,
   };
 }
 
@@ -483,12 +489,13 @@ export function createOperatorApi(
    * the answer could be lost with the connection: under Bun a client that sent
    * `Connection: close` with a body of 2 MB or more received nothing.
    *
-   * Two exceptions. A body that has not ended by the time limit is not waited
+   * An Expect client whose body was never asked for is answered immediately
+   * and closed, without starting a body reader or either wait below.
+   * A body that has not ended by the time limit is not waited
    * for longer: the answer is sent and the connection closed once it is
    * written. And a refusal whose body has not begun to arrive within
    * `HELD_BODY_MS` is sent then, as the refusal of a client that holds its
-   * body back until it is asked for it (`Expect: 100-continue`, which the MCP
-   * server sends with a body over 64 kB) or until it has heard nothing; the
+   * body back until it has heard nothing; the
    * body is still read and dropped after it, and the connection closed if the
    * body has not ended by the time limit.
    */
@@ -500,6 +507,13 @@ export function createOperatorApi(
   ): Promise<void> {
     const incoming = requestBody(req, res, bodyTimeoutMs);
     const reply = await act(route, pending, req, incoming);
+    if (incoming.unasked()) {
+      req.pause();
+      res.setHeader("Connection", "close");
+      res.once("finish", () => req.socket.destroy());
+      send(res, reply);
+      return;
+    }
     const reading = incoming.read(0);
     let held: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
