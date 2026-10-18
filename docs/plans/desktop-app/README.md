@@ -68,9 +68,11 @@ Settle these before anything is built. Record each as a `design:` comment on the
    CLI, so using a Google subscription needs an Antigravity adapter as well, or instead, and decision 7 first.
 7. **Subscription terms, per provider.** The app must only ever run each vendor's own unmodified CLI under the user's
    own sign-in, and never read a credential file. Within that:
-   - **Anthropic** does not let third-party developers offer Claude sign-in or route requests through Free, Pro or
-     Max credentials. It does let a user sign in to the unmodified Claude Code binary with their own plan, which is what
-     this app does.
+   - **Anthropic** does not let third-party developers offer Claude sign-in, route requests through Free, Pro or Max
+     credentials, or collect, store or intermediate those credentials. It does let a user sign in to the unmodified
+     Claude Code binary with their own plan, which is what this app does. Two things to confirm before relying on a
+     plan for unattended shifts: the Consumer Terms' limit on automated access (the docs do endorse `claude -p` for
+     scripts), and whether running Claude Code inside a product of your own falls under the Commercial Terms.
    - **OpenAI** invites building interfaces on `codex exec`, its SDK and its app-server.
    - **xAI** allows its subscriptions in third-party harnesses.
    - **Google** is the open question. Its Antigravity FAQ says wrapping `agy` inside third-party applications "is not
@@ -81,6 +83,15 @@ Settle these before anything is built. Record each as a `design:` comment on the
 
    Check the terms again before the app is given to anyone else: everything above assumes one person's own use.
 
-**Implementation note.** Three of the five routes speak the Agent Client Protocol: Gemini CLI (`--acp`), Grok Build
-(`grok agent stdio`) and OpenCode. Codex has its own app-server protocol. One ACP client in `scripts/executors/` could
-therefore carry multi-turn chats and permission requests for several providers at once.
+**Implementation note.** Every route has a way to hold a multi-turn chat, and most can ask the app for permission:
+
+| Route | Multi-turn chat | Permission requests to the app |
+|---|---|---|
+| Claude Code | one process reading stream-json turns on stdin, or `--resume` | `--permission-prompt-tool` (an MCP tool the hearth serves) |
+| Codex | `codex app-server` (JSON-RPC; experimental), or `exec resume` | app-server approval requests |
+| Gemini CLI | `--acp` (Agent Client Protocol) | ACP |
+| Antigravity | one process reading stream-json turns on stdin | none in that mode (rules set up front); its separate ACP server has them |
+| Grok Build | `grok agent stdio` (ACP), or `--resume` | ACP |
+| OpenCode (OpenRouter) | `opencode serve` (HTTP and an event stream), or ACP | yes, over HTTP or ACP |
+
+One ACP client in `scripts/executors/` would cover Gemini CLI, Grok Build and OpenCode at once.

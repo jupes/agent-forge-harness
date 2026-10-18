@@ -41,9 +41,10 @@ workstreams in parallel across a few repositories. Their jobs:
    requests, and never merge.
 2. **Local-first, single user.** No accounts, no app sign-in, no cloud sync, no teams, no sharing. The app talks only to
    a local server (the **hearth**) on this machine.
-3. **Each provider through its own official CLI and its own login.** The app never asks for, stores or shows a
-   provider password or OAuth token. "Sign in" opens that provider's own login flow. API keys, where a provider needs
-   one, live in that provider's own configuration, not in the app.
+3. **Each provider through a CLI and its own login.** The vendor's own CLI wherever one exists (Appendix A). The app
+   never asks for, stores or shows a provider password or OAuth token. "Sign in" opens that provider's own login flow.
+   API keys, where a provider needs one, live in that provider's own configuration or the environment, never typed
+   into or stored by the app.
 4. **Show where every number comes from.** Live vs. last-known; reported by the provider vs. counted locally;
    unknown is shown as unknown ("—" with a reason), never as zero.
 5. **Calm by default.** Ambient status, not alarms. Interrupt only for: approval needed, input needed (a permission
@@ -294,7 +295,7 @@ or provider signed out: suggest switching the Keeper to another smith), conversa
 | Where | worktree `trees/a1b2c3` · branch `feat/gemini-adapter` |
 | Status | Running 12m · Needs permission · Idle · Ended ✓ · Ended ✕ · Stale |
 | Last activity | "Ran `bun test scripts/executors` · 14s ago" |
-| Usage | 182k tokens · $0.84 (or "subscription") |
+| Usage | 182k tokens · ≈ $0.84 (an estimate at list price on a plan; exact on an API key or credits) |
 
 Teammates and subagents nest under their parent session (indented, with a thread line). Filters: provider, kind,
 status, bead, smith; search. Selecting a row shows it in the inspector; opening it goes to the session view. Bulk: Stop.
@@ -307,10 +308,11 @@ command palette.
 
 **Layout, top to bottom.**
 1. **Provider picker:** five large segmented tiles: Claude, Codex, Gemini, Grok, OpenRouter. Each tile shows the
-   provider monogram, how it is connected ("Max plan", "ChatGPT Pro", "Gemini API key", "SuperGrok", "API key · credits"), and its
-   headroom ("5-hour window 42% used, resets 14:10" / "$41.80 left this month" / "usage not reported"). A tile is disabled
-   with a reason and a fix when the CLI is missing ("Install…") or signed out ("Sign in…", which opens the provider's
-   own login in a terminal).
+   provider monogram, how it is connected ("Max plan", "ChatGPT Pro", "Gemini API key", "SuperGrok", "API key ·
+   credits"), the CLI it runs through where there is a choice (Gemini: Antigravity or Gemini CLI; OpenRouter: OpenCode
+   or Ori), and its headroom ("5-hour window 42% used, resets 14:10" / "$41.80 left this month" / "usage not
+   reported"). A tile is disabled with a reason and a fix when the CLI is missing ("Install…") or signed out
+   ("Sign in…", which opens the provider's own login in a terminal).
 2. **Prompt:** a large input (Markdown-aware), attachments (files, images where the provider accepts them), `@` for
    beads/files/sessions, `/` for harness commands (e.g. `/forgemaster`, `/review`), and **Templates** (New skill,
    Fix a bug, Review a PR, Research a question, Plan a feature) that fill the prompt.
@@ -353,7 +355,9 @@ Copy CLI command, Pop out window, Archive).
 - **Files changed** summary card at the end of a turn: files with +/− counts, "Open diff", "Open in editor".
 - **Permission request card** (inline, also raised in Inbox and as an OS notification): what the agent wants to do
   (command or diff preview), why if given, and **Allow once**, **Allow for this session**, **Deny** (with an optional
-  note back to the agent). Shows a countdown if the CLI times the request out.
+  note back to the agent). Shows a countdown if the CLI times the request out. A provider route that cannot ask
+  (Appendix A) runs with rules set in the composer instead, and a tool those rules refused shows as a "Denied by rule"
+  row with **Allow next time**.
 - **Plan / to-do blocks** when the provider emits them.
 - **Turn footer:** duration, tokens in/out, cost if reported, model actually used (if it differs from the requested
   one, say so: "Requested Opus 5.5 · served Sonnet 5.5").
@@ -372,7 +376,7 @@ Files changed, Activity (this session's ledger events), Usage.
   tool activity (names, files, durations: metadata only, since the ledger stores no bodies) and status. Actions: Resume
   here (once it has ended), Activity.
 - **Shift session**: a headless run started by a shift for a bead. Read-only while running ("Started by shift
-  `shift-20261018-0900-a1b2` for `x1gs.8.3`"), with Stop; resumable as a chat once it ends.
+  `shift-20261018-0900-a1b2` for `x1gs.9.3`"), with Stop; resumable as a chat once it ends.
 - **Teammate / subagent**: breadcrumb to the parent session.
 
 ### 6.9 Beads — P0
@@ -546,10 +550,10 @@ see); Integrations (register the Forge MCP tools for Claude Code, Codex and Curs
 
 - **Tray icon** with a badge for "needs you". Menu: Running n · Needs you n · In review n; the last five
   notifications; Pause all shifts; Quiet hours on/off; Open Agent Forge; Quit (asks whether to stop running shifts).
-- **Notifications** (Windows toast style), each with up to two actions: "x1gs.4.4 is waiting for approval" (Approve,
-  Open); "Claude wants to run `bun install` in Billing API" (Allow, Open); "Gate failed on x1gs.5.3: lint" (Open); "Shift halted
-  x1gs.8.3 after 3 repairs" (Open); "Council verdict on x1gs.7.2: revise, 1 high" (Open); "Claude 5-hour window at
-  80%" (Open usage).
+- **Notifications** (Windows toast style), each with up to two actions: "x1gs.9.1 is waiting for approval" (Approve,
+  Open); "Claude wants to run `bun install` in Billing API" (Allow, Open); "Gate failed on x1gs.5.3: lint" (Open);
+  "Shift halted x1gs.9.3 after 3 repairs" (Open); "Council verdict on x1gs.7.2: revise, 1 high" (Open); "Claude 5-hour
+  window at 80%" (Open usage).
 
 ### 6.22 Pop-out session window — P2
 
@@ -654,7 +658,7 @@ notifications; hit targets ≥ 24px; never color alone for status.
 **Projects**
 | Project | Repositories | Beads open / in progress / blocked / closed | Live |
 |---|---|---|---|
-| Agent Forge | agent-forge-harness | 94 / 2 / 24 / 452 | Keeper; Codex on x1gs.4.4; Claude Code in a terminal; one shift |
+| Agent Forge | agent-forge-harness | 94 / 3 / 24 / 452 | Keeper; Codex on x1gs.4.4; Claude Code in a terminal; one shift |
 | Billing API | billing-api | 31 / 3 / 4 / 210 | Claude chat; a permission request waiting |
 | Mobile App | mobile-app, web-client | 58 / 1 / 9 / 133 | Gemini task running |
 | Legacy Worker | legacy-worker | 12 / 0 / 1 / 77 | Idle 6 days; knowledge file 45 days old |
@@ -730,7 +734,7 @@ do. The design should show each provider in its real shape rather than flatten t
 
 | Provider | Reached through | How it signs in | Runs today in the harness |
 |---|---|---|---|
-| **Claude** | Claude Code CLI (`claude`) | Claude subscription sign-in, or an Anthropic API key | Yes: headless adapter `scripts/executors/claude.ts` |
+| **Claude** | Claude Code CLI (`claude`): `-p` for tasks, a long-lived stream-json process or `--resume` for chats | Claude plan, signed in to the CLI by the user, or an Anthropic API key | Yes: headless adapter `scripts/executors/claude.ts` |
 | **Codex** | Codex CLI (`codex`): `exec` for tasks, the app-server for chats | Sign in with ChatGPT (subscription), or an OpenAI API key | Yes: headless adapter `scripts/executors/codex.ts` |
 | **Gemini** | Antigravity CLI (`agy`) for Google AI Pro / Ultra; Gemini CLI (`gemini`) for API keys, Vertex AI and Code Assist | Google sign-in (consumer route under a terms question: A.4), a Gemini API key, Vertex AI, or a business sign-in | Planned for Gemini CLI only: `x1gs.4.4` |
 | **Grok** | Grok Build (`grok`), xAI's official open-source CLI | X / SuperGrok subscription (browser or device-code sign-in), or an xAI API key | No |
@@ -738,15 +742,34 @@ do. The design should show each provider in its real shape rather than flatten t
 
 ### A.2 Claude (Claude Code CLI)
 
-- **Session modes.** Chat: multi-turn by resuming the CLI's own session id. Task: one headless run (`claude -p`) with a
-  JSON event stream.
-- **Composer fields.** Model (aliases and full ids); permission mode (Default, Accept edits, Plan, and "Bypass
-  permissions", shown locked: the harness never skips permissions, decision #6); allowed and disallowed tools; extra
-  directories; MCP servers (the Forge tools on by default); text appended to the system prompt; maximum turns; output
-  format for tasks.
-- **Usage the app can show.** Each run reports its tokens and an equivalent cost. The plan's rolling windows (a
-  5-hour session window and weekly limits) are what the user cares about most; show them where the CLI reports them,
-  and otherwise "Not reported by this CLI" with locally counted usage.
+- **Sign-in.** A Claude plan (Pro, Max, Team, Enterprise) that the user signed in to the unmodified `claude` binary
+  themselves, or an Anthropic API key. `claude auth status` tells the app which. In plan mode the app keeps
+  `ANTHROPIC_API_KEY` out of the child's environment, because a key that is present always wins in headless runs.
+- **Session modes.** Task: `claude -p` with `--output-format stream-json` (init, assistant and tool messages, partial
+  text, rate-limit events, and a result with cost and usage) and optionally `--json-schema` for structured output.
+  Chat: one long-lived process that reads turns as JSON lines on stdin (`--input-format stream-json`), or one run per
+  turn with `--resume <id>`. The app can choose the session id itself (`--session-id`) and fork a session
+  (`--fork-session`).
+- **Permission requests.** `--permission-prompt-tool` hands each approval to an MCP tool. Pointing it at the hearth's
+  own MCP server makes the permission card (§6.8) native for Claude.
+- **Composer fields.**
+  - Model: the Opus, Sonnet, Haiku and Fable aliases, "opusplan", 1M-context variants, or a full id such as
+    `claude-opus-5-5`; up to three fallback models.
+  - Effort: low, medium, high, xhigh, max, ultracode. Thinking on or off where the model allows it (always on for the
+    5.5 models and Fable).
+  - Permission mode: Default, Accept edits, Plan, Auto, Don't ask. "Bypass permissions" is locked (decision #6).
+  - Tools: allowed and disallowed tools, the tool set itself, agents, plugins.
+  - Context: extra directories, MCP servers (with "only these" strict mode), settings, text appended to or replacing
+    the system prompt.
+  - Limits, for tasks: maximum turns, a maximum spend in USD (a list-price estimate, not the plan's allowance), an
+    output schema.
+  - Where: a worktree.
+  - Images: sent as content in the input stream; there is no flag for them.
+- **Usage the app can show.** Per run, tokens by model and a cost estimate at list prices, labelled as an estimate
+  because a plan is not billed per token. For the plan itself, the stream's rate-limit events say allowed, warning or
+  rejected, with a reset time, and an experimental usage report gives the 5-hour session window and the weekly windows
+  as percent used with reset times. Running out arrives as a recognizable error ("session limit · resets 3:45pm").
+  Show these as reported, marked "experimental" where they are.
 
 ### A.3 Codex (Codex CLI)
 
@@ -812,7 +835,25 @@ do. The design should show each provider in its real shape rather than flatten t
   documented cap for the tier (for example 1,500 requests a day on Code Assist Standard, 2,000 on Enterprise). Running
   out arrives as an error the app can name ("daily quota reached").
 
-### A.5 OpenRouter
+### A.5 Grok (Grok Build)
+
+- **Shape.** xAI's official, open-source coding CLI, `grok` (`xai-org/grok-build`, 1.0.x; WinGet `xAI.GrokBuild`). It
+  signs in with the user's X / SuperGrok subscription, whose usage comes from one weekly pool shared across Grok
+  products, or with `XAI_API_KEY` (billed separately). xAI explicitly allows its subscriptions in third-party
+  harnesses. An unofficial community `grok-cli` installs a binary with the same name: the doctor must tell them apart.
+- **Session modes.** Task: `grok -p` with `--output-format json` or `streaming-json`; the result carries the session
+  id, stop reason, token usage (including reasoning tokens), turns and cost. Chat: `--resume <id>`, `--continue`,
+  `--fork-session`. Long-lived: Agent Client Protocol over stdio (`grok agent stdio`).
+- **Composer fields.** Model (`grok-4.7`, the default; `grok-build-0.1`, the coding model; others); effort, from none
+  to max, limited to the levels each model accepts; permission mode (Default, Accept edits, Plan, Auto, Don't ask;
+  "Bypass permissions" and `--yolo` shown locked); allow / deny rules such as `Bash(git *)`; tools and disallowed tools;
+  sandbox; agents; worktree; maximum turns; working directory; MCP servers (it also imports the project's `.mcp.json`).
+- **Usage the app can show.** Tokens and cost per session (`grok usage <session-id>` and each run's result). The
+  subscription's weekly pool appears only in the CLI's interactive `/usage`, so the app shows "Not reported by this
+  CLI" for it, beside locally counted usage. With an API key, every response's cost is reported; the account balance
+  needs a management key: optional.
+
+### A.6 OpenRouter
 
 - **Shape.** One account reaching hundreds of models from many vendors, billed from prepaid credits. There is no
   subscription. A session runs through an agent CLI pointed at OpenRouter (decision 4 in `README.md`):
@@ -832,24 +873,6 @@ do. The design should show each provider in its real shape rather than flatten t
   response also reports its own cost, so each session shows exact spend. Out of credits arrives as a clear error
   ("402: add credits"). The hearth reads the endpoint with the key it already uses for council reviews
   (`OPENROUTER_API_KEY` in the environment). The account's total balance needs a separate management key: optional.
-
-### A.6 Grok (Grok Build)
-
-- **Shape.** xAI's official, open-source coding CLI, `grok` (`xai-org/grok-build`, 1.0.x; WinGet `xAI.GrokBuild`). It
-  signs in with the user's X / SuperGrok subscription, whose usage comes from one weekly pool shared across Grok
-  products, or with `XAI_API_KEY` (billed separately). xAI explicitly allows its subscriptions in third-party
-  harnesses. An unofficial community `grok-cli` installs a binary with the same name: the doctor must tell them apart.
-- **Session modes.** Task: `grok -p` with `--output-format json` or `streaming-json`; the result carries the session
-  id, stop reason, token usage (including reasoning tokens), turns and cost. Chat: `--resume <id>`, `--continue`,
-  `--fork-session`. Long-lived: Agent Client Protocol over stdio (`grok agent stdio`).
-- **Composer fields.** Model (`grok-4.7`, the default; `grok-build-0.1`, the coding model; others); effort, from none
-  to max, limited to the levels each model accepts; permission mode (Default, Accept edits, Plan, Auto, Don't ask;
-  "Bypass permissions" and `--yolo` shown locked); allow / deny rules such as `Bash(git *)`; tools and disallowed tools;
-  sandbox; agents; worktree; maximum turns; working directory; MCP servers (it also imports the project's `.mcp.json`).
-- **Usage the app can show.** Tokens and cost per session (`grok usage <session-id>` and each run's result). The
-  subscription's weekly pool appears only in the CLI's interactive `/usage`, so the app shows "Not reported by this
-  CLI" for it, beside locally counted usage. With an API key, every response's cost is reported; the account balance
-  needs a management key: optional.
 
 ### A.7 Rules that apply to every provider
 
