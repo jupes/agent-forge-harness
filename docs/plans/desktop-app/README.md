@@ -64,14 +64,22 @@ Settle these before anything is built. Record each as a `design:` comment on the
      OpenRouter's key endpoint, read with the key the council already uses.
 5. **Retiring the static snapshot mode** of the dashboard (`ui-pruning.md`, R1), which §10 of the architecture keeps.
 6. **Which Gemini binary.** Since 2026-06-18 Google AI Pro and Ultra subscribers (and the free tier) use Antigravity
-   CLI. Gemini CLI remains for API keys, Vertex AI and Code Assist organizations. `x1gs.4.4` targets Gemini CLI, so
-   using a Google subscription needs an Antigravity adapter as well, or instead.
-7. **Subscription terms.** Anthropic does not let third-party developers offer Claude sign-in or route requests
-   through Free, Pro or Max credentials. It does let a user sign in to the unmodified Claude Code binary with their own
-   plan, which is what this app does. Google forbids reusing Gemini CLI's sign-in outside the CLI. OpenAI invites
-   building interfaces on `codex exec` and its app-server. xAI allows its subscriptions in third-party harnesses. The
-   app must therefore only ever run each vendor's own CLI under the user's own sign-in, and never read a credential
-   file. Check the terms again before the app is given to anyone else: they are written for one person's own use.
+   CLI (`agy`). Gemini CLI remains for API keys, Vertex AI and Code Assist organizations. `x1gs.4.4` targets Gemini
+   CLI, so using a Google subscription needs an Antigravity adapter as well, or instead, and decision 7 first.
+7. **Subscription terms, per provider.** The app must only ever run each vendor's own unmodified CLI under the user's
+   own sign-in, and never read a credential file. Within that:
+   - **Anthropic** does not let third-party developers offer Claude sign-in or route requests through Free, Pro or
+     Max credentials. It does let a user sign in to the unmodified Claude Code binary with their own plan, which is what
+     this app does.
+   - **OpenAI** invites building interfaces on `codex exec`, its SDK and its app-server.
+   - **xAI** allows its subscriptions in third-party harnesses.
+   - **Google** is the open question. Its Antigravity FAQ says wrapping `agy` inside third-party applications "is not
+     supported under consumer plans". It also forbids reusing Gemini CLI's sign-in outside the CLI. Both were read only
+     through search excerpts, and forum replies suggest a local, single-user child process may be tolerated. Until
+     Google confirms otherwise, the safe Gemini route is an API key, Vertex AI or a business sign-in, not a Google AI
+     Pro / Ultra plan.
+
+   Check the terms again before the app is given to anyone else: everything above assumes one person's own use.
 
 **Implementation note.** Three of the five routes speak the Agent Client Protocol: Gemini CLI (`--acp`), Grok Build
 (`grok agent stdio`) and OpenCode. Codex has its own app-server protocol. One ACP client in `scripts/executors/` could

@@ -732,7 +732,7 @@ do. The design should show each provider in its real shape rather than flatten t
 |---|---|---|---|
 | **Claude** | Claude Code CLI (`claude`) | Claude subscription sign-in, or an Anthropic API key | Yes: headless adapter `scripts/executors/claude.ts` |
 | **Codex** | Codex CLI (`codex`): `exec` for tasks, the app-server for chats | Sign in with ChatGPT (subscription), or an OpenAI API key | Yes: headless adapter `scripts/executors/codex.ts` |
-| **Gemini** | Antigravity CLI for Google AI Pro / Ultra; Gemini CLI (`gemini`) for API keys, Vertex AI and Code Assist | Google sign-in, a Gemini API key, or Vertex AI | Planned for Gemini CLI only: `x1gs.4.4` |
+| **Gemini** | Antigravity CLI (`agy`) for Google AI Pro / Ultra; Gemini CLI (`gemini`) for API keys, Vertex AI and Code Assist | Google sign-in (consumer route under a terms question: A.4), a Gemini API key, Vertex AI, or a business sign-in | Planned for Gemini CLI only: `x1gs.4.4` |
 | **Grok** | Grok Build (`grok`), xAI's official open-source CLI | X / SuperGrok subscription (browser or device-code sign-in), or an xAI API key | No |
 | **OpenRouter** | An agent CLI pointed at OpenRouter: OpenCode (built-in provider) or Ori (OpenRouter's own CLI, a 0.x preview) | OpenRouter API key, or `ori login`; prepaid credits, no subscription | Council reviews only (`scripts/council/providers.ts`) |
 
@@ -772,13 +772,34 @@ do. The design should show each provider in its real shape rather than flatten t
   any credits, and pushes an update when they change. `codex exec` alone reports no windows, so the usage meters come
   from the app-server. With an API key there are no plan windows: show spend counted locally.
 
-### A.4 Gemini (Gemini CLI)
+### A.4 Gemini (Antigravity CLI or Gemini CLI)
 
 - **Which binary.** Since 2026-06-18 Google's consumer plans (Google AI Pro and Ultra) and its free tier use
-  **Antigravity CLI** instead of Gemini CLI. **Gemini CLI** remains for Gemini API keys, Vertex AI, and organizations
-  with a Gemini Code Assist license. The provider tile must say which one it runs. The planned adapter (`x1gs.4.4`)
-  targets Gemini CLI, so a Google AI Pro or Ultra subscriber is not covered by it (decision 6 in `README.md`).
-- **Session modes (Gemini CLI).** Task: `gemini -p` with `--output-format json` or `stream-json` (init, message, tool
+  **Antigravity CLI** (`agy`) instead of Gemini CLI. **Gemini CLI** (`gemini`) remains for Gemini API keys, Vertex AI,
+  and organizations with a Gemini Code Assist license. The provider tile says which route it runs ("Gemini · via
+  Antigravity, Google AI Pro" or "Gemini · via Gemini CLI, API key"), and the composer has a route selector when both
+  are set up. The planned adapter (`x1gs.4.4`) covers only Gemini CLI (decision 6 in `README.md`).
+- **Terms warning for the Antigravity route.** Google's FAQ says wrapping `agy` inside third-party applications is not
+  supported under consumer plans. The design shows the route, but marks it as needing the owner's decision until
+  that is settled (decision 7); an API-key or business sign-in route is the safe default.
+
+**Antigravity CLI (`agy`)**
+- **Session modes.** Task: `agy -p` with `--output-format json` or `stream-json` (init, typed step updates, and a
+  result with status, response, structured output and usage). Chat: `--conversation <id>` or `--continue`, or one
+  long-lived process reading turns as JSON lines on stdin. Approval requests do not reach the app in this mode: a tool
+  the session's rules don't allow is denied, so the composer sets the allow rules before the run. Google's separate ACP
+  server (`antigravity-acp`) does send permission requests, but signs in on its own and reports no usage.
+- **Composer fields.** Model (Gemini models, plus the Claude and GPT models Google's plans include, listed by the CLI
+  itself); effort (low, medium, high); mode (Default, Accept edits, Plan; Auto is not available on Windows); tool
+  permission policy (request review, always proceed, strict; "skip permissions" locked); sandbox (Windows 11 24H2 or
+  later); extra directories; files, images, PDFs and audio attached by `@`; MCP servers; plugins; an output schema for
+  tasks.
+- **Usage the app can show.** The best of any provider: `agy -p "/usage" --output-format json` reports, without
+  spending quota, each model group's 5-hour and weekly windows as the share remaining and the reset time, and AI
+  credits once the plan's quota is used up.
+
+**Gemini CLI (`gemini`)**
+- **Session modes.** Task: `gemini -p` with `--output-format json` or `stream-json` (init, message, tool
   use, tool result, error, and a result with token statistics). Chat: `--resume latest|<id>`, or start under the app's
   own id with `--session-id`. Long-lived: the Agent Client Protocol (`gemini --acp`), with session modes and model
   switching.
