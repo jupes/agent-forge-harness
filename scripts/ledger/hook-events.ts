@@ -80,13 +80,17 @@ export function hookDeps(opts: {
   cwd: string;
   path?: string;
   now?: () => Date;
+  /** How long an append retries a busy ledger; `appendEvent`'s 100 ms when not given. */
+  appendWaitMs?: number;
 }): HookDeps {
   const path = opts.path ?? ledgerPath(opts.env);
   const clock = opts.now ? { now: opts.now } : {};
+  const wait =
+    opts.appendWaitMs !== undefined ? { waitMs: opts.appendWaitMs } : {};
   return {
     env: opts.env,
     cwd: opts.cwd,
-    append: (event) => appendEvent(event, { path, ...clock }),
+    append: (event) => appendEvent(event, { path, ...clock, ...wait }),
     getModel: (sessionId) => getSessionModel(sessionId, { path }),
     setModel: (entry) => setSessionModel(entry, { path, ...clock }),
     readTranscript: (file, agentId) =>

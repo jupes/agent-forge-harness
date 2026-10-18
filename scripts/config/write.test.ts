@@ -263,7 +263,9 @@ describe("set: a layout the editor does not own is refused, and the file is left
         '[smiths.claude-master]\nmodel = "a"\n[smiths.claude-master]\neffort = "b"\n',
         key,
         "x",
-        "more than once",
+        // Bun >=1.4 rejects duplicate tables during parsing; older Bun
+        // reaches the editor's duplicate-table check. Both must name it.
+        "claude-master",
       );
     }
   });

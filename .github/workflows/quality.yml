@@ -9,7 +9,7 @@ permissions:
 # download cache key read it, so a bump installs the new runtime and starts a
 # fresh download cache together.
 env:
-  BUN_VERSION: 1.3.10
+  BUN_VERSION: 1.4.2
 # A unique push group preserves even queued master runs: sharing a ref group
 # can cancel a pending run even with cancel-in-progress disabled.
 concurrency:

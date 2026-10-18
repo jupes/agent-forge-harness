@@ -42,14 +42,18 @@ function childEnv(home: string): Record<string, string> {
 async function appendInChild(
   home: string,
   sessionId: string,
-): Promise<{ exitCode: number; stdout: string }> {
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const child = Bun.spawn(["bun", "run", FIXTURE, sessionId], {
     env: childEnv(home),
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stdout = await new Response(child.stdout).text();
-  return { exitCode: await child.exited, stdout };
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { exitCode, stdout, stderr };
 }
 
 function userVersion(db: Database): number {
@@ -232,6 +236,9 @@ describe("openLedger", () => {
     const children = await Promise.all(
       Array.from({ length: 6 }, (_, i) => appendInChild(home, `sess-${i}`)),
     );
+    // Include append-one's result and stderr: a failed insert is distinct from
+    // an open/migration failure, though both make the child exit nonzero.
+    expect(children.filter((child) => child.exitCode !== 0)).toEqual([]);
     expect(children.map((child) => child.exitCode)).toEqual([0, 0, 0, 0, 0, 0]);
 
     const db = new Database(join(home, "ledger.db"), { readonly: true });

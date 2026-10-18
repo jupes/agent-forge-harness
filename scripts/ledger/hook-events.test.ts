@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
@@ -445,6 +446,33 @@ describe("subagents and teammates", () => {
       parentSessionId: "S",
       worktree: expect.stringContaining("check out"),
     });
+  });
+
+  test("hook dependencies given an append wait retry a ledger another connection holds for that long, then refuse", () => {
+    const box = sandbox();
+    const { deps } = harness(box);
+    handleToolUse(child, deps);
+    const waiting = hookDeps({
+      env: {},
+      cwd: box.cwd,
+      path: box.path,
+      appendWaitMs: 300,
+    });
+    const holder = new Database(box.path);
+    holder.exec("BEGIN IMMEDIATE");
+    const began = performance.now();
+    const result = waiting.append({
+      kind: "tool.called",
+      workspace: box.cwd,
+      sessionId: "S",
+      payload: { tool: "Grep", argsHash: "sha256:x" },
+    });
+    const waited = performance.now() - began;
+    holder.exec("ROLLBACK");
+    holder.close();
+    expect(result.ok).toBe(false);
+    expect(waited).toBeGreaterThanOrEqual(300);
+    expect(waited).toBeLessThan(1500);
   });
 
   test("a payload with agent_id and teammate_name is a teammate", () => {

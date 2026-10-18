@@ -924,7 +924,7 @@ test("the guard counts Host, Origin and Sec-Fetch-Site in any letter case, as No
 
 /**
  * A stand-in for a hearth that hangs: on a loopback port, it accepts each
- * connection, reads nothing and never answers. It keeps every connection and
+ * connection, drains the request and never answers. It keeps every connection and
  * notes each one's close.
  */
 async function hungUpstream(): Promise<{
@@ -936,6 +936,9 @@ async function hungUpstream(): Promise<{
   const closed = new Set<Socket>();
   const server = createNetServer((socket) => {
     sockets.push(socket);
+    // A paused readable may retain EOF behind the buffered request bytes.
+    // Drain them so close measures the peer leaving, not unread input.
+    socket.resume();
     socket.once("close", () => closed.add(socket));
     socket.on("error", () => undefined);
   });
