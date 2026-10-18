@@ -51,6 +51,7 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
   ],
   "shift.stopped": ["shiftId", "reason"],
   "council.run.started": ["councilRunId", "profile", "budgetUsd"],
+  "council.verdict.comment": ["councilRunId", "status"],
   "council.run.finished": [
     "councilRunId",
     "outcome",
