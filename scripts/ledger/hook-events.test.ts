@@ -447,6 +447,31 @@ describe("subagents and teammates", () => {
     });
   });
 
+  test("a subagent's later tool calls look its start up instead of offering it again, so each takes the write lock once", () => {
+    const box = sandbox();
+    const { deps } = harness(box);
+    const appended: string[] = [];
+    const recording: HookDeps = {
+      ...deps,
+      append: (event: LedgerEventInput) => {
+        appended.push(event.kind);
+        return deps.append(event);
+      },
+    };
+    handleToolUse(child, recording);
+    handleToolUse(child, recording);
+    handleToolUse(child, recording);
+    expect(appended).toEqual([
+      "session.started",
+      "tool.called",
+      "tool.called",
+      "tool.called",
+    ]);
+    expect(
+      events(box).filter((event) => event.kind === "session.started"),
+    ).toHaveLength(1);
+  });
+
   test("a payload with agent_id and teammate_name is a teammate", () => {
     const box = sandbox();
     const { deps } = harness(box);

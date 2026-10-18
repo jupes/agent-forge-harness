@@ -268,6 +268,28 @@ export function openChildSessions(
   }
 }
 
+/**
+ * True when the ledger already holds `sessionId`'s `session.started`. A read,
+ * so it takes no write lock; false when the ledger cannot be read, and the
+ * caller then offers the start as before.
+ */
+export function sessionStarted(
+  sessionId: string,
+  opts: { path?: string } = {},
+): boolean {
+  try {
+    return (
+      openLedger(opts.path)
+        .query<{ found: number }, [string]>(
+          "SELECT 1 AS found FROM events WHERE session_id = ? AND kind = 'session.started' LIMIT 1",
+        )
+        .get(sessionId) !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface EventPage {
   events: LedgerEvent[];
   /** More events matched the filter than `limit`. */

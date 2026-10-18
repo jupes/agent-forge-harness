@@ -21,7 +21,7 @@ import { type AppendResult, appendEvent } from "./append";
 import { backupIfDue } from "./backup";
 import { removeSessionMirror, writeSessionMirror } from "./identity";
 import { ledgerPath } from "./paths";
-import { openChildSessions } from "./query";
+import { openChildSessions, sessionStarted } from "./query";
 import {
   getSessionModel,
   type SessionModel,
@@ -69,6 +69,8 @@ export interface HookDeps {
   /** The session's model from a transcript, or with `agentId` that subagent's. */
   readTranscript(path: string, agentId?: string): TranscriptModel | null;
   openChildren(sessionId: string): string[];
+  /** The ledger already holds this session's `session.started`. */
+  hasStarted(sessionId: string): boolean;
   writeMirror(worktree: string, sessionId: string): boolean;
   removeMirror(worktree: string, ifHolds: string): boolean;
   backupIfDue(): boolean;
@@ -92,6 +94,7 @@ export function hookDeps(opts: {
     readTranscript: (file, agentId) =>
       modelFromTranscriptTail(file, agentId !== undefined ? { agentId } : {}),
     openChildren: (sessionId) => openChildSessions(sessionId, { path }),
+    hasStarted: (sessionId) => sessionStarted(sessionId, { path }),
     writeMirror: writeSessionMirror,
     removeMirror: removeSessionMirror,
     backupIfDue: () => backupIfDue({ path, ...clock }),
@@ -226,8 +229,10 @@ function envelope(
 
 /**
  * A child session has no start hook of its own, so its `session.started` is
- * offered before each of its events; the ledger keeps the first and ignores
- * the rest, which also holds when several hooks race.
+ * offered before its events until the ledger holds it; the ledger keeps the
+ * first and ignores the rest, which also holds when several hooks race. Once
+ * it is stored a read finds it, so a child's later events do not take the
+ * write lock just to have the start ignored.
  */
 function startChild(
   context: Context,
@@ -236,6 +241,7 @@ function startChild(
 ): void {
   const { identity } = context;
   if (identity.sessionId === identity.hostSessionId) return;
+  if (deps.hasStarted(identity.sessionId)) return;
   deps.append({
     kind: "session.started",
     ...envelope(context, executor),
