@@ -1886,6 +1886,85 @@ describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races
     );
   });
 
+  test("t1sn: a target read-back after an operator pause and resume is left, not counted as this run's move", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    killedOnce(r, "t-1", {
+      landed: true,
+      asItDies: () => {
+        for (const [from, to] of [
+          ["running", "paused"],
+          ["paused", "queued"],
+        ] as const)
+          appendEvent(
+            {
+              kind: "bead.transitioned",
+              workspace: r.workspace,
+              beadId: "t-1",
+              payload: { from, to, reason: "operator" },
+            },
+            { path: r.ledger },
+          );
+      },
+    });
+    const done = await stoppedOnceRunning(r, stop);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "left" });
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.comments("t-1").at(-1)).toContain("found it queue:queued");
+    expect(r.comments("t-1").at(-1)).not.toContain("may still be");
+  });
+
+  test("t1sn: a refused final try with an exhausted read-back budget never claims the bead may still be running", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    killedOnce(r, "t-1", { landed: true });
+    const answer = r.deps.runBd;
+    let failed = false;
+    let reads = 0;
+    r.deps.runBd = async (args, options) => {
+      if (failed && args[0] === "show" && args.at(-1) === "t-1") {
+        if (++reads === 1) {
+          const result = await answer(args, options);
+          await Bun.sleep(4_050);
+          return result;
+        }
+        return { status: null, stdout: "", stderr: "read-back timed out" };
+      }
+      const result = await answer(args, options);
+      if (args[0] === "update" && args.includes("--add-label=queue:queued"))
+        failed = true;
+      return result;
+    };
+    const done = await stoppedOnceRunning(r, stop);
+    expect(reads).toBe(2);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "left" });
+    expect(r.comments("t-1").at(-1)).toContain("not running");
+    expect(r.comments("t-1").at(-1)).not.toContain("may still be");
+  }, 15_000);
+
+  test("t1sn: the first settle read and write receive the same bounded stop budget", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    const answer = r.deps.runBd;
+    const limits: Array<number | undefined> = [];
+    r.deps.runBd = async (args, options) => {
+      if (
+        stop.signal.aborted &&
+        ["show", "update"].includes(args[0] ?? "") &&
+        args.at(-1) === "t-1"
+      )
+        limits.push(options?.timeoutMs);
+      return answer(args, options);
+    };
+    const done = await stoppedOnceRunning(r, stop);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "released" });
+    expect(limits.length).toBeGreaterThanOrEqual(2);
+    for (const limit of limits)
+      expect(limit ?? Infinity).toBeLessThanOrEqual(4_000);
+    expect(limits.at(-1) ?? Infinity).toBeLessThanOrEqual(limits[0] ?? 0);
+    expect(r.reservations()).toBe(0);
+  });
+
   test("a submit whose bd was killed after its write landed (x1gs.5.4.16): the bead is found in review with no queue move recorded since the run's start, so the submit counts and the draft pull request is opened", async () => {
     const r = rig([queued("t-1")]);
     const submits = killedOnce(r, "t-1", { landed: true, to: "review" });

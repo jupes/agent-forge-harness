@@ -317,10 +317,10 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
   admit that failed included) that fails as `failed` or `unknown` (bd failed, or ended with no exit
   status: killed, as a terminal's Ctrl-C kills the shift's own `bd` on Linux and macOS) is made
   again, `SETTLE_TRIES` (3) times in all, `SETTLE_RETRY_MS` (200 ms) apart (`x1gs.5.4.16`).
-  - **Bounded:** the tries after the first share `SETTLE_RETRY_BUDGET_MS` (4 s). It caps their
+  - **Bounded:** all tries share `SETTLE_RETRY_BUDGET_MS` (4 s), including the first. It caps their
     queue-lock wait and every bd call they make (the runner's `timeoutMs`), and no try starts once
-    it is spent. So they add at most about 4.4 s to whatever the first try took. The first try is
-    as before: up to the lock's 10 s wait, or bd's 30 s limit per call.
+    it is spent. This also bounds a stop arriving while the first try is in flight: that try no
+    longer has the lock's 10 s wait or bd's 30 s per-call limit. Retry sleeps add at most 400 ms.
   - **Not after `busy`:** that answer has already waited the whole lock wait, so the lock is
     stuck. Three such tries (about 30.4 s) would outlast the CLI's 30 s Ctrl-C grace
     (`INTERRUPT_GRACE_MS`) and end the process 130 with its record `running`.
@@ -337,6 +337,8 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
       the entry gets the move's outcome, and a `submit` goes on to its pull request step. That
       move has no `bead.transitioned`, a gap `forge:queue reconcile` reports.
     - Found anywhere else, it is left there, and the end comment says where it was found.
+    - If the read-back fails after a refusal, the end comment says it was not running when the
+      queue refused it, with its exact state unreadable; it never claims it may still be running.
   - **Final:** a bead gone and a conflict.
   - **What the entry says:** its `error` lists each try. A move that never went through ends
     `left`, and its end comment names the reason: another run's start (`SHIFT_ENDINGS.takenAfter`),
@@ -627,7 +629,7 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     first try as a killed `bd` (no exit status), and no real signal is sent to a real `bd`.
   - A queue move after the claim that never goes through leaves the bead `running` with no run.
     The cases: bd failing on every try; a lock still busy after the first try's whole wait; the
-    4 s for the tries after the first spent; a ledger that cannot be read, so no try after the
+    4 s for all tries spent; a ledger that cannot be read, so no try after the
     first may write; this run's own start not stored. The entry says so and names the way out, a
     pause and a resume (the operator's queue actions). `forge:shift recover` does not help: it refuses a live shift, and
     a stopped one. In the race above it is the refused shift's start that is the newest move, so
