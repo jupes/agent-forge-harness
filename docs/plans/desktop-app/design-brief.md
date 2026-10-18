@@ -307,8 +307,8 @@ command palette.
 
 **Layout, top to bottom.**
 1. **Provider picker:** five large segmented tiles: Claude, Codex, Gemini, Grok, OpenRouter. Each tile shows the
-   provider monogram, how it is connected ("Max plan", "ChatGPT Pro", "Google sign-in", "API key", "Credits"), and its
-   headroom ("5-hour window 42% used, resets 14:10" / "$41.80 credits left" / "usage not reported"). A tile is disabled
+   provider monogram, how it is connected ("Max plan", "ChatGPT Pro", "Gemini API key", "SuperGrok", "API key · credits"), and its
+   headroom ("5-hour window 42% used, resets 14:10" / "$41.80 left this month" / "usage not reported"). A tile is disabled
    with a reason and a fix when the CLI is missing ("Install…") or signed out ("Sign in…", which opens the provider's
    own login in a terminal).
 2. **Prompt:** a large input (Markdown-aware), attachments (files, images where the provider accepts them), `@` for
