@@ -223,7 +223,7 @@ Pop out, Archive.
    **Ask a follow-up** (opens the Keeper with the brief quoted). A brief older than a few hours says so.
 2. **Counts row:** Open · In progress · Blocked · Closed (beads); Runs in flight · Open sessions · Queued · File claims
    held (live).
-3. **Needs you** list for this project (same items as the Inbox, filtered).
+3. **Needs you** list for this project (same items as the Inbox, filtered: the first three, then the total and a link to the Inbox for the rest).
 4. **Live sessions** strip: cards for running sessions with provider, model, bead, current activity ("Editing
    `scripts/executors/gemini.ts`"), elapsed, tokens so far. Click opens the session.
 5. **Workbench snapshot:** a mini bar of queue-state counts and any active shift (elapsed/limit, beads done/limit,
@@ -361,7 +361,7 @@ Copy CLI command, Pop out window, Archive).
 - **Plan / to-do blocks** when the provider emits them.
 - **Turn footer:** duration, tokens in/out, cost if reported, model actually used (if it differs from the requested
   one, say so: "Requested Opus 5.5 · served Sonnet 5.5").
-- **Inline errors:** usage limit reached ("Claude usage limit reached; resets 14:10.", with **Continue on another
+- **Inline errors:** usage limit reached ("Claude Opus weekly limit reached; resets Thu 09:00.", with **Continue on another
   provider**), CLI crashed (exit code + stderr tail + **Restart**), network or auth errors with the provider's own words.
 
 **Composer.** Same as §6.7's prompt area, with the provider fixed. A compact options strip above the input shows the
@@ -675,7 +675,7 @@ notifications; hit targets ≥ 24px; never color alone for status.
 | `agent-forge-harness-x1gs` | Agent Forge Command Center | epic | P2 | open | — (61% of 52 children closed) |
 
 **Smiths:** `claude-master` (Claude, claude-opus-5-5, high, master) · `claude-journeyman` (Claude, claude-sonnet-5-5,
-medium, journeyman, default) · `claude-apprentice` (Claude, Haiku, low, apprentice) · `codex-journeyman` (Codex,
+medium, journeyman, default) · `claude-apprentice` (Claude, claude-haiku-5-5, low, apprentice) · `codex-journeyman` (Codex,
 gpt-5-codex, medium, journeyman). Benches: low = claude-apprentice 70 / codex-journeyman 30; medium =
 claude-journeyman 70 / codex-journeyman 30; high = claude-master 100.
 
@@ -694,10 +694,10 @@ claude-journeyman 70 / codex-journeyman 30; high = claude-master 100.
 **Usage (Providers & usage, title-bar chip)**
 | Provider | Connected as | What the meters show |
 |---|---|---|
-| Claude | Max plan | 5-hour window 42% used, resets 14:10 · weekly 61%, resets Thu 09:00 |
+| Claude | Max plan | 5-hour window 42% used, resets 14:10 · Opus weekly 100% used, resets Thu 09:00 · weekly 61%, resets Thu 09:00 |
 | Codex | ChatGPT Pro | Weekly window 18% used, resets Mon 00:00 (no 5-hour window on Pro) |
 | Gemini | Gemini API key (Gemini CLI) | 212 requests today, counted locally · $1.90 this month |
-| Grok | SuperGrok (Grok Build) | Weekly pool: not reported by this CLI · 1.2M tokens this week, counted locally |
+| Grok | SuperGrok (Grok Build) | Weekly allowance: not reported by this CLI · 1.2M tokens this week, counted locally |
 | OpenRouter | API key, prepaid credits | $41.80 of the key's $100 monthly limit left · $58.20 spent this month |
 
 **Shift:** `shift-20261018-0900-a1b2`: started 09:00, 1h12m of 2h, concurrency 2, 1 of 4 beads done, $3.40 of $10,
