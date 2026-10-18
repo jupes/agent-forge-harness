@@ -29,6 +29,7 @@
 import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
 import {
   createCliAdapter,
+  modelArgs,
   type ParsedLine,
   type ParsedTool,
   usageCounts,
@@ -162,8 +163,7 @@ export const claudeAdapter = createCliAdapter({
     "--output-format",
     "stream-json",
     "--verbose",
-    "--model",
-    request.smith.model,
+    ...modelArgs(request.smith.model),
     "--effort",
     request.smith.effort,
     "--permission-mode",

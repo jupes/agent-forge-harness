@@ -1,4 +1,8 @@
-import type { BenchName, Smith } from "../../types/hearth";
+import {
+  type BenchName,
+  CLI_DEFAULT_MODEL,
+  type Smith,
+} from "../../types/hearth";
 
 export interface BenchEntry {
   smith: string;
@@ -34,7 +38,10 @@ export const BUILTIN_SMITHS: Readonly<Record<string, Smith>> = {
   "codex-journeyman": {
     name: "codex-journeyman",
     provider: "codex",
-    model: "gpt-5-codex",
+    // No model name: codex accepts different ones for an API key and for an
+    // account sign-in (gpt-5-codex is refused for the latter, HTTP 400), so
+    // the CLI runs the model its own config names (x1gs.4.9).
+    model: CLI_DEFAULT_MODEL,
     effort: "medium",
     enabled: true,
     tags: ["rank:journeyman"],

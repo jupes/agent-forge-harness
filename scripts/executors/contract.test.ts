@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { isAdapterChild } from "../../.claude/hooks/utils/hook-input";
-import type { LedgerEventInput } from "../../types/hearth";
+import { CLI_DEFAULT_MODEL, type LedgerEventInput } from "../../types/hearth";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
 import { hashText } from "../hash-text";
@@ -373,10 +373,25 @@ for (const { name, adapter, smith, usage, effortArgs } of adapters) {
         const { dump } = await run(adapter, name, smith, "ok", {
           smith: { ...builtin, effort },
         });
-        const argv = dump.argv as string[];
-        expect(holdsInOrder(argv, ["--model", builtin.model])).toBe(true);
-        expect(holdsInOrder(argv, effortArgs(effort))).toBe(true);
+        expect(holdsInOrder(dump.argv as string[], effortArgs(effort))).toBe(
+          true,
+        );
       }
+    });
+
+    test(`a named model is passed as --model; ${CLI_DEFAULT_MODEL} passes none, so the CLI runs the model it is configured with (x1gs.4.9)`, async () => {
+      const builtin = BUILTIN_SMITHS[smith] as SpawnRequest["smith"];
+      const named = await run(adapter, name, smith, "ok", {
+        smith: { ...builtin, model: "named-model-1" },
+      });
+      expect(
+        holdsInOrder(named.dump.argv as string[], ["--model", "named-model-1"]),
+      ).toBe(true);
+      const configured = await run(adapter, name, smith, "ok", {
+        smith: { ...builtin, model: CLI_DEFAULT_MODEL },
+      });
+      expect(configured.dump.argv as string[]).not.toContain("--model");
+      expect(configured.dump.argv as string[]).not.toContain(CLI_DEFAULT_MODEL);
     });
 
     test("never asks for dangerously-skip-permissions", async () => {

@@ -4,13 +4,14 @@
  * hearth events. A provider supplies only its flags and its line parser.
  */
 
-import type {
-  Executor,
-  LedgerEventBase,
-  LedgerEventInput,
-  Provider,
-  ProviderUsage,
-  ProviderUsageCount,
+import {
+  CLI_DEFAULT_MODEL,
+  type Executor,
+  type LedgerEventBase,
+  type LedgerEventInput,
+  type Provider,
+  type ProviderUsage,
+  type ProviderUsageCount,
 } from "../../types/hearth";
 import { hashText } from "../hash-text";
 import {
@@ -158,6 +159,14 @@ function resolveCommand(
   const path = Bun.which(spec.binary);
   if (!path) return { error: `${spec.binary} not found on PATH` };
   return { command: [path], path };
+}
+
+/**
+ * The `--model` argument for a smith's model, the same flag in both CLIs:
+ * none for `CLI_DEFAULT_MODEL`, so the CLI runs the model it is configured with.
+ */
+export function modelArgs(model: string): string[] {
+  return model === CLI_DEFAULT_MODEL ? [] : ["--model", model];
 }
 
 export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
