@@ -11,6 +11,7 @@ features (beads, workbench and shifts, forge runs, council reviews, activity, sm
 |---|---|
 | [`claude-design-prompt.md`](claude-design-prompt.md) | The kickoff prompt and seven follow-up prompts to paste into Claude Design, in order |
 | [`design-brief.md`](design-brief.md) | The supporting brief: product, vocabulary, information architecture, every screen, flows, components, states, visual direction, sample data, and what each provider's CLI offers |
+| [`claude-code-handoff.md`](claude-code-handoff.md) | The handoff to Claude Code: build order, the screen map, the flows to test, the rules, and the decisions to settle first |
 | [`ui-pruning.md`](ui-pruning.md) | What to remove or fold from today's dashboard, with evidence and the order to do it in |
 
 This suite builds on the command-center plan in [`../command-center/`](../command-center/00-README.md). It adds two
