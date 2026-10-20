@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseDesktopArguments } from "./desktop-entry";
 import { startDesktopHost } from "./desktop-host";
@@ -233,7 +233,10 @@ test("refuses unsafe proxy startup and works with process-start loopback exempti
   expect(JSON.parse(safe.body ?? "{}").ok).toBe(true);
 }, 15_000);
 
-test("streams incrementally, closes active streams with the host, and rejects truncation", async () => {
+test.each([
+  "host shutdown",
+  "client disconnect",
+] as const)("streams incrementally and releases the upstream on %s", async (ending) => {
   const hearth = await startTestHearth();
   closes.push(() => hearth.close());
   const assetsRoot = mkdtempSync(join(hearth.root, "stream assets-"));
@@ -297,56 +300,18 @@ test("streams incrementally, closes active streams with the host, and rejects tr
     );
   });
   await reached;
-  // Bun 1.3.10 node:http did not emit request/response/socket close or set
-  // socket.destroyed after a raw client disconnected before the body completed
-  // (measured in this test fixture; active bead agent-forge-harness-cla5.1.1).
-  // Host close remains an explicit bounded cleanup path for that runtime gap.
-  await host.close();
+  if (ending === "host shutdown") await host.close();
+  else client.destroy();
   await Promise.race([
     upstreamGone,
     new Promise((_, reject) =>
       setTimeout(
-        () => reject(new Error("host close left upstream stream open")),
+        () => reject(new Error("stream cleanup left upstream open")),
         2000,
       ),
     ),
   ]);
   client.destroy();
-});
-
-test("keeps evidence for the Bun 1.3.10 node:http client-disconnect gap", async () => {
-  // Tracked under active bead agent-forge-harness-cla5.1.1: a focused raw
-  // socket probe showed Bun's node:http compatibility server does not emit
-  // downstream close signals for an unfinished response after peer shutdown.
-  const closeSignals = new Set<string>();
-  const server = createServer((_req, res) => {
-    res.once("close", () => closeSignals.add("response"));
-    res.writeHead(200, { "Content-Type": "text/event-stream" });
-    res.write(": open\n\n");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("missing probe port");
-  const client = connect(address.port, "127.0.0.1");
-  await new Promise<void>((resolve, reject) => {
-    client.once("error", reject);
-    client.once("data", () => {
-      client.destroy();
-      resolve();
-    });
-    client.once("connect", () =>
-      client.write(
-        `GET /events HTTP/1.1\r\nHost: 127.0.0.1:${address.port}\r\nConnection: keep-alive\r\n\r\n`,
-      ),
-    );
-  });
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  expect(closeSignals.has("response")).toBe(false);
-  await new Promise<void>((resolve) => {
-    server.closeAllConnections();
-    server.close(() => resolve());
-  });
 });
 
 test("accepts only the exact three trusted CLI options and keeps spaced values intact", () => {
@@ -360,9 +325,9 @@ test("accepts only the exact three trusted CLI options and keeps spaced values i
       "C:\\native hearth.exe",
     ]),
   ).toEqual({
-    root: "C:\\work tree",
-    assetsRoot: "C:\\built UI",
-    hearthCommand: ["C:\\native hearth.exe"],
+    root: resolve("C:\\work tree"),
+    assetsRoot: resolve("C:\\built UI"),
+    hearthCommand: [resolve("C:\\native hearth.exe")],
   });
   expect(() =>
     parseDesktopArguments([
