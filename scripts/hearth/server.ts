@@ -583,11 +583,17 @@ export function closeOnSignal(
   });
 }
 
-if (isMain(import.meta)) {
-  main(process.argv.slice(2)).catch((error: unknown) => {
+export async function runHearthServer(argv: string[]): Promise<void> {
+  try {
+    await main(argv);
+  } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,
     );
     process.exit(1);
-  });
+  }
+}
+
+if (isMain(import.meta)) {
+  void runHearthServer(process.argv.slice(2));
 }

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { isMain } from "../is-main";
 import { startDesktopHost } from "./desktop-host";
 
 export function parseDesktopArguments(args: readonly string[]): {
@@ -67,4 +68,4 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
   }
 }
 
-if (import.meta.main) await runDesktopEntry(Bun.argv.slice(2));
+if (isMain(import.meta)) await runDesktopEntry(process.argv.slice(2));
