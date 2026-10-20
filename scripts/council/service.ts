@@ -295,7 +295,16 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         for (const name of readdirSync(directory))
           if (name.endsWith(".json")) paths.add(join(directory, name));
     }
-    return [...paths].flatMap((path) => {
+    // The UI selects the first choice. Match a start that omits `profile`,
+    // regardless of the filesystem's enumeration order or a workspace default.
+    const defaultPath = join(harnessRoot, "councils", "default.json");
+    const ordered = [...paths].sort((left, right) => {
+      if (left === right) return 0;
+      if (left === defaultPath) return -1;
+      if (right === defaultPath) return 1;
+      return left < right ? -1 : 1;
+    });
+    return ordered.flatMap((path) => {
       try {
         const selected = profile(path);
         return [
