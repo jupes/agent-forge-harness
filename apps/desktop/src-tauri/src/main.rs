@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod recovery;
+
 use serde::Deserialize;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -201,7 +203,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
-            let (child, url) = launch_host(app.handle(), &root)?;
+            let started = recovery::retry(
+                || launch_host(app.handle(), &root),
+                |_| recovery::startup_retry(),
+            );
+            let Ok((child, url)) = started else {
+                app.handle().exit(0);
+                return Ok(());
+            };
             let origin = url.origin();
             app.manage(HostProcess(Mutex::new(Some(child))));
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
@@ -213,7 +222,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .build(tauri::generate_context!())?
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                app.state::<HostProcess>().shutdown();
+                if let Some(host) = app.try_state::<HostProcess>() {
+                    host.shutdown();
+                }
             }
         });
     Ok(())

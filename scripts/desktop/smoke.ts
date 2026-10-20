@@ -104,7 +104,6 @@ async function main(): Promise<void> {
     "Could not prepare isolated tracker stub.",
   );
   linkOrCopy(executable, join(runner, "agent-forge-desktop.exe"));
-  linkOrCopy(join(stage, "desktop-host.exe"), join(runner, "desktop-host.exe"));
   linkOrCopy(join(stage, "hearth.exe"), join(runner, "hearth.exe"));
   cpSync(join(stage, "dashboard"), join(runner, "dashboard"), {
     recursive: true,
@@ -121,6 +120,29 @@ async function main(): Promise<void> {
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     WEBVIEW2_USER_DATA_FOLDER: join(temp, "webview-profile"),
   };
+  const cancelled = Bun.spawn({
+    cmd: [join(runner, "agent-forge-desktop.exe"), "--root", fixtureRoot],
+    cwd: runner,
+    env,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  try {
+    await waitForMainWindow(
+      cancelled.pid,
+      cancelled,
+      "Agent Forge — hearth unavailable",
+    );
+    await recoveryDialog(cancelled.pid, "cancel");
+    await waitForAppExit(cancelled);
+    if (cancelled.exitCode !== 0)
+      throw new Error(
+        `Cancelling startup did not exit cleanly (code ${cancelled.exitCode}).`,
+      );
+  } finally {
+    if (cancelled.exitCode === null) cancelled.kill();
+  }
   const appProcess = Bun.spawn({
     cmd: [join(runner, "agent-forge-desktop.exe"), "--root", fixtureRoot],
     cwd: runner,
@@ -138,6 +160,17 @@ async function main(): Promise<void> {
   let failureScreenshot: string | undefined;
 
   try {
+    await waitForMainWindow(
+      appProcess.pid,
+      appProcess,
+      "Agent Forge — hearth unavailable",
+    );
+    await recoveryDialog(appProcess.pid, "inspect");
+    linkOrCopy(
+      join(stage, "desktop-host.exe"),
+      join(runner, "desktop-host.exe"),
+    );
+    await recoveryDialog(appProcess.pid, "retry");
     windowVisible = await waitForMainWindow(appProcess.pid, appProcess);
     processTree = await captureProcessTree(appProcess.pid);
     const target = await waitForTarget(debugPort, appProcess);
@@ -255,12 +288,75 @@ async function main(): Promise<void> {
           ...(checks ?? {}),
           cspErrors,
           proxyEnvConflictTested: true,
+          startupRetryTested: true,
+          startupCancelTested: true,
           childrenStopped: true,
         },
         error: null,
       }),
     );
   }
+}
+
+/** Operate only the startup dialog owned by this smoke's exact native PID. */
+async function recoveryDialog(
+  pid: number,
+  action: "inspect" | "retry" | "cancel",
+): Promise<void> {
+  const screenshot = join(
+    root,
+    ".tmp",
+    "work",
+    "desktop-native-tools",
+    "native-startup-recovery.png",
+  );
+  mkdirSync(resolve(screenshot, ".."), { recursive: true });
+  await powershellResult(
+    `
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class RecoveryProbe {
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+}
+'@
+    $window = (Get-Process -Id ${pid} -ErrorAction Stop).MainWindowHandle
+    $title = New-Object System.Text.StringBuilder 256
+    [void][RecoveryProbe]::GetWindowText($window, $title, 256)
+    if ($title.ToString() -ne 'Agent Forge — hearth unavailable') { throw 'Expected startup recovery dialog' }
+    if ([RecoveryProbe]::GetDlgItem($window, 4) -eq [IntPtr]::Zero -or [RecoveryProbe]::GetDlgItem($window, 2) -eq [IntPtr]::Zero) { throw 'Recovery choices missing' }
+    $default = [RecoveryProbe]::SendMessage($window, 0x400, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -band 0xffff
+    if ($default -ne 2) { throw 'Cancel is not the default choice' }
+    ${
+      action === "inspect"
+        ? `
+    Add-Type -AssemblyName System.Drawing
+    [void][RecoveryProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+    $rect = New-Object RecoveryProbe+Rect
+    if (-not [RecoveryProbe]::GetWindowRect($window, [ref]$rect)) { throw 'Dialog bounds unavailable' }
+    $bitmap = New-Object System.Drawing.Bitmap ($rect.Right - $rect.Left), ($rect.Bottom - $rect.Top)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+      $dc = $graphics.GetHdc()
+      try {
+        if (-not [RecoveryProbe]::PrintWindow($window, $dc, 2)) { throw 'Dialog capture unavailable' }
+      } finally { $graphics.ReleaseHdc($dc) }
+      $bitmap.Save('${psQuote(screenshot)}', [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally { $graphics.Dispose(); $bitmap.Dispose() }
+    `
+        : `if (-not [RecoveryProbe]::PostMessage($window, 0x111, [IntPtr]${action === "retry" ? 4 : 2}, [IntPtr]::Zero)) { throw 'Could not choose recovery action' }`
+    }
+  `,
+    "startup recovery check",
+  );
 }
 
 async function runBounded(
@@ -421,6 +517,7 @@ async function reloadPage(socket: WebSocket): Promise<void> {
 async function readChecks(socket: WebSocket): Promise<SmokeChecks> {
   const result = await cdp(socket, "Runtime.evaluate", {
     expression: `(async () => {
+      if (location.protocol !== "http:" || location.hostname !== "127.0.0.1") return {};
       const sessionKey = localStorage.getItem(${JSON.stringify(sessionKeyName)});
       const hasSessionKey = typeof sessionKey === "string" && sessionKey.length > 0;
       let tokenStatus = null;
@@ -535,11 +632,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 async function waitForMainWindow(
   pid: number,
   child: Bun.Subprocess,
+  title = "Agent Forge Harness",
 ): Promise<boolean> {
   const deadline = Date.now() + waitLimitMs;
   while (Date.now() < deadline && child.exitCode === null) {
     const result = await powershellResult(
-      `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).MainWindowHandle`,
+      `$window = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($window.MainWindowTitle -eq '${psQuote(title)}') { $window.MainWindowHandle }`,
       "main-window check",
     );
     if (Number(result.trim()) > 0) return true;
