@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use serde::Deserialize;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -122,6 +124,8 @@ fn launch_host(
         .arg(assets)
         .arg("--hearth")
         .arg(hearth)
+        .env("NO_PROXY", proxy_bypass_env())
+        .env("no_proxy", proxy_bypass_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -136,6 +140,27 @@ fn launch_host(
             Err(error.into())
         }
     }
+}
+
+fn proxy_bypass_env() -> String {
+    let upper = env::var("NO_PROXY").unwrap_or_default();
+    let lower = env::var("no_proxy").unwrap_or_default();
+    proxy_bypass(&upper, &lower)
+}
+
+fn proxy_bypass(upper: &str, lower: &str) -> String {
+    let mut entries = Vec::new();
+    for value in [upper, lower] {
+        for entry in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !entries.iter().any(|seen| seen == entry) {
+                entries.push(entry.to_owned());
+            }
+        }
+    }
+    if !entries.iter().any(|entry| entry == "127.0.0.1") {
+        entries.push("127.0.0.1".to_owned());
+    }
+    entries.join(",")
 }
 
 fn stop_child(child: &mut Child) {
@@ -196,7 +221,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     if run().is_err() {
+        #[cfg(debug_assertions)]
         eprintln!("desktop shell failed");
+        std::process::exit(1);
     }
 }
 
@@ -235,5 +262,16 @@ mod tests {
         assert!(parse_ready(&bad_line, bad_line.len() as u64).is_err());
         assert!(parse_ready(&line, MAX_READY_BYTES + 1).is_err());
         assert!(good.len() + 1 < MAX_READY_BYTES as usize);
+    }
+
+    #[test]
+    fn loopback_proxy_bypass_preserves_and_combines_existing_entries() {
+        assert_eq!(proxy_bypass("corp.example", ""), "corp.example,127.0.0.1");
+        assert_eq!(
+            proxy_bypass("localhost", "10.0.0.1"),
+            "localhost,10.0.0.1,127.0.0.1"
+        );
+        assert_eq!(proxy_bypass("10.0.0.1,127.0.0.1", ""), "10.0.0.1,127.0.0.1");
+        assert_eq!(proxy_bypass("", ""), "127.0.0.1");
     }
 }

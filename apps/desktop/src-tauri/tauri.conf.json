@@ -14,6 +14,9 @@
   },
   "bundle": {
     "active": true,
+    "icon": [
+      "icons/icon.ico"
+    ],
     "externalBin": [
       "binaries/desktop-host",
       "binaries/hearth"
