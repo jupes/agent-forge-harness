@@ -44,6 +44,8 @@ export interface SupervisorOptions {
   id: string;
   /** Wait this long for a freshly spawned hearth to publish its lock. */
   startTimeoutMs?: number;
+  /** Trusted executable and fixed argv for a packaged hearth launcher. */
+  command?: readonly string[];
 }
 
 /**
@@ -66,6 +68,18 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((done) => setTimeout(done, ms));
 
 export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
+  const command = options.command;
+  if (
+    command !== undefined &&
+    (command.length === 0 ||
+      typeof command[0] !== "string" ||
+      command[0].trim() === "")
+  )
+    throw new Error(
+      "A configured hearth command requires a nonblank executable",
+    );
+  const executable = command?.[0] ?? "bun";
+  const args = command === undefined ? [SERVER_SCRIPT] : command.slice(1);
   const root = resolve(options.root);
   const file = lockPath(options.home, root);
   const timeout = options.startTimeoutMs ?? 20_000;
@@ -108,7 +122,7 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     // A lock whose process is gone (or was reused by something else) is stale.
     if (current) releaseLock(file, current.pid);
 
-    const child = spawn("bun", [SERVER_SCRIPT, "--root", root], {
+    const child = spawn(executable, [...args, "--root", root], {
       env: {
         ...process.env,
         AGENT_FORGE_HOME: options.home,
