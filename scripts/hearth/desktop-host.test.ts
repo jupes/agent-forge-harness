@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseDesktopArguments } from "./desktop-entry";
 import { startDesktopHost } from "./desktop-host";
 import { tokenPath } from "./home";
 import {
@@ -348,3 +349,31 @@ test("keeps evidence for the Bun 1.3.10 node:http client-disconnect gap", async 
   });
 });
 
+test("accepts only the exact three trusted CLI options and keeps spaced values intact", () => {
+  expect(
+    parseDesktopArguments([
+      "--root",
+      "C:\\work tree",
+      "--assets",
+      "C:\\built UI",
+      "--hearth",
+      "C:\\native hearth.exe",
+    ]),
+  ).toEqual({
+    root: "C:\\work tree",
+    assetsRoot: "C:\\built UI",
+    hearthCommand: ["C:\\native hearth.exe"],
+  });
+  expect(() =>
+    parseDesktopArguments([
+      "--root",
+      "x",
+      "--assets",
+      "y",
+      "--hearth",
+      "z",
+      "--port",
+      "1",
+    ]),
+  ).toThrow();
+});
