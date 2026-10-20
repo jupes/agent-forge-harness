@@ -59,7 +59,7 @@ export interface HearthReadOptions {
  * as well, so the functions a test calls take the answer as an option.
  */
 export function servedStatically(): boolean {
-  return import.meta.hot === undefined;
+  return import.meta.hot === undefined && import.meta.env?.MODE !== "desktop";
 }
 
 /**
