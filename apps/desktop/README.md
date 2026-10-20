@@ -32,6 +32,11 @@ not call a paid provider or alter the repository's Beads data. The native
 shell does not yet provide a default checkout selection or a visible recovery
 state if its supervised host stops after startup.
 
+The screenshot shows the existing dashboard used as a transport tracer with
+isolated fixture data; it is not an approved new desktop frame.
+
+![Existing dashboard transport tracer with isolated fixture data](docs/native-smoke.png)
+
 The Bun 1.3.10 `node:http` host does not currently detect a client disconnect
 while an upstream streaming response is open; runtime stream cancellation
 remains a tracked gap.
