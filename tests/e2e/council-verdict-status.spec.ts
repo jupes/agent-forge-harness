@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Request, test } from "@playwright/test";
 import type { CouncilServiceJob } from "../../scripts/council/service";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import type { EventsPage, LedgerEvent } from "../../types/hearth";
@@ -124,9 +124,13 @@ test("verdict status follows the page ledger after council SSE ends, survives re
     route.fulfill({ json: { ok: true, data: other, error: null } }),
   );
   let streamEnded = false;
-  page.on("requestfinished", (request) => {
+  const streamTerminated = (request: Request): void => {
     if (request.url().includes(`/runs/${runId}/events`)) streamEnded = true;
-  });
+  };
+  // The completed snapshot closes the fetch with AbortController. Depending
+  // on timing Chromium reports finished or cancelled; both end this stream.
+  page.on("requestfinished", streamTerminated);
+  page.on("requestfailed", streamTerminated);
   await openSettled(page, `/council.html?run=${runId}`);
   await expect(page.locator(".council-report .pill").first()).toHaveText(
     "completed",
@@ -148,6 +152,13 @@ test("verdict status follows the page ledger after council SSE ends, survives re
       payload: { councilRunId: runId, status },
     };
     recorded = [event];
+    // A reload can finish the verdict read before the page's ledger stream
+    // has installed its injection seam. Wait for that actual readiness.
+    await page.waitForFunction(
+      () =>
+        typeof (window as unknown as { verdictEvent?: unknown })
+          .verdictEvent === "function",
+    );
     await page.evaluate(
       (event) =>
         (
