@@ -1,14 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod recovery;
+mod workspace;
 
 use serde::Deserialize;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{
-    env, fs,
+    env,
     io::{BufRead, BufReader, Read},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex},
     thread,
@@ -84,29 +85,6 @@ fn parse_ready(line: &[u8], count: u64) -> Result<Url, &'static str> {
         return Err("host startup failed");
     }
     validated_url(&envelope.data.url)
-}
-
-fn checkout_root() -> Result<PathBuf, &'static str> {
-    let mut args = env::args_os().skip(1);
-    let root = match args.next() {
-        Some(flag) if flag == "--root" => args
-            .next()
-            .map(PathBuf::from)
-            .ok_or("missing checkout root")?,
-        Some(_) => return Err("unexpected desktop argument"),
-        None => env::current_dir().map_err(|_| "checkout root unavailable")?,
-    };
-    if args.next().is_some() {
-        return Err("unexpected desktop argument");
-    }
-    let root = fs::canonicalize(root).map_err(|_| "invalid checkout root")?;
-    if !root.is_dir()
-        || !root.join("scripts/hearth/server.ts").is_file()
-        || !root.join(".git").exists()
-    {
-        return Err("invalid checkout root");
-    }
-    Ok(root)
 }
 
 fn launch_host(
@@ -199,7 +177,17 @@ impl Drop for HostProcess {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let root = checkout_root()?;
+    let args: Vec<_> = env::args_os().skip(1).collect();
+    let cwd = env::current_dir().map_err(|_| "checkout root unavailable")?;
+    let Some(root) = workspace::select_root(
+        &args,
+        &cwd,
+        workspace::choose_folder,
+        recovery::workspace_retry,
+    )?
+    else {
+        return Ok(());
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
@@ -232,6 +220,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     if run().is_err() {
+        recovery::launch_error();
         #[cfg(debug_assertions)]
         eprintln!("desktop shell failed");
         std::process::exit(1);

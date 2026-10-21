@@ -65,6 +65,7 @@ type SmokeChecks = {
   healthStatus: number | null;
   tokenStatus: number | null;
   hasSessionKey: boolean;
+  workspaceMatches: boolean;
 };
 
 async function main(): Promise<void> {
@@ -120,37 +121,43 @@ async function main(): Promise<void> {
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     WEBVIEW2_USER_DATA_FOLDER: join(temp, "webview-profile"),
   };
-  const cancelled = Bun.spawn({
-    cmd: [join(runner, "agent-forge-desktop.exe"), "--root", fixtureRoot],
-    cwd: runner,
-    env,
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  try {
-    await waitForMainWindow(
-      cancelled.pid,
-      cancelled,
-      "Agent Forge — hearth unavailable",
-    );
-    await recoveryDialog(cancelled.pid, "cancel");
-    await waitForAppExit(cancelled);
-    if (cancelled.exitCode !== 0)
-      throw new Error(
-        `Cancelling startup did not exit cleanly (code ${cancelled.exitCode}).`,
-      );
-  } finally {
-    if (cancelled.exitCode === null) cancelled.kill();
+  const launch = (args: string[] = [], cwd = runner) =>
+    Bun.spawn({
+      cmd: [join(runner, "agent-forge-desktop.exe"), ...args],
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  for (const scenario of [
+    {
+      args: [],
+      title: "Choose an Agent Forge checkout",
+      cancel: (pid: number) => folderDialog(pid),
+    },
+    {
+      args: ["--root", fixtureRoot],
+      title: "Agent Forge — hearth unavailable",
+      cancel: (pid: number) => recoveryDialog(pid, "cancel"),
+    },
+  ]) {
+    const cancelled = launch(scenario.args);
+    try {
+      await waitForMainWindow(cancelled.pid, cancelled, scenario.title);
+      await scenario.cancel(cancelled.pid);
+      await waitForAppExit(cancelled);
+      if (cancelled.exitCode !== 0)
+        throw new Error(
+          `Cancelling startup did not exit cleanly (code ${cancelled.exitCode}).`,
+        );
+    } finally {
+      if (cancelled.exitCode === null) cancelled.kill();
+    }
   }
-  const appProcess = Bun.spawn({
-    cmd: [join(runner, "agent-forge-desktop.exe"), "--root", fixtureRoot],
-    cwd: runner,
-    env,
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  });
+  const selectedRoot = join(temp, "selected checkout");
+  mkdirSync(selectedRoot);
+  const appProcess = launch([], selectedRoot);
   let socket: WebSocket | undefined;
   let checks: SmokeChecks | undefined;
   let processTree: ProcessTree | undefined;
@@ -160,6 +167,42 @@ async function main(): Promise<void> {
   let failureScreenshot: string | undefined;
 
   try {
+    await waitForMainWindow(
+      appProcess.pid,
+      appProcess,
+      "Choose an Agent Forge checkout",
+    );
+    // Accept the displayed empty folder first: the real app must reject it.
+    // This avoids depending on unsupported OS accessibility editing patterns.
+    await folderDialog(appProcess.pid, true);
+    await waitForMainWindow(
+      appProcess.pid,
+      appProcess,
+      "Agent Forge — choose a checkout",
+    );
+    await recoveryDialog(
+      appProcess.pid,
+      "inspect",
+      "Agent Forge — choose a checkout",
+      "native-workspace-warning.png",
+    );
+    mkdirSync(join(selectedRoot, ".git"));
+    mkdirSync(join(selectedRoot, "scripts", "hearth"), { recursive: true });
+    copyFileSync(
+      join(fixtureRoot, "scripts", "hearth", "server.ts"),
+      join(selectedRoot, "scripts", "hearth", "server.ts"),
+    );
+    await recoveryDialog(
+      appProcess.pid,
+      "retry",
+      "Agent Forge — choose a checkout",
+    );
+    await waitForMainWindow(
+      appProcess.pid,
+      appProcess,
+      "Choose an Agent Forge checkout",
+    );
+    await folderDialog(appProcess.pid, true);
     await waitForMainWindow(
       appProcess.pid,
       appProcess,
@@ -190,7 +233,7 @@ async function main(): Promise<void> {
     });
     const probeDeadline = Date.now() + waitLimitMs;
     while (Date.now() < probeDeadline) {
-      checks = await readChecks(socket);
+      checks = await readChecks(socket, `${basename(temp)}/selected checkout`);
       if (checks.hashCleared && checks.authenticated && checks.health) break;
       await delay(500);
     }
@@ -200,7 +243,7 @@ async function main(): Promise<void> {
       );
     }
     await reloadPage(socket);
-    checks = await readChecks(socket);
+    checks = await readChecks(socket, `${basename(temp)}/selected checkout`);
     if (!allChecksPassed(checks))
       throw new Error(
         "The dashboard failed a packaged asset or session check.",
@@ -290,6 +333,9 @@ async function main(): Promise<void> {
           proxyEnvConflictTested: true,
           startupRetryTested: true,
           startupCancelTested: true,
+          checkoutPickerTested: true,
+          checkoutPickerCancelTested: true,
+          invalidCheckoutRetryTested: true,
           childrenStopped: true,
         },
         error: null,
@@ -298,17 +344,41 @@ async function main(): Promise<void> {
   }
 }
 
+async function folderDialog(pid: number, accept = false): Promise<void> {
+  await powershellResult(
+    `
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class FolderProbe {
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+}
+'@
+    $window = (Get-Process -Id ${pid} -ErrorAction Stop).MainWindowHandle
+    $title = New-Object System.Text.StringBuilder 256
+    [void][FolderProbe]::GetWindowText($window, $title, 256)
+    if ($title.ToString() -ne 'Choose an Agent Forge checkout') { throw 'Expected checkout picker' }
+    if (-not [FolderProbe]::PostMessage($window, 0x111, [IntPtr]${accept ? 1 : 2}, [IntPtr]::Zero)) { throw 'Folder action unavailable' }
+  `,
+    "checkout picker check",
+  );
+}
+
 /** Operate only the startup dialog owned by this smoke's exact native PID. */
 async function recoveryDialog(
   pid: number,
   action: "inspect" | "retry" | "cancel",
+  title = "Agent Forge — hearth unavailable",
+  screenshotName = "native-startup-recovery.png",
 ): Promise<void> {
   const screenshot = join(
     root,
     ".tmp",
     "work",
     "desktop-native-tools",
-    "native-startup-recovery.png",
+    screenshotName,
   );
   mkdirSync(resolve(screenshot, ".."), { recursive: true });
   await powershellResult(
@@ -326,12 +396,13 @@ public static class RecoveryProbe {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect rect);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
 }
 '@
     $window = (Get-Process -Id ${pid} -ErrorAction Stop).MainWindowHandle
     $title = New-Object System.Text.StringBuilder 256
     [void][RecoveryProbe]::GetWindowText($window, $title, 256)
-    if ($title.ToString() -ne 'Agent Forge — hearth unavailable') { throw 'Expected startup recovery dialog' }
+    if ($title.ToString() -ne '${psQuote(title)}') { throw 'Expected startup recovery dialog' }
     if ([RecoveryProbe]::GetDlgItem($window, 4) -eq [IntPtr]::Zero -or [RecoveryProbe]::GetDlgItem($window, 2) -eq [IntPtr]::Zero) { throw 'Recovery choices missing' }
     $default = [RecoveryProbe]::SendMessage($window, 0x400, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -band 0xffff
     if ($default -ne 2) { throw 'Cancel is not the default choice' }
@@ -339,7 +410,7 @@ public static class RecoveryProbe {
       action === "inspect"
         ? `
     Add-Type -AssemblyName System.Drawing
-    [void][RecoveryProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+    [void][RecoveryProbe]::SetThreadDpiAwarenessContext([RecoveryProbe]::GetWindowDpiAwarenessContext($window))
     $rect = New-Object RecoveryProbe+Rect
     if (-not [RecoveryProbe]::GetWindowRect($window, [ref]$rect)) { throw 'Dialog bounds unavailable' }
     $bitmap = New-Object System.Drawing.Bitmap ($rect.Right - $rect.Left), ($rect.Bottom - $rect.Top)
@@ -514,7 +585,10 @@ async function reloadPage(socket: WebSocket): Promise<void> {
   await loaded;
 }
 
-async function readChecks(socket: WebSocket): Promise<SmokeChecks> {
+async function readChecks(
+  socket: WebSocket,
+  workspaceSuffix: string,
+): Promise<SmokeChecks> {
   const result = await cdp(socket, "Runtime.evaluate", {
     expression: `(async () => {
       if (location.protocol !== "http:" || location.hostname !== "127.0.0.1") return {};
@@ -530,8 +604,14 @@ async function readChecks(socket: WebSocket): Promise<SmokeChecks> {
             return typeof envelope?.data?.token === "string" && envelope.data.token.length > 0;
           }).catch(() => false);
       let healthStatus = null;
+      let workspaceMatches = false;
       const healthOk = await fetch(${JSON.stringify(healthPath)}, { signal: AbortSignal.timeout(2500) })
-        .then((response) => { healthStatus = response.status; return response.ok; }).catch(() => false);
+        .then(async (response) => {
+          healthStatus = response.status;
+          const envelope = await response.json();
+          workspaceMatches = typeof envelope?.data?.root === "string" && envelope.data.root.replaceAll(String.fromCharCode(92), "/").toLowerCase().endsWith(${JSON.stringify(workspaceSuffix.toLowerCase())});
+          return response.ok && envelope?.ok === true;
+        }).catch(() => false);
       const cssLink = [...document.querySelectorAll('link[rel="stylesheet"]')]
         .find((link) => link.href.includes("/assets/"));
       const script = [...document.scripts].find((item) => item.src.includes("/assets/"));
@@ -554,6 +634,7 @@ async function readChecks(socket: WebSocket): Promise<SmokeChecks> {
         healthStatus,
         tokenStatus,
         hasSessionKey,
+        workspaceMatches,
       };
     })()`,
     awaitPromise: true,
@@ -576,11 +657,13 @@ async function readChecks(socket: WebSocket): Promise<SmokeChecks> {
     tokenStatus:
       typeof value?.tokenStatus === "number" ? value.tokenStatus : null,
     hasSessionKey: value?.hasSessionKey === true,
+    workspaceMatches: value?.workspaceMatches === true,
   };
 }
 
 function allChecksPassed(checks: SmokeChecks): boolean {
   return (
+    checks.workspaceMatches &&
     checks.hashCleared &&
     checks.rendered &&
     checks.health &&
@@ -828,7 +911,13 @@ async function powershellResult(
         ? "PowerShell syntax error"
         : /cim|winmgmts|namespace/.test(stderr)
           ? "CIM query failed"
-          : "PowerShell command failed";
+          : /folder entry unavailable/.test(stderr)
+            ? "folder entry unavailable"
+            : /expected checkout picker/.test(stderr)
+              ? "checkout picker not found"
+              : /folder action unavailable/.test(stderr)
+                ? "folder action unavailable"
+                : "PowerShell command failed";
     throw new Error(
       `${purpose} failed (${category}, exit ${result.exitCode}).`,
     );

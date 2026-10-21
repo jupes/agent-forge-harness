@@ -11,15 +11,23 @@ package a Beads snapshot.
 From the repository root, run `bun install --frozen-lockfile`, then
 `bun run desktop:build`. The Release executable and its dashboard/sidecar files
 are staged under `apps/desktop/build/windows-x64`. This is a runnable Release
-folder for the first tracer, not an installer. Start it with an explicit
-checkout path: `apps/desktop/build/windows-x64/agent-forge-desktop.exe --root <checkout>`.
-The staged folder alone has no default checkout selection yet. If the host
-cannot start, a native Windows dialog explains the failure and offers Retry
+folder for the first tracer, not an installer. Open the executable normally
+to choose an Agent Forge checkout in the native Windows folder picker. A
+valid current checkout is used directly. An explicit checkout path is also
+supported: `apps/desktop/build/windows-x64/agent-forge-desktop.exe --root <checkout>`.
+An explicit invalid path is refused rather than replaced with a different
+workspace. Cancelling folder selection exits before starting the host. A
+folder missing the harness and Git markers offers Retry to choose again.
+The app does not persist the selected path or grant the renderer filesystem
+access. If the host cannot start, a native Windows dialog explains the failure
+and offers Retry
 and Cancel. Cancel is the default; each new launch attempt requires Retry.
 The failed host is stopped before the dialog opens. Raw host errors and launch
 credentials are never shown in the dialog.
 
 ![Native startup recovery with Cancel selected by default](docs/native-startup-recovery.png)
+
+![Invalid checkout offers selection retry or cancellation](docs/native-workspace-warning.png)
 
 After `bun run desktop:build` has produced the dashboard assets and sidecars,
 run the native Rust checks:
@@ -32,11 +40,17 @@ cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 `bun run desktop:smoke` starts that Release app against a temporary checkout
 with an isolated `AGENT_FORGE_HOME` and unique WebView2 profile, with a bounded
 loopback WebView debugger used only by the smoke. It checks the dashboard
-startup Cancel, repair followed by Retry, the dashboard launch exchange,
+folder selection and cancellation, invalid-folder retry, startup Cancel,
+repair followed by Retry, the dashboard launch exchange,
 packaged asset MIME types, and clean child shutdown; it does
 not call a paid provider or alter the repository's Beads data. The native
-shell does not yet provide a default checkout selection or a visible recovery
-state if its supervised host stops after startup.
+shell does not yet provide a visible recovery state if its supervised host
+stops after startup.
+
+The picker smoke accepts its displayed temporary folder before and after
+adding checkout markers, then checks that the hearth serves that exact folder.
+It drives real native dialogs without editing inaccessible OS controls. This
+does not automate folder-tree navigation or the full keyboard walkthrough.
 
 The screenshot shows the existing dashboard used as a transport tracer with
 isolated fixture data; it is not an approved new desktop frame.

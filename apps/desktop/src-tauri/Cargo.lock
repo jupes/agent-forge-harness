@@ -18,6 +18,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-shell",
  "url",
+ "windows",
 ]
 
 [[package]]
