@@ -41,6 +41,7 @@ import {
   SESSION_KEY_HEADER,
   SURFACE_HEADER,
 } from "./paths";
+import { desktopControlRoutes } from "./routes/desktop-control";
 import type { BdResult } from "./routes/dev-api";
 import {
   startTestHearth,
@@ -83,6 +84,39 @@ const RUN_STATE = JSON.stringify({
 });
 
 const key = (route: ApiRoute): string => `${route.method} ${route.path}`;
+
+test("desktop recovery's action row refuses invalid input and failed audits before restart", async () => {
+  let effects = 0;
+  const decorate = (routes: readonly ApiRoute[]) => [
+    ...routes,
+    ...desktopControlRoutes(async () => {
+      effects++;
+      return { status: 200, data: { restarted: true } };
+    }),
+  ];
+  const h = await start({ api: { decorate } });
+  for (const body of [{ command: "anything" }, [], null]) {
+    const response = await post(h, "/desktop/restart", body);
+    expect(response.status).toBe(400);
+  }
+  expect((await post(h, "/desktop/restart?root=elsewhere", {})).status).toBe(
+    400,
+  );
+  expect(effects).toBe(0);
+  expect((await post(h, "/desktop/restart", {})).status).toBe(200);
+  expect(effects).toBe(1);
+  expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+    action: "desktop.hearth.restart",
+  });
+  const blocked = await start({
+    api: {
+      decorate,
+      appendEvent: () => ({ ok: false, error: "read-only ledger" }),
+    },
+  });
+  expect((await post(blocked, "/desktop/restart", {})).status).toBe(503);
+  expect(effects).toBe(1);
+});
 
 /** The table's action rows. An empty table must fail a test that iterates it, not pass it. */
 function actionRows(h: TestHearth): ActionRoute[] {

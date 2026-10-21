@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { desktopConnection } from "../../apps/desktop/src/connection-state";
+import {
+  compatibilityFromHealth,
+  desktopConnection,
+} from "../../apps/desktop/src/connection-state";
 import { MAX_FAILURES, type StreamDiagnostics } from "../../docs/js/use-stream";
 
 const initial: StreamDiagnostics = {
@@ -12,6 +15,24 @@ const compatible = {
   appVersion: "1",
   hearthVersion: "1",
 } as const;
+
+test("health compatibility is explicit, and malformed or missing versions stay unknown", () => {
+  expect(compatibilityFromHealth({ apiVersion: 1 })).toEqual(compatible);
+  expect(compatibilityFromHealth({ apiVersion: 2 })).toEqual({
+    state: "mismatch",
+    appVersion: "1",
+    hearthVersion: "2",
+  });
+  for (const data of [
+    null,
+    {},
+    { apiVersion: "1" },
+    { apiVersion: 0 },
+    { apiVersion: 1.1 },
+    { apiVersion: Number.NaN },
+  ])
+    expect(compatibilityFromHealth(data).state).toBe("unknown");
+});
 
 test("connecting has no invented data time and no available writes", () => {
   expect(desktopConnection("connecting", initial, compatible)).toMatchObject({

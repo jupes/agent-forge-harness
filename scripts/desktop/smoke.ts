@@ -289,6 +289,10 @@ async function main(): Promise<void> {
     mkdirSync(resolve(screenshotPath, ".."), { recursive: true });
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, "base64"));
 
+    await verifyConnectionRecovery(socket);
+    // Hearth recovery keeps the host and window, but replaces the child hearth.
+    processTree = await captureProcessTree(appProcess.pid);
+
     // Crash only the fixture-owned host, never a real hearth or another app.
     const priorTree = processTree;
     const priorOrigin = await pageOrigin(socket);
@@ -437,12 +441,213 @@ async function main(): Promise<void> {
           runtimeCancelTested: true,
           staleWindowDisabledTested: true,
           retiredOriginBlockedTested: true,
+          hearthRestartTested: true,
+          connectionStatesTested: true,
+          unknownRestartHeldTested: true,
+          connectionKeyboardTested: true,
+          minimumViewportTested: true,
           childrenStopped: true,
         },
         error: null,
       }),
     );
   }
+}
+
+/** The real packaged page and restart route, with only failure/health answers controlled. */
+async function verifyConnectionRecovery(socket: WebSocket): Promise<void> {
+  const interception = await cdp(
+    socket,
+    "Page.addScriptToEvaluateOnNewDocument",
+    {
+      source: `
+    (() => {
+      const original = window.fetch.bind(window);
+      const probe = window.__connectionSmoke = {mode:'mismatch', active:0, posts:[], stream:null, sentinel:'same page', dropRestart:false, restore:()=>{window.fetch=original}};
+      window.fetch = async (input, init = {}) => {
+        const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+        if (init.method === 'POST') probe.posts.push(path);
+        if (path === '/__agent-forge/health' && probe.mode === 'mismatch')
+          return Response.json({ok:true,data:{apiVersion:2},error:null});
+        if (path === '/__agent-forge/stream') {
+          const controller = new AbortController();
+          probe.stream = controller;
+          const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+          probe.active++;
+          signal.addEventListener('abort', () => probe.active--, {once:true});
+          if (probe.mode === 'offline') return new Response('offline', {status:503});
+          return original(input, {...init, signal});
+        }
+        const response = await original(input, init);
+        if (path === '/__agent-forge/desktop/restart' && probe.dropRestart) {
+          probe.dropRestart = false;
+          await response.text();
+          throw new Error('Smoke: restart answer lost');
+        }
+        return response;
+      };
+    })();
+  `,
+    },
+  );
+  await reloadPage(socket);
+  const banner = "document.querySelector('.af-desktop-connection')";
+  await waitForPage(
+    socket,
+    `${banner}?.dataset.phase === 'version-mismatch'`,
+    "Version mismatch did not come from the explicit health version",
+  );
+  await evaluate(
+    socket,
+    "window.__connectionSmoke.mode='offline'; window.__connectionSmoke.stream.abort()",
+  );
+  await waitForPage(
+    socket,
+    `${banner}?.dataset.phase === 'reconnecting' && ${banner}.textContent.includes('attempt 1 of 5')`,
+    "The retry attempt was not shown",
+  );
+  await waitForPage(
+    socket,
+    `${banner}?.dataset.phase === 'stopped' && !!${banner}.querySelector('time')`,
+    "The stopped banner did not retain its last-data time",
+  );
+  await cdp(socket, "Emulation.setDeviceMetricsOverride", {
+    width: 1100,
+    height: 700,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await cdp(socket, "Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const restart = `${banner}.querySelector('button')`;
+  // Tab supplies keyboard modality; focus the recovery control as assistive navigation does.
+  await cdp(socket, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Tab",
+    code: "Tab",
+    windowsVirtualKeyCode: 9,
+  });
+  await cdp(socket, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Tab",
+    code: "Tab",
+    windowsVirtualKeyCode: 9,
+  });
+  await evaluate(socket, `${restart}.focus()`);
+  if (
+    !(await evaluate(
+      socket,
+      `(() => {const button=${restart};const box=button.getBoundingClientRect();return button.matches(':focus-visible') && getComputedStyle(button).outlineStyle !== 'none' && box.height >= 24 && box.right <= innerWidth && box.left >= 0 && ${banner}.getAnimations({subtree:true}).length === 0})()`,
+    ))
+  )
+    throw new Error(
+      "Recovery focus, hit target, minimum viewport or reduced motion failed",
+    );
+  await saveConnectionShot(socket, "native-connection-stopped.png");
+  const priorSession = await sessionFingerprint(socket);
+  const priorOrigin = await pageOrigin(socket);
+  await evaluate(
+    socket,
+    `window.__connectionSmoke.mode='normal'; ${restart}.click()`,
+  );
+  await waitForPage(
+    socket,
+    `${banner}?.dataset.phase === 'connected' && ${banner}.textContent.includes('Workspace actions are available')`,
+    "Explicit restart did not reconnect",
+  );
+  if (
+    (await sessionFingerprint(socket)) === priorSession ||
+    (await pageOrigin(socket)) !== priorOrigin
+  )
+    throw new Error(
+      "Restart did not refresh the session on the existing origin",
+    );
+  if (
+    !(await evaluate(
+      socket,
+      "window.__connectionSmoke.active === 1 && window.__connectionSmoke.posts.filter(p => p === '/__agent-forge/desktop/restart').length === 1",
+    ))
+  )
+    throw new Error("Restart did not leave exactly one stream and one action");
+  await cdp(socket, "Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await saveConnectionShot(socket, "native-connection-connected.png");
+  // Lose only the answer after a real restart: the page must never repeat it itself.
+  await evaluate(
+    socket,
+    "window.__connectionSmoke.mode='mismatch'; window.__connectionSmoke.stream.abort()",
+  );
+  await waitForPage(
+    socket,
+    `${banner}?.dataset.phase === 'version-mismatch'`,
+    "Compatibility was not checked after reconnection",
+  );
+  await evaluate(
+    socket,
+    `window.__connectionSmoke.mode='normal';window.__connectionSmoke.dropRestart=true;${restart}.click()`,
+  );
+  await waitForPage(
+    socket,
+    `${banner}?.textContent.includes('Outcome unknown') && ${banner}.dataset.phase === 'connected'`,
+    "The unknown restart was not held after reads recovered",
+  );
+  await saveConnectionShot(socket, "native-connection-unknown.png");
+  if (
+    !(await evaluate(
+      socket,
+      "window.__connectionSmoke.sentinel === 'same page' && window.__connectionSmoke.active === 1 && window.__connectionSmoke.posts.filter(p => p === '/__agent-forge/desktop/restart').length === 2 && window.__connectionSmoke.posts.every(p => ['/__agent-forge/desktop/restart','/__agent-forge/session'].includes(p))",
+    ))
+  )
+    throw new Error(
+      "Recovery reloaded the page, duplicated the stream, or replayed a workspace write",
+    );
+  await evaluate(socket, `${banner}.querySelector('button').click()`);
+  if (
+    !(await evaluate(
+      socket,
+      "window.__connectionSmoke.posts.filter(p => p === '/__agent-forge/desktop/restart').length === 2",
+    ))
+  )
+    throw new Error("Acknowledging an unknown outcome repeated the action");
+  if (typeof interception.identifier !== "string")
+    throw new Error("Smoke interceptor identifier unavailable");
+  await cdp(socket, "Page.removeScriptToEvaluateOnNewDocument", {
+    identifier: interception.identifier,
+  });
+  await evaluate(socket, "window.__connectionSmoke.restore()");
+}
+
+async function waitForPage(
+  socket: WebSocket,
+  expression: string,
+  error: string,
+): Promise<void> {
+  const deadline = Date.now() + waitLimitMs;
+  while (Date.now() < deadline) {
+    if (await evaluate(socket, expression)) return;
+    await delay(100);
+  }
+  throw new Error(error);
+}
+
+async function saveConnectionShot(
+  socket: WebSocket,
+  name: string,
+): Promise<void> {
+  const result = await cdp(socket, "Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  if (typeof result.data !== "string")
+    throw new Error("Connection screenshot unavailable");
+  const file = join(root, ".tmp", "work", "desktop-native-tools", name);
+  mkdirSync(resolve(file, ".."), { recursive: true });
+  writeFileSync(file, Buffer.from(result.data, "base64"));
 }
 
 async function folderDialog(pid: number, accept = false): Promise<void> {

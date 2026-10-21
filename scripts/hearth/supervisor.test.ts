@@ -153,6 +153,48 @@ test("concurrent ensure calls share one configured launcher startup", async () =
   ).toHaveLength(1);
 });
 
+test("explicit restart replaces only the owned hearth and concurrent reads join it", async () => {
+  const { home, make, lock } = fixture();
+  const supervisor = make("desktop", [
+    process.execPath,
+    "-e",
+    FAKE_LAUNCHER,
+    "restart-fixture",
+  ]);
+  await supervisor.ensure();
+  const previous = lock()?.pid ?? 0;
+  const restart = supervisor.restartIfOwner!();
+  const [result, port] = await Promise.all([restart, supervisor.ensure()]);
+  expect(result).toEqual({ ok: true, port });
+  expect(lock()?.pid).not.toBe(previous);
+  expect(isPidAlive(previous)).toBe(false);
+  expect(lock()?.supervisor).toBe("desktop");
+  expect(
+    readFileSync(join(home, "launcher-starts.txt"), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(2);
+});
+
+test("restart refuses a hearth adopted by another supervisor without stopping or claiming it", async () => {
+  const { home, make, lock } = fixture();
+  const command = [process.execPath, "-e", FAKE_LAUNCHER, "restart-fixture"];
+  const first = make("first", command);
+  await first.ensure();
+  const second = make("second", command);
+  await second.ensure();
+  const previous = lock();
+  const result = await first.restartIfOwner!();
+  expect(result.ok).toBe(false);
+  expect(lock()).toEqual(previous);
+  expect(isPidAlive(previous?.pid ?? 0)).toBe(true);
+  expect(
+    readFileSync(join(home, "launcher-starts.txt"), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(1);
+});
+
 test("starts a hearth, records itself as supervisor, and stops it on close", async () => {
   const { make, lock } = fixture();
   const first = make("first");

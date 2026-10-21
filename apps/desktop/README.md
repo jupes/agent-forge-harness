@@ -75,7 +75,7 @@ does not reliably report renderer disconnects and is not a validated build runti
 The `.ico` is a neutral, build-only tracer asset created for Windows resource
 validation. It is not a final or approved product mark.
 
-## Connection-state producer
+## Hearth connection and recovery
 
 `src/connection-state.ts` exports `desktopConnection(status, diagnostics,
 compatibility)` for the desktop frame, home and project views. The existing
@@ -85,15 +85,48 @@ applied snapshot or new ledger delta. Keepalives and duplicate deltas do not
 make retained data look freshly read. Subscribers are notified when retry
 diagnostics change even if the status stays `reconnecting`.
 
-The selector distinguishes Connecting, Connected, Reconnecting, Stopped and
-an explicitly reported Version mismatch. Unknown compatibility remains unknown
-and cannot enable writes. No extra stream, retry policy, request replay or
-provider call is introduced.
+The desktop-only `ConnectionBanner` renders Connecting, Connected,
+Reconnecting with the actual attempt count, Stopped with Restart hearth, and
+Version mismatch. The supplied state galleries guide its banner and last-read
+time. Last received stats stay visible during an outage and are labelled as
+last received, rather than live. The rest of the dashboard remains the transport
+tracer; the responsive desktop frame is a separate task.
 
-This is a read-only producer contract, not the finished connection banner or
-an authorization guard. The health response currently reports pid/root but no
-API compatibility version, and the renderer has no restart command. The next
-connection slice must supply those explicit contracts, enforce write availability
-at action boundaries, wire the native restart action, and verify the actual
-banner in WebView2 before the connection task can close. Native host-crash
-recovery remains available through the native Retry/Cancel dialog above.
+`connection-recovery.ts` exposes the controller and its subscription, read-only
+state, explicit `restart()` and unknown-outcome acknowledgement. It uses the
+existing singleton stream. `suspend()` cancels transport/retries while retaining
+collections; `resumeFresh()` opens one new stream from a fresh snapshot and
+rejects late callbacks and collection reads from the previous connection.
+
+Health reports `apiVersion: 1`, an API compatibility contract independent of
+the product release. Missing or malformed versions stay unknown. Desktop
+workspace posts are refused in the page while disconnected or unverified and
+checked again at the host against the trusted lock's root, pid and compatibility
+before forwarding. Reads and the launch/session exchange remain available for
+recovery. The ordinary dashboard and static copy retain their existing behavior.
+
+`POST /__agent-forge/desktop/restart` is an operator action table row mounted by
+the desktop host. It accepts only an empty object, requires the same origin and
+current protected operator token, and records `desktop.hearth.restart` before
+the effect. It stops only a hearth whose process identity and supervisor
+ownership still match, then starts the configured bundled hearth. Concurrent
+reads join that restart, and host shutdown waits for it before owner cleanup.
+There is no renderer shell or filesystem command bridge.
+
+Restart returns a fresh same-origin launch link. The page consumes it in place,
+refreshes its session and token cache, and resumes reads without reloading or
+replaying pending writes. A lost response shows Outcome unknown and holds a
+second restart until the operator confirms checking the hearth and pending
+actions. Only the existing pre-effect 403 token retry remains automatic.
+
+The native smoke verifies these states in the packaged WebView2 page, two real
+hearth restarts, fresh authentication, one resumed stream, retained data time,
+unknown-outcome hold, visible keyboard focus, a 24px minimum recovery target,
+reduced motion, and 1100x700/1440x900 viewports. It then removes its controlled
+failure responses and runs the native host-crash Retry/Cancel checks above.
+
+![Stopped connection with retained data and keyboard focus at 1100x700](docs/native-connection-stopped.png)
+
+![Recovered connection on the existing page at 1440x900](docs/native-connection-connected.png)
+
+![Unknown restart outcome held for an explicit check](docs/native-connection-unknown.png)

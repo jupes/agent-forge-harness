@@ -1,11 +1,34 @@
 import type { LiveStatus } from "../../../docs/js/app-state";
 import type { StreamDiagnostics } from "../../../docs/js/use-stream";
+import { HEARTH_API_VERSION } from "../../../scripts/hearth/protocol";
 
 /** Compatibility must come from an explicit producer, never a network error. */
 export type HearthCompatibility =
   | { state: "compatible"; appVersion: string; hearthVersion: string }
   | { state: "mismatch"; appVersion: string; hearthVersion: string }
   | { state: "unknown"; reason: string };
+
+export function compatibilityFromHealth(data: unknown): HearthCompatibility {
+  const version =
+    data !== null && typeof data === "object" && "apiVersion" in data
+      ? data.apiVersion
+      : undefined;
+  if (
+    typeof version !== "number" ||
+    !Number.isSafeInteger(version) ||
+    version <= 0
+  )
+    return {
+      state: "unknown",
+      reason:
+        "The hearth does not report a supported compatibility version. Restart the hearth to use the bundled version.",
+    };
+  return {
+    state: version === HEARTH_API_VERSION ? "compatible" : "mismatch",
+    appVersion: String(HEARTH_API_VERSION),
+    hearthVersion: String(version),
+  };
+}
 
 export interface DesktopConnection {
   phase:

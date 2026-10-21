@@ -63,6 +63,7 @@ import {
   SESSION_ROUTE,
   TOKEN_ROUTE,
 } from "./paths";
+import { HEARTH_API_VERSION } from "./protocol";
 import { councilHttpHandler } from "./routes/council";
 import {
   type BdRunner,
@@ -405,7 +406,11 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       return reply(res, 200, { token: current });
     }
     if (pathname === HEALTH_ROUTE) {
-      return reply(res, 200, { pid: process.pid, root });
+      return reply(res, 200, {
+        pid: process.pid,
+        root,
+        apiVersion: HEARTH_API_VERSION,
+      });
     }
     const notFound = (): void => {
       // A path the table serves, asked with a method nothing serves.

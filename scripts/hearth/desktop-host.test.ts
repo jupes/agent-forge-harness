@@ -1,10 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { closeLedger } from "../ledger/db";
 import { parseDesktopArguments, runDesktopCleanup } from "./desktop-entry";
 import { startDesktopHost } from "./desktop-host";
 import { lockPath, tokenPath } from "./home";
@@ -17,7 +24,11 @@ import {
   SURFACE_HEADER,
   TOKEN_ROUTE,
 } from "./paths";
-import { deadProxyEnvironment, startTestHearth } from "./testing";
+import {
+  deadProxyEnvironment,
+  privateTempDir,
+  startTestHearth,
+} from "./testing";
 import { readToken } from "./token";
 
 const closes: Array<() => Promise<void>> = [];
@@ -25,7 +36,11 @@ afterEach(async () => {
   for (const close of closes.splice(0).reverse()) await close();
 });
 
-async function fixture() {
+async function fixture(
+  restart?: (
+    hearth: Awaited<ReturnType<typeof startTestHearth>>,
+  ) => Promise<import("./supervisor").RestartResult>,
+) {
   const hearth = await startTestHearth();
   closes.push(() => hearth.close());
   const assetsRoot = mkdtempSync(join(hearth.root, "assets with spaces-"));
@@ -37,11 +52,130 @@ async function fixture() {
     supervisor: {
       ensure: async () => hearth.hearth.port,
       stopIfOwner: async () => {},
+      ...(restart ? { restartIfOwner: () => restart(hearth) } : {}),
     },
   });
   closes.push(host.close);
   return { hearth, host, assetsRoot, origin: new URL(host.url).origin };
 }
+
+test("desktop restart is authenticated, validated, audited before effect, and returns a fresh same-origin launch", async () => {
+  let restarts = 0;
+  const { hearth, host, origin } = await fixture(async (running) => {
+    expect(running.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+      action: "desktop.hearth.restart",
+      surface: "ui",
+    });
+    restarts++;
+    return { ok: true, port: running.hearth.port };
+  });
+  const path = `${origin}${API_PREFIX}/desktop/restart`;
+  const headers = {
+    Origin: origin,
+    [OPERATOR_HEADER]: hearth.hearth.token,
+    [SURFACE_HEADER]: "ui",
+    "Content-Type": "application/json",
+  };
+  for (const [extra, body, status] of [
+    [{ [OPERATOR_HEADER]: "wrong" }, {}, 403],
+    [{ Origin: "http://127.0.0.1:1" }, {}, 403],
+    [{}, { command: "anything" }, 400],
+  ] as const) {
+    expect(
+      (
+        await fetch(path, {
+          method: "POST",
+          headers: { ...headers, ...extra },
+          body: JSON.stringify(body),
+        })
+      ).status,
+    ).toBe(status);
+    expect(restarts).toBe(0);
+  }
+  const response = await fetch(path, { method: "POST", headers, body: "{}" });
+  expect(response.status).toBe(200);
+  const answer = await response.json();
+  expect(answer.ok).toBe(true);
+  expect(new URL(answer.data.url).origin).toBe(origin);
+  expect(new URL(answer.data.url).hash).toMatch(/^#launch=[0-9a-f]{64}$/);
+  expect(answer.data.url).not.toBe(host.url);
+  expect(restarts).toBe(1);
+});
+
+test("a real desktop restart rotates the hearth token and session, including after automatic process replacement", async () => {
+  const temp = privateTempDir("af-desktop-restart-");
+  closes.push(async () => {
+    closeLedger(join(temp, "home", "ledger.db"));
+    rmSync(temp, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 50,
+    });
+  });
+  const home = join(temp, "home");
+  const root = join(temp, "checkout");
+  const assetsRoot = join(temp, "assets");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  mkdirSync(assetsRoot);
+  writeFileSync(join(assetsRoot, "index.html"), "desktop fixture");
+  const serverModule = pathToFileURL(
+    resolve(import.meta.dir, "server.ts"),
+  ).href;
+  const source = `const {createHearth}=await import(${JSON.stringify(serverModule)}); await createHearth({root:process.argv[process.argv.indexOf('--root')+1],home:process.env.AGENT_FORGE_HOME,api:{configHome:process.env.AGENT_FORGE_HOME,runBd:async()=>({status:0,stdout:'[]',stderr:''})}});`;
+  const host = await startDesktopHost({
+    root,
+    home,
+    assetsRoot,
+    hearthCommand: [process.execPath, "-e", source, "desktop-fixture"],
+  });
+  closes.push(host.close);
+  const origin = new URL(host.url).origin;
+  const exchange = async (link: string) => {
+    const response = await fetch(`${origin}${SESSION_ROUTE}`, {
+      method: "POST",
+      headers: {
+        Origin: origin,
+        "x-agent-forge-launch": new URL(link).hash.slice(8),
+        [SURFACE_HEADER]: "ui",
+      },
+    });
+    expect(response.status).toBe(200);
+    return {
+      cookie: response.headers.get("set-cookie")?.split(";")[0] ?? "",
+      key: (await response.json()).data.key,
+    };
+  };
+  const session = await exchange(host.url);
+  const tokenFile = tokenPath(home, root);
+  const before = readToken(tokenFile);
+  const restart = async () =>
+    fetch(`${origin}${API_PREFIX}/desktop/restart`, {
+      method: "POST",
+      headers: {
+        Origin: origin,
+        [OPERATOR_HEADER]: readToken(tokenFile) ?? "",
+        [SURFACE_HEADER]: "ui",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+  const first = await restart();
+  expect(first.status).toBe(200);
+  const fresh = await exchange((await first.json()).data.url);
+  expect(fresh).not.toEqual(session);
+  expect(readToken(tokenFile)).not.toBe(before);
+  const previous = readLock(lockPath(home, root));
+  if (!previous || previous.pid === process.pid)
+    throw new Error("No fixture-owned child hearth");
+  process.kill(previous.pid);
+  await new Promise((done) => setTimeout(done, 300));
+  expect((await fetch(`${origin}${API_PREFIX}/health`)).status).toBe(200);
+  expect(readLock(lockPath(home, root))?.pid).not.toBe(previous.pid);
+  const second = await restart();
+  expect(second.status).toBe(200);
+  await second.body?.cancel();
+}, 30_000);
 
 test("serves fixed assets and carries launch/session/token/action traffic on one guarded origin", async () => {
   const { hearth, host, origin } = await fixture();
@@ -368,4 +502,59 @@ test("crash cleanup never takes ownership from another supervisor", async () => 
     (await fetch(`http://127.0.0.1:${hearth.hearth.port}/__agent-forge/health`))
       .status,
   ).toBe(200);
+});
+
+test("desktop refuses writes to a hearth with missing or mismatched API compatibility", async () => {
+  const { hearth, assetsRoot } = await fixture();
+  let port = hearth.hearth.port;
+  let version: number | undefined = 2;
+  let posts = 0;
+  const old = createServer((req, res) => {
+    if (req.method === "POST") posts++;
+    expect(req.headers[OPERATOR_HEADER]).toBeUndefined();
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        ok: true,
+        data: { pid: process.pid, root: hearth.root, apiVersion: version },
+        error: null,
+      }),
+    );
+  });
+  await new Promise<void>((done) => old.listen(0, "127.0.0.1", done));
+  closes.push(async () => {
+    old.closeAllConnections();
+    await new Promise<void>((done) => old.close(() => done()));
+  });
+  const host = await startDesktopHost({
+    root: hearth.root,
+    home: hearth.home,
+    assetsRoot,
+    supervisor: { ensure: async () => port, stopIfOwner: async () => {} },
+  });
+  closes.push(host.close);
+  const address = old.address();
+  if (!address || typeof address === "string")
+    throw new Error("fixture port missing");
+  port = address.port;
+  const file = lockPath(hearth.home, hearth.root);
+  const lock = readLock(file);
+  if (!lock) throw new Error("fixture lock missing");
+  writeFileSync(file, JSON.stringify({ ...lock, port }));
+  const origin = new URL(host.url).origin;
+  for (version of [2, undefined]) {
+    const response = await fetch(`${origin}${API_PREFIX}/beads/bead-1/claim`, {
+      method: "POST",
+      headers: {
+        Origin: origin,
+        [OPERATOR_HEADER]: hearth.hearth.token,
+        [SURFACE_HEADER]: "ui",
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).ok).toBe(false);
+  }
+  expect(posts).toBe(0);
 });

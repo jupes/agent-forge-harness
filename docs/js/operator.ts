@@ -316,6 +316,7 @@ export type OperatorRead = (
 export interface OperatorClient {
   post: OperatorPost;
   read: OperatorRead;
+  invalidateToken(): void;
 }
 
 /**
@@ -367,6 +368,8 @@ export interface OperatorClientOptions
   ready?: () => Promise<unknown>;
   /** Where the session key is read from, for each token request; `pageSessionKeys` by default. */
   sessionKeys?: SessionKeyStore;
+  /** A desktop connection can refuse workspace writes before any request leaves. */
+  postProblem?: (url: string) => string | null;
 }
 
 /** A poster and a reader with one token cache of their own; `fetchImpl` is replaced in tests. */
@@ -402,7 +405,13 @@ export function createOperatorClient(
   };
 
   const send = async (url: string, body: unknown): Promise<Response> => {
+    const check = (): void => {
+      const problem = options.postProblem?.(url);
+      if (problem) throw new NotSent(problem);
+    };
+    check();
     const held = await heldToken();
+    check();
     return fetchImpl(url, {
       method: "POST",
       headers: {
@@ -437,6 +446,9 @@ export function createOperatorClient(
   return {
     post: again(send),
     read: again((url: string, init: RequestInit = {}) => get(url, init)),
+    invalidateToken: () => {
+      token = null;
+    },
   };
 }
 
@@ -452,9 +464,45 @@ export function createOperatorPost(
  * On a static copy it asks for nothing: no hearth is behind it. It asks for
  * the token only once the page's launch has settled.
  */
+let pagePostProblem: ((url: string) => string | null) | null = null;
+export function setPagePostProblem(
+  check: (url: string) => string | null,
+): void {
+  pagePostProblem = check;
+}
+
 const pageClient = createOperatorClient(undefined, {
   staticCopy: servedStatically(),
   ready: launchSettled,
+  postProblem: (url) => pagePostProblem?.(url) ?? null,
 });
+
+/** Consume an explicit restart's launch in place, keeping page data and pending writes. */
+export function refreshPageSession(
+  link: string,
+  origin: string = window.location.origin,
+): Promise<LaunchOutcome> {
+  const url = new URL(link);
+  if (
+    url.origin !== origin ||
+    url.protocol !== "http:" ||
+    url.hostname !== "127.0.0.1" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    !/^#launch=[0-9a-f]{64}$/.test(url.hash)
+  )
+    throw new Error(
+      "The restarted hearth returned an invalid desktop launch link",
+    );
+  pageClient.invalidateToken();
+  launched = exchangeLaunch(
+    url.hash.slice("#launch=".length),
+    boundedFetch((input, init) => fetch(input, init), {}),
+    pageSessionKeys,
+  );
+  return launched;
+}
 export const operatorPost: OperatorPost = pageClient.post;
 export const operatorRead: OperatorRead = pageClient.read;

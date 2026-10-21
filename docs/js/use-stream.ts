@@ -336,6 +336,10 @@ export interface StreamClient {
   getState(): LiveState;
   /** Real retry/data diagnostics, sampled alongside getState in subscribers. */
   getDiagnostics(): StreamDiagnostics;
+  /** Pause transport and retries while retaining received data. */
+  suspend(): void;
+  /** Resume a suspended client once, requiring a fresh snapshot. */
+  resumeFresh(): void;
   /** Be told after every change of state. Holds the connection open until the returned function is called. */
   subscribe(listener: () => void): () => void;
   /**
@@ -421,6 +425,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     callback: (reason: WatchReason) => void;
   }>();
   let holders = 0;
+  let suspended = false;
 
   let connection: { close(): void } | null = null;
   /** Raised for every connection and on release, so a late call from an old one is ignored. */
@@ -544,7 +549,13 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   }
 
   function connect(): void {
-    if (connection !== null || holders === 0 || state.status === "off") return;
+    if (
+      suspended ||
+      connection !== null ||
+      holders === 0 ||
+      state.status === "off"
+    )
+      return;
     generation += 1;
     const mine = generation;
     const current = (): boolean => mine === generation;
@@ -583,7 +594,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
         openedAt = now();
         watchSilence(awaitingSnapshot ? SNAPSHOT_MS : SILENCE_MS);
         // A resume shows what the page already has; a first open waits for its snapshot.
-        if (state.cursor !== null) setState(withStatus(state, "live"));
+        if (state.cursor !== null && !awaitingSnapshot)
+          setState(withStatus(state, "live"));
         // Anything but the first connection of the page follows a gap, in which a
         // view may have failed to read: every watcher reads again.
         const gap = afterAGap;
@@ -649,8 +661,16 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       timers,
       now,
       async run() {
+        if (suspended) return;
+        const mine = generation;
         const envelope = await deps.read(`/${name}`);
-        if (holders === 0 || state.cursor === null || state.status === "off")
+        if (
+          suspended ||
+          mine !== generation ||
+          holders === 0 ||
+          state.cursor === null ||
+          state.status === "off"
+        )
           return;
         // A read that did not answer (it rejected) keeps what was shown. One
         // that answered "this cannot be read" is taken at its word: the
@@ -674,7 +694,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     timers,
     now,
     async run() {
-      if (rowless.size === 0) return;
+      if (suspended || rowless.size === 0) return;
+      const mine = generation;
       const asked = [...rowless];
       let envelope: OperatorEnvelope<unknown>;
       try {
@@ -682,12 +703,20 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       } catch (cause) {
         // Nothing answered: the ids stay, and a few more tries follow on their
         // own, so one waiting session is not left bare until the next snapshot.
-        rowFailures += 1;
-        if (rowFailures <= SESSION_ROW_RETRIES) sessionRows.request();
+        if (!suspended && mine === generation) {
+          rowFailures += 1;
+          if (rowFailures <= SESSION_ROW_RETRIES) sessionRows.request();
+        }
         throw cause;
       }
       rowFailures = 0;
-      if (holders === 0 || state.cursor === null || state.status === "off")
+      if (
+        suspended ||
+        mine !== generation ||
+        holders === 0 ||
+        state.cursor === null ||
+        state.status === "off"
+      )
         return;
       if (!envelope.ok || !Array.isArray(envelope.data)) {
         for (const id of asked) rowless.delete(id);
@@ -712,6 +741,27 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       retryLimit: MAX_FAILURES - 1,
       lastDataAt,
     }),
+    suspend() {
+      if (suspended) return;
+      suspended = true;
+      drop();
+      retryTimer = stop(retryTimer);
+      setState(withStatus(state, "reconnecting"));
+    },
+    resumeFresh() {
+      if (!suspended) return;
+      suspended = false;
+      failures = 0;
+      askAfresh = true;
+      setState(
+        withStatus(
+          state,
+          state.cursor === null ? "connecting" : "reconnecting",
+        ),
+        true,
+      );
+      connect();
+    },
     subscribe(listener) {
       listeners.add(listener);
       hold();

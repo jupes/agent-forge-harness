@@ -788,6 +788,33 @@ function harness(random: () => number = () => 0.5) {
   return { clock, wire, reads, client };
 }
 
+test("explicit recovery pauses retries, retains data, ignores retired callbacks and resumes one fresh stream", () => {
+  const { client, wire, clock } = harness(() => 0);
+  const leave = client.subscribe(() => {});
+  const previous = wire.current;
+  previous.open();
+  previous.snapshot({ sessions: ok([session("retained")]) });
+  const sessions = client.getState().sessions;
+  previous.end("failed");
+  client.suspend();
+  clock.advance(100_000);
+  expect(wire.connections).toHaveLength(1);
+  expect(previous.closed).toBe(true);
+  expect(client.getState().sessions).toBe(sessions);
+  previous.snapshot({ sessions: ok([]) });
+  expect(client.getState().sessions).toBe(sessions);
+  client.resumeFresh();
+  client.resumeFresh();
+  expect(wire.connections).toHaveLength(2);
+  expect(wire.current.lastEventId).toBeNull();
+  expect(client.getState().sessions).toBe(sessions);
+  wire.current.open();
+  wire.current.snapshot({ cursor: 22, sessions: ok([session("replacement")]) });
+  expect(client.getState().cursor).toBe(22);
+  expect(client.getDiagnostics().consecutiveFailures).toBe(0);
+  leave();
+});
+
 test("connection diagnostics count real retries and retain the last accepted stream data time", () => {
   const { client, wire, clock } = harness(() => 0);
   expect(client.getDiagnostics()).toEqual({
@@ -3052,6 +3079,8 @@ function watchedOnly(): { client: StreamClient; tell(): void } {
   return {
     client: {
       getState: () => INITIAL_LIVE_STATE,
+      suspend: () => {},
+      resumeFresh: () => {},
       getDiagnostics: () => ({
         consecutiveFailures: 0,
         retryLimit: MAX_FAILURES - 1,

@@ -7,12 +7,19 @@ import {
   type ServerResponse,
 } from "node:http";
 import { connect } from "node:net";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { appendEvent } from "../ledger/append";
+import { resolveCheckout } from "../ledger/workspace";
+import { createOperatorApi } from "./api";
 import { frontDoorOrigin, hasAmbiguousPath } from "./gate";
-import { hearthHome, tokenPath } from "./home";
+import { hearthHome, lockPath, tokenPath } from "./home";
+import { readHomeFile, readHomeLock } from "./home-guard";
 import { launchUrl, requestLaunch } from "./launch";
-import { loopbackProxyVariable } from "./loopback";
-import { API_PREFIX } from "./paths";
+import { healthProblem, loopbackProxyVariable } from "./loopback";
+import { API_PREFIX, SESSION_ROUTE } from "./paths";
+import { HEARTH_API_VERSION } from "./protocol";
+import { desktopControlRoutes } from "./routes/desktop-control";
+import { hearthLedger } from "./routes/operator-reads";
 import { createSupervisor, type HearthSupervisor } from "./supervisor";
 import { readToken } from "./token";
 
@@ -136,6 +143,64 @@ export async function startDesktopHost(
   let server: ReturnType<typeof createServer> | null = null;
   try {
     const port = await supervisor.ensure();
+    const controlRoutes = desktopControlRoutes(async () => {
+      if (closing !== null || supervisor.restartIfOwner === undefined)
+        return {
+          status: 409,
+          error:
+            "Hearth restart is unavailable in this desktop host. Nothing was stopped.",
+        };
+      for (const response of upstreamResponses) response.destroy();
+      for (const upstream of upstreams) upstream.destroy();
+      const restarted = await supervisor.restartIfOwner();
+      if (!restarted.ok) return { status: 409, error: restarted.error };
+      const token = readToken(tokenPath(home, root));
+      if (token === null)
+        throw new Error(
+          "The restarted hearth did not publish its operator token. Check its status before trying again.",
+        );
+      const minted = await requestLaunch({
+        home,
+        root,
+        port: restarted.port,
+        token,
+        surface: "ui",
+      });
+      const address = server?.address();
+      if (!address || typeof address === "string" || closing !== null)
+        throw new Error("The desktop host closed during recovery.");
+      return {
+        status: 200,
+        data: {
+          url: launchUrl(`http://127.0.0.1:${address.port}/`, minted.secret),
+        },
+      };
+    });
+    const controls = createOperatorApi(
+      {
+        workspace: resolveCheckout(root).workspace,
+        expectedToken: () => {
+          // Token rotation can also follow an automatic process replacement.
+          // Read through the trusted home handle, never cache an earlier boot's token.
+          const read = readHomeFile(home, tokenPath(home, root));
+          const token = read.text?.trim();
+          return read.problem === null && token && /^[0-9a-f]{64}$/.test(token)
+            ? token
+            : null;
+        },
+        appendEvent: (event) => {
+          try {
+            return appendEvent(event, hearthLedger(join(home, "ledger.db")));
+          } catch {
+            return {
+              ok: false,
+              error: "The desktop audit ledger is unavailable",
+            };
+          }
+        },
+      },
+      controlRoutes,
+    );
     server = createServer(
       {
         headersTimeout: 10_000,
@@ -168,11 +233,45 @@ export async function startDesktopHost(
       if (url.origin !== origin || hasAmbiguousPath(pathname))
         return reply(res, 400, "Bad request");
       if (isApiPath(pathname)) {
+        if (controls.allowedMethods(pathname).length > 0) {
+          await controls.handle(req, res, () =>
+            reply(res, 405, "Method not allowed"),
+          );
+          return;
+        }
         let targetPort: number;
         try {
           targetPort = await supervisor.ensure();
         } catch {
           return reply(res, 503, "Control plane unavailable");
+        }
+        if (req.method === "POST" && pathname !== SESSION_ROUTE) {
+          const trusted = readHomeLock(home, lockPath(home, root));
+          const lock = trusted.lock;
+          const compatible =
+            trusted.problem === null &&
+            lock !== null &&
+            lock.port === targetPort &&
+            resolve(lock.root) === root &&
+            (await healthProblem(lock, {
+              expectedApiVersion: HEARTH_API_VERSION,
+            })) === null;
+          if (!compatible) {
+            res.setHeader("Connection", "close");
+            res.writeHead(409, {
+              "Content-Type": "application/json; charset=utf-8",
+              "Cache-Control": "no-store",
+            });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                data: null,
+                error:
+                  "Workspace actions are unavailable because the hearth's compatibility could not be verified. Restart the hearth to use the bundled version. Nothing was forwarded.",
+              }),
+            );
+            return;
+          }
         }
         const headers = Object.fromEntries(
           Object.entries(req.headers).filter(

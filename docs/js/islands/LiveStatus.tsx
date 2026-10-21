@@ -74,14 +74,20 @@ const shown = (value: number | null): string | number => value ?? "–";
 
 export function LiveStatsView({
   stats,
+  lastKnown = false,
 }: {
   stats: LiveStatsValues | null;
+  lastKnown?: boolean;
 }): JSX.Element | null {
   if (stats === null) return null;
   return (
     <section
       class="af-stat-row"
-      aria-label="Live from the control plane"
+      aria-label={
+        lastKnown
+          ? "Last received from the control plane"
+          : "Live from the control plane"
+      }
       data-testid="live-stats"
     >
       <StatCard
@@ -113,6 +119,22 @@ const sameStats = (
     a.claims === b.claims);
 
 /** The dashboard's second stat row: absent until a snapshot has arrived, and when live updates are off. */
-export function LiveStats(): JSX.Element | null {
-  return <LiveStatsView stats={useStream(liveStats, sameStats)} />;
+const retainedStats = (state: LiveState): LiveStatsValues | null =>
+  liveStats(
+    state.status === "off" ? { ...state, status: "reconnecting" } : state,
+  );
+
+export function LiveStats({
+  retainLastKnown = false,
+}: {
+  retainLastKnown?: boolean;
+} = {}): JSX.Element | null {
+  const stats = useStream(
+    retainLastKnown ? retainedStats : liveStats,
+    sameStats,
+  );
+  const lastKnown = useStream(
+    (state) => retainLastKnown && state.status !== "live",
+  );
+  return <LiveStatsView stats={stats} lastKnown={lastKnown} />;
 }

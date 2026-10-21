@@ -8,6 +8,10 @@
 
 import { render } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
+import {
+  ConnectionBanner,
+  installDesktopConnection,
+} from "../../apps/desktop/src/ConnectionBanner";
 import type { BeadsPayload } from "../../types/beads";
 import { needsSnapshot, pageTitleFor, snapshotLabelFor } from "./app-state";
 import { installCopyDelegation } from "./copy-to-clipboard";
@@ -40,6 +44,8 @@ import { readSnapshotAgain, useSnapshotRebuilt } from "./use-snapshot-rebuilt";
 // address bar (the route part stays) and is exchanged for the page's
 // dashboard session, which the operator token needs (`operator.ts`).
 startPageLaunch();
+const desktop = import.meta.env?.MODE === "desktop";
+if (desktop) installDesktopConnection();
 
 const BEADS_URL = "data/beads.json";
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
@@ -180,7 +186,7 @@ function DashboardApp() {
       snapshotLabel={label}
       snapshotIso={iso}
     >
-      <LiveBanner route={route} />
+      {desktop ? <ConnectionBanner /> : <LiveBanner route={route} />}
       <PendingWrites />
       {renderRoute()}
     </AppShell>
@@ -213,7 +219,7 @@ function DashboardApp() {
         return route === "dashboard" ? (
           <>
             <BeadCounts snapshot={null} initiativeFilter="all" />
-            <LiveStats />
+            <LiveStats retainLastKnown={desktop} />
             {missing}
           </>
         ) : (
