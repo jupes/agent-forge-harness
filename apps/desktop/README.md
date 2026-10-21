@@ -74,3 +74,26 @@ does not reliably report renderer disconnects and is not a validated build runti
 
 The `.ico` is a neutral, build-only tracer asset created for Windows resource
 validation. It is not a final or approved product mark.
+
+## Connection-state producer
+
+`src/connection-state.ts` exports `desktopConnection(status, diagnostics,
+compatibility)` for the desktop frame, home and project views. The existing
+page's single `appStream()` client now supplies `getDiagnostics()` with the
+actual consecutive failure count, retry limit and local time of the last
+applied snapshot or new ledger delta. Keepalives and duplicate deltas do not
+make retained data look freshly read. Subscribers are notified when retry
+diagnostics change even if the status stays `reconnecting`.
+
+The selector distinguishes Connecting, Connected, Reconnecting, Stopped and
+an explicitly reported Version mismatch. Unknown compatibility remains unknown
+and cannot enable writes. No extra stream, retry policy, request replay or
+provider call is introduced.
+
+This is a read-only producer contract, not the finished connection banner or
+an authorization guard. The health response currently reports pid/root but no
+API compatibility version, and the renderer has no restart command. The next
+connection slice must supply those explicit contracts, enforce write availability
+at action boundaries, wire the native restart action, and verify the actual
+banner in WebView2 before the connection task can close. Native host-crash
+recovery remains available through the native Retry/Cancel dialog above.

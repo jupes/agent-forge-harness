@@ -788,6 +788,60 @@ function harness(random: () => number = () => 0.5) {
   return { clock, wire, reads, client };
 }
 
+test("connection diagnostics count real retries and retain the last accepted stream data time", () => {
+  const { client, wire, clock } = harness(() => 0);
+  expect(client.getDiagnostics()).toEqual({
+    consecutiveFailures: 0,
+    retryLimit: MAX_FAILURES - 1,
+    lastDataAt: null,
+  });
+  const observed: number[] = [];
+  const leave = client.subscribe(() =>
+    observed.push(client.getDiagnostics().consecutiveFailures),
+  );
+  clock.advance(100);
+  wire.current.open();
+  wire.current.snapshot();
+  expect(client.getDiagnostics().lastDataAt).toBe(100);
+  wire.current.end("failed");
+  clock.advance(250);
+  wire.current.end("failed");
+  expect(observed.slice(-2)).toEqual([1, 2]);
+  expect(client.getDiagnostics()).toEqual({
+    consecutiveFailures: 2,
+    retryLimit: MAX_FAILURES - 1,
+    lastDataAt: 100,
+  });
+  expect(client.getState().cursor).toBe(10);
+  leave();
+});
+
+test("stable keepalives reset failure diagnostics without making retained data look newly read", () => {
+  const { client, wire, clock } = harness(() => 0);
+  const observed: number[] = [];
+  const leave = client.subscribe(() =>
+    observed.push(client.getDiagnostics().consecutiveFailures),
+  );
+  wire.current.open();
+  clock.advance(100);
+  wire.current.snapshot();
+  wire.current.end("failed");
+  clock.advance(250);
+  wire.current.open();
+  clock.advance(STABLE_MS);
+  wire.current.keepalive();
+  expect(observed.at(-1)).toBe(0);
+  expect(client.getDiagnostics().lastDataAt).toBe(100);
+  wire.current.delta(gate(11));
+  clock.advance(BATCH_MS);
+  const acceptedAt = client.getDiagnostics().lastDataAt;
+  expect(acceptedAt).toBe(clock.now());
+  wire.current.delta(gate(11));
+  clock.advance(BATCH_MS);
+  expect(client.getDiagnostics().lastDataAt).toBe(acceptedAt);
+  leave();
+});
+
 const gate = (id: number): LedgerEvent =>
   event(id, { kind: "gate.ran", payload: { gate: "tsc", passed: true } });
 const phaseDone = (id: number, slug = "alpha"): LedgerEvent =>
@@ -2998,6 +3052,11 @@ function watchedOnly(): { client: StreamClient; tell(): void } {
   return {
     client: {
       getState: () => INITIAL_LIVE_STATE,
+      getDiagnostics: () => ({
+        consecutiveFailures: 0,
+        retryLimit: MAX_FAILURES - 1,
+        lastDataAt: null,
+      }),
       subscribe: () => () => undefined,
       watch: (_kinds, callback) => {
         callbacks.push(callback);

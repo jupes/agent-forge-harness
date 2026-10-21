@@ -334,6 +334,8 @@ export type WatchReason = "events" | "resync";
 
 export interface StreamClient {
   getState(): LiveState;
+  /** Real retry/data diagnostics, sampled alongside getState in subscribers. */
+  getDiagnostics(): StreamDiagnostics;
   /** Be told after every change of state. Holds the connection open until the returned function is called. */
   subscribe(listener: () => void): () => void;
   /**
@@ -344,6 +346,14 @@ export interface StreamClient {
     kinds: readonly LedgerEventKind[],
     callback: (reason: WatchReason) => void,
   ): () => void;
+}
+
+export interface StreamDiagnostics {
+  readonly consecutiveFailures: number;
+  /** MAX_FAILURES includes the original request, so there is one fewer retry. */
+  readonly retryLimit: number;
+  /** Local receipt time of the latest applied snapshot/delta; keepalives do not refresh it. */
+  readonly lastDataAt: number | null;
 }
 
 export interface StreamClientDeps {
@@ -418,6 +428,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   /** Whether a connection of this page has ended: the next one to open may follow a gap. */
   let afterAGap = false;
   let failures = 0;
+  let lastDataAt: number | null = null;
   /** The next request asks for a snapshot even when the page has a cursor. */
   let askAfresh = false;
   let waiting: LedgerEvent[] = [];
@@ -429,8 +440,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
   let retryTimer: unknown = null;
   let silenceTimer: unknown = null;
 
-  const setState = (next: LiveState): void => {
-    if (next === state) return;
+  const setState = (next: LiveState, diagnosticsChanged = false): void => {
+    if (next === state && !diagnosticsChanged) return;
     state = next;
     for (const listener of [...listeners]) listener();
   };
@@ -462,6 +473,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     if (next === state || before === null) return;
     const kinds = new Set<LedgerEventKind>();
     for (const event of batch) if (event.id > before) kinds.add(event.kind);
+    lastDataAt = now();
     setState(next);
     tell(kinds);
     // After the update, so the delta is shown without waiting for the read.
@@ -485,6 +497,7 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       rowless.clear();
       rowFailures = 0;
       batchTimer = stop(batchTimer);
+      lastDataAt = now();
       setState(applySnapshot(state, data));
       return true;
     } else if (message.event === "delta" && isLedgerEvent(data)) {
@@ -516,10 +529,10 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
     drop();
     failures += 1;
     if (failures >= MAX_FAILURES) {
-      setState(withStatus(state, "off", "lost"));
+      setState(withStatus(state, "off", "lost"), true);
       return;
     }
-    setState(withStatus(state, "reconnecting"));
+    setState(withStatus(state, "reconnecting"), true);
     const ceiling = RETRY_BASE_MS * 2 ** (failures - 1);
     retryTimer = timers.set(
       () => {
@@ -550,7 +563,9 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
       watchSilence();
       if (works || openedAt === null || now() - openedAt < STABLE_MS) return;
       works = true;
+      const changed = failures !== 0;
       failures = 0;
+      if (changed) setState(state, true);
     };
     askAfresh = false;
     // Timed from the request: a hearth that hangs never answers it. A resume
@@ -692,6 +707,11 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
 
   return {
     getState: () => state,
+    getDiagnostics: () => ({
+      consecutiveFailures: failures,
+      retryLimit: MAX_FAILURES - 1,
+      lastDataAt,
+    }),
     subscribe(listener) {
       listeners.add(listener);
       hold();
