@@ -12,6 +12,7 @@ import {
   ConnectionBanner,
   installDesktopConnection,
 } from "../../apps/desktop/src/ConnectionBanner";
+import { DesktopApp } from "../../apps/desktop/src/DesktopApp";
 import type { BeadsPayload } from "../../types/beads";
 import { needsSnapshot, pageTitleFor, snapshotLabelFor } from "./app-state";
 import { installCopyDelegation } from "./copy-to-clipboard";
@@ -270,6 +271,6 @@ function DashboardApp() {
 }
 
 const root = document.getElementById("app");
-if (root) render(<DashboardApp />, root);
+if (root) render(desktop ? <DesktopApp /> : <DashboardApp />, root);
 
 export { DashboardApp, DEFAULT_ROUTE };

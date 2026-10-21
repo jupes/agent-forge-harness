@@ -290,6 +290,7 @@ async function main(): Promise<void> {
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, "base64"));
 
     await verifyConnectionRecovery(socket);
+    await verifyDesktopFrame(socket);
     // Hearth recovery keeps the host and window, but replaces the child hearth.
     processTree = await captureProcessTree(appProcess.pid);
 
@@ -446,6 +447,11 @@ async function main(): Promise<void> {
           unknownRestartHeldTested: true,
           connectionKeyboardTested: true,
           minimumViewportTested: true,
+          desktopFrameTested: true,
+          scopedNavigationTested: true,
+          inspectorCollapseTested: true,
+          frameKeyboardTested: true,
+          frameTextContrastTested: true,
           childrenStopped: true,
         },
         error: null,
@@ -620,6 +626,257 @@ async function verifyConnectionRecovery(socket: WebSocket): Promise<void> {
     identifier: interception.identifier,
   });
   await evaluate(socket, "window.__connectionSmoke.restore()");
+}
+
+async function verifyDesktopFrame(socket: WebSocket): Promise<void> {
+  const frame = "document.querySelector('.af-desktop-frame')";
+  await waitForPage(
+    socket,
+    `!!${frame}`,
+    "The packaged desktop did not mount its frame",
+  );
+  const session = await sessionFingerprint(socket);
+  const origin = await pageOrigin(socket);
+  let streamRequests = 0;
+  const observe = (event: MessageEvent): void => {
+    const message = parseCdpMessage(String(event.data));
+    if (message?.method !== "Network.requestWillBeSent") return;
+    const request = asRecord(asRecord(message.params)?.request);
+    if (
+      typeof request?.url === "string" &&
+      request.url.endsWith("/__agent-forge/stream")
+    )
+      streamRequests++;
+  };
+  socket.addEventListener("message", observe);
+  try {
+    await cdp(socket, "Emulation.setDeviceMetricsOverride", {
+      width: 1440,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await evaluate(socket, "location.hash=''");
+    await waitForPage(
+      socket,
+      "document.querySelector('.af-desktop-project-name')?.textContent.includes('No project selected')",
+      "The unselected project state was fabricated",
+    );
+    if (
+      await evaluate(
+        socket,
+        "document.querySelector('.af-desktop-inspector').hidden",
+      )
+    )
+      await evaluate(
+        socket,
+        "document.querySelector('main button[aria-label=\"Show inspector\"]').click()",
+      );
+    await waitForPage(
+      socket,
+      `${frame}.dataset.inspectorOpen === 'true'`,
+      "The inspector did not open at the wide viewport",
+    );
+    if (
+      !(await evaluate(
+        socket,
+        `(() => {const main=document.querySelector('main').getBoundingClientRect();const inspector=document.querySelector('.af-desktop-inspector').getBoundingClientRect();return document.documentElement.scrollWidth <= innerWidth && main.width > 400 && inspector.width >= 290 && inspector.left >= main.right-1})()`,
+      ))
+    )
+      throw new Error(
+        "The wide desktop frame overflowed or its inspector overlapped the content",
+      );
+    await saveConnectionShot(socket, "native-frame-1440.png");
+    if (
+      !(await evaluate(
+        socket,
+        `(() => {
+      const channels = value => value.match(/[\\d.]+/g).slice(0,3).map(Number);
+      const light = rgb => rgb.map(n => { const c=n/255; return c<=0.04045?c/12.92:((c+0.055)/1.055)**2.4; }).reduce((sum,n,i)=>sum+n*[0.2126,0.7152,0.0722][i],0);
+      return [...document.querySelectorAll('.af-desktop-frame .af-empty-hint,.af-desktop-breadcrumb')].every(node => {
+        const foreground=light(channels(getComputedStyle(node).color));
+        let surface=node; while(surface && getComputedStyle(surface).backgroundColor === 'rgba(0, 0, 0, 0)') surface=surface.parentElement;
+        if(!surface) return false;
+        const background=light(channels(getComputedStyle(surface).backgroundColor));
+        return (Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05) >= 4.5;
+      });
+    })()`,
+      ))
+    )
+      throw new Error(
+        "Desktop hint text failed AA contrast against its rendered surface",
+      );
+    const project = "project-stable-42";
+    const selection = "agent-forge-harness-" + "long-bead-reference-".repeat(8);
+    await evaluate(
+      socket,
+      `location.hash=${JSON.stringify(`#/desktop/project/${project}/beads?selectionKind=bead&selectionId=${selection}`)}`,
+    );
+    await waitForPage(
+      socket,
+      "document.querySelector('main h1')?.textContent === 'Beads'",
+      "Project navigation did not reach the content outlet",
+    );
+    // Stress the existing name slot without inventing a persisted project record.
+    await evaluate(
+      socket,
+      "document.querySelector('.af-desktop-project-name > span').textContent='A long project name with many repositories '.repeat(20)",
+    );
+    if (
+      !(await evaluate(
+        socket,
+        "(() => {const name=document.querySelector('.af-desktop-project-name > span');return name.scrollWidth > name.clientWidth && getComputedStyle(name).textOverflow === 'ellipsis' && document.documentElement.scrollWidth <= innerWidth})()",
+      ))
+    )
+      throw new Error("A long project title escaped its constrained name slot");
+    await evaluate(
+      socket,
+      "document.querySelector('button[aria-label=\"Close inspector\"]').focus()",
+    );
+    await cdp(socket, "Emulation.setDeviceMetricsOverride", {
+      width: 1100,
+      height: 700,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await waitForPage(
+      socket,
+      `${frame}.dataset.inspectorOpen === 'false'`,
+      "The inspector did not collapse at the minimum viewport",
+    );
+    await waitForPage(
+      socket,
+      "document.activeElement.getAttribute('aria-label') === 'Show inspector'",
+      "Responsive collapse lost the inspector's keyboard focus",
+    );
+    if (
+      !(await evaluate(
+        socket,
+        "(() => {const side=document.querySelector('.af-desktop-sidebar').getBoundingClientRect();return side.width <= 57 && document.documentElement.scrollWidth <= innerWidth && getComputedStyle(document.querySelector('.af-desktop-sidebar-label')).display === 'none'})()",
+      ))
+    )
+      throw new Error(
+        "The minimum desktop viewport did not narrow the sidebar to icons",
+      );
+    await evaluate(
+      socket,
+      "document.querySelector('.af-desktop-project-name > span').textContent='Project unavailable'",
+    );
+    await saveConnectionShot(socket, "native-frame-1100.png");
+    // Keyboard navigation changes destinations while preserving stable scope/selection.
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Tab",
+      code: "Tab",
+      windowsVirtualKeyCode: 9,
+    });
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Tab",
+      code: "Tab",
+      windowsVirtualKeyCode: 9,
+    });
+    for (const label of [
+      "Inbox",
+      "Providers & usage",
+      "Smiths",
+      "Settings",
+      "Projects",
+    ]) {
+      await evaluate(
+        socket,
+        `document.querySelector('.af-desktop-rail a[aria-label=${JSON.stringify(label)}]').focus()`,
+      );
+      if (
+        !(await evaluate(
+          socket,
+          "document.activeElement.matches(':focus-visible') && getComputedStyle(document.activeElement).outlineStyle !== 'none'",
+        ))
+      )
+        throw new Error("A rail destination lost its visible keyboard focus");
+      await cdp(socket, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+      });
+      await cdp(socket, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+      });
+      await waitForPage(
+        socket,
+        `document.querySelector('main h1')?.textContent === ${JSON.stringify(label)}`,
+        "Keyboard navigation did not select its destination",
+      );
+      if (
+        !(await evaluate(
+          socket,
+          `(() => {const query=new URLSearchParams(location.hash.split('?')[1]);return query.get('project') === '${project}' && query.get('selectionId') === ${JSON.stringify(selection)}})()`,
+        ))
+      )
+        throw new Error(
+          "Global navigation changed the project or object selection",
+        );
+    }
+    await evaluate(
+      socket,
+      "document.querySelector('main button[aria-label=\"Show inspector\"]').focus()",
+    );
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      text: "\r",
+      unmodifiedText: "\r",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+    });
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+    });
+    await waitForPage(
+      socket,
+      `${frame}.dataset.inspectorOpen === 'true'`,
+      "Keyboard inspector toggle did not open",
+    );
+    await evaluate(
+      socket,
+      "document.querySelector('button[aria-label=\"Close inspector\"]').focus()",
+    );
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await waitForPage(
+      socket,
+      "document.activeElement.getAttribute('aria-label') === 'Show inspector'",
+      "Closing the inspector did not restore keyboard focus",
+    );
+    if (
+      streamRequests !== 0 ||
+      (await sessionFingerprint(socket)) !== session ||
+      (await pageOrigin(socket)) !== origin
+    )
+      throw new Error(
+        "Frame navigation restarted the stream, session or origin",
+      );
+    await evaluate(socket, "location.hash=''");
+  } finally {
+    socket.removeEventListener("message", observe);
+  }
 }
 
 async function waitForPage(

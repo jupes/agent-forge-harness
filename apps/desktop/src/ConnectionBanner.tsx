@@ -113,15 +113,24 @@ export function ConnectionBannerView({
   );
 }
 
-export function ConnectionBanner(): JSX.Element | null {
+export function useDesktopRecovery(): DesktopRecovery | null {
   const connection = pageConnection;
-  if (connection === null) return null;
-  const [state, setState] = useState(connection.get);
+  const [state, setState] = useState<DesktopRecovery | null>(
+    () => connection?.get() ?? null,
+  );
   useEffect(() => {
+    if (connection === null) return;
     const leave = connection.subscribe(() => setState(connection.get()));
     setState(connection.get());
     return leave;
   }, [connection]);
+  return state;
+}
+
+export function ConnectionBanner(): JSX.Element | null {
+  const state = useDesktopRecovery();
+  const connection = pageConnection;
+  if (state === null || connection === null) return null;
   return (
     <ConnectionBannerView
       state={state}

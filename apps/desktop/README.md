@@ -1,6 +1,6 @@
-# Windows desktop tracer
+# Windows desktop app
 
-This first desktop checkpoint wraps the existing dashboard in a Tauri 2 window.
+The desktop uses a Tauri 2 window around the Preact desktop frame.
 Building requires Bun 1.4.2, Rust 1.99.1 (the version validated for this build), and
 Visual Studio C++ Build Tools with the MSVC toolchain and Windows SDK. Running
 the staged app requires the WebView2 Runtime and a valid checkout path; it does
@@ -63,8 +63,8 @@ adding checkout markers, then checks that the hearth serves that exact folder.
 It drives real native dialogs without editing inaccessible OS controls. This
 does not automate folder-tree navigation or the full keyboard walkthrough.
 
-The screenshot shows the existing dashboard used as a transport tracer with
-isolated fixture data; it is not an approved new desktop frame.
+The screenshot below records the earlier dashboard transport checkpoint with
+isolated fixture data. The current desktop frame is documented below.
 
 ![Existing dashboard transport tracer with isolated fixture data](docs/native-smoke.png)
 
@@ -90,7 +90,8 @@ Reconnecting with the actual attempt count, Stopped with Restart hearth, and
 Version mismatch. The supplied state galleries guide its banner and last-read
 time. Last received stats stay visible during an outage and are labelled as
 last received, rather than live. The rest of the dashboard remains the transport
-tracer; the responsive desktop frame is a separate task.
+tracer in the earlier connection screenshots. The current desktop frame uses
+the same connection controller and does not mount the legacy dashboard.
 
 `connection-recovery.ts` exposes the controller and its subscription, read-only
 state, explicit `restart()` and unknown-outcome acknowledgement. It uses the
@@ -130,3 +131,63 @@ failure responses and runs the native host-crash Retry/Cancel checks above.
 ![Recovered connection on the existing page at 1440x900](docs/native-connection-connected.png)
 
 ![Unknown restart outcome held for an explicit check](docs/native-connection-unknown.png)
+
+## Responsive desktop frame
+
+Desktop mode mounts `src/DesktopApp.tsx`; the ordinary dashboard keeps its own
+routes, snapshot mode and documents. The frame uses the supplied Projects and
+Session pages' shared rail/title/sidebar/inspector layout with the documented
+dark Nocturne colors and generated Phosphor glyphs. Native Windows decorations
+and window controls remain intact.
+
+The wide frame has a 48px title area, 56px global rail, 224px project sidebar
+and optional 300px inspector. At 1100x700 the sidebar narrows to icons and the
+inspector collapses. It can be opened explicitly at either size. Closing it
+with its button or Escape returns focus to the toggle; automatic collapse
+does the same when focus was inside it. Labels remain accessible in the icon
+sidebar, long names truncate with their full title, and inspector references
+wrap. Reduced motion disables frame animations and transitions. Muted hint
+text uses a desktop override with AA contrast against the actual surface.
+
+`src/navigation.ts` is the route contract:
+
+- `DesktopRoute` keeps destination, `projectId` and object `selection` separate.
+- `desktopRoute(hash)` parses desktop-only links and rejects malformed paths.
+- `desktopHref(route)` builds links from encoded stable ids, never display names.
+- `navigateGlobal` preserves the project and selection; `navigateProject` uses
+  that same project id, or returns to Projects when none is selected.
+- Links are `#/desktop/<global>?project=<id>` or
+  `#/desktop/project/<id>/<destination>`. An optional `selectionKind` and
+  `selectionId` carry a bead, session, run or event. The inspector's open/closed
+  state is local UI state and does not erase the selection.
+
+The global rail targets Projects, Inbox, Providers & usage, Smiths and Settings.
+The project sidebar targets Forge Keeper, Overview, Sessions, Beads, Workbench,
+Runs, Reviews, Activity and project Settings. This does not settle the deferred
+seven/eight-destination discrepancy or create excluded dashboard destinations.
+
+`DesktopFrame` is a pure view. Future project/screen producers pass a verified
+`FrameProject` (id, name and project-scoped session rows), main content and
+optional inspector content. Rows from a different project id are not shown.
+`ProviderMonogram`, `FrameProvider`, `FrameSession` and `FrameSessionStatus`
+provide shared provider names, monograms and grouped status glyphs. The header
+and banner subscribe to the existing `useDesktopRecovery()` controller; routes
+never own the shared stream.
+
+Project persistence and the destination screens belong to later beads. Until
+those producers are connected, `DesktopApp` supplies no project and honest
+unavailable destinations. It does not invent project records, sessions, usage,
+inbox counts or an empty provider allowance. Search and New session are visibly
+unavailable. A later project switch must clear a selection from the old project
+and resolve the new id through the project source before supplying its rows.
+
+The packaged WebView2 smoke verifies both viewport sizes, no project selected,
+long-title truncation (a controlled DOM layout stress fixture), unknown project
+and selection references, all five rail destinations, keyboard activation,
+inspector Escape/focus return, responsive focus return, text contrast and
+unchanged stream/session/origin during navigation. Existing connection recovery
+and native crash checks run in that same app and still require clean shutdown.
+
+![Wide desktop frame with no project selected](docs/native-frame-1440.png)
+
+![Minimum desktop frame with an unavailable project and collapsed inspector](docs/native-frame-1100.png)
