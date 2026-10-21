@@ -12,10 +12,32 @@ pub fn retry<T, E>(
 }
 
 pub fn startup_retry() -> bool {
-    retry_dialog(
+    startup_retry_at(0)
+}
+
+pub fn startup_retry_at(owner: usize) -> bool {
+    retry_dialog_at(
+        owner,
         "Agent Forge — hearth unavailable",
         "The hearth could not start. The desktop has not connected to your workspace.\r\n\r\nCheck that the app's dashboard and sidecar files are together and that the workspace is available, then choose Retry. Choose Cancel to close the app.",
     )
+}
+
+pub fn runtime_retry(owner: usize) -> bool {
+    retry_dialog_at(
+        owner,
+        "Agent Forge — connection stopped",
+        "The desktop connection to the hearth stopped. The displayed data may be out of date, and workspace actions are unavailable.\r\n\r\nChoose Retry to reconnect to the same checkout. Previously sent actions will not be repeated. Choose Cancel to close the app.",
+    )
+}
+
+pub fn cleanup_error(owner: usize) {
+    message_box_at(
+        owner,
+        "Agent Forge — recovery unavailable",
+        "The desktop could not finish checking the stopped hearth. It will close without starting another connection.\r\n\r\nCheck that the app's dashboard and sidecar files are together, then open the app again. Previously sent actions may have completed; check their outcomes before repeating them.",
+        0x00000030,
+    );
 }
 
 pub fn workspace_retry() -> bool {
@@ -34,15 +56,28 @@ pub fn launch_error() {
 }
 
 fn retry_dialog(title: &str, text: &str) -> bool {
+    retry_dialog_at(0, title, text)
+}
+
+fn retry_dialog_at(owner: usize, title: &str, text: &str) -> bool {
     const MB_RETRYCANCEL: u32 = 0x00000005;
     const MB_ICONWARNING: u32 = 0x00000030;
     const MB_DEFBUTTON2: u32 = 0x00000100;
     const IDRETRY: i32 = 4;
-    message_box(title, text, MB_RETRYCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDRETRY
+    message_box_at(
+        owner,
+        title,
+        text,
+        MB_RETRYCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+    ) == IDRETRY
+}
+
+fn message_box(title: &str, text: &str, flags: u32) -> i32 {
+    message_box_at(0, title, text, flags)
 }
 
 #[cfg(windows)]
-fn message_box(title: &str, text: &str, flags: u32) -> i32 {
+fn message_box_at(owner: usize, title: &str, text: &str, flags: u32) -> i32 {
     let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
     #[link(name = "user32")]
@@ -55,12 +90,12 @@ fn message_box(title: &str, text: &str, flags: u32) -> i32 {
         ) -> i32;
     }
     // SAFETY: both strings are NUL-terminated and live for the entire modal call.
-    // No owner window exists until the host supplies a validated launch URL.
-    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), flags) }
+    // The owner is either zero before startup, or this app's native window.
+    unsafe { MessageBoxW(owner as *mut _, text.as_ptr(), title.as_ptr(), flags) }
 }
 
 #[cfg(not(windows))]
-fn message_box(_title: &str, _text: &str, _flags: u32) -> i32 {
+fn message_box_at(_owner: usize, _title: &str, _text: &str, _flags: u32) -> i32 {
     0
 }
 

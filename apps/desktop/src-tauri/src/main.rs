@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod lifecycle;
 mod recovery;
 mod workspace;
 
@@ -11,7 +12,7 @@ use std::{
     io::{BufRead, BufReader, Read},
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -34,6 +35,7 @@ struct ReadyEnvelope {
 #[serde(deny_unknown_fields)]
 struct ReadyData {
     url: String,
+    owner: String,
 }
 
 fn validated_url(raw: &str) -> Result<Url, &'static str> {
@@ -59,7 +61,7 @@ fn validated_url(raw: &str) -> Result<Url, &'static str> {
     Ok(url)
 }
 
-fn read_ready(stdout: std::process::ChildStdout) -> Result<Url, &'static str> {
+fn read_ready(stdout: std::process::ChildStdout) -> Result<(Url, String), &'static str> {
     let (tx, rx) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut line = Vec::new();
@@ -74,7 +76,7 @@ fn read_ready(stdout: std::process::ChildStdout) -> Result<Url, &'static str> {
         .map_err(|_| "host startup timed out")?
 }
 
-fn parse_ready(line: &[u8], count: u64) -> Result<Url, &'static str> {
+fn parse_ready(line: &[u8], count: u64) -> Result<(Url, String), &'static str> {
     if count == 0 || count > MAX_READY_BYTES || line.last() != Some(&b'\n') {
         return Err("invalid host handshake");
     }
@@ -84,13 +86,30 @@ fn parse_ready(line: &[u8], count: u64) -> Result<Url, &'static str> {
     if !envelope.ok || !envelope.error.is_null() {
         return Err("host startup failed");
     }
-    validated_url(&envelope.data.url)
+    let owner = envelope.data.owner;
+    if owner.len() != 36
+        || !owner.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+            }
+        })
+    {
+        return Err("invalid host handshake");
+    }
+    Ok((validated_url(&envelope.data.url)?, owner))
+}
+
+struct OwnedHost {
+    child: Child,
+    owner: String,
 }
 
 fn launch_host(
     app: &tauri::AppHandle,
     root: &Path,
-) -> Result<(Child, Url), Box<dyn std::error::Error>> {
+) -> Result<(OwnedHost, Url), Box<dyn std::error::Error>> {
     let hearth: Command = app.shell().sidecar("hearth")?.into();
     let hearth = hearth.get_program().to_owned();
     let assets = app.path().resource_dir()?.join("dashboard");
@@ -114,7 +133,7 @@ fn launch_host(
     let mut child = command.spawn()?;
     let stdout = child.stdout.take().ok_or("host output unavailable")?;
     match read_ready(stdout) {
-        Ok(url) => Ok((child, url)),
+        Ok((url, owner)) => Ok((OwnedHost { child, owner }, url)),
         Err(error) => {
             stop_child(&mut child);
             Err(error.into())
@@ -156,24 +175,146 @@ fn stop_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-struct HostProcess(Mutex<Option<Child>>);
+struct HostProcess {
+    process: Mutex<lifecycle::Lifecycle<OwnedHost>>,
+    origin: Mutex<Option<url::Origin>>,
+}
 impl HostProcess {
+    fn stopped(&self) -> bool {
+        self.process.lock().map_or(true, |slot| slot.stopped())
+    }
+
     fn shutdown(&self) {
-        if let Ok(mut slot) = self.0.lock() {
-            if let Some(mut child) = slot.take() {
-                stop_child(&mut child);
-            }
+        let child = self
+            .process
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.shutdown());
+        if let Some(mut owned) = child {
+            stop_child(&mut owned.child);
         }
     }
 }
 impl Drop for HostProcess {
     fn drop(&mut self) {
-        if let Ok(slot) = self.0.get_mut() {
-            if let Some(mut child) = slot.take() {
-                stop_child(&mut child);
+        if let Ok(slot) = self.process.get_mut() {
+            if let Some(mut owned) = slot.shutdown() {
+                stop_child(&mut owned.child);
             }
         }
     }
+}
+
+fn cleanup_owner(app: &tauri::AppHandle, root: &Path, owner: &str) -> bool {
+    let Ok(command) = app.shell().sidecar("desktop-host") else {
+        return false;
+    };
+    let mut command: Command = command.into();
+    command
+        .arg("--cleanup")
+        .arg("--root")
+        .arg(root)
+        .arg("--owner")
+        .arg(owner)
+        .env("NO_PROXY", proxy_bypass_env())
+        .env("no_proxy", proxy_bypass_env())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let Ok(mut cleanup) = command.spawn() else {
+        return false;
+    };
+    let deadline = Instant::now() + SHUTDOWN_GRACE;
+    while Instant::now() < deadline {
+        match cleanup.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Err(_) => break,
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    let _ = cleanup.kill();
+    let _ = cleanup.wait();
+    false
+}
+
+/// A single native watchdog owns restart decisions. It never queues or replays
+/// renderer requests and never takes a shutdown-induced exit as a crash.
+fn watch_host(app: tauri::AppHandle, root: std::path::PathBuf, host: Arc<HostProcess>) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(250));
+        if host.stopped() {
+            return;
+        }
+        let failed = host.process.lock().ok().and_then(|mut slot| {
+            slot.take_failed(|owned| !matches!(owned.child.try_wait(), Ok(None)))
+        });
+        let Some(mut owned) = failed else {
+            continue;
+        };
+        if let Ok(mut origin) = host.origin.lock() {
+            *origin = None;
+        }
+        stop_child(&mut owned.child);
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        if window.set_enabled(false).is_err() {
+            app.exit(1);
+            return;
+        }
+        #[cfg(windows)]
+        let owner = window.hwnd().map_or(0, |hwnd| hwnd.0 as usize);
+        #[cfg(not(windows))]
+        let owner = 0;
+        if host.stopped() {
+            return;
+        }
+        // Use the existing trusted-lock, exact-owner and health checks. This
+        // helper cannot claim/start a hearth another window now supervises.
+        if !cleanup_owner(&app, &root, &owned.owner) {
+            recovery::cleanup_error(owner);
+            app.exit(1);
+            return;
+        }
+        if !recovery::runtime_retry(owner) {
+            app.exit(0);
+            return;
+        }
+        // Keep stale workspace controls disabled throughout a startup attempt.
+        let _ = window.set_enabled(false);
+        let started = recovery::retry(
+            || {
+                if host.stopped() {
+                    return Err("app closing".into());
+                }
+                launch_host(&app, &root)
+            },
+            |_| !host.stopped() && recovery::startup_retry_at(owner),
+        );
+        let Ok((child, url)) = started else {
+            app.exit(0);
+            return;
+        };
+        let installed = host
+            .process
+            .lock()
+            .expect("host state poisoned")
+            .install(child);
+        if let Err(mut owned) = installed {
+            stop_child(&mut owned.child);
+            let _ = cleanup_owner(&app, &root, &owned.owner);
+            return;
+        }
+        if let Ok(mut origin) = host.origin.lock() {
+            *origin = Some(url.origin());
+        }
+        if window.navigate(url).is_err() || window.set_enabled(true).is_err() {
+            app.exit(1);
+            return;
+        }
+    });
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -199,18 +340,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 app.handle().exit(0);
                 return Ok(());
             };
-            let origin = url.origin();
-            app.manage(HostProcess(Mutex::new(Some(child))));
+            let host = Arc::new(HostProcess {
+                process: Mutex::new(lifecycle::Lifecycle::new(child)),
+                origin: Mutex::new(Some(url.origin())),
+            });
+            app.manage(host.clone());
+            let navigation = host.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("Agent Forge Harness")
-                .on_navigation(move |next| next.origin() == origin)
+                .on_navigation(move |next| {
+                    navigation
+                        .origin
+                        .lock()
+                        .is_ok_and(|origin| origin.as_ref() == Some(&next.origin()))
+                })
                 .build()?;
+            watch_host(app.handle().clone(), root.clone(), host);
             Ok(())
         })
         .build(tauri::generate_context!())?
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                if let Some(host) = app.try_state::<HostProcess>() {
+                if let Some(host) = app.try_state::<Arc<HostProcess>>() {
                     host.shutdown();
                 }
             }
@@ -232,7 +383,7 @@ mod tests {
     use super::*;
 
     fn ready(raw: &str) -> String {
-        serde_json::json!({"ok":true,"data":{"url":raw},"error":null}).to_string()
+        serde_json::json!({"ok":true,"data":{"url":raw,"owner":"11111111-1111-4111-8111-111111111111"},"error":null}).to_string()
     }
 
     #[test]
@@ -261,6 +412,11 @@ mod tests {
         bad_line.push(b'\n');
         assert!(parse_ready(&bad_line, bad_line.len() as u64).is_err());
         assert!(parse_ready(&line, MAX_READY_BYTES + 1).is_err());
+        for owner in ["", "../../../other", "11111111-1111-4111-8111-11111111111g"] {
+            let bad = good.replace("11111111-1111-4111-8111-111111111111", owner);
+            let line = format!("{bad}\n");
+            assert!(parse_ready(line.as_bytes(), line.len() as u64).is_err());
+        }
         assert!(good.len() + 1 < MAX_READY_BYTES as usize);
     }
 

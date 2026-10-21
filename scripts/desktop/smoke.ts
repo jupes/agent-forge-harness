@@ -37,6 +37,29 @@ const healthPath = "/__agent-forge/health";
 const tokenPath = "/__agent-forge/token";
 const sessionKeyName = "agent-forge-session-key";
 const sessionKeyHeader = "x-agent-forge-session-key";
+// Find owned modal dialogs too; Process.MainWindowHandle excludes those.
+const nativeWindowLocator = `
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class NativeWindowLocator {
+  private delegate bool Callback(IntPtr h, IntPtr p);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(Callback callback, IntPtr p);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr h, StringBuilder text, int count);
+  public static IntPtr Find(uint pid, string title) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, p) => {
+      uint owner; GetWindowThreadProcessId(h, out owner);
+      if (owner != pid) return true;
+      var text = new StringBuilder(256); GetWindowText(h, text, 256);
+      if (text.ToString() != title) return true;
+      found = h; return false;
+    }, IntPtr.Zero);
+    return found;
+  }
+}
+`;
 
 type CdpMessage = {
   id?: unknown;
@@ -265,8 +288,82 @@ async function main(): Promise<void> {
     );
     mkdirSync(resolve(screenshotPath, ".."), { recursive: true });
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, "base64"));
-    await closeMainWindow(appProcess.pid);
+
+    // Crash only the fixture-owned host, never a real hearth or another app.
+    const priorTree = processTree;
+    const priorOrigin = await pageOrigin(socket);
+    const priorSession = await sessionFingerprint(socket);
+    await stopFixtureHost(priorTree);
+    await waitForMainWindow(
+      appProcess.pid,
+      appProcess,
+      "Agent Forge — connection stopped",
+    );
+    await recoveryDialog(
+      appProcess.pid,
+      "inspect",
+      "Agent Forge — connection stopped",
+      "native-runtime-recovery.png",
+    );
+    await recoveryDialog(
+      appProcess.pid,
+      "retry",
+      "Agent Forge — connection stopped",
+    );
+    const restartDeadline = Date.now() + waitLimitMs;
+    while (Date.now() < restartDeadline) {
+      checks = await readChecks(
+        socket,
+        `${basename(temp)}/selected checkout`,
+      ).catch(() => undefined);
+      if (
+        checks &&
+        allChecksPassed(checks) &&
+        (await sessionFingerprint(socket)) !== priorSession
+      )
+        break;
+      await delay(500);
+    }
+    if (
+      !checks ||
+      !allChecksPassed(checks) ||
+      (await sessionFingerprint(socket)) === priorSession
+    )
+      throw new Error(
+        "The restarted host did not establish a fresh authorized connection.",
+      );
+    const restartedTree = await captureProcessTree(appProcess.pid);
+    processTree = {
+      children: [...priorTree.children, ...restartedTree.children],
+    };
+    const activeHosts = restartedTree.children.filter(
+      (child) => basename(child.path).toLowerCase() === "desktop-host.exe",
+    );
+    if (activeHosts.length !== 1)
+      throw new Error("Restart did not leave exactly one desktop host.");
+    const currentOrigin = await pageOrigin(socket);
+    for (const forbidden of new Set(["http://127.0.0.1:1", priorOrigin])) {
+      if (forbidden === currentOrigin) continue;
+      await cdp(socket, "Page.navigate", { url: `${forbidden}/` });
+      if ((await pageOrigin(socket)) !== currentOrigin)
+        throw new Error("Native navigation escaped the active host origin.");
+    }
+
+    // A second failure exercises Cancel after a successful reconnect.
+    await stopFixtureHost(restartedTree);
+    await waitForMainWindow(
+      appProcess.pid,
+      appProcess,
+      "Agent Forge — connection stopped",
+    );
+    await recoveryDialog(
+      appProcess.pid,
+      "cancel",
+      "Agent Forge — connection stopped",
+    );
     await waitForAppExit(appProcess);
+    if (appProcess.exitCode !== 0)
+      throw new Error("Cancelling runtime recovery did not exit cleanly.");
     await waitForCapturedChildrenGone(processTree);
     socket.close();
     socket = undefined;
@@ -336,6 +433,10 @@ async function main(): Promise<void> {
           checkoutPickerTested: true,
           checkoutPickerCancelTested: true,
           invalidCheckoutRetryTested: true,
+          runtimeRetryTested: true,
+          runtimeCancelTested: true,
+          staleWindowDisabledTested: true,
+          retiredOriginBlockedTested: true,
           childrenStopped: true,
         },
         error: null,
@@ -366,7 +467,7 @@ public static class FolderProbe {
   );
 }
 
-/** Operate only the startup dialog owned by this smoke's exact native PID. */
+/** Operate only a dialog owned by this smoke's exact native PID. */
 async function recoveryDialog(
   pid: number,
   action: "inspect" | "retry" | "cancel",
@@ -384,6 +485,9 @@ async function recoveryDialog(
   await powershellResult(
     `
     Add-Type -TypeDefinition @'
+${nativeWindowLocator}
+'@
+    Add-Type -TypeDefinition @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
@@ -397,15 +501,25 @@ public static class RecoveryProbe {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint command);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
 }
 '@
-    $window = (Get-Process -Id ${pid} -ErrorAction Stop).MainWindowHandle
+    $window = [NativeWindowLocator]::Find(${pid}, '${psQuote(title)}')
     $title = New-Object System.Text.StringBuilder 256
     [void][RecoveryProbe]::GetWindowText($window, $title, 256)
     if ($title.ToString() -ne '${psQuote(title)}') { throw 'Expected startup recovery dialog' }
     if ([RecoveryProbe]::GetDlgItem($window, 4) -eq [IntPtr]::Zero -or [RecoveryProbe]::GetDlgItem($window, 2) -eq [IntPtr]::Zero) { throw 'Recovery choices missing' }
     $default = [RecoveryProbe]::SendMessage($window, 0x400, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -band 0xffff
     if ($default -ne 2) { throw 'Cancel is not the default choice' }
+    ${
+      title === "Agent Forge — connection stopped"
+        ? `
+    $owner = [RecoveryProbe]::GetWindow($window, 4)
+    if ($owner -eq [IntPtr]::Zero -or [RecoveryProbe]::IsWindowEnabled($owner)) { throw 'Stale workspace window is not disabled' }
+    `
+        : ""
+    }
     ${
       action === "inspect"
         ? `
@@ -720,7 +834,10 @@ async function waitForMainWindow(
   const deadline = Date.now() + waitLimitMs;
   while (Date.now() < deadline && child.exitCode === null) {
     const result = await powershellResult(
-      `$window = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($window.MainWindowTitle -eq '${psQuote(title)}') { $window.MainWindowHandle }`,
+      `Add-Type -TypeDefinition @'
+${nativeWindowLocator}
+'@
+      [NativeWindowLocator]::Find(${pid}, '${psQuote(title)}').ToInt64()`,
       "main-window check",
     );
     if (Number(result.trim()) > 0) return true;
@@ -731,6 +848,44 @@ async function waitForMainWindow(
       `The native process exited with code ${child.exitCode} before showing a window.`,
     );
   throw new Error("The native app did not open a visible window.");
+}
+
+async function pageOrigin(socket: WebSocket): Promise<string> {
+  const result = await cdp(socket, "Runtime.evaluate", {
+    expression: "location.origin",
+    returnByValue: true,
+  });
+  const origin = asRecord(result.result)?.value;
+  if (typeof origin !== "string")
+    throw new Error("WebView origin unavailable.");
+  return origin;
+}
+
+async function sessionFingerprint(socket: WebSocket): Promise<string> {
+  const result = await cdp(socket, "Runtime.evaluate", {
+    expression: `(async () => {
+      const key = localStorage.getItem(${JSON.stringify(sessionKeyName)});
+      if (!key) return "";
+      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+      return [...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, "0")).join("");
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  const value = asRecord(result.result)?.value;
+  if (typeof value !== "string" || !value)
+    throw new Error("Session fingerprint unavailable.");
+  return value;
+}
+
+async function stopFixtureHost(tree: ProcessTree): Promise<void> {
+  const hosts = tree.children.filter(
+    (child) => basename(child.path).toLowerCase() === "desktop-host.exe",
+  );
+  if (hosts.length !== 1)
+    throw new Error("Expected one fixture host before crash.");
+  await stopCapturedChildren({ children: hosts });
+  await waitForCapturedChildrenGone({ children: hosts });
 }
 
 async function closeMainWindow(pid: number): Promise<void> {

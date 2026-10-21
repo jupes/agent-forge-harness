@@ -42,10 +42,21 @@ with an isolated `AGENT_FORGE_HOME` and unique WebView2 profile, with a bounded
 loopback WebView debugger used only by the smoke. It checks the dashboard
 folder selection and cancellation, invalid-folder retry, startup Cancel,
 repair followed by Retry, the dashboard launch exchange,
-packaged asset MIME types, and clean child shutdown; it does
-not call a paid provider or alter the repository's Beads data. The native
-shell does not yet provide a visible recovery state if its supervised host
-stops after startup.
+packaged asset MIME types, runtime host crashes, Retry and Cancel, a fresh
+authorized session after reconnect, disabled stale workspace controls,
+blocked retired origins, and clean child shutdown. It does not call a paid
+provider or alter the repository's Beads data.
+
+If the host stops after startup, a native dialog explains that displayed data
+may be old and workspace actions are unavailable. The workspace window stays
+disabled until recovery completes. Retry reloads the same checkout through a
+new launch exchange; it does not replay previously sent actions. Cancel closes
+the app. A cleanup-only sidecar invocation uses the failed host's owner UUID
+and the existing trusted-lock/health checks to stop its orphaned hearth. It
+cannot claim or start a hearth and leaves one now owned by another window alone.
+The owner UUID stays in the native startup handshake, outside renderer config.
+
+![Runtime recovery with Cancel selected by default](docs/native-runtime-recovery.png)
 
 The picker smoke accepts its displayed temporary folder before and after
 adding checkout markers, then checks that the hearth serves that exact folder.

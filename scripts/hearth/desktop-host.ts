@@ -27,6 +27,8 @@ export interface DesktopHostOptions {
 
 export interface DesktopHost {
   url: string;
+  /** Native-side lifecycle owner; never sent to the renderer. */
+  owner: string;
   close(): Promise<void>;
 }
 
@@ -118,12 +120,13 @@ export async function startDesktopHost(
     throw new Error(
       `Refusing desktop host startup: ${proxyVariable} can proxy loopback. Add 127.0.0.1 to both NO_PROXY and no_proxy.`,
     );
+  const owner = randomUUID();
   const supervisor =
     options.supervisor ??
     createSupervisor({
       root,
       home,
-      id: randomUUID(),
+      id: owner,
       ...(options.hearthCommand ? { command: options.hearthCommand } : {}),
     });
   const sockets = new Set<import("node:net").Socket>();
@@ -275,6 +278,7 @@ export async function startDesktopHost(
     });
     return {
       url: launchUrl(`http://127.0.0.1:${address.port}/`, minted.secret),
+      owner,
       close() {
         closing ??= (async () => {
           for (const response of upstreamResponses) response.destroy();

@@ -5,9 +5,10 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseDesktopArguments } from "./desktop-entry";
+import { parseDesktopArguments, runDesktopCleanup } from "./desktop-entry";
 import { startDesktopHost } from "./desktop-host";
-import { tokenPath } from "./home";
+import { lockPath, tokenPath } from "./home";
+import { readLock, updateLock } from "./lock";
 import {
   API_PREFIX,
   OPERATOR_HEADER,
@@ -341,4 +342,30 @@ test("accepts only the exact three trusted CLI options and keeps spaced values i
       "1",
     ]),
   ).toThrow();
+});
+
+test("crash cleanup never takes ownership from another supervisor", async () => {
+  const hearth = await startTestHearth();
+  closes.push(() => hearth.close());
+  const file = lockPath(hearth.home, hearth.root);
+  const original = readLock(file);
+  expect(original).not.toBeNull();
+  if (!original) throw new Error("fixture lock missing");
+  const anotherOwner = "11111111-1111-4111-8111-111111111111";
+  updateLock(file, original, { supervisor: anotherOwner });
+  await runDesktopCleanup(
+    [
+      "--cleanup",
+      "--root",
+      hearth.root,
+      "--owner",
+      "22222222-2222-4222-8222-222222222222",
+    ],
+    hearth.home,
+  );
+  expect(readLock(file)?.supervisor).toBe(anotherOwner);
+  expect(
+    (await fetch(`http://127.0.0.1:${hearth.hearth.port}/__agent-forge/health`))
+      .status,
+  ).toBe(200);
 });

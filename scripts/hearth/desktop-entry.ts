@@ -1,6 +1,32 @@
 import { resolve } from "node:path";
 import { isMain } from "../is-main";
 import { startDesktopHost } from "./desktop-host";
+import { hearthHome } from "./home";
+import { createSupervisor } from "./supervisor";
+
+/** Cleanup cannot attach, start, or claim a hearth: only stop its exact owner. */
+export async function runDesktopCleanup(
+  args: readonly string[],
+  home = hearthHome(),
+): Promise<void> {
+  if (
+    args.length !== 5 ||
+    args[0] !== "--cleanup" ||
+    args[1] !== "--root" ||
+    !args[2] ||
+    args[3] !== "--owner" ||
+    !args[4] ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      args[4],
+    )
+  )
+    throw new Error("Invalid desktop cleanup arguments");
+  await createSupervisor({
+    root: resolve(args[2]),
+    home,
+    id: args[4],
+  }).stopIfOwner();
+}
 
 export function parseDesktopArguments(args: readonly string[]): {
   root: string;
@@ -27,6 +53,14 @@ export function parseDesktopArguments(args: readonly string[]): {
 }
 
 export async function runDesktopEntry(args: readonly string[]): Promise<void> {
+  if (args[0] === "--cleanup") {
+    try {
+      await runDesktopCleanup(args);
+    } catch {
+      process.exitCode = 1;
+    }
+    return;
+  }
   let host: Awaited<ReturnType<typeof startDesktopHost>> | null = null;
   let closeRequested = false;
   let closing: Promise<void> | null = null;
@@ -57,7 +91,7 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
       return;
     }
     process.stdout.write(
-      `${JSON.stringify({ ok: true, data: { url: host.url }, error: null })}\n`,
+      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner }, error: null })}\n`,
     );
   } catch {
     if (host) await host.close().catch(() => {});
