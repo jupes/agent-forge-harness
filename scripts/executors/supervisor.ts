@@ -8,6 +8,7 @@
  * (`tree-guard.ts`).
  */
 
+import { join } from "node:path";
 import { guardTree } from "./tree-guard";
 import type { ChildExit } from "./types";
 
@@ -38,7 +39,12 @@ let hooked = false;
 /** Kill a process and its children. Synchronous so it is safe inside `exit` handlers. */
 export function killTree(pid: number): void {
   if (process.platform === "win32") {
-    Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"], {
+    const taskkill = join(
+      process.env["SystemRoot"] || process.env["SYSTEMROOT"] || "C:\\Windows",
+      "System32",
+      "taskkill.exe",
+    );
+    Bun.spawnSync([taskkill, "/PID", String(pid), "/T", "/F"], {
       stdout: "ignore",
       stderr: "ignore",
     });

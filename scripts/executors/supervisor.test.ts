@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "path";
+import { buildChildEnv } from "./env";
 import {
   killAllLive,
   killTree,
@@ -12,6 +13,56 @@ import {
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const hang = [process.execPath, FAKE, "--fake-mode", "hang"];
 const PARENT = join(import.meta.dir, "fixtures", "supervising-parent.ts");
+
+test("a parent with an empty PATH can stop the provider and its descendant", async () => {
+  const env = Object.fromEntries(
+    Object.entries(buildChildEnv(process.env, [])).filter(
+      ([name]) => name.toLowerCase() !== "path",
+    ),
+  );
+  const parent = Bun.spawn(
+    [
+      process.execPath,
+      join(import.meta.dir, "fixtures", "minimal-path-stop.ts"),
+    ],
+    { env: { ...env, PATH: "" }, stdout: "pipe", stderr: "pipe" },
+  );
+  const deadline = setTimeout(() => parent.kill(), 8_000);
+  let pids: { pid?: number; childPid?: number } = {};
+  try {
+    const stdout = await new Response(parent.stdout).text();
+    await new Response(parent.stderr).text();
+    let rows: unknown[];
+    try {
+      rows = stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    } catch {
+      throw new Error("Malformed minimal-path stop fixture reply");
+    }
+    const first = rows[0];
+    if (
+      typeof first !== "object" ||
+      first === null ||
+      !("pid" in first) ||
+      !("childPid" in first) ||
+      typeof first.pid !== "number" ||
+      typeof first.childPid !== "number"
+    )
+      throw new Error("The minimal-path fixture did not announce its tree.");
+    pids = { pid: first.pid, childPid: first.childPid };
+    expect(await parent.exited).toBe(0);
+    expect(rows[1]).toMatchObject({ ok: true, error: null });
+    expect(await goneWithin(first.pid, 3_000)).toBe(true);
+    expect(await goneWithin(first.childPid, 3_000)).toBe(true);
+  } finally {
+    clearTimeout(deadline);
+    if (parent.exitCode === null) parent.kill();
+    for (const pid of [pids.pid, pids.childPid])
+      if (pid !== undefined && running(pid)) killTree(pid);
+  }
+}, 20_000);
 
 /** Whether a process with this pid is running. */
 function running(pid: number): boolean {
