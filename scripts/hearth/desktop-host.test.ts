@@ -12,6 +12,7 @@ import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { closeLedger } from "../ledger/db";
+import { removeDirectory } from "../remove-directory";
 import { parseDesktopArguments, runDesktopCleanup } from "./desktop-entry";
 import { startDesktopHost } from "./desktop-host";
 import { lockPath, tokenPath } from "./home";
@@ -106,12 +107,7 @@ test("a real desktop restart rotates the hearth token and session, including aft
   const temp = privateTempDir("af-desktop-restart-");
   closes.push(async () => {
     closeLedger(join(temp, "home", "ledger.db"));
-    rmSync(temp, {
-      recursive: true,
-      force: true,
-      maxRetries: 20,
-      retryDelay: 50,
-    });
+    removeDirectory(temp, { attempts: 21, delayMs: 50 });
   });
   const home = join(temp, "home");
   const root = join(temp, "checkout");
