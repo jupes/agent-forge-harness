@@ -50,6 +50,7 @@ import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
 import { importGraph } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
+import { settleIsolationReruns } from "./isolation-reruns";
 import { ledgerHome, ledgerPath } from "./paths";
 import { rerunReport } from "./rerun-output";
 
@@ -106,6 +107,8 @@ interface FailedRerun {
 
 /**
  * Run each file in its own `bun test` with `env`, `RERUN_WORKERS` at a time.
+ * The timed append file gets an exclusive phase first: Windows CI stored all
+ * 10,000 rows but exceeded its unchanged 60s bound under concurrent disk work.
  * Every file still runs with the scratch home, so a default home written by
  * any of them is still found; running them apart also names the file that
  * failed. The `./` makes bun take the path as a file, not a name filter.
@@ -114,10 +117,10 @@ async function rerunEach(
   files: string[],
   env: Record<string, string>,
 ): Promise<FailedRerun[]> {
-  const queue = [...files];
-  const failed: FailedRerun[] = [];
-  const worker = async (): Promise<void> => {
-    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+  const results = await settleIsolationReruns(
+    files,
+    RERUN_WORKERS,
+    async (file): Promise<FailedRerun | null> => {
       const child = Bun.spawn(
         [
           process.execPath,
@@ -138,11 +141,28 @@ async function rerunEach(
         new Response(child.stderr).text(),
       ]);
       const exitCode = await child.exited;
-      if (exitCode !== 0)
-        failed.push({ file, exitCode, ...rerunReport(`${stdout}${stderr}`) });
-    }
-  };
-  await Promise.all(Array.from({ length: RERUN_WORKERS }, worker));
+      return exitCode === 0
+        ? null
+        : { file, exitCode, ...rerunReport(`${stdout}${stderr}`) };
+    },
+  );
+  const failed: FailedRerun[] = results.flatMap((result, index) =>
+    result.status === "fulfilled"
+      ? result.value === null
+        ? []
+        : [result.value]
+      : [
+          {
+            file: files[index] ?? "unknown file",
+            exitCode: -1,
+            failures:
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason),
+            tail: "",
+          },
+        ],
+  );
   return failed.sort((a, b) => a.file.localeCompare(b.file));
 }
 
