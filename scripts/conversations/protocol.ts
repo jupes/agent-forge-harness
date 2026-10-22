@@ -3,7 +3,9 @@ import type {
   ConversationEvent,
   ConversationReceipt,
   ConversationSend,
+  PreparedConversationSend,
 } from "../../types/conversation";
+import { briefSnapshotSchema } from "../keeper/brief-protocol";
 import { ConversationError } from "./error";
 
 // Select runtime validation before constructing schemas in the strict-CSP WebView.
@@ -37,6 +39,21 @@ export function parseConversationSend(input: unknown): ConversationSend {
     );
   return parsed.data;
 }
+const preparedSendSchema = sendSchema
+  .extend({ brief: briefSnapshotSchema.optional() })
+  .strict();
+/** Private storage codec; the public message parser above never accepts intent. */
+export function parsePreparedConversationSend(
+  input: unknown,
+): PreparedConversationSend {
+  const parsed = preparedSendSchema.safeParse(input);
+  if (!parsed.success)
+    throw new ConversationError(
+      400,
+      "Expected a bounded prepared conversation request.",
+    );
+  return parsed.data;
+}
 export const isConversationRequestId = (value: unknown): value is string =>
   uuid.safeParse(value).success;
 
@@ -55,6 +72,7 @@ export const eventSchema: z.ZodType<ConversationEvent> = z.discriminatedUnion(
         kind: z.literal("user"),
         text: z.string().max(16_384),
         about: z.array(object).max(16),
+        brief: briefSnapshotSchema.optional(),
       })
       .strict(),
     binding.extend({ kind: z.literal("identity") }).strict(),

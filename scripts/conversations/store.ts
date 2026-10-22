@@ -3,8 +3,8 @@ import { join } from "node:path";
 import type {
   ConversationEvent,
   ConversationReceipt,
-  ConversationSend,
   ConversationState,
+  PreparedConversationSend,
 } from "../../types/conversation";
 import {
   ensurePrivateHome,
@@ -16,7 +16,11 @@ import { withQueueLock } from "../scheduler/queue-lock";
 import { ConversationError } from "./error";
 import { conversationDirectory, conversationFile } from "./paths";
 
-import { eventSchema, parseConversationSend, stateSchema } from "./protocol";
+import {
+  eventSchema,
+  parsePreparedConversationSend,
+  stateSchema,
+} from "./protocol";
 
 export { ConversationError } from "./error";
 export { isConversationRequestId, parseConversationSend } from "./protocol";
@@ -259,11 +263,22 @@ export function createConversationStore(
     },
     async accept(
       projectId: string,
-      input: ConversationSend,
+      input: PreparedConversationSend,
     ): Promise<ConversationReceipt> {
-      const request = parseConversationSend(input);
+      const request = parsePreparedConversationSend(input);
+      if (request.brief && request.brief.projectId !== projectId)
+        throw new ConversationError(
+          400,
+          "The brief snapshot belongs to another project.",
+        );
       const hash = createHash("sha256")
-        .update(JSON.stringify({ text: request.text, about: request.about }))
+        .update(
+          JSON.stringify({
+            text: request.text,
+            about: request.about,
+            ...(request.brief ? { brief: request.brief } : {}),
+          }),
+        )
         .digest("hex");
       const directory = conversationDirectory(home, projectId);
       ensurePrivateHome(home);
@@ -318,7 +333,12 @@ export function createConversationStore(
             seq: state.frames.length + 1,
             turnId: request.requestId,
             at,
-            event: { kind: "user", text: request.text, about: request.about },
+            event: {
+              kind: "user",
+              text: request.text,
+              about: request.about,
+              ...(request.brief ? { brief: request.brief } : {}),
+            },
           });
           save(state);
           return {

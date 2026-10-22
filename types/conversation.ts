@@ -1,4 +1,5 @@
 import type { KeeperReadKind } from "./keeper";
+import type { KeeperBriefSnapshot } from "./keeper-brief";
 
 /** Transcript bodies belong to private session storage, never LedgerEventInput. */
 export interface ConversationObject {
@@ -11,6 +12,10 @@ export interface ConversationSend {
   expectedRevision: number;
   text: string;
   about: ConversationObject[];
+}
+/** Only trusted hearth preparation supplies this private intent, never a wire message. */
+export interface PreparedConversationSend extends ConversationSend {
+  brief?: KeeperBriefSnapshot | undefined;
 }
 
 export type ConversationPhase =
@@ -39,7 +44,12 @@ export interface ConversationBinding {
 }
 
 export type ConversationEvent =
-  | { kind: "user"; text: string; about: ConversationObject[] }
+  | {
+      kind: "user";
+      text: string;
+      about: ConversationObject[];
+      brief?: KeeperBriefSnapshot | undefined;
+    }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }
   | {

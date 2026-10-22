@@ -3,8 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { keeperBriefs } from "../keeper/brief-model";
+import { buildKeeperBriefSnapshot } from "../keeper/brief-snapshot";
 import { createProjectStore } from "../projects/store";
 import { ConversationError } from "./error";
+import { parseConversationSend } from "./protocol";
 import { createConversationService } from "./service";
 import { createConversationStore } from "./store";
 import type { ConversationTransport, ConversationUpdate } from "./transport";
@@ -88,6 +91,86 @@ async function until(check: () => Promise<boolean>) {
     await Bun.sleep(5);
   }
 }
+
+test("brief refresh captures one trusted snapshot under the same dispatch lease; retries cannot replace its provenance", async () => {
+  const { home, root, projectId } = await fixture();
+  const project = createProjectStore(home).read().projects[0];
+  if (!project) throw new Error("Missing project");
+  const workspace = project.workspaces[0]?.root;
+  if (!workspace) throw new Error("Missing workspace");
+  let prepares = 0;
+  let starts = 0;
+  const service = createConversationService({
+    home,
+    root,
+    async prepareBrief() {
+      prepares++;
+      return buildKeeperBriefSnapshot(
+        project,
+        prepares,
+        {
+          workspace,
+          asOf: "2026-10-22T12:00:00.000Z",
+          issues: [],
+          queue: [],
+          sessions: [],
+          sessionsComplete: true,
+          runs: [],
+          problems: [],
+        },
+        { events: [], more: false },
+      );
+    },
+    transport: {
+      provider: "claude",
+      async run(request, sink) {
+        starts++;
+        expect(request.input.text).toContain("Snapshot:");
+        expect(request.input.text).toContain('"catalogRevision":1');
+        await sink({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "actual-brief-session",
+          version: "fixture",
+        });
+        await sink({
+          kind: "text",
+          text: JSON.stringify({
+            summary: "No recorded movement in the available source.",
+            moving: [],
+            waiting: [],
+            stuck: [],
+          }),
+        });
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Refresh Keeper brief",
+    about: [],
+  };
+  const accepted = await service.send(projectId, input, "brief");
+  await service.settled(projectId);
+  const duplicate = await service.send(projectId, input, "brief");
+  expect(duplicate.turn.requestId).toBe(accepted.turn.requestId);
+  expect(starts).toBe(1);
+  expect(prepares).toBe(1);
+  const state = createConversationStore(home).read(projectId);
+  expect(keeperBriefs(state).latest?.snapshot.catalogRevision).toBe(1);
+  await expect(service.send(projectId, input)).rejects.toThrow(
+    "different content",
+  );
+  expect(() =>
+    parseConversationSend({
+      ...input,
+      brief: keeperBriefs(state).latest?.snapshot,
+    }),
+  ).toThrow();
+});
 
 test("two service instances share one dispatch lease and duplicate requests do not start another provider", async () => {
   const { home, root, projectId } = await fixture();

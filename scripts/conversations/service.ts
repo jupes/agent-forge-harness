@@ -6,7 +6,11 @@ import type {
   ConversationSend,
   ConversationState,
   ConversationTurn,
+  PreparedConversationSend,
 } from "../../types/conversation";
+import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
+import { keeperBriefPrompt } from "../keeper/brief-model";
+import { briefSnapshotSchema } from "../keeper/brief-protocol";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
@@ -32,6 +36,9 @@ interface ConversationOptions {
   root: string;
   transport: ConversationTransport;
   validateAbout?: ValidateConversationAbout | undefined;
+  prepareBrief?:
+    | ((projectId: string) => Promise<KeeperBriefSnapshot>)
+    | undefined;
   onChange?(update: ConversationUpdate): void;
 }
 
@@ -152,12 +159,29 @@ export function createConversationService(options: ConversationOptions) {
     async send(
       projectId: string,
       rawInput: ConversationSend,
+      purpose: "message" | "brief" = "message",
     ): Promise<ConversationReceipt> {
-      const input = parseConversationSend(rawInput);
+      const wireInput = parseConversationSend(rawInput);
+      let input: PreparedConversationSend = wireInput;
       const project = projectFor(projectId);
       const current = store.read(projectId);
+      const original = () => {
+        const user = store
+          .read(projectId)
+          .frames.find(
+            (frame) =>
+              frame.turnId === input.requestId && frame.event.kind === "user",
+          )?.event;
+        if (purpose !== "brief") return wireInput;
+        if (user?.kind !== "user" || !user.brief)
+          throw new ConversationError(
+            409,
+            "This request id already names different content. Read the original request.",
+          );
+        return { ...wireInput, brief: user.brief };
+      };
       if (current.turns.some((item) => item.requestId === input.requestId))
-        return store.accept(projectId, input);
+        return store.accept(projectId, original());
       if (closed)
         throw new ConversationError(
           503,
@@ -188,6 +212,11 @@ export function createConversationService(options: ConversationOptions) {
           );
         await options.validateAbout(projectId, input.about);
       }
+      if (purpose === "brief" && !options.prepareBrief)
+        throw new ConversationError(
+          503,
+          "Brief source preparation is unavailable. No turn was accepted.",
+        );
       await options.transport.check?.({
         project,
         root: options.root,
@@ -206,7 +235,7 @@ export function createConversationService(options: ConversationOptions) {
             "This hearth already owns an active turn. No new turn was accepted.",
           );
         await existing.admission;
-        return store.accept(projectId, input);
+        return store.accept(projectId, original());
       }
       const abort = new AbortController();
       const owner = randomUUID();
@@ -236,6 +265,30 @@ export function createConversationService(options: ConversationOptions) {
                 .turns.some((turn) => turn.requestId === input.requestId)
             )
               await options.validateAbout?.(projectId, input.about);
+            if (purpose === "brief") {
+              if (
+                store
+                  .read(projectId)
+                  .turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const snapshot = briefSnapshotSchema.safeParse(
+                  await options.prepareBrief?.(projectId),
+                );
+                if (!snapshot.success || snapshot.data.projectId !== projectId)
+                  throw new ConversationError(
+                    503,
+                    "The scoped brief snapshot could not be verified. No turn was accepted.",
+                  );
+                input = { ...wireInput, brief: snapshot.data };
+              }
+            }
+            if (closed || abort.signal.aborted)
+              throw new ConversationError(
+                503,
+                "The hearth closed during source preparation. No turn was accepted.",
+              );
             const accepted = await store.accept(projectId, input);
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
@@ -252,7 +305,9 @@ export function createConversationService(options: ConversationOptions) {
                 {
                   project,
                   root: options.root,
-                  input,
+                  input: input.brief
+                    ? { ...input, text: keeperBriefPrompt(input.brief) }
+                    : input,
                   resume: store.read(projectId).binding,
                 },
                 async (event) => {
@@ -290,7 +345,7 @@ export function createConversationService(options: ConversationOptions) {
               .read(projectId)
               .turns.some((turn) => turn.requestId === input.requestId)
           ) {
-            const previous = await store.accept(projectId, input);
+            const previous = await store.accept(projectId, original());
             admitted = true;
             accept(previous);
           } else
