@@ -60,6 +60,8 @@ test("projects persist pin/archive through the real hearth, filter and switch wi
   await expect(
     page.getByRole("button", { name: "Unpin Alpha", exact: true }),
   ).toBeEnabled();
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  await page.screenshot({ path: test.info().outputPath("projects-home.png") });
   await page.reload();
   await expect(
     page.getByRole("button", { name: "Unpin Alpha", exact: true }),
