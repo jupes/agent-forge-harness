@@ -22,6 +22,7 @@ import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
+import { fakeConversationTransport } from "../conversations/testing";
 import { operatorCouncilLedger } from "../council/ledger-wiring";
 import type { CommandRunner } from "../council/pr-source";
 import { appendEvent } from "../ledger/append";
@@ -484,6 +485,7 @@ export async function startTestHearth(
     ...(options.launchNow ? { launchNow: options.launchNow } : {}),
     api: {
       ledgerPath: ledger,
+      conversationTransport: fakeConversationTransport(),
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,

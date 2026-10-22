@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LedgerEventInput, OperatorEnvelope } from "../../../types/hearth";
+import type { ConversationTransport } from "../../conversations/transport";
 import { assertCouncilRunId } from "../../council/artifacts";
 import {
   assertCouncilInput,
@@ -36,6 +37,7 @@ import { createLedgerStream } from "../stream";
 import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
+import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
 import {
@@ -63,6 +65,7 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 export interface OperatorDeps extends ReadDeps {
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
+  conversationTransport?: ConversationTransport | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
   appendEvent(event: LedgerEventInput): AppendResult;
@@ -340,8 +343,8 @@ async function collectionEnvelope(row: ReadRoute): Promise<OperatorEnvelope> {
 
 export interface OperatorTable {
   routes: ApiRoute[];
-  /** End what the table holds open (the event streams). */
-  close(): void;
+  /** End event streams and stop the conversation processes this hearth owns. */
+  close(): Promise<void>;
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
@@ -351,6 +354,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
+  const conversations = conversationRoutes(
+    deps.projectHome,
+    deps.root,
+    deps.conversationTransport,
+  );
   const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
@@ -369,6 +377,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
+    conversations.read,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -403,6 +412,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       stream,
       ...actions(deps),
       preferences,
+      conversations.send,
+      conversations.stop,
       ...beadRoutes({
         workspace,
         runBd: deps.runBd,
@@ -428,6 +439,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         starts: deps.shiftStarts,
       }),
     ],
-    close: () => live.close(),
+    close: async () => {
+      live.close();
+      await conversations.close();
+    },
   };
 }

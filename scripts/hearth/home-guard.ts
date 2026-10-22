@@ -237,6 +237,8 @@ function isLockFile(file: string): boolean {
 
 /** The most a file in the home that a client reads (a lock, a dashboard record) may hold. */
 export const MAX_HOME_FILE_BYTES = 65_536;
+/** Separate ceiling for hearth-owned session bodies; lock/catalog readers stay at 64 KiB. */
+export const MAX_SESSION_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 
 /**
  * What a client may use from a file in the hearth home (`readHomeFile`):
@@ -316,6 +318,20 @@ export function readHomeFile(
   file?: string,
   options: HomeCheckOptions = {},
 ): HomeRead {
+  return readHomeText(home, file, options, MAX_HOME_FILE_BYTES);
+}
+
+/** Bun hearth only: the same opened-file checks, with a fixed transcript ceiling. */
+export function readSessionTranscript(home: string, file: string): HomeRead {
+  return readHomeText(home, file, {}, MAX_SESSION_TRANSCRIPT_BYTES);
+}
+
+function readHomeText(
+  home: string,
+  file: string | undefined,
+  options: HomeCheckOptions,
+  maxBytes: number,
+): HomeRead {
   if (!existsSync(home)) return { problem: null, text: null };
   const windows = (options.platform ?? process.platform) === "win32";
   const name = file === undefined ? null : nameInHome(home, file);
@@ -323,11 +339,14 @@ export function readHomeFile(
     return refused(
       `${file} is not in the hearth home ${home}, so it is not trusted.`,
     );
-  if (windows && options.acl === undefined && !hasBunFfi())
+  if (windows && options.acl === undefined && !hasBunFfi()) {
+    if (maxBytes !== MAX_HOME_FILE_BYTES)
+      return refused("Session transcripts must be read by the Bun hearth.");
     return checkHomeInBun(home, file);
+  }
   return windows
-    ? readWindowsHomeFile(home, file, name, options.acl)
-    : readPosixHomeFile(home, file);
+    ? readWindowsHomeFile(home, file, name, options.acl, maxBytes)
+    : readPosixHomeFile(home, file, maxBytes);
 }
 
 function homeRefusal(
@@ -366,6 +385,7 @@ function readWindowsHomeFile(
   file: string | undefined,
   name: string | null,
   given: WindowsAcl | undefined,
+  maxBytes: number,
 ): HomeRead {
   let userSid: string | null = null;
   try {
@@ -376,7 +396,7 @@ function readWindowsHomeFile(
     if (own !== null) return homeRefusal(home, own, true, userSid);
     if (acl.readInFolder === undefined)
       throw new Error("these ACL functions cannot read through a handle");
-    const read = acl.readInFolder(home, name, MAX_HOME_FILE_BYTES);
+    const read = acl.readInFolder(home, name, maxBytes);
     // Removed meanwhile: it holds nothing.
     if (read === null) return { problem: null, text: null };
     const reached = windowsWriteFinding(read.folder, "directory", userSid);
@@ -398,7 +418,11 @@ function readWindowsHomeFile(
   }
 }
 
-function readPosixHomeFile(home: string, file: string | undefined): HomeRead {
+function readPosixHomeFile(
+  home: string,
+  file: string | undefined,
+  maxBytes: number,
+): HomeRead {
   const uid = process.getuid?.() ?? 0;
   try {
     const finding = posixWriteFinding(statSync(home), uid);
@@ -434,19 +458,19 @@ function readPosixHomeFile(home: string, file: string | undefined): HomeRead {
       );
     const finding = posixWriteFinding(stats, uid);
     if (finding !== null) return fileRefusal(file, finding, false);
-    if (stats.size > MAX_HOME_FILE_BYTES)
+    if (stats.size > maxBytes)
       return refused(
-        `The file ${file} in the hearth home is larger than ${MAX_HOME_FILE_BYTES} bytes, so it is not trusted. ${fileFix(file, false)}.`,
+        `The file ${file} in the hearth home is larger than ${maxBytes} bytes, so it is not trusted. ${fileFix(file, false)}.`,
       );
-    const bytes = Buffer.alloc(MAX_HOME_FILE_BYTES + 1);
+    const bytes = Buffer.alloc(maxBytes + 1);
     let at = 0;
     for (;;) {
       const got = readSync(fd, bytes, at, bytes.length - at, null);
       if (got === 0) break;
       at += got;
-      if (at > MAX_HOME_FILE_BYTES)
+      if (at > maxBytes)
         return refused(
-          `The file ${file} in the hearth home is larger than ${MAX_HOME_FILE_BYTES} bytes, so it is not trusted. ${fileFix(file, false)}.`,
+          `The file ${file} in the hearth home is larger than ${maxBytes} bytes, so it is not trusted. ${fileFix(file, false)}.`,
         );
     }
     return decoded(file, bytes.subarray(0, at), false);

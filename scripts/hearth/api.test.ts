@@ -18,6 +18,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
 import type { CouncilPreview } from "../council/service";
@@ -63,7 +64,7 @@ async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
   open.push(hearth);
   writeOwnerOnly(
     projectCatalogPath(hearth.home),
-    JSON.stringify(projectCatalogFixture(hearth.root)),
+    JSON.stringify(projectCatalogFixture(hearth.workspace)),
   );
   return hearth;
 }
@@ -392,6 +393,71 @@ function queueMove(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/keeper/turns": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/turns`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b01",
+        expectedRevision: 0,
+        text: "Fixture question",
+        about: [],
+      },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/turns`,
+      body: {
+        requestId: "not-a-request",
+        expectedRevision: 0,
+        text: "Question",
+        about: [],
+      },
+    },
+    happened: async (h) => {
+      const store = createConversationStore(h.home);
+      for (
+        let attempt = 0;
+        attempt < 100 &&
+        store.read(FIXTURE_PROJECT_ID).turns[0]?.phase === "running";
+        attempt++
+      )
+        await Bun.sleep(5);
+      expect(store.read(FIXTURE_PROJECT_ID).turns[0]?.phase).toBe("completed");
+      expect(
+        store
+          .read(FIXTURE_PROJECT_ID)
+          .frames.filter((frame) => frame.event.kind === "user"),
+      ).toHaveLength(1);
+    },
+  },
+  "POST /projects/:id/keeper/stop": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/stop`,
+      body: { requestId: "3a533435-5025-43d5-8c6d-7e90482c8ed8" },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/stop`,
+      body: { requestId: "not-a-request" },
+    },
+    prepare: async (h) => {
+      const store = createConversationStore(h.home);
+      await store.accept(FIXTURE_PROJECT_ID, {
+        requestId: "3a533435-5025-43d5-8c6d-7e90482c8ed8",
+        expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+        text: "Unissued fixture turn",
+        about: [],
+      });
+    },
+    happened: async (h) => {
+      expect(
+        createConversationStore(h.home).read(FIXTURE_PROJECT_ID).turns.at(-1)
+          ?.phase,
+      ).toBe("cancelled");
+    },
+  },
   "POST /projects/:id/preferences": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/preferences`,
@@ -406,7 +472,7 @@ const ACTIONS: Record<string, ActionFixture> = {
     prepare: async (h) => {
       writeOwnerOnly(
         projectCatalogPath(h.home),
-        JSON.stringify(projectCatalogFixture(h.root)),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
       );
     },
     happened: async (h) => {
@@ -856,6 +922,7 @@ const READS: Record<string, string> = {
   "GET /projects/summary": "/projects/summary",
   "GET /projects/:id/overview":
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
+  "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",
   "GET /runs/:slug": "/runs/demo",

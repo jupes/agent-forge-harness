@@ -21,6 +21,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import type { ConversationTransport } from "../conversations/transport";
 import type {
   CouncilAppend,
   CouncilAttachResolver,
@@ -141,6 +142,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Restricted Keeper transport; tests supply a fake, never a real provider. */
+  conversationTransport?: ConversationTransport;
   /** The ledger file; defaults to `ledger.db` in the hearth's home. */
   ledgerPath?: string;
   /** Runs `bd` with an argument array; defaults to the real one, in the main checkout. */
@@ -318,6 +321,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   const table = operatorRoutes({
     projectHome: home,
+    conversationTransport: options.api?.conversationTransport,
     root,
     workspace,
     ledgerPath: ledgerFile,
@@ -447,7 +451,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   const stop = async (): Promise<void> => {
     try {
-      table.close();
+      await table.close();
       await service.close();
       server.closeAllConnections();
       // Called back with an error, which changes nothing here, when it never listened.
