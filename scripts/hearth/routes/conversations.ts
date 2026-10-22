@@ -1,5 +1,8 @@
 import type { ConversationSend } from "../../../types/conversation";
-import { createConversationService } from "../../conversations/service";
+import {
+  createConversationService,
+  type ValidateConversationAbout,
+} from "../../conversations/service";
 import {
   ConversationError,
   isConversationRequestId,
@@ -51,12 +54,14 @@ export function conversationRoutes(
   home: string,
   root: string,
   transport: ConversationTransport = unavailable,
+  validateAbout?: ValidateConversationAbout,
 ) {
   const feed = createConversationFeed();
   const service = createConversationService({
     home,
     root,
     transport,
+    validateAbout,
     onChange: (update) => feed.changed(update.projectId),
   });
   const address = (request: RouteRequest): ValidationResult<string> => {

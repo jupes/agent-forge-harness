@@ -34,7 +34,12 @@ const page = (projectId = alpha): ConversationPage => ({
   request: null,
   controllable: false,
 });
-function fixture() {
+function fixture(
+  readObjects?: (
+    projectId: string,
+    query: import("../../types/keeper").KeeperReadQuery,
+  ) => Promise<unknown>,
+) {
   const opened: Array<{
     projectId: string;
     after: number | null;
@@ -52,6 +57,7 @@ function fixture() {
   };
   let read: unknown = page();
   const client = createKeeperClient({
+    readObjects,
     canWrite: () => true,
     requestId: () => requestId,
     stream: (projectId) => (after, handlers) => {
@@ -88,6 +94,76 @@ function fixture() {
     },
   };
 }
+
+test("unresolved and foreign About references hold Send; removal fences late reads and retries keep the original snapshot", async () => {
+  const reads: Array<{ projectId: string; resolve(value: unknown): void }> = [];
+  const f = fixture(
+    (projectId) => new Promise((resolve) => reads.push({ projectId, resolve })),
+  );
+  f.client.activate(alpha);
+  f.deliver(page());
+  f.client.draft(alpha, "Explain this");
+  const first = f.client.attach(alpha, { kind: "bead", id: "one" });
+  expect(f.client.canSend(alpha)).toBe(false);
+  f.client.removeAbout(alpha, { kind: "bead", id: "one" });
+  const second = f.client.attach(alpha, { kind: "bead", id: "one" });
+  const result = (projectId: string, id: string) => ({
+    scope: {
+      projectId,
+      name: "Alpha",
+      slug: "alpha",
+      catalogRevision: 1,
+      workspace: "/fixture",
+      repositories: [],
+      epicIds: [],
+      repositoryCount: 0,
+      epicCount: 0,
+      detailsComplete: true,
+      detailsReason: null,
+      label: "project:alpha",
+      unavailableWorkspaces: 0,
+    },
+    kind: "beads",
+    mode: "detail",
+    source: "Scoped fixture",
+    asOf: at,
+    complete: true,
+    reason: null,
+    records: [{ id, data: { title: "Scoped bead" }, truncated: false }],
+    totalKnown: 1,
+    nextCursor: null,
+  });
+  reads[0]?.resolve(result(alpha, "one"));
+  await first;
+  expect(f.client.get(alpha).about[0]?.status).toBe("loading");
+  reads[1]?.resolve(result(beta, "one"));
+  await second;
+  expect(f.client.get(alpha).about[0]?.status).toBe("error");
+  expect(f.client.canSend(alpha)).toBe(false);
+  const third = f.client.attach(alpha, { kind: "bead", id: "one" }, true);
+  reads[2]?.resolve(result(alpha, "one"));
+  await third;
+  expect(f.client.canSend(alpha)).toBe(true);
+  await f.client.send(alpha);
+  f.client.removeAbout(alpha, { kind: "bead", id: "one" });
+  await f.client.retryOriginal(alpha);
+  expect(f.posts.map((post) => post.body)).toEqual([
+    {
+      requestId,
+      expectedRevision: 0,
+      text: "Explain this",
+      about: [{ kind: "bead", id: "one" }],
+    },
+    {
+      requestId,
+      expectedRevision: 0,
+      text: "Explain this",
+      about: [{ kind: "bead", id: "one" }],
+    },
+  ]);
+  expect(f.client.get(beta).about).toEqual([]);
+  f.client.dispose();
+});
 
 test("project changes fence late body events, retain separate drafts and never stop a provider", () => {
   const f = fixture();

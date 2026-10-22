@@ -248,9 +248,11 @@ export function ProjectSessions({
 export function SessionInspector({
   projectId,
   session,
+  onAskKeeper,
 }: {
   projectId: string;
   session: SessionSummary | undefined;
+  onAskKeeper?: () => void;
 }): JSX.Element {
   if (!session)
     return (
@@ -279,6 +281,11 @@ export function SessionInspector({
       >
         Open session
       </Button>
+      {onAskKeeper && (
+        <Button onClick={onAskKeeper} aria-haspopup="dialog">
+          Ask Keeper about this session
+        </Button>
+      )}
     </section>
   );
 }

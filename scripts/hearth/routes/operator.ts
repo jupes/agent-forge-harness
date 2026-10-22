@@ -40,7 +40,7 @@ import { beadRoutes } from "./beads";
 import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
-import { keeperReadRoute } from "./keeper-read";
+import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
 import {
   beadsReads,
   fail,
@@ -355,12 +355,13 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
+  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
   const conversations = conversationRoutes(
     deps.projectHome,
     deps.root,
     deps.conversationTransport,
+    keeperAboutValidator(deps, projectSnapshot),
   );
-  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,

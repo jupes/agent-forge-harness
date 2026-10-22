@@ -1,5 +1,7 @@
 import type { KeeperReadQuery } from "../../../types/keeper";
 import { ConversationError } from "../../conversations/error";
+import type { ValidateConversationAbout } from "../../conversations/service";
+import { KEEPER_OBJECT_READS } from "../../keeper/objects";
 import {
   type KeeperHistory,
   parseKeeperReadQuery,
@@ -10,6 +12,47 @@ import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type { ReadRoute } from "../api";
 import { fail, hearthLedger, type ReadDeps } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
+
+function recordedHistory(deps: ReadDeps): KeeperHistory {
+  try {
+    const page = queryEventPage(
+      { workspace: deps.workspace, limit: 10_000 },
+      hearthLedger(deps.ledgerPath),
+    );
+    return { events: page.events, more: page.more };
+  } catch {
+    return { events: null, more: false };
+  }
+}
+
+/** Reuses the reader's exact membership rules, before any new turn is admitted. */
+export function keeperAboutValidator(
+  deps: ReadDeps,
+  load: () => Promise<ProjectSnapshot>,
+): ValidateConversationAbout {
+  return async (projectId, about) => {
+    const snapshot = await load();
+    const project = snapshot.catalog.projects.find(
+      (item) => item.id === projectId,
+    );
+    if (!project)
+      throw new ConversationError(
+        404,
+        "This project is not in the hearth catalog.",
+      );
+    const history = about.some((ref) => ref.kind === "event")
+      ? recordedHistory(deps)
+      : { events: [], more: false };
+    for (const ref of about)
+      readKeeperProject(
+        project,
+        snapshot.catalog.revision,
+        snapshot.source,
+        history,
+        { kind: KEEPER_OBJECT_READS[ref.kind], id: ref.id },
+      );
+  };
+}
 
 /** This row only reads the selected project's sources; the model has no action row. */
 export function keeperReadRoute(
@@ -55,18 +98,10 @@ export function keeperReadRoute(
             status: 404,
             error: "This project is not in the hearth catalog.",
           };
-        let history: KeeperHistory = { events: [], more: false };
-        if (query.kind === "activity") {
-          try {
-            const page = queryEventPage(
-              { workspace: deps.workspace, limit: 10_000 },
-              hearthLedger(deps.ledgerPath),
-            );
-            history = { events: page.events, more: page.more };
-          } catch {
-            history = { events: null, more: false };
-          }
-        }
+        const history: KeeperHistory =
+          query.kind === "activity"
+            ? recordedHistory(deps)
+            : { events: [], more: false };
         return {
           status: 200,
           data: readKeeperProject(

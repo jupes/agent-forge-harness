@@ -206,3 +206,29 @@ responses produce generic errors without echoing their content. Every response
 is bounded to 48,000 bytes, including Unicode scope metadata. This reader is a
 separate profile from the general hearth MCP server and exposes none of its
 operator tools.
+
+## Selection context and drawer
+
+Ctrl/Cmd+J and the session inspector's Ask Keeper control use the shell's existing
+typed selection. They open the same project conversation and attach opaque
+bead/session/run/event references. The app-root client owns drafts and references;
+the drawer owns focus and presentation. Opening, closing, navigation, suggestions
+and context checks never start or stop a model turn. Escape closes suggestions
+before the drawer; closing the drawer restores the invoking control's focus.
+
+About chips show scope-checking, confirmed and unavailable states. Unknown or
+failed context holds Send until retried or removed. The server independently
+checks each reference through the exact project reader rules before preflight
+and again at admission. Incomplete sources can confirm an exact observed member,
+but cannot authorize absent records. Provider prompts carry typed references,
+never automatically copied record bodies. The sealed model reader rechecks
+current scope when it actually reads an object.
+
+Mentions query a bounded index with provenance and an exact-id fallback. Late
+results cannot replace a removed/re-attached chip or another project's choices.
+File paths remain human prompt text: no arbitrary filesystem-read capability is
+introduced. Slash suggestions use `docs/js/generated/commands.ts`; choosing one
+only edits the draft. It does not invoke a CLI or expand a command's permissions.
+Each Send snapshots references alongside its request UUID and text. Unknown
+delivery and explicit retry preserve that snapshot despite subsequent edits;
+an exact recorded retry reconciles its receipt even if membership later changes.

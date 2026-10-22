@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { KeeperReadQuery, KeeperReadResult } from "../../types/keeper";
 import { ConversationError } from "../conversations/error";
 
+if (typeof window !== "undefined") z.config({ jitless: true });
+
 export const KEEPER_READ_SCHEMA = z
   .object({
     kind: z.enum(["beads", "queue", "sessions", "runs", "activity"]),

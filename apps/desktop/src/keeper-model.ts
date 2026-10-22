@@ -1,5 +1,6 @@
 import type {
   ConversationEvent,
+  ConversationObject,
   ConversationPage,
   ConversationTurn,
 } from "../../../types/conversation";
@@ -8,6 +9,7 @@ export interface KeeperTurnView {
   id: string;
   at: string;
   question: string;
+  about: ConversationObject[];
   reply: string;
   reads: Extract<ConversationEvent, { kind: "read" }>[];
   turn: ConversationTurn | null;
@@ -21,6 +23,7 @@ export function keeperTurns(page: ConversationPage | null): KeeperTurnView[] {
         id: frame.turnId,
         at: frame.at,
         question: "",
+        about: [],
         reply: "",
         reads: [],
         turn:
@@ -28,8 +31,10 @@ export function keeperTurns(page: ConversationPage | null): KeeperTurnView[] {
       };
       rows.set(frame.turnId, row);
     }
-    if (frame.event.kind === "user") row.question = frame.event.text;
-    else if (frame.event.kind === "text") row.reply += frame.event.text;
+    if (frame.event.kind === "user") {
+      row.question = frame.event.text;
+      row.about = frame.event.about;
+    } else if (frame.event.kind === "text") row.reply += frame.event.text;
     else if (frame.event.kind === "read") row.reads.push(frame.event);
   }
   return [...rows.values()];

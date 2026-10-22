@@ -17,6 +17,11 @@ export function useKeeper(projectId: string | null, writesAllowed: boolean) {
   client.current ??= createKeeperClient({
     canWrite: () => writes.current,
     requestId: () => crypto.randomUUID(),
+    readObjects: (id, query) =>
+      readOperatorRoute(
+        `/projects/${encodeURIComponent(id)}/keeper/read?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`,
+        pageReads(),
+      ),
     stream: (id) =>
       fetchTransport(
         `/__agent-forge/projects/${encodeURIComponent(id)}/keeper/events`,

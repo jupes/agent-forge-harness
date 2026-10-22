@@ -643,6 +643,7 @@ async function main(): Promise<void> {
           trackerStandInTested: true,
           packagedKeeperReaderTested: true,
           keeperConversationTested: true,
+          keeperSelectionTested: true,
           focusOutline,
           childrenStopped: true,
         },
@@ -1028,6 +1029,78 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
     );
     await evaluate(
       socket,
+      "location.hash += '?selectionKind=bead&selectionId=fixture-epic'",
+    );
+    await waitForPage(
+      socket,
+      "document.querySelector('.af-desktop-frame')?.getAttribute('data-selection-id') === 'fixture-epic'",
+      "The native selection route did not settle",
+    );
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "j",
+      code: "KeyJ",
+      windowsVirtualKeyCode: 74,
+      modifiers: 2,
+    });
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "j",
+      code: "KeyJ",
+      windowsVirtualKeyCode: 74,
+      modifiers: 0,
+    });
+    await waitForPage(
+      socket,
+      "document.querySelector('.af-keeper-drawer')?.open && document.activeElement === document.querySelector('.af-keeper-drawer textarea') && Array.from(document.querySelectorAll('.af-keeper-drawer .af-keeper-about a')).some(a=>a.textContent==='bead fixture-epic')",
+      "The native Ctrl+J drawer did not focus its composer with scoped bead context",
+    );
+    await evaluate(
+      socket,
+      `(() => {const input=document.querySelector('.af-keeper-drawer textarea');input.value='/forge';input.setSelectionRange(6,6);input.dispatchEvent(new Event('input',{bubbles:true}));})()`,
+    );
+    await waitForPage(
+      socket,
+      "Array.from(document.querySelectorAll('.af-keeper-drawer .af-keeper-picker button')).some(b=>b.textContent.includes('/forge-plan'))",
+      "The packaged Keeper did not show its actual harness command catalog",
+    );
+    await saveConnectionShot(socket, "native-keeper-selection.png");
+    for (let index = 0; index < 2; index++) {
+      await cdp(socket, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Escape",
+        code: "Escape",
+        windowsVirtualKeyCode: 27,
+      });
+      await cdp(socket, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Escape",
+        code: "Escape",
+        windowsVirtualKeyCode: 27,
+      });
+      await waitForPage(
+        socket,
+        index === 0
+          ? "document.querySelector('.af-keeper-drawer')?.open && !document.querySelector('.af-keeper-picker')"
+          : "!document.querySelector('.af-keeper-drawer')?.open",
+        "The native Escape sequence did not close suggestions before the drawer",
+      );
+    }
+    await evaluate(
+      socket,
+      "document.querySelector('.af-keeper-launcher button').click()",
+    );
+    await waitForPage(
+      socket,
+      "!!document.querySelector('.af-keeper-drawer textarea')",
+      "The native drawer did not reopen",
+    );
+    await evaluate(
+      socket,
+      `(() => {const input=document.querySelector('.af-keeper-drawer textarea');input.value='Native Keeper draft';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.af-keeper-drawer-link a').click();})()`,
+    );
+    await evaluate(
+      socket,
       'document.querySelector(\'.af-desktop-sidebar a[href$="/keeper"],.af-desktop-project-link[href$="/keeper"]\').click()',
     );
     await waitForPage(
@@ -1036,6 +1109,9 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
       "The native full conversation lost its shared draft",
     );
     await saveConnectionShot(socket, "native-keeper.png");
+  } catch (error) {
+    await saveConnectionShot(socket, "native-keeper-context-failure.png");
+    throw error;
   } finally {
     if (typeof originalHash === "string")
       await evaluate(socket, `location.hash=${JSON.stringify(originalHash)}`);

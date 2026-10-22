@@ -37,7 +37,20 @@ export function DesktopApp(): JSX.Element {
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
   const keeper = useKeeper(project?.id ?? null, writesAllowed);
   const [keeperOpen, setKeeperOpen] = useState(false);
-  const keeperOpener = useRef<HTMLButtonElement>(null);
+  const keeperOpener = useRef<HTMLElement>(null);
+  const openKeeper = () => {
+    if (!project) return;
+    keeperOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (route.selection) void keeper.attach(project.id, route.selection);
+    setKeeperOpen(true);
+  };
+  // A selection may commit before effects replace an event listener. Keep the
+  // listener stable and read the current render's context for every shortcut.
+  const keeperShortcut = useRef<(() => void) | null>(null);
+  keeperShortcut.current = project && !keeperOpen ? openKeeper : null;
   const frameSessions = summary
     ? sessionRows(summary.sessions, {}, summary.asOf).map((row) => ({
         id: row.session.sessionId,
@@ -61,6 +74,26 @@ export function DesktopApp(): JSX.Element {
     const changed = () => setRoute(desktopRoute(window.location.hash));
     window.addEventListener("hashchange", changed);
     return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if (
+        !keeperShortcut.current ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.shiftKey ||
+        !(event.ctrlKey || event.metaKey) ||
+        event.key.toLowerCase() !== "j"
+      )
+        return;
+      // Respect any other modal already using the browser's top layer.
+      if (document.querySelector("dialog[open]")) return;
+      event.preventDefault();
+      keeperShortcut.current();
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
   }, []);
   useEffect(() => {
     const compact = window.matchMedia("(max-width: 1200px)");
@@ -119,6 +152,7 @@ export function DesktopApp(): JSX.Element {
               session={summary?.sessions.find(
                 (session) => session.sessionId === route.selection?.id,
               )}
+              onAskKeeper={openKeeper}
             />
           ) : route.destination === "keeper" && project ? (
             <KeeperScope project={project} page={keeper.get(project.id).page} />
@@ -141,10 +175,10 @@ export function DesktopApp(): JSX.Element {
           <div class="af-keeper-launcher">
             <button
               type="button"
-              ref={keeperOpener}
               class="af-btn af-btn-secondary"
-              onClick={() => setKeeperOpen(true)}
+              onClick={openKeeper}
               aria-haspopup="dialog"
+              aria-keyshortcuts="Control+j Meta+j"
             >
               Ask Keeper
             </button>
@@ -188,6 +222,7 @@ export function DesktopApp(): JSX.Element {
             client={keeper}
             writesAllowed={writesAllowed}
             onScope={() => setInspectorOpen(true)}
+            active={!keeperOpen}
           />
         ) : route.destination === "overview" && project ? (
           <ProjectOverview key={project.id} projectId={project.id} />
@@ -226,6 +261,7 @@ export function DesktopApp(): JSX.Element {
         onClose={() => setKeeperOpen(false)}
         returnFocusRef={keeperOpener}
         class="af-keeper-drawer"
+        initialFocus="content"
       >
         {project && (
           <>
@@ -247,6 +283,7 @@ export function DesktopApp(): JSX.Element {
               client={keeper}
               writesAllowed={writesAllowed}
               compact
+              active={keeperOpen}
               onNavigate={() => setKeeperOpen(false)}
             />
           </>

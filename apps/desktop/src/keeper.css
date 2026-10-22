@@ -358,6 +358,84 @@ button.af-keeper-chip {
 .af-keeper-drawer-link {
   padding: 0 16px 8px;
 }
+.af-keeper-about {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  max-height: 100px;
+  overflow: auto;
+}
+.af-keeper-about-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  padding: 2px 6px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.af-keeper-about-item.is-error {
+  border-color: var(--color-accent);
+}
+.af-keeper-about-item button,
+.af-keeper-picker button {
+  min-width: 24px;
+  min-height: 28px;
+  cursor: pointer;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: 5px;
+  padding: 4px 8px;
+  text-align: left;
+}
+.af-keeper-about-item p {
+  margin: 0;
+  flex-basis: 100%;
+}
+.af-keeper-composer {
+  position: relative;
+}
+.af-keeper-picker {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% - 4px);
+  left: 12px;
+  right: 12px;
+  max-height: min(320px, 45dvh);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 30%);
+  font-size: 12px;
+}
+.af-keeper-picker-kinds,
+.af-keeper-picker-options {
+  display: grid;
+  gap: 4px;
+}
+.af-keeper-picker-kinds {
+  grid-template-columns: repeat(4, 1fr);
+}
+.af-keeper-picker-kinds [aria-pressed="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.af-keeper-picker-options button {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.af-keeper-picker-source {
+  color: var(--color-neutral-400);
+  margin: 6px 0;
+}
 .af-keeper-conversation :focus-visible,
 .af-keeper-scope :focus-visible {
   outline: 2px solid var(--color-accent);

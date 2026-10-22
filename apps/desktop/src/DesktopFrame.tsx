@@ -120,6 +120,7 @@ export function DesktopFrame({
       class="af-desktop-frame"
       data-inspector-open={inspectorOpen}
       data-destination={route.destination}
+      data-selection-id={route.selection?.id}
     >
       <button
         class="af-skip-link"

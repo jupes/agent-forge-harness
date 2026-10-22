@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ConversationObject,
   ConversationPage,
   ConversationReceipt,
   ConversationSend,
@@ -21,10 +22,16 @@ import type { ConversationTransport, ConversationUpdate } from "./transport";
 
 export type { ConversationPage } from "../../types/conversation";
 
+export type ValidateConversationAbout = (
+  projectId: string,
+  about: ConversationObject[],
+) => Promise<void>;
+
 interface ConversationOptions {
   home: string;
   root: string;
   transport: ConversationTransport;
+  validateAbout?: ValidateConversationAbout | undefined;
   onChange?(update: ConversationUpdate): void;
 }
 
@@ -173,11 +180,14 @@ export function createConversationService(options: ConversationOptions) {
           409,
           "The configured provider differs from the saved conversation. Continuity must be resolved before sending.",
         );
-      if (input.about.length)
-        throw new ConversationError(
-          400,
-          "Object context requires the project-scoped reader. No turn was accepted.",
-        );
+      if (input.about.length) {
+        if (!options.validateAbout)
+          throw new ConversationError(
+            400,
+            "Object context requires the project-scoped reader. No turn was accepted.",
+          );
+        await options.validateAbout(projectId, input.about);
+      }
       await options.transport.check?.({
         project,
         root: options.root,
@@ -217,6 +227,15 @@ export function createConversationService(options: ConversationOptions) {
                 "This hearth is closing. No turn was accepted.",
               );
             await store.recover(projectId);
+            // Preflight can take time. Recheck new context at admission; exact
+            // retries always reconcile their saved receipt without fresh authority.
+            if (
+              input.about.length &&
+              !store
+                .read(projectId)
+                .turns.some((turn) => turn.requestId === input.requestId)
+            )
+              await options.validateAbout?.(projectId, input.about);
             const accepted = await store.accept(projectId, input);
             if (accepted.turn.phase !== "accepted") {
               admitted = true;

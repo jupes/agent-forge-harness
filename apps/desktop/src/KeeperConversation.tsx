@@ -4,11 +4,14 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Icon } from "../../../docs/js/ds/Icon";
 import type {
   ConversationEvent,
+  ConversationObject,
   ConversationPage,
 } from "../../../types/conversation";
 import type { ProjectRecord } from "../../../types/projects";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
+import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperContext, keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
 import "./keeper.css";
@@ -42,6 +45,20 @@ function readHref(projectId: string, read: ReadTrace, id: string): string {
             ? "workbench"
             : "beads";
   return desktopHref({ projectId, destination, selection });
+}
+function objectHref(projectId: string, object: ConversationObject): string {
+  return desktopHref({
+    projectId,
+    destination:
+      object.kind === "session"
+        ? "sessions"
+        : object.kind === "run"
+          ? "runs"
+          : object.kind === "event"
+            ? "activity"
+            : "beads",
+    selection: object,
+  });
 }
 function ReadTraces({
   projectId,
@@ -154,6 +171,7 @@ export function KeeperConversation({
   compact = false,
   onNavigate,
   onScope,
+  active = true,
 }: {
   project: ProjectRecord;
   client: KeeperClient;
@@ -161,6 +179,7 @@ export function KeeperConversation({
   compact?: boolean;
   onNavigate?: (() => void) | undefined;
   onScope?: () => void;
+  active?: boolean;
 }): JSX.Element {
   const state = client.get(project.id);
   const rows = keeperTurns(state.page);
@@ -178,10 +197,42 @@ export function KeeperConversation({
     current && ["accepted", "running", "cancelling"].includes(current.phase);
   const feed = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const pickerRegion = useRef<HTMLDivElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [pickerDismissed, setPickerDismissed] = useState(false);
+  const pickerVisible = active && editing && !pickerDismissed;
+  const choose = (value: string, object?: ConversationObject) => {
+    const picker = keeperPicker(state.draft, caret);
+    if (!picker) return;
+    if (object) void client.attach(project.id, object);
+    // Kind buttons change the active mention token; actual choices finish it.
+    const switchingKind = value.endsWith(":");
+    const next = insertKeeperSuggestion(state.draft, picker, value);
+    client.draft(
+      project.id,
+      switchingKind
+        ? next.text.slice(0, next.caret - 1) + next.text.slice(next.caret)
+        : next.text,
+    );
+    setCaret(switchingKind ? next.caret - 1 : next.caret);
+    setPickerDismissed(!switchingKind);
+    requestAnimationFrame(() => {
+      input.current?.focus();
+      const position = switchingKind ? next.caret - 1 : next.caret;
+      input.current?.setSelectionRange(position, position);
+    });
+  };
   const follow = useRef(true);
   const [away, setAway] = useState(false);
   const [copyNotice, setCopyNotice] = useState("");
   const lastSeq = state.page?.frames.at(-1)?.seq ?? 0;
+  useEffect(() => {
+    if (!compact) return;
+    // The parent dialog enters the top layer after mounting its content.
+    const frame = requestAnimationFrame(() => input.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [compact]);
   useEffect(() => {
     if (follow.current && feed.current)
       feed.current.scrollTop = feed.current.scrollHeight;
@@ -349,6 +400,23 @@ export function KeeperConversation({
             {row.question && (
               <article class="af-keeper-question" aria-label="Your message">
                 <p>{row.question}</p>
+                {row.about.length > 0 && (
+                  <div
+                    class="af-keeper-object-links"
+                    role="group"
+                    aria-label="Message context"
+                  >
+                    {row.about.map((object) => (
+                      <a
+                        key={`${object.kind}:${object.id}`}
+                        href={objectHref(project.id, object)}
+                        onClick={onNavigate}
+                      >
+                        {object.kind} {object.id}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </article>
             )}
             {(row.reply || row.reads.length > 0) && (
@@ -405,7 +473,16 @@ export function KeeperConversation({
           Jump to latest
         </Button>
       )}
-      <div class="af-keeper-composer">
+      <div
+        class="af-keeper-composer"
+        onBlur={(event) => {
+          if (
+            !(event.relatedTarget instanceof Node) ||
+            !event.currentTarget.contains(event.relatedTarget)
+          )
+            setEditing(false);
+        }}
+      >
         <p class="af-keeper-status" role="status">
           {state.posting
             ? "Sending the original request…"
@@ -420,6 +497,56 @@ export function KeeperConversation({
                     : "Conversation updates unavailable"}
           {copyNotice ? ` · ${copyNotice}` : ""}
         </p>
+        {state.about.length > 0 && (
+          <div
+            class="af-keeper-about"
+            role="group"
+            aria-label={`About context for ${project.name}`}
+          >
+            <strong>About · {project.name}</strong>
+            {state.about.map((ref) => (
+              <div
+                key={`${ref.kind}:${ref.id}`}
+                class={`af-keeper-about-item is-${ref.status}`}
+              >
+                {ref.status === "ready" ? (
+                  <a
+                    href={objectHref(project.id, ref)}
+                    onClick={onNavigate}
+                    title={`${ref.title} · ${ref.source} · ${ref.asOf}${ref.complete ? "" : ` · ${ref.reason ?? "Incomplete source"}`}`}
+                  >
+                    {ref.kind} {ref.id}
+                  </a>
+                ) : (
+                  <span>
+                    {ref.kind} {ref.id} ·{" "}
+                    {ref.status === "loading"
+                      ? "Checking scope…"
+                      : "Unavailable"}
+                  </span>
+                )}
+                {ref.status === "error" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void client.attach(project.id, ref, true);
+                    }}
+                  >
+                    Retry {ref.kind} {ref.id}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label={`Remove ${ref.kind} ${ref.id} context`}
+                  onClick={() => client.removeAbout(project.id, ref)}
+                >
+                  ×
+                </button>
+                {ref.status === "error" && <p role="status">{ref.reason}</p>}
+              </div>
+            ))}
+          </div>
+        )}
         {!state.draft && rows.length === 0 && (
           <div class="af-keeper-suggestions">
             {suggestions.map((text) => (
@@ -450,10 +577,37 @@ export function KeeperConversation({
           value={state.draft}
           placeholder={`Ask about ${project.name}…`}
           aria-describedby={`keeper-hint-${compact ? "drawer" : "full"}`}
-          onInput={(event) =>
-            client.draft(project.id, event.currentTarget.value)
-          }
+          onInput={(event) => {
+            client.draft(project.id, event.currentTarget.value);
+            setCaret(event.currentTarget.selectionStart);
+            setEditing(true);
+            setPickerDismissed(false);
+          }}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onFocus={() => setEditing(true)}
           onKeyDown={(event) => {
+            if (pickerVisible && keeperPicker(state.draft, caret)) {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                setPickerDismissed(true);
+                return;
+              }
+              if (event.key === "ArrowDown") {
+                const first =
+                  pickerRegion.current?.querySelector<HTMLButtonElement>(
+                    ".af-keeper-picker-options button:not([disabled])",
+                  ) ??
+                  pickerRegion.current?.querySelector<HTMLButtonElement>(
+                    "button:not([disabled])",
+                  );
+                if (first) {
+                  event.preventDefault();
+                  first.focus();
+                  return;
+                }
+              }
+            }
             if (
               (event.ctrlKey || event.metaKey) &&
               event.key === "Enter" &&
@@ -464,9 +618,22 @@ export function KeeperConversation({
             }
           }}
         />
+        <KeeperSuggestions
+          projectId={project.id}
+          client={client}
+          text={state.draft}
+          caret={caret}
+          visible={pickerVisible}
+          region={pickerRegion}
+          onChoose={choose}
+          onClose={() => {
+            setPickerDismissed(true);
+            input.current?.focus();
+          }}
+        />
         <div class="af-keeper-composer-actions">
           <small id={`keeper-hint-${compact ? "drawer" : "full"}`}>
-            Ctrl/Cmd+Enter sends · Enter adds a line
+            Ctrl/Cmd+Enter sends · Enter adds a line · @ mentions · / commands
           </small>
           {answering ? (
             <Button

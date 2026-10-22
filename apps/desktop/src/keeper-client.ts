@@ -5,15 +5,20 @@ import {
   conversationPageSchema,
   conversationReceiptSchema,
 } from "../../../scripts/conversations/protocol";
+import { KEEPER_OBJECT_READS } from "../../../scripts/keeper/objects";
 import type {
+  ConversationObject,
   ConversationPage,
   ConversationSend,
   ConversationTurn,
 } from "../../../types/conversation";
+import type { KeeperReadQuery } from "../../../types/keeper";
+import { type KeeperAbout, keeperObjects } from "./keeper-context";
 
 export interface KeeperView {
   projectId: string;
   draft: string;
+  about: KeeperAbout[];
   page: ConversationPage | null;
   loaded: boolean;
   live: boolean;
@@ -39,6 +44,9 @@ interface Deps {
   ): Promise<ActionOutcome>;
   requestId(): string;
   canWrite(): boolean;
+  readObjects?:
+    | ((projectId: string, query: KeeperReadQuery) => Promise<unknown>)
+    | undefined;
   timers?: Timers;
   now?: () => number;
 }
@@ -64,6 +72,7 @@ export function createKeeperClient(deps: Deps) {
       entry = {
         projectId,
         draft: "",
+        about: [],
         page: null,
         loaded: false,
         live: false,
@@ -104,6 +113,15 @@ export function createKeeperClient(deps: Deps) {
   };
   const confirm = (entry: KeeperView, turn: ConversationTurn) => {
     if (entry.pending?.requestId === turn.requestId) {
+      if (
+        entry.about.length === entry.pending.about.length &&
+        entry.about.every(
+          (ref, index) =>
+            ref.kind === entry.pending?.about[index]?.kind &&
+            ref.id === entry.pending?.about[index]?.id,
+        )
+      )
+        entry.about = [];
       if (entry.draft.trim() === entry.pending.text) entry.draft = "";
       entry.pending = null;
       entry.admitted = turn;
@@ -307,6 +325,7 @@ export function createKeeperClient(deps: Deps) {
       !entry.posting &&
       !entry.stopping &&
       !entry.stopPosting &&
+      entry.about.every((ref) => ref.status === "ready") &&
       Boolean(entry.draft.trim()) &&
       entry.draft.trim().length <= 16_384 &&
       !entry.page?.turns.some(held) &&
@@ -317,6 +336,22 @@ export function createKeeperClient(deps: Deps) {
     get,
     canSend,
     check,
+    async objects(
+      projectId: string,
+      kind: ConversationObject["kind"],
+      id?: string,
+    ) {
+      if (!deps.readObjects) throw new Error("Object context is unavailable.");
+      return keeperObjects(
+        projectId,
+        kind,
+        await deps.readObjects(projectId, {
+          kind: KEEPER_OBJECT_READS[kind],
+          ...(id !== undefined ? { id } : { limit: 100 }),
+        }),
+        id,
+      );
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -353,14 +388,65 @@ export function createKeeperClient(deps: Deps) {
       get(projectId).draft = text;
       tell();
     },
+    async attach(projectId: string, object: ConversationObject, retry = false) {
+      if (disposed) return;
+      const entry = get(projectId);
+      const existing = entry.about.find(
+        (ref) => ref.kind === object.kind && ref.id === object.id,
+      );
+      if ((existing && !retry) || (!existing && entry.about.length >= 16))
+        return;
+      const ref: KeeperAbout = {
+        ...object,
+        status: "loading",
+        title: object.id,
+        source: null,
+        asOf: null,
+        complete: false,
+        reason: null,
+      };
+      entry.about = [...entry.about.filter((item) => item !== existing), ref];
+      tell();
+      try {
+        if (!deps.readObjects)
+          throw new Error("Object context is unavailable.");
+        const raw = await deps.readObjects(projectId, {
+          kind: KEEPER_OBJECT_READS[object.kind],
+          id: object.id,
+        });
+        const result = keeperObjects(projectId, object.kind, raw, object.id);
+        if (disposed || !entry.about.includes(ref)) return;
+        Object.assign(ref, {
+          status: "ready",
+          title: result.items[0]?.title ?? ref.id,
+          source: result.source,
+          asOf: result.asOf,
+          complete: result.complete,
+          reason: result.reason,
+        });
+      } catch {
+        if (disposed || !entry.about.includes(ref)) return;
+        ref.status = "error";
+        ref.reason =
+          "This object could not be confirmed in this project's scope. Retry or remove it before sending.";
+      }
+      tell();
+    },
+    removeAbout(projectId: string, object: ConversationObject) {
+      const entry = get(projectId);
+      entry.about = entry.about.filter(
+        (ref) => ref.kind !== object.kind || ref.id !== object.id,
+      );
+      tell();
+    },
     async send(projectId: string) {
       if (!canSend(projectId)) return;
       const entry = get(projectId);
-      const input = {
+      const input: ConversationSend = {
         requestId: deps.requestId(),
         expectedRevision: entry.page?.revision ?? 0,
         text: entry.draft.trim(),
-        about: [],
+        about: entry.about.map(({ kind, id }) => ({ kind, id })),
       };
       entry.pending = input;
       await postTurn(entry, input, false);

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProjectStore } from "../projects/store";
+import { ConversationError } from "./error";
 import { createConversationService } from "./service";
 import { createConversationStore } from "./store";
 import type { ConversationTransport, ConversationUpdate } from "./transport";
@@ -35,6 +36,49 @@ async function fixture() {
   if (!projectId) throw new Error("Missing fixture project");
   return { home, root, projectId };
 }
+
+test("context without a trusted validator is refused, and membership lost during preflight is rechecked before admission", async () => {
+  const { home, root, projectId } = await fixture();
+  let starts = 0;
+  let allowed = true;
+  const transport: ConversationTransport = {
+    provider: "claude",
+    async check() {
+      allowed = false;
+    },
+    async run() {
+      starts++;
+      return { phase: "completed", reason: null };
+    },
+  };
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Explain this",
+    about: [{ kind: "bead" as const, id: "member" }],
+  };
+  const unbound = createConversationService({ home, root, transport });
+  cleanup.push(() => unbound.close());
+  await expect(unbound.send(projectId, input)).rejects.toThrow(
+    "project-scoped reader",
+  );
+  const bound = createConversationService({
+    home,
+    root,
+    transport,
+    async validateAbout() {
+      if (!allowed)
+        throw new ConversationError(
+          404,
+          "Object is no longer in this project's scope.",
+        );
+    },
+  });
+  cleanup.push(() => bound.close());
+  await expect(bound.send(projectId, input)).rejects.toThrow("no longer");
+  expect(starts).toBe(0);
+  expect((await bound.read(projectId)).turns).toEqual([]);
+});
 
 async function until(check: () => Promise<boolean>) {
   const deadline = Date.now() + 3000;
