@@ -1,0 +1,396 @@
+.af-keeper-conversation {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  min-height: 420px;
+  height: calc(100dvh - 164px);
+  min-width: 0;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-bg);
+  position: relative;
+}
+.af-keeper-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+.af-keeper-heading,
+.af-keeper-chips,
+.af-keeper-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.af-keeper-heading h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+.af-keeper-heading h2 span,
+.af-keeper-context,
+.af-keeper-composer small,
+.af-keeper-status {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+  font-weight: 400;
+}
+.af-keeper-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--color-accent);
+  color: var(--color-bg);
+  font-size: 11px;
+  flex: none;
+}
+.af-keeper-chips {
+  margin-top: 10px;
+}
+.af-keeper-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 9px;
+  border: 1px solid var(--color-divider);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+button.af-keeper-chip {
+  cursor: pointer;
+}
+.af-keeper-context {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.af-keeper-context meter {
+  width: 64px;
+  height: 10px;
+}
+.af-keeper-thread {
+  grid-row: 3;
+  overflow: auto;
+  padding: 20px;
+  min-height: 0;
+  scroll-behavior: auto;
+}
+.af-keeper-turn,
+.af-keeper-welcome {
+  max-width: 760px;
+  margin: 0 auto 18px;
+}
+.af-keeper-welcome {
+  padding: 40px 12px;
+  text-align: center;
+  color: var(--color-neutral-400);
+}
+.af-keeper-welcome h3 {
+  color: var(--color-text);
+  font-weight: 500;
+}
+.af-keeper-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-neutral-400);
+  font-size: 11px;
+  text-align: center;
+}
+.af-keeper-day::before,
+.af-keeper-day::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--color-divider);
+}
+.af-keeper-question {
+  margin: 12px 0 16px auto;
+  max-width: 80%;
+  width: fit-content;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--color-accent-900);
+  border: 1px solid var(--color-divider);
+}
+.af-keeper-question p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.af-keeper-reply {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+}
+.af-keeper-markdown {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.af-keeper-markdown p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+.af-keeper-markdown h3 {
+  margin: 14px 0 8px;
+  font-size: 15px;
+  font-weight: 500;
+}
+.af-keeper-markdown ul,
+.af-keeper-markdown ol {
+  padding-left: 22px;
+  margin: 8px 0;
+}
+.af-keeper-markdown pre {
+  overflow: auto;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  white-space: pre;
+}
+.af-keeper-markdown blockquote {
+  border-left: 3px solid var(--color-divider);
+  padding-left: 12px;
+  margin-left: 0;
+  color: var(--color-neutral-400);
+}
+.af-keeper-table {
+  overflow: auto;
+  margin: 10px 0;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+}
+.af-keeper-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.af-keeper-table th,
+.af-keeper-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-divider);
+  min-width: 100px;
+}
+.af-keeper-table th {
+  background: var(--color-surface);
+  color: var(--color-neutral-400);
+  font-weight: 500;
+}
+.af-keeper-reads {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--color-divider);
+  color: var(--color-neutral-400);
+  font-size: 11px;
+}
+.af-keeper-reads summary {
+  cursor: pointer;
+  min-height: 26px;
+}
+.af-keeper-reads p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+.af-keeper-object-links {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.af-keeper-object-links a {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  font: 11px var(--font-mono);
+  color: var(--color-accent);
+}
+.af-keeper-copy {
+  background: transparent;
+  color: var(--color-neutral-400);
+  border: 0;
+  min-height: 26px;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 0;
+  margin-top: 5px;
+}
+.af-keeper-notice {
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--color-divider);
+  grid-row: 2;
+}
+.af-keeper-notice p {
+  margin: 4px 0 8px;
+}
+.af-keeper-notice .af-btn {
+  margin: 0 5px 5px 0;
+}
+.af-keeper-warning {
+  color: var(--color-warning, var(--color-text));
+  padding: 8px 10px;
+  border-left: 2px solid currentColor;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.af-keeper-composer {
+  grid-row: 5;
+  padding: 10px 20px 14px;
+  border-top: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  display: grid;
+  gap: 8px;
+}
+.af-keeper-status {
+  margin: 0;
+  min-height: 18px;
+}
+.af-keeper-label {
+  font-size: 12px;
+}
+.af-keeper-composer textarea {
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 58px;
+  max-height: 160px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 10px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  font: inherit;
+  line-height: 1.5;
+}
+.af-keeper-composer-actions {
+  justify-content: space-between;
+}
+.af-keeper-suggestions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.af-keeper-suggestions button {
+  padding: 4px 9px;
+  min-height: 28px;
+  font: inherit;
+  font-size: 11px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  color: var(--color-neutral-400);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.af-keeper-jump {
+  grid-row: 4;
+  justify-self: center;
+  margin: 2px 0 8px;
+}
+.af-keeper-launcher {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+.af-keeper-scope h2 {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-accent);
+  margin-top: 20px;
+}
+.af-keeper-scope h3 {
+  font-size: 11px;
+  color: var(--color-neutral-400);
+  font-weight: 500;
+}
+.af-keeper-scope p,
+.af-keeper-scope li {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.af-keeper-scope code {
+  overflow-wrap: anywhere;
+}
+.af-keeper-scope ul {
+  padding-left: 18px;
+}
+.af-keeper-drawer .af-dialog-panel {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  margin: 0;
+}
+.af-keeper-drawer {
+  margin: 0 0 0 auto;
+  width: min(680px, 100dvw);
+  height: 100dvh;
+  max-height: 100dvh;
+  max-width: 100dvw;
+  box-sizing: border-box;
+  padding: 12px;
+}
+.af-keeper-drawer .af-dialog-body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1;
+  padding: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.af-keeper-drawer .af-keeper-conversation {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+.af-keeper-drawer-link {
+  padding: 0 16px 8px;
+}
+.af-keeper-conversation :focus-visible,
+.af-keeper-scope :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .af-keeper-conversation *,
+  .af-keeper-drawer * {
+    animation: none;
+    transition: none;
+    scroll-behavior: auto;
+  }
+}
+
+.af-desktop-frame[data-destination="keeper"] .af-desktop-main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.af-desktop-frame[data-destination="keeper"] .af-desktop-content-header {
+  flex: none;
+}
+.af-desktop-frame[data-destination="keeper"] .af-desktop-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+.af-desktop-frame[data-destination="keeper"]
+  .af-desktop-content
+  > .af-keeper-conversation {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}

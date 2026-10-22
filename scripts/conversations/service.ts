@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ConversationPage,
   ConversationReceipt,
   ConversationSend,
   ConversationState,
@@ -18,12 +19,7 @@ import {
 } from "./store";
 import type { ConversationTransport, ConversationUpdate } from "./transport";
 
-export interface ConversationPage extends ConversationState {
-  more: boolean;
-  nextCursor: number;
-  request: ConversationTurn | null;
-  controllable: boolean;
-}
+export type { ConversationPage } from "../../types/conversation";
 
 interface ConversationOptions {
   home: string;
@@ -139,6 +135,7 @@ export function createConversationService(options: ConversationOptions) {
         frames,
         more: state.frames.some((frame) => frame.seq > nextCursor),
         nextCursor,
+        lastSequence: state.frames.at(-1)?.seq ?? 0,
         request:
           state.turns.find((item) => item.requestId === query.requestId) ??
           null,

@@ -24,7 +24,7 @@ test("the Keeper action is audited before a single durable send, while reads nev
   );
   const path = `/projects/${FIXTURE_PROJECT_ID}/keeper`;
   const get = (suffix = "") =>
-    fetch(h.api + path + suffix, { headers: h.headers(null) });
+    fetch(h.api + path + suffix, { headers: h.headers(h.hearth.token) });
   expect((await get()).status).toBe(200);
   expect(
     createConversationStore(h.home).read(FIXTURE_PROJECT_ID).turns,
@@ -110,7 +110,7 @@ test("a lost send response is reconciled by its original request without another
   });
   expect(sent.status).toBe(500);
   const read = await fetch(h.api + path + `?requestId=${requestId}`, {
-    headers: h.headers(null),
+    headers: h.headers(h.hearth.token),
   });
   const result: unknown = await read.json();
   expect(result).toMatchObject({ ok: true, data: { request: { requestId } } });

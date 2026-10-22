@@ -1072,12 +1072,13 @@ describe("the route table", () => {
         .map(key)
         .sort(),
     ).toEqual(Object.keys(READS).sort());
-    // One stream, and nothing in the table of a kind this suite does not cover.
+    // One ledger feed and a separate private conversation body feed.
     expect(rows.filter((route) => route.kind === "stream").map(key)).toEqual([
       "GET /stream",
+      "GET /projects/:id/keeper/events",
     ]);
     expect(rows.length).toBe(
-      Object.keys(ACTIONS).length + Object.keys(READS).length + 1,
+      Object.keys(ACTIONS).length + Object.keys(READS).length + 2,
     );
   });
 });
@@ -1472,7 +1473,8 @@ describe("a read row or the stream while another connection holds the write lock
       (route) => route.kind === "read" || route.kind === "stream",
     );
     const pathOf = (row: ApiRoute): string => {
-      if (row.kind === "stream") return row.path;
+      if (row.kind === "stream")
+        return row.path.replace(":id", FIXTURE_PROJECT_ID);
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
@@ -1493,7 +1495,11 @@ describe("a read row or the stream while another connection holds the write lock
       const sent = performance.now();
       for (const row of rows) {
         const [response, health] = await Promise.all([
-          get(h, pathOf(row)).then(answered),
+          get(
+            h,
+            pathOf(row),
+            h.headers(row.operatorOnly ? h.hearth.token : undefined),
+          ).then(answered),
           fetch(`${h.hearth.url}${HEALTH_ROUTE}`),
         ]);
         expect({ row: key(row), health: health.status }).toEqual({
@@ -1522,7 +1528,13 @@ describe("a read row or the stream while another connection holds the write lock
 
     // Released, the next read opens the file and every row answers.
     for (const row of rows) {
-      const response = await answered(await get(h, pathOf(row)));
+      const response = await answered(
+        await get(
+          h,
+          pathOf(row),
+          h.headers(row.operatorOnly ? h.hearth.token : undefined),
+        ),
+      );
       expect({ row: key(row), status: response.status }).toEqual({
         row: key(row),
         status: 200,
@@ -2392,7 +2404,11 @@ describe("every read row (iterating the table)", () => {
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
-      const response = await get(h, path);
+      const response = await get(
+        h,
+        path,
+        h.headers(row.operatorOnly ? h.hearth.token : undefined),
+      );
       const body = await envelope(response);
       expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
         row: key(row),
@@ -2428,7 +2444,10 @@ describe("every read row (iterating the table)", () => {
         expect((await envelope(response)).ok).toBe(false);
       }
       // A browser on the same origin sends no Origin on a GET; its fetch metadata is the declaration.
-      const browser = await get(h, path, { "Sec-Fetch-Site": "same-origin" });
+      const browser = await get(h, path, {
+        "Sec-Fetch-Site": "same-origin",
+        ...(row.operatorOnly ? { [OPERATOR_HEADER]: h.hearth.token } : {}),
+      });
       expect({ row: key(row), status: browser.status }).toEqual({
         row: key(row),
         status: 200,

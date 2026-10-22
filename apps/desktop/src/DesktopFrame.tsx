@@ -116,7 +116,11 @@ export function DesktopFrame({
       ?.label ??
     "Projects";
   return (
-    <div class="af-desktop-frame" data-inspector-open={inspectorOpen}>
+    <div
+      class="af-desktop-frame"
+      data-inspector-open={inspectorOpen}
+      data-destination={route.destination}
+    >
       <button
         class="af-skip-link"
         type="button"

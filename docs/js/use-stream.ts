@@ -17,7 +17,8 @@
  *
  * Reads need no operator token; this module never asks for one.
  *
- * The ledger is the only change feed. Where an event does not carry enough to
+ * The ledger is the metadata change feed. Private conversation body replay is
+ * owned by the separate Keeper client, never a ledger collection. Where an event does not carry enough to
  * update a view, the view's own read route is fetched again when an event of
  * a kind that matters arrives: at most once per short window, never on a timer.
  */

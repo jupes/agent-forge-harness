@@ -412,6 +412,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     routes: [
       ...reads,
       stream,
+      conversations.events,
       ...actions(deps),
       preferences,
       conversations.send,

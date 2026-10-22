@@ -45,6 +45,8 @@ export type RouteReply =
   | { status: number; error: string };
 
 interface RouteCommon<Input> {
+  /** Private read/stream content needs operator authority; actions always require it. */
+  operatorOnly?: true;
   /** Relative to `/__agent-forge`; a `:name` segment is a parameter. */
   path: string;
   validate(request: RouteRequest): ValidationResult<Input>;
@@ -547,6 +549,17 @@ export function createOperatorApi(
     if (route.kind === "action") return serveAction(route, pending, req, res);
     if (repeatsSingleHeader(req) || !isDeclaredSameOrigin(req))
       return send(res, refuse(403, NOT_THIS_ORIGIN));
+    if (
+      route.operatorOnly &&
+      !tokenMatches(deps.expectedToken(), req.headers[OPERATOR_HEADER])
+    )
+      return send(
+        res,
+        refuse(
+          403,
+          "This private read needs the operator token of this control plane",
+        ),
+      );
 
     const params = decode(pending.params);
     if (!params.ok) return send(res, refuse(400, params.error));

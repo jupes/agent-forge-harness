@@ -5,6 +5,7 @@ import base from "./playwright.config";
 export default defineConfig({
   ...base,
   testDir: "tests/desktop-e2e",
+  globalSetup: "./tests/desktop-e2e/global-setup.ts",
   projects: [
     { name: "desktop-app", use: { viewport: { width: 1440, height: 900 } } },
   ],

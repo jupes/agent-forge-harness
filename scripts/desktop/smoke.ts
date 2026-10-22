@@ -468,6 +468,7 @@ async function main(): Promise<void> {
 
     focusOutline = await verifyConnectionRecovery(socket);
     await verifyDesktopFrame(socket);
+    await verifyKeeperConversation(socket);
     // Hearth recovery keeps the host and window, but replaces the child hearth.
     processTree = await captureProcessTree(appProcess.pid);
 
@@ -641,6 +642,7 @@ async function main(): Promise<void> {
           projectSessionsTested: true,
           trackerStandInTested: true,
           packagedKeeperReaderTested: true,
+          keeperConversationTested: true,
           focusOutline,
           childrenStopped: true,
         },
@@ -955,6 +957,89 @@ async function pageHearthPid(socket: WebSocket): Promise<number> {
       "The native review could not verify its hearth process identity",
     );
   return pid;
+}
+
+/** Actual packaged rendering and shared draft, without dispatching a provider turn. */
+async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
+  const originalHash = await evaluate(socket, "location.hash");
+  try {
+    await evaluate(
+      socket,
+      `(async () => { const response=await fetch('/__agent-forge/projects',{signal:AbortSignal.timeout(5000)});const envelope=await response.json();if(!response.ok||!envelope.ok)throw Error('No fixture catalog');const project=envelope.data.projects.find(p=>p.slug==='native-fixture');if(!project)throw Error('No native project');location.hash='#/desktop/project/'+project.id+'/keeper'; })()`,
+    );
+    await waitForPage(
+      socket,
+      "!!document.querySelector('.af-keeper-welcome')",
+      "The packaged Keeper did not load its empty standing conversation",
+    );
+    await evaluate(
+      socket,
+      `(() => {const input=document.querySelector('.af-keeper-composer textarea');input.value='Native Keeper draft';input.dispatchEvent(new Event('input',{bubbles:true}));})()`,
+    );
+    await waitForPage(
+      socket,
+      "Array.from(document.querySelectorAll('.af-keeper-composer button')).some(b=>b.textContent.trim()==='Send'&&!b.disabled)",
+      "The packaged Keeper did not enable its explicit Send control",
+    );
+    await evaluate(
+      socket,
+      'document.querySelector(\'a[aria-label="Overview"],.af-desktop-project-nav a[title="Overview"]\').click()',
+    );
+    await waitForPage(
+      socket,
+      "!!document.querySelector('.af-keeper-launcher button')",
+      "The native Keeper drawer opener is missing",
+    );
+    await evaluate(
+      socket,
+      "document.querySelector('.af-keeper-launcher button').focus();document.querySelector('.af-keeper-launcher button').click()",
+    );
+    await waitForPage(
+      socket,
+      "document.querySelector('.af-keeper-drawer')?.open && document.querySelector('.af-keeper-drawer textarea')?.value === 'Native Keeper draft'",
+      "The packaged drawer did not share the full conversation draft",
+    );
+    if (
+      !(await evaluate(
+        socket,
+        `(() => {const dialog=document.querySelector('.af-keeper-drawer');const send=Array.from(dialog.querySelectorAll('button')).find(b=>b.textContent.trim()==='Send');const box=send.getBoundingClientRect();return box.top>=0&&box.bottom<=innerHeight&&box.left>=0&&box.right<=innerWidth;})()`,
+      ))
+    )
+      throw new Error(
+        "The packaged Keeper drawer hid its Send control outside the viewport",
+      );
+    await saveConnectionShot(socket, "native-keeper-drawer.png");
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await cdp(socket, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await waitForPage(
+      socket,
+      "!document.querySelector('.af-keeper-drawer').open && document.activeElement?.textContent.trim() === 'Ask Keeper'",
+      "The packaged Keeper drawer did not return keyboard focus",
+    );
+    await evaluate(
+      socket,
+      'document.querySelector(\'.af-desktop-sidebar a[href$="/keeper"],.af-desktop-project-link[href$="/keeper"]\').click()',
+    );
+    await waitForPage(
+      socket,
+      "document.querySelector('.af-keeper-composer textarea')?.value === 'Native Keeper draft'",
+      "The native full conversation lost its shared draft",
+    );
+    await saveConnectionShot(socket, "native-keeper.png");
+  } finally {
+    if (typeof originalHash === "string")
+      await evaluate(socket, `location.hash=${JSON.stringify(originalHash)}`);
+  }
 }
 
 async function verifyDesktopFrame(socket: WebSocket): Promise<void> {

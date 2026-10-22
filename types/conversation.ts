@@ -91,3 +91,11 @@ export interface ConversationReceipt {
   revision: number;
   turn: ConversationTurn;
 }
+
+export interface ConversationPage extends ConversationState {
+  more: boolean;
+  nextCursor: number;
+  lastSequence: number;
+  request: ConversationTurn | null;
+  controllable: boolean;
+}

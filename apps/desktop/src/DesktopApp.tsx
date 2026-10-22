@@ -1,9 +1,11 @@
 import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
+import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import { DesktopFrame } from "./DesktopFrame";
+import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import {
   desktopHref,
   desktopRoute,
@@ -15,6 +17,7 @@ import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
 import { sessionRows } from "./sessions-model";
+import { useKeeper } from "./use-keeper";
 import { useProjects } from "./use-projects";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
@@ -31,6 +34,10 @@ export function DesktopApp(): JSX.Element {
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
   );
+  const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const keeper = useKeeper(project?.id ?? null, writesAllowed);
+  const [keeperOpen, setKeeperOpen] = useState(false);
+  const keeperOpener = useRef<HTMLButtonElement>(null);
   const frameSessions = summary
     ? sessionRows(summary.sessions, {}, summary.asOf).map((row) => ({
         id: row.session.sessionId,
@@ -44,6 +51,7 @@ export function DesktopApp(): JSX.Element {
   useEffect(() => {
     if (previousProject.current !== route.projectId)
       document.getElementById("af-main")?.focus();
+    if (previousProject.current !== route.projectId) setKeeperOpen(false);
     previousProject.current = route.projectId;
   }, [route.projectId]);
   useEffect(() => {
@@ -85,107 +93,165 @@ export function DesktopApp(): JSX.Element {
       ?.label ??
     "Projects";
   return (
-    <DesktopFrame
-      route={route}
-      project={
-        project
-          ? {
-              id: project.id,
-              name: project.name,
-              sessions: frameSessions,
-              sessionsComplete: summary?.sessionsComplete ?? false,
-            }
-          : null
-      }
-      connectionLabel={
-        recovery?.busy
-          ? "Restarting"
-          : (recovery?.connection.label ?? "Connecting")
-      }
-      inspectorOpen={inspectorOpen}
-      inspector={
-        route.selection?.kind === "session" && project ? (
-          <SessionInspector
-            projectId={project.id}
-            session={summary?.sessions.find(
-              (session) => session.sessionId === route.selection?.id,
-            )}
-          />
-        ) : undefined
-      }
-      onInspectorToggle={() => {
-        setInspectorOpen(!inspectorOpen);
-        if (inspectorOpen)
-          requestAnimationFrame(() =>
-            document
-              .querySelector<HTMLButtonElement>(
-                'main button[aria-label="Show inspector"]',
-              )
-              ?.focus(),
-          );
-      }}
-    >
-      <ConnectionBanner />
-      {project?.archived && (
-        <p role="status">
-          This project is archived. Its saved scope remains available for
-          inspection.
-        </p>
-      )}
-      {projects.notice && (
-        <div role="status" class="af-notice">
-          {projects.notice}
-          {projects.needsCheck && (
-            <Button
-              onClick={() => {
-                void projects.check();
-              }}
+    <>
+      <DesktopFrame
+        route={route}
+        project={
+          project
+            ? {
+                id: project.id,
+                name: project.name,
+                sessions: frameSessions,
+                sessionsComplete: summary?.sessionsComplete ?? false,
+              }
+            : null
+        }
+        connectionLabel={
+          recovery?.busy
+            ? "Restarting"
+            : (recovery?.connection.label ?? "Connecting")
+        }
+        inspectorOpen={inspectorOpen}
+        inspector={
+          route.selection?.kind === "session" && project ? (
+            <SessionInspector
+              projectId={project.id}
+              session={summary?.sessions.find(
+                (session) => session.sessionId === route.selection?.id,
+              )}
+            />
+          ) : route.destination === "keeper" && project ? (
+            <KeeperScope project={project} page={keeper.get(project.id).page} />
+          ) : undefined
+        }
+        onInspectorToggle={() => {
+          setInspectorOpen(!inspectorOpen);
+          if (inspectorOpen)
+            requestAnimationFrame(() =>
+              document
+                .querySelector<HTMLButtonElement>(
+                  'main button[aria-label="Show inspector"]',
+                )
+                ?.focus(),
+            );
+        }}
+      >
+        <ConnectionBanner />
+        {project && route.destination !== "keeper" && (
+          <div class="af-keeper-launcher">
+            <button
+              type="button"
+              ref={keeperOpener}
+              class="af-btn af-btn-secondary"
+              onClick={() => setKeeperOpen(true)}
+              aria-haspopup="dialog"
             >
-              Check project preferences
+              Ask Keeper
+            </button>
+          </div>
+        )}
+        {project?.archived && (
+          <p role="status">
+            This project is archived. Its saved scope remains available for
+            inspection.
+          </p>
+        )}
+        {projects.notice && (
+          <div role="status" class="af-notice">
+            {projects.notice}
+            {projects.needsCheck && (
+              <Button
+                onClick={() => {
+                  void projects.check();
+                }}
+              >
+                Check project preferences
+              </Button>
+            )}
+          </div>
+        )}
+        {route.destination === "projects" ? (
+          <ProjectsHome
+            home={projects.data}
+            error={projects.error}
+            loading={projects.loading}
+            stale={recovery?.connection.phase !== "connected"}
+            held={projects.held}
+            writesAllowed={recovery?.connection.writesAllowed ?? false}
+            reload={projects.reload}
+            change={projects.change}
+          />
+        ) : route.destination === "keeper" && project ? (
+          <KeeperConversation
+            key={project.id}
+            project={project}
+            client={keeper}
+            writesAllowed={writesAllowed}
+            onScope={() => setInspectorOpen(true)}
+          />
+        ) : route.destination === "overview" && project ? (
+          <ProjectOverview key={project.id} projectId={project.id} />
+        ) : route.destination === "sessions" && project ? (
+          <ProjectSessions
+            key={project.id}
+            projectId={project.id}
+            selectedId={
+              route.selection?.kind === "session" ? route.selection.id : null
+            }
+          />
+        ) : global ? (
+          <EmptyState
+            title={`${name} unavailable`}
+            hint={`${name} is not available in this build.`}
+          />
+        ) : (
+          <EmptyState
+            title={project ? `${name} unavailable` : "Project unavailable"}
+            hint={
+              project
+                ? `${name} for ${project.name} is not available in this build.`
+                : "This project could not be loaded. Choose a project to continue."
+            }
+          >
+            <Button href={desktopHref(navigateGlobal(route, "projects"))}>
+              Choose project
             </Button>
-          )}
-        </div>
-      )}
-      {route.destination === "projects" ? (
-        <ProjectsHome
-          home={projects.data}
-          error={projects.error}
-          loading={projects.loading}
-          stale={recovery?.connection.phase !== "connected"}
-          held={projects.held}
-          writesAllowed={recovery?.connection.writesAllowed ?? false}
-          reload={projects.reload}
-          change={projects.change}
-        />
-      ) : route.destination === "overview" && project ? (
-        <ProjectOverview key={project.id} projectId={project.id} />
-      ) : route.destination === "sessions" && project ? (
-        <ProjectSessions
-          key={project.id}
-          projectId={project.id}
-          selectedId={
-            route.selection?.kind === "session" ? route.selection.id : null
-          }
-        />
-      ) : global ? (
-        <EmptyState
-          title={`${name} unavailable`}
-          hint={`${name} is not available in this build.`}
-        />
-      ) : (
-        <EmptyState
-          title={project ? `${name} unavailable` : "Project unavailable"}
-          hint={
-            project
-              ? `${name} for ${project.name} is not available in this build.`
-              : "This project could not be loaded. Choose a project to continue."
-          }
-        >
-          <Button href={desktopHref(navigateGlobal(route, "projects"))}>
-            Choose project
-          </Button>
-        </EmptyState>
-      )}
-    </DesktopFrame>
+          </EmptyState>
+        )}
+      </DesktopFrame>
+      <Dialog
+        open={keeperOpen && Boolean(project)}
+        title={`Forge Keeper · ${project?.name ?? ""}`}
+        titleId="af-keeper-drawer-title"
+        onClose={() => setKeeperOpen(false)}
+        returnFocusRef={keeperOpener}
+        class="af-keeper-drawer"
+      >
+        {project && (
+          <>
+            <div class="af-keeper-drawer-link">
+              <a
+                href={desktopHref({
+                  destination: "keeper",
+                  projectId: project.id,
+                  selection: null,
+                })}
+                onClick={() => setKeeperOpen(false)}
+              >
+                Open full conversation
+              </a>
+            </div>
+            <KeeperConversation
+              key={project.id}
+              project={project}
+              client={keeper}
+              writesAllowed={writesAllowed}
+              compact
+              onNavigate={() => setKeeperOpen(false)}
+            />
+          </>
+        )}
+      </Dialog>
+    </>
   );
 }

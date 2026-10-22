@@ -21,10 +21,13 @@ drawer remain in their owning beads.
 
 The operator rows are `GET /projects/:id/keeper`,
 `POST /projects/:id/keeper/turns` and `POST /projects/:id/keeper/stop`.
+Private transcript reads and the body stream require the operator token,
+through the same runner that owns action authority. The model's separate
+project reader has no such token and cannot read transcripts.
 The existing runner owns same-origin, token, body validation, audit-before-effect
 ordering and envelopes. A page accepts only `after`, `limit` (1–100) and an
 optional UUID `requestId`; duplicated/unknown parameters are refused. Neither
-reads nor transcripts are stream collections. A send body is capped at 80,000
+reads nor transcripts are ledger stream collections. A send body is capped at 80,000
 bytes and its message at 16,384 characters. No model token or action tool exists
 at this boundary.
 
@@ -99,10 +102,44 @@ every new row in the common refusal/audit matrix. The hermetic hearth uses
 starts a real provider.
 
 Nonempty object context is refused until mention membership checks are connected;
-a path or arbitrary object id cannot grant knowledge. The renderer integration
-will display body frames in the shared full/drawer conversation with escaped
-Markdown, linked objects, read traces and honest context measurements. Those
-features are not counted as complete by these storage/API tests.
+a path or arbitrary object id cannot grant knowledge. The full conversation and
+drawer now share one app-root client. The remaining mention, proposal, brief and
+provider-switch features are not counted as complete by the renderer tests.
+
+## Shared renderer and private replay
+
+`GET /projects/:id/keeper/events` is an operator-authorized private body channel,
+separate from the page's one metadata ledger feed. It sends validated conversation
+pages of at most ten frames, with exact sequence cursors, latest 50 turn records
+and the retained last sequence. An ahead-of-history cursor is refused. Stored
+frames are published after writes; local change notifications wake observers and
+a bounded periodic read observes foreign writers. Slow readers stop further
+writes until their socket drains. Closing an observer never stops its provider.
+
+`createKeeperClient` owns per-project drafts and pending request identities at
+the app root. Full page and drawer use that same client and local conversation
+address. Switching projects closes the observer and releases its body cache;
+late callbacks cannot paint the new project. Reconnect uses the last validated
+sequence, has deadlines and finite retries, and never sends a provider request.
+Strict pure schemas are shared by the store and renderer. Gaps, conflicting
+duplicates, foreign addresses and malformed frames preserve partial text and
+require a fresh replay.
+
+An uncertain send keeps its original UUID, text and expected revision. A null
+lookup does not prove an in-flight request will never arrive. Explicit retry
+therefore submits that exact original identity; another message stays held until
+its receipt is confirmed. A receipt does not bypass replay: Send waits until the
+corresponding revision is observed. Stop remains pending until confirmed terminal
+state. Delayed reads or Stop replies cannot regress a newer replay.
+
+The reading column renders escaped Markdown elements (headings, lists, tables,
+code, safe web links), scoped read-trace links, source/time/completeness and
+reported/estimated/unknown context. The composer grows, Ctrl/Cmd+Enter sends,
+plain Enter adds a line, and scrolling away preserves position with Jump to
+latest. The shared native dialog traps focus and returns it on Escape. Minimum
+viewport, reduced motion, visible focus and inert hostile markup are exercised
+in the desktop browser suite. Recorded context fixtures are synthetic; no
+production occupancy measurement or allowance is invented.
 
 ## Restricted Claude transport
 

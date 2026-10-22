@@ -7,7 +7,14 @@ import {
 } from "../../conversations/store";
 import type { ConversationTransport } from "../../conversations/transport";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
-import type { ActionRoute, ReadRoute, RouteReply, RouteRequest } from "../api";
+import type {
+  ActionRoute,
+  ReadRoute,
+  RouteReply,
+  RouteRequest,
+  StreamRoute,
+} from "../api";
+import { createConversationFeed } from "../conversation-feed";
 import type { ValidationResult } from "../validate";
 import { bodyFields, fail, noParameters } from "./operator-reads";
 
@@ -45,7 +52,13 @@ export function conversationRoutes(
   root: string,
   transport: ConversationTransport = unavailable,
 ) {
-  const service = createConversationService({ home, root, transport });
+  const feed = createConversationFeed();
+  const service = createConversationService({
+    home,
+    root,
+    transport,
+    onChange: (update) => feed.changed(update.projectId),
+  });
   const address = (request: RouteRequest): ValidationResult<string> => {
     const id = request.params["id"];
     return isProjectId(id)
@@ -61,6 +74,7 @@ export function conversationRoutes(
     kind: "read",
     method: "GET",
     path: "/projects/:id/keeper",
+    operatorOnly: true,
     validate: (request) => {
       const id = address(request);
       if (!id.ok) return id;
@@ -141,5 +155,46 @@ export function conversationRoutes(
     effect: ({ id, requestId }) =>
       answer(200, () => service.stop(id, requestId)),
   };
-  return { read, send, stop, close: () => service.close() };
+  const events: StreamRoute<{ id: string; after: number }> = {
+    kind: "stream",
+    method: "GET",
+    path: "/projects/:id/keeper/events",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const params = noParameters(request);
+      if (!params.ok) return params;
+      const after = request.headers["last-event-id"] ?? "0";
+      if (
+        typeof after !== "string" ||
+        !/^\d+$/.test(after) ||
+        !Number.isSafeInteger(Number(after))
+      )
+        return fail("Expected a bounded conversation cursor.");
+      return { ok: true, value: { id: id.value, after: Number(after) } };
+    },
+    open: async ({ id, after }, req, res) => {
+      try {
+        return await feed.open(id, after, service.read, req, res);
+      } catch (error) {
+        if (
+          error instanceof ConversationError ||
+          error instanceof ProjectStoreError
+        )
+          return { status: error.status, error: error.message };
+        throw error;
+      }
+    },
+  };
+  return {
+    read,
+    send,
+    stop,
+    events,
+    close: async () => {
+      feed.close();
+      await service.close();
+    },
+  };
 }
