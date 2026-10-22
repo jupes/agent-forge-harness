@@ -1,0 +1,177 @@
+/** Hermetic provider stand-in: it invokes the real readonly MCP child, never a model. */
+
+import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+
+const args = process.argv.slice(2);
+const mode = process.env["KEEPER_FIXTURE_MODE"] ?? "normal";
+if (args.includes("--version")) {
+  process.stdout.write("2.1.296 (Claude Code fixture)\n");
+} else if (args.includes("--help")) {
+  process.stdout.write(
+    mode === "legacy"
+      ? "--print --output-format\n"
+      : "--print --input-format --output-format --verbose --include-partial-messages --model --effort --permission-mode --permission-prompts --tools --allowedTools --restricted --strict-mcp-config --mcp-config --setting-sources --settings --disable-slash-commands --no-chrome --append-system-prompt --resume\n",
+  );
+} else {
+  const prompt = await Bun.stdin.text();
+  const recordFile = process.env["KEEPER_FIXTURE_RECORD"];
+  const arg = (flag: string) => args[args.indexOf(flag) + 1];
+  let reader: StdioClientTransport | undefined;
+  let client: Client | undefined;
+  const id =
+    arg("--resume") && args.includes("--resume")
+      ? arg("--resume")
+      : randomUUID();
+  const emit = (packet: Record<string, unknown>) =>
+    process.stdout.write(JSON.stringify({ session_id: id, ...packet }) + "\n");
+  const stream = (event: Record<string, unknown>) =>
+    emit({ type: "stream_event", event });
+  try {
+    const raw: unknown = JSON.parse(arg("--mcp-config") ?? "null");
+    if (typeof raw !== "object" || raw === null || !("mcpServers" in raw))
+      throw new Error("missing config");
+    const config = raw.mcpServers;
+    if (typeof config !== "object" || config === null || !("keeper" in config))
+      throw new Error("missing reader");
+    const keeper = config.keeper;
+    if (
+      typeof keeper !== "object" ||
+      keeper === null ||
+      !("command" in keeper) ||
+      !("args" in keeper) ||
+      typeof keeper.command !== "string" ||
+      !Array.isArray(keeper.args) ||
+      keeper.args.some((value) => typeof value !== "string")
+    )
+      throw new Error("invalid reader");
+    reader = new StdioClientTransport({
+      command: keeper.command,
+      args: keeper.args,
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
+        ),
+      ),
+      stderr: "pipe",
+    });
+    client = new Client({ name: "keeper-fake-provider", version: "0" });
+    await client.connect(reader);
+    const tools = (await client.listTools()).tools.map(
+      (tool) => `mcp__keeper__${tool.name}`,
+    );
+    if (recordFile)
+      writeFileSync(
+        recordFile,
+        JSON.stringify({
+          args,
+          prompt,
+          home: process.env["AGENT_FORGE_HOME"],
+          adapter: process.env["AGENT_FORGE_ADAPTER"],
+          operatorSecretPresent:
+            process.env["TEST_OPERATOR_SECRET"] !== undefined,
+          readerPid: reader.pid,
+          tools,
+        }),
+      );
+    emit({
+      type: "system",
+      subtype: "init",
+      tools: mode === "bad-tool" ? [...tools, "Bash"] : tools,
+    });
+    stream({
+      type: "message_start",
+      message: { id: "read-message", model: "fixture-observed-model" },
+    });
+    stream({
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "read-1",
+        name: "mcp__keeper__read_project",
+        input: {},
+      },
+    });
+    emit({
+      type: "assistant",
+      message: {
+        id: "read-message",
+        model: "fixture-observed-model",
+        content: [
+          {
+            type: "tool_use",
+            id: "read-1",
+            name: "mcp__keeper__read_project",
+            input: { kind: "beads" },
+          },
+        ],
+      },
+    });
+    const answer = await client.callTool({
+      name: "read_project",
+      arguments: { kind: "beads" },
+    });
+    emit({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "read-1",
+            content: answer.content,
+            is_error: answer.isError === true,
+          },
+        ],
+      },
+    });
+    stream({
+      type: "message_start",
+      message: { id: "reply-message", model: "fixture-observed-model" },
+    });
+    stream({
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    });
+    // Split in the middle of a UTF-8 sequence to exercise the actual pipe decoder.
+    const line = Buffer.from(
+      JSON.stringify({
+        session_id: id,
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Scoped reply 🌱" },
+        },
+      }) + "\n",
+    );
+    const split = line.indexOf(Buffer.from("🌱")) + 1;
+    await Bun.write(Bun.stdout, line.subarray(0, split));
+    await Bun.write(Bun.stdout, line.subarray(split));
+    if (mode === "hang") await new Promise(() => {});
+    if (mode === "overflow") {
+      await Bun.write(Bun.stdout, "x".repeat(1_100_000));
+      await new Promise(() => {});
+    }
+    const complete = {
+      type: "assistant",
+      message: {
+        id: "reply-message",
+        model: "fixture-observed-model",
+        content: [{ type: "text", text: "Scoped reply 🌱" }],
+      },
+    };
+    emit(complete);
+    emit(complete);
+    stream({ type: "content_block_stop", index: 0 });
+    if (mode === "bad-identity")
+      emit({ type: "system", subtype: "status", session_id: randomUUID() });
+    if (mode !== "missing-terminal")
+      emit({ type: "result", subtype: "success", is_error: false });
+  } finally {
+    await client?.close();
+  }
+}

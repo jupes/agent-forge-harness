@@ -1,3 +1,5 @@
+import type { KeeperReadKind } from "./keeper";
+
 /** Transcript bodies belong to private session storage, never LedgerEventInput. */
 export interface ConversationObject {
   kind: "bead" | "session" | "run" | "event";
@@ -39,7 +41,33 @@ export interface ConversationBinding {
 export type ConversationEvent =
   | { kind: "user"; text: string; about: ConversationObject[] }
   | ({ kind: "identity" } & ConversationBinding)
-  | { kind: "text"; text: string };
+  | { kind: "text"; text: string; messageId?: string | undefined }
+  | {
+      kind: "process";
+      pid: number;
+      smith: string;
+      requestedModel: string;
+      requestedEffort: string;
+    }
+  | { kind: "model"; model: string }
+  | {
+      kind: "read";
+      query: KeeperReadKind;
+      source: string;
+      asOf: string;
+      complete: boolean;
+      reason: string | null;
+      ids: string[];
+      nextCursor: number | null;
+    }
+  | {
+      kind: "context";
+      used: number | null;
+      capacity: number | null;
+      basis: "reported" | "estimated" | "unknown";
+      source: string;
+      asOf: string;
+    };
 
 export interface ConversationFrame {
   seq: number;

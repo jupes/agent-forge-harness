@@ -10,7 +10,11 @@ import type { ProjectRecord } from "../../types/projects";
 export interface ConversationTransport {
   provider: ConversationBinding["provider"];
   /** Read-only capability check; it must never start a model turn. */
-  check?(): Promise<void>;
+  check?(request: {
+    project: ProjectRecord;
+    root: string;
+    resume: ConversationBinding | null;
+  }): Promise<void>;
   /** Settles only after the supervised process tree stops, including on error/abort. */
   run(
     request: {

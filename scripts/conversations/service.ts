@@ -181,7 +181,11 @@ export function createConversationService(options: ConversationOptions) {
           400,
           "Object context requires the project-scoped reader. No turn was accepted.",
         );
-      await options.transport.check?.();
+      await options.transport.check?.({
+        project,
+        root: options.root,
+        resume: current.binding,
+      });
       if (closed)
         throw new ConversationError(
           503,

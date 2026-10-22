@@ -21,6 +21,9 @@ export interface SuperviseOptions {
   stdin?: string | undefined;
   timeoutMs?: number | undefined;
   onLine: (line: string) => void;
+  /** Optional protocol bound, including output that never sends a newline. */
+  maxLineBytes?: number;
+  onOutputError?: () => void;
 }
 
 export interface Supervised {
@@ -123,6 +126,7 @@ function hookParentExit(): void {
 async function pumpLines(
   stream: ReadableStream<Uint8Array>,
   onLine: (line: string) => void,
+  maxLineBytes?: number,
 ): Promise<void> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
@@ -131,8 +135,12 @@ async function pumpLines(
     const parts = buffer.split(/\r?\n/);
     buffer = final ? "" : (parts.pop() ?? "");
     for (const part of parts) {
+      if (maxLineBytes !== undefined && Buffer.byteLength(part) > maxLineBytes)
+        throw new Error("Child output exceeded its protocol bound.");
       if (part.trim()) onLine(part);
     }
+    if (maxLineBytes !== undefined && Buffer.byteLength(buffer) > maxLineBytes)
+      throw new Error("Child output exceeded its protocol bound.");
   };
   while (true) {
     const { done, value } = await reader.read();
@@ -189,7 +197,15 @@ export function supervise(options: SuperviseOptions): Supervised {
   if (options.stdin !== undefined) proc.stdin.write(options.stdin);
   proc.stdin.end();
 
-  const pumped = pumpLines(proc.stdout, options.onLine);
+  const pumped = pumpLines(
+    proc.stdout,
+    options.onLine,
+    options.maxLineBytes,
+  ).catch(() => {
+    // A broken output protocol must not leave a producer blocked on its pipe.
+    kill();
+    options.onOutputError?.();
+  });
   const stderrTail = readTail(proc.stderr, STDERR_TAIL_CHARS).catch(() => "");
   const done = (async (): Promise<ChildExit> => {
     try {

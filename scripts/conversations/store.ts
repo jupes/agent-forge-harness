@@ -89,7 +89,60 @@ const eventSchema: z.ZodType<ConversationEvent> = z.discriminatedUnion("kind", [
     .strict(),
   binding.extend({ kind: z.literal("identity") }).strict(),
   z
-    .object({ kind: z.literal("text"), text: z.string().min(1).max(16_384) })
+    .object({
+      kind: z.literal("text"),
+      text: z.string().min(1).max(16_384),
+      messageId: z.string().min(1).max(200).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("process"),
+      pid: z.number().int().positive(),
+      smith: z.string().min(1).max(200),
+      requestedModel: z.string().min(1).max(200),
+      requestedEffort: z.string().min(1).max(100),
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal("model"), model: z.string().min(1).max(200) })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("read"),
+      query: z.enum(["beads", "queue", "sessions", "runs", "activity"]),
+      source: z.string().max(200),
+      asOf: z.iso.datetime(),
+      complete: z.boolean(),
+      reason: z.string().max(8000).nullable(),
+      ids: z.array(z.string().max(200)).max(100),
+      nextCursor: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(Number.MAX_SAFE_INTEGER - 1)
+        .nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("context"),
+      used: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(Number.MAX_SAFE_INTEGER - 1)
+        .nullable(),
+      capacity: z
+        .number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER - 1)
+        .nullable(),
+      basis: z.enum(["reported", "estimated", "unknown"]),
+      source: z.string().max(200),
+      asOf: z.iso.datetime(),
+    })
     .strict(),
 ]);
 const turn = z

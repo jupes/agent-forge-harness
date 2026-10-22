@@ -1,8 +1,9 @@
-# Standing conversation foundation
+# Standing Keeper conversation
 
 This implements the persistence/dispatch boundary of the standing Keeper in
-decision 21–22 at `7e41bba`. The complete Keeper screen, restricted real provider
-transport, project tools, briefs and shared drawer remain in their owning beads.
+decision 21–22 at `7e41bba`, plus the restricted Claude streaming transport and
+project reader. The complete Keeper screen, briefs, action cards and shared
+drawer remain in their owning beads.
 
 ## Public surface
 
@@ -28,7 +29,8 @@ bytes and its message at 16,384 characters. No model token or action tool exists
 at this boundary.
 
 `types/conversation.ts` is separate from `LedgerEventInput`. Frames currently
-hold user messages, provider identity and assistant text. `ConversationTransport`
+hold user messages, provider identity, assistant text, actual process/configured
+smith, observed model, read traces and context provenance. `ConversationTransport`
 in `scripts/conversations/transport.ts` supplies the private body channel and
 must settle only after its supervised process tree terminates, including on
 error/abort. It receives the exact observed resume identity. No universal
@@ -96,10 +98,74 @@ every new row in the common refusal/audit matrix. The hermetic hearth uses
 `fakeConversationTransport()` from `scripts/conversations/testing.ts` and never
 starts a real provider.
 
-Production transport is explicitly unavailable in this foundation checkpoint.
-Nonempty object context is refused until project-bound membership checks are
-connected; a path or arbitrary object id cannot grant knowledge. The next
-integration supplies the restricted CLI transport and scoped read results,
-then renders body frames in the shared full/drawer conversation with escaped
+Nonempty object context is refused until mention membership checks are connected;
+a path or arbitrary object id cannot grant knowledge. The renderer integration
+will display body frames in the shared full/drawer conversation with escaped
 Markdown, linked objects, read traces and honest context measurements. Those
 features are not counted as complete by these storage/API tests.
+
+## Restricted Claude transport
+
+The hearth supplies `createClaudeConversationTransport` by default. The configured
+default crew must be an enabled Claude smith; another provider or an unsupported
+CLI is explicitly unavailable, without selecting a fallback. Before admission,
+bounded, supervised `--version` and `--help` probes check required capabilities
+without starting a model. Dispatch checks again and uses the actual observed
+session UUID with `--resume`; there is no latest-session, fork or resend fallback.
+
+The prompt and user-controlled project text travel as JSON on stdin, never argv.
+Argument arrays use `--restricted`, manual permissions with prompts denied,
+`--tools ""`, an exact `--allowedTools mcp__keeper__read_project`, and a strict MCP
+configuration containing only the sealed reader. Skills and Chrome integration
+are disabled; user/project setting sources are empty and `disableAllHooks` is
+requested. Administrator-managed policy remains authoritative. An unexpected
+advertised or invoked tool interrupts the stream and leaves completion unknown.
+
+The child receives the executor's environment allowlist plus explicit app home
+and adapter marker. All inherited harness correlation variables are removed;
+any environment value containing the live operator token is removed even when
+explicitly allowlisted. The model receives no operator token or action tool.
+Windows requires a native executable, avoiding command-shell shim quoting.
+
+The line decoder preserves split UTF-8 and bounds packets, including an output
+producer that never sends a newline. The parser tracks each message's content
+blocks, reconciles full assistant packets with partial text, deduplicates packet
+UUIDs and omits thinking content. Read traces contain ids, source/time,
+completeness and cursor, without duplicating source bodies. Context occupancy is
+explicitly unknown when the CLI supplies no measurement; usage totals are not
+treated as occupancy or provider allowance. Pending transcript writes are
+serialized and bounded. Protocol/storage failures stop the supervised tree;
+accepted partial frames remain private. Completion requires matching identity,
+the restricted profile, a successful terminal result and exit zero. A timeout,
+missing terminal or identity fork cannot claim completion.
+
+The source reader is a Bun entry point. The packaged hearth explicitly launches
+itself in `--keeper-reader` mode, so installed apps do not depend on source paths.
+`scripts/keeper/verify-reader.ts` checks either runtime against a private fake
+hearth. The Windows smoke includes that check before opening the shell.
+
+Installed Claude Code **2.1.296** was checked with help/version only on Windows.
+No live model, paid request or authentication probe was made. Fake CLI tests
+exercise actual pipes, MCP, hearth reads, persistence, resume and process-tree
+termination; they prove that plumbing, not a successful live-provider turn.
+The stream mapping follows the provider's [streaming reference](https://code.claude.com/docs/en/agent-sdk/streaming-output)
+and [CLI reference](https://code.claude.com/docs/en/cli-reference).
+
+## Project reader
+
+`GET /projects/:id/keeper/read` supports only `beads`, `queue`, `sessions`,
+`runs` and `activity`, with an optional id or bounded cursor/page size. Bead
+indexes omit descriptions; an id requests details. Exact workspace, saved epic
+ancestry and the exact project label jointly control membership. A reused
+session id never grants foreign event access. Each activity event needs its own
+workspace and member-bead binding. Checkout-only run observation, unavailable
+sources, truncation and pagination are explicit.
+
+One MCP tool, `read_project`, wraps that row over a direct literal-loopback
+connection. Its launch seals the hearth origin and project UUID; model arguments
+cannot change either, supply paths or request actions. Replies are checked for
+matching scope/kind/mode/ids before their bodies are returned. Foreign or malformed
+responses produce generic errors without echoing their content. Every response
+is bounded to 48,000 bytes, including Unicode scope metadata. This reader is a
+separate profile from the general hearth MCP server and exposes none of its
+operator tools.

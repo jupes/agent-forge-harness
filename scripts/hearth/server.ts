@@ -31,6 +31,7 @@ import { createCouncilService } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { ownInterrupts } from "../executors/supervisor";
 import { isMain } from "../is-main";
+import { createClaudeConversationTransport } from "../keeper/claude-transport";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
@@ -90,6 +91,8 @@ export interface HearthOptions {
   home?: string;
   /** Where `councils/` lives; defaults to `root` (the harness checkout). */
   harnessRoot?: string;
+  /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
+  keeperReaderCommand?: readonly string[];
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -321,7 +324,26 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   const table = operatorRoutes({
     projectHome: home,
-    conversationTransport: options.api?.conversationTransport,
+    conversationTransport:
+      options.api?.conversationTransport ??
+      createClaudeConversationTransport({
+        root,
+        home,
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        origin: () => {
+          const address = server.address();
+          if (!address || typeof address === "string")
+            throw new Error("The hearth is not listening.");
+          return `http://127.0.0.1:${address.port}`;
+        },
+        operatorToken: expectedToken,
+        readerCommand: options.keeperReaderCommand ?? [
+          process.execPath,
+          resolve(import.meta.dir, "../keeper/reader-entry.ts"),
+        ],
+      }),
     root,
     workspace,
     ledgerPath: ledgerFile,
@@ -540,7 +562,10 @@ function argValue(argv: string[], flag: string): string | undefined {
   return index >= 0 ? argv[index + 1] : undefined;
 }
 
-async function main(argv: string[]): Promise<void> {
+async function main(
+  argv: string[],
+  keeperReaderCommand?: readonly string[],
+): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
   // Loaded here, not at the top: `createHearth` records council runs only when
@@ -548,6 +573,7 @@ async function main(argv: string[]): Promise<void> {
   const { operatorCouncilLedger } = await import("../council/ledger-wiring");
   const hearth = await createHearth({
     root,
+    ...(keeperReaderCommand ? { keeperReaderCommand } : {}),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
@@ -593,9 +619,12 @@ export function closeOnSignal(
   });
 }
 
-export async function runHearthServer(argv: string[]): Promise<void> {
+export async function runHearthServer(
+  argv: string[],
+  keeperReaderCommand?: readonly string[],
+): Promise<void> {
   try {
-    await main(argv);
+    await main(argv, keeperReaderCommand);
   } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,

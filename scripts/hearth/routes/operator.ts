@@ -40,6 +40,7 @@ import { beadRoutes } from "./beads";
 import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
+import { keeperReadRoute } from "./keeper-read";
 import {
   beadsReads,
   fail,
@@ -377,6 +378,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
+    keeperReadRoute(deps, projectSnapshot),
     conversations.read,
   ];
 

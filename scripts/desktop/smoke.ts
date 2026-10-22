@@ -21,6 +21,7 @@ import {
 } from "node:path";
 import { OPERATOR_HEADER } from "../hearth/paths";
 import { isMain } from "../is-main";
+import { verifyKeeperReader } from "../keeper/verify-reader";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { ledgerPath } from "../ledger/paths";
@@ -103,6 +104,8 @@ async function main(): Promise<void> {
     throw new Error("Desktop smoke requires Windows.");
   if (!existsSync(executable))
     throw new Error("Build the Windows release stage before running smoke.");
+
+  await verifyKeeperReader([join(stage, "hearth.exe"), "--keeper-reader"]);
 
   const temp = mkdtempSync(join(tmpdir(), "agent-forge-desktop-smoke-"));
   const desktopSmokeHome = resolve(temp, "home");
@@ -637,6 +640,7 @@ async function main(): Promise<void> {
           projectOverviewTested: true,
           projectSessionsTested: true,
           trackerStandInTested: true,
+          packagedKeeperReaderTested: true,
           focusOutline,
           childrenStopped: true,
         },
