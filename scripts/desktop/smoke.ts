@@ -18,7 +18,9 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { OPERATOR_HEADER } from "../hearth/paths";
 import { isMain } from "../is-main";
+import { createProjectStore } from "../projects/store";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");
@@ -106,6 +108,22 @@ async function main(): Promise<void> {
   mkdirSync(fakeBin);
   mkdirSync(runner);
   mkdirSync(join(fixtureRoot, ".git"), { recursive: true });
+  await createProjectStore(desktopSmokeHome).create(
+    {
+      slug: "native-fixture",
+      name: "Native fixture",
+      description: "Private catalog verification",
+      icon: "N",
+      workspaces: [
+        {
+          root: fixtureRoot,
+          repositories: [fixtureRoot],
+          epicIds: ["fixture-epic"],
+        },
+      ],
+    },
+    0,
+  );
   mkdirSync(join(fixtureRoot, "scripts", "hearth"), { recursive: true });
   writeFileSync(
     join(fixtureRoot, "scripts", "hearth", "server.ts"),
@@ -280,6 +298,27 @@ async function main(): Promise<void> {
       );
     if (cspErrors > 0)
       throw new Error("WebView reported a blocked dashboard script.");
+    if (
+      !(await evaluate(
+        socket,
+        `(async () => {
+      const read = async () => { const r = await fetch('/__agent-forge/projects', {signal:AbortSignal.timeout(5000)}); const e = await r.json(); if (!r.ok || !e.ok) throw Error('Catalog read failed'); return e.data; };
+      const catalog = await read();
+      const project = catalog.projects.find(p => p.slug === 'native-fixture');
+      if (catalog.version !== 1 || catalog.revision !== 1 || !project || project.pinned) return false;
+      const tokenResponse = await fetch(${JSON.stringify(tokenPath)}, {headers:{${JSON.stringify(sessionKeyHeader)}:localStorage.getItem(${JSON.stringify(sessionKeyName)})},signal:AbortSignal.timeout(5000)});
+      const token = await tokenResponse.json();
+      if (!tokenResponse.ok || !token.ok) return false;
+      const r = await fetch('/__agent-forge/projects/' + project.id + '/preferences', {method:'POST',headers:{'Content-Type':'application/json',${JSON.stringify(OPERATOR_HEADER)}:token.data.token},body:JSON.stringify({revision:catalog.revision,pinned:true}),signal:AbortSignal.timeout(5000)});
+      const changed = await r.json();
+      const confirmed = await read();
+      return r.ok && changed.ok && changed.data.revision === 2 && confirmed.revision === 2 && confirmed.projects.find(p => p.id === project.id)?.pinned === true;
+    })()`,
+      ))
+    )
+      throw new Error(
+        "The packaged hearth did not confirm and persist project preferences.",
+      );
     const screenshot = await cdp(socket, "Page.captureScreenshot", {
       format: "png",
       captureBeyondViewport: false,
@@ -465,6 +504,7 @@ async function main(): Promise<void> {
           secondWindowHandoffTested: true,
           frameTargetsTested: true,
           frameFocusOutlineTested: true,
+          projectCatalogTested: true,
           focusOutline,
           childrenStopped: true,
         },

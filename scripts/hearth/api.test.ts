@@ -25,6 +25,8 @@ import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { createProjectStore, projectCatalogPath } from "../projects/store";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { queueTracker } from "../scheduler/queue-fixture";
 import {
   readShiftRecord,
@@ -48,7 +50,7 @@ import {
   type TestHearth,
   type TestHearthOptions,
 } from "./testing";
-import { readToken } from "./token";
+import { readToken, writeOwnerOnly } from "./token";
 import { validateOperatorEnvelope } from "./validate";
 
 const open: TestHearth[] = [];
@@ -386,6 +388,30 @@ function queueMove(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/preferences": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/preferences`,
+      body: { revision: 1, pinned: true },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/preferences`,
+      body: { revision: 1, pinned: "yes" },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.root)),
+      );
+    },
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [{ id: FIXTURE_PROJECT_ID, pinned: true }],
+      });
+    },
+  },
   // A child that inherited its parent's label: in no state, so propose takes it in.
   "POST /queue/:id/propose": {
     valid: {
@@ -822,6 +848,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects": "/projects",
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",
   "GET /runs/:slug": "/runs/demo",

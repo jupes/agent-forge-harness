@@ -317,6 +317,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     now: options.api?.shiftNow,
   });
   const table = operatorRoutes({
+    projectHome: home,
     root,
     workspace,
     ledgerPath: ledgerFile,

@@ -180,8 +180,10 @@ provide shared provider names, monograms and grouped status glyphs. The header
 and banner subscribe to the existing `useDesktopRecovery()` controller; routes
 never own the shared stream.
 
-Project persistence and the destination screens belong to later beads. Until
-those producers are connected, `DesktopApp` supplies no project and honest
+The [project contract](docs/project-contract.md) defines the private versioned
+catalog, explicit scope selector and audited preference routes. Connecting it
+to Projects home and the destination screens belongs to later checkpoints.
+Until those producers are connected, `DesktopApp` supplies no project and honest
 unavailable destinations. It does not invent project records, sessions, usage,
 inbox counts or an empty provider allowance. Search and New session are visibly
 unavailable. A later project switch must clear a selection from the old project

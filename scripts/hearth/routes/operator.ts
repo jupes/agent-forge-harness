@@ -49,12 +49,15 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
 import { shiftRoutes } from "./shifts";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  /** Machine-private home; the project catalog is shared above workspaces. */
+  projectHome: string;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
   appendEvent(event: LedgerEventInput): AppendResult;
@@ -342,6 +345,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { queue, smiths, config, worktrees, eligibility } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
+  const { projects, preferences } = projectRoutes(deps.projectHome);
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -356,6 +360,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     eligibility,
     counts,
     scoreboard,
+    projects,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -389,6 +394,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...reads,
       stream,
       ...actions(deps),
+      preferences,
       ...beadRoutes({
         workspace,
         runBd: deps.runBd,
