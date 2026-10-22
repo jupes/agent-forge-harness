@@ -47,6 +47,12 @@ authorized session after reconnect, disabled stale workspace controls,
 blocked retired origins, and clean child shutdown. It does not call a paid
 provider or alter the repository's Beads data.
 
+It also opens two windows on one isolated checkout/home and verifies the same
+hearth pid survives the former owner's normal close, the last owner's close
+stops it, and reopening refreshes the launch session. The hearth has a detached
+OS lifetime; its current supervisor's trusted ownership check controls shutdown,
+so it can outlive the window that originally launched it.
+
 If the host stops after startup, a native dialog explains that displayed data
 may be old and workspace actions are unavailable. The workspace window stays
 disabled until recovery completes. Retry reloads the same checkout through a
@@ -191,3 +197,7 @@ and native crash checks run in that same app and still require clean shutdown.
 ![Wide desktop frame with no project selected](docs/native-frame-1440.png)
 
 ![Minimum desktop frame with an unavailable project and collapsed inspector](docs/native-frame-1100.png)
+
+The [Windows shell review packet](docs/windows-shell-review.md) separates actual
+packaged checks from the remaining human checkpoint. Automated results do not
+self-certify the HITL review.

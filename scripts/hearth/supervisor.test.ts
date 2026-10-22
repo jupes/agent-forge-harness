@@ -223,6 +223,30 @@ test("a second supervisor adopts the live hearth, and the old one then leaves it
   await second.stopIfOwner();
 }, 30_000);
 
+test("a hearth survives its launching supervisor process exiting so another window can adopt it", async () => {
+  const { home, root, make, lock } = fixture();
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  await printedBy(
+    `
+    import { createSupervisor } from ${SUPERVISOR};
+    const supervisor = createSupervisor({root:${JSON.stringify(root)},home:${JSON.stringify(home)},id:'departing-window',command:[process.execPath,'-e',${JSON.stringify(FAKE_LAUNCHER)},'handoff-fixture']});
+    const port=await supervisor.ensure();
+    process.stdout.write(JSON.stringify({port}));
+  `,
+    env,
+  );
+  const pid = lock()?.pid ?? 0;
+  expect(isPidAlive(pid)).toBe(true);
+  const remaining = make("remaining-window");
+  await remaining.ensure();
+  expect(lock()?.pid).toBe(pid);
+  expect(lock()?.supervisor).toBe("remaining-window");
+}, 30_000);
+
 test("respawns on the same port when the hearth was stopped underneath it", async () => {
   const { make, lock } = fixture();
   const first = make("first");

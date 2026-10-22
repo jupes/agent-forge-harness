@@ -148,6 +148,9 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
       },
       stdio: "ignore",
       windowsHide: true,
+      // Ownership can move to another window. On Windows unref alone still
+      // ends this child with its launching host; detach its OS lifetime too.
+      detached: true,
     });
     let failed: Error | null = null;
     child.once("error", (error) => {

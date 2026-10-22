@@ -144,11 +144,15 @@ async function main(): Promise<void> {
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     WEBVIEW2_USER_DATA_FOLDER: join(temp, "webview-profile"),
   };
-  const launch = (args: string[] = [], cwd = runner) =>
+  const launch = (
+    args: string[] = [],
+    cwd = runner,
+    overrides: Record<string, string> = {},
+  ) =>
     Bun.spawn({
       cmd: [join(runner, "agent-forge-desktop.exe"), ...args],
       cwd,
-      env,
+      env: { ...env, ...overrides },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -188,6 +192,9 @@ async function main(): Promise<void> {
   let cspErrors = 0;
   let smokeError: Error | undefined;
   let failureScreenshot: string | undefined;
+  let focusOutline:
+    | { specifiedCssPx: number; computedCssPx: number }
+    | undefined;
 
   try {
     await waitForMainWindow(
@@ -289,7 +296,7 @@ async function main(): Promise<void> {
     mkdirSync(resolve(screenshotPath, ".."), { recursive: true });
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, "base64"));
 
-    await verifyConnectionRecovery(socket);
+    focusOutline = await verifyConnectionRecovery(socket);
     await verifyDesktopFrame(socket);
     // Hearth recovery keeps the host and window, but replaces the child hearth.
     processTree = await captureProcessTree(appProcess.pid);
@@ -372,6 +379,7 @@ async function main(): Promise<void> {
     await waitForCapturedChildrenGone(processTree);
     socket.close();
     socket = undefined;
+    await verifyNativeWindowHandoff(launch, runner, fixtureRoot, temp);
   } catch (error: unknown) {
     smokeError =
       error instanceof Error ? error : new Error("Desktop smoke failed.");
@@ -452,6 +460,12 @@ async function main(): Promise<void> {
           inspectorCollapseTested: true,
           frameKeyboardTested: true,
           frameTextContrastTested: true,
+          normalWindowCloseTested: true,
+          reopenWindowTested: true,
+          secondWindowHandoffTested: true,
+          frameTargetsTested: true,
+          frameFocusOutlineTested: true,
+          focusOutline,
           childrenStopped: true,
         },
         error: null,
@@ -461,7 +475,9 @@ async function main(): Promise<void> {
 }
 
 /** The real packaged page and restart route, with only failure/health answers controlled. */
-async function verifyConnectionRecovery(socket: WebSocket): Promise<void> {
+async function verifyConnectionRecovery(
+  socket: WebSocket,
+): Promise<{ specifiedCssPx: number; computedCssPx: number }> {
   const interception = await cdp(
     socket,
     "Page.addScriptToEvaluateOnNewDocument",
@@ -541,14 +557,29 @@ async function verifyConnectionRecovery(socket: WebSocket): Promise<void> {
     windowsVirtualKeyCode: 9,
   });
   await evaluate(socket, `${restart}.focus()`);
+  const focusEvidence = await evaluate(
+    socket,
+    `(() => {const button=${restart};const box=button.getBoundingClientRect();const style=getComputedStyle(button);const declared=[...document.styleSheets].flatMap(sheet=>[...sheet.cssRules]).filter(rule=>rule.selectorText === ':focus-visible').map(rule=>Number.parseFloat(rule.style.getPropertyValue('outline-width') || rule.style.getPropertyValue('outline')));return {visible:button.matches(':focus-visible'),outline:style.outlineStyle,width:Number.parseFloat(style.outlineWidth),specified:declared.at(-1),height:box.height,right:box.right,left:box.left,viewport:innerWidth,animations:${banner}.getAnimations({subtree:true}).length,dpr:devicePixelRatio}})()`,
+  );
+  const focus = asRecord(focusEvidence);
   if (
-    !(await evaluate(
-      socket,
-      `(() => {const button=${restart};const box=button.getBoundingClientRect();return button.matches(':focus-visible') && getComputedStyle(button).outlineStyle !== 'none' && box.height >= 24 && box.right <= innerWidth && box.left >= 0 && ${banner}.getAnimations({subtree:true}).length === 0})()`,
-    ))
+    !focus ||
+    focus.visible !== true ||
+    focus.outline === "none" ||
+    focus.specified !== 2 ||
+    typeof focus.width !== "number" ||
+    focus.width <= 0 ||
+    typeof focus.height !== "number" ||
+    focus.height < 24 ||
+    typeof focus.right !== "number" ||
+    typeof focus.viewport !== "number" ||
+    focus.right > focus.viewport ||
+    typeof focus.left !== "number" ||
+    focus.left < 0 ||
+    focus.animations !== 0
   )
     throw new Error(
-      "Recovery focus, hit target, minimum viewport or reduced motion failed",
+      `Recovery focus, hit target, minimum viewport or reduced motion failed: ${JSON.stringify(focusEvidence)}`,
     );
   await saveConnectionShot(socket, "native-connection-stopped.png");
   const priorSession = await sessionFingerprint(socket);
@@ -626,6 +657,128 @@ async function verifyConnectionRecovery(socket: WebSocket): Promise<void> {
     identifier: interception.identifier,
   });
   await evaluate(socket, "window.__connectionSmoke.restore()");
+  return { specifiedCssPx: 2, computedCssPx: Number(focus.width) };
+}
+
+async function verifyNativeWindowHandoff(
+  launch: (
+    args: string[],
+    cwd: string,
+    overrides: Record<string, string>,
+  ) => Bun.Subprocess,
+  runner: string,
+  checkout: string,
+  temp: string,
+): Promise<void> {
+  const processes: Bun.Subprocess[] = [];
+  const sockets: WebSocket[] = [];
+  const trees: ProcessTree[] = [];
+  const start = async (profile: string, needsChildHearth: boolean) => {
+    const port = await availablePort();
+    const child = launch(["--root", checkout], runner, {
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      WEBVIEW2_USER_DATA_FOLDER: join(temp, profile),
+    });
+    processes.push(child);
+    await waitForMainWindow(child.pid, child);
+    const tree = await captureProcessTree(child.pid, needsChildHearth);
+    trees.push(tree);
+    const target = await waitForTarget(port, child);
+    const socket = await openCdp(target.webSocketDebuggerUrl);
+    sockets.push(socket);
+    await cdpEnable(socket);
+    const deadline = Date.now() + waitLimitMs;
+    let healthy = false;
+    while (Date.now() < deadline) {
+      const checks = await readChecks(socket, `${basename(temp)}/checkout`);
+      if (allChecksPassed(checks)) {
+        healthy = true;
+        break;
+      }
+      await delay(100);
+    }
+    if (!healthy)
+      throw new Error(
+        "A review window did not establish its isolated authorized connection",
+      );
+    return {
+      child,
+      tree,
+      socket,
+      session: await sessionFingerprint(socket),
+      hearthPid: await pageHearthPid(socket),
+    };
+  };
+  const close = async (child: Bun.Subprocess): Promise<void> => {
+    await closeMainWindow(child.pid);
+    await waitForAppExit(child);
+    if (child.exitCode !== 0)
+      throw new Error("Normal native window close did not exit successfully");
+  };
+  try {
+    const first = await start("window-handoff-first", true);
+    const second = await start("window-handoff-second", false);
+    if (first.hearthPid !== second.hearthPid)
+      throw new Error(
+        "Two windows started duplicate hearths for the same checkout",
+      );
+    await close(first.child);
+    await waitForCapturedChildrenGone({
+      children: first.tree.children.filter(
+        (child) => basename(child.path).toLowerCase() !== "hearth.exe",
+      ),
+    });
+    if ((await pageHearthPid(second.socket)) !== first.hearthPid)
+      throw new Error(
+        "Closing the former owner stopped the second window's hearth",
+      );
+    const stillConnected = await readChecks(
+      second.socket,
+      `${basename(temp)}/checkout`,
+    );
+    if (!allChecksPassed(stillConnected))
+      throw new Error(
+        "The remaining window lost its session after the former owner closed",
+      );
+    await close(second.child);
+    await waitForCapturedChildrenGone({
+      children: trees.flatMap((tree) => tree.children),
+    });
+    const reopened = await start("window-handoff-second", true);
+    if (reopened.session === second.session)
+      throw new Error(
+        "Reopening the desktop did not refresh its launch session",
+      );
+    await close(reopened.child);
+    await waitForCapturedChildrenGone({ children: reopened.tree.children });
+  } finally {
+    for (const socket of sockets) socket.close();
+    for (const child of processes) {
+      if (child.exitCode === null) {
+        await closeMainWindow(child.pid).catch(() => {});
+        await Promise.race([child.exited, delay(8_000)]);
+      }
+      if (child.exitCode === null) child.kill();
+    }
+    for (const tree of trees) await stopCapturedChildren(tree);
+    await waitForCapturedChildrenGone({
+      children: trees.flatMap((tree) => tree.children),
+    });
+  }
+}
+
+async function pageHearthPid(socket: WebSocket): Promise<number> {
+  const result = await cdp(socket, "Runtime.evaluate", {
+    expression: `(async () => {const response=await fetch('/__agent-forge/health', {signal:AbortSignal.timeout(2500)});const answer=await response.json();return response.ok && answer.ok === true ? answer.data?.pid : null})()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  const pid = asRecord(result.result)?.value;
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
+    throw new Error(
+      "The native review could not verify its hearth process identity",
+    );
+  return pid;
 }
 
 async function verifyDesktopFrame(socket: WebSocket): Promise<void> {
@@ -690,10 +843,19 @@ async function verifyDesktopFrame(socket: WebSocket): Promise<void> {
     if (
       !(await evaluate(
         socket,
+        `(() => {const targets=[...document.querySelectorAll('.af-desktop-frame a[href],.af-desktop-frame button:not([disabled])')].map(node=>node.getBoundingClientRect()).filter(box=>box.width>0&&box.height>0&&box.right>0&&box.bottom>0);return targets.length>5&&targets.every(box=>box.width>=24&&box.height>=24)})()`,
+      ))
+    )
+      throw new Error(
+        "A visible desktop control is smaller than its 24px target",
+      );
+    if (
+      !(await evaluate(
+        socket,
         `(() => {
       const channels = value => value.match(/[\\d.]+/g).slice(0,3).map(Number);
       const light = rgb => rgb.map(n => { const c=n/255; return c<=0.04045?c/12.92:((c+0.055)/1.055)**2.4; }).reduce((sum,n,i)=>sum+n*[0.2126,0.7152,0.0722][i],0);
-      return [...document.querySelectorAll('.af-desktop-frame .af-empty-hint,.af-desktop-breadcrumb')].every(node => {
+      return [...document.querySelectorAll('.af-desktop-frame .af-empty-hint,.af-desktop-breadcrumb,.af-desktop-content-header .af-btn')].every(node => {
         const foreground=light(channels(getComputedStyle(node).color));
         let surface=node; while(surface && getComputedStyle(surface).backgroundColor === 'rgba(0, 0, 0, 0)') surface=surface.parentElement;
         if(!surface) return false;
@@ -790,7 +952,7 @@ async function verifyDesktopFrame(socket: WebSocket): Promise<void> {
       if (
         !(await evaluate(
           socket,
-          "document.activeElement.matches(':focus-visible') && getComputedStyle(document.activeElement).outlineStyle !== 'none'",
+          "document.activeElement.matches(':focus-visible') && getComputedStyle(document.activeElement).outlineStyle !== 'none' && Number.parseFloat(getComputedStyle(document.activeElement).outlineWidth) > 0",
         ))
       )
         throw new Error("A rail destination lost its visible keyboard focus");
@@ -1385,7 +1547,10 @@ function assertWithin(base: string, target: string): void {
   }
 }
 
-async function captureProcessTree(rootPid: number): Promise<ProcessTree> {
+async function captureProcessTree(
+  rootPid: number,
+  needsChildHearth = true,
+): Promise<ProcessTree> {
   const script = `
     $all = @(Get-CimInstance Win32_Process)
     $root = $all | Where-Object { $_.ProcessId -eq ${rootPid} -and [System.IO.Path]::GetFileName($_.ExecutablePath) -eq 'agent-forge-desktop.exe' } | Select-Object -First 1
@@ -1442,9 +1607,10 @@ async function captureProcessTree(rootPid: number): Promise<ProcessTree> {
     !children.some(
       (child) => basename(child.path).toLowerCase() === "desktop-host.exe",
     ) ||
-    !children.some(
-      (child) => basename(child.path).toLowerCase() === "hearth.exe",
-    )
+    (needsChildHearth &&
+      !children.some(
+        (child) => basename(child.path).toLowerCase() === "hearth.exe",
+      ))
   ) {
     throw new Error("The smoke did not capture both native host processes.");
   }
