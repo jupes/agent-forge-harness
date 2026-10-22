@@ -1889,6 +1889,38 @@ async function captureProcessTree(
   rootPid: number,
   needsChildHearth = true,
 ): Promise<ProcessTree> {
+  const deadline = Date.now() + waitLimitMs;
+  let observedRoot: ProcessIdentity | undefined;
+  while (true) {
+    const tree = await readProcessTree(rootPid);
+    if (
+      observedRoot &&
+      (tree.root.created !== observedRoot.created ||
+        tree.root.path !== observedRoot.path)
+    )
+      throw new Error("The native process identity changed during startup.");
+    observedRoot = tree.root;
+    const names = new Set(
+      tree.children.map((child) => basename(child.path).toLowerCase()),
+    );
+    if (
+      names.has("desktop-host.exe") &&
+      (!needsChildHearth || names.has("hearth.exe"))
+    )
+      return tree;
+    if (Date.now() >= deadline)
+      throw new Error(
+        "The smoke did not observe the required native host processes before its startup deadline.",
+      );
+    // A visible window can precede the sidecar spawn. Observe actual readiness
+    // within the existing deadline, retaining PID/creation/path ownership fences.
+    await delay(100);
+  }
+}
+
+async function readProcessTree(
+  rootPid: number,
+): Promise<ProcessTree & { root: ProcessIdentity }> {
   const script = `
     $all = @(Get-CimInstance Win32_Process)
     $root = $all | Where-Object { $_.ProcessId -eq ${rootPid} -and [System.IO.Path]::GetFileName($_.ExecutablePath) -eq 'agent-forge-desktop.exe' } | Select-Object -First 1
@@ -1907,11 +1939,15 @@ async function captureProcessTree(
     $childIdentities = @($found | ForEach-Object { & $toIdentity $_ })
     [pscustomobject]@{ root=$rootIdentity; children=$childIdentities } | ConvertTo-Json -Compress -Depth 5
   `;
-  const parsed = asRecord(
-    JSON.parse(
-      await powershellResult(script, "process-tree capture"),
-    ) as unknown,
-  );
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await powershellResult(script, "process-tree capture"));
+  } catch {
+    throw new Error(
+      "The smoke could not decode its native process identities.",
+    );
+  }
+  const parsed = asRecord(raw);
   const rootIdentity = parseProcessIdentity(parsed?.root);
   const rawChildren = parsed?.children;
   const childValues = Array.isArray(rawChildren)
@@ -1940,17 +1976,6 @@ async function captureProcessTree(
     )
   ) {
     throw new Error("The smoke found an unexpected child process.");
-  }
-  if (
-    !children.some(
-      (child) => basename(child.path).toLowerCase() === "desktop-host.exe",
-    ) ||
-    (needsChildHearth &&
-      !children.some(
-        (child) => basename(child.path).toLowerCase() === "hearth.exe",
-      ))
-  ) {
-    throw new Error("The smoke did not capture both native host processes.");
   }
   return { root: rootIdentity, children };
 }

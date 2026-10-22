@@ -3,7 +3,7 @@ import { expect, type Request, test } from "@playwright/test";
 import type { CouncilServiceJob } from "../../scripts/council/service";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import type { EventsPage, LedgerEvent } from "../../types/hearth";
-import { openSettled } from "./fixtures";
+import { openSettled, reloadSettled } from "./fixtures";
 import { pageToken } from "./launch-link";
 import { createFromBuilder, requireStandIn, standInCalls } from "./stand-in";
 
@@ -174,7 +174,7 @@ test("verdict status follows the page ledger after council SSE ends, survives re
           : "status not known",
     );
     if (status === "posted") {
-      await page.reload();
+      await reloadSettled(page);
       await expect(notice).toContainText("posted to the bead");
       if (process.env["SHOT_DIR"])
         await page.screenshot({

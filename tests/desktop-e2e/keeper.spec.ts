@@ -156,6 +156,54 @@ test("Ctrl+J carries the selected bead through drawer/full view into one real fa
   await expect(fullInput).toBeFocused();
 });
 
+test("returning to the full view synchronizes the native dialog before another shortcut", async ({
+  page,
+}) => {
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
+  await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
+  const drawer = page.getByRole("dialog", {
+    name: "Forge Keeper · Alpha",
+    exact: true,
+  });
+  await expect(
+    drawer.getByRole("textbox", { name: "Message the Keeper" }),
+  ).toBeFocused();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const frame = document.querySelector(".af-desktop-frame");
+        const link = document.querySelector<HTMLAnchorElement>(
+          ".af-keeper-drawer-link a",
+        );
+        if (!frame || !link) throw new Error("No full-view handoff");
+        const observer = new MutationObserver(() => {
+          if (frame.getAttribute("data-destination") !== "keeper") return;
+          observer.disconnect();
+          document
+            .querySelector<HTMLTextAreaElement>(".af-desktop-main textarea")
+            ?.focus();
+          window.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "j",
+              ctrlKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+          resolve();
+        });
+        observer.observe(frame, {
+          attributes: true,
+          attributeFilter: ["data-destination"],
+        });
+        link.click();
+      }),
+  );
+  await expect(
+    drawer.getByRole("textbox", { name: "Message the Keeper" }),
+  ).toBeFocused();
+});
+
 test("a shortcut during the selection render uses the new selection before effects run", async ({
   page,
 }) => {
