@@ -141,11 +141,14 @@ function run(): Printed {
       const { blockedBy, ...printed } = issue;
       return `${JSON.stringify({
         ...printed,
-        dependencies: (blockedBy ?? []).map((blocker) => ({
-          issue_id: issue.id,
-          depends_on_id: blocker,
-          type: "blocks",
-        })),
+        dependencies: [
+          ...(printed.dependencies ?? []),
+          ...(blockedBy ?? []).map((blocker) => ({
+            issue_id: issue.id,
+            depends_on_id: blocker,
+            type: "blocks",
+          })),
+        ],
       })}\n`;
     });
     return { status: 0, stdout: lines.join(""), stderr: "" };

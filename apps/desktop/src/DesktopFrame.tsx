@@ -23,11 +23,24 @@ const PROVIDERS = {
 } as const;
 
 export type FrameProvider = keyof typeof PROVIDERS;
-export type FrameSessionStatus = "needs-you" | "running" | "idle" | "observed";
+export function providerName(provider: string): string {
+  return (
+    Object.entries(PROVIDERS).find(([id]) => id === provider)?.[1].name ??
+    (provider || "Provider not reported")
+  );
+}
+export type FrameSessionStatus =
+  | "needs-you"
+  | "running"
+  | "idle"
+  | "observed"
+  | "ended-today"
+  | "older";
 export interface FrameSession {
   id: string;
   title: string;
-  provider: FrameProvider;
+  provider: string;
+  depth?: number;
   status: FrameSessionStatus;
 }
 /** A future project producer supplies only rows it has actually scoped to this stable id. */
@@ -35,21 +48,24 @@ export interface FrameProject {
   id: string;
   name: string;
   sessions: readonly FrameSession[];
+  sessionsComplete?: boolean;
 }
 
 export function ProviderMonogram({
   provider,
 }: {
-  provider: FrameProvider;
+  provider: string;
 }): JSX.Element {
+  const entry = Object.entries(PROVIDERS).find(([id]) => id === provider)?.[1];
+  const name = entry?.name ?? (provider || "Provider not reported");
   return (
     <span
-      class={`af-desktop-monogram af-provider-${provider}`}
+      class={`af-desktop-monogram af-provider-${entry ? provider : "unknown"}`}
       role="img"
-      aria-label={PROVIDERS[provider].name}
-      title={PROVIDERS[provider].name}
+      aria-label={name}
+      title={name}
     >
-      {PROVIDERS[provider].monogram}
+      {entry?.monogram ?? "?"}
     </span>
   );
 }
@@ -63,6 +79,8 @@ const GROUPS: readonly {
   { status: "running", label: "Running", icon: "circle-half" },
   { status: "idle", label: "Idle", icon: "circle" },
   { status: "observed", label: "Observed", icon: "circle" },
+  { status: "ended-today", label: "Ended today", icon: "circle" },
+  { status: "older", label: "Older", icon: "circle" },
 ];
 
 export interface DesktopFrameProps {
@@ -202,13 +220,14 @@ export function DesktopFrame({
                   {rows.map((row) => (
                     <a
                       key={row.id}
-                      class="af-desktop-project-link"
+                      class="af-desktop-project-link af-desktop-session-link"
+                      style={{ "--session-depth": row.depth ?? 0 }}
                       href={desktopHref({
                         ...navigateProject(route, "sessions"),
                         selection: { kind: "session", id: row.id },
                       })}
                       title={`${row.title} · ${group.label}`}
-                      aria-label={`${PROVIDERS[row.provider].name}: ${row.title}, ${group.label}`}
+                      aria-label={`${providerName(row.provider)}: ${row.title}, ${group.label}`}
                     >
                       <ProviderMonogram provider={row.provider} />
                       <span class="af-desktop-sidebar-label">{row.title}</span>
@@ -220,9 +239,17 @@ export function DesktopFrame({
             })
           ) : (
             <p class="af-desktop-session-group">
-              {project ? "No sessions" : "Sessions unavailable"}
+              {project && project.sessionsComplete !== false
+                ? "No sessions"
+                : "Sessions unavailable"}
             </p>
           )}
+          {project?.sessionsComplete === false &&
+            project.sessions.length > 0 && (
+              <p class="af-desktop-session-group">
+                Partial session observations
+              </p>
+            )}
           <Button
             variant="ghost"
             icon="plus-circle"

@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
@@ -11,7 +11,10 @@ import {
   navigateGlobal,
   PROJECT_DESTINATIONS,
 } from "./navigation";
+import { ProjectOverview } from "./ProjectOverview";
+import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
+import { sessionRows } from "./sessions-model";
 import { useProjects } from "./use-projects";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
@@ -25,6 +28,27 @@ export function DesktopApp(): JSX.Element {
   const project = projects.data?.catalog.projects.find(
     (item) => item.id === route.projectId,
   );
+  const summary = projects.data?.summaries.find(
+    (item) => item.projectId === project?.id,
+  );
+  const frameSessions = summary
+    ? sessionRows(summary.sessions, {}, summary.asOf).map((row) => ({
+        id: row.session.sessionId,
+        title: row.session.beadId ?? row.session.sessionId,
+        provider: row.session.executor?.provider ?? "Provider not reported",
+        status: row.group,
+        depth: row.depth,
+      }))
+    : [];
+  const previousProject = useRef(route.projectId);
+  useEffect(() => {
+    if (previousProject.current !== route.projectId)
+      document.getElementById("af-main")?.focus();
+    previousProject.current = route.projectId;
+  }, [route.projectId]);
+  useEffect(() => {
+    if (route.selection?.kind === "session") setInspectorOpen(true);
+  }, [route.projectId, route.selection?.kind, route.selection?.id]);
   useEffect(() => {
     const changed = () => setRoute(desktopRoute(window.location.hash));
     window.addEventListener("hashchange", changed);
@@ -64,7 +88,14 @@ export function DesktopApp(): JSX.Element {
     <DesktopFrame
       route={route}
       project={
-        project ? { id: project.id, name: project.name, sessions: [] } : null
+        project
+          ? {
+              id: project.id,
+              name: project.name,
+              sessions: frameSessions,
+              sessionsComplete: summary?.sessionsComplete ?? false,
+            }
+          : null
       }
       connectionLabel={
         recovery?.busy
@@ -72,6 +103,16 @@ export function DesktopApp(): JSX.Element {
           : (recovery?.connection.label ?? "Connecting")
       }
       inspectorOpen={inspectorOpen}
+      inspector={
+        route.selection?.kind === "session" && project ? (
+          <SessionInspector
+            projectId={project.id}
+            session={summary?.sessions.find(
+              (session) => session.sessionId === route.selection?.id,
+            )}
+          />
+        ) : undefined
+      }
       onInspectorToggle={() => {
         setInspectorOpen(!inspectorOpen);
         if (inspectorOpen)
@@ -85,6 +126,12 @@ export function DesktopApp(): JSX.Element {
       }}
     >
       <ConnectionBanner />
+      {project?.archived && (
+        <p role="status">
+          This project is archived. Its saved scope remains available for
+          inspection.
+        </p>
+      )}
       {projects.notice && (
         <div role="status" class="af-notice">
           {projects.notice}
@@ -109,6 +156,16 @@ export function DesktopApp(): JSX.Element {
           writesAllowed={recovery?.connection.writesAllowed ?? false}
           reload={projects.reload}
           change={projects.change}
+        />
+      ) : route.destination === "overview" && project ? (
+        <ProjectOverview key={project.id} projectId={project.id} />
+      ) : route.destination === "sessions" && project ? (
+        <ProjectSessions
+          key={project.id}
+          projectId={project.id}
+          selectedId={
+            route.selection?.kind === "session" ? route.selection.id : null
+          }
         />
       ) : global ? (
         <EmptyState

@@ -54,8 +54,8 @@ export function summarizeProject(
     );
   const scoped =
     Boolean(scope) && source.issues !== null && missing.length === 0;
-  const complete =
-    scoped && project.workspaces.length === 1 && problems.length === 0;
+  // Tracker completeness is independent of ledger/session availability.
+  const complete = scoped && project.workspaces.length === 1;
   const queueRows = (source.queue ?? []).filter(
     (entry) => ids.has(entry.beadId) && entry.backed === true,
   );

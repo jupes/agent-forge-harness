@@ -61,6 +61,10 @@ afterEach(async () => {
 async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
   const hearth = await startTestHearth(options);
   open.push(hearth);
+  writeOwnerOnly(
+    projectCatalogPath(hearth.home),
+    JSON.stringify(projectCatalogFixture(hearth.root)),
+  );
   return hearth;
 }
 
@@ -850,6 +854,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 const READS: Record<string, string> = {
   "GET /projects": "/projects",
   "GET /projects/summary": "/projects/summary",
+  "GET /projects/:id/overview":
+    "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",
   "GET /runs/:slug": "/runs/demo",

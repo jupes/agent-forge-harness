@@ -5,6 +5,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -20,6 +21,10 @@ import {
 } from "node:path";
 import { OPERATOR_HEADER } from "../hearth/paths";
 import { isMain } from "../is-main";
+import { appendEvent } from "../ledger/append";
+import { closeLedger } from "../ledger/db";
+import { ledgerPath } from "../ledger/paths";
+import { resolveCheckout } from "../ledger/workspace";
 import { createProjectStore } from "../projects/store";
 
 const root = resolve(import.meta.dir, "../..");
@@ -108,22 +113,6 @@ async function main(): Promise<void> {
   mkdirSync(fakeBin);
   mkdirSync(runner);
   mkdirSync(join(fixtureRoot, ".git"), { recursive: true });
-  await createProjectStore(desktopSmokeHome).create(
-    {
-      slug: "native-fixture",
-      name: "Native fixture",
-      description: "Private catalog verification",
-      icon: "N",
-      workspaces: [
-        {
-          root: fixtureRoot,
-          repositories: [fixtureRoot],
-          epicIds: ["fixture-epic"],
-        },
-      ],
-    },
-    0,
-  );
   mkdirSync(join(fixtureRoot, "scripts", "hearth"), { recursive: true });
   writeFileSync(
     join(fixtureRoot, "scripts", "hearth", "server.ts"),
@@ -132,7 +121,12 @@ async function main(): Promise<void> {
   );
   const fakeBdSource = join(temp, "fake-bd.ts");
   const fakeBdExecutable = join(fakeBin, "bd.exe");
-  writeFileSync(fakeBdSource, 'process.stdout.write("[]\\n");\n', "utf8");
+  const fakeBdCalls = join(temp, "fake-bd-calls.jsonl");
+  writeFileSync(
+    fakeBdSource,
+    `import {appendFileSync} from "node:fs";appendFileSync(${JSON.stringify(fakeBdCalls)},JSON.stringify(process.argv)+"\\n");const row={id:"fixture-epic",title:"Native fixture epic",issue_type:"epic",status:"open",labels:["project:native-fixture"],created_at:"2026-10-21T00:00:00Z",updated_at:"2026-10-21T00:00:00Z"};process.stdout.write(process.argv.includes("export")?JSON.stringify(row)+"\\n":"[]\\n");\n`,
+    "utf8",
+  );
   await runBounded(
     [
       process.execPath,
@@ -145,6 +139,21 @@ async function main(): Promise<void> {
     30_000,
     "Could not prepare isolated tracker stub.",
   );
+  const trackerProbe = Bun.spawnSync(
+    [fakeBdExecutable, "export", "--readonly", "--no-memories"],
+    { stdout: "pipe", stderr: "pipe", timeout: 5000 },
+  );
+  let trackerRow: unknown;
+  try {
+    trackerRow = JSON.parse(trackerProbe.stdout.toString());
+  } catch {
+    trackerRow = null;
+  }
+  if (
+    trackerProbe.exitCode !== 0 ||
+    asRecord(trackerRow)?.id !== "fixture-epic"
+  )
+    throw new Error("Isolated tracker export did not answer a fixture epic.");
   linkOrCopy(executable, join(runner, "agent-forge-desktop.exe"));
   linkOrCopy(join(stage, "hearth.exe"), join(runner, "hearth.exe"));
   cpSync(join(stage, "dashboard"), join(runner, "dashboard"), {
@@ -153,7 +162,13 @@ async function main(): Promise<void> {
 
   const debugPort = await availablePort();
   const env = {
-    ...process.env,
+    // Windows treats PATH/Path as one key; remove inherited aliases before
+    // setting the isolated path for native grandchildren.
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => name.toUpperCase() !== "PATH",
+      ),
+    ),
     AGENT_FORGE_HOME: desktopSmokeHome,
     HTTP_PROXY: "http://127.0.0.1:1",
     NO_PROXY: "",
@@ -235,6 +250,37 @@ async function main(): Promise<void> {
       "native-workspace-warning.png",
     );
     mkdirSync(join(selectedRoot, ".git"));
+    await createProjectStore(desktopSmokeHome).create(
+      {
+        slug: "native-fixture",
+        name: "Native fixture",
+        description: "Private catalog verification",
+        icon: "N",
+        workspaces: [
+          {
+            root: selectedRoot,
+            repositories: [selectedRoot],
+            epicIds: ["fixture-epic"],
+          },
+        ],
+      },
+      0,
+    );
+    const fixtureLedger = ledgerPath({ AGENT_FORGE_HOME: desktopSmokeHome });
+    const seeded = appendEvent(
+      {
+        kind: "session.started",
+        workspace: resolveCheckout(selectedRoot).workspace,
+        beadId: "fixture-epic",
+        sessionId: "native-observed-session",
+        executor: { provider: "codex", model: "fixture-model" },
+        payload: { kind: "interactive" },
+      },
+      { path: fixtureLedger },
+    );
+    closeLedger(fixtureLedger);
+    if (!seeded.ok)
+      throw new Error("Could not seed isolated session metadata.");
     mkdirSync(join(selectedRoot, "scripts", "hearth"), { recursive: true });
     copyFileSync(
       join(fixtureRoot, "scripts", "hearth", "server.ts"),
@@ -298,6 +344,29 @@ async function main(): Promise<void> {
       );
     if (cspErrors > 0)
       throw new Error("WebView reported a blocked dashboard script.");
+    const trackerRead = asRecord(
+      await evaluate(
+        socket,
+        `(async () => { const response = await fetch('/__agent-forge/beads/counts', {signal:AbortSignal.timeout(5000)}); return response.json(); })()`,
+      ),
+    );
+    if (trackerRead?.ok !== true)
+      throw new Error(
+        `Native fixture tracker read failed: ${String(trackerRead?.error ?? "no answer").slice(0, 400)}`,
+      );
+    let exportCalls = 0;
+    for (const line of readFileSync(fakeBdCalls, "utf8").split("\n")) {
+      try {
+        const args: unknown = JSON.parse(line);
+        if (Array.isArray(args) && args.includes("export")) exportCalls++;
+      } catch {
+        /* An incomplete trailing recorder line is not evidence. */
+      }
+    }
+    if (exportCalls < 2)
+      throw new Error(
+        "The packaged hearth did not use the isolated tracker stand-in.",
+      );
     if (
       !(await evaluate(
         socket,
@@ -333,6 +402,44 @@ async function main(): Promise<void> {
       socket,
       `document.querySelector('.af-desktop-project-name')?.textContent?.trim() === 'Native fixture' && location.hash.endsWith('/overview')`,
       "The native project card opened the wrong scope.",
+    );
+    const sourceCheck = asRecord(
+      await evaluate(
+        socket,
+        `(async () => { const id = location.hash.split('/')[3]; const response = await fetch('/__agent-forge/projects/' + id + '/overview', {signal:AbortSignal.timeout(5000)}); return response.json(); })()`,
+      ),
+    );
+    const sourceSummary = asRecord(asRecord(sourceCheck?.data)?.summary);
+    if (
+      !Array.isArray(sourceSummary?.sessions) ||
+      sourceSummary.sessions.length !== 1
+    )
+      throw new Error(
+        `Native fixture source failed: ${JSON.stringify({ problems: sourceSummary?.problems, sessions: sourceSummary?.sessions }).slice(0, 600)}`,
+      );
+    await waitForPage(
+      socket,
+      `!!document.querySelector('.af-project-overview a[href*="selectionId=native-observed-session"]')`,
+      "The native project overview did not show its scoped session.",
+    );
+    await saveConnectionShot(socket, "native-project-overview.png");
+    await evaluate(
+      socket,
+      `Array.from(document.querySelectorAll('.af-project-overview a')).find(a => a.textContent?.trim() === 'All sessions')?.click()`,
+    );
+    await waitForPage(
+      socket,
+      `document.querySelector('.af-project-sessions')?.textContent?.includes('native-observed-session')`,
+      "The native scoped session list did not load.",
+    );
+    await evaluate(
+      socket,
+      `Array.from(document.querySelectorAll('.af-project-sessions a')).find(a => a.textContent?.trim() === 'Open native-observed-session')?.click()`,
+    );
+    await waitForPage(
+      socket,
+      `document.querySelector('[aria-label="Selected session"]')?.textContent?.includes('native-observed-session')`,
+      "The native session inspector did not select its scoped session.",
     );
     await evaluate(socket, `location.hash = '#/desktop/projects'`);
     await waitForPage(
@@ -527,6 +634,9 @@ async function main(): Promise<void> {
           frameFocusOutlineTested: true,
           projectCatalogTested: true,
           projectHomeTested: true,
+          projectOverviewTested: true,
+          projectSessionsTested: true,
+          trackerStandInTested: true,
           focusOutline,
           childrenStopped: true,
         },

@@ -49,7 +49,11 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
-import { projectSummaryRoute } from "./project-summaries";
+import { projectOverviewRoute } from "./project-overview";
+import {
+  projectSnapshotReader,
+  projectSummaryRoute,
+} from "./project-summaries";
 import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
 import { shiftRoutes } from "./shifts";
@@ -347,6 +351,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
+  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -362,7 +367,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
-    projectSummaryRoute(deps.projectHome, deps),
+    projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
+    projectOverviewRoute(deps, projectSnapshot),
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.

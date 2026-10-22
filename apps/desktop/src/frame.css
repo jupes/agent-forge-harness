@@ -289,3 +289,9 @@
     scroll-behavior: auto;
   }
 }
+
+@media (min-width: 1201px) {
+  .af-desktop-session-link {
+    padding-inline-start: calc(8px + var(--session-depth, 0) * 12px);
+  }
+}
