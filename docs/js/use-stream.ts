@@ -776,6 +776,8 @@ export function createStreamClient(deps: StreamClientDeps): StreamClient {
 // ── A view that reads its own route ─────────────────────────────────────────
 
 export interface LiveReadOptions<T> {
+  /** Keep data while exposing a failed refresh, for views that label last-known values. */
+  reportRefreshError?: boolean;
   /** Read the view's data. */
   load(): Promise<T>;
   client: StreamClient;
@@ -808,9 +810,9 @@ export function startLiveRead<T>(options: LiveReadOptions<T>): LiveRead {
         if (!live) return;
         const error = cause instanceof Error ? cause.message : String(cause);
         options.onChange((previous) =>
-          previous.data !== null
+          previous.data !== null && !options.reportRefreshError
             ? previous
-            : { data: null, error, loading: false },
+            : { data: previous.data, error, loading: false },
         );
       }
     },
@@ -973,6 +975,7 @@ export function useLiveRead<T>(
 export function useOperatorRead<T>(
   path: string,
   kinds: readonly LedgerEventKind[],
+  reportRefreshError = false,
 ): DevApiState<T> & { reload(): void } {
   const [state, setState] = useState<DevApiState<T>>({
     data: null,
@@ -984,6 +987,7 @@ export function useOperatorRead<T>(
   useEffect(() => {
     const read = startLiveRead<T>({
       load: () => readOperatorRoute<T>(path, pageReads()),
+      reportRefreshError,
       client: appStream(),
       kinds,
       onChange: setState,
@@ -993,7 +997,7 @@ export function useOperatorRead<T>(
       read();
       if (live.current === read) live.current = null;
     };
-  }, [path, kinds]);
+  }, [path, kinds, reportRefreshError]);
 
   return { ...state, reload: () => live.current?.reload() };
 }

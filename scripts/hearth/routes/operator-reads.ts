@@ -449,7 +449,7 @@ export const QUEUE_LIST_ARGS: readonly string[] = [
  * call is running shares the next call, so it never receives an answer that
  * was read before it asked.
  */
-function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
+export function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
   let running: Promise<T> | null = null;
   let next: Promise<T> | null = null;
   const launch = (): Promise<T> => {
@@ -474,7 +474,7 @@ function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
   };
 }
 
-function withTimeout<T>(
+export function withTimeout<T>(
   work: Promise<T>,
   ms: number,
   refusal: string,

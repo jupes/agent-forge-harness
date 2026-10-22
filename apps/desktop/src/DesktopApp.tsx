@@ -11,6 +11,8 @@ import {
   navigateGlobal,
   PROJECT_DESTINATIONS,
 } from "./navigation";
+import { ProjectsHome } from "./ProjectsHome";
+import { useProjects } from "./use-projects";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
@@ -19,6 +21,10 @@ export function DesktopApp(): JSX.Element {
     () => window.matchMedia("(min-width: 1201px)").matches,
   );
   const recovery = useDesktopRecovery();
+  const projects = useProjects();
+  const project = projects.data?.catalog.projects.find(
+    (item) => item.id === route.projectId,
+  );
   useEffect(() => {
     const changed = () => setRoute(desktopRoute(window.location.hash));
     window.addEventListener("hashchange", changed);
@@ -57,7 +63,9 @@ export function DesktopApp(): JSX.Element {
   return (
     <DesktopFrame
       route={route}
-      project={null}
+      project={
+        project ? { id: project.id, name: project.name, sessions: [] } : null
+      }
       connectionLabel={
         recovery?.busy
           ? "Restarting"
@@ -77,15 +85,44 @@ export function DesktopApp(): JSX.Element {
       }}
     >
       <ConnectionBanner />
-      {global ? (
+      {projects.notice && (
+        <div role="status" class="af-notice">
+          {projects.notice}
+          {projects.needsCheck && (
+            <Button
+              onClick={() => {
+                void projects.check();
+              }}
+            >
+              Check project preferences
+            </Button>
+          )}
+        </div>
+      )}
+      {route.destination === "projects" ? (
+        <ProjectsHome
+          home={projects.data}
+          error={projects.error}
+          loading={projects.loading}
+          stale={recovery?.connection.phase !== "connected"}
+          held={projects.held}
+          writesAllowed={recovery?.connection.writesAllowed ?? false}
+          reload={projects.reload}
+          change={projects.change}
+        />
+      ) : global ? (
         <EmptyState
           title={`${name} unavailable`}
           hint={`${name} is not available in this build.`}
         />
       ) : (
         <EmptyState
-          title="Project unavailable"
-          hint="This project could not be loaded. Choose a project to continue."
+          title={project ? `${name} unavailable` : "Project unavailable"}
+          hint={
+            project
+              ? `${name} for ${project.name} is not available in this build.`
+              : "This project could not be loaded. Choose a project to continue."
+          }
         >
           <Button href={desktopHref(navigateGlobal(route, "projects"))}>
             Choose project

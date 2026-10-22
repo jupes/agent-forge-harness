@@ -2969,6 +2969,43 @@ describe("the notice and the live stat cards", () => {
 });
 
 describe("a view that reads an operator route, and reloads after its own change", () => {
+  test("a last-known view retains data and reports a failed refresh, then clears the error on recovery", async () => {
+    const { wire, client, clock } = harness();
+    let state: DevApiState<string> = { data: null, error: null, loading: true };
+    let failed = false;
+    const read = startLiveRead<string>({
+      client,
+      kinds: [],
+      timers: clock.timers,
+      now: clock.now,
+      reportRefreshError: true,
+      load: async () => {
+        if (failed) throw new Error("unavailable");
+        return "known";
+      },
+      onChange: (update) => {
+        state = update(state);
+      },
+    });
+    wire.current.open();
+    wire.current.snapshot({ cursor: 1 });
+    await settle();
+    failed = true;
+    read.reload();
+    clock.advance(REFETCH_WINDOW_MS);
+    await settle();
+    expect(state).toEqual({
+      data: "known",
+      error: "unavailable",
+      loading: false,
+    });
+    failed = false;
+    read.reload();
+    clock.advance(REFETCH_WINDOW_MS);
+    await settle();
+    expect(state).toEqual({ data: "known", error: null, loading: false });
+    read();
+  });
   test("reload during a read in flight reads again once that read ends, and the later answer is what is shown", async () => {
     const { wire, client, clock } = harness();
     let state: DevApiState<string> = { data: null, error: null, loading: true };

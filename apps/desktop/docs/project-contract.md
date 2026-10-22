@@ -148,8 +148,50 @@ origin/token/validation/audit ordering.
 
 The packaged Windows smoke seeds a private fixture catalog, reads it through
 the compiled hearth and confirms a pin write with a separate read. Its
-`projectCatalogTested` result proves that backend path in Tauri/WebView2;
-the frame still displays its honest unavailable Projects state.
+`projectCatalogTested` result proves that backend path in Tauri/WebView2.
+`projectHomeTested` additionally checks the rendered persisted preference and
+opens the card into its own project scope.
 
-This checkpoint does not claim Projects-A rendering, live summaries, last-known
-cards, switching UI, Keeper/provider data or a human review result.
+## Home summaries and navigation
+
+`GET /__agent-forge/projects/summary` returns `ProjectsHome` from
+`types/project-summary.ts`: the catalog, read timestamp, and summaries keyed
+by stable project id. The route takes no parameters. It never opens a path
+from a stored project record. One bounded, coalesced readonly tracker export
+feeds the normalized scope selector and queue metadata. Malformed or incomplete
+exports and missing selected epics cannot produce complete totals.
+
+`summarizeProject(project, sources)` in `scripts/projects/summary.ts` selects
+membership before counting. Bead counts reuse the dashboard dependency rules;
+queue counts require backing queue metadata and deduplicate bead ids. The
+needs-you preview contains proposed, review and halted queue entries, not
+assumed permission requests. Sessions must name a member bead and the served
+workspace. They are ledger observations, not proof of process liveness. The
+500-row ledger bound is explicit through `sessionsComplete`.
+
+Run observations come from the existing checkout-local run store. A run must
+name a member epic and cannot claim another checkout. These observations do
+not establish that every worktree was searched. Missing Keeper briefs, spend,
+unread totals and provider allowances remain unavailable until their owning
+producers exist. No hard-coded sample cards or usage meters enter production.
+
+The app keeps one summary read at its root, follows relevant events on the
+existing stream, and refreshes after a confirmed preference write. Failed
+refreshes retain labelled last-known data and expose the error. The new
+`useOperatorRead` refresh-error option is opt-in; existing dashboard views keep
+their previous behavior. Pin/archive controls hold while a write or its
+verification is in flight. An unknown outcome stays held across navigation
+until the operator explicitly checks against the hearth; it is never replayed.
+Catalog revisions prevent an older read from replacing a confirmed preference.
+
+`openProject(id, destination)` in `apps/desktop/src/projects-model.ts` always
+clears prior object selection. Cards sort by pin, known needs-you items, last
+activity, then name/id. Archive filtering and search do not change identity.
+Archiving returns focus to the filter. The selected frame name is taken only
+from the catalog record matching the route id. Missing ids stay unavailable.
+
+`bun run verify:desktop` runs the desktop renderer against the existing E2E
+suite's isolated hearth, recording tracker stand-in and launch/session flow.
+It is a separate Playwright config so dashboard-mode tests retain their own
+document. CI runs this suite alongside the dashboard shards. These browser
+and native checks do not replace the owner's Windows human review.

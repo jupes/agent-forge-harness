@@ -46,7 +46,8 @@
     "desktop:build": "bun run scripts/desktop/build.ts",
     "desktop:smoke": "bun run scripts/desktop/smoke.ts",
     "dashboard:commands": "bun run scripts/dashboard/commands-catalog.ts",
-    "verify:ui": "playwright test"
+    "verify:ui": "playwright test",
+    "verify:desktop": "playwright test --config playwright.desktop.config.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3",

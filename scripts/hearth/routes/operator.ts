@@ -49,6 +49,7 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { projectSummaryRoute } from "./project-summaries";
 import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
 import { shiftRoutes } from "./shifts";
@@ -361,6 +362,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    projectSummaryRoute(deps.projectHome, deps),
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.

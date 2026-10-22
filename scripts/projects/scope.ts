@@ -2,7 +2,7 @@ import type { BeadsIssue } from "../../types/beads";
 import type { ProjectRecord } from "../../types/projects";
 
 /** Compare already canonical ledger paths without reading the filesystem. */
-function workspaceKey(path: string): string {
+export function workspaceKey(path: string): string {
   const value = path.replaceAll("\\", "/").replace(/\/+$/, "");
   return /^[a-z]:\//i.test(value) ? value.toLowerCase() : value;
 }

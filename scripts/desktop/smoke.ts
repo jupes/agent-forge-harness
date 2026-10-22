@@ -319,6 +319,27 @@ async function main(): Promise<void> {
       throw new Error(
         "The packaged hearth did not confirm and persist project preferences.",
       );
+    await reloadPage(socket);
+    await waitForPage(
+      socket,
+      `Array.from(document.querySelectorAll('.af-project-card button')).some(b => b.textContent?.trim() === 'Unpin Native fixture')`,
+      "The native project card did not reflect persisted preferences.",
+    );
+    await evaluate(
+      socket,
+      `Array.from(document.querySelectorAll('.af-project-card a')).find(a => a.textContent?.trim() === 'Open Native fixture')?.click()`,
+    );
+    await waitForPage(
+      socket,
+      `document.querySelector('.af-desktop-project-name')?.textContent?.trim() === 'Native fixture' && location.hash.endsWith('/overview')`,
+      "The native project card opened the wrong scope.",
+    );
+    await evaluate(socket, `location.hash = '#/desktop/projects'`);
+    await waitForPage(
+      socket,
+      `!!document.querySelector('.af-project-card')`,
+      "The native project cards did not return.",
+    );
     const screenshot = await cdp(socket, "Page.captureScreenshot", {
       format: "png",
       captureBeyondViewport: false,
@@ -505,6 +526,7 @@ async function main(): Promise<void> {
           frameTargetsTested: true,
           frameFocusOutlineTested: true,
           projectCatalogTested: true,
+          projectHomeTested: true,
           focusOutline,
           childrenStopped: true,
         },
@@ -1311,6 +1333,7 @@ async function evaluate(
 ): Promise<unknown> {
   const result = await cdp(socket, "Runtime.evaluate", {
     expression,
+    awaitPromise: true,
     returnByValue: true,
   });
   if (result.exceptionDetails !== undefined)

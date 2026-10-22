@@ -849,6 +849,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
   "GET /projects": "/projects",
+  "GET /projects/summary": "/projects/summary",
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",
   "GET /runs/:slug": "/runs/demo",

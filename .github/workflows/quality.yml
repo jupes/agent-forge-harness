@@ -114,10 +114,22 @@ jobs:
         timeout-minutes: 12
         run: bun run verify:ui -- --shard=${{ matrix.shard }}/3
       - name: Upload traces and failure screenshots
+        # Desktop renderer uses the same isolated servers in a separate run.
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-test-results-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 14
+      - name: Run desktop browser journeys
+        if: matrix.shard == 1
+        timeout-minutes: 8
+        run: bun run verify:desktop
+      - name: Upload desktop traces and failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-playwright-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 14
 

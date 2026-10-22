@@ -1,0 +1,119 @@
+.af-projects-home {
+  display: grid;
+  gap: 18px;
+}
+.af-projects-home a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  min-width: 28px;
+}
+.af-projects-toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+.af-projects-toolbar label {
+  display: grid;
+  gap: 6px;
+}
+.af-projects-toolbar input,
+.af-projects-toolbar select {
+  color: inherit;
+  background: #232637;
+  border: 1px solid #626881;
+  border-radius: 6px;
+  min-height: 34px;
+  padding: 5px 9px;
+}
+.af-projects-muted {
+  color: #b3b6cb;
+  font-size: 12px;
+}
+.af-projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+  gap: 16px;
+}
+.af-project-card {
+  background: #232637;
+  border: 1px solid #42475f;
+  border-radius: 10px;
+  padding: 18px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.af-project-card header {
+  display: flex;
+  align-items: start;
+  gap: 12px;
+}
+.af-project-card h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.af-project-card :where(h2) a {
+  color: inherit;
+}
+.af-project-card p {
+  margin: 12px 0;
+}
+.af-project-tile {
+  display: grid;
+  place-items: center;
+  background: #35394e;
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+.af-project-queue,
+.af-project-card footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.af-project-queue {
+  font-size: 12px;
+  border-block: 1px solid #42475f;
+  padding-block: 10px;
+}
+.af-project-queue [data-state="halted"],
+.af-projects-problem {
+  color: #ffb7ad;
+}
+.af-project-keeper {
+  border-left: 2px solid #b4a2ff;
+  padding: 8px 12px;
+  background: #292c40;
+}
+.af-projects-needs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.af-projects-needs a {
+  color: inherit;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #626881;
+  border-radius: 6px;
+}
+.af-project-new {
+  display: grid;
+  place-items: center;
+  min-height: 100px;
+  border: 1px dashed #626881;
+  border-radius: 10px;
+}
+.af-projects-subscriptions {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  border-top: 1px solid #42475f;
+}
+.af-projects-home[data-last-known="true"] .af-project-card {
+  background: #272938;
+}
