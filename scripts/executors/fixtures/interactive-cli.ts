@@ -1,12 +1,23 @@
 /** Inert bidirectional process fixture; never invokes a provider or shell. */
+import { appendFileSync } from "node:fs";
+import { basename } from "node:path";
+
 const mode = process.argv[2];
 if (mode === "child") await new Promise(() => setInterval(() => {}, 1000));
-if (mode === "blocked" || mode === "exit-tree") {
-  const child = Bun.spawn([process.execPath, import.meta.filename, "child"], {
+if (mode === "blocked" || mode === "exit-tree" || mode === "startup-tree") {
+  const self = /^bun(?:\.exe)?$/i.test(basename(process.execPath))
+    ? [process.execPath, import.meta.filename]
+    : [process.execPath];
+  const child = Bun.spawn([...self, "child"], {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
   });
+  if (process.env.INTERACTIVE_TREE_LOG)
+    appendFileSync(
+      process.env.INTERACTIVE_TREE_LOG,
+      `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`,
+    );
   await Bun.stdout.write(`${JSON.stringify({ childPid: child.pid })}\n`);
   if (mode === "exit-tree") process.exit(0);
   await new Promise(() => setInterval(() => {}, 1000));
