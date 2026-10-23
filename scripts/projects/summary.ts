@@ -1,11 +1,11 @@
 import type { BeadsDependency, BeadsIssue } from "../../types/beads";
+import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
 import {
   QUEUE_STATES,
   type QueueEntry,
   type QueueState,
   type SessionSummary,
 } from "../../types/hearth";
-import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { ProjectSummary } from "../../types/project-summary";
 import type { ProjectRecord } from "../../types/projects";
 import type { BdExportRow } from "../beads-dashboard";
@@ -27,7 +27,7 @@ export interface ProjectSources {
   runs?: RunSummary[];
   checkout?: string;
   /** Trusted private registry membership, not inferred from session ids or ledger content. */
-  ownedSessions?: OwnedSessionRecord[];
+  ownedSessions?: OwnedCodingSessionRecord[];
 }
 
 /** Membership is established before any aggregation or object link is emitted. */
