@@ -13,6 +13,7 @@ import {
   desktopRoute,
   GLOBAL_DESTINATIONS,
   navigateGlobal,
+  observeDesktopRoute,
   PROJECT_DESTINATIONS,
 } from "./navigation";
 import { ObservedSessionDetail } from "./ObservedSessionDetail";
@@ -216,9 +217,16 @@ export function DesktopApp(): JSX.Element {
     if (route.selection?.kind === "session") setInspectorOpen(true);
   }, [route.projectId, route.selection?.kind, route.selection?.id]);
   useEffect(() => {
-    const changed = () => setRoute(desktopRoute(window.location.hash));
-    window.addEventListener("hashchange", changed);
-    return () => window.removeEventListener("hashchange", changed);
+    return observeDesktopRoute(
+      {
+        hash: () => window.location.hash,
+        listen: (changed) => {
+          window.addEventListener("hashchange", changed);
+          return () => window.removeEventListener("hashchange", changed);
+        },
+      },
+      setRoute,
+    );
   }, []);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {

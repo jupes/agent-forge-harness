@@ -463,50 +463,69 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       }
 
       let stopReason: string | undefined;
-      const done = supervised.done.then(async (exit): Promise<ExecResult> => {
-        await startup;
-        request.signal?.removeEventListener("abort", aborted);
-        if (capture) {
-          try {
-            await capture.finish(exit);
-          } catch {
-            captureFailed();
+      const done = supervised.done
+        .then(async (exit): Promise<ExecResult> => {
+          await startup;
+          request.signal?.removeEventListener("abort", aborted);
+          if (capture) {
+            try {
+              await capture.finish(exit);
+            } catch {
+              captureFailed();
+            }
           }
-        }
-        const result: ExecResult = {
-          ...exit,
-          providerErrors: [...providerErrors],
-          ...(privateCaptureFailed ? { privateCaptureFailed: true } : {}),
-        };
-        // Fixed wording only: the provider's own text stays out of the ledger.
-        const reason = result.privateCaptureFailed
-          ? "failed: private transcript unavailable"
-          : result.timedOut
-            ? "timeout"
-            : result.stopped
-              ? `stopped: ${stopReason ?? "operator"}`
-              : result.exitCode !== 0
-                ? `failed: exit ${result.exitCode}`
-                : result.providerErrors.length > 0
-                  ? "failed: exit 0, provider reported an error"
-                  : "completed";
-        if (!capture || privateProviderStarted) {
-          const { base, unmirror } = current();
-          queue.push({
-            ...base,
-            ts: new Date().toISOString(),
-            kind: "session.ended",
-            payload: {
-              reason,
-              durationMs: Date.now() - startedAt,
-              ...(usage ? { usage } : {}),
-            },
-          });
-          unmirror();
-        }
-        queue.close();
-        return result;
-      });
+          const result: ExecResult = {
+            ...exit,
+            providerErrors: [...providerErrors],
+            ...(privateCaptureFailed ? { privateCaptureFailed: true } : {}),
+          };
+          // Fixed wording only: the provider's own text stays out of the ledger.
+          const reason = result.privateCaptureFailed
+            ? "failed: private transcript unavailable"
+            : result.timedOut
+              ? "timeout"
+              : result.stopped
+                ? `stopped: ${stopReason ?? "operator"}`
+                : result.exitCode !== 0
+                  ? `failed: exit ${result.exitCode}`
+                  : result.providerErrors.length > 0
+                    ? "failed: exit 0, provider reported an error"
+                    : "completed";
+          if (!capture || privateProviderStarted) {
+            const { base, unmirror } = current();
+            queue.push({
+              ...base,
+              ts: new Date().toISOString(),
+              kind: "session.ended",
+              payload: {
+                reason,
+                durationMs: Date.now() - startedAt,
+                ...(usage ? { usage } : {}),
+              },
+            });
+            unmirror();
+          }
+          queue.close();
+          return result;
+        })
+        .catch(async (error: unknown) => {
+          // A cleanup refusal is not provider completion. Close consumers and
+          // retain an unknown private original rather than hanging the event loop.
+          capture?.abort();
+          request.signal?.removeEventListener("abort", aborted);
+          await startup;
+          if (capture) {
+            try {
+              await capture.finish(null);
+            } catch {
+              // The exact original remains unconfirmed; never fabricate an exit.
+            }
+          }
+          session?.unmirror();
+          queue.close();
+          throw capture ? new PrivateCaptureError() : error;
+        });
+      void done.catch(() => undefined);
 
       return {
         get sessionId() {
@@ -515,10 +534,12 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         pid: supervised.pid,
         events: queue.iterate(),
         done,
-        async stop(reason) {
+        stop(reason) {
           stopReason = reason;
           capture?.abort();
-          await supervised.stop(reason);
+          const stopping = supervised.stop(reason);
+          void stopping.catch(() => undefined);
+          return stopping;
         },
       };
     },
