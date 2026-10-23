@@ -95,7 +95,12 @@ test("held authenticated reads announce loading before verified empty and retain
   });
   let actualRead = false;
   await page.route(endpoint, async (intercept) => {
-    const actual = await intercept.fetch();
+    const actual = await intercept.fetch({
+      headers: {
+        ...(await intercept.request().allHeaders()),
+        origin: new URL(intercept.request().url()).origin,
+      },
+    });
     expect(actual.status()).toBe(200);
     actualRead = true;
     await held;
@@ -334,6 +339,13 @@ test("an actually refused disposable Git preflight shows Failed to start without
     await expect(dialog.getByLabel("Duration", { exact: true })).toHaveValue(
       "1m",
     );
+    await dialog.getByLabel("Base branch", { exact: true }).fill("main");
+    await dialog
+      .getByLabel("Smith override", { exact: true })
+      .selectOption("claude-journeyman");
+    await dialog
+      .getByLabel("Epic filter", { exact: true })
+      .selectOption("alpha-epic");
     await dialog
       .getByRole("button", { name: "Start reviewed shift", exact: true })
       .click();

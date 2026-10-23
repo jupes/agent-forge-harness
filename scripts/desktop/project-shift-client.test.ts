@@ -174,6 +174,32 @@ function fixture() {
   };
 }
 
+test("checking an existing original updates its row in place so keyboard focus is not moved with the row", async () => {
+  const f = fixture(),
+    client = f.make(),
+    first = actual("stopped"),
+    second = actual("stopped");
+  second.intent.request.requestId = "a9c58be5-c25c-4277-b521-9c8047be7efa";
+  second.intent.shiftId = "shift-20261023-180001-1234";
+  second.intent.requestHash = projectShiftRequestHash(
+    scope.projectId,
+    scope.workspace,
+    second.intent.request,
+  );
+  second.observation.requestId = second.intent.request.requestId;
+  second.observation.shiftId = second.intent.shiftId;
+  f.setList([first, second]);
+  await client.refresh(scope);
+  first.observation.reason = "operator";
+  f.setOriginal(first);
+  await client.check(scope, requestId);
+  expect(
+    client.get(scope).page?.items.map((item) => item.intent.shiftId),
+  ).toEqual([first.intent.shiftId, second.intent.shiftId]);
+  expect(client.get(scope).page?.items[0]?.observation.reason).toBe("operator");
+  expect(f.posts).toEqual([]);
+});
+
 test("a held pre-admission POST survives another window and protected404 without a new identity or any replay", async () => {
   const f = fixture(),
     first = f.make();
