@@ -59,8 +59,9 @@ Task accepts one turn. Chat's next explicit turn uses only the confirmed native
 binding in its own journal. Subsequent turns preserve the original model, effort,
 mode and options while replacing text, attachments, checked About references and
 the verified resume UUID. A missing identity or unknown outcome holds later
-turns. Closing the client does not stop work; explicit Stop awaits supervised
-process-tree termination.
+turns. Closing the client does not stop work. Explicit Stop requests cancellation
+and immediately returns the `cancelling` phase; `cancelled` is confirmed only
+after the supervised process tree exits.
 
 The dedicated coding transport is independent of Keeper's sealed read profile.
 It probes the installed CLI without a model request, rechecks the prepared
