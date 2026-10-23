@@ -483,6 +483,16 @@ export function createCodexChatStream(options: {
           });
         } else
           throw new Error("Codex requested an unsupported client operation.");
+      } else if (frame.method === "warning") {
+        const warning = z
+          .object({
+            threadId: codexNativeUuidSchema.nullable(),
+            message: z.string().max(16_384),
+          })
+          .strict()
+          .parse(params);
+        if (warning.threadId !== null) scoped(warning, false);
+        // Non-fatal diagnostics remain private; neither global nor scoped bodies enter events.
       } else if (frame.method === "thread/started") {
         const announced = z
           .object({

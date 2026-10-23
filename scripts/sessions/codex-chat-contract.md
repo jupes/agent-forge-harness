@@ -48,6 +48,8 @@ The request is durably persisted before the trusted callback runs. The selected 
 
 Main text includes only native agent-message deltas/full messages, with prefix/full deduplication. Tool output is never main text. Conflicting prefixes, type/identity changes, malformed frames, unmatched RPC responses and post-terminal item content refuse. Native usage retains `lastResponse` and `threadTotal` scopes from the generated protocol; neither is represented as an inferred aggregate for the entire accepted turn. Rich reasoning/tool/activity projection is a separate producer integration.
 
+The generated `v2/WarningNotification.ts` permits `threadId: null` for a global non-fatal warning. Its documented shape and message bound are checked, then the private body is discarded. A scoped warning must still name the exact owned thread; malformed warnings and unrelated notifications carrying a null identity are refused. This exception does not broaden unknown notification scope handling.
+
 A completed result requires both an explicit native completed turn without error and successful process exit after bounded EOF/shutdown. Exit zero cannot erase a protocol, writer, approval, Stop or timeout latch. A failed or interrupted native turn is unsuccessful. Fixed refusal text excludes provider error bodies, private content and environment values. This slice does not implement a native provider-error details renderer.
 
 Stop uses owned process-tree cleanup; it does not yet send `turn/interrupt`. A later resume must still acknowledge an idle thread. Uncertain active state refuses rather than silently dispatching another turn. Public lifecycle reconciliation and approved restart behavior remain integration work.

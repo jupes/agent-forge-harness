@@ -354,6 +354,29 @@ test("duplicate native approval requests call authority once; native resolution 
   }
 });
 
+test("replaying an already resolved native approval refuses without another callback or reply", async () => {
+  const f = fixture("approval-stale");
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let calls = 0;
+  const result = await f.runtime.run(
+    { prepared: snapshot, resume: null },
+    async () => {},
+    new AbortController().signal,
+    {
+      requestApproval: () => {
+        calls++;
+        return new Promise(() => {});
+      },
+    },
+  );
+  expect(result.phase).toBe("unknown");
+  expect(calls).toBeLessThanOrEqual(1);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
+});
+
 test("never-settling approval and initialize acknowledgements stop real native descendants", async () => {
   for (const mode of ["approval-never", "hang-initialize"]) {
     const f = fixture(mode),

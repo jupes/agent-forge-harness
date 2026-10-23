@@ -381,6 +381,8 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
           fingerprint = JSON.stringify(native),
           previous = approvals.get(key);
         if (previous) {
+          if (previous.closed)
+            throw new Error("Native approval identity is no longer live.");
           if (previous.fingerprint !== fingerprint)
             throw new Error("Native approval identity changed.");
           return;
