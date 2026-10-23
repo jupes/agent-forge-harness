@@ -62,6 +62,7 @@ async function fixture() {
   );
   let calls = 0;
   const runtime: SessionRuntime = {
+    provider: "claude",
     async prepare() {
       calls++;
       throw Error("Unexpected ordinary preparation");
@@ -128,7 +129,11 @@ test("generic private reads and Stop cannot create a service or stop marker for 
             about: [],
           }),
       ])
-        await expect(Promise.resolve().then(action)).rejects.toThrow("shift");
+        await expect(
+          Promise.resolve().then(async () => {
+            await action();
+          }),
+        ).rejects.toThrow("shift");
     }
     expect(f.calls()).toBe(0);
     expect(readFileSync(sessionRegistryFile(f.home), "utf8")).toBe(bytes);
