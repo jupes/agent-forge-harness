@@ -428,8 +428,8 @@ async function main(): Promise<void> {
     await saveConnectionShot(socket, "native-project-overview.png");
     await waitForPage(
       socket,
-      `!!document.querySelector('.af-brief-panel') && Array.from(document.querySelectorAll('.af-brief-panel button')).some(b => b.textContent?.trim() === 'Refresh brief' && !b.disabled)`,
-      "The native Keeper brief panel did not expose its attended Refresh control.",
+      `!!document.querySelector('.af-brief-panel .af-brief-availability[data-readiness="unavailable"] a[href$="/keeper"]') && Array.from(document.querySelectorAll('.af-brief-panel button')).some(b => b.textContent?.trim() === 'Refresh brief' && b.disabled)`,
+      "The no-CLI native fixture did not explain its unavailable attended Refresh control.",
     );
     if (
       !(await evaluate(
@@ -1020,8 +1020,8 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
     );
     await waitForPage(
       socket,
-      "Array.from(document.querySelectorAll('.af-keeper-composer button')).some(b=>b.textContent.trim()==='Send'&&!b.disabled)",
-      "The packaged Keeper did not enable its explicit Send control",
+      "document.querySelector('.af-keeper-recovery.is-unavailable') && Array.from(document.querySelectorAll('.af-keeper-composer button')).some(b=>b.textContent.trim()==='Send'&&b.disabled)",
+      "The no-CLI packaged Keeper did not preserve its unavailable Send state",
     );
     await evaluate(
       socket,
