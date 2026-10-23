@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmdirSync,
   symlinkSync,
   unlinkSync,
@@ -461,8 +462,8 @@ test("sync selects the actual harness linked checkout and skips an unrelated rep
     const sync = f.records().filter((record) => record.kind === "sync");
     expect(sync).toHaveLength(sameWorkspace ? 1 : 0);
     if (sameWorkspace)
-      expect(String(sync[0]?.cwd).toLowerCase().replaceAll("\\", "/")).toBe(
-        worktree.toLowerCase().replaceAll("\\", "/"),
+      expect(realpathSync.native(String(sync[0]?.cwd))).toBe(
+        realpathSync.native(worktree),
       );
   }
 });
