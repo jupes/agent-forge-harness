@@ -4,6 +4,7 @@ import {
   newSessionDraft,
   sessionAttachments,
   sessionStartBody,
+  validateSessionAttachments,
 } from "../../apps/desktop/src/session-composer";
 
 test("smith defaults retain unsupported effort until the user explicitly selects CLI default, and Chat omits Task-only limits", () => {
@@ -36,6 +37,59 @@ test("smith defaults retain unsupported effort until the user explicitly selects
   ).toThrow("JSON object");
 });
 
+test("separately valid attachment batches cannot overflow their combined private input bound", async () => {
+  const first = await sessionAttachments([
+    new File([new Uint8Array(600_000)], "first.png", { type: "image/png" }),
+  ]);
+  const second = await sessionAttachments([
+    new File([new Uint8Array(600_000)], "second.png", { type: "image/png" }),
+  ]);
+  expect(() => validateSessionAttachments(first)).not.toThrow();
+  expect(() => validateSessionAttachments(second)).not.toThrow();
+  expect(() => validateSessionAttachments([...first, ...second])).toThrow(
+    "combined 1.5 MB",
+  );
+  expect(() =>
+    sessionStartBody({
+      ...newSessionDraft(),
+      attachments: [...first, ...second],
+    }),
+  ).toThrow("combined 1.5 MB");
+});
+
+test("new worktrees become launchable only after a confirmed path matches the reviewed repository, ref, branch and bead", () => {
+  const draft = {
+    ...newSessionDraft(),
+    prompt: "Run in a new worktree",
+    repository: "/repo",
+    worktree: "/repo/trees/sw-confirmed",
+    smith: "claude",
+    model: "sonnet",
+    where: "new" as const,
+    baseRef: "HEAD",
+    branch: "feat/session",
+    beadId: "alpha-epic",
+  };
+  expect(() => sessionStartBody(draft)).toThrow("create and confirm");
+  const confirmed = {
+    ...draft,
+    createdWorktree: {
+      path: draft.worktree,
+      repository: draft.repository,
+      baseRef: draft.baseRef,
+      branch: draft.branch,
+      beadId: draft.beadId,
+    },
+  };
+  expect(sessionStartBody(confirmed).worktree).toBe(draft.worktree);
+  expect(() =>
+    sessionStartBody({ ...confirmed, branch: "feat/different" }),
+  ).toThrow("create and confirm");
+  expect(() =>
+    sessionStartBody({ ...confirmed, beadId: "another-bead" }),
+  ).toThrow("create and confirm");
+});
+
 test("selected text and image files remain exact inline input and binary or oversized attachments refuse", async () => {
   const text = new File(["  Exact text 🌱\n"], "notes.txt", {
       type: "text/plain",
@@ -60,4 +114,7 @@ test("selected text and image files remain exact inline input and binary or over
   await expect(
     sessionAttachments([new File([new Uint8Array(1_000_001)], "large.txt")]),
   ).rejects.toThrow("1 MB");
+  await expect(
+    sessionAttachments([new File(["x".repeat(524_289)], "long.txt")]),
+  ).rejects.toThrow("supported text or image limits");
 });

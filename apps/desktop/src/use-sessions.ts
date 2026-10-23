@@ -43,6 +43,20 @@ export function useSessions(
         `/__agent-forge${base(id)}/${encodeURIComponent(session)}/events`,
         { fetch: operatorRead },
       ),
+    createWorktree: (id, input) =>
+      actionOutcome(
+        () =>
+          operatorPost(
+            `/__agent-forge/projects/${encodeURIComponent(id)}/session-worktrees`,
+            input,
+          ),
+        "Check the original worktree request before trying again.",
+      ),
+    readWorktree: (id, requestId) =>
+      readOperatorRoute(
+        `/projects/${encodeURIComponent(id)}/session-worktrees/${encodeURIComponent(requestId)}`,
+        { ...pageReads(), fetch: operatorRead },
+      ),
   });
   const client = held.current;
   useEffect(

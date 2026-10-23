@@ -6,45 +6,29 @@ import {
   conversationPageSchema,
   conversationReceiptSchema,
 } from "../../../scripts/conversations/protocol";
+import {
+  ownedSessionSchema,
+  sessionStartReceiptSchema,
+} from "../../../scripts/sessions/protocol";
 import type {
+  ConversationObject,
   ConversationPage,
   ConversationReceipt,
   ConversationTurn,
 } from "../../../types/conversation";
 import type { OwnedSessionRecord } from "../../../types/owned-session";
+import type { SessionAttachment } from "../../../types/session-launch";
 import type { SessionStartRequest } from "../../../types/session-requests";
 import type { SessionMessage } from "../../../types/session-turn";
-import { newSessionDraft, type SessionComposerDraft } from "./session-composer";
+import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
+import {
+  newSessionDraft,
+  type SessionComposerDraft,
+  validateSessionAttachments,
+} from "./session-composer";
+import { createSessionWorktreeClient } from "./session-worktree-client";
 
-const ownedId = z
-  .string()
-  .regex(
-    /^session-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
-export const ownedSessionSchema: z.ZodType<OwnedSessionRecord> = z
-  .object({
-    id: ownedId,
-    projectId: z.string(),
-    requestId: z.string().uuid(),
-    requestHash: z.string().regex(/^[a-f0-9]{64}$/),
-    createdAt: z.iso.datetime(),
-    mode: z.enum(["task", "chat"]),
-    provider: z.literal("claude"),
-    workspace: z.string().min(1).max(1024),
-    repository: z.string().min(1).max(1024),
-    worktree: z.string().min(1).max(1024),
-    beadId: z.string().min(1).max(200).optional(),
-    smith: z.string().min(1).max(80),
-    requestedModel: z.string().min(1).max(200),
-    requestedEffort: z
-      .enum(["low", "medium", "high", "xhigh", "max"])
-      .nullable(),
-  })
-  .strict();
 const listSchema = z.array(ownedSessionSchema).max(1000);
-const startReceiptSchema = z
-  .object({ session: ownedSessionSchema, receipt: conversationReceiptSchema })
-  .strict();
 const active = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
 const held = (turn: ConversationTurn) =>
@@ -76,6 +60,8 @@ export interface OwnedSessionView {
   loaded: boolean;
   live: boolean;
   draft: string;
+  attachments: SessionAttachment[];
+  about: ConversationObject[];
   pending: SessionMessage | null;
   posting: boolean;
   stopping: string | null;
@@ -103,6 +89,11 @@ export function createSessionsClient(deps: {
   ): Promise<ActionOutcome>;
   stream(projectId: string, sessionId: string): StreamTransport;
   timers?: Timers;
+  createWorktree?(
+    projectId: string,
+    input: SessionWorktreeRequest,
+  ): Promise<ActionOutcome>;
+  readWorktree?(projectId: string, requestId: string): Promise<unknown>;
 }) {
   const projects = new Map<string, SessionProjectView>(),
     sessions = new Map<string, OwnedSessionView>(),
@@ -143,6 +134,8 @@ export function createSessionsClient(deps: {
         loaded: false,
         live: false,
         draft: "",
+        attachments: [],
+        about: [],
         pending: null,
         posting: false,
         stopping: null,
@@ -167,6 +160,13 @@ export function createSessionsClient(deps: {
   const confirm = (entry: OwnedSessionView, turn: ConversationTurn) => {
     if (entry.pending?.requestId === turn.requestId) {
       if (entry.draft === entry.pending.text) entry.draft = "";
+      if (
+        JSON.stringify(entry.attachments) ===
+        JSON.stringify(entry.pending.attachments ?? [])
+      )
+        entry.attachments = [];
+      if (JSON.stringify(entry.about) === JSON.stringify(entry.pending.about))
+        entry.about = [];
       entry.pending = null;
       entry.notice = "The original message is recorded in this session.";
     }
@@ -368,7 +368,7 @@ export function createSessionsClient(deps: {
       outcome.state === "done" &&
       entry.pendingStart?.requestId === input.requestId
     ) {
-      const parsed = startReceiptSchema.safeParse(outcome.data);
+      const parsed = sessionStartReceiptSchema.safeParse(outcome.data);
       if (
         parsed.success &&
         parsed.data.session.projectId === projectId &&
@@ -424,7 +424,10 @@ export function createSessionsClient(deps: {
     }
     entry.posting = false;
     if (disposed) return;
-    if (outcome.state === "done") {
+    if (
+      outcome.state === "done" &&
+      entry.pending?.requestId === input.requestId
+    ) {
       const parsed = conversationReceiptSchema.safeParse(outcome.data);
       if (
         parsed.success &&
@@ -439,7 +442,10 @@ export function createSessionsClient(deps: {
       } else
         entry.notice =
           "The message receipt could not be verified. Check the original request.";
-    } else if (entry.pending?.requestId === input.requestId) {
+    } else if (
+      outcome.state !== "done" &&
+      entry.pending?.requestId === input.requestId
+    ) {
       entry.notice = outcome.message;
       if (outcome.state === "refused" && !retry) entry.pending = null;
     }
@@ -447,6 +453,20 @@ export function createSessionsClient(deps: {
     await check(entry.projectId, entry.id);
   };
   const client = {
+    worktrees: createSessionWorktreeClient({
+      canWrite: deps.canWrite,
+      requestId: deps.requestId,
+      post: (projectId, input) =>
+        deps.createWorktree?.(projectId, input) ??
+        Promise.resolve({
+          state: "refused",
+          message: "Worktree creation is unavailable.",
+        }),
+      read: (projectId, requestId) =>
+        deps.readWorktree?.(projectId, requestId) ??
+        Promise.reject(new Error("Worktree lookup unavailable")),
+      changed: tell,
+    }),
     project,
     session,
     refresh,
@@ -466,6 +486,18 @@ export function createSessionsClient(deps: {
     },
     draft(projectId: string, id: string, text: string) {
       session(projectId, id).draft = text;
+      tell();
+    },
+    editMessage(
+      projectId: string,
+      id: string,
+      update: {
+        attachments?: SessionAttachment[];
+        about?: ConversationObject[];
+      },
+    ) {
+      if (update.attachments) validateSessionAttachments(update.attachments);
+      Object.assign(session(projectId, id), structuredClone(update));
       tell();
     },
     async start(
@@ -493,6 +525,7 @@ export function createSessionsClient(deps: {
         entry.loaded &&
         entry.live &&
         !!entry.draft.trim() &&
+        entry.draft.length <= 16_384 &&
         !entry.pending &&
         !entry.posting &&
         !entry.stopping &&
@@ -508,7 +541,8 @@ export function createSessionsClient(deps: {
         requestId: deps.requestId(),
         expectedRevision: entry.page?.revision ?? 0,
         text: entry.draft,
-        about: [],
+        about: structuredClone(entry.about),
+        attachments: structuredClone(entry.attachments),
       };
       await postMessage(entry, false);
     },

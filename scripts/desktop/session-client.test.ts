@@ -185,3 +185,79 @@ test("terminal stream confirmation wins over a delayed malformed Stop receipt, a
   expect(posts).toEqual(["stop"]);
   client.dispose();
 });
+
+test("a delayed malformed message receipt cannot overwrite stream confirmation or erase the next draft, and stale project streams stay private", async () => {
+  const observers: StreamHandlers[] = [],
+    posts: unknown[] = [];
+  let finish: ((value: ActionOutcome) => void) | undefined;
+  const nextId = "18da5c95-3218-439c-a33d-e5662465f506";
+  const ready = {
+    ...page,
+    binding: { provider: "claude", sessionId: "native-id", version: "fixture" },
+    turns: [{ ...turn, phase: "completed" }],
+    request: null,
+  };
+  const client = createSessionsClient({
+    canWrite: () => true,
+    requestId: () => nextId,
+    list: async (scope) => (scope === projectId ? [record] : []),
+    read: async () => ready,
+    post: async (_project, _session, _action, body) => {
+      posts.push(body);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+    stream: () => (_cursor, handlers) => {
+      observers.push(handlers);
+      return { close() {} };
+    },
+  });
+  const deliver = (value: unknown, index = 0) =>
+    observers[index]?.onMessage({
+      event: "conversation",
+      id: "1",
+      data: JSON.stringify(value),
+    });
+  await client.refresh(projectId);
+  client.activate(projectId, id);
+  deliver(ready);
+  client.draft(projectId, id, "Exact follow-up");
+  client.editMessage(projectId, id, {
+    attachments: [{ kind: "text", name: "first.txt", text: "first" }],
+    about: [{ kind: "bead", id: "alpha-epic" }],
+  });
+  const sending = client.send(projectId, id);
+  expect(posts[0]).toMatchObject({
+    requestId: nextId,
+    text: "Exact follow-up",
+    attachments: [{ name: "first.txt" }],
+    about: [{ id: "alpha-epic" }],
+  });
+  client.draft(projectId, id, "Later draft");
+  client.editMessage(projectId, id, {
+    attachments: [{ kind: "text", name: "later.txt", text: "later" }],
+    about: [],
+  });
+  const confirmed = {
+    ...ready,
+    revision: 3,
+    frames: [],
+    turns: [...ready.turns, { ...turn, requestId: nextId, phase: "completed" }],
+    request: null,
+  };
+  deliver(confirmed);
+  finish?.({ state: "done", data: { malformed: true } });
+  await sending;
+  expect(client.session(projectId, id).notice).toBe(
+    "The original message is recorded in this session.",
+  );
+  expect(client.session(projectId, id).draft).toBe("Later draft");
+  expect(client.session(projectId, id).attachments[0]?.name).toBe("later.txt");
+  client.activate("project-beta", "session-beta");
+  deliver(confirmed);
+  expect(client.session(projectId, id).page).toBeNull();
+  expect(client.session("project-beta", "session-beta").page).toBeNull();
+  expect(posts).toHaveLength(1);
+  client.dispose();
+});

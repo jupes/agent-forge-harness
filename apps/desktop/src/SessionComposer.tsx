@@ -4,7 +4,7 @@ import { Button } from "../../../docs/js/ds/Button";
 import { operatorPost } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
-import { sessionTurnSnapshotSchema } from "../../../scripts/sessions/turn-protocol";
+import { sessionPreviewReceiptSchema } from "../../../scripts/sessions/protocol";
 import type { WorktreeEntry } from "../../../types/beads";
 import type { ConversationObject } from "../../../types/conversation";
 import type { SmithsView } from "../../../types/hearth";
@@ -19,6 +19,7 @@ import {
   chooseSessionSmith,
   sessionAttachments,
   sessionStartBody,
+  validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
 
@@ -61,7 +62,8 @@ export function SessionComposer({
   onStarted(id: string): void;
 }) {
   const view = client.project(project.id),
-    draft = view.composer;
+    draft = view.composer,
+    worktreeAction = client.worktrees.get(project.id);
   const [settings, setSettings] = useState<{
     smiths: SmithsView;
     worktrees: WorktreeEntry[];
@@ -134,6 +136,44 @@ export function SessionComposer({
     if (view.lastStarted && view.lastStarted !== startAtOpen.current)
       onStarted(view.lastStarted);
   }, [view.lastStarted, onStarted]);
+  const created =
+    worktreeAction.receipt?.state === "created"
+      ? worktreeAction.receipt.worktree
+      : null;
+  useEffect(() => {
+    const original = worktreeAction.original;
+    if (
+      created &&
+      original &&
+      draft.where === "new" &&
+      draft.repository === original.repository &&
+      draft.baseRef === original.baseRef &&
+      draft.branch === original.branch &&
+      (draft.beadId || undefined) === original.beadId &&
+      draft.createdWorktree?.path !== created.path
+    )
+      client.editComposer(project.id, {
+        worktree: created.path,
+        createdWorktree: {
+          path: created.path,
+          repository: original.repository,
+          baseRef: original.baseRef,
+          branch: original.branch,
+          ...(original.beadId ? { beadId: original.beadId } : {}),
+        },
+      });
+  }, [
+    created?.path,
+    worktreeAction.original,
+    draft.where,
+    draft.repository,
+    draft.baseRef,
+    draft.branch,
+    draft.beadId,
+    draft.createdWorktree?.path,
+    client,
+    project.id,
+  ]);
   const selectedSmith = settings?.smiths.smiths.find(
     (item) => item.name === draft.smith,
   );
@@ -212,28 +252,41 @@ export function SessionComposer({
         "No session was started; check supported options again.",
       );
       if (result.state !== "done") throw new Error(result.message);
-      const value = result.data;
-      if (
-        !value ||
-        typeof value !== "object" ||
-        !("projectId" in value) ||
-        value.projectId !== project.id ||
-        !("requestId" in value) ||
-        value.requestId !== input.requestId ||
-        !("snapshot" in value)
-      )
-        throw new Error("The supported-options reply could not be verified.");
-      const checked = sessionTurnSnapshotSchema.safeParse(value.snapshot);
+      const checked = sessionPreviewReceiptSchema.safeParse(result.data);
       if (
         !checked.success ||
-        checked.data.smith !== input.smith ||
-        checked.data.launch.model !== input.launch.model ||
-        checked.data.launch.prompt !== input.launch.prompt
+        checked.data.projectId !== project.id ||
+        checked.data.requestId !== input.requestId ||
+        checked.data.snapshot.smith !== input.smith ||
+        checked.data.snapshot.cwd !== input.worktree
       )
         throw new Error(
           "The supported-options reply did not match the reviewed request.",
         );
-      setSnapshot(checked.data);
+      const expected = serializeClaudeLaunch(
+        {
+          ...input.launch,
+          context: {
+            projectId: project.id,
+            repository: input.repository,
+            worktree: input.worktree,
+            ...(input.beadId ? { beadId: input.beadId } : {}),
+            about: input.about ?? [],
+          },
+        },
+        checked.data.snapshot.capabilities,
+      );
+      for (const key of Object.keys(expected) as Array<
+        keyof SerializedClaudeLaunch
+      >)
+        if (
+          JSON.stringify(expected[key]) !==
+          JSON.stringify(checked.data.serialized[key])
+        )
+          throw new Error(
+            "The supported-options reply changed the reviewed session input.",
+          );
+      setSnapshot(checked.data.snapshot);
     } catch (error) {
       setSnapshot(null);
       setProblem(
@@ -397,9 +450,12 @@ export function SessionComposer({
               setAttaching(true);
               void sessionAttachments(files)
                 .then((items) => {
-                  if (items.length + draft.attachments.length > 8)
-                    throw new Error("Choose at most eight attachments.");
-                  edit({ attachments: [...draft.attachments, ...items] });
+                  const combined = [
+                    ...client.project(project.id).composer.attachments,
+                    ...items,
+                  ];
+                  validateSessionAttachments(combined);
+                  edit({ attachments: combined });
                 })
                 .catch((error) =>
                   setProblem(
@@ -459,6 +515,7 @@ export function SessionComposer({
             Repository
             <select
               aria-label="Session repository"
+              disabled={!settings}
               value={draft.repository}
               onChange={(event) =>
                 edit({ repository: event.currentTarget.value })
@@ -475,21 +532,22 @@ export function SessionComposer({
             Where it runs
             <select
               aria-label="Where the session runs"
+              disabled={!settings}
               value={draft.where}
               onChange={(event) => {
                 const where =
-                  event.currentTarget.value === "existing"
-                    ? "existing"
-                    : "main";
+                  event.currentTarget.value === "new"
+                    ? "new"
+                    : event.currentTarget.value === "existing"
+                      ? "existing"
+                      : "main";
                 edit({
                   where,
                   ...(where === "main" && main ? { worktree: main.path } : {}),
                 });
               }}
             >
-              <option value="new" disabled>
-                New worktree (recommended) · creation unavailable
-              </option>
+              <option value="new">New worktree (recommended)</option>
               <option value="existing">Existing worktree</option>
               <option value="main">Main checkout</option>
             </select>
@@ -497,7 +555,7 @@ export function SessionComposer({
         </div>
         {draft.where === "main" ? (
           <p class="af-session-warning">Edits land in your working copy.</p>
-        ) : (
+        ) : draft.where === "existing" ? (
           <label>
             Registered worktree
             <select
@@ -517,6 +575,102 @@ export function SessionComposer({
                 ))}
             </select>
           </label>
+        ) : (
+          <div class="af-session-new-worktree">
+            <p>
+              Creating a worktree is a separate explicit action. It creates a
+              branch and directory; it starts no provider.
+            </p>
+            <div class="af-session-composer-row">
+              <label>
+                Base ref
+                <input
+                  aria-label="New session worktree base ref"
+                  value={draft.baseRef}
+                  onInput={(event) =>
+                    edit({ baseRef: event.currentTarget.value })
+                  }
+                />
+              </label>
+              <label>
+                New branch
+                <input
+                  aria-label="New session worktree branch"
+                  placeholder="feat/my-session"
+                  value={draft.branch}
+                  onInput={(event) =>
+                    edit({ branch: event.currentTarget.value })
+                  }
+                />
+              </label>
+            </div>
+            {worktreeAction.receipt?.worktree && (
+              <p>
+                Requested worktree: {worktreeAction.receipt.worktree.path} ·{" "}
+                {worktreeAction.receipt.state === "created"
+                  ? "Created"
+                  : "Outcome unconfirmed; this path cannot start a session"}
+              </p>
+            )}
+            {worktreeAction.notice && (
+              <p role="status">{worktreeAction.notice}</p>
+            )}
+            <div class="af-session-composer-row">
+              {!worktreeAction.original ? (
+                <Button
+                  disabled={
+                    !writesAllowed ||
+                    worktreeAction.posting ||
+                    !!view.pendingStart
+                  }
+                  onClick={() => {
+                    void client.worktrees.create(project.id, {
+                      repository: draft.repository,
+                      baseRef: draft.baseRef,
+                      branch: draft.branch,
+                      ...(draft.beadId ? { beadId: draft.beadId } : {}),
+                    });
+                  }}
+                >
+                  Create worktree
+                </Button>
+              ) : worktreeAction.receipt &&
+                worktreeAction.receipt.state !== "unknown" ? (
+                <Button
+                  disabled={worktreeAction.posting || worktreeAction.checking}
+                  onClick={() => {
+                    client.worktrees.another(project.id);
+                    edit({ createdWorktree: null, worktree: "" });
+                  }}
+                >
+                  Prepare another worktree
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    disabled={worktreeAction.checking}
+                    onClick={() => {
+                      void client.worktrees.check(project.id);
+                    }}
+                  >
+                    Check original worktree
+                  </Button>
+                  <Button
+                    disabled={
+                      !writesAllowed ||
+                      worktreeAction.posting ||
+                      !!view.pendingStart
+                    }
+                    onClick={() => {
+                      void client.worktrees.retry(project.id);
+                    }}
+                  >
+                    Retry original worktree
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
         )}
         <div class="af-session-composer-row">
           <label>
@@ -550,6 +704,7 @@ export function SessionComposer({
           Source smith
           <select
             aria-label="Session smith"
+            disabled={!settings}
             value={draft.smith}
             onChange={(event) => {
               const chosen = settings?.smiths.smiths.find(
@@ -616,6 +771,7 @@ export function SessionComposer({
             Reasoning effort
             <select
               aria-label="Session effort"
+              disabled={!settings}
               value={draft.effort}
               onChange={(event) =>
                 edit({ effort: event.currentTarget.value, custom: true })

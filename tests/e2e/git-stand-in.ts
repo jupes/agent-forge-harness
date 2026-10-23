@@ -19,9 +19,21 @@
  */
 
 const args = process.argv.slice(2);
+const here = process.cwd().replaceAll("\\", "/");
+
+// The coding-session scope validator needs the fixture's ordinary checkout
+// discovery as well as its listing. These are synthetic cwd-only answers;
+// no ambient Git process, repository config, hooks or other checkout is read.
+if (args.join(" ") === "rev-parse --show-toplevel") {
+  process.stdout.write(`${here}\n`);
+  process.exit(0);
+}
+if (args.join(" ") === "rev-parse --path-format=absolute --git-common-dir") {
+  process.stdout.write(`${here}/.git\n`);
+  process.exit(0);
+}
 
 if (args.join(" ") === "worktree list --porcelain -z") {
-  const here = process.cwd().replaceAll("\\", "/");
   process.stdout.write(
     `worktree ${here}\0HEAD ${"0".repeat(40)}\0detached\0\0`,
   );

@@ -125,6 +125,11 @@
   color: inherit;
   cursor: pointer;
 }
+.af-session-composer .af-keeper-picker,
+.af-owned-session-composer .af-keeper-picker {
+  position: static;
+  max-height: min(280px, 35dvh);
+}
 .af-session-composer
   :is(button, input, select, textarea, summary):focus-visible,
 .af-owned-session
@@ -143,7 +148,7 @@
 .af-owned-session {
   display: flex;
   flex-direction: column;
-  min-height: 440px;
+  min-height: 560px;
   height: calc(100dvh - 205px);
   border: 1px solid var(--color-divider);
   border-radius: var(--radius-lg);
@@ -183,9 +188,9 @@
   font-size: 11px;
 }
 .af-owned-transcript {
-  flex: 1 1 80px;
+  flex: 1 1 140px;
   overflow: auto;
-  min-height: 80px;
+  min-height: 140px;
   padding: 18px;
 }
 .af-owned-turn {
@@ -221,10 +226,17 @@
   border-top: 1px solid var(--color-divider);
   background: var(--color-surface);
   font-size: 12px;
+  max-height: 45dvh;
+  overflow: auto;
 }
 .af-owned-session-composer label {
   display: grid;
   gap: 6px;
+}
+.af-owned-session-composer .af-session-files {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
 }
 .af-owned-session-composer p {
   margin: 0 0 6px;

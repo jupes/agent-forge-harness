@@ -1,21 +1,31 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
+import type { ConversationObject } from "../../../types/conversation";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import { KeeperSuggestions } from "./KeeperSuggestions";
+import type { KeeperClient } from "./keeper-client";
+import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
 import type { SessionsClient } from "./session-client";
+import {
+  sessionAttachments,
+  validateSessionAttachments,
+} from "./session-composer";
 import "./session.css";
 
 export function SessionConversation({
   projectId,
   sessionId,
   client,
+  keeper,
   writesAllowed,
 }: {
   projectId: string;
   sessionId: string;
   client: SessionsClient;
+  keeper: KeeperClient;
   writesAllowed: boolean;
 }) {
   const view = client.session(projectId, sessionId),
@@ -35,8 +45,43 @@ export function SessionConversation({
   const snapshot = first?.kind === "user" ? first.session : undefined;
   const feed = useRef<HTMLDivElement>(null),
     following = useRef(true);
+  const prompt = useRef<HTMLTextAreaElement>(null),
+    pickerRegion = useRef<HTMLDivElement>(null);
   const [away, setAway] = useState(false),
     [notice, setNotice] = useState("");
+  const [caret, setCaret] = useState(0),
+    [pickerVisible, setPickerVisible] = useState(false),
+    [attaching, setAttaching] = useState(false);
+  const choose = (value: string, object?: ConversationObject) => {
+    const picker = keeperPicker(view.draft, caret);
+    if (!picker) return;
+    const insertion = insertKeeperSuggestion(view.draft, picker, value),
+      changingKind = value.endsWith(":"),
+      position = insertion.caret - (changingKind ? 1 : 0);
+    client.draft(
+      projectId,
+      sessionId,
+      changingKind
+        ? insertion.text.slice(0, position) +
+            insertion.text.slice(insertion.caret)
+        : insertion.text,
+    );
+    if (
+      object &&
+      !view.about.some(
+        (item) => item.kind === object.kind && item.id === object.id,
+      )
+    )
+      client.editMessage(projectId, sessionId, {
+        about: [...view.about, object],
+      });
+    setCaret(position);
+    setPickerVisible(changingKind);
+    requestAnimationFrame(() => {
+      prompt.current?.focus();
+      prompt.current?.setSelectionRange(position, position);
+    });
+  };
   const lastSequence = view.page?.nextCursor ?? 0;
   useEffect(() => {
     if (following.current && feed.current)
@@ -286,18 +331,46 @@ export function SessionConversation({
         <label>
           Reply to Claude
           <textarea
+            ref={prompt}
             aria-label="Session reply prompt"
-            rows={3}
+            rows={2}
             maxLength={16_384}
             value={view.draft}
             disabled={record?.mode === "task"}
-            onInput={(event) =>
-              client.draft(projectId, sessionId, event.currentTarget.value)
-            }
+            onInput={(event) => {
+              client.draft(projectId, sessionId, event.currentTarget.value);
+              setCaret(event.currentTarget.selectionStart);
+              setPickerVisible(true);
+            }}
+            onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
             onKeyDown={(event) => {
+              if (
+                event.key === "Escape" &&
+                pickerVisible &&
+                keeperPicker(view.draft, caret)
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                setPickerVisible(false);
+              }
+              if (
+                event.key === "ArrowDown" &&
+                pickerVisible &&
+                keeperPicker(view.draft, caret)
+              ) {
+                const first =
+                  pickerRegion.current?.querySelector<HTMLButtonElement>(
+                    "button:not([disabled])",
+                  );
+                if (first) {
+                  event.preventDefault();
+                  first.focus();
+                }
+              }
               if (
                 (event.ctrlKey || event.metaKey) &&
                 event.key === "Enter" &&
+                !attaching &&
                 !event.isComposing
               ) {
                 event.preventDefault();
@@ -306,6 +379,95 @@ export function SessionConversation({
             }}
           />
         </label>
+        {record?.mode === "chat" && (
+          <>
+            <KeeperSuggestions
+              projectId={projectId}
+              client={keeper}
+              text={view.draft}
+              caret={caret}
+              visible={pickerVisible}
+              region={pickerRegion}
+              aboutCount={view.about.length}
+              recipient="this session"
+              onChoose={choose}
+              onClose={() => {
+                setPickerVisible(false);
+                prompt.current?.focus();
+              }}
+            />
+            <label class="af-session-files">
+              Attach text or images
+              <input
+                type="file"
+                multiple
+                aria-label="Session reply attachments"
+                accept=".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs,image/png,image/jpeg,image/gif,image/webp"
+                disabled={attaching || !!view.pending}
+                onChange={(event) => {
+                  const files = [...(event.currentTarget.files ?? [])];
+                  event.currentTarget.value = "";
+                  setAttaching(true);
+                  void sessionAttachments(files)
+                    .then((items) => {
+                      const combined = [
+                        ...client.session(projectId, sessionId).attachments,
+                        ...items,
+                      ];
+                      validateSessionAttachments(combined);
+                      client.editMessage(projectId, sessionId, {
+                        attachments: combined,
+                      });
+                    })
+                    .catch((error) =>
+                      setNotice(
+                        error instanceof Error
+                          ? error.message
+                          : "The attachments could not be read.",
+                      ),
+                    )
+                    .finally(() => setAttaching(false));
+                }}
+              />
+            </label>
+            <div class="af-session-chips">
+              {view.attachments.map((item, index) => (
+                <span key={`${item.name}:${index}`}>
+                  {item.kind} · {item.name}
+                  <button
+                    type="button"
+                    aria-label={`Remove reply attachment ${item.name}`}
+                    onClick={() =>
+                      client.editMessage(projectId, sessionId, {
+                        attachments: view.attachments.filter(
+                          (_, at) => at !== index,
+                        ),
+                      })
+                    }
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {view.about.map((item) => (
+                <span key={`${item.kind}:${item.id}`}>
+                  About {item.kind} {item.id}
+                  <button
+                    type="button"
+                    aria-label={`Remove reply ${item.kind} ${item.id} context`}
+                    onClick={() =>
+                      client.editMessage(projectId, sessionId, {
+                        about: view.about.filter((value) => value !== item),
+                      })
+                    }
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          </>
+        )}
         <div class="af-session-composer-actions">
           <small>
             Ctrl/Cmd+Enter sends · Enter adds a line · closing this view leaves
@@ -313,7 +475,7 @@ export function SessionConversation({
           </small>
           <Button
             variant="primary"
-            disabled={!client.canSend(projectId, sessionId)}
+            disabled={attaching || !client.canSend(projectId, sessionId)}
             onClick={() => {
               void client.send(projectId, sessionId);
             }}

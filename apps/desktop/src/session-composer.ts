@@ -1,3 +1,4 @@
+import { sessionAttachmentSchema } from "../../../scripts/sessions/claude-launch";
 import type { ConversationObject } from "../../../types/conversation";
 import type { Smith } from "../../../types/hearth";
 import type {
@@ -14,6 +15,15 @@ export interface SessionComposerDraft {
   repository: string;
   worktree: string;
   where: "main" | "existing" | "new";
+  baseRef: string;
+  branch: string;
+  createdWorktree: {
+    path: string;
+    repository: string;
+    baseRef: string;
+    branch: string;
+    beadId?: string | undefined;
+  } | null;
   beadId: string;
   mode: "task" | "chat";
   smith: string;
@@ -34,6 +44,9 @@ export const newSessionDraft = (): SessionComposerDraft => ({
   repository: "",
   worktree: "",
   where: "main",
+  baseRef: "HEAD",
+  branch: "",
+  createdWorktree: null,
   beadId: "",
   mode: "chat",
   smith: "",
@@ -63,6 +76,7 @@ export function chooseSessionSmith(
 export function sessionStartBody(
   draft: SessionComposerDraft,
 ): Omit<SessionStartRequest, "requestId"> {
+  validateSessionAttachments(draft.attachments);
   if (
     !draft.prompt.trim() ||
     !draft.repository ||
@@ -73,8 +87,18 @@ export function sessionStartBody(
     throw new Error(
       "Choose a repository, worktree, smith and model, and enter a prompt.",
     );
-  if (draft.where === "new")
-    throw new Error("Creating a worktree is not available in this build.");
+  if (
+    draft.where === "new" &&
+    (!draft.createdWorktree ||
+      draft.createdWorktree.path !== draft.worktree ||
+      draft.createdWorktree.repository !== draft.repository ||
+      draft.createdWorktree.baseRef !== draft.baseRef ||
+      draft.createdWorktree.branch !== draft.branch ||
+      draft.createdWorktree.beadId !== (draft.beadId || undefined))
+  )
+    throw new Error(
+      "Explicitly create and confirm this worktree before checking session options or starting.",
+    );
   if (
     draft.effort &&
     !["low", "medium", "high", "xhigh", "max"].includes(draft.effort)
@@ -166,11 +190,24 @@ export async function sessionAttachments(
       attachments.push({ kind: "text", name: file.name, text });
     }
   }
+  validateSessionAttachments(attachments);
+  return attachments;
+}
+
+export function validateSessionAttachments(
+  attachments: readonly SessionAttachment[],
+): void {
+  if (attachments.length > 8)
+    throw new Error("Choose at most eight attachments.");
   if (
     new TextEncoder().encode(JSON.stringify(attachments)).byteLength > 1_500_000
   )
     throw new Error(
       "The selected attachments exceed the combined 1.5 MB input limit.",
     );
-  return attachments;
+  for (const item of attachments)
+    if (!sessionAttachmentSchema.safeParse(item).success)
+      throw new Error(
+        `Attachment ${item.name} is invalid or exceeds the supported text or image limits.`,
+      );
 }
