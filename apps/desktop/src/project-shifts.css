@@ -29,6 +29,19 @@
   border-top: 1px solid var(--color-divider);
   padding: 20px 0;
 }
+.af-shift-skeleton {
+  display: grid;
+  gap: 10px;
+}
+.af-shift-skeleton i {
+  display: block;
+  height: 16px;
+  border-radius: 5px;
+  background: var(--color-divider);
+}
+.af-shift-skeleton i:last-child {
+  width: 60%;
+}
 .af-shift-row h3,
 .af-shift-held code {
   overflow-wrap: anywhere;
