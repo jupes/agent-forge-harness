@@ -1,4 +1,5 @@
 import type {
+  CodexChatCommand,
   CodexChatOutcome,
   CodexChatUsage,
 } from "../../../types/codex-chat";
@@ -8,11 +9,22 @@ import type {
   ClaudeCodingUsageEvent,
   CodingActivityEvent,
   CodingOutcomeEvent,
+  ReportedText,
 } from "../../../types/session-activity";
 import type { CodexChatDecisionView } from "./codex-chat-decisions";
 
+export interface NativeChatCommandReport {
+  version: string;
+  report: CodexChatCommand;
+  initialAggregate: ReportedText | null;
+  finalAggregate: ReportedText | null;
+  streamedOutput: ReportedText | null;
+  streamPrefixMissing: boolean;
+}
+
 export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
+  nativeCommands: NativeChatCommandReport[];
   usage: ClaudeCodingUsageEvent | CodexCodingUsageEvent | null;
   outcome: CodingOutcomeEvent | null;
   observedModel: string | null;
@@ -25,8 +37,10 @@ export function ownedSessionTurn(
   turnId: string,
 ): OwnedSessionTurn {
   const activities = new Map<string, CodingActivityEvent>();
+  const commands = new Map<string, NativeChatCommandReport>();
   const result: OwnedSessionTurn = {
     activities: [],
+    nativeCommands: [],
     usage: null,
     outcome: null,
     observedModel: null,
@@ -54,6 +68,53 @@ export function ownedSessionTurn(
           activity: { ...previous.activity, ...event.activity },
         });
       else activities.set(key, event);
+    } else if (event.kind === "coding-chat" && event.event.kind === "command") {
+      const report = event.event;
+      if (
+        page?.binding?.provider !== "codex" ||
+        page.binding.sessionId !== report.threadId ||
+        page.binding.version !== event.version
+      )
+        continue;
+      const key = JSON.stringify([
+        report.threadId,
+        report.turnId,
+        report.itemId,
+      ]);
+      const previous = commands.get(key);
+      if (
+        previous &&
+        (previous.report.status !== "inProgress" ||
+          previous.report.source === "turn/completed" ||
+          previous.report.source === "item/completed")
+      )
+        continue;
+      const streamedOutput =
+        report.outputSource === "delta" && report.output
+          ? {
+              text: (previous?.streamedOutput?.text ?? "") + report.output.text,
+              truncated:
+                previous?.streamedOutput?.truncated === true ||
+                report.output.truncated,
+            }
+          : (previous?.streamedOutput ?? null);
+      commands.set(key, {
+        version: event.version,
+        report,
+        initialAggregate:
+          report.source === "item/started"
+            ? report.output
+            : (previous?.initialAggregate ?? null),
+        finalAggregate:
+          report.source === "item/completed" ||
+          report.source === "turn/completed"
+            ? report.output
+            : null,
+        streamedOutput,
+        streamPrefixMissing:
+          previous?.streamPrefixMissing ??
+          report.source === "item/commandExecution/outputDelta",
+      });
     } else if (event.kind === "coding-usage") result.usage = event;
     else if (event.kind === "coding-outcome") result.outcome = event;
     else if (event.kind === "model") result.observedModel = event.model;
@@ -67,6 +128,7 @@ export function ownedSessionTurn(
       result.requestedModel = event.requestedModel;
   }
   result.activities = [...activities.values()];
+  result.nativeCommands = [...commands.values()];
   return result;
 }
 

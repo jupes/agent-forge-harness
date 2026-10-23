@@ -12,7 +12,10 @@ import {
   sessionStateSupport,
   unsupportedSessionStates,
 } from "../../apps/desktop/src/session-activity";
-import type { CodexChatOutcome } from "../../types/codex-chat";
+import type {
+  CodexChatCommand,
+  CodexChatOutcome,
+} from "../../types/codex-chat";
 import type {
   ConversationEvent,
   ConversationPage,
@@ -132,6 +135,153 @@ function page(events: ConversationEvent[]): ConversationPage {
     controllable: true,
   };
 }
+
+test("native Chat commands keep their streamed prefix and final aggregate separate, scoped and inert without granting decisions", () => {
+  const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const command: CodexChatCommand = {
+    kind: "command",
+    source: "item/started",
+    threadId,
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "native-command",
+    command: { text: "<script>inert command</script>", truncated: false },
+    cwd: "/reported/only",
+    status: "inProgress",
+    output: null,
+    outputSource: null,
+    exitCode: null,
+    durationMs: null,
+    partial: true,
+  };
+  const native = (event: CodexChatCommand): ConversationEvent => ({
+    kind: "coding-chat",
+    provider: "codex",
+    version: "0.163.0-alpha.10.2",
+    event,
+  });
+  const current = page([
+    native({
+      ...command,
+      outputSource: "aggregate",
+      output: { text: "Initial aggregate", truncated: false },
+    }),
+    native({
+      ...command,
+      source: "item/commandExecution/outputDelta",
+      outputSource: "delta",
+      output: { text: "first\n", truncated: false },
+    }),
+    native({
+      ...command,
+      source: "item/commandExecution/outputDelta",
+      outputSource: "delta",
+      output: { text: "second\n", truncated: true },
+    }),
+  ]);
+  current.binding = {
+    provider: "codex",
+    sessionId: threadId,
+    version: "0.163.0-alpha.10.2",
+  };
+  let value = ownedSessionTurn(current, turnId);
+  expect(value).toMatchObject({
+    nativeCommands: [
+      {
+        streamedOutput: { text: "first\nsecond\n", truncated: true },
+        streamPrefixMissing: false,
+      },
+    ],
+  });
+  let view = SessionActivity({ value });
+  expect(textOf(view)).toContain(
+    "Command · Reported in progress · Partial report",
+  );
+  expect(textOf(view)).toContain("Exit code not reported");
+  const finished = native({
+    ...command,
+    source: "item/completed",
+    status: "completed",
+    partial: false,
+    outputSource: "aggregate",
+    output: { text: "Distinct final aggregate", truncated: false },
+    exitCode: 0,
+    durationMs: 0,
+  });
+  current.frames.push({
+    seq: 4,
+    at: current.frames[0]!.at,
+    turnId,
+    event: finished,
+  });
+  current.frames.push({
+    ...current.frames[0]!,
+    seq: 5,
+    turnId: "other-accepted-turn",
+  });
+  value = ownedSessionTurn(current, turnId);
+  expect(value).toMatchObject({
+    nativeCommands: [
+      {
+        report: {
+          status: "completed",
+          output: { text: "Distinct final aggregate" },
+        },
+        streamedOutput: { text: "first\nsecond\n", truncated: true },
+      },
+    ],
+  });
+  view = SessionActivity({ value });
+  expect(textOf(view)).toContain("Reported exit code: 0");
+  expect(textOf(view)).toContain("Reported duration: 0 ms");
+  expect(textOf(view)).toContain("Distinct final aggregate");
+  expect(textOf(view)).toContain("first\nsecond\n");
+  expect(textOf(view)).toContain("Initial aggregate");
+  expect(textOf(view)).toContain("item/completed");
+  expect(textOf(view)).toContain(command.command.text);
+  for (const tag of ["button", "a", "script", "iframe", "img"])
+    expect(findAll(view, tag)).toHaveLength(0);
+  expect(findAll(view, "details")).toHaveLength(1);
+  expect(attrs(findAll(view, "details")[0]!).open).toBeUndefined();
+  const partial = { ...current, frames: current.frames.slice(1, 3) };
+  expect(ownedSessionTurn(partial, turnId)).toMatchObject({
+    nativeCommands: [{ streamPrefixMissing: true }],
+  });
+  expect(
+    textOf(SessionActivity({ value: ownedSessionTurn(partial, turnId) })),
+  ).toContain("Earlier command reports are not loaded");
+  const completedOnly = { ...current, frames: [current.frames[3]!] };
+  expect(ownedSessionTurn(completedOnly, turnId)).toMatchObject({
+    nativeCommands: [{ streamedOutput: null, report: { status: "completed" } }],
+  });
+  for (const binding of [
+    null,
+    { ...current.binding, sessionId: "foreign" },
+    { ...current.binding, version: "other" },
+  ])
+    expect(ownedSessionTurn({ ...current, binding }, turnId)).toMatchObject({
+      nativeCommands: [],
+    });
+  for (const status of ["failed", "declined"] as const) {
+    const report = {
+      ...command,
+      source: "item/completed" as const,
+      status,
+      partial: false,
+    };
+    const failed = SessionActivity({
+      value: ownedSessionTurn(
+        {
+          ...current,
+          frames: [{ ...current.frames[0]!, event: native(report) }],
+        },
+        turnId,
+      ),
+    });
+    expect(textOf(failed)).toContain(`Command · Reported ${status}`);
+    expect(textOf(failed)).toContain("Exit code not reported");
+    expect(findAll(failed, "button")).toHaveLength(0);
+  }
+});
 
 test("owned activity replaces cumulative reasoning and joins a tool result with its original input without mixing another turn", () => {
   const common = {

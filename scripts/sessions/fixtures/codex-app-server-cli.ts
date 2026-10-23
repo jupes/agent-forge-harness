@@ -285,6 +285,76 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
+      } else if (
+        mode === "command-activity" ||
+        mode === "command-interrupted" ||
+        mode === "command-activity-held"
+      ) {
+        const scope = { threadId, turnId };
+        const command = {
+          type: "commandExecution",
+          id: "reported-command-a",
+          pluginId: null,
+          scriptPath: null,
+          command: "inert command <script> stays text",
+          cwd,
+          processId: null,
+          source: "agent",
+          commandActions: [],
+          status: "inProgress",
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        };
+        await send({
+          method: "item/started",
+          params: { ...scope, item: command, startedAtMs: 1 },
+        });
+        await send({
+          method: "item/commandExecution/outputDelta",
+          params: {
+            ...scope,
+            itemId: command.id,
+            delta: "Reported line one\n",
+          },
+        });
+        if (mode === "command-activity-held") {
+          hangTree();
+        } else if (mode === "command-interrupted") {
+          await send({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: {
+                id: turnId,
+                status: "interrupted",
+                error: null,
+                items: [
+                  {
+                    ...command,
+                    aggregatedOutput: "Partial aggregate at interruption",
+                  },
+                ],
+              },
+            },
+          });
+        } else {
+          await send({
+            method: "item/completed",
+            params: {
+              ...scope,
+              item: {
+                ...command,
+                status: "completed",
+                aggregatedOutput: "Reported line one\nReported line two\n",
+                exitCode: 0,
+                durationMs: 12,
+              },
+              completedAtMs: 13,
+            },
+          });
+          await finish();
+        }
       } else if (mode === "burst") {
         hangTree();
         for (let index = 0; index < 400; index++)
@@ -317,6 +387,9 @@ while (true) {
               command: "inert example",
               cwd,
               status: "inProgress",
+              aggregatedOutput: null,
+              exitCode: null,
+              durationMs: null,
             },
           },
         };

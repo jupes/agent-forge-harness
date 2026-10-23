@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type {
   CodexChatApproval,
+  CodexChatCommand,
   CodexChatEvent,
   CodexChatOutcome,
 } from "../../types/codex-chat";
@@ -9,6 +10,10 @@ import type {
   CodexChatPrivateEvent,
 } from "../../types/codex-owned-chat";
 import type { CodexExecUsage } from "../../types/codex-task";
+import {
+  reportedTextSchema,
+  SESSION_ACTIVITY_LIMITS,
+} from "./activity-protocol";
 import {
   CODEX_APP_SERVER_VERSION,
   codexNativeUuidSchema,
@@ -52,6 +57,52 @@ const usage = z
     }),
   );
 const decision = z.enum(["accept", "decline", "cancel"]);
+export const codexChatCommandSchema = z
+  .object({
+    kind: z.literal("command"),
+    source: z.enum([
+      "item/started",
+      "item/commandExecution/outputDelta",
+      "item/completed",
+      "turn/completed",
+    ]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    command: reportedTextSchema.refine((value) => value.text.length > 0),
+    cwd: text.min(1).max(1024),
+    status: z.enum(["inProgress", "completed", "failed", "declined"]),
+    output: reportedTextSchema.nullable(),
+    outputSource: z.enum(["delta", "aggregate"]).nullable(),
+    exitCode: z
+      .number()
+      .int()
+      .min(-2_147_483_648)
+      .max(2_147_483_647)
+      .nullable(),
+    durationMs: count.nullable(),
+    partial: z.boolean(),
+  })
+  .strict()
+  .refine((value) => {
+    const delta = value.source === "item/commandExecution/outputDelta";
+    const active = value.status === "inProgress";
+    return (
+      (value.source !== "item/started" || active) &&
+      (value.source !== "item/completed" || !active) &&
+      (!delta || active) &&
+      value.partial === active &&
+      (delta
+        ? value.output !== null &&
+          value.outputSource === "delta" &&
+          value.exitCode === null &&
+          value.durationMs === null
+        : value.outputSource ===
+          (value.output === null ? null : "aggregate")) &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatCommand>;
 export const codexChatOutcomeSchema = z
   .object({
     phase: z.enum(["completed", "failed", "unknown"]),
@@ -102,6 +153,7 @@ export const codexChatApprovalSchema = z
     (value) => value.kind !== "command" || (!!value.command && !!value.cwd),
   ) satisfies z.ZodType<CodexChatApproval>;
 const nativeEvent = z.discriminatedUnion("kind", [
+  codexChatCommandSchema,
   z
     .object({
       kind: z.literal("process"),

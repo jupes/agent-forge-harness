@@ -26,6 +26,8 @@ if (
     "outcome-held",
     "hang-text",
     "provider-error",
+    "command-activity",
+    "command-activity-held",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");
