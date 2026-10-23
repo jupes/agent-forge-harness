@@ -39,6 +39,7 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { sessionLibraryReadSchema } from "../sessions/library-protocol";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
 import type { ActionContext, ActionRoute, ApiRoute } from "./api";
@@ -967,6 +968,33 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/sessions/:sessionId/archive": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+      body: {
+        requestId: "28641f36-7cfe-4d6d-b1aa-f8102d6f4a0d",
+        expectedRevision: 0,
+        archived: true,
+      },
+      status: 200,
+      target: FIXTURE_OWNED_SESSION_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+      body: { requestId: "invalid", archived: true },
+    },
+    prepare: async (h) => {
+      await seedOwnedSession(h);
+    },
+    happened: async (_h, answer) => {
+      const parsed = sessionLibraryReadSchema.safeParse(answer);
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.entry.archived).toBe(true);
+        expect(parsed.data.receipt?.outcome).toBe("applied");
+      }
+    },
+  },
   "POST /projects/:id/keeper/continuations": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
@@ -1590,8 +1618,13 @@ const READS: Record<string, string> = {
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+  "GET /projects/:id/session-observations": `/projects/${FIXTURE_PROJECT_ID}/session-observations`,
+  "GET /projects/:id/session-observations/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/session-observations/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
+  "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
+  "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+  "GET /projects/:id/sessions/:sessionId/export": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/export`,
   "GET /projects": "/projects",
   "GET /projects/summary": "/projects/summary",
   "GET /projects/:id/overview":
@@ -2116,6 +2149,7 @@ describe("a read row or the stream while another connection holds the write lock
   const LEDGER_ROWS: ReadonlyArray<[string, number]> = [
     ["GET /eligibility", 502],
     ["GET /events", 500],
+    ["GET /projects/:id/session-observations/:sessionId", 503],
     ["GET /reservations", 500],
     ["GET /runs/:slug", 500],
     ["GET /scoreboard", 500],

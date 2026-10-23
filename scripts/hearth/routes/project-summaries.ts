@@ -135,7 +135,7 @@ export function projectSnapshotReader(
       try {
         const registry = createSessionRegistry(home);
         source.ownedSessions = catalog.projects
-          .flatMap((project) => registry.list(project.id))
+          .flatMap((project) => registry.listAll(project.id))
           .filter(
             (session) =>
               workspaceKey(session.workspace) === workspaceKey(deps.workspace),

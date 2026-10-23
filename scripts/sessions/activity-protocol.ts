@@ -200,6 +200,20 @@ const activity = z.discriminatedUnion("kind", [
     })
     .strict(),
   z.object({ kind: z.literal("structured-output"), output: json }).strict(),
+  z
+    .object({
+      kind: z.literal("permission-denials"),
+      denials: z
+        .array(z.object({ toolId: id, name: id, input: json }).strict())
+        .max(SESSION_ACTIVITY_LIMITS.items),
+      truncated: z.boolean(),
+    })
+    .strict()
+    .refine(
+      (value) =>
+        new Set(value.denials.map((item) => item.toolId)).size ===
+        value.denials.length,
+    ),
 ]);
 export const codingActivitySchema: z.ZodType<CodingActivityEvent> = z
   .object({
@@ -225,7 +239,11 @@ export const codingActivitySchema: z.ZodType<CodingActivityEvent> = z
       value.source.startsWith(`${value.provider}.`) &&
       bytes(JSON.stringify(value)) <= SESSION_ACTIVITY_LIMITS.eventBytes &&
       (value.source !== "claude.result" ||
-        value.activity.kind === "structured-output") &&
+        ["structured-output", "permission-denials"].includes(
+          value.activity.kind,
+        )) &&
+      (value.activity.kind !== "permission-denials" ||
+        value.source === "claude.result") &&
       (value.provider !== "codex" ||
         value.activity.kind !== "structured-output") &&
       (value.source !== "claude.user" ||

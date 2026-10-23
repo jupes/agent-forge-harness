@@ -64,6 +64,197 @@ const input = {
 };
 record.requestHash = await sessionStartHash({ ...input, requestId });
 
+test("a failed private feed reads the selected saved pages without claiming live status or dispatching a provider", async () => {
+  let handlers: StreamHandlers | undefined;
+  const reads: number[] = [],
+    posts: string[] = [];
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [record],
+    read: async (_project, _session, query) => {
+      reads.push(query.after);
+      return query.after === 0
+        ? { ...page, more: true, lastSequence: 2 }
+        : {
+            ...page,
+            frames: [
+              {
+                ...page.frames[0],
+                seq: 2,
+                event: { kind: "text", text: "Saved private reply" },
+              },
+            ],
+            nextCursor: 2,
+            lastSequence: 2,
+          };
+    },
+    post: async (_project, _session, action) => {
+      posts.push(action);
+      return { state: "unknown", message: "Unexpected write" };
+    },
+    stream: () => (_after, next) => {
+      handlers = next;
+      return { close() {} };
+    },
+  });
+  client.activate(projectId, id);
+  if (!handlers) throw Error("Missing private feed");
+  handlers.onEnd("failed");
+  await Bun.sleep(0);
+  expect(reads).toEqual([0, 1]);
+  expect(client.session(projectId, id)).toMatchObject({
+    loaded: true,
+    live: false,
+    feedInterrupted: true,
+    readError: "",
+  });
+  expect(client.session(projectId, id).page?.frames).toHaveLength(2);
+  expect(posts).toEqual([]);
+  client.dispose();
+});
+
+test("late fallback reads cannot refill a closed project cache or replace a newer selection", async () => {
+  let handlers: StreamHandlers | undefined,
+    finish: ((value: unknown) => void) | undefined;
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [record],
+    read: async () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    post: async () => {
+      throw Error("A saved read cannot write");
+    },
+    stream: () => (_after, next) => {
+      handlers = next;
+      return { close() {} };
+    },
+  });
+  client.activate(projectId, id);
+  if (!handlers) throw Error("Missing private feed");
+  handlers.onEnd("failed");
+  expect(finish).toBeDefined();
+  client.activate("project-other", "session-other");
+  finish?.(page);
+  await Bun.sleep(0);
+  expect(client.session(projectId, id).page).toBeNull();
+  expect(client.session("project-other", "session-other").page).toBeNull();
+  client.dispose();
+});
+
+test("saved fallback has a deadline and ignores late data after it, with no provider retry", async () => {
+  let handlers: StreamHandlers | undefined,
+    finish: ((value: unknown) => void) | undefined;
+  const scheduled = new Set<{ run(): void; ms: number }>();
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [record],
+    read: async () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    post: async () => {
+      throw Error("A saved read cannot write");
+    },
+    stream: () => (_after, next) => {
+      handlers = next;
+      return { close() {} };
+    },
+    timers: {
+      set(run, ms) {
+        const item = { run, ms };
+        scheduled.add(item);
+        return item;
+      },
+      clear(handle) {
+        for (const item of scheduled)
+          if (item === handle) scheduled.delete(item);
+      },
+    },
+  });
+  client.activate(projectId, id);
+  if (!handlers) throw Error("Missing private feed");
+  handlers.onEnd("failed");
+  const deadline = [...scheduled].find((item) => item.ms === 5000);
+  expect(deadline).toBeDefined();
+  deadline?.run();
+  expect(client.session(projectId, id).readError).toContain("time limit");
+  finish?.(page);
+  await Bun.sleep(0);
+  expect(client.session(projectId, id).page).toBeNull();
+  client.dispose();
+  expect(scheduled.size).toBe(0);
+});
+
+for (const limit of ["pages", "bytes", "malformed"] as const) {
+  test(`saved fallback enforces ${limit} limits and keeps its earlier verified frames`, async () => {
+    let handlers: StreamHandlers | undefined,
+      reads = 0;
+    const client = createSessionsClient({
+      identities: sessionStartFixture().identities,
+      canWrite: () => true,
+      requestId: () => requestId,
+      list: async () => [record],
+      read: async (_project, _session, query) => {
+        reads++;
+        const count = limit === "bytes" ? 100 : 1;
+        const nextCursor = query.after + count;
+        return {
+          ...page,
+          revision: reads + 1,
+          more: true,
+          nextCursor,
+          lastSequence: 1000,
+          frames: Array.from({ length: count }, (_, index) => ({
+            seq:
+              query.after +
+              index +
+              1 +
+              (limit === "malformed" && reads > 1 ? 1 : 0),
+            turnId: requestId,
+            at,
+            event: {
+              kind: "text",
+              text: limit === "bytes" ? "x".repeat(16_384) : "Saved partial",
+            },
+          })),
+        };
+      },
+      post: async () => {
+        throw Error("A saved read cannot write");
+      },
+      stream: () => (_after, next) => {
+        handlers = next;
+        return { close() {} };
+      },
+    });
+    try {
+      client.activate(projectId, id);
+      if (!handlers) throw Error("Missing private feed");
+      handlers.onEnd("failed");
+      await Bun.sleep(0);
+      const saved = client.session(projectId, id);
+      expect(saved.readError).not.toBe("");
+      expect(saved.page?.frames.length).toBeGreaterThan(0);
+      expect(
+        new TextEncoder().encode(JSON.stringify(saved.page?.frames)).byteLength,
+      ).toBeLessThanOrEqual(8 * 1024 * 1024);
+      expect(saved.live).toBe(false);
+      expect(saved.loaded).toBe(false);
+      expect(reads).toBe(limit === "pages" ? 200 : limit === "bytes" ? 6 : 2);
+    } finally {
+      client.dispose();
+    }
+  });
+}
+
 test("lost Start responses retain the immutable original until its actual admitted turn is found; reads never start another provider", async () => {
   const sent: SessionStartRequest[] = [];
   let listed = false,

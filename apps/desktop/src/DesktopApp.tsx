@@ -15,6 +15,7 @@ import {
   navigateGlobal,
   PROJECT_DESTINATIONS,
 } from "./navigation";
+import { ObservedSessionDetail } from "./ObservedSessionDetail";
 import { OwnedSessions } from "./OwnedSessions";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
@@ -24,13 +25,14 @@ import { ProjectWorkbench } from "./ProjectWorkbench";
 import { Providers } from "./Providers";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
-import { sessionRows } from "./sessions-model";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
+import { useSessionLibrary } from "./use-session-library";
+import { useSessionObservations } from "./use-session-observations";
 import { useSessions } from "./use-sessions";
 import { useWorkbench } from "./use-workbench";
 
@@ -84,15 +86,37 @@ export function DesktopApp(): JSX.Element {
         : null;
     setNewBeadOpen(true);
   };
-  const selectedOwnedSession =
-    route.destination === "sessions" &&
-    route.selection?.kind === "session" &&
-    /^session-[0-9a-f-]{36}$/.test(route.selection.id)
-      ? route.selection.id
-      : null;
-  const sessions = useSessions(
+  const selectedSession =
+    route.selection?.kind === "session" ? route.selection.id : null;
+  const observations = useSessionObservations(
     project?.id ?? null,
-    selectedOwnedSession,
+    selectedSession,
+    summary?.workspace ?? null,
+  );
+  const sessions = useSessions(project?.id ?? null, null, writesAllowed);
+  const observationRows = project
+    ? observations.rows(project.id, sessions.project(project.id).records)
+    : [];
+  const selectedOwner =
+    project && selectedSession
+      ? observationRows.find((row) => row.id === selectedSession)?.owner
+      : null;
+  // Historical registration proves the address belongs to this project. Its
+  // spelling, ledger kind, worktree and process availability grant no authority.
+  const selectedOwnedSession =
+    route.destination === "sessions" && selectedOwner && !selectedOwner.origin
+      ? selectedOwner.record.id
+      : null;
+  useEffect(() => {
+    sessions.activate(project?.id ?? null, selectedOwnedSession);
+  }, [sessions, project?.id, selectedOwnedSession]);
+  const sessionLibrary = useSessionLibrary(
+    project?.id ?? null,
+    project && selectedOwnedSession
+      ? (sessions
+          .project(project.id)
+          .records.find((record) => record.id === selectedOwnedSession) ?? null)
+      : null,
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
@@ -127,24 +151,13 @@ export function DesktopApp(): JSX.Element {
   // listener stable and read the current render's context for every shortcut.
   const keeperShortcut = useRef<(() => void) | null>(null);
   keeperShortcut.current = project && !keeperOpen ? openKeeper : null;
-  const frameSessions: FrameSession[] = summary
-    ? sessionRows(summary.sessions, {}, summary.asOf).map((row) => ({
-        id: row.session.sessionId,
-        title: row.session.beadId ?? row.session.sessionId,
-        provider: row.session.executor?.provider ?? "Provider not reported",
-        status: row.group,
-        depth: row.depth,
-      }))
-    : [];
-  if (project)
-    for (const record of sessions.project(project.id).records)
-      if (!frameSessions.some((item) => item.id === record.id))
-        frameSessions.push({
-          id: record.id,
-          title: `${record.mode === "chat" ? "Chat" : "Task"} · ${record.beadId ?? record.requestedModel}`,
-          provider: record.provider,
-          status: "unverified",
-        });
+  const frameSessions: FrameSession[] = observationRows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    provider: row.provider,
+    status: row.status,
+    depth: row.depth,
+  }));
   const previousProject = useRef(route.projectId);
   useEffect(() => {
     if (previousProject.current !== route.projectId)
@@ -224,7 +237,12 @@ export function DesktopApp(): JSX.Element {
                 id: project.id,
                 name: project.name,
                 sessions: frameSessions,
-                sessionsComplete: summary?.sessionsComplete ?? false,
+                sessionsComplete:
+                  !!observations.project(project.id).data
+                    ?.observationsComplete &&
+                  !!observations.project(project.id).data?.ownership
+                    .available &&
+                  !observations.project(project.id).error,
               }
             : null
         }
@@ -262,6 +280,7 @@ export function DesktopApp(): JSX.Element {
           ) : route.selection?.kind === "session" && project ? (
             <SessionInspector
               projectId={project.id}
+              row={observationRows.find((row) => row.id === selectedSession)}
               session={summary?.sessions.find(
                 (session) => session.sessionId === route.selection?.id,
               )}
@@ -469,6 +488,15 @@ export function DesktopApp(): JSX.Element {
             client={sessions}
             keeper={keeper}
             writesAllowed={writesAllowed}
+            library={sessionLibrary}
+          />
+        ) : route.destination === "sessions" && project && selectedSession ? (
+          <ObservedSessionDetail
+            key={`${project.id}:${selectedSession}`}
+            projectId={project.id}
+            sessionId={selectedSession}
+            client={observations}
+            row={observationRows.find((row) => row.id === selectedSession)}
           />
         ) : route.destination === "sessions" && project ? (
           <>
@@ -476,8 +504,13 @@ export function DesktopApp(): JSX.Element {
               projectId={project.id}
               client={sessions}
               onNew={() => openSession()}
+              library={sessionLibrary}
             />
             <ProjectSessions
+              client={observations}
+              representedIds={sessions
+                .project(project.id)
+                .records.map((record) => record.id)}
               keeper={keeper}
               writesAllowed={writesAllowed}
               key={project.id}
