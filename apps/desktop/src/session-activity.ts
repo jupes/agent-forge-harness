@@ -1,3 +1,4 @@
+import type { CodexChatOutcome } from "../../../types/codex-chat";
 import type { CodexCodingUsageEvent } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
 import type {
@@ -118,6 +119,31 @@ export interface OwnedSessionLifecycle {
   detail: string;
 }
 
+/** A saved outcome describes this accepted turn only; it grants no process or reply authority. */
+export function ownedCodexChatOutcome(
+  page: ConversationPage | null,
+  turnId: string,
+): CodexChatOutcome | null {
+  const saved = [...(page?.frames ?? [])]
+    .reverse()
+    .find(
+      (frame) =>
+        frame.turnId === turnId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    )?.event;
+  if (saved?.kind !== "coding-chat" || saved.event.kind !== "outcome")
+    return null;
+  const outcome = saved.event.outcome;
+  if (
+    outcome.threadId !== null &&
+    (page?.binding?.provider !== "codex" ||
+      outcome.threadId !== page.binding.sessionId)
+  )
+    return null;
+  return outcome;
+}
+
 /** No clock heuristic or provider prose can establish process death, permissions or allowance. */
 export function ownedSessionLifecycle(
   page: ConversationPage | null,
@@ -151,6 +177,7 @@ export function ownedSessionLifecycle(
           detail: "Reading the saved private conversation.",
         };
   const outcome = ownedSessionTurn(page, turn.requestId).outcome;
+  const chatOutcome = ownedCodexChatOutcome(page, turn.requestId);
   const geminiOutcome = page?.frames
     .filter(
       (frame) =>
@@ -161,6 +188,7 @@ export function ownedSessionLifecycle(
     .at(-1)?.event;
   if (
     outcome?.code === "timed-out" ||
+    chatOutcome?.timedOut ||
     (geminiOutcome?.kind === "coding-gemini-task" &&
       geminiOutcome.event.kind === "outcome" &&
       geminiOutcome.event.timedOut)
@@ -177,6 +205,24 @@ export function ownedSessionLifecycle(
       label: "Stopped",
       detail: "Stop is confirmed. Saved partial activity is retained.",
     };
+  if (chatOutcome && ["accepted", "running", "cancelling"].includes(turn.phase))
+    return chatOutcome.phase === "completed"
+      ? {
+          state: "ended",
+          label: "Native turn ended",
+          detail:
+            "The native process ended. Waiting for the final saved conversation status before another follow-up.",
+        }
+      : {
+          state: chatOutcome.phase === "failed" ? "error" : "unknown",
+          label:
+            chatOutcome.phase === "failed"
+              ? "Ended with error"
+              : "Outcome unknown",
+          detail:
+            chatOutcome.reason ??
+            "The native provider did not confirm successful completion. This turn was not resent.",
+        };
   if (turn.phase === "unknown")
     return {
       state: "unknown",

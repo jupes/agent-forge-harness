@@ -414,6 +414,57 @@ test.each([
   expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
 }, 15000);
 
+test("Stop lets an in-flight private write settle within its own deadline before saving one final native outcome", async () => {
+  const f = fixture("hang-text"),
+    controller = new AbortController();
+  const runtime = createCodexChatRuntime({
+    ...f.options,
+    persistenceTimeoutMs: 3000,
+  });
+  const snapshot = await runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let writing = false;
+  let release: () => void = () => {
+    throw Error("Private writer was not held");
+  };
+  const persisted: CodexChatEvent[] = [];
+  const running = runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      if (event.kind === "text") {
+        writing = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      persisted.push(event);
+    },
+    controller.signal,
+    decline,
+  );
+  const pids = await until(() => treeRecord(f.records()));
+  await until(() => (writing ? true : null));
+  controller.abort();
+  expect(await stoppedTree(pids)).toBe(true);
+  release();
+  const result = await running;
+  expect(result).toMatchObject({
+    phase: "failed",
+    reason: "The Codex Chat turn was stopped.",
+    stopped: true,
+    timedOut: false,
+  });
+  const final = persisted.filter((event) => event.kind === "outcome");
+  expect(final).toHaveLength(1);
+  expect(final[0]).toEqual({ kind: "outcome", outcome: result });
+  expect(persisted.at(-1)?.kind).toBe("outcome");
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+});
+
 test("explicit Stop confirms actual native tree cleanup while a private writer never settles", async () => {
   const f = fixture("hang-text"),
     controller = new AbortController();
@@ -527,6 +578,52 @@ test("a rejected private writer and queue pressure remain failures even with exi
     const pids = treeRecord(f.records());
     if (pids) expect(await stoppedTree(pids)).toBe(true);
   }
+});
+
+test.each([
+  "reject",
+  "never-settle",
+] as const)("a %s final outcome save remains bounded and cannot report owned completion or resend a native prompt", async (mode) => {
+  const f = fixture(),
+    prepared = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+  let offered = 0,
+    processId: number | undefined,
+    release: (() => void) | undefined;
+  const result = await f.runtime.run(
+    { prepared, resume: null },
+    async (event) => {
+      if (event.kind === "process") processId = event.pid;
+      if (event.kind !== "outcome") return;
+      offered++;
+      if (mode === "reject") throw Error("Private final save refused");
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    },
+    new AbortController().signal,
+    decline,
+  );
+  expect(result).toMatchObject({
+    phase: "unknown",
+    exitCode: 0,
+    timedOut: false,
+    stopped: false,
+  });
+  expect(result.reason).toContain(
+    "final private Chat outcome could not be saved",
+  );
+  expect(offered).toBe(1);
+  if (processId === undefined)
+    throw Error("The actual native owner was not witnessed");
+  expect(alive(processId)).toBe(false);
+  const before = f.records();
+  expect(before.filter((row) => row.method === "turn/start")).toHaveLength(1);
+  release?.();
+  await Promise.resolve();
+  expect(f.records()).toEqual(before);
 });
 
 test("native argv, filtered environment and acknowledged usage scopes preserve requested truth", async () => {

@@ -1,6 +1,6 @@
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
 import { supervise } from "../../scripts/executors/supervisor";
@@ -70,6 +70,11 @@ async function main() {
     timedChat = createCodexChatRuntime({
       ...chatOptions,
       approvalTimeoutMs: 5000,
+    }),
+    deadlineChat = createCodexChatRuntime({
+      ...chatOptions,
+      timeoutMs: 5000,
+      approvalTimeoutMs: 45_000,
     });
   const hearth = await createHearth({
     root,
@@ -167,7 +172,7 @@ async function main() {
       codexChatRuntime: {
         check: (input) => chat.check(input),
         prepare: (input) => chat.prepare(input),
-        run: (...args) => {
+        run: async (...args) => {
           let mode: unknown = null;
           try {
             mode = JSON.parse(
@@ -176,7 +181,29 @@ async function main() {
           } catch {
             /* Only the explicit inert mode selects a shorter approval deadline. */
           }
-          return (mode === "approval-timeout" ? timedChat : chat).run(...args);
+          const result = await (mode === "outcome-held"
+            ? deadlineChat
+            : mode === "approval-timeout"
+              ? timedChat
+              : chat
+          ).run(...args);
+          if (mode === "outcome-held") {
+            // Hold only the fixture's final application metadata write after
+            // the real native tree and private outcome have already settled.
+            writeFileSync(
+              join(home, "codex-chat-outcome-held.json"),
+              JSON.stringify(result),
+            );
+            const until = Date.now() + 10_000;
+            while (!existsSync(join(home, "codex-chat-outcome-release"))) {
+              if (Date.now() >= until)
+                throw Error(
+                  "The bounded final metadata fixture was not released",
+                );
+              await Bun.sleep(10);
+            }
+          }
+          return result;
         },
       },
     },

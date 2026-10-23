@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { CodexChatApproval, CodexChatEvent } from "../../types/codex-chat";
+import type {
+  CodexChatApproval,
+  CodexChatEvent,
+  CodexChatOutcome,
+} from "../../types/codex-chat";
 import type {
   CodexChatDecisionIntent,
   CodexChatPrivateEvent,
@@ -48,6 +52,31 @@ const usage = z
     }),
   );
 const decision = z.enum(["accept", "decline", "cancel"]);
+export const codexChatOutcomeSchema = z
+  .object({
+    phase: z.enum(["completed", "failed", "unknown"]),
+    reason: text.nullable(),
+    threadId: codexNativeUuidSchema.nullable(),
+    turnId: codexNativeUuidSchema.nullable(),
+    observedModel: z.null(),
+    usage: z
+      .object({ lastResponse: usage, threadTotal: usage })
+      .strict()
+      .nullable(),
+    exitCode: z.number().int().min(-0x80000000).max(0xffffffff).nullable(),
+    stopped: z.boolean(),
+    timedOut: z.boolean(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.phase !== "completed" ||
+      (value.exitCode === 0 &&
+        value.threadId !== null &&
+        value.turnId !== null &&
+        !value.stopped &&
+        !value.timedOut),
+  ) satisfies z.ZodType<CodexChatOutcome>;
 export const codexChatApprovalSchema = z
   .object({
     id: sessionRequestIdSchema,
@@ -118,6 +147,12 @@ const nativeEvent = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("usage"),
       usage: z.object({ lastResponse: usage, threadTotal: usage }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("outcome"),
+      outcome: codexChatOutcomeSchema,
     })
     .strict(),
   z

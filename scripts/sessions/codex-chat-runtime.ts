@@ -291,6 +291,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       let providerProcessId: number | null = null;
       let timedOut = false,
         stopped = false,
+        privateWriteFailed = false,
         writes = Promise.resolve(),
         queuedFrames = 0,
         queuedBytes = 0;
@@ -341,10 +342,13 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
               await bounded(
                 () => persist(copy),
                 persistenceTimeoutMs,
-                control.signal,
+                // Stop cancels protocol work, while an already-started private
+                // save retains its own bounded chance to preserve that report.
+                undefined,
                 "Private Chat persistence did not settle.",
               );
             } catch {
+              privateWriteFailed = true;
               latch(
                 "unknown",
                 "The private Chat writer failed or exceeded its deadline.",
@@ -771,7 +775,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
         exit?.exitCode === 0 &&
         !exit.timedOut &&
         !exit.stopped;
-      return {
+      let outcome: CodexChatOutcome = {
         phase: failed?.phase ?? (completed ? "completed" : "failed"),
         reason:
           failed?.reason ??
@@ -786,6 +790,26 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
         stopped: stopped || (exit?.stopped ?? false),
         timedOut: timedOut || (exit?.timedOut ?? false),
       };
+      // The physical tree and earlier private callbacks have settled. This final
+      // save has its own bounded wait, including after Stop aborted protocol work.
+      if (!privateWriteFailed)
+        try {
+          await bounded(
+            () =>
+              persist({ kind: "outcome", outcome: structuredClone(outcome) }),
+            persistenceTimeoutMs,
+            undefined,
+            "The final private Chat outcome did not settle.",
+          );
+        } catch {
+          outcome = {
+            ...outcome,
+            phase: "unknown",
+            reason:
+              "The final private Chat outcome could not be saved. The turn was not resent.",
+          };
+        }
+      return outcome;
     },
   };
 }

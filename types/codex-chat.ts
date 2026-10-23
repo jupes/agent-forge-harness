@@ -77,6 +77,7 @@ export type CodexChatEvent =
   | { kind: "turn"; threadId: string; turnId: string }
   | { kind: "text"; itemId: string; text: string }
   | { kind: "usage"; usage: CodexChatUsage }
+  | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }
   | { kind: "approval-request"; approval: CodexChatApproval }
   | {

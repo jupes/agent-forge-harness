@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { CodexChatTerminal } from "../../apps/desktop/src/CodexChatTerminal";
 import type { CodexChatDecisionView } from "../../apps/desktop/src/codex-chat-decisions";
 import {
   SessionActivity,
@@ -11,6 +12,7 @@ import {
   sessionStateSupport,
   unsupportedSessionStates,
 } from "../../apps/desktop/src/session-activity";
+import type { CodexChatOutcome } from "../../types/codex-chat";
 import type {
   ConversationEvent,
   ConversationPage,
@@ -18,6 +20,97 @@ import type {
 import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 
 const turnId = "original-turn";
+test("native Chat terminal facts keep zero distinct from missing, render private prose inertly and grant no controls", () => {
+  expect(CodexChatTerminal({ value: null })).toBeNull();
+  const outcome: CodexChatOutcome = {
+    phase: "unknown",
+    reason: "<script>private</script>",
+    threadId: null,
+    turnId: null,
+    observedModel: null,
+    usage: null,
+    exitCode: null,
+    stopped: true,
+    timedOut: false,
+  };
+  const unknown = CodexChatTerminal({ value: outcome });
+  expect(textOf(unknown)).toContain("Process exit codeNot reported");
+  expect(textOf(unknown)).toContain("Supervisor stopped the processYes");
+  expect(textOf(unknown)).toContain(outcome.reason!);
+  expect(textOf(unknown)).not.toContain("Stop confirmed");
+  expect(findAll(unknown, "script")).toHaveLength(0);
+  expect(findAll(unknown, "button")).toHaveLength(0);
+  const zero = CodexChatTerminal({ value: { ...outcome, exitCode: 0 } });
+  expect(textOf(zero)).toContain("Process exit code0");
+});
+test("native Chat timeout facts survive a saved reload while internal cleanup, another thread and prose never confirm operator Stop", () => {
+  const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const outcome: CodexChatOutcome = {
+    phase: "unknown",
+    reason: "Native protocol stopped after its deadline",
+    threadId,
+    turnId: "0199a214-81c0-7800-8aa1-bbab2a035a53",
+    observedModel: null,
+    usage: null,
+    exitCode: 1,
+    stopped: true,
+    timedOut: true,
+  };
+  const current = page([
+    {
+      kind: "coding-chat",
+      provider: "codex",
+      version: "0.163.0-alpha.10.2",
+      event: { kind: "outcome", outcome },
+    },
+  ]);
+  current.binding = {
+    provider: "codex",
+    sessionId: threadId,
+    version: "0.163.0-alpha.10.2",
+  };
+  current.turns = [
+    {
+      requestId: turnId,
+      hash: "fixture",
+      phase: "unknown",
+      createdAt: "2026-10-23T00:00:00Z",
+      updatedAt: "2026-10-23T00:00:00Z",
+      reason: "Unverified timeout words",
+      owner: "fixture",
+    },
+  ];
+  const options = {
+    mode: "chat",
+    loaded: true,
+    live: false,
+    stopping: false,
+    feedInterrupted: false,
+    readError: "",
+  } as const;
+  expect(ownedSessionLifecycle(current, options).state).toBe("timed-out");
+  outcome.timedOut = false;
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  outcome.timedOut = true;
+  outcome.threadId = "0199a215-81c0-7800-8aa1-bbab2a035a53";
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  outcome.threadId = threadId;
+  current.frames[0]!.turnId = "another-accepted-turn";
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  current.frames[0]!.turnId = turnId;
+  outcome.timedOut = false;
+  current.turns[0]!.phase = "cancelled";
+  expect(ownedSessionLifecycle(current, options).state).toBe("stopped");
+  current.turns[0]!.phase = "running";
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  outcome.phase = "failed";
+  expect(ownedSessionLifecycle(current, options).state).toBe("error");
+  outcome.phase = "completed";
+  outcome.exitCode = 0;
+  outcome.stopped = false;
+  expect(ownedSessionLifecycle(current, options).state).toBe("ended");
+  expect(ownedSessionLifecycle(current, options).label).not.toContain("ready");
+});
 function page(events: ConversationEvent[]): ConversationPage {
   return {
     version: 1,

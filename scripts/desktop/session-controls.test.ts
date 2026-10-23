@@ -169,6 +169,43 @@ test("native Chat actions use its original snapshot and exact binding without in
     available: true,
     reason: expect.stringContaining("inline"),
   });
+  const endedBeforeFinalStatus: ConversationPage = {
+    ...active,
+    frames: [
+      ...active.frames,
+      {
+        seq: 2,
+        turnId: requestId,
+        at: record.createdAt,
+        event: {
+          kind: "coding-chat",
+          provider: "codex",
+          version: CODEX_APP_SERVER_VERSION,
+          event: {
+            kind: "outcome",
+            outcome: {
+              phase: "completed",
+              reason: "Completed",
+              threadId: page.binding!.sessionId,
+              turnId: "0199a214-81c0-7800-8aa1-bbab2a035a53",
+              observedModel: null,
+              usage: null,
+              exitCode: 0,
+              stopped: false,
+              timedOut: false,
+            },
+          },
+        },
+      },
+    ],
+  };
+  const terminalControls = ownedSessionControls({
+    ...input,
+    page: endedBeforeFinalStatus,
+  });
+  expect(terminalControls.stop.available).toBe(false);
+  expect(terminalControls.permissions.available).toBe(false);
+  expect(terminalControls.resume.available).toBe(false);
   expect(
     ownedSessionControls({ ...input, page: active, stopping: true }).permissions
       .available,

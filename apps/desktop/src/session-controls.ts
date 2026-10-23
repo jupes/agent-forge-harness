@@ -4,6 +4,7 @@ import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
 import { serializeGeminiTask } from "../../../scripts/sessions/gemini-task";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
+import { ownedCodexChatOutcome } from "./session-activity";
 
 export function ownedSessionControls(input: {
   record: OwnedCodingSessionRecord;
@@ -60,6 +61,10 @@ export function ownedSessionControls(input: {
     !!commandPreview;
   const nativePermissions =
     nativeChat && chat?.launch.approvalPolicy === "on-request";
+  const nativeEnded =
+    nativeChat &&
+    !!current &&
+    !!ownedCodexChatOutcome(input.page, current.requestId);
   const provider =
     input.record.provider === "codex"
       ? "Codex"
@@ -109,6 +114,7 @@ export function ownedSessionControls(input: {
       available:
         scoped &&
         active &&
+        !nativeEnded &&
         !!input.page?.controllable &&
         !input.stopping &&
         current?.phase !== "cancelling",
@@ -116,7 +122,7 @@ export function ownedSessionControls(input: {
         ? "This saved conversation does not match an ordinary session in this project."
         : input.stopping || current?.phase === "cancelling"
           ? "Stop is pending until the owned process confirms cancellation."
-          : !active
+          : !active || nativeEnded
             ? "There is no active owned turn to stop."
             : !input.page?.controllable
               ? "This hearth does not own the saved running process."
@@ -136,6 +142,7 @@ export function ownedSessionControls(input: {
         nativePermissions &&
         ready &&
         active &&
+        !nativeEnded &&
         !!input.page?.controllable &&
         !input.stopping &&
         current?.phase !== "cancelling",

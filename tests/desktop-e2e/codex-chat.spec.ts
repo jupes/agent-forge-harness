@@ -1,10 +1,17 @@
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -82,6 +89,13 @@ async function startedChat(page: Page) {
 let previous = new Set<string>();
 test.beforeEach(() => {
   seedProjects();
+  for (const name of [
+    "codex-chat-outcome-held.json",
+    "codex-chat-outcome-release",
+  ]) {
+    const file = join(HEARTH_HOME, name);
+    if (existsSync(file)) unlinkSync(file);
+  }
   previous = new Set(records().map((record) => record.id));
   mode("approval-command");
 });
@@ -775,6 +789,24 @@ test("explicit Chat Stop waits for the actual native provider and helper to exit
   await expect(
     pane.getByRole("button", { name: "Allow once", exact: true }),
   ).toHaveCount(0);
+  await reloadSettled(page);
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  const outcome = pane.getByRole("region", {
+    name: "Native Chat outcome",
+    exact: true,
+  });
+  await expect(outcome).toContainText("Supervisor stopped the process");
+  expect(
+    saved(record.id).frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome" &&
+        frame.event.event.outcome.stopped,
+    ),
+  ).toBe(true);
 });
 
 test("Chat option checks show loading and failure without accepting a turn, then recover through a fresh native preview", async ({
@@ -994,4 +1026,151 @@ test("the native approval deadline removes stale choices without answering the r
   await expect(
     pane.getByRole("button", { name: "Refresh native approvals", exact: true }),
   ).toBeDisabled();
+});
+
+test("a saved native timeout withdraws old choices before final metadata settles, and reload/export never revive or resend them", async ({
+  page,
+}) => {
+  mode("outcome-held");
+  const before = calls().filter((row) => row.method === "turn/start").length;
+  const { pane, record } = await startedChat(page);
+  const allow = pane.getByRole("button", { name: "Allow once", exact: true });
+  await expect(allow).toBeEnabled();
+  let releaseRead = () => {},
+    received = () => {},
+    decisions = 0;
+  const gate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    received = resolve;
+  });
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/approval-decisions")
+    )
+      decisions++;
+  });
+  await page.route(
+    `**/projects/${alpha.id}/sessions/${record.id}/approvals`,
+    async (route) => {
+      const response = await route.fetch({
+        headers: {
+          ...route.request().headers(),
+          origin: new URL(route.request().url()).origin,
+        },
+      });
+      if (response.status() !== 200)
+        throw Error(
+          `Protected approval fixture read refused: ${response.status()}`,
+        );
+      const body = await response.text();
+      received();
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body,
+      });
+    },
+  );
+  try {
+    await pane
+      .getByRole("button", { name: "Refresh native approvals", exact: true })
+      .click();
+    await held;
+    await expect
+      .poll(() => existsSync(join(HEARTH_HOME, "codex-chat-outcome-held.json")))
+      .toBe(true);
+    expect(saved(record.id).turns[0]?.phase).toBe("running");
+    await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+      "data-session-state",
+      "timed-out",
+    );
+    await expect(
+      pane.getByRole("button", { name: "Stop session", exact: true }),
+    ).toHaveCount(0);
+    await expect(allow).toHaveCount(0);
+    releaseRead();
+    await expect(allow).toHaveCount(0);
+    expect(decisions).toBe(0);
+    await pane
+      .getByRole("button", { name: "Session actions", exact: true })
+      .click();
+    const actions = page.getByRole("dialog", {
+      name: "Session actions",
+      exact: true,
+    });
+    await expect(
+      actions.getByRole("button", {
+        name: "Review native permissions",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(
+      actions.getByRole("button", { name: "Continue this Chat", exact: true }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+  } finally {
+    releaseRead();
+    writeFileSync(
+      join(HEARTH_HOME, "codex-chat-outcome-release"),
+      "release this closed fixture only",
+    );
+  }
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("unknown");
+  await reloadSettled(page);
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "timed-out",
+  );
+  const outcome = pane.getByRole("region", {
+    name: "Native Chat outcome",
+    exact: true,
+  });
+  await expect(outcome).toContainText("Time limit reached");
+  await expect(outcome).toContainText("Supervisor stopped the process");
+  if (process.env.CODEX_CHAT_OUTCOME_SHOTS)
+    await outcome.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_OUTCOME_SHOTS,
+        "native-chat-outcome.png",
+      ),
+    });
+  const tree = calls()
+    .filter((row) => row.kind === "process")
+    .at(-1);
+  if (typeof tree?.pid !== "number")
+    throw Error("No actual native process witness");
+  expect(() => globalThis.process.kill(tree.pid!, 0)).toThrow();
+  await pane
+    .getByRole("button", { name: "Session actions", exact: true })
+    .click();
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("dialog", { name: "Session actions", exact: true })
+    .getByRole("button", { name: "Export saved transcript", exact: true })
+    .click();
+  const exportedPath = await (await download).path();
+  if (!exportedPath) throw Error("No complete transcript download");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(exportedPath, "utf8"));
+  } catch {
+    throw Error("Malformed complete transcript download");
+  }
+  const exported = sessionTranscriptExportSchema.parse(raw).conversation;
+  expect(
+    exported.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome" &&
+        frame.event.event.outcome.timedOut,
+    ),
+  ).toBe(true);
+  expect(calls().filter((row) => row.method === "turn/start")).toHaveLength(
+    before + 1,
+  );
+  expect(decisions).toBe(0);
 });
