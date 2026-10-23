@@ -3,6 +3,11 @@ import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { KeeperReadKind } from "./keeper";
 import type { KeeperBriefSnapshot } from "./keeper-brief";
 import type { KeeperRecoveryState } from "./keeper-recovery";
+import type {
+  ClaudeCodingUsageEvent,
+  CodingActivityEvent,
+  CodingOutcomeEvent,
+} from "./session-activity";
 import type { SessionTurnSnapshot } from "./session-turn";
 
 /** A trusted server-selected journal partition, separate from the provider's resume identity. */
@@ -93,7 +98,10 @@ export type ConversationEvent =
       source: string;
       asOf: string;
     }
-  | CodexCodingUsageEvent;
+  | CodexCodingUsageEvent
+  | ClaudeCodingUsageEvent
+  | CodingActivityEvent
+  | CodingOutcomeEvent;
 
 export interface ConversationFrame {
   seq: number;

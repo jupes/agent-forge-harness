@@ -11,6 +11,11 @@ import {
   parsePreparedConversationSend,
   stateSchema,
 } from "../conversations/protocol";
+import {
+  claudeCodingUsageSchema,
+  codingActivitySchema,
+  codingOutcomeSchema,
+} from "./activity-protocol";
 import { codexExecCapabilitiesSchema } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 
@@ -87,6 +92,9 @@ export const ownedCodingEventSchema = z.union([
   eventSchema,
   codexUser,
   codingUsage,
+  claudeCodingUsageSchema,
+  codingActivitySchema,
+  codingOutcomeSchema,
 ]);
 const frame = z
   .object({
@@ -110,14 +118,45 @@ const inProject = (value: {
           (value.binding.provider === "codex" &&
             z.string().uuid().safeParse(value.binding.sessionId).success))),
   );
+/** Whole states prove reported activity against its immutable private launch, not a public row. */
+function reportedTurn(
+  value: {
+    binding: { provider: string } | null;
+    frames: { turnId: string; event: ConversationEvent }[];
+  },
+  complete: boolean,
+) {
+  return value.frames.every((frame) => {
+    const event = frame.event;
+    if (
+      event.kind !== "coding-activity" &&
+      event.kind !== "coding-outcome" &&
+      !(event.kind === "coding-usage" && event.provider === "claude")
+    )
+      return true;
+    const user = value.frames.find(
+      (candidate) =>
+        candidate.turnId === frame.turnId && candidate.event.kind === "user",
+    )?.event;
+    if (user?.kind !== "user")
+      return !complete && value.binding?.provider === event.provider;
+    const snapshot = user.session ?? user.codexTask;
+    return (
+      snapshot?.provider === event.provider &&
+      snapshot.capabilities.version === event.version
+    );
+  });
+}
 export const ownedCodingStateSchema = stateSchema
   .extend({ frames: z.array(frame).max(20_000) })
   .strict()
-  .refine(inProject);
+  .refine(inProject)
+  .refine((value) => reportedTurn(value, true));
 export const ownedCodingPageSchema = conversationPageSchema
   .extend({ frames: z.array(frame).max(100) })
   .strict()
-  .refine(inProject);
+  .refine(inProject)
+  .refine((value) => reportedTurn(value, false));
 const prepared = z
   .object({
     requestId: z.string().uuid(),

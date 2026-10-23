@@ -1,3 +1,5 @@
+import type { CodingActivityEvent } from "./session-activity";
+
 /** Task-only request data. Scope, allowance, executable and environment authority stay with the server. */
 export interface CodexTaskLaunch {
   mode: "task";
@@ -63,11 +65,12 @@ export interface CodexExecUsage {
   reasoningOutputTokens?: number;
 }
 
-/** Private events only. They contain no tool bodies or inferred execution model. */
+/** Private events only. Reported activity never grants tool authority or an inferred model. */
 export type CodexExecPrivateEvent =
   | { kind: "identity"; provider: "codex"; threadId: string; version: string }
   | { kind: "text"; itemId: string; text: string }
-  | { kind: "usage"; usage: CodexExecUsage };
+  | { kind: "usage"; usage: CodexExecUsage }
+  | CodingActivityEvent;
 
 export interface CodexExecOutcome {
   phase: "completed" | "failed" | "unknown";

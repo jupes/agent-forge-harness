@@ -4,6 +4,8 @@ import type {
   CodexExecUsage,
 } from "../../types/codex-task";
 import type { ChildExit } from "../executors/types";
+import { createActivityBudget } from "./activity-protocol";
+import { codexActivity } from "./codex-activity";
 
 export const CODEX_EXEC_STREAM_LIMITS = {
   lines: 4096,
@@ -64,9 +66,15 @@ export function createCodexExecParser(options: { version: string }) {
   let bytes = 0;
   let textBytes = 0;
   let usage: CodexExecUsage | null = null;
+  const activityBudget = createActivityBudget();
   const items = new Map<
     string,
-    { type: string; complete: boolean; text: string | null }
+    {
+      type: string;
+      complete: boolean;
+      text: string | null;
+      report: string | null;
+    }
   >();
   const read = (line: string): CodexExecPrivateEvent[] => {
     if (finished) throw bad();
@@ -131,7 +139,12 @@ export function createCodexExecParser(options: { version: string }) {
     let item = items.get(value.item.id);
     if (!item) {
       if (items.size >= CODEX_EXEC_STREAM_LIMITS.items) throw bad();
-      item = { type: value.item.type, complete: false, text: null };
+      item = {
+        type: value.item.type,
+        complete: false,
+        text: null,
+        report: null,
+      };
       items.set(value.item.id, item);
     }
     if (
@@ -140,11 +153,25 @@ export function createCodexExecParser(options: { version: string }) {
     )
       throw bad();
     if (value.item.type === "error") providerError = true;
-    if (value.type !== "item.completed") return [];
     if (value.item.type !== "agent_message") {
-      item.complete = true;
-      return [];
+      const activity = codexActivity({
+        version,
+        source:
+          value.type === "item.started"
+            ? "codex.item.started"
+            : value.type === "item.updated"
+              ? "codex.item.updated"
+              : "codex.item.completed",
+        item: value.item,
+      });
+      const report = activity === null ? null : JSON.stringify(activity);
+      if (item.complete && item.report !== report) throw bad();
+      if (value.type === "item.completed") item.complete = true;
+      if (item.report === report) return [];
+      item.report = report;
+      return activity === null ? [] : [activityBudget(activity)];
     }
+    if (value.type !== "item.completed") return [];
     const text = value.item.text;
     if (
       typeof text !== "string" ||

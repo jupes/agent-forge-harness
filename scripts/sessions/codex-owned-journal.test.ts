@@ -114,4 +114,49 @@ test("a saved Codex intent cannot project another project's private context", ()
       binding: { provider: "claude", sessionId: "foreign", version: "1.0.0" },
     }).success,
   ).toBe(false);
+  const activity = {
+    kind: "coding-activity",
+    provider: "codex",
+    version: snapshot.capabilities.version,
+    id: "reasoning-1",
+    source: "codex.item.completed",
+    partial: false,
+    activity: {
+      kind: "reasoning",
+      content: { text: "Reported private summary", truncated: false },
+      redacted: false,
+    },
+  };
+  const richState = {
+    ...state,
+    frames: [
+      ...state.frames,
+      {
+        ...state.frames[0],
+        seq: 2,
+        turnId: requestId,
+        at: "2026-10-23T00:00:01.000Z",
+        event: activity,
+      },
+    ],
+  };
+  expect(ownedCodingStateSchema.safeParse(richState).success).toBe(true);
+  for (const event of [
+    { ...activity, version: "0.164.0" },
+    { ...activity, provider: "claude", source: "claude.assistant" },
+  ]) {
+    expect(ownedCodingEventSchema.safeParse(event).success).toBe(true);
+    expect(
+      ownedCodingStateSchema.safeParse({
+        ...richState,
+        frames: [state.frames[0], { ...richState.frames[1], event }],
+      }).success,
+    ).toBe(false);
+  }
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...richState,
+      frames: [richState.frames[1]],
+    }).success,
+  ).toBe(false);
 });

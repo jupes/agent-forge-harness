@@ -1,0 +1,132 @@
+import { expect, test } from "bun:test";
+import type { CodingActivityEvent } from "../../types/session-activity";
+import { eventSchema } from "../conversations/protocol";
+import {
+  codingActivitySchema,
+  codingOutcomeSchema,
+  reportedJson,
+  reportedText,
+  SESSION_ACTIVITY_LIMITS,
+} from "./activity-protocol";
+import { ownedCodingEventSchema } from "./codex-owned-journal";
+
+const base = {
+  kind: "coding-activity",
+  provider: "claude",
+  version: "2.1.296",
+  id: "message:tool-1",
+  source: "claude.assistant",
+  partial: false,
+} as const;
+test("strict private activity accepts inert reported data without granting the Keeper codec new fields", () => {
+  const value = {
+    ...base,
+    activity: {
+      kind: "tool",
+      toolId: "tool-1",
+      name: "Bash",
+      state: "running",
+      input: reportedJson({ command: "echo private", approval: "allow once" }),
+    },
+  } satisfies CodingActivityEvent;
+  expect(codingActivitySchema.parse(value)).toEqual(value);
+  expect(ownedCodingEventSchema.safeParse(value).success).toBe(true);
+  expect(eventSchema.safeParse(value).success).toBe(false);
+  expect(
+    codingActivitySchema.safeParse({ ...value, authority: "operator" }).success,
+  ).toBe(false);
+  expect(
+    codingActivitySchema.safeParse({ ...value, provider: "codex" }).success,
+  ).toBe(false);
+});
+
+test("UTF-8 clipping and nested JSON limits remain explicit and cannot emit a forged complete value", () => {
+  const clipped = reportedText("🌱".repeat(SESSION_ACTIVITY_LIMITS.textBytes));
+  expect(clipped.truncated).toBe(true);
+  expect(new TextEncoder().encode(clipped.text).length).toBeLessThanOrEqual(
+    SESSION_ACTIVITY_LIMITS.textBytes,
+  );
+  expect(clipped.text).not.toMatch(/[\uD800-\uDBFF]$/);
+  expect(reportedText("hello\0private")).toEqual({
+    text: "hello�private",
+    truncated: true,
+  });
+  const nested = { child: {} };
+  let cursor: { child?: unknown } = nested;
+  for (let index = 0; index < SESSION_ACTIVITY_LIMITS.jsonDepth + 1; index++) {
+    const next = {};
+    cursor.child = next;
+    cursor = next;
+  }
+  expect(reportedJson(nested)).toEqual({
+    json: "",
+    truncated: true,
+    omitted: "depth",
+  });
+  const output = {
+    ...base,
+    source: "claude.result",
+    activity: {
+      kind: "structured-output",
+      output: reportedJson({ actual: [1, "two"] }),
+    },
+  };
+  expect(codingActivitySchema.safeParse(output).success).toBe(true);
+  expect(
+    codingActivitySchema.safeParse({
+      ...output,
+      activity: {
+        kind: "structured-output",
+        output: { json: "{", truncated: false },
+      },
+    }).success,
+  ).toBe(false);
+});
+
+test("actual process evidence constrains outcomes and reported words cannot grant a typed limit or authentication claim", () => {
+  const outcome = {
+    kind: "coding-outcome",
+    provider: "claude",
+    version: "2.1.296",
+    code: "timed-out",
+    exitCode: null,
+    timedOut: true,
+    stopped: false,
+    message: reportedText("Provider timed out"),
+    stderrTail: reportedText(""),
+  };
+  expect(codingOutcomeSchema.safeParse(outcome).success).toBe(true);
+  expect(eventSchema.safeParse(outcome).success).toBe(false);
+  expect(
+    codingOutcomeSchema.safeParse({
+      ...outcome,
+      code: "completed",
+      exitCode: 0,
+    }).success,
+  ).toBe(false);
+  expect(
+    codingOutcomeSchema.safeParse({
+      ...outcome,
+      timedOut: false,
+      code: "rate-limited",
+      message: reportedText("limit reached"),
+    }).success,
+  ).toBe(false);
+  expect(
+    codingOutcomeSchema.safeParse({
+      ...outcome,
+      timedOut: false,
+      code: "rate-limited",
+      reportedCode: "rate_limit",
+    }).success,
+  ).toBe(true);
+  expect(
+    codingOutcomeSchema.safeParse({
+      ...outcome,
+      timedOut: false,
+      code: "auth-error",
+      reportedCode: "authentication_failed",
+      resetAt: "Thursday at9",
+    }).success,
+  ).toBe(false);
+});

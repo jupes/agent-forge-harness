@@ -61,7 +61,7 @@ test("actual exec JSONL reports its thread, completed assistant text and usage w
   });
 });
 
-test("cumulative updates and duplicate completed items cannot duplicate private main text or leak tool bodies", () => {
+test("cumulative updates and duplicate completed items cannot duplicate private main text or confuse private tools with prose", () => {
   const parser = started();
   expect(
     parser.line(
@@ -79,14 +79,7 @@ test("cumulative updates and duplicate completed items cannot duplicate private 
       }),
     ),
   ).toEqual([]);
-  for (const type of [
-    "reasoning",
-    "command_execution",
-    "mcp_tool_call",
-    "web_search",
-    "collab_tool_call",
-    "future_passive_item",
-  ])
+  for (const type of ["collab_tool_call", "future_passive_item"])
     expect(
       parser.line(
         line({
@@ -129,11 +122,96 @@ test("the documented terminal result does not require completion packets for inc
   parser.line(
     line({
       type: "item.started",
-      item: { id: "pending", type: "command_execution" },
+      item: {
+        id: "pending",
+        type: "command_execution",
+        command: "echo waiting",
+        aggregated_output: "",
+        status: "in_progress",
+      },
     }),
   );
   expect(parser.line(line({ type: "turn.completed" }))).toEqual([]);
   expect(parser.finish(exit).phase).toBe("completed");
+});
+
+test("rich exec activity remains private, updates one native item and conflicting completion poisons confirmation", () => {
+  const parser = started();
+  const command = {
+    id: "cmd",
+    type: "command_execution",
+    command: "echo private",
+    aggregated_output: "",
+    status: "in_progress",
+  };
+  const first = parser.line(line({ type: "item.started", item: command }));
+  expect(first).toMatchObject([
+    {
+      kind: "coding-activity",
+      provider: "codex",
+      version,
+      id: "cmd",
+      source: "codex.item.started",
+      partial: true,
+      activity: { kind: "command", state: "running" },
+    },
+  ]);
+  expect(parser.line(line({ type: "item.started", item: command }))).toEqual(
+    [],
+  );
+  const complete = {
+    ...command,
+    status: "completed",
+    aggregated_output: "private output",
+    exit_code: 0,
+  };
+  expect(
+    parser.line(line({ type: "item.completed", item: complete })),
+  ).toMatchObject([
+    {
+      kind: "coding-activity",
+      partial: false,
+      activity: {
+        kind: "command",
+        state: "completed",
+        output: { text: "private output" },
+        exitCode: 0,
+      },
+    },
+  ]);
+  expect(parser.line(line({ type: "item.completed", item: complete }))).toEqual(
+    [],
+  );
+  expect(() =>
+    parser.line(
+      line({
+        type: "item.completed",
+        item: { ...complete, aggregated_output: "conflicting output" },
+      }),
+    ),
+  ).toThrow("protocol");
+  expect(parser.finish(exit).phase).toBe("unknown");
+});
+
+test("aggregate rich activity overflow retains bounded partial frames and refuses a confirmed full transcript", () => {
+  const parser = started();
+  let frames = 0;
+  expect(() => {
+    for (let index = 0; index < 200; index++)
+      frames += parser.line(
+        line({
+          type: "item.updated",
+          item: {
+            id: `r${index}`,
+            type: "reasoning",
+            text: "x".repeat(16_384),
+          },
+        }),
+      ).length;
+  }).toThrow("protocol");
+  expect(frames).toBeGreaterThan(100);
+  expect(frames).toBeLessThan(150);
+  expect(parser.finish(exit).phase).toBe("unknown");
 });
 
 test("foreign identities, malformed packets and invalid lifecycle remain poisoned after process success", () => {
@@ -188,7 +266,10 @@ test("foreign identities, malformed packets and invalid lifecycle remain poisone
   }
   const parser = started();
   parser.line(
-    line({ type: "item.started", item: { id: "same", type: "reasoning" } }),
+    line({
+      type: "item.started",
+      item: { id: "same", type: "reasoning", text: "Reported summary" },
+    }),
   );
   expect(() =>
     parser.line(
@@ -268,7 +349,7 @@ test("packet, total, item and UTF-8 text bounds fail closed while valid text chu
         parser.line(
           line({
             type: "item.completed",
-            item: { id: `item_${index}`, type: "reasoning" },
+            item: { id: `item_${index}`, type: "future_passive_item" },
           }),
         );
     },
