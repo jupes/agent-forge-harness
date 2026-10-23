@@ -33,6 +33,22 @@ export interface Supervised {
   stop(reason: string): Promise<void>;
 }
 
+/** Trusted bidirectional protocols only. The ordinary serialized-stdin path is unchanged. */
+export interface InteractiveSuperviseOptions
+  extends Omit<SuperviseOptions, "stdin"> {
+  stdinMode: "interactive";
+  /** Cumulative process input and currently queued byte cap; not proof of child consumption. */
+  maxStdinBytes?: number;
+  stdinTimeoutMs?: number;
+}
+
+export interface InteractiveSupervised extends Supervised {
+  /** Ordered, bounded input acceptance; native protocol acknowledgements prove consumption. */
+  write(input: string): Promise<void>;
+  /** Sends EOF after all earlier writes. Later writes refuse. */
+  end(): Promise<void>;
+}
+
 const live = new Set<number>();
 let hooked = false;
 
@@ -174,7 +190,28 @@ async function readTail(
   return (text + decoder.decode()).slice(-max);
 }
 
-export function supervise(options: SuperviseOptions): Supervised {
+export function supervise(
+  options: InteractiveSuperviseOptions,
+): InteractiveSupervised;
+export function supervise(options: SuperviseOptions): Supervised;
+export function supervise(
+  options: SuperviseOptions | InteractiveSuperviseOptions,
+): Supervised | InteractiveSupervised {
+  const interactive = "stdinMode" in options;
+  const maxStdinBytes = interactive
+    ? (options.maxStdinBytes ?? 1024 * 1024)
+    : 0;
+  const stdinTimeoutMs = interactive ? (options.stdinTimeoutMs ?? 5000) : 0;
+  if (
+    interactive &&
+    (!Number.isSafeInteger(maxStdinBytes) ||
+      maxStdinBytes < 1 ||
+      maxStdinBytes > 16 * 1024 * 1024 ||
+      !Number.isSafeInteger(stdinTimeoutMs) ||
+      stdinTimeoutMs < 1 ||
+      stdinTimeoutMs > 30_000)
+  )
+    throw new Error("Interactive stdin bounds are invalid.");
   hookParentExit();
   const proc = Bun.spawn(options.command, {
     cwd: options.cwd,
@@ -190,7 +227,18 @@ export function supervise(options: SuperviseOptions): Supervised {
 
   let timedOut = false;
   let stopped = false;
-  const kill = () => killTree(proc.pid);
+  let inputFailure: Error | null = null;
+  const inputWaiters = new Set<(error: Error) => void>();
+  const failInput = (error: Error) => {
+    inputFailure ??= error;
+    for (const reject of inputWaiters) reject(inputFailure);
+    inputWaiters.clear();
+  };
+  const kill = () => {
+    failInput(new Error("Interactive stdin is closed."));
+    killTree(proc.pid);
+    if (interactive) guard.terminate?.();
+  };
 
   const timer =
     options.timeoutMs !== undefined
@@ -200,8 +248,84 @@ export function supervise(options: SuperviseOptions): Supervised {
         }, options.timeoutMs)
       : undefined;
 
-  if (options.stdin !== undefined) proc.stdin.write(options.stdin);
-  proc.stdin.end();
+  if (!interactive) {
+    if (options.stdin !== undefined) proc.stdin.write(options.stdin);
+    proc.stdin.end();
+  }
+
+  let inputQueue = Promise.resolve();
+  let inputBytes = 0;
+  let totalInputBytes = 0;
+  let inputFrames = 0;
+  let inputEnded = false;
+  let endPromise: Promise<void> | null = null;
+  const enqueueInput = (
+    bytes: number,
+    action: () => number | Promise<number>,
+  ): Promise<void> => {
+    if (inputFailure) return Promise.reject(inputFailure);
+    if (
+      inputFrames >= 256 ||
+      inputBytes + bytes > maxStdinBytes ||
+      totalInputBytes + bytes > maxStdinBytes
+    ) {
+      const error = new Error(
+        "Interactive stdin exceeded its queue bound or total byte bound.",
+      );
+      failInput(error);
+      kill();
+      return Promise.reject(error);
+    }
+    inputBytes += bytes;
+    totalInputBytes += bytes;
+    inputFrames++;
+    const written = inputQueue.then(async () => {
+      if (inputFailure) throw inputFailure;
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(deadline);
+          inputWaiters.delete(cancel);
+          if (error) reject(error);
+          else resolve();
+        };
+        const cancel = (error: Error) => finish(error);
+        const deadline = setTimeout(() => {
+          const error = new Error(
+            "Interactive stdin exceeded its write deadline.",
+          );
+          finish(error);
+          failInput(error);
+          kill();
+        }, stdinTimeoutMs);
+        inputWaiters.add(cancel);
+        try {
+          Promise.resolve(action()).then(
+            () => finish(),
+            () => {
+              const error = new Error("Interactive stdin pipe is closed.");
+              finish(error);
+              failInput(error);
+              kill();
+            },
+          );
+        } catch {
+          const error = new Error("Interactive stdin pipe is closed.");
+          finish(error);
+          failInput(error);
+          kill();
+        }
+      });
+    });
+    const tracked = written.finally(() => {
+      inputBytes -= bytes;
+      inputFrames--;
+    });
+    inputQueue = tracked.catch(() => undefined);
+    return tracked;
+  };
 
   const pumped = pumpLines(
     proc.stdout,
@@ -216,6 +340,12 @@ export function supervise(options: SuperviseOptions): Supervised {
   const done = (async (): Promise<ChildExit> => {
     try {
       const exitCode = await proc.exited;
+      if (interactive) {
+        // This per-turn owner retains no native helpers after the parent exits.
+        killTree(proc.pid);
+        guard.terminate?.();
+        failInput(new Error("Interactive stdin is closed."));
+      }
       await pumped.catch(() => undefined);
       const stderr = await stderrTail;
       return { exitCode, timedOut, stopped, stderr };
@@ -226,13 +356,31 @@ export function supervise(options: SuperviseOptions): Supervised {
     }
   })();
 
-  return {
+  const handle: Supervised = {
     pid: proc.pid,
     done,
     async stop() {
       stopped = true;
       kill();
       await done;
+    },
+  };
+  if (!interactive) return handle;
+  return {
+    ...handle,
+    write(input) {
+      if (inputEnded || inputFailure)
+        return Promise.reject(new Error("Interactive stdin is closed."));
+      return enqueueInput(Buffer.byteLength(input), async () => {
+        await proc.stdin.write(input);
+        return proc.stdin.flush();
+      });
+    },
+    end() {
+      if (endPromise) return endPromise;
+      inputEnded = true;
+      endPromise = enqueueInput(0, () => proc.stdin.end());
+      return endPromise;
     },
   };
 }
