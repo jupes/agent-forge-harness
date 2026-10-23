@@ -1,7 +1,7 @@
 /** No model or network access: a stand-in for the coding CLI's actual pipes. */
 
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeWhole } from "../../executors/fixtures/write-whole";
 import { claudeReportedActivity } from "./reported-activity";
 
 export async function runCodingCliFixture() {
@@ -29,7 +29,7 @@ export async function runCodingCliFixture() {
       ).pid;
     const record = process.env["CODING_FIXTURE_RECORD"];
     if (record)
-      writeFileSync(
+      writeWhole(
         record,
         JSON.stringify({
           argv,
