@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProjectStore } from "../projects/store";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { conversationFile, conversationLeaseFile } from "./paths";
 import { createConversationService } from "./service";
 import { createConversationStore } from "./store";
@@ -217,4 +218,43 @@ test("copies of one owned session share its dispatch lease while a second sessio
   const other = await independent.read(projectId);
   expect(other.controllable).toBe(true);
   expect(other.turns[0]?.phase).toBe("running");
+});
+
+test("owned admission and frame updates share their own write lock and do not acquire Keeper's write lock", async () => {
+  const { home, projectId } = await fixture(),
+    a = address(projectId),
+    store = createConversationStore(home, undefined, a);
+  const directory = join(home, "conversations");
+  const request = turn(),
+    owner = randomUUID();
+  await withQueueLock(
+    join(directory, `${a.sessionId}.write.lock.db`),
+    async () => {
+      await expect(store.accept(projectId, request)).rejects.toThrow("busy");
+      expect(store.read(projectId).revision).toBe(0);
+    },
+  );
+  await withQueueLock(join(directory, "write.lock.db"), async () => {
+    expect((await store.accept(projectId, request)).turn.requestId).toBe(
+      request.requestId,
+    );
+  });
+  await store.start(projectId, request.requestId, owner);
+  await withQueueLock(
+    join(directory, `${a.sessionId}.write.lock.db`),
+    async () => {
+      await expect(
+        store.append(projectId, request.requestId, owner, {
+          kind: "text",
+          text: "Must wait for the writer",
+        }),
+      ).rejects.toThrow("busy");
+    },
+  );
+  expect(store.read(projectId).frames).toHaveLength(1);
+  await store.append(projectId, request.requestId, owner, {
+    kind: "text",
+    text: "After the writer released",
+  });
+  expect(store.read(projectId).frames).toHaveLength(2);
 });

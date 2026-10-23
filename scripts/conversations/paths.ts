@@ -70,6 +70,19 @@ export function conversationFile(
   return join(conversationDirectory(home, projectId), `${name}.json`);
 }
 
+/** Every read-modify-write of one journal must use the same lock. */
+export function conversationWriteLockFile(
+  home: string,
+  projectId: string,
+  address?: OwnedConversationAddress,
+): string {
+  const name = conversationId(projectId, address);
+  return join(
+    conversationDirectory(home, projectId),
+    address === undefined ? "write.lock.db" : `${name}.write.lock.db`,
+  );
+}
+
 export function conversationLeaseFile(
   home: string,
   projectId: string,
