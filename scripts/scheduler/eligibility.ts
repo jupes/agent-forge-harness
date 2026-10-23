@@ -30,7 +30,7 @@
 import { join } from "node:path";
 import type { BeadsDependency, BeadsIssue } from "../../types/beads";
 import type { Reservation } from "../../types/hearth";
-import { planBundles } from "../beads/convoy-bundles";
+import { planBundles } from "../beads/convoy-bundles-core";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { parsed, refusal } from "../hearth/tracker-write";
 import { activeReservations } from "../ledger/query";
