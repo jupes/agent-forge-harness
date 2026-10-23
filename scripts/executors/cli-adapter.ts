@@ -323,33 +323,45 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       });
 
       let stopReason: string | undefined;
-      const done = child.done.then((exit): ExecResult => {
-        const result = { ...exit, providerErrors: [...providerErrors] };
-        // Fixed wording only: the provider's own text stays out of the ledger.
-        const reason = result.timedOut
-          ? "timeout"
-          : result.stopped
-            ? `stopped: ${stopReason ?? "operator"}`
-            : result.exitCode !== 0
-              ? `failed: exit ${result.exitCode}`
-              : result.providerErrors.length > 0
-                ? "failed: exit 0, provider reported an error"
-                : "completed";
-        const { base, unmirror } = current();
-        queue.push({
-          ...base,
-          ts: new Date().toISOString(),
-          kind: "session.ended",
-          payload: {
-            reason,
-            durationMs: Date.now() - startedAt,
-            ...(usage ? { usage } : {}),
-          },
+      const done = child.done
+        .then((exit): ExecResult => {
+          const result = { ...exit, providerErrors: [...providerErrors] };
+          // Fixed wording only: the provider's own text stays out of the ledger.
+          const reason = result.timedOut
+            ? "timeout"
+            : result.stopped
+              ? `stopped: ${stopReason ?? "operator"}`
+              : result.exitCode !== 0
+                ? `failed: exit ${result.exitCode}`
+                : result.providerErrors.length > 0
+                  ? "failed: exit 0, provider reported an error"
+                  : "completed";
+          const { base, unmirror } = current();
+          queue.push({
+            ...base,
+            ts: new Date().toISOString(),
+            kind: "session.ended",
+            payload: {
+              reason,
+              durationMs: Date.now() - startedAt,
+              ...(usage ? { usage } : {}),
+            },
+          });
+          unmirror();
+          queue.close();
+          return result;
+        })
+        .catch((error: unknown) => {
+          // An unconfirmed cleanup is not a provider completion. Release the
+          // metadata iterator and mirror while preserving the rejected outcome.
+          try {
+            session?.unmirror();
+          } finally {
+            queue.close();
+          }
+          throw error;
         });
-        unmirror();
-        queue.close();
-        return result;
-      });
+      void done.catch(() => undefined);
 
       return {
         get sessionId() {
@@ -358,9 +370,11 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         pid: child.pid,
         events: queue.iterate(),
         done,
-        async stop(reason) {
+        stop(reason) {
           stopReason = reason;
-          await child.stop(reason);
+          const stopping = child.stop(reason);
+          void stopping.catch(() => undefined);
+          return stopping;
         },
       };
     },

@@ -347,7 +347,16 @@ export async function runExec(
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
-  const result = await handle.done;
+  let result: Awaited<typeof handle.done>;
+  try {
+    result = await handle.done;
+  } catch (error) {
+    return failure(
+      error instanceof Error
+        ? error.message
+        : "The provider outcome is unknown.",
+    );
+  }
   const runError =
     result.stopped && signal?.aborted
       ? `stopped: ${abortReason(signal)}`
