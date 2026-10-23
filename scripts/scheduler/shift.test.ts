@@ -433,6 +433,23 @@ async function until(ready: () => boolean, ms = 4000): Promise<void> {
 }
 
 describe("forge:shift — the loop, on a fake adapter", () => {
+  test("the trusted project admission guard refuses a candidate before any claim, reservation, worktree or provider", async () => {
+    const r = rig([queued("t-1")]);
+    let checks = 0;
+    r.deps.beforeStart = async (id, shown) => {
+      checks++;
+      expect(id).toBe("t-1");
+      expect(shown["labels"]).toContain("queue:queued");
+      return false;
+    };
+    const done = await shift(r);
+    expect(done.reason).toBe("drained");
+    expect(checks).toBe(1);
+    expect(r.fake.runs).toEqual([]);
+    expect(r.startPoints).toEqual([]);
+    expect(r.reservations()).toBe(0);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+  });
   test("the actual record retains an explicit per-run timeout and admission count for read-only project observations", async () => {
     const r = rig([queued("t-1"), queued("t-2")]);
     const done = await shift(r, { maxBeads: 1, runTimeoutMs: 1_200_000 });

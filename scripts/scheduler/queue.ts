@@ -276,6 +276,13 @@ export function pickable(entries: readonly QueueEntry[]): QueueEntry[] {
 // ── Moving a bead ───────────────────────────────────────────────────────────
 
 export interface QueueDeps {
+  /** Trusted admission only, after the fresh show and legal-state check inside the queue lock. Never applies to cleanup moves. */
+  beforeStart?:
+    | ((
+        id: string,
+        shown: Readonly<Record<string, unknown>>,
+      ) => Promise<boolean>)
+    | undefined;
   /** The workspace the transition events are recorded under. */
   workspace: string;
   /** Runs `bd` in the checkout that holds the tracker: an argument array, no shell. */
@@ -497,6 +504,21 @@ export function createQueue(deps: QueueDeps): Queue {
         "refused",
         `${id} is ${standing.kind === "unbacked" ? `carrying ${label(standing.label)}, which the queue did not write,` : "not in the queue"} and its Beads status is closed: a closed bead is not proposed.`,
       );
+
+    if (action === "start" && deps.beforeStart) {
+      try {
+        if (!(await deps.beforeStart(id, shown.value)))
+          return no(
+            "refused",
+            "Current project admission could not be verified. Nothing was started.",
+          );
+      } catch {
+        return no(
+          "failed",
+          "Current project admission could not be checked. Nothing was started.",
+        );
+      }
+    }
 
     // The label the bead carries now, which the write replaces. Never the one
     // it adds: bd adds before it removes, and would leave the bead with none.

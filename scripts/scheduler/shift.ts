@@ -57,6 +57,7 @@ import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
 import {
   createQueue,
+  type QueueDeps,
   type QueueFailure,
   queueStateOf,
   smithFor,
@@ -298,6 +299,8 @@ export interface Attempt {
 }
 
 export interface ShiftDeps {
+  /** Desktop project admission: rechecked under canonical queue ownership before each new start, never for owned cleanup. */
+  beforeStart?: QueueDeps["beforeStart"];
   /** The checkout the shift runs for: its config and its tracker. */
   root: string;
   /** Runs `bd` in the checkout that holds the tracker. */
@@ -638,6 +641,7 @@ export async function runShift(
       append({ ...event, runId });
   const queueFor = (runId: string) =>
     createQueue({
+      beforeStart: deps.beforeStart,
       workspace,
       runBd: deps.runBd,
       appendEvent: appendFor(runId),

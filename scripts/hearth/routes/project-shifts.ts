@@ -7,6 +7,7 @@ import {
   projectShiftStartSchema,
   shiftRequestIdSchema,
 } from "../../shifts/protocol";
+import { createProjectShiftScopeValidator } from "../../shifts/scope";
 import { createProjectShiftService } from "../../shifts/service";
 import type { ActionRoute, ApiRoute, ReadRoute, RouteReply } from "../api";
 import type { ValidationResult } from "../validate";
@@ -84,57 +85,20 @@ export function projectShiftRoutes(
   deps: OperatorDeps,
   load: () => Promise<ProjectSnapshot>,
 ) {
-  const service = createProjectShiftService({
-    home: deps.projectHome,
-    root: deps.root,
-    async validateStart(projectId, request) {
-      const snapshot = await load(),
-        project = snapshot.catalog.projects.find(
-          (item) => item.id === projectId,
-        );
-      if (!project)
-        throw new ConversationError(
-          404,
-          "This project is not in the hearth catalog.",
-        );
-      if (project.archived)
-        throw new ConversationError(
-          409,
-          "This project is archived. Existing owned shift controls remain available.",
-        );
-      if (request.expectedCatalogRevision !== snapshot.catalog.revision)
-        throw new ConversationError(
-          409,
-          "The project catalog changed. Review the current shift options before starting.",
-        );
-      const loaded = loadConfig({
+  const scope = createProjectShiftScopeValidator({
+    workspace: deps.workspace,
+    load,
+    loadConfig: () =>
+      loadConfig({
         harnessRoot: deps.root,
         env: {},
         ...(deps.configHome !== undefined ? { home: deps.configHome } : {}),
-      });
-      const choices = projectShiftOptions(
-        project,
-        snapshot.source,
-        loaded,
-        snapshot.catalog.revision,
-      );
-      if (
-        request.options.epic !== undefined &&
-        !choices.epics.some((epic) => epic.id === request.options.epic)
-      )
-        throw new ConversationError(
-          409,
-          "The reviewed epic is not an epic in the current project scope.",
-        );
-      if (
-        request.options.smith !== undefined &&
-        !choices.smiths.names.includes(request.options.smith)
-      )
-        throw new ConversationError(
-          409,
-          "The reviewed smith is no longer enabled.",
-        );
-    },
+      }),
+  });
+  const service = createProjectShiftService({
+    home: deps.projectHome,
+    root: deps.root,
+    validateStart: scope.validateStart,
   });
   const canonical = shiftRoutes({
     workspace: deps.workspace,
