@@ -28,7 +28,11 @@ export function createCodexChatPreview(options: {
     raw: unknown,
   ): Promise<CodexChatPreviewReceipt> => {
     const request = parseOwnedSessionStart(raw);
-    if (!("provider" in request) || request.launch.mode !== "chat")
+    if (
+      !("provider" in request) ||
+      request.provider !== "codex" ||
+      request.launch.mode !== "chat"
+    )
       throw new ConversationError(400, "An explicit Codex Chat is required.");
     const metadata = {
       workspace: resolveCheckout(options.root).workspace,

@@ -232,8 +232,7 @@ function reportedTurn(
       // configuration, text, approval or usage gains identity from it.
       if (
         !complete &&
-        (event.kind === "coding-chat" ||
-          event.kind === "coding-gemini-task") &&
+        (event.kind === "coding-chat" || event.kind === "coding-gemini-task") &&
         event.event.kind === "process" &&
         value.binding === null
       )

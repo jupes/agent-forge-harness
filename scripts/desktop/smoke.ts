@@ -513,6 +513,42 @@ async function main(): Promise<void> {
       `(() => { const detail=document.querySelector('[aria-label="Observed session details"]'); return detail?.textContent?.includes('The conversation is not captured here') && detail.textContent.includes('Session start recorded') && detail.textContent.includes('Not verified by this metadata source') && !detail.querySelector('textarea,input') && !Array.from(detail.querySelectorAll('button')).some(b => /^(Stop|Resume|Send)/.test(b.textContent?.trim() ?? '')); })()`,
       "The native external detail did not preserve its read-only metadata boundary.",
     );
+    await evaluate(
+      socket,
+      `Array.from(document.querySelectorAll('main a')).find(a => a.textContent?.trim() === 'View session Activity')?.click()`,
+    );
+    await waitForPage(
+      socket,
+      `!!document.querySelector('[aria-label="Project Activity"] [role="option"]') && document.querySelector('[aria-label="Project Activity"]')?.textContent?.includes('Session started')`,
+      "The native scoped Activity metadata feed did not load.",
+    );
+    await evaluate(
+      socket,
+      `document.querySelector('[role="listbox"][aria-label="Project activity"]').focus()`,
+    );
+    for (const [key, code] of [
+      ["End", 35],
+      ["Enter", 13],
+    ] as const) {
+      await cdp(socket, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key,
+        code: key,
+        windowsVirtualKeyCode: code,
+      });
+      await cdp(socket, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key,
+        code: key,
+        windowsVirtualKeyCode: code,
+      });
+    }
+    await waitForPage(
+      socket,
+      `(() => {const detail=document.querySelector('[aria-label="Activity inspector"]'); return detail?.textContent?.includes('Session started') && detail.textContent.includes('Recorded provider') && detail.textContent.includes('native-observed-session') && !detail.querySelector('textarea,input') && !Array.from(detail.querySelectorAll('button')).some(b => /^(Stop|Resume|Send|Allow)/.test(b.textContent?.trim() ?? ''));})()`,
+      "The native Activity inspector did not retain its metadata-only boundary.",
+    );
+    await saveConnectionShot(socket, "native-project-activity.png");
     await verifyNativeSessionLibrary(
       socket,
       nativeSession,
@@ -726,6 +762,7 @@ async function main(): Promise<void> {
           keeperProposalsTested: true,
           observedSessionIneligibleTested: true,
           scopedObservedSessionDetailsTested: true,
+          scopedProjectActivityMetadataTested: true,
           completeOwnedTranscriptDownloadTested: true,
           reversibleOwnedArchiveTested: true,
           focusOutline,

@@ -1703,6 +1703,8 @@ const READS: Record<string, string> = {
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/session-observations": `/projects/${FIXTURE_PROJECT_ID}/session-observations`,
   "GET /projects/:id/session-observations/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/session-observations/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
+  "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
@@ -1782,6 +1784,38 @@ async function probed(
 
 function snapshot(h: TestHearth): number[] {
   return h.events().map((event) => event.id);
+}
+
+function activityReadMembership(h: TestHearth): void {
+  const previous = h.bd.answer;
+  h.bd.answer = (args) =>
+    previous?.(args) ??
+    (args[0] === "export"
+      ? {
+          status: 0,
+          stdout: JSON.stringify({
+            id: "alpha-epic",
+            title: "Activity fixture",
+            status: "open",
+            issue_type: "epic",
+            labels: ["project:alpha"],
+          }),
+          stderr: "",
+        }
+      : undefined);
+}
+
+/** A real metadata row for the selected-event read, never synthesized by the handler. */
+function seedActivityReadFixture(h: TestHearth): LedgerEvent[] {
+  activityReadMembership(h);
+  expect(
+    h.append({
+      kind: "tool.called",
+      sessionId: FIXTURE_OWNED_SESSION_ID,
+      payload: { tool: "Read", argsHash: "fixture-activity-hash" },
+    }),
+  ).toBe(1);
+  return h.events();
 }
 
 describe("the operator API on a hearth", () => {
@@ -2233,6 +2267,8 @@ describe("a read row or the stream while another connection holds the write lock
   const LEDGER_ROWS: ReadonlyArray<[string, number]> = [
     ["GET /eligibility", 502],
     ["GET /events", 500],
+    ["GET /projects/:id/activity", 503],
+    ["GET /projects/:id/activity/:eventId", 503],
     ["GET /projects/:id/session-observations/:sessionId", 503],
     ["GET /reservations", 500],
     ["GET /runs/:slug", 500],
@@ -2281,6 +2317,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
+    activityReadMembership(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -2348,6 +2385,10 @@ describe("a read row or the stream while another connection holds the write lock
 
     // Released, the next read opens the file and every row answers.
     for (const row of rows) {
+      // Earlier served ledger reads retain the cold-open oracle; only this
+      // selected-event row needs an existing metadata fixture.
+      if (key(row) === "GET /projects/:id/activity/:eventId")
+        seedActivityReadFixture(h);
       const response = await answered(
         await get(
           h,
@@ -3240,6 +3281,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
+    seedActivityReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3270,6 +3312,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
+    const before = seedActivityReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
@@ -3300,7 +3343,7 @@ describe("every read row (iterating the table)", () => {
         status: 200,
       });
     }
-    expect(h.events()).toEqual([]);
+    expect(h.events()).toEqual(before);
     // The read rows run `bd list` (the queue, eligibility) and `bd export` (the Beads counts), and nothing that writes.
     expect(
       h.bd.calls.every((args) => args[0] === "list" || args[0] === "export"),
