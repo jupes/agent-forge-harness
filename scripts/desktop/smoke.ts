@@ -780,6 +780,8 @@ async function seedNativeSession(
           "--verbose",
           "--include-partial-messages",
           "--model",
+          "--permission-mode",
+          "--permission-prompts",
           "--allowedTools",
         ],
       },
@@ -833,7 +835,7 @@ async function verifyNativeSessionLibrary(
   await evaluate(socket, `${actionButton}.click()`);
   const dialog = `document.querySelector('dialog[open]')`;
   const button = (name: string) =>
-    `Array.from(${dialog}?.querySelectorAll('button') ?? []).find(b => b.textContent?.trim() === ${JSON.stringify(name)})`;
+    `Array.from(${dialog}?.querySelectorAll('button') ?? []).find(b => b.textContent?.trim() === ${JSON.stringify(name)} || b.getAttribute('aria-label') === ${JSON.stringify(name)})`;
   await waitForPage(
     socket,
     `${button("Export saved transcript")}?.disabled === false && ${button("Archive session")}?.disabled === false`,
