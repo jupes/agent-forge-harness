@@ -25,6 +25,7 @@ import {
   shiftRequestIdSchema,
 } from "./protocol";
 import { SHIFT_START_FIELDS } from "./start-fields";
+import { canonicalProjectShiftStart } from "./start-input";
 
 export const MAX_PROJECT_SHIFT_REQUESTS = 1000;
 export const MAX_PROJECT_SHIFT_BYTES = 2_097_152;
@@ -37,30 +38,8 @@ export function projectShiftRequestHash(
   workspace: string,
   request: ProjectShiftStartRequest,
 ): string {
-  const options = request.options;
   return createHash("sha256")
-    .update(
-      JSON.stringify({
-        version: 1,
-        projectId,
-        workspace: workspaceKey(workspace),
-        requestId: request.requestId,
-        expectedCatalogRevision: request.expectedCatalogRevision,
-        options: {
-          for: options.for,
-          concurrency: options.concurrency,
-          maxBeads: options.maxBeads,
-          maxUsd: options.maxUsd,
-          repairs: options.repairs,
-          base: options.base,
-          ...(options.epic !== undefined ? { epic: options.epic } : {}),
-          ...(options.smith !== undefined ? { smith: options.smith } : {}),
-          ...(options.runTimeout !== undefined
-            ? { runTimeout: options.runTimeout }
-            : {}),
-        },
-      }),
-    )
+    .update(canonicalProjectShiftStart(projectId, workspace, request))
     .digest("hex");
 }
 export function projectShiftFlags(request: ProjectShiftStartRequest): string[] {
