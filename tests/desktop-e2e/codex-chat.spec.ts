@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
@@ -7,7 +7,14 @@ import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wir
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, seedProjects } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  catalog,
+  catalogFile,
+  seedProjects,
+  workspace,
+} from "./project-fixtures";
 
 function records() {
   try {
@@ -110,8 +117,11 @@ test.afterEach(async ({ page }) => {
       .toBe(false);
   }
 });
-async function composer(page: Page) {
-  await page.getByRole("button", { name: "New session", exact: true }).click();
+async function composer(page: Page, capture = false, alreadyOpen = false) {
+  if (!alreadyOpen)
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
   const dialog = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
@@ -147,6 +157,22 @@ async function composer(page: Page) {
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
+  if (capture && process.env.CODEX_CHAT_SHOTS) {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.screenshot({
+      path: join(process.env.CODEX_CHAT_SHOTS, "codex-chat-composer.png"),
+      fullPage: true,
+      maskColor: "#1c1d24",
+      mask: [
+        dialog.getByRole("combobox", {
+          name: "Session repository",
+          exact: true,
+        }),
+        dialog.getByRole("textbox", { name: "Session prompt", exact: true }),
+      ],
+    });
+    await page.setViewportSize({ width: 1100, height: 750 });
+  }
   return dialog;
 }
 
@@ -154,9 +180,22 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   page,
 }) => {
   await page.setViewportSize({ width: 1100, height: 750 });
-  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/beads?selectionKind=bead&selectionId=alpha-epic`,
+  );
+  await page
+    .getByRole("button", { name: "Show inspector", exact: true })
+    .click();
+  await page
+    .getByRole("region", { name: "Bead alpha-epic", exact: true })
+    .getByRole("button", { name: "Start session", exact: true })
+    .click();
   const before = calls().filter((row) => row.kind === "answer").length,
-    dialog = await composer(page);
+    dialog = await composer(page, true, true);
+  await expect(
+    dialog.getByRole("textbox", { name: "Session bead", exact: true }),
+  ).toHaveValue("alpha-epic");
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("PRIVATE edited native Chat question");
@@ -181,6 +220,38 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
       exact: true,
     });
   await expect(approval).toContainText("inert example");
+  await expect
+    .poll(() =>
+      pane.locator("header").evaluate((header) => {
+        const heading = header.querySelector("h2");
+        if (!heading) return false;
+        const outer = header.getBoundingClientRect(),
+          inner = heading.getBoundingClientRect();
+        return inner.top >= outer.top && inner.bottom <= outer.bottom;
+      }),
+    )
+    .toBe(true);
+  if (process.env.CODEX_CHAT_SHOTS) {
+    await page
+      .getByRole("button", { name: "Hide inspector", exact: true })
+      .click();
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await approval.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(process.env.CODEX_CHAT_SHOTS, "codex-chat-approval.png"),
+      fullPage: true,
+      maskColor: "#1c1d24",
+      style:
+        '.af-owned-session code, .af-owned-session-header details, [aria-label="Your session message"] { visibility: hidden !important; }',
+      mask: [
+        page.getByRole("complementary", { name: "Inspector", exact: true }),
+        pane
+          .locator(".af-session-note")
+          .filter({ hasText: /[A-Z]:[\\/]|\/Users\/|\/home\// }),
+      ],
+    });
+    await page.setViewportSize({ width: 1100, height: 750 });
+  }
   await expect(
     approval.getByRole("button", { name: "Allow once", exact: true }),
   ).toBeEnabled();
@@ -194,6 +265,20 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   await expect(pane.getByText("Hello world", { exact: true })).toBeVisible();
   const record = records().find((row) => !previous.has(row.id));
   if (!record) throw Error("No accepted Chat record");
+  expect(record.beadId).toBe("alpha-epic");
+  expect(realpathSync.native(record.worktree)).toBe(
+    realpathSync.native(workspace),
+  );
+  expect(
+    saved(record.id).frames.find((frame) => frame.event.kind === "user")?.event,
+  ).toMatchObject({
+    kind: "user",
+    codexChat: {
+      launch: {
+        context: { beadId: "alpha-epic", worktree: record.worktree },
+      },
+    },
+  });
   await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
   const usage = pane.getByRole("region", {
     name: "Native Chat usage",
@@ -536,4 +621,223 @@ test("explicit Chat Stop waits for the actual native provider and helper to exit
   await expect(
     pane.getByRole("button", { name: "Allow once", exact: true }),
   ).toHaveCount(0);
+});
+
+test("Chat option checks show loading and failure without accepting a turn, then recover through a fresh native preview", async ({
+  page,
+}) => {
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  let releaseChoices = () => {};
+  const choicesGate = new Promise<void>((resolve) => {
+    releaseChoices = resolve;
+  });
+  await page.route("**/__agent-forge/smiths", async (route) => {
+    await choicesGate;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await dialog.getByRole("button", { name: /Cx · Codex/ }).click();
+  await dialog
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("chat");
+  try {
+    await expect(
+      dialog.getByRole("textbox", { name: "Session model", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      dialog.getByRole("combobox", { name: "Session effort", exact: true }),
+    ).toBeDisabled();
+  } finally {
+    releaseChoices();
+  }
+  await expect(
+    dialog.getByRole("combobox", { name: "Session smith", exact: true }),
+  ).toHaveValue("codex-journeyman");
+  await page.unroute("**/__agent-forge/smiths");
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("PRIVATE checked later");
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  let release = () => {},
+    seen = () => {};
+  const held = new Promise<void>((resolve) => {
+      seen = resolve;
+    }),
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const path = `**/projects/${alpha.id}/sessions/preview`;
+  await page.route(path, async (route) => {
+    seen();
+    await gate;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error:
+          "Native capability check is unavailable. No conversation was started.",
+      }),
+    });
+  });
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await held;
+  try {
+    await expect(
+      dialog.getByRole("button", {
+        name: "Checking supported options…",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+    expect(records().filter((row) => !previous.has(row.id))).toEqual([]);
+  } finally {
+    release();
+  }
+  await expect(
+    dialog.getByText(
+      "Native capability check is unavailable. No conversation was started.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.unroute(path);
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  expect(records().filter((row) => !previous.has(row.id))).toEqual([]);
+});
+
+test("archived and foreign projects cannot advertise or answer an existing live Chat callback", async ({
+  page,
+}) => {
+  const before = calls().filter((row) => row.kind === "answer").length,
+    { pane, record } = await startedChat(page);
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toBeEnabled();
+  const pending = saved(record.id).frames.find(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "approval-request",
+  )?.event;
+  if (
+    pending?.kind !== "coding-chat" ||
+    pending.event.kind !== "approval-request"
+  )
+    throw Error("No saved native offer");
+  const token = await pageToken(page);
+  const foreign = await page.evaluate(
+    async ({ project, id, token, header, approvalId, turnRequestId }) => {
+      const base = `/__agent-forge/projects/${project}/sessions/${id}`,
+        headers = { [header]: token, "Content-Type": "application/json" };
+      const read = await fetch(`${base}/approvals`, { headers }),
+        write = await fetch(`${base}/approval-decisions`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            requestId: crypto.randomUUID(),
+            turnRequestId,
+            approvalId,
+            decision: "accept",
+          }),
+        });
+      return { read: read.status, write: write.status };
+    },
+    {
+      project: beta.id,
+      id: record.id,
+      token,
+      header: OPERATOR_HEADER,
+      approvalId: pending.event.approval.id,
+      turnRequestId: saved(record.id).turns[0]?.requestId,
+    },
+  );
+  expect(foreign).toEqual({ read: 409, write: 409 });
+  try {
+    writeFileSync(
+      catalogFile,
+      JSON.stringify({
+        ...catalog,
+        revision: catalog.revision + 1,
+        projects: catalog.projects.map((project) =>
+          project.id === alpha.id ? { ...project, archived: true } : project,
+        ),
+      }),
+    );
+    await reloadSettled(page);
+    await expect(
+      pane.getByRole("button", { name: "Allow once", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      pane.getByRole("button", {
+        name: "Refresh native approvals",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    const archived = await page.evaluate(
+      async ({ project, id, token, header }) => {
+        const response = await fetch(
+          `/__agent-forge/projects/${project}/sessions/${id}/approvals`,
+          { headers: { [header]: token } },
+        );
+        return response.status;
+      },
+      { project: alpha.id, id: record.id, token, header: OPERATOR_HEADER },
+    );
+    expect(archived).toBe(409);
+    expect(calls().filter((row) => row.kind === "answer")).toHaveLength(before);
+  } finally {
+    writeFileSync(catalogFile, JSON.stringify(catalog));
+  }
+});
+
+test("a native Chat provider failure stays failed and never reports an observed execution model", async ({
+  page,
+}) => {
+  mode("provider-error");
+  const { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("failed");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "error",
+  );
+  await expect(pane).toContainText(
+    "The execution model is not reported by this native Chat protocol.",
+  );
+  expect(
+    saved(record.id).frames.filter((frame) => frame.event.kind === "model"),
+  ).toEqual([]);
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("the native approval deadline removes stale choices without answering the request", async ({
+  page,
+}) => {
+  mode("approval-timeout");
+  const before = calls().filter((row) => row.kind === "answer").length,
+    { pane, record } = await startedChat(page),
+    allow = pane.getByRole("button", { name: "Allow once", exact: true });
+  await expect(allow).toBeEnabled();
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("unknown");
+  await expect(allow).toHaveCount(0);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(before);
+  await expect(
+    pane.getByRole("button", { name: "Refresh native approvals", exact: true }),
+  ).toBeDisabled();
 });

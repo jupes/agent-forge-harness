@@ -350,22 +350,6 @@ export function SessionConversation({
           </details>
         </details>
       </header>
-      {isCodexChat && (
-        <>
-          <CodexChatApprovals
-            client={approvals}
-            actionable={approvalActionable}
-          />
-          <CodexChatUsage
-            usage={
-              chatUsageEvent?.kind === "coding-chat" &&
-              chatUsageEvent.event.kind === "usage"
-                ? chatUsageEvent.event.usage
-                : null
-            }
-          />
-        </>
-      )}
       {(view.notice || view.readError) && (
         <div class="af-session-warning" role="status">
           <p>{view.notice}</p>
@@ -517,6 +501,22 @@ export function SessionConversation({
             </div>
           );
         })}
+        {isCodexChat && (
+          <div class="af-session-chat-controls">
+            <CodexChatApprovals
+              client={approvals}
+              actionable={approvalActionable}
+            />
+            <CodexChatUsage
+              usage={
+                chatUsageEvent?.kind === "coding-chat" &&
+                chatUsageEvent.event.kind === "usage"
+                  ? chatUsageEvent.event.usage
+                  : null
+              }
+            />
+          </div>
+        )}
       </div>
       {away && (
         <Button

@@ -95,6 +95,12 @@
   gap: 10px;
   min-width: 0;
 }
+.af-session-chat-controls {
+  display: grid;
+  gap: 14px;
+  max-width: 800px;
+  margin: 0 auto;
+}
 .af-session-approval pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

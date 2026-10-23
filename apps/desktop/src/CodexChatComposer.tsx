@@ -634,6 +634,7 @@ export function CodexChatComposer({
             Requested model
             <input
               aria-label="Session model"
+              disabled={!settings || !options.initialized}
               maxLength={200}
               value={options.model}
               onInput={(event) =>
@@ -645,6 +646,7 @@ export function CodexChatComposer({
             Reasoning effort
             <select
               aria-label="Session effort"
+              disabled={!settings || !options.initialized}
               value={options.effort}
               onChange={(event) =>
                 editOptions({ effort: event.currentTarget.value })
@@ -676,6 +678,7 @@ export function CodexChatComposer({
             Sandbox
             <select
               aria-label="Session sandbox"
+              disabled={!settings || !options.initialized}
               value={options.sandbox}
               onChange={(event) =>
                 editOptions({
@@ -697,6 +700,7 @@ export function CodexChatComposer({
             Approvals
             <select
               aria-label="Session approvals"
+              disabled={!settings || !options.initialized}
               value={options.approvalPolicy}
               onChange={(event) =>
                 editOptions({

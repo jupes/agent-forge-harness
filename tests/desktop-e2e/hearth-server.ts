@@ -46,6 +46,30 @@ async function main() {
     ...claudeOptions,
     timeoutMs: 1500,
   });
+  const chatOptions = {
+    root,
+    home,
+    configHome: home,
+    command: [
+      join(
+        home,
+        "bd-stand-in",
+        "bin",
+        process.platform === "win32" ? "codex-chat.exe" : "codex-chat",
+      ),
+    ],
+    syncCommand: [command, "--sync"],
+    operatorToken: () => token,
+    timeoutMs: 60_000,
+  };
+  const chat = createCodexChatRuntime({
+      ...chatOptions,
+      approvalTimeoutMs: 45_000,
+    }),
+    timedChat = createCodexChatRuntime({
+      ...chatOptions,
+      approvalTimeoutMs: 5000,
+    });
   const hearth = await createHearth({
     root,
     home,
@@ -124,23 +148,21 @@ async function main() {
         operatorToken: () => token,
         timeoutMs: 60_000,
       }),
-      codexChatRuntime: createCodexChatRuntime({
-        root,
-        home,
-        configHome: home,
-        command: [
-          join(
-            home,
-            "bd-stand-in",
-            "bin",
-            process.platform === "win32" ? "codex-chat.exe" : "codex-chat",
-          ),
-        ],
-        syncCommand: [command, "--sync"],
-        operatorToken: () => token,
-        timeoutMs: 60_000,
-        approvalTimeoutMs: 45_000,
-      }),
+      codexChatRuntime: {
+        check: (input) => chat.check(input),
+        prepare: (input) => chat.prepare(input),
+        run: (...args) => {
+          let mode: unknown = null;
+          try {
+            mode = JSON.parse(
+              readFileSync(join(home, "codex-chat-fixture-mode.json"), "utf8"),
+            );
+          } catch {
+            /* Only the explicit inert mode selects a shorter approval deadline. */
+          }
+          return (mode === "approval-timeout" ? timedChat : chat).run(...args);
+        },
+      },
     },
   });
   console.log(
