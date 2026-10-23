@@ -66,3 +66,14 @@ Result usage is per main turn; `total_cost_usd` is an estimated cumulative
 session amount restored across resume. Neither proves plan allowance or a bill.
 The typed `rate_limit_event` and optional `/usage` report are separate evidence;
 they must never be manufactured after a failed read.
+
+`scripts/sessions/claude-account.ts` exports `claudeAccountReportSchema`, the
+incoming-packet decoder `claudeAccountReports`, and `latestClaudeAccountReports`.
+The last function returns only typed metadata for a server readiness projection:
+auth source, authentication-flow status, rate-limit status, and reported usage
+windows. It never returns transcript text or authentication-flow output. Hearth
+receipt time is `observedAt`; callers must apply their own freshness policy.
+`apiKeySource: "none"` does not mean signed out. Rate-event `resetsAt` is retained
+as the reported number with `resetUnit: "unreported"`: the inspected reference
+does not specify its unit. Usage-report `resets_at` is an explicitly typed ISO
+timestamp. Null meters, empty meters and missing reports remain distinct.

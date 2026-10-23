@@ -16,6 +16,7 @@ import {
   codingActivitySchema,
   codingOutcomeSchema,
 } from "./activity-protocol";
+import { claudeAccountReportSchema } from "./claude-account";
 import { codexExecCapabilitiesSchema } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 
@@ -95,6 +96,7 @@ export const ownedCodingEventSchema = z.union([
   claudeCodingUsageSchema,
   codingActivitySchema,
   codingOutcomeSchema,
+  claudeAccountReportSchema,
 ]);
 const frame = z
   .object({
@@ -131,6 +133,7 @@ function reportedTurn(
     if (
       event.kind !== "coding-activity" &&
       event.kind !== "coding-outcome" &&
+      event.kind !== "coding-account" &&
       event.kind !== "coding-usage"
     )
       return true;

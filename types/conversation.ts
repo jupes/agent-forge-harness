@@ -1,3 +1,4 @@
+import type { ClaudeAccountReport } from "./claude-account";
 import type { CodexCodingUsageEvent } from "./codex-owned-task";
 import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { KeeperReadKind } from "./keeper";
@@ -101,6 +102,7 @@ export type ConversationEvent =
   | CodexCodingUsageEvent
   | ClaudeCodingUsageEvent
   | CodingActivityEvent
+  | ClaudeAccountReport
   | CodingOutcomeEvent;
 
 export interface ConversationFrame {
