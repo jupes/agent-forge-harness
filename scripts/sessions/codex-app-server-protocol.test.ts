@@ -174,6 +174,37 @@ test("foreign native identity and malformed or oversized frames refuse", () => {
   );
 });
 
+test("documented global warnings stay private while scoped foreign or malformed warnings refuse", () => {
+  const beforeThread = createCodexChatStream({
+    launch,
+    version: capabilities.version,
+    resumeThreadId: null,
+  });
+  expect(
+    beforeThread.accept(
+      notify("warning", { threadId: null, message: "private global warning" }),
+    ),
+  ).toEqual({ events: [], approvals: [], resolved: [] });
+  const decoder = stream();
+  expect(
+    decoder.accept(
+      notify("warning", { threadId, message: "private scoped warning" }),
+    ).events,
+  ).toEqual([]);
+  expect(() =>
+    decoder.accept(notify("warning", { threadId: turnId, message: "foreign" })),
+  ).toThrow("identity");
+  for (const params of [
+    { threadId: null, message: 1 },
+    { message: "missing scope field" },
+    { threadId: null, message: "x".repeat(16_385) },
+  ])
+    expect(() => decoder.accept(notify("warning", params))).toThrow();
+  expect(() =>
+    decoder.accept(notify("future/notification", { threadId: null })),
+  ).toThrow("identity");
+});
+
 function approval(
   decoder: ReturnType<typeof stream>,
   method: "commandExecution" | "fileChange" = "commandExecution",

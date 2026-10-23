@@ -158,7 +158,7 @@ while (true) {
     record({ kind: "rpc", method, params, id });
     if (method === "initialize" && mode === "hang-initialize") {
       hangTree();
-    } else if (method === "initialize")
+    } else if (method === "initialize") {
       await send({
         id,
         result: {
@@ -168,7 +168,11 @@ while (true) {
           platformOs: "windows",
         },
       });
-    else if (method === "thread/start" || method === "thread/resume") {
+      await send({
+        method: "warning",
+        params: { threadId: null, message: "Inert private global warning" },
+      });
+    } else if (method === "thread/start" || method === "thread/resume") {
       if (
         !("model" in params) ||
         !("cwd" in params) ||
