@@ -79,6 +79,15 @@ export function ProjectBeads({
     filtered = filterBeads(rows, filters);
   const update = (patch: Partial<BeadFilters>) =>
     setFilters({ ...filters, ...patch });
+  const copyId = async (id: string) => {
+    try {
+      if (!navigator.clipboard) throw Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(id);
+      setCopy(`Copied ${id}.`);
+    } catch {
+      setCopy(`Copy unavailable. Select the bead id: ${id}`);
+    }
+  };
   const choices = (
     key: keyof Pick<ProjectBead, "type" | "status" | "queue" | "assignee">,
   ) =>
@@ -306,13 +315,7 @@ export function ProjectBeads({
                           type="button"
                           aria-label={`Copy bead ${bead.id}`}
                           onClick={() => {
-                            void navigator.clipboard.writeText(bead.id).then(
-                              () => setCopy(`Copied ${bead.id}.`),
-                              () =>
-                                setCopy(
-                                  `Copy unavailable. Select the bead id: ${bead.id}`,
-                                ),
-                            );
+                            void copyId(bead.id);
                           }}
                         >
                           {bead.id}

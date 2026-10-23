@@ -213,7 +213,10 @@ export function DesktopApp(): JSX.Element {
               id={route.selection.id}
               error={beads.error}
               loading={beads.loading}
-              reload={beads.reload}
+              reload={() => {
+                beads.reload();
+                projects.reload();
+              }}
               page={beads.data}
               sessions={summary?.sessions ?? []}
               sessionsComplete={summary?.sessionsComplete ?? false}
@@ -250,14 +253,16 @@ export function DesktopApp(): JSX.Element {
         }
       >
         <ConnectionBanner />
-        {project && route.selection?.kind === "bead" && (
-          <Button
-            disabled={!writesAllowed || project.archived}
-            onClick={() => openSession(route.selection?.id)}
-          >
-            Start session for bead {route.selection.id}
-          </Button>
-        )}
+        {project &&
+          route.destination !== "beads" &&
+          route.selection?.kind === "bead" && (
+            <Button
+              disabled={!writesAllowed || project.archived}
+              onClick={() => openSession(route.selection?.id)}
+            >
+              Start session for bead {route.selection.id}
+            </Button>
+          )}
         {project && route.destination !== "keeper" && (
           <div class="af-keeper-launcher">
             <button
@@ -331,7 +336,10 @@ export function DesktopApp(): JSX.Element {
                 id={route.selection.id}
                 error={beads.error}
                 loading={beads.loading}
-                reload={beads.reload}
+                reload={() => {
+                  beads.reload();
+                  projects.reload();
+                }}
                 page={beads.data}
                 sessions={summary?.sessions ?? []}
                 sessionsComplete={summary?.sessionsComplete ?? false}
@@ -348,7 +356,10 @@ export function DesktopApp(): JSX.Element {
               page={beads.data}
               error={beads.error}
               loading={beads.loading}
-              reload={beads.reload}
+              reload={() => {
+                beads.reload();
+                projects.reload();
+              }}
               selectedId={
                 route.selection?.kind === "bead" ? route.selection.id : null
               }

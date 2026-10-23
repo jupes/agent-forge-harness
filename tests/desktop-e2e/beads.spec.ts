@@ -77,6 +77,12 @@ test("Ready preserves P4 and claim semantics, combined filters and dependency in
   page,
 }) => {
   await page.setViewportSize({ width: 1600, height: 1100 });
+  await page.addInitScript(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    }),
+  );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
   const region = page.getByRole("region", { name: "Project beads" });
@@ -92,6 +98,12 @@ test("Ready preserves P4 and claim semantics, combined filters and dependency in
     }),
   ).toHaveCount(0);
   await expect(region).not.toContainText("Foreign Beta Secret");
+  await region
+    .getByRole("button", { name: "Copy bead alpha-ready", exact: true })
+    .click();
+  await expect(region.getByRole("status")).toContainText(
+    "Copy unavailable. Select the bead id: alpha-ready",
+  );
   await region
     .getByRole("combobox", { name: "Filter beads by priority", exact: true })
     .selectOption("4");

@@ -385,8 +385,12 @@ test("a bead-prefilled Task exposes locked modes, and project drafts and session
     `/index.html#/desktop/project/${alpha.id}/beads?selectionKind=bead&selectionId=alpha-epic`,
   );
   await page
+    .getByRole("button", { name: "Show inspector", exact: true })
+    .click();
+  await page
+    .getByRole("region", { name: "Bead alpha-epic", exact: true })
     .getByRole("button", {
-      name: "Start session for bead alpha-epic",
+      name: "Start session",
       exact: true,
     })
     .click();
