@@ -276,6 +276,26 @@ test("a full-history completion without actual process/binding/outcome proof is 
   f.observer.close();
 });
 
+test("an index refusal invalidates already queued private messages and close callbacks", async () => {
+  const f = fixture();
+  await f.observer.refresh();
+  f.emit(page());
+  const old = f.connections[0];
+  if (!old) throw Error("No original feed");
+  f.setIndex({ projectId: "foreign" });
+  await f.observer.refresh();
+  expect(old.closed).toBe(true);
+  expect(f.observer.get().live).toBe(false);
+  const error = f.observer.get().error;
+  f.emit(page(100, 121), old);
+  old.handlers.onEnd("ended");
+  expect(f.observer.get().page?.frames).toHaveLength(100);
+  expect(f.observer.get().error).toBe(error);
+  expect(f.observer.get().live).toBe(false);
+  expect(f.timers.size).toBe(0);
+  f.observer.close();
+});
+
 test("completion is published only after all correlated private pages, and a closed connection cannot mutate them", async () => {
   const f = fixture();
   await f.observer.refresh();

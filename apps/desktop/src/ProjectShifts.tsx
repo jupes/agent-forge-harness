@@ -28,7 +28,10 @@ function elapsed(startedAt: string, now: number) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 function duration(milliseconds: number) {
-  return `${milliseconds / 60000} minutes`;
+  if (milliseconds % 3600000 === 0) return `${milliseconds / 3600000}h`;
+  if (milliseconds % 60000 === 0) return `${milliseconds / 60000}m`;
+  if (milliseconds % 1000 === 0) return `${milliseconds / 1000}s`;
+  return `${milliseconds}ms`;
 }
 
 export function ProjectShifts({
@@ -300,6 +303,7 @@ function ShiftFields({
       <label>
         Duration
         <input
+          aria-label="Duration"
           value={draft.for}
           onInput={(e) => field("for", e.currentTarget.value)}
         />
@@ -312,6 +316,7 @@ function ShiftFields({
       <label>
         Concurrency
         <input
+          aria-label="Concurrency"
           type="number"
           min={options.limits.concurrency[0]}
           max={options.limits.concurrency[1]}
@@ -327,6 +332,7 @@ function ShiftFields({
       <label>
         Maximum beads
         <input
+          aria-label="Maximum beads"
           type="number"
           min={options.limits.maxBeads[0]}
           max={options.limits.maxBeads[1]}
@@ -342,6 +348,7 @@ function ShiftFields({
       <label>
         Spend cap (USD)
         <input
+          aria-label="Spend cap (USD)"
           type="number"
           min="0"
           max={options.limits.maxUsd}
@@ -357,6 +364,7 @@ function ShiftFields({
       <label>
         Repair attempts
         <input
+          aria-label="Repair attempts"
           type="number"
           min={options.limits.repairs[0]}
           max={options.limits.repairs[1]}
@@ -371,6 +379,7 @@ function ShiftFields({
       <label>
         Base branch
         <input
+          aria-label="Base branch"
           value={draft.base}
           onInput={(e) => field("base", e.currentTarget.value)}
         />
@@ -379,6 +388,7 @@ function ShiftFields({
       <label>
         Epic filter
         <select
+          aria-label="Epic filter"
           value={draft.epic}
           onChange={(e) => field("epic", e.currentTarget.value)}
         >
@@ -393,6 +403,7 @@ function ShiftFields({
       <label>
         Smith override
         <select
+          aria-label="Smith override"
           value={draft.smith}
           onChange={(e) => field("smith", e.currentTarget.value)}
         >
@@ -411,6 +422,7 @@ function ShiftFields({
       <label>
         Per-run timeout (optional)
         <input
+          aria-label="Per-run timeout (optional)"
           placeholder="Use remaining shift time"
           value={draft.runTimeout}
           onInput={(e) => field("runTimeout", e.currentTarget.value)}

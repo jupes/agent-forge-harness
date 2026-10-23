@@ -291,6 +291,7 @@ export function createShiftAttemptObserver(deps: {
           choose(latest, state.followLatest);
       } catch {
         if (!disposed) {
+          epoch++;
           disconnect();
           state.error =
             "The private attempt index could not be verified. Metadata alone does not prove provider dispatch or completion.";
