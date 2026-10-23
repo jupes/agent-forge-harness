@@ -1,7 +1,10 @@
 import { z } from "zod";
 import type {
+  ProjectShiftIntent,
   ProjectShiftOptions,
+  ProjectShiftReceipt,
   ProjectShiftStartRequest,
+  ProjectShiftsPage,
 } from "../../types/project-shifts";
 import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
 
@@ -59,6 +62,85 @@ export const projectShiftStartSchema: z.ZodType<ProjectShiftStartRequest> = z
       .strict(),
   })
   .strict();
+
+export const projectShiftIntentSchema: z.ZodType<ProjectShiftIntent> = z
+  .object({
+    projectId: word.regex(
+      /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ),
+    workspace: word,
+    shiftId: word.regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/),
+    request: projectShiftStartSchema,
+    requestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    createdAt: z.iso.datetime(),
+    attemptedAt: z.iso.datetime().nullable(),
+  })
+  .strict();
+export const projectShiftReceiptSchema: z.ZodType<ProjectShiftReceipt> = z
+  .object({
+    intent: projectShiftIntentSchema,
+    observation: z
+      .object({
+        shiftId: word,
+        requestId: shiftRequestIdSchema,
+        phase: z.enum([
+          "reserved",
+          "unknown",
+          "starting",
+          "failed",
+          "running",
+          "stopping",
+          "stopped",
+          "needs-recovery",
+        ]),
+        reason: word.nullable(),
+        actual: z
+          .object({
+            startedAt: z.iso.datetime(),
+            endedAt: z.iso.datetime().nullable(),
+            deadline: z.iso.datetime(),
+            concurrency: count,
+            forMs: count,
+            maxBeads: count,
+            maxUsd: z.number().finite().positive(),
+            repairs: count,
+            throttle: z.number().finite().min(0.1).max(1).nullable(),
+            base: word,
+            epic: id.nullable(),
+            smith: word.nullable(),
+            runTimeoutMs: count.nullable(),
+            spentUsd: z.number().finite().nonnegative(),
+            unpriced: count,
+            admitted: count.nullable(),
+            reviewed: count,
+            running: count,
+            halted: count,
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.intent.shiftId === value.observation.shiftId &&
+      value.intent.request.requestId === value.observation.requestId &&
+      (value.observation.actual === null) ===
+        ["reserved", "unknown", "starting", "failed"].includes(
+          value.observation.phase,
+        ),
+  );
+export const projectShiftsPageSchema: z.ZodType<ProjectShiftsPage> = z
+  .object({
+    projectId: word,
+    asOf: z.iso.datetime(),
+    items: z.array(projectShiftReceiptSchema).max(1000),
+  })
+  .strict()
+  .refine((page) =>
+    page.items.every((item) => item.intent.projectId === page.projectId),
+  );
 
 /** This module is renderer-safe; no private store or native runtime imports. */
 export const projectShiftOptionsSchema: z.ZodType<ProjectShiftOptions> = z

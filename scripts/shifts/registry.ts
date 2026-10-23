@@ -19,7 +19,11 @@ import { isProjectId } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { shiftOptions } from "../scheduler/shift";
 import { runOptions } from "../scheduler/shift-cli";
-import { projectShiftStartSchema, shiftRequestIdSchema } from "./protocol";
+import {
+  projectShiftIntentSchema,
+  projectShiftStartSchema,
+  shiftRequestIdSchema,
+} from "./protocol";
 import { SHIFT_START_FIELDS } from "./start-fields";
 
 export const MAX_PROJECT_SHIFT_REQUESTS = 1000;
@@ -85,18 +89,8 @@ function validBounds(request: ProjectShiftStartRequest): boolean {
   const parsed = runOptions(projectShiftFlags(request));
   return parsed.ok && shiftOptions(parsed.value).ok;
 }
-const intentSchema: z.ZodType<ProjectShiftIntent> = z
-  .object({
-    projectId: z.string().refine(isProjectId),
-    workspace: z.string().min(1).max(1024),
-    shiftId,
-    request: projectShiftStartSchema,
-    requestHash: z.string().regex(/^[a-f0-9]{64}$/),
-    createdAt: z.iso.datetime(),
-    attemptedAt: z.iso.datetime().nullable(),
-  })
-  .strict()
-  .refine(
+const intentSchema: z.ZodType<ProjectShiftIntent> =
+  projectShiftIntentSchema.refine(
     (value) =>
       validBounds(value.request) &&
       value.requestHash ===

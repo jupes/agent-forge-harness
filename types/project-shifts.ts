@@ -30,6 +30,16 @@ export interface ProjectShiftIntent {
   attemptedAt: string | null;
 }
 
+export interface ProjectShiftReceipt {
+  intent: ProjectShiftIntent;
+  observation: ProjectShiftObservation;
+}
+export interface ProjectShiftsPage {
+  projectId: string;
+  asOf: string;
+  items: ProjectShiftReceipt[];
+}
+
 export interface ProjectShiftObservation {
   shiftId: string;
   requestId: string;

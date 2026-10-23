@@ -60,7 +60,7 @@ import {
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
-import { projectShiftOptionsRoute } from "./project-shifts";
+import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
 import {
   projectSnapshotReader,
   projectSummaryRoute,
@@ -370,6 +370,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
   const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
   const conversations = conversationRoutes(
     deps.projectHome,
     deps.root,
@@ -495,6 +496,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...trackerWrites,
       ...queueWrites,
       ...projectWrites,
+      ...scopedShifts.routes,
       ...shiftRoutes({
         workspace,
         shiftsDir: deps.shiftsDir,
@@ -508,6 +510,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
+      scopedShifts.close();
       live.close();
       await ownedSessions.close();
       await proposals.close();
