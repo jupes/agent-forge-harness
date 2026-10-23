@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import type { ConversationPage } from "../../types/conversation";
 import { buildChildEnv } from "../executors/env";
@@ -53,7 +59,9 @@ afterAll(() => scratch.cleanup());
 
 test("the production compiled hearth owns Gemini Task bootstrap, private history and real tree Stop without ambient Bun or source", async () => {
   for (const mode of ["normal", "hang-tree"]) {
-    const root = scratch.make("gemini-owned-packaged-root-"),
+    const root = realpathSync.native(
+        scratch.make("gemini-owned-packaged-root-"),
+      ),
       home = join(root, "private-home"),
       log = join(root, "native.jsonl");
     mkdirSync(join(root, ".git"));
@@ -137,8 +145,9 @@ test("the production compiled hearth owns Gemini Task bootstrap, private history
           },
         }),
       });
-      expect(response.status).toBe(202);
-      sessionId = (await response.json()).data.session.id;
+      const accepted = await response.json();
+      expect(response.status, JSON.stringify(accepted)).toBe(202);
+      sessionId = accepted.data.session.id;
       let page: ConversationPage;
       const read = async () => {
         const reply = await fetch(`${url}/${sessionId}`, { headers });
