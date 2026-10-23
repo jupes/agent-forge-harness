@@ -1038,7 +1038,7 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
     );
     await waitForPage(
       socket,
-      "document.querySelector('.af-keeper-drawer')?.open && document.querySelector('.af-keeper-drawer textarea')?.value === 'Native Keeper draft'",
+      "document.querySelector('.af-keeper-drawer')?.open && document.querySelector('.af-keeper-drawer .af-keeper-composer textarea')?.value === 'Native Keeper draft'",
       "The packaged drawer did not share the full conversation draft",
     );
     if (
@@ -1093,12 +1093,12 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
     });
     await waitForPage(
       socket,
-      "document.querySelector('.af-keeper-drawer')?.open && document.activeElement === document.querySelector('.af-keeper-drawer textarea') && Array.from(document.querySelectorAll('.af-keeper-drawer .af-keeper-about a')).some(a=>a.textContent==='bead fixture-epic')",
+      "document.querySelector('.af-keeper-drawer')?.open && document.activeElement === document.querySelector('.af-keeper-drawer .af-keeper-composer textarea') && Array.from(document.querySelectorAll('.af-keeper-drawer .af-keeper-about a')).some(a=>a.textContent==='bead fixture-epic')",
       "The native Ctrl+J drawer did not focus its composer with scoped bead context",
     );
     await evaluate(
       socket,
-      `(() => {const input=document.querySelector('.af-keeper-drawer textarea');input.value='/forge';input.setSelectionRange(6,6);input.dispatchEvent(new Event('input',{bubbles:true}));})()`,
+      `(() => {const input=document.querySelector('.af-keeper-drawer .af-keeper-composer textarea');input.value='/forge';input.setSelectionRange(6,6);input.dispatchEvent(new Event('input',{bubbles:true}));})()`,
     );
     await waitForPage(
       socket,
@@ -1133,12 +1133,12 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
     );
     await waitForPage(
       socket,
-      "!!document.querySelector('.af-keeper-drawer textarea')",
+      "!!document.querySelector('.af-keeper-drawer .af-keeper-composer textarea')",
       "The native drawer did not reopen",
     );
     await evaluate(
       socket,
-      `(() => {const input=document.querySelector('.af-keeper-drawer textarea');input.value='Native Keeper draft';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.af-keeper-drawer-link a').click();})()`,
+      `(() => {const input=document.querySelector('.af-keeper-drawer .af-keeper-composer textarea');input.value='Native Keeper draft';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.af-keeper-drawer-link a').click();})()`,
     );
     await evaluate(
       socket,
