@@ -22,6 +22,15 @@ const range = z.tuple([count, count]);
 const sourced = <T extends z.ZodType>(value: T) =>
   z.object({ value, source: word }).strict();
 
+export const shiftHostSnapshotSchema = z
+  .object({
+    asOf: z.iso.datetime(),
+    cpu: z.number().finite().min(0).max(1).nullable(),
+    memory: z.number().finite().min(0).max(1).nullable(),
+    busy: z.boolean(),
+  })
+  .strict();
+
 export const shiftRequestIdSchema = z
   .uuid()
   .refine((value) => value === value.toLowerCase());
@@ -90,6 +99,7 @@ export const projectShiftReceiptSchema: z.ZodType<ProjectShiftReceipt> = z
           "starting",
           "failed",
           "running",
+          "throttled",
           "stopping",
           "stopped",
           "needs-recovery",
@@ -116,6 +126,7 @@ export const projectShiftReceiptSchema: z.ZodType<ProjectShiftReceipt> = z
             reviewed: count,
             running: count,
             halted: count,
+            host: shiftHostSnapshotSchema.nullable().optional(),
           })
           .strict()
           .nullable(),

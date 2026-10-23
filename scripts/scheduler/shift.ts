@@ -324,9 +324,12 @@ export interface ShiftDeps {
   /** Where its worktrees go: `<main>/trees/<id>`. */
   mainCheckout: string;
   /** Says whether the host is too busy to admit more: CPU or memory in use at or above `threshold` (`[shift] throttle`). */
-  sampleHost(
-    threshold: number,
-  ): Promise<{ busy: boolean; reason?: string | undefined }>;
+  sampleHost(threshold: number): Promise<{
+    busy: boolean;
+    reason?: string | undefined;
+    cpu?: number | null;
+    memory?: number | null;
+  }>;
   /** Makes `<mainCheckout>/trees/<id>` on a new branch that starts at `startPoint`. */
   makeWorktree(request: {
     id: string;
@@ -1344,6 +1347,22 @@ export async function runShift(
         changed = false;
         lastRead = clock();
         const host = await deps.sampleHost(throttle);
+        if (deps.captureAttempt) {
+          const share = (value: number | null | undefined) =>
+            typeof value === "number" &&
+            Number.isFinite(value) &&
+            value >= 0 &&
+            value <= 1
+              ? value
+              : null;
+          record.host = {
+            asOf: now().toISOString(),
+            cpu: share(host.cpu),
+            memory: share(host.memory),
+            busy: host.busy,
+          };
+          save();
+        }
         if (host.busy) {
           hostBusy = true;
           break;

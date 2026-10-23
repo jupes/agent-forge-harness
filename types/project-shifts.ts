@@ -51,6 +51,7 @@ export interface ProjectShiftObservation {
     | "starting"
     | "failed"
     | "running"
+    | "throttled"
     | "stopping"
     | "stopped"
     | "needs-recovery";
@@ -75,6 +76,7 @@ export interface ProjectShiftObservation {
     reviewed: number;
     running: number;
     halted: number;
+    host?: ShiftHostSnapshot | null | undefined;
   } | null;
 }
 
@@ -104,3 +106,5 @@ export interface ProjectShiftOptions {
   smiths: { names: string[]; defaultSmith: string | null };
   availability: { start: boolean; reason: string | null };
 }
+
+import type { ShiftHostSnapshot } from "./shift-host";

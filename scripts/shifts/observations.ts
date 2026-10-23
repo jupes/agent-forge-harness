@@ -8,7 +8,7 @@ import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
 import { workspaceKey } from "../projects/scope";
 import { runOptions } from "../scheduler/shift-cli-runtime";
 import { SHIFT_BEAD_OUTCOMES } from "../scheduler/shift-store";
-import { projectShiftStartSchema } from "./protocol";
+import { projectShiftStartSchema, shiftHostSnapshotSchema } from "./protocol";
 import { projectShiftFlags, projectShiftRequestHash } from "./registry";
 
 const word = z.string().min(1).max(1024);
@@ -132,6 +132,12 @@ export function observeProjectShift(
       source.alive === undefined
     )
       return unknown();
+    const sampled = shiftHostSnapshotSchema.safeParse(record["host"]);
+    const host =
+      sampled.success &&
+      Date.parse(sampled.data.asOf) >= Date.parse(record.startedAt)
+        ? sampled.data
+        : null;
     const phase =
       record.state === "stopped"
         ? "stopped"
@@ -139,7 +145,9 @@ export function observeProjectShift(
           ? "needs-recovery"
           : source.stopRequested === true
             ? "stopping"
-            : "running";
+            : host?.busy === true
+              ? "throttled"
+              : "running";
     const reason =
       phase === "needs-recovery"
         ? "The recorded shift process is no longer alive. Recover explicitly to settle the work it still owns."
@@ -148,7 +156,9 @@ export function observeProjectShift(
           : phase === "stopped"
             ? (SHIFT_STOP_REASONS.find((known) => known === record.reason) ??
               "Stopped; the reason is unavailable.")
-            : null;
+            : phase === "throttled"
+              ? "Admission is paused while the measured host load is at or above the configured threshold. Running attempts retain their owned controls."
+              : null;
     return {
       ...base,
       phase,
@@ -175,6 +185,7 @@ export function observeProjectShift(
         running: record.beads.filter((bead) => bead.outcome === "running")
           .length,
         halted: record.beads.filter((bead) => bead.outcome === "halted").length,
+        host,
       },
     };
   }

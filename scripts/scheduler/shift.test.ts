@@ -433,6 +433,56 @@ async function until(ready: () => boolean, ms = 4000): Promise<void> {
 }
 
 describe("forge:shift — the loop, on a fake adapter", () => {
+  test("attended host samples persist while throttled before Stop, without inventing unavailable shares", async () => {
+    const stop = new AbortController();
+    const r = rig([], undefined, {
+      shiftId: "shift-20261023-170000-1234",
+      signal: stop.signal,
+      sampleHost: async () => ({ busy: true, cpu: 0.91, memory: 0.45 }),
+      captureAttempt: () => ({
+        prepare: async () => {
+          throw Error("No work may run while throttled");
+        },
+      }),
+    });
+    const running = shift(r);
+    try {
+      await until(
+        () =>
+          readShiftRecord(r.deps.shiftsDir, r.deps.shiftId ?? "")?.host !==
+          undefined,
+        500,
+      );
+    } finally {
+      stop.abort();
+    }
+    const done = await running;
+    expect(done.record.host).toMatchObject({
+      cpu: 0.91,
+      memory: 0.45,
+      busy: true,
+    });
+    expect(Date.parse(done.record.host?.asOf ?? "")).toBeGreaterThanOrEqual(
+      Date.parse(done.record.startedAt),
+    );
+    expect(done.reason).toBe("operator");
+    expect(r.fake.runs).toEqual([]);
+    const ordinary = rig([], undefined, {
+      sampleHost: async () => ({ busy: false }),
+    });
+    expect((await shift(ordinary)).record.host).toBeUndefined();
+    const capture = r.deps.captureAttempt;
+    if (!capture) throw Error("Missing trusted fixture capture");
+    const attended = rig([], undefined, {
+      sampleHost: async () => ({ busy: false }),
+      captureAttempt: capture,
+    });
+    expect((await shift(attended)).record.host).toMatchObject({
+      cpu: null,
+      memory: null,
+      busy: false,
+    });
+  });
   test("the trusted project admission guard refuses a candidate before any claim, reservation, worktree or provider", async () => {
     const r = rig([queued("t-1")]);
     let checks = 0;

@@ -152,3 +152,48 @@ test("a saved request and a launch marker remain distinct from an actual shift; 
     }).phase,
   ).toBe("failed");
 });
+
+test("attended host observations report measured shares and throttling without granting cleanup authority to optional metadata", () => {
+  const host = {
+    asOf: "2026-10-23T06:31:00.000Z",
+    cpu: 0.91,
+    memory: 0.45,
+    busy: true,
+  };
+  const observed = observeProjectShift(intent, {
+    record: { ...record, host },
+    alive: true,
+  });
+  expect(observed.phase).toBe("throttled");
+  expect(observed.actual).toMatchObject({ host, throttle: 0.85 });
+  for (const invalid of [
+    undefined,
+    { ...host, cpu: -1 },
+    { ...host, memory: Infinity },
+    { ...host, asOf: "invalid" },
+  ]) {
+    const source = { ...record, host: invalid };
+    expect(
+      observeProjectShift(intent, { record: source, alive: true }).actual?.host,
+    ).toBeNull();
+    expect(
+      observeProjectShift(intent, {
+        record: source,
+        alive: true,
+        stopRequested: true,
+      }).phase,
+    ).toBe("stopping");
+    expect(
+      observeProjectShift(intent, { record: source, alive: false }).phase,
+    ).toBe("needs-recovery");
+  }
+  expect(
+    observeProjectShift(intent, {
+      record: {
+        ...record,
+        host: { ...host, cpu: null, memory: null, busy: false },
+      },
+      alive: true,
+    }).actual?.host,
+  ).toMatchObject({ cpu: null, memory: null, busy: false });
+});
