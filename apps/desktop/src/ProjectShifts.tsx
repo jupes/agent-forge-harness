@@ -10,6 +10,8 @@ import type { ProjectShiftsClient } from "./project-shift-client";
 import {
   newProjectShiftDraft,
   type ProjectShiftDraft,
+  projectShiftPhaseLabel,
+  projectShiftReasonLabel,
   reviewedProjectShift,
 } from "./project-shift-composer";
 import type { ProjectShiftScope } from "./project-shift-identities";
@@ -457,20 +459,16 @@ function ShiftRow({
     actual = observation.actual,
     reviewed = intent.request.options;
   return (
-    <article class="af-shift-row" data-shift={intent.shiftId}>
+    <article
+      class="af-shift-row"
+      data-shift={intent.shiftId}
+      data-phase={observation.phase}
+    >
       <div class="af-shift-section-heading">
         <div>
           <h3>{intent.shiftId}</h3>
           <p>
-            <strong>
-              {observation.phase === "throttled"
-                ? "Throttled · waiting for host capacity"
-                : observation.phase === "stopping"
-                  ? "Stopping · awaiting confirmation"
-                  : observation.phase === "needs-recovery"
-                    ? "Needs explicit recovery"
-                    : observation.phase}
-            </strong>
+            <strong>{projectShiftPhaseLabel(observation.phase)}</strong>
           </p>
         </div>
         <div class="af-shift-actions">
@@ -500,9 +498,17 @@ function ShiftRow({
           </Button>
         </div>
       </div>
-      {observation.reason && <p>{observation.reason}</p>}
+      {observation.reason && (
+        <p>{projectShiftReasonLabel(observation.reason)}</p>
+      )}
       {actual ? (
         <dl class="af-shift-metrics">
+          <div>
+            <dt>Started</dt>
+            <dd>
+              <time dateTime={actual.startedAt}>{clock(actual.startedAt)}</time>
+            </dd>
+          </div>
           <div>
             <dt>Elapsed / limit</dt>
             <dd>

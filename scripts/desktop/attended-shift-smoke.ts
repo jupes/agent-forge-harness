@@ -51,8 +51,12 @@ export async function verifyAttendedProjectShifts(
   }
   fixture.prepareFixture(process.execPath);
   const { FIXTURE_ROOT, REPOSITORY, HOME, BIN, STATE, EMPTY_HOME } = fixture;
-  const executable = join(FIXTURE_ROOT, "native-agent-forge-desktop.exe");
+  const executable = join(FIXTURE_ROOT, "agent-forge-desktop.exe");
   copyFileSync(join(stage, "agent-forge-desktop.exe"), executable);
+  copyFileSync(
+    join(stage, "desktop-host.exe"),
+    join(FIXTURE_ROOT, "desktop-host.exe"),
+  );
   copyFileSync(join(stage, "hearth.exe"), join(FIXTURE_ROOT, "hearth.exe"));
   cpSync(join(stage, "dashboard"), join(FIXTURE_ROOT, "dashboard"), {
     recursive: true,
@@ -83,7 +87,9 @@ export async function verifyAttendedProjectShifts(
       PATH: [BIN, join(systemRoot, "System32"), systemRoot].join(delimiter),
       AGENT_FORGE_HOME: HOME,
       HOME: EMPTY_HOME,
-      USERPROFILE: EMPTY_HOME,
+      // WebView's debug listener requires the real Windows GUI profile.
+      // Agent state, WebView data and all closed fake-provider data stay isolated.
+      USERPROFILE: process.env.USERPROFILE ?? EMPTY_HOME,
       APPDATA: EMPTY_HOME,
       LOCALAPPDATA: EMPTY_HOME,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
@@ -110,11 +116,16 @@ export async function verifyAttendedProjectShifts(
     });
     await child.providerPid;
     await child.end();
-    const target = await tools.waitForTarget(port, {
-      get exitCode() {
-        return code;
-      },
-    });
+    let target: { webSocketDebuggerUrl: string };
+    try {
+      target = await tools.waitForTarget(port, {
+        get exitCode() {
+          return code;
+        },
+      });
+    } catch {
+      throw Error("The owned packaged shift page did not open.");
+    }
     const url = new URL(target.webSocketDebuggerUrl);
     if (url.hostname !== "127.0.0.1" || Number(url.port) !== port)
       throw Error(
@@ -149,11 +160,21 @@ export async function verifyAttendedProjectShifts(
       connected,
       `location.hash='#/desktop/project/${FIXTURE_PROJECT_ID}/workbench'`,
     );
-    await tools.waitForPage(
-      connected,
-      "!!document.querySelector('.af-project-shifts')",
-      "The packaged Workbench did not expose its scoped shift panel.",
-    );
+    try {
+      await tools.waitForPage(
+        connected,
+        "!!document.querySelector('.af-project-shifts')",
+        "The packaged Workbench did not expose its scoped shift panel.",
+      );
+    } catch {
+      const state = await tools.evaluate(
+        connected,
+        "JSON.stringify({hash:location.hash,text:document.querySelector('main')?.textContent?.slice(0,1800)})",
+      );
+      throw Error(
+        `The packaged Workbench did not expose its scoped shift panel: ${String(state)}`,
+      );
+    }
     return connected;
   };
   const click = async (
@@ -195,7 +216,7 @@ export async function verifyAttendedProjectShifts(
     );
   };
   const lastPhase = (phase: string) =>
-    `Array.from(document.querySelectorAll('.af-shift-row')).at(-1)?.querySelector('strong')?.textContent?.trim()===${JSON.stringify(phase)}`;
+    `Array.from(document.querySelectorAll('.af-shift-row')).at(-1)?.getAttribute('data-phase')===${JSON.stringify(phase)}`;
   const gone = async (pid: number) => {
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
@@ -253,6 +274,10 @@ export async function verifyAttendedProjectShifts(
       throw Error(
         "The packaged view did not retain the actual original private input.",
       );
+    await tools.evaluate(
+      current,
+      "document.querySelector('.af-project-shift-attempts')?.scrollIntoView({block:'start'})",
+    );
     if (!(await tools.screenshot(current, "native-attended-shift.png")))
       throw Error(
         "The packaged attended shift screenshot could not be retained.",

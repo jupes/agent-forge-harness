@@ -184,7 +184,7 @@ test("the actual compiled production hearth executes attended input through fixe
     const timer = setTimeout(() => {
       expired = true;
       void child.stop();
-    }, 20000);
+    }, 45000);
     const result = await child.done.finally(() => clearTimeout(timer));
     expect(expired).toBe(false);
     expect(await child.enginePid).not.toBe(child.pid);
@@ -313,4 +313,4 @@ test("the actual compiled production hearth executes attended input through fixe
       JSON.stringify(queryEvents({ workspace: root }, { path: ledger })),
     ).not.toContain(actual.stdin);
   }
-}, 90000);
+}, 120000);

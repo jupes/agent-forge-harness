@@ -1,9 +1,48 @@
 import { expect, test } from "bun:test";
 import {
   newProjectShiftDraft,
+  projectShiftPhaseLabel,
+  projectShiftReasonLabel,
   reviewedProjectShift,
 } from "../../apps/desktop/src/project-shift-composer";
 import type { ProjectShiftOptions } from "../../types/project-shifts";
+
+test("shift states and every canonical stopped reason have explicit operator wording", () => {
+  expect(projectShiftPhaseLabel("failed")).toBe("Failed to start");
+  expect(projectShiftPhaseLabel("unknown")).toBe(
+    "Outcome unknown · check original",
+  );
+  expect(projectShiftPhaseLabel("reserved")).toBe(
+    "Original saved · launch unobserved",
+  );
+  expect(projectShiftPhaseLabel("starting")).toBe("Starting");
+  expect(projectShiftPhaseLabel("running")).toBe("Running");
+  expect(projectShiftPhaseLabel("throttled")).toBe(
+    "Throttled · waiting for host capacity",
+  );
+  expect(projectShiftPhaseLabel("stopping")).toBe(
+    "Stopping · awaiting confirmation",
+  );
+  expect(projectShiftPhaseLabel("stopped")).toBe("Stopped");
+  expect(projectShiftPhaseLabel("needs-recovery")).toBe(
+    "Needs explicit recovery",
+  );
+  for (const [reason, label] of Object.entries({
+    elapsed: "Duration limit reached",
+    operator: "Stopped by operator",
+    throttle: "Stopped for host load",
+    halted: "Stopped after halted work",
+    drained: "Selected queue drained",
+    count: "Maximum admitted beads reached",
+    budget: "Spend cap reached",
+    recovered: "Recovered and stopped",
+  }))
+    expect(projectShiftReasonLabel(reason)).toBe(label);
+  expect(projectShiftReasonLabel(null)).toBeNull();
+  expect(projectShiftReasonLabel("Checking never dispatches the shift.")).toBe(
+    "Checking never dispatches the shift.",
+  );
+});
 
 const options: ProjectShiftOptions = {
   projectId: "project-a5832fa0-7a21-403b-8184-44892f0d8d86",

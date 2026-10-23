@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildChildEnv } from "../executors/env";
 import { ensurePrivateHome } from "../hearth/home-guard";
@@ -9,6 +9,7 @@ import {
   executeOriginalProjectShift,
   parseProjectShiftExecutionArgs,
 } from "./execution";
+import { projectShiftReceiptSchema } from "./protocol";
 import {
   createProjectShiftRegistry,
   projectShiftRegistryFile,
@@ -133,7 +134,7 @@ test("a raw reservation or unavailable attended adapter cannot enter the engine 
   expect(ran).toBe(0);
 });
 
-test("the actual source child entry refuses unavailable attended execution without touching the saved original", async () => {
+test("the actual source child claims its original once and retains an unknown receipt when mutable preparation refuses", async () => {
   const f = await fixture();
   await f.registry.markAttempted(
     f.projectId,
@@ -141,42 +142,67 @@ test("the actual source child entry refuses unavailable attended execution witho
     f.intent.requestHash,
   );
   const file = projectShiftRegistryFile(f.home),
-    before = readFileSync(file, "utf8");
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      join(import.meta.dir, "execution-entry.ts"),
-      f.projectId,
-      f.requestId,
-    ],
-    {
-      cwd: f.root,
-      env: {
-        ...buildChildEnv(process.env, []),
-        AGENT_FORGE_HOME: f.home,
-        HOME: f.root,
-        USERPROFILE: f.root,
-      },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+    before = f.registry.read(f.projectId, f.requestId);
+  const command = [
+    process.execPath,
+    join(import.meta.dir, "execution-entry.ts"),
+    f.projectId,
+    f.requestId,
+  ];
+  const options = {
+    cwd: f.root,
+    env: {
+      ...buildChildEnv(process.env, []),
+      AGENT_FORGE_HOME: f.home,
+      HOME: f.root,
+      USERPROFILE: f.root,
     },
-  );
+    stdin: "ignore" as const,
+    stdout: "pipe" as const,
+    stderr: "pipe" as const,
+  };
+  const child = Bun.spawn(command, options);
   const timer = setTimeout(() => child.kill(), 10_000);
   try {
     const [code, stdout] = await Promise.all([
       child.exited,
       new Response(child.stdout).text(),
     ]);
-    expect(code).toBe(1);
+    expect(code).toBe(0);
     let value: unknown;
     try {
       value = JSON.parse(stdout);
     } catch {
-      throw Error("Invalid child refusal envelope");
+      throw Error("Invalid child observation envelope");
     }
-    expect(value).toMatchObject({ ok: false, data: null });
-    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(value).toMatchObject({ ok: true, error: null });
+    if (!value || typeof value !== "object" || !("data" in value))
+      throw Error("Missing original child receipt");
+    const receipt = projectShiftReceiptSchema.parse(value.data),
+      original = f.registry.read(f.projectId, f.requestId);
+    expect(original.executionStartedAt).toBeTruthy();
+    expect({ ...original, executionStartedAt: null }).toEqual({
+      ...before,
+      executionStartedAt: null,
+    });
+    expect(receipt.intent).toEqual(original);
+    expect(receipt.observation.phase).toBe("unknown");
+    expect(existsSync(join(f.home, "shifts"))).toBe(false);
+    expect(existsSync(join(f.home, "sessions"))).toBe(false);
+    const after = readFileSync(file, "utf8"),
+      repeated = Bun.spawnSync(command, { ...options, timeout: 5000 });
+    expect(repeated.exitCode).toBe(0);
+    expect(repeated.stderr.toString()).toBe("");
+    let repeatedValue: unknown;
+    try {
+      repeatedValue = JSON.parse(repeated.stdout.toString());
+    } catch {
+      throw Error("Invalid repeated child observation envelope");
+    }
+    expect(repeatedValue).toMatchObject({ ok: true, error: null });
+    expect(readFileSync(file, "utf8")).toBe(after);
+    expect(existsSync(join(f.home, "shifts"))).toBe(false);
+    expect(existsSync(join(f.home, "sessions"))).toBe(false);
   } finally {
     clearTimeout(timer);
     child.kill();

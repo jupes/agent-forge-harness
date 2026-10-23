@@ -1,8 +1,42 @@
 import { projectShiftStartOptionsSchema } from "../../../scripts/shifts/protocol";
+import type { ShiftStopReason } from "../../../types/hearth";
 import type {
+  ProjectShiftObservation,
   ProjectShiftOptions,
   ProjectShiftStartRequest,
 } from "../../../types/project-shifts";
+
+const phaseLabels: Record<ProjectShiftObservation["phase"], string> = {
+  reserved: "Original saved · launch unobserved",
+  unknown: "Outcome unknown · check original",
+  starting: "Starting",
+  failed: "Failed to start",
+  running: "Running",
+  throttled: "Throttled · waiting for host capacity",
+  stopping: "Stopping · awaiting confirmation",
+  stopped: "Stopped",
+  "needs-recovery": "Needs explicit recovery",
+};
+const stoppedLabels: Record<ShiftStopReason, string> = {
+  elapsed: "Duration limit reached",
+  operator: "Stopped by operator",
+  throttle: "Stopped for host load",
+  halted: "Stopped after halted work",
+  drained: "Selected queue drained",
+  count: "Maximum admitted beads reached",
+  budget: "Spend cap reached",
+  recovered: "Recovered and stopped",
+};
+export function projectShiftPhaseLabel(
+  phase: ProjectShiftObservation["phase"],
+): string {
+  return phaseLabels[phase];
+}
+export function projectShiftReasonLabel(reason: string | null): string | null {
+  return (
+    Object.entries(stoppedLabels).find(([key]) => key === reason)?.[1] ?? reason
+  );
+}
 
 export interface ProjectShiftDraft {
   expectedCatalogRevision: number;

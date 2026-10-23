@@ -151,11 +151,13 @@ test("a lost real Start response reloads its exact original and private attended
     runTimeout: "20m",
   });
   await reloadSettled(page);
-  await expect(panel(page).locator("[data-shift]").last()).toContainText(
+  await expect(panel(page).locator("[data-shift]").last()).toHaveAttribute(
+    "data-phase",
     "stopped",
     { timeout: 20000 },
   );
   const last = panel(page).locator("[data-shift]").last();
+  await expect(last).toContainText("Started");
   await last.getByRole("button", { name: "Attend shift", exact: true }).click();
   const activity = panel(page).getByRole("region", {
     name: "Private shift activity",
@@ -174,6 +176,10 @@ test("a lost real Start response reloads its exact original and private attended
   await expect(activity.getByRole("button", { name: /Send|Stop/ })).toHaveCount(
     0,
   );
+  await activity.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/project-shift-attended.png",
+  });
   const actual = actualProvider();
   expect(actual).not.toBeNull();
   if (!actual) throw Error("No actual provider record");
@@ -244,7 +250,9 @@ test("whole-shift Stop retains keyboard focus across a background read and waits
   release?.();
   await readFinished;
   await page.unroute(`**/__agent-forge/projects/${FIXTURE_PROJECT_ID}/shifts`);
-  await expect(row).toContainText("stopped", { timeout: 20000 });
+  await expect(row).toHaveAttribute("data-phase", "stopped", {
+    timeout: 20000,
+  });
   expect(stopCalls).toBe(1);
   for (const pid of [actual.pid, actual.childPid])
     if (pid)
