@@ -238,6 +238,23 @@ const running = (pid: number) => {
     return false;
   }
 };
+function fixtureState(pid: number) {
+  if (process.platform !== "linux") return { pid, platform: process.platform };
+  try {
+    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
+      .match(/\) (\S+) (\d+) (\d+)/)
+      ?.slice(1);
+    return {
+      pid,
+      state: fields?.[0] ?? "unparsed",
+      parent: fields?.[1],
+      group: fields?.[2],
+      at: process.hrtime.bigint().toString(),
+    };
+  } catch {
+    return { pid, state: "gone", at: process.hrtime.bigint().toString() };
+  }
+}
 async function until(check: () => boolean) {
   const deadline = Date.now() + 5000;
   while (!check()) {
@@ -536,7 +553,14 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
       .at(-1);
     if (typeof probe?.pid !== "number" || typeof probe.childPid !== "number")
       throw new Error("Missing capability process tree");
-    expect(running(probe.pid) || running(probe.childPid)).toBe(false);
+    expect(
+      running(probe.pid) || running(probe.childPid),
+      JSON.stringify({
+        phase: "capability-stop",
+        process: fixtureState(probe.pid),
+        helper: fixtureState(probe.childPid),
+      }),
+    ).toBe(false);
   } finally {
     controller.abort();
     await job.catch(() => undefined);

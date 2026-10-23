@@ -15,13 +15,34 @@ afterEach(() => scratch.cleanup());
 const fake = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const fixedFailure =
   "The private provider transcript could not be verified. The shift must stop before another attempt.";
+const aliveSamples = new Map<number, unknown>();
+function fixtureState(pid: number) {
+  if (process.platform !== "linux") return { pid, platform: process.platform };
+  try {
+    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
+      .match(/\) (\S+) (\d+) (\d+)/)
+      ?.slice(1);
+    return {
+      pid,
+      state: fields?.[0] ?? "unparsed",
+      parent: fields?.[1],
+      group: fields?.[2],
+      at: process.hrtime.bigint().toString(),
+    };
+  } catch {
+    return { pid, state: "gone", at: process.hrtime.bigint().toString() };
+  }
+}
 function alive(pid: number) {
   try {
-    if (
-      process.platform === "linux" &&
-      /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
-    )
-      return false;
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      aliveSamples.set(pid, {
+        fields: stat.match(/\) (\S+) (\d+) (\d+)/)?.slice(1),
+        at: process.hrtime.bigint().toString(),
+      });
+      if (/\) Z(?: |$)/.test(stat)) return false;
+    }
     process.kill(pid, 0);
     return true;
   } catch {
@@ -334,7 +355,14 @@ test("private capture finishes only after a normally exiting provider's held hel
         },
         async finish() {
           expect(descendant).toBeGreaterThan(0);
-          expect(alive(descendant)).toBe(false);
+          expect(
+            alive(descendant),
+            JSON.stringify({
+              phase: "private-finish",
+              sampled: aliveSamples.get(descendant),
+              after: fixtureState(descendant),
+            }),
+          ).toBe(false);
         },
       }),
     },
@@ -342,7 +370,14 @@ test("private capture finishes only after a normally exiting provider's held hel
   try {
     expect(await handle.done).toMatchObject({ exitCode: 0, stopped: false });
     expect(descendant).toBeGreaterThan(0);
-    expect(alive(descendant)).toBe(false);
+    expect(
+      alive(descendant),
+      JSON.stringify({
+        phase: "private-done",
+        sampled: aliveSamples.get(descendant),
+        after: fixtureState(descendant),
+      }),
+    ).toBe(false);
   } finally {
     await handle.stop("fixture cleanup");
     await handle.done;
