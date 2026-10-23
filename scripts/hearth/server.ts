@@ -43,6 +43,7 @@ import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";
+import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -156,6 +157,8 @@ export function hearthCouncilRunner(
 export interface OperatorApiOverrides {
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
+  /** Trusted native Task runtime only; never selected by a caller-supplied command. */
+  codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
@@ -357,6 +360,16 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     });
   const table = operatorRoutes({
     projectHome: home,
+    codexTaskRuntime:
+      options.api?.codexTaskRuntime ??
+      createCodexTaskRuntime({
+        root,
+        home,
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        operatorToken: expectedToken,
+      }),
     sessionRuntime:
       options.api?.sessionRuntime ??
       createClaudeSessionTransport({

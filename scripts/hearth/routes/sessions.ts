@@ -1,5 +1,5 @@
+import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
 import type { LedgerEventInput } from "../../../types/hearth";
-import type { SessionStartRequest } from "../../../types/session-requests";
 import type { SessionMessage } from "../../../types/session-turn";
 import { ConversationError } from "../../conversations/error";
 import { parseSessionSend } from "../../conversations/protocol";
@@ -11,13 +11,16 @@ import {
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
+import type { SessionRuntime } from "../../sessions/admission";
+import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
+import { parseOwnedSessionStart } from "../../sessions/codex-owned-protocol";
+import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import {
-  createOwnedSessionService,
-  type SessionRuntime,
-} from "../../sessions/admission";
+  createOwnedCodingSessionService,
+  unavailableCodexTaskRuntime,
+} from "../../sessions/owned-coding-service";
 import { createSessionPreview } from "../../sessions/preview";
 import { SessionRegistryError } from "../../sessions/registry";
-import { parseSessionStart } from "../../sessions/request-protocol";
 import type {
   ActionRoute,
   ReadRoute,
@@ -72,6 +75,7 @@ export function createOwnedSessionRoutes(
   deps: Dependencies,
   load: () => Promise<ProjectSnapshot>,
   runtime: SessionRuntime,
+  codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>,
 ) {
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
@@ -81,10 +85,16 @@ export function createOwnedSessionRoutes(
     runtime,
     validateScope,
   });
-  const service = createOwnedSessionService({
+  const prepareCodexPreview = createCodexTaskPreview({
+    root: deps.root,
+    runtime: codexTaskRuntime ?? unavailableCodexTaskRuntime,
+    validateScope,
+  });
+  const service = createOwnedCodingSessionService({
     home,
     root: deps.root,
     runtime,
+    codexTaskRuntime,
     validateScope,
     onChange: (session, update) => {
       feed.changed(session.id);
@@ -223,37 +233,39 @@ export function createOwnedSessionRoutes(
       }
     },
   };
-  const start: ActionRoute<{ projectId: string; input: SessionStartRequest }> =
-    {
-      kind: "action",
-      method: "POST",
-      path: "/projects/:id/sessions",
-      action: "session.start",
-      maxBodyBytes: 2_200_000,
-      validate: (request) => {
-        const selected = project(request),
-          query = noParameters(request);
-        if (!selected.ok) return selected;
-        if (!query.ok) return query;
-        try {
-          return {
-            ok: true,
-            value: {
-              projectId: selected.value,
-              input: parseSessionStart(request.body),
-            },
-          };
-        } catch {
-          return fail("Expected a strict supported session Start request.");
-        }
-      },
-      subject: ({ projectId, input }) => ({
-        target: projectId,
-        ...(input.beadId ? { beadId: input.beadId } : {}),
-      }),
-      effect: ({ projectId, input }) =>
-        answer(202, () => service.start(projectId, input)),
-    };
+  const start: ActionRoute<{
+    projectId: string;
+    input: OwnedSessionStartRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions",
+    action: "session.start",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: {
+            projectId: selected.value,
+            input: parseOwnedSessionStart(request.body),
+          },
+        };
+      } catch {
+        return fail("Expected a strict supported session Start request.");
+      }
+    },
+    subject: ({ projectId, input }) => ({
+      target: projectId,
+      ...(input.beadId ? { beadId: input.beadId } : {}),
+    }),
+    effect: ({ projectId, input }) =>
+      answer(202, () => service.start(projectId, input)),
+  };
   const send: ActionRoute<Address & { input: SessionMessage }> = {
     kind: "action",
     method: "POST",
@@ -282,13 +294,17 @@ export function createOwnedSessionRoutes(
   };
   const preview: ActionRoute<{
     projectId: string;
-    input: SessionStartRequest;
+    input: OwnedSessionStartRequest;
   }> = {
     ...start,
     path: "/projects/:id/sessions/preview",
     action: "session.preview",
     effect: ({ projectId, input }) =>
-      answer(200, () => preparePreview(projectId, input)),
+      answer(200, () =>
+        "provider" in input
+          ? prepareCodexPreview(projectId, input)
+          : preparePreview(projectId, input),
+      ),
   };
   const stop: ActionRoute<Address & { requestId: string }> = {
     kind: "action",

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
+import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
 import type { ConversationObject } from "../../../types/conversation";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { KeeperSuggestions } from "./KeeperSuggestions";
@@ -43,6 +44,18 @@ export function SessionConversation({
     (frame) => frame.event.kind === "user" && frame.event.session,
   )?.event;
   const snapshot = first?.kind === "user" ? first.session : undefined;
+  const codexFirst = view.page?.frames.find(
+    (frame) => frame.event.kind === "user" && frame.event.codexTask,
+  )?.event;
+  const codexSnapshot =
+    codexFirst?.kind === "user" ? codexFirst.codexTask : undefined;
+  const usage = view.page?.frames
+    .filter(
+      (frame) =>
+        frame.turnId === current?.requestId &&
+        frame.event.kind === "coding-usage",
+    )
+    .at(-1)?.event;
   const feed = useRef<HTMLDivElement>(null),
     following = useRef(true);
   const prompt = useRef<HTMLTextAreaElement>(null),
@@ -92,7 +105,9 @@ export function SessionConversation({
     <section class="af-owned-session" aria-label="Session conversation">
       <header class="af-owned-session-header">
         <div>
-          <span class="af-keeper-chip">Cl · Claude</span>
+          <span class="af-keeper-chip">
+            {record?.provider === "codex" ? "Cx · Codex" : "Cl · Claude"}
+          </span>
           <h2>
             {record?.mode === "task" ? "Task" : "Chat"} ·{" "}
             {record?.beadId ?? "Project session"}
@@ -107,6 +122,11 @@ export function SessionConversation({
             ? ` · Observed ${observed.model}`
             : ""}
         </p>
+        {record?.provider === "codex" && (
+          <p class="af-session-note">
+            Observed model is not reported by Codex exec.
+          </p>
+        )}
         <p class="af-session-note">
           {record?.worktree ?? "Working directory not reported"}
         </p>
@@ -161,7 +181,11 @@ export function SessionConversation({
             <dt>CLI version</dt>
             <dd>{view.page?.binding?.version ?? "Not reported yet"}</dd>
             <dt>Permissions</dt>
-            <dd>{snapshot?.launch.permissionMode ?? "Not reported yet"}</dd>
+            <dd>
+              {codexSnapshot
+                ? `${codexSnapshot.launch.sandbox} · approvals ${codexSnapshot.launch.approvalPolicy}`
+                : (snapshot?.launch.permissionMode ?? "Not reported yet")}
+            </dd>
           </dl>
           {snapshot && (
             <pre>
@@ -171,9 +195,35 @@ export function SessionConversation({
               }
             </pre>
           )}
+          {codexSnapshot && (
+            <pre>
+              {
+                serializeCodexTask(
+                  codexSnapshot.launch,
+                  codexSnapshot.capabilities,
+                ).equivalentCommand
+              }
+            </pre>
+          )}
+          {usage?.kind === "coding-usage" && (
+            <dl>
+              <dt>Reported input tokens</dt>
+              <dd>{usage.usage.inputTokens ?? "Not reported"}</dd>
+              <dt>Reported output tokens</dt>
+              <dd>{usage.usage.outputTokens ?? "Not reported"}</dd>
+              {usage.provider === "codex" &&
+                usage.usage.cachedInputTokens !== undefined && (
+                  <>
+                    <dt>Reported cached input tokens</dt>
+                    <dd>{usage.usage.cachedInputTokens}</dd>
+                  </>
+                )}
+            </dl>
+          )}
           <p class="af-session-note">
-            Usage, tool details and files changed are not reported by this
-            transcript adapter.
+            {record?.provider === "codex"
+              ? "Detailed tool activity and files changed are not yet shown in this view. Remaining allowance may be unavailable."
+              : "Detailed tool activity, files changed and detailed usage are not yet shown in this view."}
           </p>
         </details>
       </header>
@@ -264,17 +314,20 @@ export function SessionConversation({
                   (frame) =>
                     frame.turnId === row.id && frame.event.kind === "user",
                 )
-                .map((frame) =>
-                  frame.event.kind === "user" &&
-                  frame.event.session?.launch.attachments?.length ? (
+                .map((frame) => {
+                  if (frame.event.kind !== "user") return null;
+                  const attachments =
+                    frame.event.codexTask?.launch.attachments ??
+                    frame.event.session?.launch.attachments;
+                  return attachments?.length ? (
                     <p class="af-session-note" key={frame.seq}>
                       Attachments:{" "}
-                      {frame.event.session.launch.attachments
+                      {attachments
                         .map((item) => `${item.name} (${item.kind})`)
                         .join(", ")}
                     </p>
-                  ) : null,
-                )}
+                  ) : null;
+                })}
             </article>
             {row.reply && (
               <article class="af-owned-reply" aria-label="Session reply">
@@ -329,7 +382,7 @@ export function SessionConversation({
                   : "Enter a follow-up for this same provider conversation.")}
         </p>
         <label>
-          Reply to Claude
+          Reply to {record?.provider === "codex" ? "Codex" : "Claude"}
           <textarea
             ref={prompt}
             aria-label="Session reply prompt"

@@ -1,6 +1,14 @@
+import type { ClaudeAccountReport } from "./claude-account";
+import type { CodexCodingUsageEvent } from "./codex-owned-task";
+import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { KeeperReadKind } from "./keeper";
 import type { KeeperBriefSnapshot } from "./keeper-brief";
 import type { KeeperRecoveryState } from "./keeper-recovery";
+import type {
+  ClaudeCodingUsageEvent,
+  CodingActivityEvent,
+  CodingOutcomeEvent,
+} from "./session-activity";
 import type { SessionTurnSnapshot } from "./session-turn";
 
 /** A trusted server-selected journal partition, separate from the provider's resume identity. */
@@ -26,6 +34,7 @@ export interface ConversationSend {
 export interface PreparedConversationSend extends ConversationSend {
   brief?: KeeperBriefSnapshot | undefined;
   session?: SessionTurnSnapshot | undefined;
+  codexTask?: PreparedCodexTask | undefined;
 }
 
 export type ConversationPhase =
@@ -60,6 +69,7 @@ export type ConversationEvent =
       about: ConversationObject[];
       brief?: KeeperBriefSnapshot | undefined;
       session?: SessionTurnSnapshot | undefined;
+      codexTask?: PreparedCodexTask | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }
@@ -88,7 +98,12 @@ export type ConversationEvent =
       basis: "reported" | "estimated" | "unknown";
       source: string;
       asOf: string;
-    };
+    }
+  | CodexCodingUsageEvent
+  | ClaudeCodingUsageEvent
+  | CodingActivityEvent
+  | ClaudeAccountReport
+  | CodingOutcomeEvent;
 
 export interface ConversationFrame {
   seq: number;

@@ -15,6 +15,11 @@ import {
 import { writeOwnerOnly } from "../hearth/token";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { withQueueLock } from "../scheduler/queue-lock";
+import {
+  ownedCodingEventSchema,
+  ownedCodingStateSchema,
+  parseOwnedPreparedConversationSend,
+} from "../sessions/codex-owned-journal";
 import { ConversationError } from "./error";
 import {
   conversationFile,
@@ -95,6 +100,8 @@ export function createConversationStore(
   now: () => Date = () => new Date(),
   address?: OwnedConversationAddress,
 ) {
+  const stateCodec = address ? ownedCodingStateSchema : stateSchema;
+  const eventCodec = address ? ownedCodingEventSchema : eventSchema;
   const fileFor = (projectId: string) =>
     conversationFile(home, projectId, address);
   const read = (projectId: string): ConversationState => {
@@ -123,7 +130,7 @@ export function createConversationStore(
         "The saved conversation is not valid JSON. Its saved data has been kept.",
       );
     }
-    const parsed = stateSchema.safeParse(raw);
+    const parsed = stateCodec.safeParse(raw);
     if (
       !parsed.success ||
       parsed.data.projectId !== projectId ||
@@ -144,7 +151,7 @@ export function createConversationStore(
     return parsed.data;
   };
   const save = (state: ConversationState) => {
-    const valid = stateSchema.safeParse(state);
+    const valid = stateCodec.safeParse(state);
     const content = `${JSON.stringify(state)}\n`;
     if (
       !valid.success ||
@@ -308,7 +315,7 @@ export function createConversationStore(
       owner: string,
       event: ConversationEvent,
     ) {
-      const parsed = eventSchema.safeParse(event);
+      const parsed = eventCodec.safeParse(event);
       if (!parsed.success || event.kind === "user")
         throw new ConversationError(400, "Expected a bounded provider frame.");
       return change(projectId, (state) => {
@@ -416,7 +423,9 @@ export function createConversationStore(
       projectId: string,
       input: PreparedConversationSend,
     ): Promise<ConversationReceipt> {
-      const request = parsePreparedConversationSend(input);
+      const request = address
+        ? parseOwnedPreparedConversationSend(input)
+        : parsePreparedConversationSend(input);
       if (
         request.session &&
         (!address ||
@@ -432,6 +441,14 @@ export function createConversationStore(
           400,
           "The brief snapshot belongs to another project.",
         );
+      if (
+        request.codexTask &&
+        (!address || request.codexTask.launch.context?.projectId !== projectId)
+      )
+        throw new ConversationError(
+          400,
+          "The private Codex Task does not belong to this owned session.",
+        );
       const hash = createHash("sha256")
         .update(
           JSON.stringify({
@@ -439,6 +456,7 @@ export function createConversationStore(
             about: request.about,
             ...(request.brief ? { brief: request.brief } : {}),
             ...(request.session ? { session: request.session } : {}),
+            ...(request.codexTask ? { codexTask: request.codexTask } : {}),
           }),
         )
         .digest("hex");
@@ -510,6 +528,7 @@ export function createConversationStore(
               about: request.about,
               ...(request.brief ? { brief: request.brief } : {}),
               ...(request.session ? { session: request.session } : {}),
+              ...(request.codexTask ? { codexTask: request.codexTask } : {}),
             },
           });
           save(state);

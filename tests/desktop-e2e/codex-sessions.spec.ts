@@ -1,0 +1,427 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { expect, type Page, test } from "@playwright/test";
+import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
+import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
+import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
+import { pageToken } from "../e2e/launch-link";
+import { HEARTH_HOME } from "../e2e/servers";
+import { alpha, beta, seedProjects } from "./project-fixtures";
+
+interface Call {
+  kind: string;
+  argv: string[];
+  stdin: string;
+  cwd: string;
+  id: string;
+  pid: number;
+  childPid: number | null;
+}
+function calls(): Call[] {
+  if (!existsSync(join(HEARTH_HOME, "codex-fixture-calls.jsonl"))) return [];
+  try {
+    return readFileSync(join(HEARTH_HOME, "codex-fixture-calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    throw Error("Invalid native Codex fixture recording.");
+  }
+}
+function records() {
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(HEARTH_HOME, "sessions", "registry.json"), "utf8"),
+    );
+    return ownedCodingSessionSchema.array().parse(raw.records);
+  } catch {
+    return [];
+  }
+}
+function journal(id: string) {
+  try {
+    return ownedCodingStateSchema.parse(
+      JSON.parse(
+        readFileSync(join(HEARTH_HOME, "conversations", `${id}.json`), "utf8"),
+      ),
+    );
+  } catch {
+    throw Error("The isolated private Task journal is unavailable.");
+  }
+}
+const tasks = () => calls().filter((call) => call.kind === "task");
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+let previous = new Set<string>();
+test.beforeEach(() => {
+  seedProjects();
+  previous = new Set(records().map((record) => record.id));
+  writeFileSync(
+    join(HEARTH_HOME, "codex-fixture-mode.json"),
+    JSON.stringify("normal"),
+  );
+});
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  for (const record of records().filter((record) => !previous.has(record.id))) {
+    const turn = journal(record.id).turns.find((item) =>
+      ["accepted", "running", "cancelling"].includes(item.phase),
+    );
+    if (!turn) continue;
+    const token = await pageToken(page);
+    await page.evaluate(
+      async ({ record, requestId, token, header }) => {
+        await fetch(
+          `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/stop`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", [header]: token },
+            body: JSON.stringify({ requestId }),
+          },
+        );
+      },
+      { record, requestId: turn.requestId, token, header: OPERATOR_HEADER },
+    );
+    await expect
+      .poll(() =>
+        journal(record.id).turns.some((item) =>
+          ["accepted", "running", "cancelling"].includes(item.phase),
+        ),
+      )
+      .toBe(false);
+  }
+});
+async function chooseCodex(page: Page) {
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await dialog.getByRole("button", { name: /Cx · Codex/ }).click();
+  await expect(
+    dialog.getByRole("combobox", { name: "Session smith", exact: true }),
+  ).toHaveValue("codex-journeyman");
+  return dialog;
+}
+async function checkDefault(page: Page, prompt: string) {
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = await chooseCodex(page);
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill(prompt);
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("region", {
+      name: "Equivalent session command",
+      exact: true,
+    }),
+  ).toContainText("--sandbox");
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  return dialog;
+}
+
+test("bead-prefilled Codex Task preserves honest effort controls and private context, reconciles a lost Start once, and reloads its actual identity", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/beads?selectionKind=bead&selectionId=alpha-epic`,
+  );
+  await page
+    .getByRole("button", { name: "Show inspector", exact: true })
+    .click();
+  await page
+    .getByRole("region", { name: "Bead alpha-epic", exact: true })
+    .getByRole("button", { name: "Start session", exact: true })
+    .click();
+  const dialog = await chooseCodex(page);
+  await expect(
+    dialog.getByRole("textbox", { name: "Session bead", exact: true }),
+  ).toHaveValue("alpha-epic");
+  await expect(
+    dialog.getByRole("combobox", { name: "Session mode", exact: true }),
+  ).toHaveValue("task");
+  await expect(
+    dialog.getByRole("option", { name: /Chat · native permission/ }),
+  ).toHaveAttribute("disabled", "");
+  await expect(
+    dialog.getByRole("combobox", { name: "Session effort", exact: true }),
+  ).toHaveValue("medium");
+  const prompt = "  PRIVATE CODEX question 🌱\n";
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill(prompt);
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog
+      .getByRole("status")
+      .filter({ hasText: "lack exact capability evidence" }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("combobox", { name: "Session effort", exact: true }),
+  ).toHaveValue("medium");
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeDisabled();
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await dialog.getByLabel("Attach text", { exact: true }).setInputFiles({
+    name: "private-note.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("PRIVATE CODEX attachment"),
+  });
+  await expect(
+    dialog.getByRole("button", {
+      name: "Remove attachment private-note.txt",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await dialog
+    .getByRole("combobox", { name: "Session sandbox", exact: true })
+    .selectOption("workspace-write");
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  const equivalent = dialog.getByRole("region", {
+    name: "Equivalent session command",
+    exact: true,
+  });
+  await expect(equivalent).toContainText("workspace-write");
+  await expect(equivalent).not.toContainText("PRIVATE CODEX");
+  expect(tasks()).toHaveLength(before);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/codex-task-composer.png",
+    style:
+      '[aria-label="Session repository"], [aria-label="Registered session worktree"], [aria-label="Equivalent session command"] { visibility: hidden !important; }',
+  });
+  await dialog.locator(".af-dialog-body").evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/codex-task-composer-prompt.png",
+    style:
+      '[aria-label="Session repository"], [aria-label="Registered session worktree"], [aria-label="Equivalent session command"] { visibility: hidden !important; }',
+  });
+  let posted = 0;
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/sessions`,
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      posted++;
+      const raw = route.request().postDataJSON();
+      expect(raw.provider).toBe("codex");
+      expect(raw.launch.mode).toBe("task");
+      expect(raw.beadId).toBe("alpha-epic");
+      await route.fetch({
+        headers: {
+          ...(await route.request().allHeaders()),
+          Origin: new URL(route.request().url()).origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      await route.abort("failed");
+    },
+  );
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  const record = records().find((record) => !previous.has(record.id));
+  if (!record) throw Error("Missing owned Task receipt.");
+  await expect.poll(() => journal(record.id).turns[0]?.phase).toBe("completed");
+  expect(posted).toBe(1);
+  expect(tasks()).toHaveLength(before + 1);
+  const actual = tasks().at(-1);
+  if (!actual) throw Error("Missing native Task.");
+  expect(actual.argv).toContain("workspace-write");
+  expect(actual.argv.join(" ")).not.toContain("PRIVATE CODEX");
+  expect(actual.stdin).toContain(prompt);
+  expect(actual.stdin).toContain("PRIVATE CODEX attachment");
+  expect(actual.stdin).toContain("alpha-epic");
+  expect(journal(record.id).binding?.sessionId).toBe(actual.id);
+  await page.getByText("Session details", { exact: true }).click();
+  await expect(page.getByText(actual.id, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Observed model is not reported by Codex exec.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Reported input tokens", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Session reply prompt", exact: true }),
+  ).toBeDisabled();
+  await page.getByText(actual.id, { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/codex-task-session.png",
+    mask: [page.getByText(record.worktree, { exact: true })],
+    style: ".af-owned-session-header pre { visibility: hidden !important; }",
+    maskColor: "#3f424d",
+  });
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  expect(tasks()).toHaveLength(before + 1);
+  await openSettled(page, `/index.html#/desktop/project/${beta.id}/sessions`);
+  await expect(page.locator(`a[href*="selectionId=${record.id}"]`)).toHaveCount(
+    0,
+  );
+});
+
+test("closing a Codex observer leaves its Task running; explicit Stop confirms the actual native process tree is gone", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  writeFileSync(
+    join(HEARTH_HOME, "codex-fixture-mode.json"),
+    JSON.stringify("hang"),
+  );
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const dialog = await checkDefault(page, "Wait for my explicit Stop");
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  const record = records().find((record) => !previous.has(record.id)),
+    actual = tasks().at(-1);
+  if (!record || !actual?.childPid)
+    throw Error("Missing running Task process tree.");
+  expect(alive(actual.pid)).toBe(true);
+  expect(alive(actual.childPid)).toBe(true);
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Overview", exact: true }),
+  ).toBeVisible();
+  expect(journal(record.id).turns[0]?.phase).toBe("running");
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  await page.getByRole("button", { name: "Stop session", exact: true }).click();
+  await expect.poll(() => journal(record.id).turns[0]?.phase).toBe("cancelled");
+  await expect
+    .poll(() => alive(actual.pid) || alive(actual.childPid ?? 0))
+    .toBe(false);
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+  expect(tasks()).toHaveLength(before + 1);
+});
+
+test("reload keeps a pre-admission Start identity held until its original protected admission is found", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const dialog = await checkDefault(
+    page,
+    "Original request may arrive after reload",
+  );
+  let release = () => {},
+    received = () => {},
+    completed = () => {};
+  const held = new Promise<void>((resolve) => {
+      received = resolve;
+    }),
+    delivery = new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+    delivered = new Promise<void>((resolve) => {
+      completed = resolve;
+    });
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/sessions`,
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      received();
+      await delivery;
+      try {
+        await route.fetch({
+          headers: {
+            ...(await route.request().allHeaders()),
+            Origin: new URL(route.request().url()).origin,
+            "Sec-Fetch-Site": "same-origin",
+          },
+        });
+        await route.abort("failed").catch(() => {});
+      } finally {
+        completed();
+      }
+    },
+  );
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await held;
+  expect(tasks()).toHaveLength(before);
+  try {
+    await reloadSettled(page);
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
+    const reloaded = page.getByRole("dialog", {
+      name: "New session · Alpha",
+      exact: true,
+    });
+    await expect(
+      reloaded.getByRole("button", {
+        name: "Check original Start",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      reloaded.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+    await reloaded
+      .getByRole("button", { name: "Check original Start", exact: true })
+      .click();
+    await expect(
+      reloaded.getByRole("button", {
+        name: "Check original Start",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      reloaded.getByRole("button", {
+        name: "Retry original Start",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    expect(tasks()).toHaveLength(before);
+  } finally {
+    release();
+    await delivered;
+    await expect.poll(() => tasks().length).toBe(before + 1);
+  }
+  // The admission's metadata stream can confirm the original before another
+  // manual Check is possible. It only reads the saved request, never resends.
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  expect(tasks()).toHaveLength(before + 1);
+});

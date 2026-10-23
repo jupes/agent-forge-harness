@@ -30,6 +30,7 @@ import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
 import { childOf } from "../scheduler/queue-fixture";
+import { unavailableCodexTaskRuntime } from "../sessions/owned-coding-service";
 import { makeOwnerOnly } from "./acl-windows";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
 import {
@@ -509,6 +510,7 @@ export async function startTestHearth(
       ledgerPath: ledger,
       conversationTransport: fakeConversationTransport(),
       sessionRuntime: fakeSessionRuntime().runtime,
+      codexTaskRuntime: unavailableCodexTaskRuntime,
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,
