@@ -36,6 +36,7 @@ import {
 } from "./project-activity-model";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
+import { Smiths } from "./Smiths";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
@@ -47,6 +48,7 @@ import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
 import { useSessionObservations } from "./use-session-observations";
 import { useSessions } from "./use-sessions";
+import { useSmiths } from "./use-smiths";
 import { useWorkbench } from "./use-workbench";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
@@ -58,6 +60,10 @@ export function DesktopApp(): JSX.Element {
   const recovery = useDesktopRecovery();
   const projects = useProjects();
   const providers = useProviders();
+  const smiths = useSmiths(
+    route.destination === "smiths",
+    providers.data?.workspace ?? null,
+  );
   const project = projects.data?.catalog.projects.find(
     (item) => item.id === route.projectId,
   );
@@ -625,6 +631,11 @@ export function DesktopApp(): JSX.Element {
               }
             />
           </>
+        ) : route.destination === "smiths" ? (
+          <Smiths
+            controller={smiths}
+            workspace={providers.data?.workspace ?? null}
+          />
         ) : route.destination === "inbox" ? (
           <BeadWriteNotices writes={beadWrites} inbox />
         ) : global ? (
