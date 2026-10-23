@@ -26,7 +26,9 @@ export async function runCodexStandIn() {
       ? "help"
       : argv.includes("--sync")
         ? "sync"
-        : "task";
+        : argv.length === 2 && argv[0] === "login" && argv[1] === "status"
+          ? "status"
+          : "task";
   const stdin = await Bun.stdin.text();
   let mode: unknown = "normal";
   try {
@@ -62,6 +64,8 @@ export async function runCodexStandIn() {
   if (kind === "version") console.log("codex-cli 0.163.0-alpha.10.2");
   else if (kind === "help")
     console.log("--json --color --sandbox --model --cd --config");
+  else if (kind === "status")
+    console.log("Logged in using fixture credentials");
   else if (kind === "task") {
     const emit = (value: Record<string, unknown>) =>
       console.log(JSON.stringify(value));

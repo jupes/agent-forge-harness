@@ -74,4 +74,14 @@ export default async function setup(): Promise<void> {
     throw Error(
       `The compiled Codex stand-in did not identify itself (status ${codexProbe.status}): ${codexProbe.stderr || codexProbe.error?.message || codexProbe.stdout}`,
     );
+  const codexStatus = spawnSync(codex, ["login", "status"], {
+    input: "",
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  if (
+    codexStatus.status !== 0 ||
+    codexStatus.stdout.trim() !== "Logged in using fixture credentials"
+  )
+    throw Error("The compiled Codex status probe must not start a Task.");
 }
