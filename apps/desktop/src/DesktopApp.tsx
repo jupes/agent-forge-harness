@@ -479,6 +479,7 @@ export function DesktopApp(): JSX.Element {
             client={sessions}
             keeper={keeper}
             writesAllowed={writesAllowed}
+            archived={project.archived}
             library={sessionLibrary}
           />
         ) : route.destination === "sessions" && project ? (

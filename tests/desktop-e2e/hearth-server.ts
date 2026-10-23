@@ -8,6 +8,7 @@ import { closeOnSignal, createHearth } from "../../scripts/hearth/server";
 import { isMain } from "../../scripts/is-main";
 import { createProviderLoginService } from "../../scripts/providers/login";
 import { createClaudeSessionTransport } from "../../scripts/sessions/claude-transport";
+import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
 
 async function main() {
@@ -122,6 +123,23 @@ async function main() {
         syncCommand: [command, "--sync"],
         operatorToken: () => token,
         timeoutMs: 60_000,
+      }),
+      codexChatRuntime: createCodexChatRuntime({
+        root,
+        home,
+        configHome: home,
+        command: [
+          join(
+            home,
+            "bd-stand-in",
+            "bin",
+            process.platform === "win32" ? "codex-chat.exe" : "codex-chat",
+          ),
+        ],
+        syncCommand: [command, "--sync"],
+        operatorToken: () => token,
+        timeoutMs: 60_000,
+        approvalTimeoutMs: 45_000,
       }),
     },
   });

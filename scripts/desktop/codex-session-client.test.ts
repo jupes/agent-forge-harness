@@ -72,6 +72,47 @@ const page = {
   controllable: false,
 };
 
+test("switching Codex modes preserves separate Chat and Task options and shared private context without starting either", () => {
+  let posts = 0;
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Unexpected dispatch" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+  client.editComposer(projectId, { prompt: "PRIVATE shared context" });
+  client.editCodexComposer(projectId, { model: "task-model", effort: "high" });
+  client.chooseCodexMode(projectId, "chat");
+  client.editCodexChatComposer(projectId, {
+    model: "chat-model",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+  });
+  client.chooseComposerProvider(projectId, "claude");
+  client.chooseComposerProvider(projectId, "codex");
+  client.chooseCodexMode(projectId, "task");
+  expect(client.project(projectId)).toMatchObject({
+    codexMode: "task",
+    composer: { prompt: "PRIVATE shared context" },
+    codexComposer: { model: "task-model", effort: "high" },
+    codexChatComposer: {
+      model: "chat-model",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    },
+  });
+  client.chooseCodexMode(projectId, "chat");
+  expect(client.project(projectId).codexChatComposer.model).toBe("chat-model");
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
 test("Codex lost Start preserves its explicit immutable provider intent across edits and retries, then confirms one Task", async () => {
   const sent: OwnedSessionStartRequest[] = [];
   let listed = false;
