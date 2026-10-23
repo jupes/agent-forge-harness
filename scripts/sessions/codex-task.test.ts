@@ -244,6 +244,19 @@ test("a supervised native fake receives exactly serialized argv/stdin and a filt
       expect(events.filter((event) => event.kind === "text")).toEqual([
         { kind: "text", itemId: "reply", text: "Fixture private reply 🌱" },
       ]);
+      expect(
+        events.filter((event) => event.kind === "coding-activity"),
+      ).toMatchObject([
+        {
+          activity: {
+            kind: "command",
+            command: { text: "echo fixture" },
+            output: { text: "private tool body" },
+            state: "completed",
+            exitCode: 0,
+          },
+        },
+      ]);
       let recorded: unknown;
       try {
         recorded = JSON.parse(await readFile(capture, "utf8"));

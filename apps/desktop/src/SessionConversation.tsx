@@ -222,8 +222,8 @@ export function SessionConversation({
           )}
           <p class="af-session-note">
             {record?.provider === "codex"
-              ? "Tool details, files changed and remaining allowance are not reported by this transcript adapter."
-              : "Usage, tool details and files changed are not reported by this transcript adapter."}
+              ? "Detailed tool activity and files changed are not yet shown in this view. Remaining allowance may be unavailable."
+              : "Detailed tool activity, files changed and detailed usage are not yet shown in this view."}
           </p>
         </details>
       </header>

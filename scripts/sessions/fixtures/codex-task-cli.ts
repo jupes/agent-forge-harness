@@ -32,7 +32,10 @@ if (isMain(import.meta)) {
     item: {
       id: "tool",
       type: "command_execution",
+      command: "echo fixture",
       aggregated_output: "private tool body",
+      status: "completed",
+      exit_code: 0,
     },
   });
   const reply = {

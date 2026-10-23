@@ -67,6 +67,28 @@ session amount restored across resume. Neither proves plan allowance or a bill.
 The typed `rate_limit_event` and optional `/usage` report are separate evidence;
 they must never be manufactured after a failed read.
 
+The Claude producer reconciles streamed thinking with full blocks and flushes
+the last bounded fragment even after a crash. Full native packet fingerprints
+detect conflicting duplicates before clipping, with object-key order ignored.
+Tool-result interpretations require their exact native tool identity; a single
+structured result cannot be borrowed across several tool-result blocks.
+
+Both coding transports persist the actual outcome after process exit and
+previous private writes. A bounded writer deadline prevents a stuck journal
+from hanging completion. An internal protocol/storage kill retains the actual
+`stopped` flag while its outcome remains `protocol-error`/`storage-error`, rather
+than claiming a confirmed human Stop. Failure to acknowledge the final outcome
+leaves completion unknown. One of the existing 256 writer slots is reserved for
+that final outcome; no persistence budget was enlarged.
+
+`private-activity-http.test.ts` exercises ordinary audited Start, protected
+private pages and exact original retry through a real isolated hearth and two
+compiled fake CLIs. It checks reported tools, command output, file changes,
+diffs, plans, structured output and account metadata, while the session list
+and ledger contain none of their private bodies. The fixture plants its own
+Git identity, private home and fake tracker; it never invokes a paid provider
+or performs a tool operation described by a report.
+
 `scripts/sessions/claude-account.ts` exports `claudeAccountReportSchema`, the
 incoming-packet decoder `claudeAccountReports`, and `latestClaudeAccountReports`.
 The last function returns only typed metadata for a server readiness projection:
