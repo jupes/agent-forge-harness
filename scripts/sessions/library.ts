@@ -24,11 +24,13 @@ export function createSessionLibrary(options: {
   home: string;
   now?: () => Date;
   persist?: typeof writeOwnerOnly;
+  validateAccess?(projectId: string): void;
 }) {
   const registry = createSessionRegistry(options.home);
   const workspace = workspaceKey(resolveCheckout(options.root).workspace);
   const now = options.now ?? (() => new Date());
   const lookup = (projectId: string, sessionId: string) => {
+    options.validateAccess?.(projectId);
     const session = registry.lookup(projectId, sessionId);
     if (workspaceKey(session.workspace) !== workspace)
       throw new ConversationError(
@@ -48,6 +50,7 @@ export function createSessionLibrary(options: {
       preferences.read(lookup(projectId, sessionId), requestId),
     archive: preferences.archive,
     list(projectId: string): SessionLibraryList {
+      options.validateAccess?.(projectId);
       return {
         projectId,
         entries: preferences.list(

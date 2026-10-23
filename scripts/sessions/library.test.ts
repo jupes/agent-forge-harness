@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { ConversationError } from "../conversations/error";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { seedOwnedSession } from "../hearth/routes/session-fixture";
@@ -409,4 +410,30 @@ test("the export codec refuses partial frames, missing turns and forged internal
       },
     }).success,
   ).toBe(false);
+});
+
+test("archive rechecks current served-project authority under its write lease before saving anything", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const session = await seedOwnedSession(h);
+  let checks = 0;
+  const library = createSessionLibrary({
+    root: h.root,
+    home: h.home,
+    validateAccess() {
+      if (++checks > 1)
+        throw new ConversationError(
+          409,
+          "Project scope changed during admission",
+        );
+    },
+  });
+  await expect(
+    library.archive(session.projectId, session.id, {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      archived: true,
+    }),
+  ).rejects.toThrow("scope changed");
+  expect(() => readFileSync(sessionLibraryFile(h.home))).toThrow();
 });

@@ -39,6 +39,7 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { sessionLibraryReadSchema } from "../sessions/library-protocol";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
 import type { ActionContext, ActionRoute, ApiRoute } from "./api";
@@ -941,6 +942,33 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/sessions": ownedSessionFixture("start"),
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
+  "POST /projects/:id/sessions/:sessionId/archive": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+      body: {
+        requestId: "28641f36-7cfe-4d6d-b1aa-f8102d6f4a0d",
+        expectedRevision: 0,
+        archived: true,
+      },
+      status: 200,
+      target: FIXTURE_OWNED_SESSION_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+      body: { requestId: "invalid", archived: true },
+    },
+    prepare: async (h) => {
+      await seedOwnedSession(h);
+    },
+    happened: async (_h, answer) => {
+      const parsed = sessionLibraryReadSchema.safeParse(answer);
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.entry.archived).toBe(true);
+        expect(parsed.data.receipt?.outcome).toBe("applied");
+      }
+    },
+  },
   "POST /projects/:id/keeper/continuations": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
@@ -1565,6 +1593,9 @@ const READS: Record<string, string> = {
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
+  "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+  "GET /projects/:id/sessions/:sessionId/export": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/export`,
   "GET /projects": "/projects",
   "GET /projects/summary": "/projects/summary",
   "GET /projects/:id/overview":

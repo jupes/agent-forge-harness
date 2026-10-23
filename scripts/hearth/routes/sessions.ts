@@ -38,6 +38,7 @@ import {
 } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 import { createOwnedSessionLedger } from "./session-ledger";
+import { createSessionLibraryRoutes } from "./session-library";
 import { createSessionScopeValidator } from "./session-scope";
 
 type Address = { projectId: string; sessionId: string };
@@ -150,6 +151,11 @@ export function createOwnedSessionRoutes(
         return service.list(projectId);
       }),
   };
+  const library = createSessionLibraryRoutes({
+    home,
+    root: deps.root,
+    readable,
+  });
   const read: ReadRoute<
     Address & { after?: number; limit?: number; requestId?: string }
   > = {
@@ -335,6 +341,7 @@ export function createOwnedSessionRoutes(
     preview,
     send,
     stop,
+    library,
     close: async () => {
       feed.close();
       await service.close();
