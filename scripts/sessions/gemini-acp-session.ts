@@ -210,6 +210,9 @@ export function createGeminiAcpSession(options: {
       requestId = parsed.data.requestId;
       originals.add(requestId);
       state = "prompt";
+      // A terminal acknowledgement closes the previous prompt's tool obligations.
+      // Lifetime permission identities and thought-tool redaction remain fenced.
+      tools.clear();
       outputBytes = 0;
       return frame;
     },

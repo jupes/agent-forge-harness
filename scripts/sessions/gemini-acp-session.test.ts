@@ -469,3 +469,20 @@ test("private text byte bounds include discarded thoughts and incomplete tool de
     truncated.answerPermission({ rpcId: 48, requestId: turn, optionId: "yes" }),
   ).toThrow("private Gemini ACP session");
 });
+
+test("a cancelled prompt's unresolved tool cannot contaminate the next explicit prompt", () => {
+  const session = ready();
+  session.read(permission());
+  session.cancel(turn);
+  session.read(response(3, { stopReason: "cancelled" }));
+  session.prompt({
+    requestId: native,
+    text: "A separately accepted next prompt",
+  });
+  expect(session.read(response(4, { stopReason: "end_turn" })).events).toEqual([
+    { kind: "result", requestId: native, stopReason: "end_turn", usage: null },
+  ]);
+  expect(() =>
+    session.answerPermission({ rpcId: 44, requestId: turn, optionId: "once" }),
+  ).toThrow("private Gemini ACP session");
+});
