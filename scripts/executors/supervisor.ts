@@ -417,6 +417,7 @@ export function supervise(
   let timedOut = false;
   let stopped = false;
   let exited = false;
+  let settled = false;
   let inputFailure: Error | null = null;
   const inputWaiters = new Set<(error: Error) => void>();
   const failInput = (error: Error) => {
@@ -426,6 +427,7 @@ export function supervise(
     inputWaiters.clear();
   };
   const kill = () => {
+    if (settled) return;
     failInput(new Error("Interactive stdin is closed."));
     if (interactive && process.platform === "win32") guard.terminate?.();
     else if (!exited) killTree(proc.pid);
@@ -613,6 +615,7 @@ export function supervise(
       outputControl.abort();
       throw error;
     } finally {
+      settled = true;
       if (timer) clearTimeout(timer);
       guard.release();
       live.delete(proc.pid);
