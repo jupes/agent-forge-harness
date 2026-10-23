@@ -252,7 +252,7 @@ export function createConversationStore(
             request.mode === "switch" &&
             state.binding !== null &&
             state.binding.provider === provider;
-          if (!resumed && state.frames.length && !request.summary)
+          if (!resumed && state.frames.length && !request.summary.trim())
             throw new ConversationError(
               400,
               "Review and retain a summary before starting a new provider conversation.",

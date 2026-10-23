@@ -56,7 +56,7 @@ test("a reviewed continuation retains transcript, changes identity only when nee
     requestId: randomUUID(),
     expectedRevision: switched.revision,
     mode: "fresh" as const,
-    summary: "The operator reviewed this exact summary.",
+    summary: "  The operator reviewed this exact summary.\n",
   };
   const fresh = await store.continueKeeper(projectId, freshRequest, "claude");
   expect(fresh.resumed).toBe(false);

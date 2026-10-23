@@ -84,6 +84,27 @@ export function createConversationService(options: ConversationOptions) {
   >();
   const owned = new Set<string>();
   let closed = false;
+  // Native capability probes are reads, but still consume real child processes.
+  // Share a single budget across projects and concurrent observer requests.
+  let activeReadinessChecks = 0;
+  const readinessWaiters: (() => void)[] = [];
+  const readinessReads = new Map<
+    string,
+    Promise<KeeperRecoveryPage["choices"]>
+  >();
+  const boundedReadiness = async <T>(check: () => Promise<T>): Promise<T> => {
+    if (activeReadinessChecks >= 4)
+      await new Promise<void>((resolve) => readinessWaiters.push(resolve));
+    else activeReadinessChecks++;
+    try {
+      if (closed) throw new ConversationError(503, "This hearth is closing.");
+      return await check();
+    } finally {
+      const next = readinessWaiters.shift();
+      if (next) next();
+      else activeReadinessChecks--;
+    }
+  };
   const projectFor = (projectId: string) => {
     // Validates the address before it can participate in a filename.
     store.read(projectId);
@@ -155,28 +176,53 @@ export function createConversationService(options: ConversationOptions) {
       const project = projectFor(projectId),
         state = await observe(projectId),
         runtime = options.keeperRuntime;
-      if (!runtime || options.address)
+      if (closed || !runtime || options.address)
         throw new ConversationError(
           503,
           "Keeper smith recovery is unavailable in this build.",
         );
       const catalog = runtime.catalog(),
         selectedSmith = savedKeeperSmith(state) ?? catalog.defaultSmith;
+      if (catalog.smiths.length > 100)
+        throw new ConversationError(
+          503,
+          "The Keeper smith catalog exceeds its supported bound.",
+        );
+      const key = JSON.stringify([
+        projectId,
+        state.revision,
+        state.binding,
+        catalog.smiths,
+      ]);
+      let checks = readinessReads.get(key);
+      if (!checks) {
+        checks = Promise.allSettled(
+          catalog.smiths.map((smith) =>
+            boundedReadiness(async () => ({
+              smith,
+              readiness: await runtime.readiness(
+                smith,
+                project,
+                options.root,
+                state.binding,
+              ),
+            })),
+          ),
+        )
+          .then((results) =>
+            results.map((result) => {
+              if (result.status === "rejected") throw result.reason;
+              return result.value;
+            }),
+          )
+          .finally(() => readinessReads.delete(key));
+        readinessReads.set(key, checks);
+      }
       const page: KeeperRecoveryPage = {
         projectId,
         conversationRevision: state.revision,
         selectedSmith,
-        choices: await Promise.all(
-          catalog.smiths.map(async (smith) => ({
-            smith,
-            readiness: await runtime.readiness(
-              smith,
-              project,
-              options.root,
-              state.binding,
-            ),
-          })),
-        ),
+        choices: await checks,
         continuation: state.keeperRecovery?.continuation ?? null,
         request:
           state.keeperRecovery?.records.find(
@@ -611,6 +657,7 @@ export function createConversationService(options: ConversationOptions) {
       closed = true;
       for (const { abort } of jobs.values()) abort.abort();
       await Promise.all([...jobs.values()].map((item) => item.job));
+      await Promise.allSettled([...readinessReads.values()]);
     },
   };
 }

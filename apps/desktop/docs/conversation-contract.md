@@ -272,6 +272,13 @@ establishes sign-out or exhaustion. Unreported allowance permits an explicitly
 requested turn when the sealed adapter capability check succeeds. No report
 ranks or automatically selects smiths.
 
+Concurrent reads of the same conversation revision and smith catalog share
+their in-flight readiness checks. A service-wide budget permits at most four
+native capability checks across projects; later reads recheck rather than
+cache a readiness claim indefinitely. Closing rejects queued checks and waits
+for active checks to settle. Continuation writes independently recheck readiness
+under the dispatch lease, so a read never authorizes a later change.
+
 `KeeperRuntime` in `scripts/keeper/recovery-runtime.ts` is the trusted provider
 report/adapter seam. Production currently supplies the sealed Claude Keeper
 transport, with read-only version/help probes. It does not probe authentication,
@@ -284,6 +291,8 @@ tests are synthetic fixtures, not evidence of a live signed-in provider.
 `POST /projects/:id/keeper/continuations` is an ordinary audited action carrying
 the original UUID, expected conversation revision, explicit smith, `switch` or
 `fresh`, and at most 12,000 characters of operator-reviewed retained summary.
+The client and private journal preserve that text exactly; whitespace-only
+text cannot satisfy the required retained context for a new native identity.
 The service holds the conversation dispatch lease, rechecks current configuration
 and readiness, then atomically commits selection and continuation in the same
 private journal. Active or unknown turns, disabled/unknown smiths, stale

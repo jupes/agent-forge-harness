@@ -25,7 +25,7 @@ export const keeperContinuationSchema = z
     expectedRevision: boundedRevision,
     mode: z.enum(["switch", "fresh"]),
     smith: z.string().min(1).max(200),
-    summary: z.string().trim().max(12_000),
+    summary: z.string().max(12_000),
   })
   .strict();
 export const keeperContinuationRecordSchema: z.ZodType<KeeperContinuationRecord> =

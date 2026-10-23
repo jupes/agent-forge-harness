@@ -130,6 +130,8 @@ async function fixture() {
     service,
     store,
     starts,
+    runtime,
+    smiths,
     send,
     unavailable: () => {
       available = false;
@@ -225,6 +227,9 @@ test("unknown and disabled smiths refuse without fallback, and Start fresh requi
   await expect(f.service.continueKeeper(f.id, input)).rejects.toThrow(
     "retain a summary",
   );
+  await expect(
+    f.service.continueKeeper(f.id, { ...input, summary: " \n\t " }),
+  ).rejects.toThrow("retain a summary");
   expect(f.store.read(f.id)).toEqual(before);
   const completed = await f.service.continueKeeper(f.id, {
     ...input,
@@ -232,4 +237,117 @@ test("unknown and disabled smiths refuse without fallback, and Start fresh requi
   });
   expect(completed.summary).toBe("This is the retained summary, exactly.");
   expect(f.starts).toHaveLength(1);
+});
+
+test("concurrent recovery reads share readiness work and bound active capability checks", async () => {
+  const f = await fixture();
+  const base = f.smiths[0];
+  if (!base) throw new Error("Missing smith");
+  f.smiths.splice(
+    0,
+    f.smiths.length,
+    ...Array.from({ length: 12 }, (_, index) => ({
+      ...base,
+      name: `bounded-${index}`,
+    })),
+  );
+  let checks = 0,
+    active = 0,
+    maximum = 0,
+    release: (() => void) | undefined,
+    began: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    began = resolve;
+  });
+  f.runtime.readiness = async () => {
+    checks++;
+    active++;
+    maximum = Math.max(maximum, active);
+    began?.();
+    try {
+      await blocked;
+      return keeperReadiness({ adapter: true, checked: true });
+    } finally {
+      active--;
+    }
+  };
+  const second = await createProjectStore(f.home).create(
+    {
+      slug: "beta",
+      name: "Beta",
+      description: "",
+      icon: "B",
+      workspaces: [{ root: f.root, repositories: [f.root], epicIds: ["beta"] }],
+    },
+    1,
+  );
+  const secondId = second.projects.find((item) => item.slug === "beta")?.id;
+  if (!secondId) throw new Error("Missing second project");
+  const reads = [
+    f.service.recovery(f.id),
+    f.service.recovery(f.id, randomUUID()),
+    f.service.recovery(secondId),
+  ];
+  try {
+    await started;
+    await Bun.sleep(10);
+    expect(maximum).toBeLessThanOrEqual(4);
+    release?.();
+    const pages = await Promise.all(reads);
+    expect(checks).toBe(24);
+    expect(pages[0]?.choices).toHaveLength(12);
+    expect(pages[1]?.choices).toEqual(pages[0]?.choices);
+    await f.service.recovery(f.id);
+    expect(checks).toBe(36);
+  } finally {
+    release?.();
+    await Promise.allSettled(reads);
+  }
+});
+
+test("closing drains active readiness reads without starting queued probes", async () => {
+  const f = await fixture();
+  const base = f.smiths[0];
+  if (!base) throw new Error("Missing smith");
+  f.smiths.splice(
+    0,
+    f.smiths.length,
+    ...Array.from({ length: 12 }, (_, index) => ({
+      ...base,
+      name: `close-${index}`,
+    })),
+  );
+  let checks = 0,
+    release: (() => void) | undefined,
+    began: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    began = resolve;
+  });
+  f.runtime.readiness = async () => {
+    checks++;
+    if (checks === 4) began?.();
+    await blocked;
+    return keeperReadiness({ adapter: true, checked: true });
+  };
+  const reading = f.service.recovery(f.id).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  try {
+    await started;
+    const closing = f.service.close();
+    release?.();
+    expect(await reading).toBeInstanceOf(Error);
+    await closing;
+    expect(checks).toBe(4);
+  } finally {
+    release?.();
+    await reading;
+  }
 });
