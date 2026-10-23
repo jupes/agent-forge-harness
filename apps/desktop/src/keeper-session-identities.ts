@@ -41,9 +41,16 @@ export function createKeeperSessionIdentities(deps: {
     try {
       raw = JSON.parse(text);
     } catch {
-      throw Error("Start identity storage could not be verified.");
+      throw Error(
+        "Start identity storage could not be verified. Existing records were kept.",
+      );
     }
-    const value = journal.parse(raw),
+    const parsed = journal.safeParse(raw);
+    if (!parsed.success)
+      throw Error(
+        "Start identity storage could not be verified. Existing records were kept.",
+      );
+    const value = parsed.data,
       seen = new Set<string>();
     for (const entry of value.records) {
       const key = JSON.stringify([

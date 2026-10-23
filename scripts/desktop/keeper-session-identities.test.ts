@@ -180,3 +180,12 @@ test("JSON expansion cannot write an unreadable journal or poison earlier identi
   }
   expect(refused).toBe(true);
 });
+
+test("invalid saved identity shapes produce a plain refusal while preserving their exact contents", () => {
+  const text = '{"version":1,"records":[{"requestId":"bad"}]}',
+    held = fixture(text);
+  expect(() => held.create().read(source)).toThrow(
+    /^Start identity storage could not be verified\. Existing records were kept\.$/,
+  );
+  expect(held.text()).toBe(text);
+});
