@@ -6,7 +6,7 @@ import type {
   SessionAttachment,
   SessionLaunchContext,
 } from "../../types/session-launch";
-import { CLAUDE_ALLOWED_TOOLS } from "../executors/claude";
+import { CLAUDE_ALLOWED_TOOLS } from "../executors/claude-tools";
 
 const baseFlags = [
   "--print",
@@ -24,7 +24,7 @@ const model = z
   .max(200)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/);
 const effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
-const capabilitiesSchema = z
+export const claudeLaunchCapabilitiesSchema = z
   .object({
     version: z
       .string()
@@ -51,7 +51,7 @@ const label = z
         character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
     ),
   );
-const attachment = z.discriminatedUnion("kind", [
+export const sessionAttachmentSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("text"),
@@ -75,11 +75,18 @@ const attachment = z.discriminatedUnion("kind", [
           (value) =>
             value.length % 4 === 0 &&
             !/[^A-Za-z0-9+/=]/.test(value) &&
-            Buffer.from(value, "base64").toString("base64") === value,
+            canonicalBase64(value),
         ),
     })
     .strict(),
 ]);
+function canonicalBase64(value: string): boolean {
+  try {
+    return btoa(atob(value)) === value;
+  } catch {
+    return false;
+  }
+}
 const context = z
   .object({
     projectId: label,
@@ -131,7 +138,7 @@ function boundedSchema(value: unknown): value is Record<string, unknown> {
     visit(value, 0)
   );
 }
-const requestSchema = z
+export const claudeSessionLaunchSchema = z
   .object({
     mode: z.enum(["task", "chat"]),
     resumeSessionId: z.string().uuid().optional(),
@@ -142,7 +149,7 @@ const requestSchema = z
       .min(1)
       .max(16_384)
       .refine((value) => !!value.trim() && !value.includes("\0")),
-    attachments: z.array(attachment).max(8).optional(),
+    attachments: z.array(sessionAttachmentSchema).max(8).optional(),
     context: context.optional(),
     permissionMode: z.enum(["acceptEdits", "plan"]).optional(),
     fallbackModels: z
@@ -200,12 +207,12 @@ export function serializeClaudeLaunch(
   request: ClaudeSessionLaunch,
   capabilities: ClaudeLaunchCapabilities,
 ): SerializedClaudeLaunch {
-  const parsed = requestSchema.safeParse(request);
+  const parsed = claudeSessionLaunchSchema.safeParse(request);
   if (!parsed.success)
     throw new Error(
       "The Claude launch request is invalid or contains unsupported options.",
     );
-  const evidence = capabilitiesSchema.safeParse(capabilities);
+  const evidence = claudeLaunchCapabilitiesSchema.safeParse(capabilities);
   if (!evidence.success)
     throw new Error(
       "The Claude capability evidence is invalid. Check the installed CLI before starting.",
@@ -222,7 +229,7 @@ export function serializeClaudeLaunch(
     inputFormat === "stream-json"
       ? privateInput(input.prompt, input.attachments ?? [], input.context)
       : input.prompt;
-  if (Buffer.byteLength(stdin, "utf8") > 8_388_608)
+  if (new TextEncoder().encode(stdin).byteLength > 8_388_608)
     throw new Error("The private Claude input exceeds the 8 MiB launch limit.");
   if (input.mode === "task" && input.resumeSessionId !== undefined)
     throw new Error("Task launches cannot resume a conversation.");
@@ -290,7 +297,7 @@ export function serializeClaudeLaunch(
       ? ["--json-schema", JSON.stringify(input.outputSchema)]
       : []),
   ];
-  if (argv.some((value) => Buffer.byteLength(value, "utf8") > 65_536))
+  if (argv.some((value) => new TextEncoder().encode(value).byteLength > 65_536))
     throw new Error("A Claude launch option exceeds its 64 KiB limit.");
   // Reserve room for the trusted executable and conservative Windows quoting.
   if (argv.reduce((size, value) => size + value.length * 2 + 3, 1024) > 30_000)

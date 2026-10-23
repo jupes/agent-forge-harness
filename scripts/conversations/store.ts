@@ -272,6 +272,16 @@ export function createConversationStore(
       input: PreparedConversationSend,
     ): Promise<ConversationReceipt> {
       const request = parsePreparedConversationSend(input);
+      if (
+        request.session &&
+        (!address ||
+          (request.session.launch.context &&
+            request.session.launch.context.projectId !== projectId))
+      )
+        throw new ConversationError(
+          400,
+          "The prepared launch does not belong to this owned session.",
+        );
       if (request.brief && request.brief.projectId !== projectId)
         throw new ConversationError(
           400,
@@ -283,6 +293,7 @@ export function createConversationStore(
             text: request.text,
             about: request.about,
             ...(request.brief ? { brief: request.brief } : {}),
+            ...(request.session ? { session: request.session } : {}),
           }),
         )
         .digest("hex");
@@ -344,6 +355,7 @@ export function createConversationStore(
               text: request.text,
               about: request.about,
               ...(request.brief ? { brief: request.brief } : {}),
+              ...(request.session ? { session: request.session } : {}),
             },
           });
           save(state);

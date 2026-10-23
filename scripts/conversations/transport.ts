@@ -2,7 +2,7 @@ import type {
   ConversationBinding,
   ConversationEvent,
   ConversationPhase,
-  ConversationSend,
+  PreparedConversationSend,
 } from "../../types/conversation";
 import type { ProjectRecord } from "../../types/projects";
 
@@ -20,7 +20,7 @@ export interface ConversationTransport {
     request: {
       project: ProjectRecord;
       root: string;
-      input: ConversationSend;
+      input: PreparedConversationSend;
       resume: ConversationBinding | null;
     },
     persist: (

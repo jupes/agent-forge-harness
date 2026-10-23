@@ -5,6 +5,7 @@ import {
   type QueueState,
   type SessionSummary,
 } from "../../types/hearth";
+import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { ProjectSummary } from "../../types/project-summary";
 import type { ProjectRecord } from "../../types/projects";
 import { buildDerivedFromIssuesAndDeps } from "../beads-dashboard";
@@ -22,6 +23,8 @@ export interface ProjectSources {
   problems: string[];
   runs?: RunSummary[];
   checkout?: string;
+  /** Trusted private registry membership, not inferred from session ids or ledger content. */
+  ownedSessions?: OwnedSessionRecord[];
 }
 
 /** Membership is established before any aggregation or object link is emitted. */
@@ -78,8 +81,21 @@ export function summarizeProject(
   const sessions = source.sessions.filter(
     (session) =>
       workspaceKey(session.workspace) === workspaceKey(source.workspace) &&
-      session.beadId !== undefined &&
-      ids.has(session.beadId),
+      ((session.beadId !== undefined && ids.has(session.beadId)) ||
+        (source.ownedSessions ?? []).some(
+          (owned) =>
+            owned.id === session.sessionId &&
+            owned.beadId === session.beadId &&
+            session.runId === undefined &&
+            (session.worktree === undefined ||
+              workspaceKey(session.worktree) ===
+                workspaceKey(owned.worktree)) &&
+            owned.projectId === project.id &&
+            workspaceKey(owned.workspace) === workspaceKey(source.workspace) &&
+            scope?.repositories.some(
+              (path) => workspaceKey(path) === workspaceKey(owned.repository),
+            ),
+        )),
   );
   const times = [
     ...members.map((item) => item.updatedAt),

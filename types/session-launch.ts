@@ -24,18 +24,18 @@ export interface SessionLaunchContext {
 export interface ClaudeSessionLaunch {
   mode: "task" | "chat";
   /** Only an actual, previously observed Claude identity may be supplied by the server. */
-  resumeSessionId?: string;
+  resumeSessionId?: string | undefined;
   model: string;
-  effort?: ClaudeEffort;
-  permissionMode?: "acceptEdits" | "plan";
+  effort?: ClaudeEffort | undefined;
+  permissionMode?: "acceptEdits" | "plan" | undefined;
   prompt: string;
-  attachments?: SessionAttachment[];
-  context?: SessionLaunchContext;
-  fallbackModels?: string[];
+  attachments?: SessionAttachment[] | undefined;
+  context?: SessionLaunchContext | undefined;
+  fallbackModels?: string[] | undefined;
   /** These paths must already have been approved and checked by the server. */
-  extraDirectories?: string[];
-  maxBudgetUsd?: number;
-  outputSchema?: Record<string, unknown>;
+  extraDirectories?: string[] | undefined;
+  maxBudgetUsd?: number | undefined;
+  outputSchema?: Record<string, unknown> | undefined;
 }
 
 export interface ClaudeLaunchCapabilities {
@@ -43,7 +43,7 @@ export interface ClaudeLaunchCapabilities {
   version: string;
   flags: readonly string[];
   /** Separate provider evidence about each exact model, never inferred from help/aliases. */
-  modelEfforts?: Readonly<Record<string, readonly ClaudeEffort[]>>;
+  modelEfforts?: Readonly<Record<string, readonly ClaudeEffort[]>> | undefined;
 }
 
 export interface SerializedClaudeLaunch {

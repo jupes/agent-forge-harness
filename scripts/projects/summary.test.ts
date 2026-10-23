@@ -1,9 +1,74 @@
 import { expect, test } from "bun:test";
 import type { BeadsIssue } from "../../types/beads";
+import type { OwnedSessionRecord } from "../../types/owned-session";
 import { summarizeProject } from "./summary";
 import { projectFixture } from "./testing";
 
 const project = projectFixture("/fixture");
+
+test("explicit owned-session membership admits a bead-free session only to its recorded project and workspace", () => {
+  const owned: OwnedSessionRecord = {
+    id: "session-00000000-0000-4000-8000-000000000001",
+    projectId: project.id,
+    requestId: "00000000-0000-4000-8000-000000000002",
+    requestHash: "a".repeat(64),
+    createdAt: project.createdAt,
+    workspace: "/fixture",
+    repository: "/fixture",
+    worktree: "/fixture",
+    mode: "chat",
+    provider: "claude",
+    smith: "coding",
+    requestedModel: "sonnet",
+    requestedEffort: null,
+  };
+  const observed = {
+    sessionId: owned.id,
+    workspace: "/fixture",
+    lastEventAt: project.createdAt,
+  };
+  const source = {
+    workspace: "/fixture",
+    asOf: project.createdAt,
+    issues: [bead("alpha-epic")],
+    queue: [],
+    sessions: [observed, { ...observed, sessionId: "unregistered" }],
+    sessionsComplete: true,
+    problems: [],
+    ownedSessions: [owned],
+  };
+  expect(summarizeProject(project, source).sessions).toEqual([observed]);
+  expect(
+    summarizeProject(project, {
+      ...source,
+      ownedSessions: [{ ...owned, projectId: "foreign" }],
+    }).sessions,
+  ).toEqual([]);
+  expect(
+    summarizeProject(project, {
+      ...source,
+      ownedSessions: [{ ...owned, workspace: "/elsewhere" }],
+    }).sessions,
+  ).toEqual([]);
+  expect(
+    summarizeProject(project, {
+      ...source,
+      ownedSessions: [{ ...owned, repository: "/elsewhere" }],
+    }).sessions,
+  ).toEqual([]);
+  expect(
+    summarizeProject(project, {
+      ...source,
+      sessions: [{ ...observed, beadId: "foreign" }],
+    }).sessions,
+  ).toEqual([]);
+  expect(
+    summarizeProject(project, {
+      ...source,
+      sessions: [{ ...observed, runId: "foreign-run" }],
+    }).sessions,
+  ).toEqual([]);
+});
 const bead = (id: string, parent?: string): BeadsIssue => ({
   id,
   title: id,

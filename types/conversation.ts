@@ -1,5 +1,6 @@
 import type { KeeperReadKind } from "./keeper";
 import type { KeeperBriefSnapshot } from "./keeper-brief";
+import type { SessionTurnSnapshot } from "./session-turn";
 
 /** A trusted server-selected journal partition, separate from the provider's resume identity. */
 export interface OwnedConversationAddress {
@@ -23,6 +24,7 @@ export interface ConversationSend {
 /** Only trusted hearth preparation supplies this private intent, never a wire message. */
 export interface PreparedConversationSend extends ConversationSend {
   brief?: KeeperBriefSnapshot | undefined;
+  session?: SessionTurnSnapshot | undefined;
 }
 
 export type ConversationPhase =
@@ -56,6 +58,7 @@ export type ConversationEvent =
       text: string;
       about: ConversationObject[];
       brief?: KeeperBriefSnapshot | undefined;
+      session?: SessionTurnSnapshot | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }

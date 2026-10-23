@@ -7,8 +7,10 @@ import {
 } from "../../beads-dashboard";
 import { listRuns } from "../../forge/runs-store";
 import { listSessions } from "../../ledger/query";
+import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, ProjectStoreError } from "../../projects/store";
 import { type ProjectSources, summarizeProject } from "../../projects/summary";
+import { createSessionRegistry } from "../../sessions/registry";
 import { type ReadRoute, safeMessage } from "../api";
 import {
   BEAD_COUNT_ARGS,
@@ -128,6 +130,20 @@ export function projectSnapshotReader(
         source.sessionsComplete = source.sessions.length < 500;
       } catch {
         source.problems.push("Session observations are unavailable.");
+      }
+      try {
+        const registry = createSessionRegistry(home);
+        source.ownedSessions = catalog.projects
+          .flatMap((project) => registry.list(project.id))
+          .filter(
+            (session) =>
+              workspaceKey(session.workspace) === workspaceKey(deps.workspace),
+          );
+      } catch {
+        source.sessionsComplete = false;
+        source.problems.push(
+          "Private owned-session membership is unavailable; unbound sessions are not included.",
+        );
       }
     }
     return { catalog, source };

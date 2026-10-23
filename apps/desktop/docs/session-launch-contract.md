@@ -1,7 +1,9 @@
-# Private session foundations
+# Private session launch and lifecycle
 
-This increment prepares `cla5.4.1` without exposing a Start route or composer.
-The standing Keeper retains its sealed transport and existing storage paths.
+The session foundations in `cla5.4.1.1` and admission increment in `cla5.4.1.2`
+support app-owned sessions. The parent retains composer presentation and its
+board-specific acceptance criteria. The standing Keeper retains its sealed
+transport and existing storage paths.
 
 ## Journal ownership
 
@@ -36,16 +38,58 @@ Help/version output proves neither authentication nor a successful model turn.
 Unsupported options and permission bypass are refused. Coding tools retain the
 existing harness allowlist; this formatter never changes Keeper's tools.
 
-## Required integration
+## Explicit admission and identity
 
-The server still owns executable resolution, filtered environment, model
+`createSessionRegistry` reserves one original Start UUID and canonical content
+hash to a project-bound `session-<UUID>`. Exact retries return that address before
+current configuration is revalidated. The private metadata index cannot dispatch
+work: only an accepted turn in the selected journal grants dispatch authority.
+Reads and restart never replay a provider turn. A reservation with no accepted
+turn can be retried explicitly using the same Start request.
+
+`createOwnedSessionService` validates current scope under admission and again
+under the owned dispatch lease. It freezes a versioned `SessionTurnSnapshot`
+before the process starts. Exact retries reconstruct that snapshot, including
+attachments, before comparing the journal's request hash. Public Keeper messages
+cannot supply it. Generic message text preserves exact whitespace. Snapshots are
+capped at 2 MiB; the complete journal still has its existing 8 MiB ceiling, which
+is checked before accepting a turn.
+
+Task accepts one turn. Chat's next explicit turn uses only the confirmed native
+binding in its own journal. Subsequent turns preserve the original model, effort,
+mode and options while replacing text, attachments, checked About references and
+the verified resume UUID. A missing identity or unknown outcome holds later
+turns. Closing the client does not stop work; explicit Stop awaits supervised
+process-tree termination.
+
+The dedicated coding transport is independent of Keeper's sealed read profile.
+It probes the installed CLI without a model request, rechecks the prepared
+version and capabilities, filters the environment, supplies private stdin and
+uses the existing process supervisor. Its parser deduplicates partial/full text,
+checks identity continuity and excludes subordinate messages from the main reply.
+
+The ledger's session id is the stable app-owned id, distinct from the native
+provider UUID retained privately as the resume binding. Actual observed model
+metadata can carry that native identity independently. Start/prompt metadata is
+emitted only after the supervised process frame; the prompt hash and length use
+the exact serialized stdin, including context and attachments. No transcript,
+attachment, reviewed options or provider-error prose enters the ledger. The
+project projection uses the private registry to admit owned sessions with no
+bead; it never infers membership from an id prefix or accepts conflicting foreign
+bead/run correlations.
+
+## Presentation and remaining integration
+
+The server owns executable resolution, filtered environment, model
 capability evidence, repository/worktree scope, optional bead membership,
 audited explicit Start, durable request identity, provider lifecycle and project
 session projection. A supplied context or extra-directory string grants none
-of those capabilities. Later integration must persist the accepted private
-launch snapshot before dispatch, preserve unknown outcomes without replay and
-confirm provider identity before resuming. No credential files or paid model
-requests are involved in the foundation tests.
+of those capabilities. Composer UI, creation of a new worktree, command/template
+selection and additional provider integrations remain with the parent and later
+beads. Existing worktrees must be in the served repository's current Git registry;
+extra directories stay physically inside that checked worktree. Child-script
+session mirrors/run correlation are a separate integration and are not claimed
+by these tests. No credential files or paid model requests are involved.
 
 Unit tests exercise independent journals, cross-instance leases, write-lock
 contention, foreign binding refusal, strict formatting and actual supervised

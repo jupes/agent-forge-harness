@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ConversationBinding,
   ConversationObject,
   ConversationPage,
   ConversationReceipt,
@@ -10,13 +11,20 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
+import type { ProjectRecord } from "../../types/projects";
+import type {
+  SessionMessage,
+  SessionTurnSnapshot,
+} from "../../types/session-turn";
 import { keeperBriefPrompt, keeperBriefs } from "../keeper/brief-model";
 import { briefSnapshotSchema } from "../keeper/brief-protocol";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
 import { conversationLeaseFile } from "./paths";
+import { parseSessionSend } from "./protocol";
 import {
   ConversationError,
   createConversationStore,
@@ -43,6 +51,14 @@ interface ConversationOptions {
   onChange?(update: ConversationUpdate): void;
   /** Trusted fixed partition for an app-owned session. Omission retains the standing Keeper. */
   address?: OwnedConversationAddress | undefined;
+  /** Only an app-owned service may prepare a private coding launch under its lease. */
+  prepareSession?:
+    | ((request: {
+        project: ProjectRecord;
+        input: SessionMessage;
+        resume: ConversationBinding | null;
+      }) => Promise<SessionTurnSnapshot>)
+    | undefined;
 }
 
 const activePhase = (phase: string) =>
@@ -50,6 +66,11 @@ const activePhase = (phase: string) =>
 
 /** Observers do not own provider lifetime. A held SQLite lease fences dispatch across hearths. */
 export function createConversationService(options: ConversationOptions) {
+  if (options.prepareSession && !options.address)
+    throw new ConversationError(
+      400,
+      "Session launch preparation requires an owned session address.",
+    );
   const store = createConversationStore(
     options.home,
     undefined,
@@ -171,11 +192,19 @@ export function createConversationService(options: ConversationOptions) {
     },
     async send(
       projectId: string,
-      rawInput: ConversationSend,
+      rawInput: SessionMessage,
       purpose: "message" | "brief" = "message",
     ): Promise<ConversationReceipt> {
-      const wireInput = parseConversationSend(rawInput);
-      let input: PreparedConversationSend = wireInput;
+      const wireInput: SessionMessage = options.prepareSession
+        ? parseSessionSend(rawInput)
+        : parseConversationSend(rawInput);
+      const privateInput: ConversationSend = {
+        requestId: wireInput.requestId,
+        expectedRevision: wireInput.expectedRevision,
+        text: wireInput.text,
+        about: wireInput.about,
+      };
+      let input: PreparedConversationSend = privateInput;
       const project = projectFor(projectId);
       const current = store.read(projectId);
       const original = () => {
@@ -185,6 +214,22 @@ export function createConversationService(options: ConversationOptions) {
             (frame) =>
               frame.turnId === input.requestId && frame.event.kind === "user",
           )?.event;
+        if (options.prepareSession) {
+          if (user?.kind !== "user" || !user.session)
+            throw new ConversationError(
+              409,
+              "This request id already names different content. Read the original request.",
+            );
+          if (
+            JSON.stringify(wireInput.attachments ?? []) !==
+            JSON.stringify(user.session.launch.attachments ?? [])
+          )
+            throw new ConversationError(
+              409,
+              "This request id already names different content. Read the original request.",
+            );
+          return { ...privateInput, session: user.session };
+        }
         if (purpose !== "brief") return wireInput;
         if (user?.kind !== "user" || !user.brief)
           throw new ConversationError(
@@ -195,6 +240,11 @@ export function createConversationService(options: ConversationOptions) {
       };
       if (current.turns.some((item) => item.requestId === input.requestId))
         return store.accept(projectId, original());
+      if (options.prepareSession && purpose !== "message")
+        throw new ConversationError(
+          400,
+          "Owned coding sessions cannot create Keeper briefs.",
+        );
       if (closed)
         throw new ConversationError(
           503,
@@ -295,6 +345,33 @@ export function createConversationService(options: ConversationOptions) {
                     "The scoped brief snapshot could not be verified. No turn was accepted.",
                   );
                 input = { ...wireInput, brief: snapshot.data };
+              }
+            }
+            if (options.prepareSession) {
+              const latest = store.read(projectId);
+              if (
+                latest.turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const snapshot = sessionTurnSnapshotSchema.safeParse(
+                  await options.prepareSession({
+                    project: projectFor(projectId),
+                    input: wireInput,
+                    resume: latest.binding,
+                  }),
+                );
+                if (
+                  !snapshot.success ||
+                  snapshot.data.launch.prompt !== wireInput.text ||
+                  JSON.stringify(snapshot.data.launch.attachments ?? []) !==
+                    JSON.stringify(wireInput.attachments ?? [])
+                )
+                  throw new ConversationError(
+                    503,
+                    "The private session launch could not be verified. No turn was accepted.",
+                  );
+                input = { ...privateInput, session: snapshot.data };
               }
             }
             if (closed || abort.signal.aborted)

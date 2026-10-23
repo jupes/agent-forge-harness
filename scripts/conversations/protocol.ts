@@ -5,7 +5,10 @@ import type {
   ConversationSend,
   PreparedConversationSend,
 } from "../../types/conversation";
+import type { SessionMessage } from "../../types/session-turn";
 import { briefSnapshotSchema } from "../keeper/brief-protocol";
+import { sessionAttachmentSchema } from "../sessions/claude-launch";
+import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
 import { ConversationError } from "./error";
 
 // Select runtime validation before constructing schemas in the strict-CSP WebView.
@@ -39,9 +42,35 @@ export function parseConversationSend(input: unknown): ConversationSend {
     );
   return parsed.data;
 }
-const preparedSendSchema = sendSchema
+const exactSendSchema = sendSchema
+  .extend({
+    text: z
+      .string()
+      .min(1)
+      .max(16_384)
+      .refine((text) => !!text.trim() && !text.includes("\0")),
+  })
+  .strict();
+const sessionSendSchema = exactSendSchema
+  .extend({ attachments: z.array(sessionAttachmentSchema).max(8).optional() })
+  .strict();
+/** Generic session text is exact; Keeper's existing normalization stays unchanged. */
+export function parseSessionSend(input: unknown): SessionMessage {
+  const parsed = sessionSendSchema.safeParse(input);
+  if (!parsed.success)
+    throw new ConversationError(
+      400,
+      "Expected an original request id, revision and bounded session message.",
+    );
+  return parsed.data;
+}
+const keeperPreparedSendSchema = sendSchema
   .extend({ brief: briefSnapshotSchema.optional() })
   .strict();
+const preparedSendSchema = z.union([
+  keeperPreparedSendSchema,
+  exactSendSchema.extend({ session: sessionTurnSnapshotSchema }).strict(),
+]);
 /** Private storage codec; the public message parser above never accepts intent. */
 export function parsePreparedConversationSend(
   input: unknown,
@@ -73,6 +102,7 @@ export const eventSchema: z.ZodType<ConversationEvent> = z.discriminatedUnion(
         text: z.string().max(16_384),
         about: z.array(object).max(16),
         brief: briefSnapshotSchema.optional(),
+        session: sessionTurnSnapshotSchema.optional(),
       })
       .strict(),
     binding.extend({ kind: z.literal("identity") }).strict(),

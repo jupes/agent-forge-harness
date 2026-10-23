@@ -27,6 +27,7 @@
  */
 
 import type { ProviderUsage, ProviderUsageCount } from "../../types/hearth";
+import { CLAUDE_ALLOWED_TOOLS } from "./claude-tools";
 import {
   createCliAdapter,
   type ParsedLine,
@@ -34,21 +35,7 @@ import {
   usageCounts,
 } from "./cli-adapter";
 
-export const CLAUDE_ALLOWED_TOOLS = [
-  "Read",
-  "Edit",
-  "Write",
-  "Grep",
-  "Glob",
-  "Bash(bun run:*)",
-  "Bash(bun test:*)",
-  "Bash(git status:*)",
-  "Bash(git diff:*)",
-  "Bash(git log:*)",
-  "Bash(git add:*)",
-  "Bash(git commit:*)",
-  "Bash(bd:*)",
-];
+export { CLAUDE_ALLOWED_TOOLS } from "./claude-tools";
 
 /** The token counts of a `result` line's `usage`, by the names the ledger stores them under. */
 const USAGE_COUNTS: Readonly<Record<string, ProviderUsageCount>> = {
