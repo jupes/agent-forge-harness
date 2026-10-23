@@ -14,7 +14,7 @@ else if (process.argv[2] === "--keeper-reader")
     process.argv.slice(3),
   );
 else
-  await (await import("./server")).runHearthServer(
+  await (await import("./server-runtime")).runHearthServer(
     process.argv.slice(2),
     [process.execPath, "--keeper-reader"],
     [process.execPath, "--codex-sync"],
