@@ -346,6 +346,67 @@ function projectBeadFixture(
   };
 }
 
+function projectQueueFixture(
+  action: "approve" | "queue" | "pause" | "resume" | "reassign",
+): ActionFixture {
+  const id = "alpha-task";
+  const path = `/projects/${FIXTURE_PROJECT_ID}/beads/${id}/${action}`;
+  const from =
+    action === "approve"
+      ? "proposed"
+      : action === "queue"
+        ? "approved"
+        : action === "resume"
+          ? "paused"
+          : "queued";
+  const to =
+    action === "approve"
+      ? "approved"
+      : action === "pause"
+        ? "paused"
+        : "queued";
+  return {
+    valid: {
+      path,
+      body: action === "reassign" ? { smith: "claude-master" } : {},
+      status: 200,
+      target: action === "reassign" ? "claude-master" : id,
+    },
+    invalid: { path, body: { unexpected: true } },
+    prepare: async (h) => {
+      seedProjectBeadWriteFixture(h);
+      const bead = h.bd.issues.get(id);
+      if (!bead) throw Error("Missing scoped queue fixture");
+      bead.labels?.push(`queue:${from}`);
+      bead.metadata = {
+        queue_state: from,
+        ...(action === "resume" ? { queue_resume: "running" } : {}),
+      };
+    },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload:
+          action === "reassign"
+            ? { action, smith: "claude-master" }
+            : { from, to, reason: `${action}:operator` },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toEqual(
+        action === "reassign"
+          ? { id, state: from, smith: "claude-master", recorded: true }
+          : { id, action, from, to, recorded: true },
+      );
+      expect(
+        h.bd.issues.get(id)?.metadata?.[
+          action === "reassign" ? "smith" : "queue_state"
+        ],
+      ).toBe(action === "reassign" ? "claude-master" : to);
+    },
+  };
+}
+
 interface Job {
   runId: string;
   status: string;
@@ -1221,6 +1282,11 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/beads/:beadId/comment": projectBeadFixture("comment"),
   "POST /projects/:id/beads/:beadId/close": projectBeadFixture("close"),
   "POST /projects/:id/beads/:beadId/propose": projectBeadFixture("propose"),
+  "POST /projects/:id/beads/:beadId/approve": projectQueueFixture("approve"),
+  "POST /projects/:id/beads/:beadId/queue": projectQueueFixture("queue"),
+  "POST /projects/:id/beads/:beadId/pause": projectQueueFixture("pause"),
+  "POST /projects/:id/beads/:beadId/resume": projectQueueFixture("resume"),
+  "POST /projects/:id/beads/:beadId/reassign": projectQueueFixture("reassign"),
   "POST /beads/:id/claim": {
     valid: {
       path: "/beads/demo-task/claim",
@@ -1399,6 +1465,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
   "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
+  "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,

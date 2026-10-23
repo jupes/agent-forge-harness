@@ -37,6 +37,21 @@ import { OPERATOR_QUEUE_ACTIONS } from "./queue";
  */
 
 const open: TestHearth[] = [];
+
+test("a conflicting external writer after the successful update answers unknown and records no false transition", async () => {
+  const { h, tracker } = await start([backed("demo-1", "proposed")]);
+  tracker.beforeUpdate = (bead) => {
+    bead.labels = ["queue:halted"];
+  };
+  const answer = await post(h, "/queue/demo-1/approve");
+  expect(answer.status).toBe(504);
+  expect(tracker.calls.filter((args) => args[0] === "update")).toHaveLength(1);
+  expect(queueLabels(tracker, "demo-1").sort()).toEqual([
+    "queue:approved",
+    "queue:halted",
+  ]);
+  expect(recorded(h).map((event) => event.kind)).toEqual(["operator.action"]);
+});
 afterEach(async () => {
   for (const hearth of open.splice(0)) await hearth.close();
 });
@@ -279,7 +294,7 @@ describe("the queue rows", () => {
             bead.labels = ["queue:halted"];
           };
         },
-        409,
+        504,
         "queue:approved and queue:halted",
       ],
     ];

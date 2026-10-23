@@ -64,6 +64,7 @@ import {
   projectSnapshotReader,
   projectSummaryRoute,
 } from "./project-summaries";
+import { projectWorkbenchRoute } from "./project-workbench";
 import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
 import { createSessionWorktreeRoutes } from "./session-worktrees";
@@ -363,7 +364,7 @@ export interface OperatorTable {
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { sessions, runs, run, events, reservations, scoreboard } =
     ledgerReads(deps);
-  const { queue, smiths, config, worktrees, eligibility } =
+  const { queue, smiths, config, worktrees, eligibility, readEligible } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
@@ -430,6 +431,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
     projectBeadsRoute(deps, projectSnapshot),
+    projectWorkbenchRoute(deps, projectSnapshot, async () => {
+      const result = await readEligible();
+      return result.ok ? result.value : null;
+    }),
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,

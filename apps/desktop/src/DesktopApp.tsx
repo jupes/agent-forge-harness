@@ -20,6 +20,7 @@ import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
+import { ProjectWorkbench } from "./ProjectWorkbench";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { sessionRows } from "./sessions-model";
@@ -29,6 +30,7 @@ import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
 import { useSessions } from "./use-sessions";
+import { useWorkbench } from "./use-workbench";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
@@ -46,10 +48,17 @@ export function DesktopApp(): JSX.Element {
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
   const beads = useBeads(
-    route.destination === "beads" ? (project?.id ?? null) : null,
-    route.destination === "beads" && route.selection?.kind === "bead"
+    route.destination === "beads" ||
+      (route.destination === "workbench" && route.selection?.kind === "bead")
+      ? (project?.id ?? null)
+      : null,
+    (route.destination === "beads" || route.destination === "workbench") &&
+      route.selection?.kind === "bead"
       ? route.selection.id
       : null,
+  );
+  const workbench = useWorkbench(
+    route.destination === "workbench" ? (project?.id ?? null) : null,
   );
   const fullBead =
     route.destination === "beads" &&
@@ -59,6 +68,7 @@ export function DesktopApp(): JSX.Element {
     ) === "full";
   const beadWrites = useBeadWrites(writesAllowed && !project?.archived, () => {
     beads.reload();
+    workbench.reload();
     projects.reload();
   });
   const [newBeadOpen, setNewBeadOpen] = useState(false);
@@ -220,7 +230,8 @@ export function DesktopApp(): JSX.Element {
         }
         inspectorOpen={fullBead ? false : inspectorOpen}
         inspector={
-          route.destination === "beads" &&
+          (route.destination === "beads" ||
+            route.destination === "workbench") &&
           !fullBead &&
           route.selection?.kind === "bead" &&
           project ? (
@@ -400,6 +411,27 @@ export function DesktopApp(): JSX.Element {
               }}
             />
           )
+        ) : route.destination === "workbench" && project ? (
+          <ProjectWorkbench
+            key={project.id}
+            projectId={project.id}
+            page={workbench.data}
+            error={workbench.error}
+            loading={workbench.loading}
+            reload={workbench.reload}
+            writes={beadWrites}
+            selectedId={
+              route.selection?.kind === "bead" ? route.selection.id : null
+            }
+            onSelect={(id) => {
+              setInspectorOpen(true);
+              window.location.hash = desktopHref({
+                projectId: project.id,
+                destination: "workbench",
+                selection: { kind: "bead", id },
+              }).slice(1);
+            }}
+          />
         ) : route.destination === "overview" && project ? (
           <ProjectOverview
             key={project.id}

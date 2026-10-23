@@ -76,6 +76,11 @@ export function projectBeadWriteRoutes(options: {
         "bead.comment",
         "bead.close",
         "queue.propose",
+        "queue.approve",
+        "queue.queue",
+        "queue.pause",
+        "queue.resume",
+        "queue.reassign",
       ].includes(row.action),
   );
   return chosen.map((row) => {
