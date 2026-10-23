@@ -149,7 +149,7 @@ test("preparation is model-free and the owned native Task persists process ident
   ]);
   expect(task?.argv).toEqual(serialized.argv);
   expect(task?.stdin).toBe(serialized.stdin);
-  expect(task?.cwd).toBe(f.root);
+  expect(task?.cwd).toBe(prepared.canonicalCwd);
   expect(task?.secretPresent).toBe(false);
   expect(task?.forged).toBe(false);
   expect(task?.preload).toBe(false);
@@ -515,5 +515,58 @@ test("Stop and a rejected output flood do not drain hundreds of slow queued priv
     expect(performance.now() - start).toBeLessThan(2000);
     expect(f.records().filter((r) => r.kind === "task")).toHaveLength(1);
     expect(liveChildCount()).toBe(0);
+  }
+});
+
+test("a Task path retargeted during private process persistence cannot receive the accepted prompt", async () => {
+  const f = fixture(),
+    first = join(f.root, "first"),
+    second = join(f.root, "second"),
+    link = join(f.root, "linked");
+  mkdirSync(first);
+  mkdirSync(second);
+  const detach = () =>
+    process.platform === "win32" ? rmdirSync(link) : unlinkSync(link);
+  symlinkSync(first, link, process.platform === "win32" ? "junction" : "dir");
+  try {
+    const prepared = await f.runtime.prepare({
+      smith: "gemini-example",
+      launch: {
+        ...f.launch,
+        cwd: link,
+        context: {
+          projectId: "test-project",
+          repository: f.root,
+          worktree: link,
+        },
+      },
+    });
+    const events: GeminiTaskRuntimeEvent[] = [];
+    const result = await f.runtime.run(
+      prepared,
+      async (event) => {
+        events.push(event);
+        if (event.kind === "process") {
+          detach();
+          symlinkSync(
+            second,
+            link,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        }
+      },
+      new AbortController().signal,
+    );
+    expect(result.phase).toBe("unknown");
+    const reads = f.records().filter((row) => row.kind === "task");
+    expect(reads.every((row) => row.stdin === "")).toBe(true);
+    for (const row of reads) expect(row.cwd).toBe(prepared.canonicalCwd);
+    expect(events.at(-1)).toMatchObject({
+      kind: "outcome",
+      outcome: { phase: "unknown" },
+    });
+    expect(liveChildCount()).toBe(0);
+  } finally {
+    detach();
   }
 });

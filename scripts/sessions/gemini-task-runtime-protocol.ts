@@ -42,6 +42,9 @@ export const preparedGeminiLaunchSchema = geminiTaskLaunchSchema.transform(
             ...(value.context.beadId === undefined
               ? {}
               : { beadId: value.context.beadId }),
+            ...(value.context.about === undefined
+              ? {}
+              : { about: value.context.about }),
           },
         }),
   }),

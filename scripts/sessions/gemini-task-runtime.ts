@@ -183,6 +183,9 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
               );
             }),
           ]);
+        } catch (error) {
+          storageFailed = true;
+          throw error;
         } finally {
           if (timer) clearTimeout(timer);
         }
@@ -226,7 +229,7 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
       try {
         child = supervise({
           command: [...runtime.command, ...serialized.argv],
-          cwd: snapshot.launch.cwd,
+          cwd: snapshot.canonicalCwd,
           env: runtime.env,
           stdinMode: "interactive",
           maxStdinBytes: GEMINI_TASK_MAX_STDIN_BYTES,
@@ -256,11 +259,11 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
           });
           releaseWrites?.();
           if (!failure && !signal.aborted) {
+            validate(snapshot);
             await child.write(serialized.stdin);
             await child.end();
           }
         } catch {
-          storageFailed = true;
           fail();
         } finally {
           releaseWrites?.();

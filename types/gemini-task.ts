@@ -16,6 +16,10 @@ export interface GeminiTaskLaunch {
     repository: string;
     worktree: string;
     beadId?: string;
+    about?: readonly {
+      kind: "bead" | "session" | "run" | "event";
+      id: string;
+    }[];
   };
   attachments?: readonly { kind: "text"; name: string; text: string }[];
 }

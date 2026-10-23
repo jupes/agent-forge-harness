@@ -68,6 +68,17 @@ export const geminiTaskLaunchSchema = z
         repository: absolutePath,
         worktree: absolutePath,
         beadId: label.max(200).optional(),
+        about: z
+          .array(
+            z
+              .object({
+                kind: z.enum(["bead", "session", "run", "event"]),
+                id: label.max(200),
+              })
+              .strict(),
+          )
+          .max(16)
+          .optional(),
       })
       .strict()
       .optional(),
