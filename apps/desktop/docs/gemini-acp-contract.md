@@ -43,10 +43,16 @@ ACP uses newline-delimited JSON-RPC2.0 with protocol version1, launched with
 initialize/new/load/prompt/cancel and supported model/mode controls are allowed.
 Unknown server filesystem/terminal/client operations refuse with no side effect.
 
-Session/load can replay historical user, agent, tool and thought updates before
-its reply. They are history, never the newly accepted turn or an actionable
-permission. Native thought chunks are discarded after identity/byte validation;
-the app does not retain or expose chain of thought.
+The pinned `loadSession` starts `session.streamHistory(messages)` without awaiting
+it. Historical user, agent, tool and thought updates can arrive before **or after**
+the load reply, including while a new prompt is pending. The native stream has no
+history-complete marker or accepted-turn ID. Consequently, all text/tool updates
+from a resumed process retain `native-session` scope with no accepted-turn ID.
+They must never become new-turn output or actionable historical permissions.
+Only the request-correlated prompt result and a live permission RPC can bind to
+the explicitly pending prompt. A quiet interval, available-commands notification,
+or elapsed time is not a replay barrier. Native thought chunks are discarded after
+identity/byte validation; the app does not retain or expose chain of thought.
 
 Native `usage_update.used` and `size` describe context occupancy. They do not
 report daily allowance. PromptResponse usage is per prompt; cached/thought counts
