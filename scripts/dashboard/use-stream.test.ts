@@ -59,6 +59,7 @@ import { activeRuns, type RunSummary } from "../forge/runs";
 import { API_PREFIX, OPERATOR_HEADER } from "../hearth/paths";
 import { STREAM_KEEPALIVE_MS } from "../hearth/stream";
 import { startTestHearth } from "../hearth/testing";
+import { openLedger } from "../ledger/db";
 import { attrs, findAll, tag, textOf } from "./ds/vnode";
 
 /** The longest wait before a retry: the ceiling after five failures in a row (the jitter only shortens it). */
@@ -2507,13 +2508,18 @@ describe("client against a real hearth", () => {
     const newest = (from: number, count: number) =>
       Array.from({ length: count }, (_, n) => `s-${from - n}`);
 
-    for (let n = 1; n <= 600; n++) start(n);
     const client = createStreamClient({
       transport: fetchTransport(`${hearth.api}/stream`, { headers }),
       read: route,
     });
-    const leave = client.subscribe(() => undefined);
+    let leave = () => {};
     try {
+      // Keep every real append, but build this read/stream fixture with one
+      // disk commit per batch so nested disk work cannot starve its own HTTP.
+      openLedger(hearth.ledger).transaction(() => {
+        for (let n = 1; n <= 600; n++) start(n);
+      })();
+      leave = client.subscribe(() => undefined);
       await eventually(() => client.getState().status === "live");
       // The snapshot carries what the route answers without parameters: the newest 100.
       const first = await route("/sessions");
@@ -2524,16 +2530,22 @@ describe("client against a real hearth", () => {
       expect(names(client.getState().sessions.data)).toEqual(newest(600, 100));
 
       // Each held session speaks again or ends, and 450 new ones start.
-      hearth.append({
-        kind: "tool.called",
-        sessionId: "s-520",
-        beadId: "b-1",
-        runId: "run-1",
-        payload: { tool: "Read", argsHash: "h" },
-      });
-      hearth.append({ kind: "session.ended", sessionId: "s-510", payload: {} });
       let last = 0;
-      for (let n = 601; n <= 1050; n++) last = start(n);
+      openLedger(hearth.ledger).transaction(() => {
+        hearth.append({
+          kind: "tool.called",
+          sessionId: "s-520",
+          beadId: "b-1",
+          runId: "run-1",
+          payload: { tool: "Read", argsHash: "h" },
+        });
+        hearth.append({
+          kind: "session.ended",
+          sessionId: "s-510",
+          payload: {},
+        });
+        for (let n = 601; n <= 1050; n++) last = start(n);
+      })();
       await eventually(() => client.getState().cursor === last, 15_000);
 
       const held = client.getState().sessions.data;
