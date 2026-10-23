@@ -14,6 +14,7 @@ import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { createCodexOwnedTaskService } from "./codex-owned-admission";
 import { parseOwnedSessionStart } from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
+import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { createSessionRegistry } from "./registry";
 
 export const unavailableCodexTaskRuntime: ReturnType<
@@ -40,6 +41,19 @@ export const unavailableCodexChatRuntime: ReturnType<
   },
   async run() {
     throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
+  },
+};
+export const unavailableGeminiTaskRuntime: ReturnType<
+  typeof createGeminiTaskRuntime
+> = {
+  async check() {
+    throw new ConversationError(503, "The Gemini Task runtime is unavailable.");
+  },
+  async prepare() {
+    throw new ConversationError(503, "The Gemini Task runtime is unavailable.");
+  },
+  async run() {
+    throw new ConversationError(503, "The Gemini Task runtime is unavailable.");
   },
 };
 /** Routing only. Neither a smith name nor a provider fallback can select an execution branch. */

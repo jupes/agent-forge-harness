@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -569,4 +570,41 @@ test("a Task path retargeted during private process persistence cannot receive t
   } finally {
     detach();
   }
+});
+
+test("owned Gemini preview uses actual read-only native probes and the exact private Task serializer", async () => {
+  const { createGeminiTaskPreview } = await import("./gemini-owned-preview");
+  const f = fixture(),
+    projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
+    requestId = randomUUID();
+  let checked = 0;
+  const preview = createGeminiTaskPreview({
+    root: f.root,
+    runtime: f.runtime,
+    validateScope: async (id, scope, about) => {
+      expect(id).toBe(projectId);
+      expect(scope.repository).toBe(f.root);
+      expect(scope.worktree).toBe(f.root);
+      expect(about).toEqual([{ kind: "bead", id: "alpha-1" }]);
+      checked++;
+    },
+  });
+  const result = await preview(projectId, {
+    provider: "gemini",
+    requestId,
+    smith: "gemini-example",
+    repository: f.root,
+    worktree: f.root,
+    about: [{ kind: "bead", id: "alpha-1" }],
+    launch: { route: "gemini-cli", mode: "task", prompt: f.launch.prompt },
+  });
+  expect(checked).toBe(2);
+  expect(result).toMatchObject({ projectId, requestId, provider: "gemini" });
+  expect(result.serialized).toEqual(
+    serializeGeminiTask(result.snapshot.launch, result.snapshot.capabilities),
+  );
+  expect(result.serialized.stdin).toContain(f.launch.prompt);
+  expect(result.serialized.equivalentCommand).not.toContain(f.launch.prompt);
+  expect(f.records().map((row) => row.kind)).toEqual(["version", "help"]);
+  expect(liveChildCount()).toBe(0);
 });

@@ -1,4 +1,5 @@
-import type { GeminiTaskLaunch } from "./gemini-task";
+import type { GeminiTaskLaunch, SerializedGeminiTask } from "./gemini-task";
+import type { PreparedGeminiTask } from "./gemini-task-runtime";
 import type { OwnedSessionMetadata, OwnedSessionRecord } from "./owned-session";
 import type { SessionStartRequest } from "./session-requests";
 
@@ -26,3 +27,11 @@ export interface GeminiOwnedSessionMetadata
 export interface GeminiOwnedSessionRecord
   extends GeminiOwnedSessionMetadata,
     Omit<OwnedSessionRecord, keyof OwnedSessionMetadata> {}
+
+export interface GeminiTaskPreviewReceipt {
+  provider: "gemini";
+  projectId: string;
+  requestId: string;
+  snapshot: PreparedGeminiTask;
+  serialized: SerializedGeminiTask;
+}

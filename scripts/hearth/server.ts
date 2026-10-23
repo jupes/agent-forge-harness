@@ -54,6 +54,7 @@ import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";
 import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
+import { createGeminiTaskRuntime } from "../sessions/gemini-task-runtime";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -173,6 +174,7 @@ export interface OperatorApiOverrides {
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>;
   codexChatRuntime?: ReturnType<typeof createCodexChatRuntime>;
+  geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime>;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
@@ -415,6 +417,17 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         ...(options.codexSyncCommand
           ? { syncCommand: options.codexSyncCommand }
           : {}),
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        environment: options.environment ?? process.env,
+        operatorToken: expectedToken,
+      }),
+    geminiTaskRuntime:
+      options.api?.geminiTaskRuntime ??
+      createGeminiTaskRuntime({
+        root,
+        home,
         ...(options.api?.configHome
           ? { configHome: options.api.configHome }
           : {}),

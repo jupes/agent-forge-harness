@@ -14,6 +14,7 @@ import type { ConversationReceipt } from "./conversation";
 import type {
   GeminiOwnedSessionMetadata,
   GeminiOwnedSessionRecord,
+  GeminiTaskPreviewReceipt,
   GeminiTaskStartRequest,
 } from "./gemini-owned-task";
 import type { OwnedSessionMetadata, OwnedSessionRecord } from "./owned-session";
@@ -86,7 +87,8 @@ export interface CodexTaskPreviewReceipt {
 }
 export type OwnedCodingSessionPreviewReceipt =
   | SessionPreviewReceipt
-  | CodexTaskPreviewReceipt;
+  | CodexTaskPreviewReceipt
+  | GeminiTaskPreviewReceipt;
 
 /** Reported counts in the owned coding journal only; no model, cost or allowance is inferred. */
 export interface CodexCodingUsageEvent {

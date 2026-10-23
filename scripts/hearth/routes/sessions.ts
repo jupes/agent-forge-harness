@@ -18,9 +18,12 @@ import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
 import { parseOwnedSessionStart } from "../../sessions/codex-owned-protocol";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
+import { createGeminiTaskPreview } from "../../sessions/gemini-owned-preview";
+import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import {
   createOwnedCodingSessionService,
   unavailableCodexTaskRuntime,
+  unavailableGeminiTaskRuntime,
 } from "../../sessions/owned-coding-service";
 import { createSessionPreview } from "../../sessions/preview";
 import { SessionRegistryError } from "../../sessions/registry";
@@ -79,9 +82,14 @@ export function createOwnedSessionRoutes(
   deps: Dependencies,
   load: () => Promise<ProjectSnapshot>,
   runtime: SessionRuntime,
-  codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>,
-  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime>,
+  providerRuntimes: {
+    codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
+    codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
+    geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+  } = {},
 ) {
+  const { codexTaskRuntime, codexChatRuntime, geminiTaskRuntime } =
+    providerRuntimes;
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
   const validateScope = createSessionScopeValidator(home, deps, load);
@@ -93,6 +101,11 @@ export function createOwnedSessionRoutes(
   const prepareCodexPreview = createCodexTaskPreview({
     root: deps.root,
     runtime: codexTaskRuntime ?? unavailableCodexTaskRuntime,
+    validateScope,
+  });
+  const prepareGeminiPreview = createGeminiTaskPreview({
+    root: deps.root,
+    runtime: geminiTaskRuntime ?? unavailableGeminiTaskRuntime,
     validateScope,
   });
   const service = createOwnedCodingSessionService({
@@ -314,10 +327,7 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, input }) =>
       answer(200, () => {
         if ("provider" in input && input.provider === "gemini")
-          throw new ConversationError(
-            503,
-            "Owned Gemini Task preview is not available yet. No Task was started.",
-          );
+          return prepareGeminiPreview(projectId, input);
         return "provider" in input
           ? prepareCodexPreview(projectId, input)
           : preparePreview(projectId, input);
