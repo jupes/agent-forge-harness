@@ -38,6 +38,7 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
 import type { ActionContext, ActionRoute, ApiRoute } from "./api";
 import { sessionsPath, tokenPath } from "./home";
@@ -654,6 +655,27 @@ function ownedSessionFixture(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/sessions/preview": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
+      body: {},
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      ACTIONS["POST /projects/:id/sessions/preview"]!.valid.body =
+        sessionStartFixture(h);
+    },
+    happened: async (h, answer) => {
+      const parsed = sessionPreviewReceiptSchema.parse(answer);
+      expect(parsed.snapshot.cwd).toBe(h.workspace);
+      expect(parsed.snapshot.launch.prompt).toBe(FIXTURE_SESSION_PROMPT);
+    },
+  },
   "POST /projects/:id/sessions": ownedSessionFixture("start"),
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),

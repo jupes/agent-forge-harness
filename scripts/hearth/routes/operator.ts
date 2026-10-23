@@ -447,6 +447,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       proposals.dismiss,
       conversations.stop,
       ownedSessions.start,
+      ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,
       ...beadRoutes({

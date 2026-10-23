@@ -55,6 +55,13 @@ cannot supply it. Generic message text preserves exact whitespace. Snapshots are
 capped at 2 MiB; the complete journal still has its existing 8 MiB ceiling, which
 is checked before accepting a turn.
 
+The audited `session.preview` action prepares the same reviewed smith, working
+directory, context and options without reserving an identity, opening a journal
+or dispatching a provider turn. Scope is checked before and after preparation.
+Its strict browser receipt includes the private snapshot and exact serializer
+result; the command preview never becomes execution authority. Shared receipt
+codecs in `scripts/sessions/protocol.ts` also verify Start identity correlation.
+
 Task accepts one turn. Chat's next explicit turn uses only the confirmed native
 binding in its own journal. Subsequent turns preserve the original model, effort,
 mode and options while replacing text, attachments, checked About references and
