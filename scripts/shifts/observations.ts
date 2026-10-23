@@ -6,7 +6,7 @@ import type {
 } from "../../types/project-shifts";
 import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
 import { workspaceKey } from "../projects/scope";
-import { runOptions } from "../scheduler/shift-cli";
+import { runOptions } from "../scheduler/shift-cli-runtime";
 import { SHIFT_BEAD_OUTCOMES } from "../scheduler/shift-store";
 import { projectShiftStartSchema } from "./protocol";
 import { projectShiftFlags, projectShiftRequestHash } from "./registry";

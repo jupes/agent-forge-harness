@@ -47,7 +47,7 @@ import {
   wholeNumberError,
 } from "../config/load";
 import { resolveSmith } from "../config/resolve";
-import { type ExecDeps, runExec } from "../executors/exec-cli";
+import { type ExecDeps, runExec } from "../executors/exec-runtime";
 import {
   PRIVATE_CAPTURE_FAILURE,
   type PrivateExecCaptureFactory,

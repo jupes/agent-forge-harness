@@ -18,7 +18,7 @@ import { workspaceKey } from "../projects/scope";
 import { isProjectId } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { shiftOptions } from "../scheduler/shift";
-import { runOptions } from "../scheduler/shift-cli";
+import { runOptions } from "../scheduler/shift-cli-runtime";
 import {
   projectShiftIntentSchema,
   projectShiftStartSchema,
