@@ -7,6 +7,8 @@ import type {
   SessionPreviewReceipt,
   SessionStartReceipt,
 } from "../../types/session-requests";
+import type { ProjectShiftAttemptOrigin } from "../../types/shift-turn";
+import { SHIFT_LIMITS } from "../config/defaults";
 import { conversationReceiptSchema } from "../conversations/protocol";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
@@ -48,7 +50,37 @@ const path = label(1024).refine(
     value.startsWith("\\\\") ||
     /^[a-zA-Z]:[\\/]/.test(value),
 );
-export const ownedSessionMetadataSchema = z
+const shiftOriginSchema = z
+  .object({
+    kind: z.literal("shift"),
+    projectId: sessionProjectIdSchema,
+    originalRequestId: sessionRequestIdSchema,
+    shiftId: label(64).regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/),
+    runId: label(200).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    beadId: label(200).refine(
+      (value) =>
+        parseBeadsIssueId(value) === value &&
+        redactSecrets(value).redactions.length === 0,
+    ),
+    attempt: z
+      .number()
+      .int()
+      .positive()
+      .max(SHIFT_LIMITS.repairs[1] + 1),
+  })
+  .strict();
+export function validOwnedSessionOrigin(value: {
+  mode: string;
+  beadId?: string | undefined;
+  origin?: ProjectShiftAttemptOrigin | undefined;
+}): boolean {
+  return (
+    !value.origin ||
+    (value.mode === "task" && value.beadId === value.origin.beadId)
+  );
+}
+/** Unrefined fields for composing provider branches without discarding cross-field checks. */
+export const ownedSessionMetadataFieldsSchema = z
   .object({
     mode: z.enum(["task", "chat"]),
     provider: z.literal("claude"),
@@ -72,8 +104,11 @@ export const ownedSessionMetadataSchema = z
     requestedEffort: z
       .enum(["low", "medium", "high", "xhigh", "max"])
       .nullable(),
+    origin: shiftOriginSchema.optional(),
   })
   .strict() satisfies z.ZodType<OwnedSessionMetadata>;
+export const ownedSessionMetadataSchema =
+  ownedSessionMetadataFieldsSchema.refine(validOwnedSessionOrigin);
 export const ownedSessionSchema: z.ZodType<OwnedSessionRecord> = z
   .object({
     projectId: sessionProjectIdSchema,
@@ -83,7 +118,12 @@ export const ownedSessionSchema: z.ZodType<OwnedSessionRecord> = z
     createdAt: z.iso.datetime(),
     ...ownedSessionMetadataSchema.shape,
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      validOwnedSessionOrigin(value) &&
+      (!value.origin || value.origin.projectId === value.projectId),
+  );
 export const sessionStartReceiptSchema: z.ZodType<SessionStartReceipt> = z
   .object({ session: ownedSessionSchema, receipt: conversationReceiptSchema })
   .strict()

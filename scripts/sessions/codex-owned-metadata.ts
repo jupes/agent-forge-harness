@@ -5,14 +5,15 @@ import type {
 } from "../../types/codex-owned-task";
 import {
   ownedSessionIdSchema,
-  ownedSessionMetadataSchema,
+  ownedSessionMetadataFieldsSchema,
   sessionProjectIdSchema,
   sessionRequestHashSchema,
   sessionRequestIdSchema,
+  validOwnedSessionOrigin,
 } from "./protocol";
 
 /** Additive registry branch. The original Claude metadata schema stays exact. */
-export const codexOwnedMetadataSchema = ownedSessionMetadataSchema
+const codexOwnedMetadataFieldsSchema = ownedSessionMetadataFieldsSchema
   .omit({ provider: true, mode: true, requestedEffort: true })
   .extend({
     provider: z.literal("codex"),
@@ -25,8 +26,11 @@ export const codexOwnedMetadataSchema = ownedSessionMetadataSchema
       .nullable(),
   })
   .strict() satisfies z.ZodType<CodexOwnedSessionMetadata>;
+export const codexOwnedMetadataSchema = codexOwnedMetadataFieldsSchema.refine(
+  validOwnedSessionOrigin,
+);
 
-export const codexOwnedSessionSchema = codexOwnedMetadataSchema
+export const codexOwnedSessionSchema = codexOwnedMetadataFieldsSchema
   .extend({
     projectId: sessionProjectIdSchema,
     id: ownedSessionIdSchema,
@@ -34,4 +38,9 @@ export const codexOwnedSessionSchema = codexOwnedMetadataSchema
     requestHash: sessionRequestHashSchema,
     createdAt: z.iso.datetime(),
   })
-  .strict() satisfies z.ZodType<CodexOwnedSessionRecord>;
+  .strict()
+  .refine(
+    (value) =>
+      validOwnedSessionOrigin(value) &&
+      (!value.origin || value.origin.projectId === value.projectId),
+  ) satisfies z.ZodType<CodexOwnedSessionRecord>;

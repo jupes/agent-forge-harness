@@ -252,7 +252,11 @@ export function createSessionRegistry(
             "The private session registry is full. Saved Start identities have been kept.",
           );
         const parsed = metadataSchema.safeParse(await prepare());
-        if (!parsed.success || parsed.data.provider !== provider)
+        if (
+          !parsed.success ||
+          parsed.data.provider !== provider ||
+          (parsed.data.origin && parsed.data.origin.projectId !== projectId)
+        )
           throw new SessionRegistryError(
             400,
             "Expected bounded trusted session metadata.",
