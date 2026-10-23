@@ -1,5 +1,6 @@
 import type { KeeperReadKind } from "./keeper";
 import type { KeeperBriefSnapshot } from "./keeper-brief";
+import type { KeeperRecoveryState } from "./keeper-recovery";
 import type { SessionTurnSnapshot } from "./session-turn";
 
 /** A trusted server-selected journal partition, separate from the provider's resume identity. */
@@ -104,6 +105,7 @@ export interface ConversationState {
   binding: ConversationBinding | null;
   turns: ConversationTurn[];
   frames: ConversationFrame[];
+  keeperRecovery?: KeeperRecoveryState | undefined;
 }
 
 export interface ConversationReceipt {
@@ -112,7 +114,9 @@ export interface ConversationReceipt {
   turn: ConversationTurn;
 }
 
-export interface ConversationPage extends ConversationState {
+export interface ConversationPage
+  extends Omit<ConversationState, "keeperRecovery"> {
+  keeperRecovery?: Omit<KeeperRecoveryState, "records"> | undefined;
   more: boolean;
   nextCursor: number;
   lastSequence: number;

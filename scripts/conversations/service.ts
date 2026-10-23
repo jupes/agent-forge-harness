@@ -11,6 +11,10 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
+import type {
+  KeeperContinuationRequest,
+  KeeperRecoveryPage,
+} from "../../types/keeper-recovery";
 import type { ProjectRecord } from "../../types/projects";
 import type {
   SessionMessage,
@@ -18,6 +22,8 @@ import type {
 } from "../../types/session-turn";
 import { keeperBriefPrompt, keeperBriefs } from "../keeper/brief-model";
 import { briefSnapshotSchema } from "../keeper/brief-protocol";
+import { keeperContinuationSchema } from "../keeper/recovery-protocol";
+import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
@@ -44,11 +50,13 @@ interface ConversationOptions {
   home: string;
   root: string;
   transport: ConversationTransport;
+  keeperRuntime?: KeeperRuntime | undefined;
   validateAbout?: ValidateConversationAbout | undefined;
   prepareBrief?:
     | ((projectId: string) => Promise<KeeperBriefSnapshot>)
     | undefined;
   onChange?(update: ConversationUpdate): void;
+  onRecoveryChange?(projectId: string): void;
   /** Trusted fixed partition for an app-owned session. Omission retains the standing Keeper. */
   address?: OwnedConversationAddress | undefined;
   /** Only an app-owned service may prepare a private coding launch under its lease. */
@@ -63,6 +71,15 @@ interface ConversationOptions {
 
 const activePhase = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
+const savedKeeperSmith = (state: ConversationState) => {
+  const process = [...state.frames]
+    .reverse()
+    .find((frame) => frame.event.kind === "process")?.event;
+  return (
+    state.keeperRecovery?.smith ??
+    (process?.kind === "process" ? process.smith : undefined)
+  );
+};
 
 /** Observers do not own provider lifetime. A held SQLite lease fences dispatch across hearths. */
 export function createConversationService(options: ConversationOptions) {
@@ -88,6 +105,27 @@ export function createConversationService(options: ConversationOptions) {
   >();
   const owned = new Set<string>();
   let closed = false;
+  // Native capability probes are reads, but still consume real child processes.
+  // Share a single budget across projects and concurrent observer requests.
+  let activeReadinessChecks = 0;
+  const readinessWaiters: (() => void)[] = [];
+  const readinessReads = new Map<
+    string,
+    Promise<KeeperRecoveryPage["choices"]>
+  >();
+  const boundedReadiness = async <T>(check: () => Promise<T>): Promise<T> => {
+    if (activeReadinessChecks >= 4)
+      await new Promise<void>((resolve) => readinessWaiters.push(resolve));
+    else activeReadinessChecks++;
+    try {
+      if (closed) throw new ConversationError(503, "This hearth is closing.");
+      return await check();
+    } finally {
+      const next = readinessWaiters.shift();
+      if (next) next();
+      else activeReadinessChecks--;
+    }
+  };
   const projectFor = (projectId: string) => {
     // Validates the address before it can participate in a filename.
     store.read(projectId);
@@ -152,6 +190,158 @@ export function createConversationService(options: ConversationOptions) {
     return state;
   };
   return {
+    async recovery(
+      projectId: string,
+      requestId?: string,
+    ): Promise<KeeperRecoveryPage> {
+      const project = projectFor(projectId),
+        state = await observe(projectId),
+        runtime = options.keeperRuntime;
+      if (closed || !runtime || options.address)
+        throw new ConversationError(
+          503,
+          "Keeper smith recovery is unavailable in this build.",
+        );
+      const catalog = runtime.catalog(),
+        selectedSmith = savedKeeperSmith(state) ?? catalog.defaultSmith;
+      if (catalog.smiths.length > 100)
+        throw new ConversationError(
+          503,
+          "The Keeper smith catalog exceeds its supported bound.",
+        );
+      const key = JSON.stringify([
+        projectId,
+        state.revision,
+        state.binding,
+        catalog.smiths,
+      ]);
+      let checks = readinessReads.get(key);
+      if (!checks) {
+        checks = Promise.allSettled(
+          catalog.smiths.map((smith) =>
+            boundedReadiness(async () => ({
+              smith,
+              readiness: await runtime.readiness(
+                smith,
+                project,
+                options.root,
+                state.binding,
+              ),
+            })),
+          ),
+        )
+          .then((results) =>
+            results.map((result) => {
+              if (result.status === "rejected") throw result.reason;
+              return result.value;
+            }),
+          )
+          .finally(() => readinessReads.delete(key));
+        readinessReads.set(key, checks);
+      }
+      const page: KeeperRecoveryPage = {
+        projectId,
+        conversationRevision: state.revision,
+        selectedSmith,
+        choices: await checks,
+        continuation: state.keeperRecovery?.continuation ?? null,
+        request:
+          state.keeperRecovery?.records.find(
+            (item) => item.requestId === requestId,
+          ) ?? null,
+      };
+      if (Buffer.byteLength(JSON.stringify(page)) > 128_000)
+        throw new ConversationError(
+          503,
+          "The Keeper readiness report exceeds its bounded read size. The saved selection and conversation have been kept.",
+        );
+      return page;
+    },
+    async continueKeeper(projectId: string, raw: KeeperContinuationRequest) {
+      const parsed = keeperContinuationSchema.safeParse(raw);
+      if (!parsed.success)
+        throw new ConversationError(
+          400,
+          "Expected an explicit smith, revision and reviewed summary.",
+        );
+      const input = parsed.data,
+        project = projectFor(projectId),
+        current = store.read(projectId);
+      // Reconcile committed intent before reading mutable configuration/readiness.
+      if (
+        current.keeperRecovery?.records.some(
+          (item) => item.requestId === input.requestId,
+        )
+      )
+        return store.continueKeeper(projectId, input, "claude");
+      const runtime = options.keeperRuntime;
+      if (closed || options.address || !runtime)
+        throw new ConversationError(
+          503,
+          "Keeper smith recovery is unavailable. The saved conversation has been kept.",
+        );
+      if (
+        !project.workspaces.some(
+          (scope) => workspaceKey(scope.root) === workspaceKey(workspace),
+        )
+      )
+        throw new ConversationError(
+          409,
+          "This hearth does not serve the project's workspace.",
+        );
+      const changed = await withQueueLock(
+        leaseFor(projectId),
+        async () => {
+          const state = store.read(projectId);
+          if (
+            state.keeperRecovery?.records.some(
+              (item) => item.requestId === input.requestId,
+            )
+          )
+            return store.continueKeeper(projectId, input, "claude");
+          if (closed)
+            throw new ConversationError(
+              503,
+              "This hearth is closing. The Keeper was not changed.",
+            );
+          if (
+            state.revision !== input.expectedRevision ||
+            state.turns.some(
+              (item) => activePhase(item.phase) || item.phase === "unknown",
+            )
+          )
+            throw new ConversationError(
+              409,
+              "The conversation changed or a turn is unresolved. Read it before changing the Keeper.",
+            );
+          const ready = await prepareKeeper(
+            runtime,
+            project,
+            options.root,
+            input.mode === "fresh" ? null : state.binding,
+            input.smith,
+          );
+          if (closed)
+            throw new ConversationError(
+              503,
+              "This hearth is closing. The Keeper was not changed.",
+            );
+          return store.continueKeeper(projectId, input, ready.smith.provider);
+        },
+        { waitMs: 300 },
+      );
+      if (!changed.ok)
+        throw new ConversationError(
+          409,
+          "Another hearth owns an active turn. The Keeper was not changed.",
+        );
+      try {
+        options.onRecoveryChange?.(projectId);
+      } catch {
+        /* A read notification never repeats a write. */
+      }
+      return changed.value;
+    },
     async briefs(projectId: string) {
       return keeperBriefs(await observe(projectId));
     },
@@ -179,6 +369,15 @@ export function createConversationService(options: ConversationOptions) {
       const nextCursor = frames.at(-1)?.seq ?? after;
       return {
         ...state,
+        ...(state.keeperRecovery
+          ? {
+              keeperRecovery: {
+                smith: state.keeperRecovery.smith,
+                generation: state.keeperRecovery.generation,
+                continuation: state.keeperRecovery.continuation,
+              },
+            }
+          : {}),
         turns: state.turns.slice(-50),
         frames,
         more: state.frames.some((frame) => frame.seq > nextCursor),
@@ -259,14 +458,6 @@ export function createConversationService(options: ConversationOptions) {
           409,
           "This hearth does not serve this project's workspace. No turn was accepted.",
         );
-      if (
-        current.binding &&
-        current.binding.provider !== options.transport.provider
-      )
-        throw new ConversationError(
-          409,
-          "The configured provider differs from the saved conversation. Continuity must be resolved before sending.",
-        );
       if (input.about.length) {
         if (!options.validateAbout)
           throw new ConversationError(
@@ -280,11 +471,31 @@ export function createConversationService(options: ConversationOptions) {
           503,
           "Brief source preparation is unavailable. No turn was accepted.",
         );
-      await options.transport.check?.({
-        project,
-        root: options.root,
-        resume: current.binding,
-      });
+      let selected =
+        options.keeperRuntime && !options.address
+          ? await prepareKeeper(
+              options.keeperRuntime,
+              project,
+              options.root,
+              current.binding,
+              savedKeeperSmith(current),
+            )
+          : { transport: options.transport, smith: null };
+      if (
+        current.binding &&
+        current.binding.provider !== selected.transport.provider
+      )
+        throw new ConversationError(
+          409,
+          "The configured provider differs from the saved conversation. Continuity must be resolved before sending.",
+        );
+      if (!options.keeperRuntime || options.address)
+        await selected.transport.check?.({
+          project,
+          root: options.root,
+          resume: current.binding,
+          ...(selected.smith ? { smith: selected.smith.name } : {}),
+        });
       if (closed)
         throw new ConversationError(
           503,
@@ -319,6 +530,29 @@ export function createConversationService(options: ConversationOptions) {
                 "This hearth is closing. No turn was accepted.",
               );
             await store.recover(projectId);
+            const atAdmission = store.read(projectId);
+            if (
+              options.keeperRuntime &&
+              !options.address &&
+              !atAdmission.turns.some(
+                (turn) => turn.requestId === input.requestId,
+              )
+            )
+              selected = await prepareKeeper(
+                options.keeperRuntime,
+                project,
+                options.root,
+                atAdmission.binding,
+                savedKeeperSmith(atAdmission),
+              );
+            if (
+              atAdmission.binding &&
+              atAdmission.binding.provider !== selected.transport.provider
+            )
+              throw new ConversationError(
+                409,
+                "The configured provider changed. Review a continuation before sending; no turn was accepted.",
+              );
             // Preflight can take time. Recheck new context at admission; exact
             // retries always reconcile their saved receipt without fresh authority.
             if (
@@ -391,14 +625,24 @@ export function createConversationService(options: ConversationOptions) {
             accept(receipt(store.read(projectId), input.requestId));
             notify(projectId, input.requestId);
             try {
-              const result = await options.transport.run(
+              const state = store.read(projectId);
+              const retained =
+                state.binding === null &&
+                state.keeperRecovery?.continuation.summary
+                  ? `Retained context reviewed by the operator (source revision ${state.keeperRecovery.continuation.expectedRevision}):\n${state.keeperRecovery.continuation.summary}\n\nCurrent request:\n`
+                  : "";
+              const turnInput = input.brief
+                ? { ...input, text: keeperBriefPrompt(input.brief) }
+                : input;
+              const result = await selected.transport.run(
                 {
                   project,
                   root: options.root,
-                  input: input.brief
-                    ? { ...input, text: keeperBriefPrompt(input.brief) }
-                    : input,
-                  resume: store.read(projectId).binding,
+                  input: retained
+                    ? { ...turnInput, text: retained + turnInput.text }
+                    : turnInput,
+                  resume: state.binding,
+                  ...(selected.smith ? { smith: selected.smith.name } : {}),
                 },
                 async (event) => {
                   await store.append(projectId, input.requestId, owner, event);
@@ -490,6 +734,7 @@ export function createConversationService(options: ConversationOptions) {
       closed = true;
       for (const { abort } of jobs.values()) abort.abort();
       await Promise.all([...jobs.values()].map((item) => item.job));
+      await Promise.allSettled([...readinessReads.values()]);
     },
   };
 }

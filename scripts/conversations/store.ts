@@ -6,12 +6,14 @@ import type {
   OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
+import type { KeeperContinuationRequest } from "../../types/keeper-recovery";
 import {
   ensurePrivateHome,
   MAX_SESSION_TRANSCRIPT_BYTES,
   readSessionTranscript,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { ConversationError } from "./error";
 import {
@@ -28,6 +30,43 @@ import {
 
 export { ConversationError } from "./error";
 export { isConversationRequestId, parseConversationSend } from "./protocol";
+
+function validKeeperRecovery(state: ConversationState): boolean {
+  const recovery = state.keeperRecovery;
+  if (!recovery) return true;
+  const last = recovery.records.at(-1);
+  return (
+    !!last &&
+    recovery.generation === recovery.records.length &&
+    recovery.smith === last.smith &&
+    JSON.stringify(recovery.continuation) === JSON.stringify(last) &&
+    new Set(recovery.records.map((item) => item.requestId)).size ===
+      recovery.records.length &&
+    recovery.records.every((item, index) => {
+      const hash = createHash("sha256")
+        .update(
+          JSON.stringify({
+            requestId: item.requestId,
+            expectedRevision: item.expectedRevision,
+            mode: item.mode,
+            smith: item.smith,
+            summary: item.summary,
+          }),
+        )
+        .digest("hex");
+      return (
+        item.generation === index + 1 &&
+        item.hash === hash &&
+        item.sourceSequence <= state.frames.length &&
+        item.expectedRevision < item.revision &&
+        item.revision <= state.revision &&
+        (index === 0 ||
+          item.revision > (recovery.records[index - 1]?.revision ?? 0)) &&
+        !state.turns.some((turn) => turn.requestId === item.requestId)
+      );
+    })
+  );
+}
 
 /** A lease-free observation; producing this view never writes the transcript. */
 export function interruptedConversation(
@@ -89,6 +128,7 @@ export function createConversationStore(
       !parsed.success ||
       parsed.data.projectId !== projectId ||
       parsed.data.conversationId !== conversationId(projectId, address) ||
+      !validKeeperRecovery(parsed.data) ||
       parsed.data.frames.some(
         (frame, index) =>
           frame.seq !== index + 1 ||
@@ -108,6 +148,7 @@ export function createConversationStore(
     const content = `${JSON.stringify(state)}\n`;
     if (
       !valid.success ||
+      !validKeeperRecovery(state) ||
       Buffer.byteLength(content) > MAX_SESSION_TRANSCRIPT_BYTES
     )
       throw new ConversationError(
@@ -142,6 +183,110 @@ export function createConversationStore(
   };
   return {
     read,
+    /** The service holds the dispatch lease and has freshly checked the selected smith. */
+    async continueKeeper(
+      projectId: string,
+      raw: KeeperContinuationRequest,
+      provider: string,
+    ) {
+      if (address)
+        throw new ConversationError(
+          400,
+          "Keeper recovery cannot change an owned session.",
+        );
+      const parsed = keeperContinuationSchema.safeParse(raw);
+      if (!parsed.success)
+        throw new ConversationError(
+          400,
+          "Expected an explicit smith, revision and reviewed summary.",
+        );
+      const request = parsed.data;
+      const hash = createHash("sha256")
+        .update(JSON.stringify(request))
+        .digest("hex");
+      const lock = conversationWriteLockFile(home, projectId, address);
+      ensurePrivateHome(home);
+      const changed = await withQueueLock(
+        lock,
+        async () => {
+          const state = read(projectId);
+          const previous = state.keeperRecovery?.records.find(
+            (item) => item.requestId === request.requestId,
+          );
+          if (previous) {
+            if (previous.hash !== hash)
+              throw new ConversationError(
+                409,
+                "This request id already names different content.",
+              );
+            return previous;
+          }
+          if (state.turns.some((item) => item.requestId === request.requestId))
+            throw new ConversationError(
+              409,
+              "This request id already names a conversation turn.",
+            );
+          if (state.revision !== request.expectedRevision)
+            throw new ConversationError(
+              409,
+              "The conversation changed. Review it again before changing its Keeper.",
+            );
+          if (
+            state.turns.some((item) =>
+              ["accepted", "running", "cancelling", "unknown"].includes(
+                item.phase,
+              ),
+            )
+          )
+            throw new ConversationError(
+              409,
+              "A turn is active or its outcome is unknown. Its Keeper cannot be changed.",
+            );
+          const generation = (state.keeperRecovery?.generation ?? 0) + 1;
+          if (generation > 100)
+            throw new ConversationError(
+              503,
+              "Keeper continuation history is full. Its saved context has been kept.",
+            );
+          const resumed =
+            request.mode === "switch" &&
+            state.binding !== null &&
+            state.binding.provider === provider;
+          if (!resumed && state.frames.length && !request.summary.trim())
+            throw new ConversationError(
+              400,
+              "Review and retain a summary before starting a new provider conversation.",
+            );
+          const record = {
+            ...request,
+            hash,
+            revision: state.revision + 1,
+            generation,
+            sourceSequence: state.frames.length,
+            at: now().toISOString(),
+            previousBinding: state.binding,
+            resumed,
+          };
+          state.keeperRecovery = {
+            smith: request.smith,
+            generation,
+            continuation: record,
+            records: [...(state.keeperRecovery?.records ?? []), record],
+          };
+          if (!resumed) state.binding = null;
+          state.revision++;
+          save(state);
+          return record;
+        },
+        { waitMs: 1000 },
+      );
+      if (!changed.ok)
+        throw new ConversationError(
+          503,
+          "The conversation is busy. Check the original continuation before retrying.",
+        );
+      return changed.value;
+    },
     async start(projectId: string, requestId: string, owner: string) {
       return change(projectId, (state) => {
         const selected = state.turns.find(
@@ -306,6 +451,15 @@ export function createConversationStore(
           const previous = state.turns.find(
             (item) => item.requestId === request.requestId,
           );
+          if (
+            state.keeperRecovery?.records.some(
+              (item) => item.requestId === request.requestId,
+            )
+          )
+            throw new ConversationError(
+              409,
+              "This request id already names a Keeper continuation.",
+            );
           if (previous) {
             if (previous.hash !== hash)
               throw new ConversationError(

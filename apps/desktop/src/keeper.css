@@ -1,6 +1,6 @@
 .af-keeper-conversation {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, auto) minmax(60px, 1fr) auto auto;
   min-height: 420px;
   height: calc(100dvh - 164px);
   min-width: 0;
@@ -471,4 +471,57 @@ button.af-keeper-chip {
   flex: 1;
   height: auto;
   min-height: 0;
+}
+.af-keeper-recovery {
+  margin: 12px 20px;
+  padding: 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  background: var(--color-surface);
+  font-size: 12px;
+}
+.af-keeper-feedback {
+  max-height: 42vh;
+  overflow: auto;
+}
+.af-keeper-recovery.is-unavailable {
+  border-color: var(--color-accent-400);
+}
+.af-keeper-recovery-heading,
+.af-keeper-recovery-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.af-keeper-recovery p {
+  margin: 8px 0;
+}
+.af-keeper-recovery label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.af-keeper-recovery :is(select, textarea) {
+  width: 100%;
+  color: inherit;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: 4px;
+  padding: 8px;
+  font: inherit;
+}
+.af-keeper-recovery summary {
+  cursor: pointer;
+  min-height: 24px;
+  padding: 6px 0;
+}
+.af-keeper-recovery :is(button, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-accent-400);
+  outline-offset: 2px;
+}
+.af-keeper-retained-summary {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
