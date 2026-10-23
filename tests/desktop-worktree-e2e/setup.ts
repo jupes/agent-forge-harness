@@ -45,6 +45,7 @@ export default async function setup() {
   };
   const bd = build("tests/e2e/bd-stand-in.ts", "bd");
   build("tests/desktop-e2e/keeper-cli-stand-in.ts", "claude");
+  build("tests/desktop-e2e/codex-cli-stand-in.ts", "codex");
   const git = build("tests/desktop-worktree-e2e/git-stand-in.ts", "git");
   const refused = spawnSync(git, ["worktree", "list", "--porcelain", "-z"], {
     cwd: process.cwd(),

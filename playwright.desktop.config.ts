@@ -11,8 +11,16 @@ export default defineConfig({
   ],
   webServer: (Array.isArray(base.webServer) ? base.webServer : []).map(
     (server) =>
-      server.name === "dashboard"
-        ? { ...server, command: `${server.command} --mode desktop` }
-        : server,
+      server.name === "hearth"
+        ? {
+            ...server,
+            command: server.command.replace(
+              "scripts/hearth/server.ts",
+              "tests/desktop-e2e/hearth-server.ts",
+            ),
+          }
+        : server.name === "dashboard"
+          ? { ...server, command: `${server.command} --mode desktop` }
+          : server,
   ),
 });

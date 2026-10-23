@@ -401,7 +401,7 @@ test("a bead-prefilled Task exposes locked modes, and project drafts and session
   ).toHaveValue("alpha-epic");
   await expect(
     dialog.getByRole("button", { name: "Codex", exact: false }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   await expect(dialog.getByLabel("Raw session flags locked")).toBeDisabled();
   await dialog
     .getByRole("textbox", { name: "Session prompt" })

@@ -28,6 +28,7 @@ import { latestEventId, queryEvents } from "../../ledger/query";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
+import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -84,6 +85,7 @@ export interface OperatorDeps extends ReadDeps {
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
   sessionRuntime: SessionRuntime;
+  codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
   keeperRuntime?: KeeperRuntime | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
@@ -394,6 +396,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps,
     projectSnapshot,
     deps.sessionRuntime,
+    deps.codexTaskRuntime,
   );
   const sessionWorktrees = createSessionWorktreeRoutes(
     deps.projectHome,

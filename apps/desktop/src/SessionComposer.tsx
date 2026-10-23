@@ -24,6 +24,24 @@ import {
   validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
+import { CodexTaskComposer } from "./CodexTaskComposer";
+
+export interface SessionComposerProps {
+  providers?: ProviderReadinessPage | null;
+  project: ProjectRecord;
+  client: SessionsClient;
+  keeper: KeeperClient;
+  writesAllowed: boolean;
+  onCancel(): void;
+  onStarted(id: string): void;
+}
+export function SessionComposer(props: SessionComposerProps) {
+  return props.client.project(props.project.id).composerProvider === "codex" ? (
+    <CodexTaskComposer {...props} />
+  ) : (
+    <ClaudeSessionComposer {...props} />
+  );
+}
 
 const templates = [
   [
@@ -48,7 +66,7 @@ const templates = [
   ],
 ] as const;
 
-export function SessionComposer({
+function ClaudeSessionComposer({
   project,
   client,
   keeper,
@@ -224,6 +242,8 @@ export function SessionComposer({
     !project.archived &&
     !busy &&
     !view.pendingStart &&
+    !view.startIdentity &&
+    !view.startIdentityError &&
     !!serialized &&
     selectedSmith?.enabled === true &&
     selectedSmith.provider === "claude";
@@ -243,7 +263,14 @@ export function SessionComposer({
     }
   };
   const check = async () => {
-    if (busy || view.pendingStart || !writesAllowed) return;
+    if (
+      busy ||
+      view.pendingStart ||
+      view.startIdentity ||
+      view.startIdentityError ||
+      !writesAllowed
+    )
+      return;
     setChecking(true);
     setProblem("");
     try {
@@ -360,7 +387,14 @@ export function SessionComposer({
             · {providerUsageLabel(claudeReadiness)}
           </small>
         </button>
-        {["Codex", "Gemini", "Grok", "OpenRouter"].map((name) => (
+        <button
+          type="button"
+          aria-pressed="false"
+          onClick={() => client.chooseComposerProvider(project.id, "codex")}
+        >
+          Cx · Codex<small>Task · CLI checked below</small>
+        </button>
+        {["Gemini", "Grok", "OpenRouter"].map((name) => (
           <button
             type="button"
             key={name}
@@ -926,7 +960,14 @@ export function SessionComposer({
       <footer class="af-session-preview">
         <h3>Equivalent command</h3>
         <Button
-          disabled={!writesAllowed || busy || !!view.pendingStart || !settings}
+          disabled={
+            !writesAllowed ||
+            busy ||
+            !!view.pendingStart ||
+            !!view.startIdentity ||
+            !!view.startIdentityError ||
+            !settings
+          }
           onClick={() => {
             void check();
           }}
@@ -953,7 +994,9 @@ export function SessionComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        {view.pendingStart && (
+        {(view.pendingStart ||
+          view.startIdentity ||
+          view.startIdentityError) && (
           <div class="af-session-composer-row">
             <Button
               onClick={() => {
@@ -963,19 +1006,21 @@ export function SessionComposer({
             >
               Check original Start
             </Button>
-            <Button
-              onClick={() => {
-                void client.retryStart(project.id);
-              }}
-              disabled={!writesAllowed || view.starting}
-            >
-              Retry original Start
-            </Button>
+            {view.pendingStart && (
+              <Button
+                onClick={() => {
+                  void client.retryStart(project.id);
+                }}
+                disabled={!writesAllowed || view.starting}
+              >
+                Retry original Start
+              </Button>
+            )}
           </div>
         )}
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
-            {view.pendingStart
+            {view.pendingStart || view.startIdentity
               ? "Close composer (Start still pending)"
               : "Cancel"}
           </Button>

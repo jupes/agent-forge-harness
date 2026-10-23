@@ -33,6 +33,7 @@ import { createProviderInspector } from "../providers/inspect";
 import { createProviderLoginService } from "../providers/login";
 import type { NativeConsoleExit } from "../providers/native-console";
 import { childOf } from "../scheduler/queue-fixture";
+import { unavailableCodexTaskRuntime } from "../sessions/owned-coding-service";
 import { makeOwnerOnly } from "./acl-windows";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
 import {
@@ -542,6 +543,7 @@ export async function startTestHearth(
       }),
       conversationTransport: fakeConversationTransport(),
       sessionRuntime: fakeSessionRuntime().runtime,
+      codexTaskRuntime: unavailableCodexTaskRuntime,
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,

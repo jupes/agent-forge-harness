@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { workspaceKey } from "../../scripts/projects/scope";
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
+import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
+import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionWorktreeReceiptSchema } from "../../scripts/sessions/worktree-protocol";
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
@@ -191,4 +193,140 @@ test("a lost explicit creation is reconciled once before Preview and Start run i
       }
     })
     .toBe("completed");
+});
+
+test("an explicit Codex Task runs only in its confirmed new worktree and keeps the actual provider identity private", async ({
+  page,
+}) => {
+  const plan = fixturePlan();
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${FIXTURE_PROJECT_ID}/sessions`,
+  );
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await dialog.getByRole("button", { name: /Cx · Codex/ }).click();
+  await expect(
+    dialog.getByRole("combobox", { name: "Session smith", exact: true }),
+  ).toHaveValue("codex-journeyman");
+  const prompt = "PRIVATE Codex new-worktree task";
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill(prompt);
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await dialog
+    .getByRole("combobox", { name: "Where the session runs", exact: true })
+    .selectOption("new");
+  await dialog
+    .getByRole("textbox", {
+      name: "New session worktree base ref",
+      exact: true,
+    })
+    .fill(plan.base);
+  await dialog
+    .getByRole("textbox", { name: "New session worktree branch", exact: true })
+    .fill("feat/browser-codex-task");
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeDisabled();
+  await dialog
+    .getByRole("button", { name: "Create worktree", exact: true })
+    .click();
+  await expect(
+    dialog.getByText(
+      "Worktree created. Review its path before checking session options.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("region", {
+      name: "Equivalent session command",
+      exact: true,
+    }),
+  ).toContainText("--sandbox");
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(
+      readFileSync(join(HEARTH_HOME, "sessions", "registry.json"), "utf8"),
+    );
+  } catch {
+    throw Error("Missing isolated registry.");
+  }
+  if (!raw || typeof raw !== "object" || !("records" in raw))
+    throw Error("Invalid isolated registry.");
+  const record = ownedCodingSessionSchema
+    .array()
+    .parse(raw.records)
+    .find((item) => item.provider === "codex");
+  if (!record) throw Error("Missing explicit Codex Task.");
+  const log = readFileSync(
+    join(HEARTH_HOME, "codex-fixture-calls.jsonl"),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => {
+      try {
+        return JSON.parse(line) as {
+          kind: string;
+          cwd: string;
+          argv: string[];
+          stdin: string;
+          id: string;
+        };
+      } catch {
+        throw Error("Invalid native fixture recording.");
+      }
+    });
+  const native = log.filter((call) => call.kind === "task");
+  expect(native).toHaveLength(1);
+  const actual = native[0];
+  if (!actual) throw Error("Missing native Task process.");
+  expect(workspaceKey(realpathSync.native(actual.cwd))).toBe(
+    workspaceKey(realpathSync.native(record.worktree)),
+  );
+  expect(workspaceKey(record.worktree)).not.toBe(workspaceKey(plan.root));
+  expect(actual.stdin).toContain(prompt);
+  expect(actual.argv.join(" ")).not.toContain(prompt);
+  expect(actual.argv).toContain(record.worktree);
+  expect(
+    readFileSync(
+      join(plan.root, ".git", "refs", "heads", "feat", "browser-codex-task"),
+      "utf8",
+    ).trim(),
+  ).toBe(plan.base);
+  expect(readFileSync(join(record.worktree, "README.md"), "utf8")).toContain(
+    "Temporary session worktree browser fixture",
+  );
+  const saved = () => {
+    try {
+      return ownedCodingStateSchema.parse(
+        JSON.parse(
+          readFileSync(
+            join(HEARTH_HOME, "conversations", `${record.id}.json`),
+            "utf8",
+          ),
+        ),
+      );
+    } catch {
+      throw Error("Missing private Task journal.");
+    }
+  };
+  await expect.poll(() => saved().turns[0]?.phase).toBe("completed");
+  expect(saved().binding?.sessionId).toBe(actual.id);
+  expect(saved().frames.some((frame) => frame.event.kind === "model")).toBe(
+    false,
+  );
 });
