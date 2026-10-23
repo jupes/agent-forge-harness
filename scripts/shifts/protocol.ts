@@ -74,6 +74,7 @@ export const projectShiftIntentSchema: z.ZodType<ProjectShiftIntent> = z
     requestHash: z.string().regex(/^[a-f0-9]{64}$/),
     createdAt: z.iso.datetime(),
     attemptedAt: z.iso.datetime().nullable(),
+    executionStartedAt: z.iso.datetime().nullable().optional(),
   })
   .strict();
 export const projectShiftReceiptSchema: z.ZodType<ProjectShiftReceipt> = z

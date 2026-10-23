@@ -28,6 +28,8 @@ export interface ProjectShiftIntent {
   requestHash: string;
   createdAt: string;
   attemptedAt: string | null;
+  /** Additive v1 field: absent on older originals; a marker never proves a provider turn. */
+  executionStartedAt?: string | null | undefined;
 }
 
 export interface ProjectShiftReceipt {

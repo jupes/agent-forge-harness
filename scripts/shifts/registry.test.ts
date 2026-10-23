@@ -199,6 +199,59 @@ test("preparation refusal or invalid full bounds leave no reservation", async ()
   expect(registry.list(FIXTURE_PROJECT_ID)).toEqual([]);
 });
 
+test("compiled execution has a separate durable at-most-once claim and older v1 originals migrate without eviction or dispatch", async () => {
+  const paths = fixture(),
+    registry = createProjectShiftRegistry(paths);
+  const saved = await registry.reserve(
+    FIXTURE_PROJECT_ID,
+    request,
+    async () => ({ shiftId }),
+  );
+  await expect(
+    registry.claimExecution(
+      FIXTURE_PROJECT_ID,
+      request.requestId,
+      saved.intent.requestHash,
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  await registry.markAttempted(
+    FIXTURE_PROJECT_ID,
+    request.requestId,
+    saved.intent.requestHash,
+  );
+  const file = projectShiftRegistryFile(paths.home);
+  const old = JSON.parse(readFileSync(file, "utf8"));
+  delete old.records[0].executionStartedAt;
+  writeOwnerOnly(file, JSON.stringify(old));
+  const reopened = createProjectShiftRegistry(paths);
+  const before = readFileSync(file, "utf8");
+  expect(
+    reopened.read(FIXTURE_PROJECT_ID, request.requestId).executionStartedAt ??
+      null,
+  ).toBeNull();
+  expect(readFileSync(file, "utf8")).toBe(before);
+  const marked = await Promise.all([
+    registry.claimExecution(
+      FIXTURE_PROJECT_ID,
+      request.requestId,
+      saved.intent.requestHash,
+    ),
+    reopened.claimExecution(
+      FIXTURE_PROJECT_ID,
+      request.requestId,
+      saved.intent.requestHash,
+    ),
+  ]);
+  expect(marked.map((value) => value.created).sort()).toEqual([false, true]);
+  expect(marked[0]?.intent.executionStartedAt).toBeDefined();
+  expect(
+    createProjectShiftRegistry(paths).read(
+      FIXTURE_PROJECT_ID,
+      request.requestId,
+    ).request,
+  ).toEqual(request);
+});
+
 test("malformed, future and linked private intent files are preserved and refuse before preparation", async () => {
   for (const text of ["{damaged", '{"version":99,"records":[]}']) {
     const paths = fixture(),

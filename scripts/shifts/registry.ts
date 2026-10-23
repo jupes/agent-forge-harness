@@ -205,50 +205,64 @@ export function createProjectShiftRegistry(options: {
       );
     }
   };
+  async function mark(
+    projectId: string,
+    requestId: string,
+    requestHash: string,
+    field: "attemptedAt" | "executionStartedAt",
+  ): Promise<{ intent: ProjectShiftIntent; created: boolean }> {
+    project(projectId);
+    if (
+      !shiftRequestIdSchema.safeParse(requestId).success ||
+      !/^[a-f0-9]{64}$/.test(requestHash)
+    )
+      throw new ConversationError(
+        400,
+        "Expected the original Start UUID and reviewed content hash.",
+      );
+    const { lock } = checkedPaths(options.home);
+    ensurePrivateHome(options.home);
+    const marked = await withQueueLock(lock, async () => {
+      const state = readState(),
+        intent = state.records.find(
+          (item) => item.request.requestId === requestId,
+        );
+      if (!intent)
+        throw new ConversationError(
+          404,
+          "This original shift Start is not in the private registry.",
+        );
+      belongs(intent, projectId);
+      if (intent.requestHash !== requestHash)
+        throw new ConversationError(
+          409,
+          "The original reviewed shift bounds do not match.",
+        );
+      if (field === "executionStartedAt" && intent.attemptedAt === null)
+        throw new ConversationError(
+          409,
+          "The original Start has no authorized launch attempt.",
+        );
+      if ((intent[field] ?? null) !== null) return { intent, created: false };
+      intent[field] = new Date().toISOString();
+      save(state);
+      return { intent, created: true };
+    });
+    if (!marked.ok)
+      unavailable("The private shift intent registry is busy or unavailable.");
+    return marked.value;
+  }
   return {
-    async markAttempted(
+    markAttempted: (
       projectId: string,
       requestId: string,
       requestHash: string,
-    ): Promise<{ intent: ProjectShiftIntent; created: boolean }> {
-      project(projectId);
-      if (
-        !shiftRequestIdSchema.safeParse(requestId).success ||
-        !/^[a-f0-9]{64}$/.test(requestHash)
-      )
-        throw new ConversationError(
-          400,
-          "Expected the original Start UUID and reviewed content hash.",
-        );
-      const { lock } = checkedPaths(options.home);
-      ensurePrivateHome(options.home);
-      const marked = await withQueueLock(lock, async () => {
-        const state = readState(),
-          intent = state.records.find(
-            (item) => item.request.requestId === requestId,
-          );
-        if (!intent)
-          throw new ConversationError(
-            404,
-            "This original shift Start is not in the private registry.",
-          );
-        belongs(intent, projectId);
-        if (intent.requestHash !== requestHash)
-          throw new ConversationError(
-            409,
-            "The original reviewed shift bounds do not match.",
-          );
-        if (intent.attemptedAt !== null) return { intent, created: false };
-        intent.attemptedAt = new Date().toISOString();
-        save(state);
-        return { intent, created: true };
-      });
-      if (!marked.ok)
-        unavailable(
-          "The private shift intent registry is busy or unavailable.",
-        );
-      return marked.value;
-    },
+    ) => mark(projectId, requestId, requestHash, "attemptedAt"),
+    claimExecution: (
+      projectId: string,
+      requestId: string,
+      requestHash: string,
+    ) => mark(projectId, requestId, requestHash, "executionStartedAt"),
     read(projectId: string, requestId: string): ProjectShiftIntent {
       project(projectId);
       if (!shiftRequestIdSchema.safeParse(requestId).success)
@@ -311,6 +325,7 @@ export function createProjectShiftRegistry(options: {
           requestHash,
           createdAt: new Date().toISOString(),
           attemptedAt: null,
+          executionStartedAt: null,
         };
         state.records.push(intent);
         save(state);
