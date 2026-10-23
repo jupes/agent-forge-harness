@@ -13,6 +13,7 @@ import {
   ProjectStoreError,
 } from "../../projects/store";
 import type { SessionRuntime } from "../../sessions/admission";
+import { createCodexChatPreview } from "../../sessions/codex-chat-owned-preview";
 import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
@@ -20,6 +21,7 @@ import { parseOwnedSessionStart } from "../../sessions/codex-owned-protocol";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import {
   createOwnedCodingSessionService,
+  unavailableCodexChatRuntime,
   unavailableCodexTaskRuntime,
 } from "../../sessions/owned-coding-service";
 import { createSessionPreview } from "../../sessions/preview";
@@ -93,6 +95,11 @@ export function createOwnedSessionRoutes(
   const prepareCodexPreview = createCodexTaskPreview({
     root: deps.root,
     runtime: codexTaskRuntime ?? unavailableCodexTaskRuntime,
+    validateScope,
+  });
+  const prepareChatPreview = createCodexChatPreview({
+    root: deps.root,
+    runtime: codexChatRuntime ?? unavailableCodexChatRuntime,
     validateScope,
   });
   const service = createOwnedCodingSessionService({
@@ -314,7 +321,9 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, input }) =>
       answer(200, () =>
         "provider" in input
-          ? prepareCodexPreview(projectId, input)
+          ? input.launch.mode === "chat"
+            ? prepareChatPreview(projectId, input)
+            : prepareCodexPreview(projectId, input)
           : preparePreview(projectId, input),
       ),
   };
