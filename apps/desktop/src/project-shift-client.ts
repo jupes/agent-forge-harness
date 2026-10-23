@@ -147,13 +147,13 @@ export function createProjectShiftsClient(deps: {
     current.page = {
       projectId: scope.projectId,
       asOf: new Date(now()).toISOString(),
-      items: [
-        ...items.filter(
-          (row) =>
-            row.intent.request.requestId !== receipt.intent.request.requestId,
-        ),
-        receipt,
-      ],
+      items: previous
+        ? items.map((row) =>
+            row.intent.request.requestId === receipt.intent.request.requestId
+              ? receipt
+              : row,
+          )
+        : [...items, receipt],
     };
     if (held?.requestId === receipt.intent.request.requestId) {
       current.original = receipt;

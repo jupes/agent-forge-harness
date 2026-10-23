@@ -6,6 +6,7 @@ import type {
   ProjectShiftReceipt,
 } from "../../../types/project-shifts";
 import { ProjectShiftAttempts } from "./ProjectShiftAttempts";
+import { ProjectShiftListStatus } from "./ProjectShiftListStatus";
 import type { ProjectShiftsClient } from "./project-shift-client";
 import {
   newProjectShiftDraft,
@@ -149,7 +150,7 @@ export function ProjectShifts({
         <p>Write connection unavailable. Original reads remain available.</p>
       )}
       {view.identityError && <p role="alert">{view.identityError}</p>}
-      {view.error && <p role="alert">{view.error}</p>}
+      <ProjectShiftListStatus view={view} />
       {view.notice && (
         <p class="af-shift-notice" role="status">
           {view.notice}
@@ -173,32 +174,31 @@ export function ProjectShifts({
           </Button>
         </div>
       )}
-      {!view.loading && !view.page?.items.length && !view.identity && (
-        <p>No project shifts reported.</p>
-      )}
-      {view.page?.items.map((item) => (
-        <ShiftRow
-          key={item.intent.request.requestId}
-          receipt={item}
-          now={now}
-          busy={view.busy || !!view.pendingControl || !writesAllowed}
-          onCheck={() => {
-            if (!view.loading)
-              void client.check(scope, item.intent.request.requestId);
-          }}
-          onControl={(kind) =>
-            void client.control(scope, item.intent.request.requestId, kind)
-          }
-          selected={attending === item.intent.request.requestId}
-          onAttend={() =>
-            setAttending(
-              attending === item.intent.request.requestId
-                ? null
-                : item.intent.request.requestId,
-            )
-          }
-        />
-      ))}
+      <div class="af-shift-list" aria-busy={view.loading}>
+        {view.page?.items.map((item) => (
+          <ShiftRow
+            key={item.intent.request.requestId}
+            receipt={item}
+            now={now}
+            busy={view.busy || !!view.pendingControl || !writesAllowed}
+            onCheck={() => {
+              if (!view.loading)
+                void client.check(scope, item.intent.request.requestId);
+            }}
+            onControl={(kind) =>
+              void client.control(scope, item.intent.request.requestId, kind)
+            }
+            selected={attending === item.intent.request.requestId}
+            onAttend={() =>
+              setAttending(
+                attending === item.intent.request.requestId
+                  ? null
+                  : item.intent.request.requestId,
+              )
+            }
+          />
+        ))}
+      </div>
       {view.page && (
         <p class="af-session-note">
           Scoped observations checked{" "}
