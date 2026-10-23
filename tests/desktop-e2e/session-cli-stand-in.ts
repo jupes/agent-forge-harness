@@ -23,6 +23,7 @@ export async function runCodingFixture(home: string) {
       "provider-error",
       "missing-result",
       "rich",
+      "rich-many",
       "rich-hang",
       "rich-timeout",
       "rich-auth-error",
@@ -71,6 +72,19 @@ export async function runCodingFixture(home: string) {
       delta: { type: "text_delta", text: "🌱" },
     },
   });
+  if (mode === "rich-many")
+    for (let n = 0; n < 121; n++)
+      emit({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "text_delta",
+            text: `\nPrivate complete export line ${n}`,
+          },
+        },
+      });
   if (mode === "rich-crash") {
     process.stderr.write("Private fixture crash tail");
     process.exitCode = 7;

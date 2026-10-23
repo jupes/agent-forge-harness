@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   cpSync,
@@ -19,6 +20,8 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { conversationFile } from "../conversations/paths";
+import { createConversationStore } from "../conversations/store";
 import { OPERATOR_HEADER } from "../hearth/paths";
 import { isMain } from "../is-main";
 import { verifyKeeperReader } from "../keeper/verify-reader";
@@ -27,6 +30,9 @@ import { closeLedger } from "../ledger/db";
 import { ledgerPath } from "../ledger/paths";
 import { resolveCheckout } from "../ledger/workspace";
 import { createProjectStore } from "../projects/store";
+import { sessionTranscriptExportSchema } from "../sessions/library-protocol";
+import { canonicalSessionInput } from "../sessions/preparation";
+import { createSessionRegistry } from "../sessions/registry";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");
@@ -113,7 +119,10 @@ async function main(): Promise<void> {
   const fakeBin = join(temp, "bin");
   const fixtureRoot = join(temp, "checkout");
   const runner = join(temp, "application");
+  const downloadDirectory = join(temp, "downloads");
   assertWithin(temp, desktopSmokeHome);
+  assertWithin(temp, downloadDirectory);
+  mkdirSync(downloadDirectory);
   mkdirSync(fakeBin);
   mkdirSync(runner);
   mkdirSync(join(fixtureRoot, ".git"), { recursive: true });
@@ -254,7 +263,7 @@ async function main(): Promise<void> {
       "native-workspace-warning.png",
     );
     mkdirSync(join(selectedRoot, ".git"));
-    await createProjectStore(desktopSmokeHome).create(
+    const catalog = await createProjectStore(desktopSmokeHome).create(
       {
         slug: "native-fixture",
         name: "Native fixture",
@@ -269,6 +278,13 @@ async function main(): Promise<void> {
         ],
       },
       0,
+    );
+    const project = catalog.projects[0];
+    if (!project) throw new Error("The isolated native project was not saved.");
+    const nativeSession = await seedNativeSession(
+      desktopSmokeHome,
+      resolveCheckout(selectedRoot).workspace,
+      project.id,
     );
     const fixtureLedger = ledgerPath({ AGENT_FORGE_HOME: desktopSmokeHome });
     const seeded = appendEvent(
@@ -317,6 +333,12 @@ async function main(): Promise<void> {
     const target = await waitForTarget(debugPort, appProcess);
     socket = await openCdp(target.webSocketDebuggerUrl);
     await cdpEnable(socket);
+    // Refuse before any export if this WebView cannot route downloads into its
+    // owned temporary directory. Never fall back to the operator's Downloads.
+    await cdp(socket, "Page.setDownloadBehavior", {
+      behavior: "allow",
+      downloadPath: downloadDirectory,
+    });
     await cdp(socket, "Network.enable", {});
     socket.addEventListener("message", (event) => {
       const message = parseCdpMessage(String(event.data));
@@ -473,6 +495,12 @@ async function main(): Promise<void> {
       socket,
       `document.querySelector('[aria-label="Selected session"]')?.textContent?.includes('native-observed-session')`,
       "The native session inspector did not select its scoped session.",
+    );
+    await verifyNativeSessionLibrary(
+      socket,
+      nativeSession,
+      desktopSmokeHome,
+      downloadDirectory,
     );
     await evaluate(socket, `location.hash = '#/desktop/projects'`);
     await waitForPage(
@@ -677,6 +705,8 @@ async function main(): Promise<void> {
           keeperBriefTested: true,
           keeperProposalsTested: true,
           observedSessionIneligibleTested: true,
+          completeOwnedTranscriptDownloadTested: true,
+          reversibleOwnedArchiveTested: true,
           focusOutline,
           childrenStopped: true,
         },
@@ -684,6 +714,177 @@ async function main(): Promise<void> {
       }),
     );
   }
+}
+
+/** Private historical fixture only: no executable, provider, tools or ledger write. */
+async function seedNativeSession(
+  home: string,
+  workspace: string,
+  projectId: string,
+) {
+  const requestId = randomUUID();
+  const prompt = "Private native saved transcript fixture";
+  const launch = { mode: "task" as const, model: "sonnet", prompt };
+  const start = {
+    requestId,
+    smith: "claude-journeyman",
+    repository: workspace,
+    worktree: workspace,
+    launch,
+  };
+  const record = await createSessionRegistry(home).reserve(
+    projectId,
+    requestId,
+    createHash("sha256").update(canonicalSessionInput(start)).digest("hex"),
+    () => ({
+      mode: "task",
+      provider: "claude",
+      workspace,
+      repository: workspace,
+      worktree: workspace,
+      smith: start.smith,
+      requestedModel: "sonnet",
+      requestedEffort: null,
+    }),
+  );
+  const store = createConversationStore(home, undefined, {
+    kind: "session",
+    projectId,
+    sessionId: record.id,
+  });
+  await store.accept(projectId, {
+    requestId,
+    expectedRevision: 0,
+    text: prompt,
+    about: [],
+    session: {
+      version: 1,
+      provider: "claude",
+      smith: record.smith,
+      cwd: workspace,
+      launch: {
+        ...launch,
+        context: {
+          projectId,
+          repository: workspace,
+          worktree: workspace,
+          about: [],
+        },
+      },
+      capabilities: {
+        version: "2.1.296",
+        flags: [
+          "--print",
+          "--input-format",
+          "--output-format",
+          "--verbose",
+          "--include-partial-messages",
+          "--model",
+          "--allowedTools",
+        ],
+      },
+    },
+  });
+  const owner = randomUUID();
+  await store.start(projectId, requestId, owner);
+  await store.append(projectId, requestId, owner, {
+    kind: "identity",
+    provider: "claude",
+    sessionId: randomUUID(),
+    version: "2.1.296",
+  });
+  for (let n = 0; n < 121; n++)
+    await store.append(projectId, requestId, owner, {
+      kind: "text",
+      text: `Native complete saved line ${n}\n`,
+    });
+  await store.finish(projectId, requestId, owner, "completed", null);
+  return record;
+}
+
+async function verifyNativeSessionLibrary(
+  socket: WebSocket,
+  record: Awaited<ReturnType<typeof seedNativeSession>>,
+  home: string,
+  downloadDirectory: string,
+) {
+  const address = {
+    kind: "session" as const,
+    projectId: record.projectId,
+    sessionId: record.id,
+  };
+  const file = conversationFile(home, record.projectId, address);
+  const history = readFileSync(file);
+  const saved = createConversationStore(home, undefined, address).read(
+    record.projectId,
+  );
+  if (saved.frames.length <= 100)
+    throw new Error("The native export fixture does not span a private page.");
+  await evaluate(
+    socket,
+    `location.hash=${JSON.stringify(`#/desktop/project/${record.projectId}/sessions?selectionKind=session&selectionId=${record.id}`)}`,
+  );
+  const actionButton = `Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Session actions')`;
+  await waitForPage(
+    socket,
+    `!!${actionButton}`,
+    "The native owned session did not expose its actions.",
+  );
+  await evaluate(socket, `${actionButton}.click()`);
+  const dialog = `document.querySelector('dialog[open]')`;
+  const button = (name: string) =>
+    `Array.from(${dialog}?.querySelectorAll('button') ?? []).find(b => b.textContent?.trim() === ${JSON.stringify(name)})`;
+  await waitForPage(
+    socket,
+    `${button("Export saved transcript")}?.disabled === false && ${button("Archive session")}?.disabled === false`,
+    "The native complete-export and archive controls did not become ready.",
+  );
+  await evaluate(socket, `${button("Export saved transcript")}.click()`);
+  const downloaded = join(
+    downloadDirectory,
+    `${record.id}-r${saved.revision}.json`,
+  );
+  assertWithin(downloadDirectory, downloaded);
+  const deadline = Date.now() + waitLimitMs;
+  while (!existsSync(downloaded) && Date.now() < deadline) await delay(100);
+  if (!existsSync(downloaded))
+    throw new Error(
+      "The native WebView did not complete its owned transcript download.",
+    );
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(downloaded, "utf8"));
+  } catch {
+    throw new Error("The native transcript download was not complete JSON.");
+  }
+  const exported = sessionTranscriptExportSchema.parse(raw);
+  if (
+    exported.session.id !== record.id ||
+    exported.conversation.revision !== saved.revision ||
+    exported.lastSequence !== saved.frames.length ||
+    JSON.stringify(exported.conversation.frames) !==
+      JSON.stringify(saved.frames) ||
+    JSON.stringify(exported.conversation.turns) !==
+      JSON.stringify(saved.turns.map(({ owner: _owner, ...turn }) => turn))
+  )
+    throw new Error(
+      "The native download did not preserve the complete saved revision without ownership authority.",
+    );
+  await evaluate(socket, `${button("Archive session")}.click()`);
+  await waitForPage(
+    socket,
+    `${button("Restore session")}?.disabled === false`,
+    "The native archive was not confirmed.",
+  );
+  await evaluate(socket, `${button("Restore session")}.click()`);
+  await waitForPage(
+    socket,
+    `${button("Archive session")}?.disabled === false`,
+    "The native archive restore was not confirmed.",
+  );
+  if (!readFileSync(file).equals(history))
+    throw new Error("Native archive or restore changed the saved transcript.");
+  await evaluate(socket, `${button("Close dialog")}.click()`);
 }
 
 /** The real packaged page and restart route, with only failure/health answers controlled. */
