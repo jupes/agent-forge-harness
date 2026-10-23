@@ -55,6 +55,9 @@ import { createClaudeSessionTransport } from "../sessions/claude-transport";
 import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
 import { createGeminiTaskRuntime } from "../sessions/gemini-task-runtime";
+import { createAttendedProjectShiftLauncher } from "../shifts/launch-runtime";
+import { createOwnedProjectShiftLauncher } from "../shifts/owned-launcher";
+import type { ProjectShiftRuntime } from "../shifts/service";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -98,22 +101,31 @@ import { QUEUE_LOCK_FILE } from "./routes/queue";
 import {
   createShiftStarts,
   endLiveShifts,
+  PROJECT_SHIFT_ENTRY,
   type ShiftLauncher,
   superviseShift,
 } from "./shift-launcher";
 import { isHealthy } from "./supervisor";
 import { createToken, readToken } from "./token";
 
-export interface HearthOptions {
+/** Trusted process entries, supplied only by the source/packaged host. Never public launch fields. */
+export interface HearthInternalCommands {
+  /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
+  keeperReaderCommand?: readonly string[];
+  /** Explicit runtime command for the packaged, original-id project shift mode. */
+  projectShiftCommand?: readonly string[];
+  /** Trusted packaged sync prefix; never read from an HTTP request or provider launch. */
+  codexSyncCommand?: readonly string[];
+  /** Mandatory owned bootstrap for private attended execution; no caller-provided command. */
+  interactiveBootstrapCommand?: readonly string[];
+}
+
+export interface HearthOptions extends HearthInternalCommands {
   root: string;
   /** Hearth state directory; defaults to `AGENT_FORGE_HOME` / `~/.agent-forge`. */
   home?: string;
   /** Where `councils/` lives; defaults to `root` (the harness checkout). */
   harnessRoot?: string;
-  /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
-  keeperReaderCommand?: readonly string[];
-  /** Trusted packaged sync prefix; never read from an HTTP request or provider launch. */
-  codexSyncCommand?: readonly string[];
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -166,6 +178,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted attended project launcher; null explicitly holds Start. Never public request data. */
+  projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
   providerInspector?: ProviderInspector;
   providerLogin?: ProviderLoginService;
@@ -340,9 +354,24 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   // Under the same home: a shift given it keeps its record and stop request there.
   const shiftsDir = join(home, SHIFTS_DIR);
+  const projectShiftCommand = options.projectShiftCommand ?? [
+    process.execPath,
+    PROJECT_SHIFT_ENTRY,
+  ];
   // A shift this hearth starts runs in its root with its home, so it takes
   // the same queue lock and writes the same ledger and shifts directory.
   const shiftStarts = createShiftStarts({
+    projectCommand: options.projectShiftCommand,
+    projectLaunch:
+      options.api?.launchShift ??
+      createOwnedProjectShiftLauncher({
+        root,
+        home,
+        command: projectShiftCommand,
+        ...(options.interactiveBootstrapCommand
+          ? { bootstrapCommand: options.interactiveBootstrapCommand }
+          : {}),
+      }),
     root,
     home,
     shiftsDir,
@@ -475,6 +504,11 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     queueLockFile: join(home, QUEUE_LOCK_FILE),
     shiftsDir,
     shiftStarts,
+    projectShiftRuntime:
+      options.api?.projectShiftRuntime === null
+        ? null
+        : (options.api?.projectShiftRuntime ??
+          createAttendedProjectShiftLauncher(shiftStarts)),
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
     git: options.api?.git,
@@ -683,8 +717,7 @@ function argValue(argv: string[], flag: string): string | undefined {
 
 async function main(
   argv: string[],
-  keeperReaderCommand?: readonly string[],
-  codexSyncCommand?: readonly string[],
+  commands: HearthInternalCommands,
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
@@ -693,8 +726,7 @@ async function main(
   const { operatorCouncilLedger } = await import("../council/ledger-wiring");
   const hearth = await createHearth({
     root,
-    ...(keeperReaderCommand ? { keeperReaderCommand } : {}),
-    ...(codexSyncCommand ? { codexSyncCommand } : {}),
+    ...commands,
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
@@ -742,11 +774,10 @@ export function closeOnSignal(
 
 export async function runHearthServer(
   argv: string[],
-  keeperReaderCommand?: readonly string[],
-  codexSyncCommand?: readonly string[],
+  commands: HearthInternalCommands = {},
 ): Promise<void> {
   try {
-    await main(argv, keeperReaderCommand, codexSyncCommand);
+    await main(argv, commands);
   } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,

@@ -302,7 +302,8 @@ export function createSessionRegistry(
         if (
           !parsed.success ||
           parsed.data.provider !== provider ||
-          (provider !== "claude" && parsed.data.mode !== mode)
+          (provider !== "claude" && parsed.data.mode !== mode) ||
+          (parsed.data.origin && parsed.data.origin.projectId !== projectId)
         )
           throw new SessionRegistryError(
             400,

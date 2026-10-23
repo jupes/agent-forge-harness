@@ -11,6 +11,7 @@ import { syncCodexSkills } from "../executors/codex-sync";
 import { buildChildEnv } from "../executors/env";
 import { verifyKeeperReader } from "../keeper/verify-reader";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
+import { verifyProjectShiftEntry } from "../shifts/verify-entry";
 import { syncCodex } from "../sync-codex";
 import { scratchDirs } from "../test-scratch";
 
@@ -310,3 +311,7 @@ test("the same compiled production entry retains the sealed Keeper reader", asyn
     childStopped: true,
   });
 }, 20_000);
+
+test("the same compiled production entry consumes only an authorized original and never repeats engine admission", async () => {
+  await verifyProjectShiftEntry([executable]);
+}, 15_000);

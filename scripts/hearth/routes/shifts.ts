@@ -28,6 +28,7 @@ import {
   readShiftRecord,
   requestStop,
 } from "../../scheduler/shift-store";
+import { SHIFT_START_FIELDS as START_FIELDS } from "../../shifts/start-fields";
 import type {
   ActionRoute,
   ApiRoute,
@@ -75,17 +76,7 @@ export type ShiftListEntry = ListedShift | ShiftLaunchEntry;
  * Named as the CLI names them, flat: `epic` is the filter (§6 wrote it
  * `filter`), as the council's body is flat.
  */
-export const START_FIELDS = {
-  for: "--for",
-  concurrency: "--concurrency",
-  maxBeads: "--max-beads",
-  maxUsd: "--max-usd",
-  repairs: "--repairs",
-  epic: "--epic",
-  smith: "--smith",
-  runTimeout: "--run-timeout",
-  base: "--base",
-} as const;
+export { SHIFT_START_FIELDS as START_FIELDS } from "../../shifts/start-fields";
 
 type StartField = keyof typeof START_FIELDS;
 

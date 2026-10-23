@@ -65,6 +65,13 @@ import {
 } from "./routes/keeper-proposal-fixture";
 import { seedProjectBeadWriteFixture } from "./routes/project-bead-write-fixture";
 import {
+  FIXTURE_SHIFT_ATTEMPT_SESSION_ID,
+  FIXTURE_SHIFT_ID,
+  FIXTURE_SHIFT_START,
+  seedProjectShift,
+  seedProjectShiftAttempt,
+} from "./routes/project-shift-fixture";
+import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
   FIXTURE_SESSION_PROMPT,
@@ -1303,6 +1310,77 @@ const ACTIONS: Record<string, ActionFixture> = {
       ]);
     },
   },
+  "POST /projects/:id/shifts": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts`,
+      body: FIXTURE_SHIFT_START,
+      status: 202,
+      target: FIXTURE_SHIFT_START.requestId,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts`,
+      body: { ...FIXTURE_SHIFT_START, workspace: "/other" },
+    },
+    prepare: (h) => seedProjectShift(h),
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        intent: { shiftId: FIXTURE_SHIFT_ID, request: FIXTURE_SHIFT_START },
+        observation: { phase: "reserved", actual: null },
+      });
+      expect(
+        h.shifts.launches.filter((launch) =>
+          launch.spec.argv.includes(FIXTURE_SHIFT_ID),
+        ),
+      ).toEqual([]);
+    },
+  },
+  "POST /projects/:id/shifts/:shiftId/stop": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/${FIXTURE_SHIFT_ID}/stop`,
+      body: {},
+      status: 200,
+      target: FIXTURE_SHIFT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/shift-1/stop`,
+      body: {},
+    },
+    prepare: (h) => seedProjectShift(h, "live"),
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        observation: { shiftId: FIXTURE_SHIFT_ID, phase: "stopping" },
+      });
+      expect(
+        existsSync(join(h.home, SHIFTS_DIR, `${FIXTURE_SHIFT_ID}.stop`)),
+      ).toBe(true);
+    },
+  },
+  "POST /projects/:id/shifts/:shiftId/recover": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/${FIXTURE_SHIFT_ID}/recover`,
+      body: {},
+      status: 200,
+      target: FIXTURE_SHIFT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/shift-1/recover`,
+      body: {},
+    },
+    prepare: (h) => seedProjectShift(h, "dead"),
+    outcome: [
+      {
+        kind: "shift.stopped",
+        payload: { shiftId: FIXTURE_SHIFT_ID, reason: "recovered" },
+      },
+    ],
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        observation: { shiftId: FIXTURE_SHIFT_ID, phase: "stopped" },
+      });
+    },
+  },
   "POST /shifts/:id/stop": {
     valid: {
       path: "/shifts/shift-20261014-120000-f1a0/stop",
@@ -1610,12 +1688,17 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
+  "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
+  "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,
+  "GET /projects/:id/shifts/requests/:requestId/attempts/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts/${FIXTURE_SHIFT_ATTEMPT_SESSION_ID}`,
   "GET /providers/sign-in": "/providers/sign-in",
   "GET /providers/:provider/sign-in/:requestId":
     "/providers/claude/sign-in/7b5b2b32-4bcc-4a1c-92c8-61dd39234d82",
   "GET /providers/readiness": "/providers/readiness",
   "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
+  "GET /projects/:id/shifts/options": `/projects/${FIXTURE_PROJECT_ID}/shifts/options`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/session-observations": `/projects/${FIXTURE_PROJECT_ID}/session-observations`,
@@ -1788,9 +1871,10 @@ describe("the route table", () => {
       "GET /stream",
       "GET /projects/:id/keeper/events",
       "GET /projects/:id/sessions/:sessionId/events",
+      "GET /projects/:id/shifts/requests/:requestId/attempts/:sessionId/events",
     ]);
     expect(rows.length).toBe(
-      Object.keys(ACTIONS).length + Object.keys(READS).length + 3,
+      Object.keys(ACTIONS).length + Object.keys(READS).length + 4,
     );
   });
 });
@@ -2194,6 +2278,9 @@ describe("a read row or the stream while another connection holds the write lock
     root = h.root;
     await seedOwnedSession(h);
     await seedChatDecision(h);
+    await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
+    seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -2201,7 +2288,13 @@ describe("a read row or the stream while another connection holds the write lock
       if (row.kind === "stream")
         return row.path
           .replace(":id", FIXTURE_PROJECT_ID)
-          .replace(":sessionId", FIXTURE_OWNED_SESSION_ID);
+          .replace(":requestId", FIXTURE_SHIFT_START.requestId)
+          .replace(
+            ":sessionId",
+            row.path.includes("/shifts/")
+              ? FIXTURE_SHIFT_ATTEMPT_SESSION_ID
+              : FIXTURE_OWNED_SESSION_ID,
+          );
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
@@ -3144,6 +3237,9 @@ describe("every read row (iterating the table)", () => {
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
+    await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
+    seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3171,6 +3267,9 @@ describe("every read row (iterating the table)", () => {
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
+    await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
+    seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

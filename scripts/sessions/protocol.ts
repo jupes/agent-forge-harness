@@ -7,31 +7,27 @@ import type {
   SessionPreviewReceipt,
   SessionStartReceipt,
 } from "../../types/session-requests";
+import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
 import { conversationReceiptSchema } from "../conversations/protocol";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
 import { serializeClaudeLaunch } from "./claude-launch";
+import {
+  ownedSessionIdSchema,
+  sessionProjectIdSchema,
+  sessionRequestHashSchema,
+  sessionRequestIdSchema,
+} from "./identity-protocol";
+import { projectShiftAttemptOriginSchema } from "./shift-origin-protocol";
 import { sessionTurnSnapshotSchema } from "./turn-protocol";
 
-/** Browser-safe wire/storage shapes. Filesystem authority is checked by the server. */
-export const sessionProjectIdSchema = z
-  .string()
-  .regex(
-    /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
-export const sessionRequestIdSchema = z
-  .string()
-  .uuid()
-  .refine((value) => value === value.toLowerCase());
-export const ownedSessionIdSchema = z
-  .string()
-  .max(44)
-  .refine(
-    (value) =>
-      value.startsWith("session-") &&
-      sessionRequestIdSchema.safeParse(value.slice(8)).success,
-  );
-export const sessionRequestHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export {
+  ownedSessionIdSchema,
+  sessionProjectIdSchema,
+  sessionRequestHashSchema,
+  sessionRequestIdSchema,
+} from "./identity-protocol";
+
 const label = (max: number) =>
   z
     .string()
@@ -48,7 +44,18 @@ const path = label(1024).refine(
     value.startsWith("\\\\") ||
     /^[a-zA-Z]:[\\/]/.test(value),
 );
-export const ownedSessionMetadataSchema = z
+export function validOwnedSessionOrigin(value: {
+  mode: string;
+  beadId?: string | undefined;
+  origin?: ProjectShiftAttemptOrigin | undefined;
+}): boolean {
+  return (
+    !value.origin ||
+    (value.mode === "task" && value.beadId === value.origin.beadId)
+  );
+}
+/** Unrefined fields for composing provider branches without discarding cross-field checks. */
+export const ownedSessionMetadataFieldsSchema = z
   .object({
     mode: z.enum(["task", "chat"]),
     provider: z.literal("claude"),
@@ -72,8 +79,11 @@ export const ownedSessionMetadataSchema = z
     requestedEffort: z
       .enum(["low", "medium", "high", "xhigh", "max"])
       .nullable(),
+    origin: projectShiftAttemptOriginSchema.optional(),
   })
   .strict() satisfies z.ZodType<OwnedSessionMetadata>;
+export const ownedSessionMetadataSchema =
+  ownedSessionMetadataFieldsSchema.refine(validOwnedSessionOrigin);
 export const ownedSessionSchema: z.ZodType<OwnedSessionRecord> = z
   .object({
     projectId: sessionProjectIdSchema,
@@ -83,7 +93,12 @@ export const ownedSessionSchema: z.ZodType<OwnedSessionRecord> = z
     createdAt: z.iso.datetime(),
     ...ownedSessionMetadataSchema.shape,
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      validOwnedSessionOrigin(value) &&
+      (!value.origin || value.origin.projectId === value.projectId),
+  );
 export const sessionStartReceiptSchema: z.ZodType<SessionStartReceipt> = z
   .object({ session: ownedSessionSchema, receipt: conversationReceiptSchema })
   .strict()

@@ -35,6 +35,7 @@ import { preparedCodexChatSchema } from "../sessions/codex-app-server-protocol";
 import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
 import { preparedGeminiTaskSchema } from "../sessions/gemini-task-runtime-protocol";
 import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
+import { conversationPage, validateConversationPageQuery } from "./page";
 import { conversationLeaseFile } from "./paths";
 import { parseSessionSend } from "./protocol";
 import {
@@ -395,45 +396,9 @@ export function createConversationService(options: ConversationOptions) {
       projectId: string,
       query: { after?: number; limit?: number; requestId?: string } = {},
     ): Promise<ConversationPage> {
-      const after = query.after ?? 0;
-      const limit = query.limit ?? 100;
-      if (
-        !Number.isSafeInteger(after) ||
-        after < 0 ||
-        !Number.isInteger(limit) ||
-        limit < 1 ||
-        limit > 100
-      )
-        throw new ConversationError(
-          400,
-          "Expected a nonnegative cursor and a page size from 1 to 100.",
-        );
+      validateConversationPageQuery(query);
       const state = await observe(projectId);
-      const frames = state.frames
-        .filter((frame) => frame.seq > after)
-        .slice(0, limit);
-      const nextCursor = frames.at(-1)?.seq ?? after;
-      return {
-        ...state,
-        ...(state.keeperRecovery
-          ? {
-              keeperRecovery: {
-                smith: state.keeperRecovery.smith,
-                generation: state.keeperRecovery.generation,
-                continuation: state.keeperRecovery.continuation,
-              },
-            }
-          : {}),
-        turns: state.turns.slice(-50),
-        frames,
-        more: state.frames.some((frame) => frame.seq > nextCursor),
-        nextCursor,
-        lastSequence: state.frames.at(-1)?.seq ?? 0,
-        request:
-          state.turns.find((item) => item.requestId === query.requestId) ??
-          null,
-        controllable: owned.has(projectId),
-      };
+      return conversationPage(state, query, owned.has(projectId));
     },
     async send(
       projectId: string,

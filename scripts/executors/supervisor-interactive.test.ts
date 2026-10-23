@@ -5,6 +5,32 @@ import { killTree, liveChildCount, supervise } from "./supervisor";
 
 const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
 
+test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
+  const lines: string[] = [];
+  const handle = supervise({
+    command: [process.execPath, fake],
+    bootstrapCommand: [
+      process.execPath,
+      join(import.meta.dir, "fixtures/interactive-control.ts"),
+      "lifetime",
+    ],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    lifetime: "shift-attempt",
+    timeoutMs: 2 * 60 * 60_000,
+    onLine: (line) => lines.push(line),
+  });
+  try {
+    await handle.done;
+    expect(lines).toEqual([
+      JSON.stringify({ timeoutMs: 7_200_000, lifetime: "shift-attempt" }),
+    ]);
+  } finally {
+    await handle.stop("fixture cleanup");
+  }
+});
+
 test("interactive supervision exchanges multiple private stdin frames before explicit EOF", async () => {
   const lines: string[] = [];
   const before = liveChildCount();

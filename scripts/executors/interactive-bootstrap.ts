@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { interactiveLifetimeMs } from "./interactive-lifetime";
 
 export const INTERACTIVE_BOOTSTRAP_FLAG = "--interactive-bootstrap";
 export const INTERACTIVE_BOOTSTRAP_CONTROL = "agent-forge-owned-interactive";
@@ -34,13 +35,23 @@ function startEnvelope(value: unknown): {
     typeof value.timeoutMs !== "number" ||
     !Number.isSafeInteger(value.timeoutMs) ||
     value.timeoutMs < 1 ||
-    value.timeoutMs > 30 * 60_000 ||
+    ("lifetime" in value &&
+      value.lifetime !== "shift-attempt" &&
+      value.lifetime !== "shift-engine") ||
     !("env" in value) ||
     typeof value.env !== "object" ||
     value.env === null ||
     Array.isArray(value.env)
   )
     throw new Error("Invalid private bootstrap input.");
+  const timeoutMs = interactiveLifetimeMs(
+    value.timeoutMs,
+    "lifetime" in value && value.lifetime === "shift-attempt"
+      ? "shift-attempt"
+      : "lifetime" in value && value.lifetime === "shift-engine"
+        ? "shift-engine"
+        : undefined,
+  );
   const env: Record<string, string> = {};
   for (const [name, item] of Object.entries(value.env)) {
     if (
@@ -59,7 +70,7 @@ function startEnvelope(value: unknown): {
     command: value.command,
     cwd: value.cwd,
     env,
-    timeoutMs: value.timeoutMs,
+    timeoutMs,
   };
 }
 

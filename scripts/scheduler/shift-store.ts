@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { ShiftHostSnapshot } from "../../types/shift-host";
 import { comparableCheckout } from "../forge/runs";
 
 /** The directory under the harness home (`AGENT_FORGE_HOME`) that holds the shift records. */
@@ -161,6 +162,8 @@ export interface ShiftOptionsRecord {
   base?: string;
   epic?: string;
   smith?: string;
+  /** Explicit per-run limit; absent means the shift's remaining time. */
+  runTimeoutMs?: number;
 }
 
 export interface ShiftRecord {
@@ -184,6 +187,10 @@ export interface ShiftRecord {
   spentUsd: number;
   /** Runs that reported no cost (a provider that does not report one). */
   unpriced: number;
+  /** Admissions that reached a worktree; absent on older records, never inferred from outcomes. */
+  admitted?: number;
+  /** Latest attended admission sample; old or ordinary shifts may have none. */
+  host?: ShiftHostSnapshot;
   beads: ShiftBeadRecord[];
 }
 

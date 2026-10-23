@@ -16,7 +16,15 @@ import {
   INTERACTIVE_BOOTSTRAP_FLAG,
   INTERACTIVE_START_MAX_BYTES,
 } from "./interactive-bootstrap";
-import { guardSuspendedWindowsProcess, guardTree } from "./tree-guard";
+import {
+  type InteractiveLifetime,
+  interactiveLifetimeMs,
+} from "./interactive-lifetime";
+import {
+  guardRequiredTree,
+  guardSuspendedWindowsProcess,
+  guardTree,
+} from "./tree-guard";
 import type { ChildExit } from "./types";
 
 /** How much of a child's stderr is kept: the end, where a failure says why. */
@@ -44,12 +52,14 @@ export interface Supervised {
 export interface InteractiveSuperviseOptions
   extends Omit<SuperviseOptions, "stdin"> {
   stdinMode: "interactive";
+  /** Trusted bounded shift capability; ordinary interactive providers retain their 30-minute bound. */
+  lifetime?: InteractiveLifetime;
   /** Cumulative process input and currently queued byte cap; not proof of child consumption. */
   maxStdinBytes?: number;
   stdinTimeoutMs?: number;
   /** Trusted packaged-entry/fixture prefix only. Never a public command surface. */
   bootstrapCommand?: readonly string[];
-  /** Trusted startup-barrier fixture only; the normal process grants ownership immediately. */
+  /** Trusted ownership barrier before the provider grant; may persist the private owner's obligation. */
   beforeStart?: () => Promise<void>;
   /** Trusted ownership-failure fixture seam only; never an HTTP or launch option. */
   interactiveGuard?: (pid: number) => {
@@ -235,6 +245,9 @@ export function supervise(
   options: SuperviseOptions | InteractiveSuperviseOptions,
 ): Supervised | InteractiveSupervised {
   const interactive = "stdinMode" in options;
+  const timeoutMs = interactive
+    ? interactiveLifetimeMs(options.timeoutMs, options.lifetime)
+    : options.timeoutMs;
   const maxStdinBytes = interactive
     ? (options.maxStdinBytes ?? 1024 * 1024)
     : 0;
@@ -337,7 +350,7 @@ export function supervise(
         ? options.interactiveGuard(proc.pid)
         : process.platform === "win32"
           ? guardSuspendedWindowsProcess(proc.pid)
-          : guardTree(proc.pid)
+          : guardRequiredTree(proc.pid)
       : guardTree(proc.pid);
   let guard: ReturnType<typeof guardTree> | null;
   try {
@@ -387,11 +400,11 @@ export function supervise(
   };
 
   const timer =
-    options.timeoutMs !== undefined
+    timeoutMs !== undefined
       ? setTimeout(() => {
           timedOut = true;
           kill();
-        }, options.timeoutMs)
+        }, timeoutMs)
       : undefined;
 
   if (!interactive) {
@@ -564,7 +577,7 @@ export function supervise(
     },
   };
   if (!interactive) return handle;
-  const start = `${JSON.stringify({ version: 1, command: [target, ...options.command.slice(1)], cwd: options.cwd, env: options.env, timeoutMs: Math.min(options.timeoutMs ?? 30 * 60_000, 30 * 60_000) })}\n`;
+  const start = `${JSON.stringify({ version: 1, command: [target, ...options.command.slice(1)], cwd: options.cwd, env: options.env, timeoutMs, ...(options.lifetime ? { lifetime: options.lifetime } : {}) })}\n`;
   if (Buffer.byteLength(start) > INTERACTIVE_START_MAX_BYTES) {
     failInput(new Error("The private ownership grant exceeded its bound."));
     kill();

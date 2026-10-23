@@ -1,4 +1,5 @@
 import type { LedgerEventInput, Provider, Smith } from "../../types/hearth";
+import type { PrivateExecCaptureFactory } from "./private-capture";
 
 /** What a sink says about one event: stored, or not and why. */
 export type SinkResult = { ok: true } | { ok: false; error: string };
@@ -38,6 +39,12 @@ export interface SpawnRequest {
   timeoutMs?: number | undefined;
   /** Replaces the resolved binary (tests point this at a fake). Adapter flags are appended. */
   command?: string[] | undefined;
+  /** Trusted attended execution only. Failure is fatal, unlike a metadata sink refusal. */
+  privateCapture?: PrivateExecCaptureFactory | undefined;
+  /** Trusted fixed host entry for the mandatory private owned-tree bootstrap. */
+  privateBootstrapCommand?: readonly string[] | undefined;
+  /** Cancels a pending private preparation before the process can be spawned. */
+  signal?: AbortSignal | undefined;
   /**
    * Told the model the provider's stream reported its responses came from,
    * each time that changes: what the run was observed to be, beside the smith
@@ -66,6 +73,8 @@ export interface ChildExit {
 
 /** How a run ended: the child's exit, and what the provider said went wrong. */
 export interface ExecResult extends ChildExit {
+  /** Fixed failure signal; storage/parser diagnostics never leave the private owner. */
+  privateCaptureFailed?: true | undefined;
   /**
    * The errors the provider reported in its own stream, in its words, oldest
    * first and each once. Shown in a command's own output, never stored in the

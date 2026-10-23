@@ -143,6 +143,17 @@ jobs:
           name: desktop-worktree-playwright-test-results
           path: test-results-desktop-worktrees/
           retention-days: 14
+      - name: Run actual attended project shift journeys
+        if: matrix.shard == 1
+        timeout-minutes: 6
+        run: bun run verify:desktop-shifts
+      - name: Upload attended project shift traces and failure screenshots
+        if: failure() && matrix.shard == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-shift-playwright-test-results
+          path: test-results/desktop-shifts/
+          retention-days: 14
 
   # Stable name for branch protection; skipped/cancelled shards must fail it.
   playwright:

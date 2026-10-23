@@ -23,6 +23,7 @@ import {
 } from "./gemini-owned-preparation";
 import { createGeminiOwnedTransport } from "./gemini-owned-transport";
 import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
+import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
 
 /** The existing locked registry and durable conversation lease own admission and exact retries. */
@@ -50,6 +51,7 @@ export function createGeminiOwnedTaskService(options: {
     initial = new Map<string, GeminiTaskLaunch>();
   let closed = false;
   const serviceFor = (session: GeminiOwnedSessionRecord) => {
+    requireOrdinarySession(session);
     if (workspaceKey(session.workspace) !== workspace)
       throw new ConversationError(
         409,
@@ -194,7 +196,7 @@ export function createGeminiOwnedTaskService(options: {
       }
     },
     async send(projectId: string, sessionId: string, _input: SessionMessage) {
-      registry.read(projectId, sessionId);
+      requireOrdinarySession(registry.read(projectId, sessionId));
       throw new ConversationError(
         409,
         "Gemini Task sessions accept one turn. Start another Task explicitly.",

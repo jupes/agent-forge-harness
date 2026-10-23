@@ -20,6 +20,7 @@ import type {
 } from "../conversations/transport";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
+import { requireOrdinarySession } from "./managed-origin";
 import { canonicalSessionInput, prepareReviewedSession } from "./preparation";
 import { createSessionRegistry } from "./registry";
 import { parseSessionStart } from "./request-protocol";
@@ -61,6 +62,7 @@ export function createOwnedSessionService(options: Options) {
     sessionId: session.id,
   });
   const serviceFor = (session: OwnedSessionRecord) => {
+    requireOrdinarySession(session);
     if (workspaceKey(session.workspace) !== workspace)
       throw new ConversationError(
         409,
@@ -213,6 +215,7 @@ export function createOwnedSessionService(options: Options) {
         );
       const input = parseSessionSend(raw),
         session = registry.read(projectId, sessionId);
+      requireOrdinarySession(session);
       if (session.mode !== "chat")
         throw new ConversationError(
           409,
@@ -230,7 +233,10 @@ export function createOwnedSessionService(options: Options) {
     list(projectId: string) {
       return registry
         .list(projectId)
-        .filter((session) => workspaceKey(session.workspace) === workspace);
+        .filter(
+          (session) =>
+            !session.origin && workspaceKey(session.workspace) === workspace,
+        );
     },
     stop(projectId: string, sessionId: string, requestId: string) {
       return forId(projectId, sessionId).stop(projectId, requestId);

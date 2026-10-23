@@ -6,14 +6,15 @@ import type {
 import { geminiTaskLaunchSchema } from "./gemini-task";
 import {
   ownedSessionIdSchema,
-  ownedSessionMetadataSchema,
+  ownedSessionMetadataFieldsSchema,
   sessionProjectIdSchema,
   sessionRequestHashSchema,
   sessionRequestIdSchema,
+  validOwnedSessionOrigin,
 } from "./protocol";
 
 /** Metadata has no native identity, private report or provider invocation authority. */
-export const geminiOwnedMetadataSchema = ownedSessionMetadataSchema
+const geminiOwnedMetadataFieldsSchema = ownedSessionMetadataFieldsSchema
   .omit({
     provider: true,
     mode: true,
@@ -28,8 +29,11 @@ export const geminiOwnedMetadataSchema = ownedSessionMetadataSchema
     requestedEffort: z.null(),
   })
   .strict() satisfies z.ZodType<GeminiOwnedSessionMetadata>;
+export const geminiOwnedMetadataSchema = geminiOwnedMetadataFieldsSchema.refine(
+  validOwnedSessionOrigin,
+);
 
-export const geminiOwnedSessionSchema = geminiOwnedMetadataSchema
+export const geminiOwnedSessionSchema = geminiOwnedMetadataFieldsSchema
   .extend({
     projectId: sessionProjectIdSchema,
     id: ownedSessionIdSchema,
@@ -37,4 +41,9 @@ export const geminiOwnedSessionSchema = geminiOwnedMetadataSchema
     requestHash: sessionRequestHashSchema,
     createdAt: z.iso.datetime(),
   })
-  .strict() satisfies z.ZodType<GeminiOwnedSessionRecord>;
+  .strict()
+  .refine(
+    (value) =>
+      validOwnedSessionOrigin(value) &&
+      (!value.origin || value.origin.projectId === value.projectId),
+  ) satisfies z.ZodType<GeminiOwnedSessionRecord>;

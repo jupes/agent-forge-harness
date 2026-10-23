@@ -31,6 +31,7 @@ import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
+import type { ProjectShiftRuntime } from "../../shifts/service";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -65,6 +66,7 @@ import {
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
+import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
 import {
   projectSnapshotReader,
   projectSummaryRoute,
@@ -102,6 +104,8 @@ export interface OperatorDeps extends ReadDeps {
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
   shiftStarts: ShiftStarts;
+  /** Trusted attended launcher only; null holds Start while retaining original reads and controls. */
+  projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
@@ -382,6 +386,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
   const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
   const conversations = conversationRoutes(
     deps.projectHome,
     deps.root,
@@ -460,6 +465,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     observations.list,
     observations.detail,
     projectBeadsRoute(deps, projectSnapshot),
+    projectShiftOptionsRoute(
+      deps,
+      projectSnapshot,
+      deps.projectShiftRuntime?.attended === true,
+    ),
     projectWorkbenchRoute(deps, projectSnapshot, async () => {
       const result = await readEligible();
       return result.ok ? result.value : null;
@@ -528,6 +538,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...trackerWrites,
       ...queueWrites,
       ...projectWrites,
+      ...scopedShifts.routes,
       ...shiftRoutes({
         workspace,
         shiftsDir: deps.shiftsDir,
@@ -541,6 +552,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
+      scopedShifts.close();
       live.close();
       await providerLogins.close();
       await ownedSessions.close();

@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
@@ -35,6 +36,7 @@ export function ProjectWorkbench({
   writes,
   selectedId,
   onSelect,
+  shifts,
 }: {
   projectId: string;
   page: ProjectWorkbenchPage | null;
@@ -44,6 +46,7 @@ export function ProjectWorkbench({
   writes: DesktopBeadWrites;
   selectedId: string | null;
   onSelect(id: string): void;
+  shifts?: ComponentChildren;
 }) {
   const [filters, setFilters] = useState(emptyFilters),
     [doneOpen, setDoneOpen] = useState(false),
@@ -164,6 +167,7 @@ export function ProjectWorkbench({
           Refresh Workbench
         </Button>
       </header>
+      {shifts}
       <div class="af-wb-toolbar">
         <label class="af-wb-search">
           Search

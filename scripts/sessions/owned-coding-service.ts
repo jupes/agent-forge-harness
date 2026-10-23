@@ -16,6 +16,7 @@ import { parseOwnedSessionStart } from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
 import { createGeminiOwnedTaskService } from "./gemini-owned-admission";
 import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
+import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
 
 export const unavailableCodexTaskRuntime: ReturnType<
@@ -96,6 +97,7 @@ export function createOwnedCodingSessionService(options: {
   });
   const selected = (projectId: string, sessionId: string) => {
     const record = registry.lookup(projectId, sessionId);
+    requireOrdinarySession(record);
     if (record.provider === "gemini") return gemini;
     return record.provider === "codex"
       ? record.mode === "chat"
@@ -128,7 +130,10 @@ export function createOwnedCodingSessionService(options: {
       const workspace = workspaceKey(resolveCheckout(options.root).workspace);
       return registry
         .listAll(projectId)
-        .filter((record) => workspaceKey(record.workspace) === workspace);
+        .filter(
+          (record) =>
+            !record.origin && workspaceKey(record.workspace) === workspace,
+        );
     },
     approvals(projectId: string, sessionId: string, requestId?: string) {
       return chat.approvals(projectId, sessionId, requestId);
