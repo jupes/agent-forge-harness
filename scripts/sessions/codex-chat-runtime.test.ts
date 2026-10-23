@@ -97,6 +97,72 @@ function fixture(mode = "normal") {
   };
   return { root, runtime, launch, records, options };
 }
+test("an actual native Chat command preserves started, streamed and completed reports outside assistant text", async () => {
+  const f = fixture("command-activity");
+  const prepared = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  const events: CodexChatEvent[] = [];
+  const result = await f.runtime.run(
+    { prepared, resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    new AbortController().signal,
+    { requestApproval: async () => "decline" },
+  );
+  const identity = {
+    kind: "command" as const,
+    threadId,
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "reported-command-a",
+    command: { text: "inert command <script> stays text", truncated: false },
+    cwd: f.root,
+  };
+  expect(events).toContainEqual({
+    ...identity,
+    source: "item/started",
+    status: "inProgress",
+    output: null,
+    outputSource: null,
+    exitCode: null,
+    durationMs: null,
+    partial: true,
+  });
+  expect(events).toContainEqual({
+    ...identity,
+    source: "item/commandExecution/outputDelta",
+    status: "inProgress",
+    output: { text: "Reported line one\n", truncated: false },
+    outputSource: "delta",
+    exitCode: null,
+    durationMs: null,
+    partial: true,
+  });
+  expect(events).toContainEqual({
+    ...identity,
+    source: "item/completed",
+    status: "completed",
+    output: {
+      text: "Reported line one\nReported line two\n",
+      truncated: false,
+    },
+    outputSource: "aggregate",
+    exitCode: 0,
+    durationMs: 12,
+    partial: false,
+  });
+  expect(result.phase).toBe("completed");
+  expect(events.filter((event) => event.kind === "text")).toEqual([
+    { kind: "text", itemId: "message-a", text: "Hello" },
+    { kind: "text", itemId: "message-a", text: " world" },
+  ]);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+});
+
 test("native Chat starts and resumes exactly one owned thread across two supervised processes", async () => {
   const f = fixture();
   const snapshot = await f.runtime.prepare({

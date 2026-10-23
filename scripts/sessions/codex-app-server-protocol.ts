@@ -2,12 +2,14 @@ import { z } from "zod";
 import type {
   CodexChatApproval,
   CodexChatCapabilities,
+  CodexChatCommand,
   CodexChatDecision,
   CodexChatEvent,
   CodexChatLaunch,
   CodexChatUsage,
   PreparedCodexChat,
 } from "../../types/codex-chat";
+import { reportedText, SESSION_ACTIVITY_LIMITS } from "./activity-protocol";
 import {
   codexExecCapabilitiesSchema,
   codexTaskLaunchSchema,
@@ -238,6 +240,19 @@ const item = z.object({
   type: id,
   text: z.string().max(1_048_576).optional(),
 });
+const nativeCommand = item.extend({
+  type: z.literal("commandExecution"),
+  command: z.string().min(1).max(65_536),
+  cwd: z
+    .string()
+    .min(1)
+    .max(1024)
+    .refine((value) => !value.includes("\0")),
+  status: z.enum(["inProgress", "completed", "failed", "declined"]),
+  aggregatedOutput: z.string().max(1_048_576).nullable(),
+  exitCode: z.number().int().min(-2_147_483_648).max(2_147_483_647).nullable(),
+  durationMs: z.number().safe().nonnegative().nullable(),
+});
 const counts = z.object({
   inputTokens: z.number().safe().nonnegative(),
   outputTokens: z.number().safe().nonnegative(),
@@ -261,10 +276,23 @@ export function createCodexChatStream(options: {
   let usage: CodexChatUsage | null = null,
     frameBytes = 0,
     frameCount = 0,
-    textBytes = 0;
+    textBytes = 0,
+    commandBytes = 0;
   const items = new Map<
     string,
-    { type: string; text: string; completed: boolean }
+    {
+      type: string;
+      text: string;
+      completed: boolean;
+      command?: {
+        identity: string;
+        started: string | null;
+        completed: string | null;
+        outputBytes: number;
+        outputTruncated: boolean;
+        report: CodexChatCommand;
+      };
+    }
   >();
   const scoped = (params: Record<string, unknown>, requireTurn = true) => {
     if (
@@ -309,6 +337,124 @@ export function createCodexChatStream(options: {
       completed: completed || previous?.completed === true,
     });
     return suffix ? [{ kind: "text", itemId, text: suffix }] : [];
+  };
+  const commandReport = (report: CodexChatCommand): CodexChatEvent[] => {
+    const bytes = encoder.encode(JSON.stringify(report)).byteLength;
+    if (bytes > SESSION_ACTIVITY_LIMITS.eventBytes)
+      throw new Error(
+        "Codex command activity exceeds its private event bound.",
+      );
+    commandBytes += bytes;
+    if (commandBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
+      throw new Error(
+        "Codex command activity exceeds its private report bound.",
+      );
+    return [report];
+  };
+  const command = (
+    value: unknown,
+    source: "item/started" | "item/completed" | "turn/completed",
+  ): CodexChatEvent[] => {
+    if (!threadId || !turnId)
+      throw new Error("Codex command has no owned native turn identity.");
+    const current = nativeCommand.parse(value),
+      previous = items.get(current.id),
+      identity = JSON.stringify([current.command, current.cwd]),
+      signature = JSON.stringify(current);
+    if (previous && previous.type !== "commandExecution")
+      throw new Error("Codex command item identity changed.");
+    if (previous?.command && previous.command.identity !== identity)
+      throw new Error("Codex command metadata changed its item identity.");
+    if ((source === "item/started") !== (current.status === "inProgress"))
+      throw new Error(
+        "Codex command status conflicts with its lifecycle source.",
+      );
+    if (previous?.completed) {
+      if (
+        source !== "item/started" &&
+        previous.command?.completed === signature
+      )
+        return [];
+      throw new Error("Codex command changed after its completed report.");
+    }
+    if (source === "item/started" && previous?.command?.started) {
+      if (previous.command.started === signature) return [];
+      throw new Error(
+        "Codex command started report conflicts with its original.",
+      );
+    }
+    if (!previous && items.size >= 256)
+      throw new Error("Codex items exceed their protocol bound.");
+    const output =
+      current.aggregatedOutput === null
+        ? null
+        : reportedText(current.aggregatedOutput);
+    const report: CodexChatCommand = {
+      kind: "command",
+      source,
+      threadId,
+      turnId,
+      itemId: current.id,
+      command: reportedText(current.command),
+      cwd: current.cwd,
+      status: current.status,
+      output,
+      outputSource: output === null ? null : "aggregate",
+      exitCode: current.exitCode,
+      durationMs: current.durationMs,
+      partial: current.status === "inProgress",
+    };
+    items.set(current.id, {
+      type: "commandExecution",
+      text: "",
+      completed: current.status !== "inProgress",
+      command: {
+        identity,
+        started: source === "item/started" ? signature : null,
+        completed: source === "item/started" ? null : signature,
+        outputBytes: output ? encoder.encode(output.text).byteLength : 0,
+        outputTruncated: output?.truncated ?? false,
+        report,
+      },
+    });
+    return commandReport(report);
+  };
+  const commandDelta = (params: Record<string, unknown>): CodexChatEvent[] => {
+    const itemId = id.parse(params.itemId),
+      previous = items.get(itemId),
+      current = previous?.command;
+    if (!current || previous.type !== "commandExecution" || previous.completed)
+      throw new Error("Codex output has no active command item identity.");
+    const delta = reportedText(z.string().max(1_048_576).parse(params.delta)),
+      capacity = SESSION_ACTIVITY_LIMITS.textBytes - current.outputBytes;
+    // Once a portion is omitted, later bytes cannot restore an honest prefix.
+    if (current.outputTruncated) return [];
+    let retained = "",
+      used = 0;
+    for (const character of delta.text) {
+      const size = encoder.encode(character).byteLength;
+      if (used + size > capacity) break;
+      retained += character;
+      used += size;
+    }
+    const output = reportedText(retained),
+      truncated =
+        current.outputTruncated ||
+        delta.truncated ||
+        retained.length < delta.text.length;
+    current.outputBytes += encoder.encode(output.text).byteLength;
+    const changed = truncated !== current.outputTruncated;
+    current.outputTruncated = truncated;
+    if (!output.text && !changed) return [];
+    const report: CodexChatCommand = {
+      ...current.report,
+      source: "item/commandExecution/outputDelta",
+      output: { text: output.text, truncated },
+      outputSource: "delta",
+      exitCode: null,
+      durationMs: null,
+    };
+    return commandReport(report);
   };
   return {
     thread(value: unknown): {
@@ -536,11 +682,20 @@ export function createCodexChatStream(options: {
             events.push(
               ...message(final.id, z.string().parse(final.text), false, true),
             );
+          else if (final.type === "commandExecution")
+            events.push(...command(value, "turn/completed"));
         }
         terminal = finished.status;
       } else if (frame.method === "serverRequest/resolved") {
         scoped(params, false);
         resolved.push(nativeRequestId.parse(params.requestId));
+      } else if (frame.method === "item/commandExecution/outputDelta") {
+        scoped(params);
+        if (terminal)
+          throw new Error(
+            "Codex command output arrived after its terminal result.",
+          );
+        events.push(...commandDelta(params));
       } else if (frame.method === "item/agentMessage/delta") {
         scoped(params);
         if (terminal)
@@ -566,7 +721,9 @@ export function createCodexChatStream(options: {
           old = items.get(current.id);
         if (old && old.type !== current.type)
           throw new Error("Codex item identity changed.");
-        if (current.type === "agentMessage")
+        if (current.type === "commandExecution")
+          events.push(...command(params.item, frame.method));
+        else if (current.type === "agentMessage")
           events.push(
             ...message(
               current.id,

@@ -113,6 +113,209 @@ function stream(selected: CodexChatLaunch = launch) {
 }
 const notify = (method: string, params: unknown) =>
   parseCodexAppServerFrame(JSON.stringify({ method, params }));
+const commandItem = (overrides: Record<string, unknown> = {}) => ({
+  type: "commandExecution",
+  id: "native-command",
+  command: "inert <script> command",
+  cwd: launch.cwd,
+  status: "inProgress",
+  aggregatedOutput: null,
+  exitCode: null,
+  durationMs: null,
+  ...overrides,
+});
+
+test("native command reports retain streamed versus aggregate output, exact duplicates and standalone declined completion", () => {
+  const decoder = stream();
+  const started = notify("item/started", {
+    threadId,
+    turnId,
+    item: commandItem(),
+    startedAtMs: 1,
+  });
+  expect(decoder.accept(started).events[0]).toMatchObject({
+    kind: "command",
+    source: "item/started",
+    status: "inProgress",
+    output: null,
+    exitCode: null,
+    partial: true,
+  });
+  expect(decoder.accept(started).events).toEqual([]);
+  for (const delta of ["one\n", "two\n"])
+    expect(
+      decoder.accept(
+        notify("item/commandExecution/outputDelta", {
+          threadId,
+          turnId,
+          itemId: "native-command",
+          delta,
+        }),
+      ).events[0],
+    ).toMatchObject({
+      output: { text: delta, truncated: false },
+      outputSource: "delta",
+      partial: true,
+    });
+  const completed = notify("item/completed", {
+    threadId,
+    turnId,
+    item: commandItem({
+      status: "completed",
+      aggregatedOutput: "A distinct provider aggregate",
+      exitCode: 0,
+      durationMs: 0,
+    }),
+    completedAtMs: 2,
+  });
+  expect(decoder.accept(completed).events[0]).toMatchObject({
+    source: "item/completed",
+    output: { text: "A distinct provider aggregate", truncated: false },
+    outputSource: "aggregate",
+    status: "completed",
+    exitCode: 0,
+    durationMs: 0,
+    partial: false,
+  });
+  expect(decoder.accept(completed).events).toEqual([]);
+  const declined = stream().accept(
+    notify("turn/completed", {
+      threadId,
+      turn: {
+        id: turnId,
+        status: "completed",
+        error: null,
+        items: [commandItem({ status: "declined" })],
+      },
+    }),
+  );
+  expect(declined.events).toHaveLength(1);
+  expect(declined.events[0]).toMatchObject({
+    source: "turn/completed",
+    status: "declined",
+    exitCode: null,
+    output: null,
+    partial: false,
+  });
+});
+
+test("unknown, foreign, conflicting and post-completion command reports cannot gain a native item identity", () => {
+  const output = (overrides: Record<string, unknown> = {}) =>
+    notify("item/commandExecution/outputDelta", {
+      threadId,
+      turnId,
+      itemId: "native-command",
+      delta: "private output",
+      ...overrides,
+    });
+  expect(() => stream().accept(output())).toThrow("command");
+  const decoder = stream();
+  decoder.accept(
+    notify("item/started", { threadId, turnId, item: commandItem() }),
+  );
+  expect(() => decoder.accept(output({ threadId: turnId }))).toThrow(
+    "identity",
+  );
+  expect(() => decoder.accept(output({ turnId: threadId }))).toThrow(
+    "identity",
+  );
+  for (const change of [
+    { command: "different command" },
+    { cwd: "foreign reported metadata" },
+    { status: "completed" },
+    { aggregatedOutput: 123 },
+    { exitCode: "0" },
+  ])
+    expect(() =>
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: commandItem(change),
+        }),
+      ),
+    ).toThrow();
+  decoder.accept(
+    notify("item/completed", {
+      threadId,
+      turnId,
+      item: commandItem({ status: "failed", exitCode: 1 }),
+    }),
+  );
+  expect(() => decoder.accept(output())).toThrow("command");
+  expect(() =>
+    decoder.accept(
+      notify("item/completed", {
+        threadId,
+        turnId,
+        item: commandItem({ status: "failed", exitCode: 2 }),
+      }),
+    ),
+  ).toThrow("completed");
+  decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "failed", items: [], error: {} },
+    }),
+  );
+  expect(() => decoder.accept(output())).toThrow("terminal");
+});
+
+test("cumulative native command output clips at a UTF-8 boundary and retains one explicit truncation report", () => {
+  const decoder = stream();
+  decoder.accept(
+    notify("item/started", { threadId, turnId, item: commandItem() }),
+  );
+  const output = (delta: string) =>
+    decoder.accept(
+      notify("item/commandExecution/outputDelta", {
+        threadId,
+        turnId,
+        itemId: "native-command",
+        delta,
+      }),
+    ).events;
+  const first = output("🌱".repeat(4095))[0];
+  expect(first).toMatchObject({
+    output: { text: "🌱".repeat(4095), truncated: false },
+  });
+  expect(output("\0🌱")[0]).toMatchObject({
+    output: { text: "�", truncated: true },
+  });
+  expect(output("more")).toEqual([]);
+  expect(
+    decoder.accept(
+      notify("item/completed", {
+        threadId,
+        turnId,
+        item: commandItem({ status: "completed", aggregatedOutput: null }),
+      }),
+    ).events[0],
+  ).toMatchObject({ output: null, status: "completed", exitCode: null });
+});
+
+test("native command report pressure refuses explicitly before exceeding the aggregate private budget", () => {
+  const decoder = stream();
+  let accepted = 0;
+  expect(() => {
+    for (let index = 0; index < 128; index++) {
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: commandItem({
+            id: `bounded-command-${index}`,
+            command: "x".repeat(16_384),
+            aggregatedOutput: "y".repeat(16_384),
+          }),
+        }),
+      );
+      accepted++;
+    }
+  }).toThrow("private report bound");
+  expect(accepted).toBeGreaterThan(0);
+  expect(accepted).toBeLessThan(64);
+});
 test("native Chat partial and completed messages deduplicate while tool output stays out of main text", () => {
   const decoder = stream();
   expect(
@@ -135,7 +338,7 @@ test("native Chat partial and completed messages deduplicate while tool output s
     { kind: "text", itemId: "message-a", text: " world" },
   ]);
   expect(decoder.accept(completed).events).toEqual([]);
-  expect(
+  expect(() =>
     decoder.accept(
       notify("item/commandExecution/outputDelta", {
         threadId,
@@ -143,8 +346,8 @@ test("native Chat partial and completed messages deduplicate while tool output s
         itemId: "tool-a",
         delta: "tool body",
       }),
-    ).events,
-  ).toEqual([]);
+    ),
+  ).toThrow("command");
   decoder.accept(
     notify("turn/completed", {
       threadId,
@@ -214,7 +417,21 @@ function approval(
     notify("item/started", {
       threadId,
       turnId,
-      item: { type: method, id: "approval-item" },
+      startedAtMs: 1,
+      item: {
+        type: method,
+        id: "approval-item",
+        ...(method === "commandExecution"
+          ? {
+              command: "echo private-command",
+              cwd: launch.cwd,
+              status: "inProgress",
+              aggregatedOutput: null,
+              exitCode: null,
+              durationMs: null,
+            }
+          : {}),
+      },
     }),
   );
   return decoder.accept(
@@ -327,7 +544,16 @@ test("conflicting message prefixes, late item content and item or stream pressur
       notify("item/started", {
         threadId,
         turnId,
-        item: { type: "commandExecution", id: `tool-${index}` },
+        item: {
+          type: "commandExecution",
+          id: `tool-${index}`,
+          command: "inert command",
+          cwd: launch.cwd,
+          status: "inProgress",
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        },
       }),
     );
   }

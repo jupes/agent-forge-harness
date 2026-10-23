@@ -5,11 +5,16 @@ import { join } from "node:path";
 import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type { CodexChatStartRequest } from "../../types/codex-owned-chat";
 import { conversationFile } from "../conversations/paths";
+import { eventSchema } from "../conversations/protocol";
+import { createConversationStore } from "../conversations/store";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
-import { ownedCodingPageSchema } from "./codex-owned-journal";
+import {
+  ownedCodingPageSchema,
+  ownedCodingStateSchema,
+} from "./codex-owned-journal";
 import { createSessionLibrary } from "./library";
 import { sessionTranscriptExportSchema } from "./library-protocol";
 import { sessionRegistryFile } from "./registry";
@@ -101,6 +106,146 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   };
   return { root, home, project, request, open, records, runtime };
 }
+
+test("actual native command history stays exact across protected partial reads, export and recreation without replay", async () => {
+  const f = await fixture("command-activity");
+  let service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id;
+  await service.settled(f.project.id, sessionId);
+  const page = await service.read(f.project.id, sessionId);
+  expect(page.turns[0]?.phase).toBe("completed");
+  const commands = page.frames.filter(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "command",
+  );
+  expect(commands).toHaveLength(3);
+  const path = conversationFile(f.home, f.project.id, {
+    kind: "session",
+    projectId: f.project.id,
+    sessionId,
+  });
+  const before = readFileSync(path),
+    registry = readFileSync(sessionRegistryFile(f.home));
+  const state = createConversationStore(f.home, undefined, {
+    kind: "session",
+    projectId: f.project.id,
+    sessionId,
+  }).read(f.project.id);
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  const firstCommand = commands[0];
+  if (
+    firstCommand?.event.kind !== "coding-chat" ||
+    firstCommand.event.event.kind !== "command"
+  )
+    throw Error("Missing correlated native command fixture");
+  for (const change of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { itemId: "different-native-item" },
+    { cwd: "changed report identity" },
+    { source: "codex.item.started" },
+    { partial: false },
+  ]) {
+    const altered = structuredClone(state);
+    const target = altered.frames.find(
+      (frame) => frame.seq === firstCommand.seq,
+    );
+    if (
+      target?.event.kind !== "coding-chat" ||
+      target.event.event.kind !== "command"
+    )
+      throw Error("Missing copied command");
+    Object.assign(target.event.event, change);
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+  const beforeCommand = state.frames.filter(
+    (frame) => frame.seq < firstCommand.seq,
+  );
+  expect(
+    ownedCodingStateSchema.safeParse({ ...state, frames: beforeCommand })
+      .success,
+  ).toBe(true);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [
+        ...beforeCommand,
+        {
+          ...firstCommand,
+          event: {
+            kind: "coding-activity",
+            provider: "codex",
+            version: "0.163.0-alpha.10.2",
+            id: "unsealed-command",
+            source: "codex.item.started",
+            partial: true,
+            activity: {
+              kind: "command",
+              command: {
+                text: "Generic command must remain refused",
+                truncated: false,
+              },
+              state: "running",
+            },
+          },
+        },
+      ],
+    }).success,
+  ).toBe(false);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [
+        ...state.frames,
+        { ...firstCommand, seq: state.frames.length + 1 },
+      ],
+    }).success,
+  ).toBe(false);
+  for (const frame of commands) {
+    const partial = await service.read(f.project.id, sessionId, {
+      after: frame.seq - 1,
+    });
+    expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+    expect(partial.frames).toContainEqual(frame);
+    expect(eventSchema.safeParse(frame.event).success).toBe(false);
+    expect(
+      ownedCodingPageSchema.safeParse({
+        ...partial,
+        binding: partial.binding
+          ? { ...partial.binding, sessionId: randomUUID() }
+          : null,
+      }).success,
+    ).toBe(false);
+    expect(
+      ownedCodingPageSchema.safeParse({
+        ...partial,
+        binding: partial.binding
+          ? { ...partial.binding, version: "0.164.0" }
+          : null,
+      }).success,
+    ).toBe(false);
+  }
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  for (const frame of commands)
+    expect(exported.conversation.frames).toContainEqual(frame);
+  await service.close();
+  service = f.open();
+  expect((await service.read(f.project.id, sessionId)).frames).toEqual(
+    page.frames,
+  );
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(readFileSync(path)).toEqual(before);
+  expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registry);
+});
 
 test("owned Chat persists its private snapshot and resumes the exact native thread after service recreation", async () => {
   const f = await fixture();

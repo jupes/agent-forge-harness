@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type {
   CodexChatApproval,
+  CodexChatCommand,
   CodexChatDecision,
   PreparedCodexChat,
 } from "../../types/codex-chat";
@@ -22,6 +23,7 @@ import {
   claudeCodingUsageSchema,
   codingActivitySchema,
   codingOutcomeSchema,
+  SESSION_ACTIVITY_LIMITS,
 } from "./activity-protocol";
 import { claudeAccountReportSchema } from "./claude-account";
 import { preparedCodexChatSchema } from "./codex-app-server-protocol";
@@ -204,7 +206,7 @@ const inProject = (value: {
 /** Whole states prove reported activity against its immutable private launch, not a public row. */
 function reportedTurn(
   value: {
-    binding: { provider: string; sessionId: string } | null;
+    binding: { provider: string; sessionId: string; version: string } | null;
     frames: { turnId: string; event: ConversationEvent }[];
   },
   complete: boolean,
@@ -229,6 +231,26 @@ function reportedTurn(
         value.binding.sessionId !== event.event.outcome.threadId)
     )
       return false;
+    if (event.kind === "coding-chat" && event.event.kind === "command") {
+      if (
+        value.binding?.provider !== "codex" ||
+        value.binding.sessionId !== event.event.threadId ||
+        value.binding.version !== event.version
+      )
+        return false;
+      const native = value.frames.find(
+        (candidate) =>
+          candidate.turnId === frame.turnId &&
+          candidate.event.kind === "coding-chat" &&
+          candidate.event.event.kind === "turn",
+      )?.event;
+      if (
+        native?.kind === "coding-chat" &&
+        native.event.kind === "turn" &&
+        native.event.turnId !== event.event.turnId
+      )
+        return false;
+    }
     const user = value.frames.find(
       (candidate) =>
         candidate.turnId === frame.turnId && candidate.event.kind === "user",
@@ -295,6 +317,8 @@ function nativeChatHistory(value: {
     pid: number | undefined;
     nativeTurn: string | undefined;
     terminal: boolean;
+    commandBytes: number;
+    commands: Map<string, CodexChatCommand>;
     approvals: Map<string, CodexChatApproval>;
     intents: Map<string, CodexChatDecision>;
   };
@@ -311,6 +335,8 @@ function nativeChatHistory(value: {
         pid: undefined,
         nativeTurn: undefined,
         terminal: false,
+        commandBytes: 0,
+        commands: new Map(),
         approvals: new Map(),
         intents: new Map(),
       };
@@ -374,9 +400,58 @@ function nativeChatHistory(value: {
       continue;
     }
     if (value.binding?.provider !== "codex") return false;
+    if (native.kind === "command") {
+      if (
+        turn.pid === undefined ||
+        native.threadId !== value.binding.sessionId ||
+        native.turnId !== turn.nativeTurn
+      )
+        return false;
+      turn.commandBytes += new TextEncoder().encode(
+        JSON.stringify(native),
+      ).byteLength;
+      if (turn.commandBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
+        return false;
+      const previous = turn.commands.get(native.itemId);
+      if (
+        previous &&
+        (previous.status !== "inProgress" ||
+          previous.cwd !== native.cwd ||
+          JSON.stringify(previous.command) !== JSON.stringify(native.command))
+      )
+        return false;
+      if (native.source === "item/commandExecution/outputDelta") {
+        if (!previous || previous.output?.truncated) return false;
+        const previousBytes = previous.output
+          ? new TextEncoder().encode(previous.output.text).byteLength
+          : 0;
+        const output = {
+          text: (previous.output?.text ?? "") + (native.output?.text ?? ""),
+          truncated:
+            previous.output?.truncated === true ||
+            native.output?.truncated === true,
+        };
+        if (
+          previousBytes +
+            new TextEncoder().encode(native.output?.text ?? "").byteLength >
+            SESSION_ACTIVITY_LIMITS.textBytes ||
+          (previous.output?.truncated && !native.output?.truncated)
+        )
+          return false;
+        turn.commands.set(native.itemId, { ...native, output });
+      } else {
+        if (native.source === "item/started" && previous) return false;
+        if (!previous && turn.commands.size >= 256) return false;
+        turn.commands.set(native.itemId, native);
+      }
+      continue;
+    }
     if (native.kind === "turn" || native.kind === "identity") {
       if (native.threadId !== value.binding.sessionId) return false;
-      if (native.kind === "turn") turn.nativeTurn = native.turnId;
+      if (native.kind === "turn") {
+        if (turn.nativeTurn && turn.nativeTurn !== native.turnId) return false;
+        turn.nativeTurn = native.turnId;
+      }
     } else if (native.kind === "configuration") {
       if (
         native.cwd !== snapshot.cwd ||

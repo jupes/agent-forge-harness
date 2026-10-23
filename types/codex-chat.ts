@@ -3,6 +3,29 @@ import type {
   CodexModelEffortEvidence,
   CodexTaskLaunch,
 } from "./codex-task";
+import type { ReportedText } from "./session-activity";
+
+/** A private native report only; these paths and bodies grant no execution or approval authority. */
+export interface CodexChatCommand {
+  kind: "command";
+  source:
+    | "item/started"
+    | "item/commandExecution/outputDelta"
+    | "item/completed"
+    | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  command: ReportedText;
+  cwd: string;
+  status: "inProgress" | "completed" | "failed" | "declined";
+  /** Delta reports carry only the newly retained portion; aggregate reports are distinct native facts. */
+  output: ReportedText | null;
+  outputSource: "delta" | "aggregate" | null;
+  exitCode: number | null;
+  durationMs: number | null;
+  partial: boolean;
+}
 
 /** Private Chat intent. Scope, allowance, original request and execution authority remain server-owned. */
 export interface CodexChatLaunch
@@ -76,6 +99,7 @@ export type CodexChatEvent =
     }
   | { kind: "turn"; threadId: string; turnId: string }
   | { kind: "text"; itemId: string; text: string }
+  | CodexChatCommand
   | { kind: "usage"; usage: CodexChatUsage }
   | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }
