@@ -41,6 +41,7 @@ import {
   SURFACE_HEADER,
 } from "./paths";
 import type { BdResult } from "./routes/dev-api";
+import { fakeSessionRuntime } from "./routes/session-fixture";
 import {
   createHearth,
   type OperatorApiOverrides,
@@ -486,6 +487,7 @@ export async function startTestHearth(
     api: {
       ledgerPath: ledger,
       conversationTransport: fakeConversationTransport(),
+      sessionRuntime: fakeSessionRuntime().runtime,
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,

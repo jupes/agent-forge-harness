@@ -17,6 +17,7 @@ import type {
   SessionSummary,
   SmithsView,
 } from "../../types/hearth";
+import type { OwnedSessionRecord } from "../../types/owned-session";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
@@ -36,6 +37,8 @@ import {
   writeShiftRecord,
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
+import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { createSessionRegistry } from "../sessions/registry";
 import type { ActionContext, ActionRoute, ApiRoute } from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
@@ -52,6 +55,18 @@ import {
   FIXTURE_KEEPER_PROPOSAL_SOURCE,
   seedKeeperProposalSource,
 } from "./routes/keeper-proposal-fixture";
+import {
+  FIXTURE_OWNED_SESSION_ID,
+  FIXTURE_OWNED_STOP_ID,
+  FIXTURE_SESSION_PROMPT,
+  FIXTURE_SESSION_SEND,
+  FIXTURE_SESSION_START,
+  FIXTURE_SESSION_STOP,
+  fixtureSessionGit,
+  seedOwnedSession,
+  sessionStartFixture,
+  waitOwnedTurn,
+} from "./routes/session-fixture";
 import {
   startTestHearth,
   type TestHearth,
@@ -237,7 +252,11 @@ interface ActionFixture {
    * row records once its effect succeeded. Declared here, on the test's side,
    * so a row that starts recording something else fails the suite.
    */
-  outcome?: Array<Pick<LedgerEvent, "kind" | "payload">>;
+  outcome?:
+    | Array<Pick<LedgerEvent, "kind" | "payload">>
+    | ((h: TestHearth) => Array<Pick<LedgerEvent, "kind" | "payload">>);
+  /** Await a background fixture's terminal metadata before comparing its exact event sequence. */
+  settled?(h: TestHearth): Promise<void>;
   /** Additional existing operator rows intentionally reached through a reviewed dispatch. */
   effects?: string[];
   /** What the valid request needs to exist first. */
@@ -505,8 +524,139 @@ function keeperProposalFixture(dismiss: boolean): ActionFixture {
   };
 }
 
+function ownedSessionFixture(
+  operation: "start" | "send" | "stop",
+): ActionFixture {
+  const projectPath = `/projects/${FIXTURE_PROJECT_ID}/sessions`;
+  const id =
+    operation === "stop" ? FIXTURE_OWNED_STOP_ID : FIXTURE_OWNED_SESSION_ID;
+  const requestId =
+    operation === "start"
+      ? FIXTURE_SESSION_START
+      : operation === "stop"
+        ? FIXTURE_SESSION_STOP
+        : FIXTURE_SESSION_SEND;
+  const path =
+    operation === "start"
+      ? projectPath
+      : `${projectPath}/${id}/${operation === "stop" ? "stop" : "turns"}`;
+  const valid: ActionFixture["valid"] = {
+    path,
+    body:
+      operation === "stop"
+        ? { requestId }
+        : operation === "send"
+          ? {
+              requestId,
+              expectedRevision: 0,
+              text: FIXTURE_SESSION_PROMPT,
+              about: [],
+            }
+          : {
+              requestId,
+              smith: "claude-journeyman",
+              repository: "/fixture",
+              worktree: "/fixture",
+              launch: {
+                mode: "chat",
+                model: "sonnet",
+                prompt: FIXTURE_SESSION_PROMPT,
+              },
+            },
+    status: operation === "stop" ? 200 : 202,
+    target: operation === "start" ? FIXTURE_PROJECT_ID : id,
+  };
+  const selected = (h: TestHearth): OwnedSessionRecord => {
+    const record = createSessionRegistry(h.home)
+      .list(FIXTURE_PROJECT_ID)
+      .find((item) =>
+        operation === "start" ? item.requestId === requestId : item.id === id,
+      );
+    if (!record) throw new Error("Missing owned session fixture");
+    return record;
+  };
+  const state = (h: TestHearth) => {
+    const session = selected(h);
+    return createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: session.id,
+    }).read(FIXTURE_PROJECT_ID);
+  };
+  return {
+    valid,
+    invalid: { path, body: { requestId: "invalid" } },
+    prepare: async (h) => {
+      if (operation === "start") valid.body = sessionStartFixture(h);
+      else {
+        await seedOwnedSession(h, operation === "stop");
+        if (operation === "send")
+          valid.body = {
+            requestId,
+            expectedRevision: state(h).revision,
+            text: FIXTURE_SESSION_PROMPT,
+            about: [],
+          };
+      }
+    },
+    settled: async (h) => {
+      await waitOwnedTurn(h, selected(h), requestId);
+      await Bun.sleep(0);
+    },
+    outcome: (h) => {
+      const saved = state(h),
+        turn = saved.turns.find((item) => item.requestId === requestId);
+      if (!turn) throw new Error("Missing owned fixture turn");
+      const events: Array<Pick<LedgerEvent, "kind" | "payload">> = [];
+      if (operation === "start")
+        events.push({
+          kind: "session.started",
+          payload: {
+            source: "desktop",
+            kind: "headless",
+            worktree: h.workspace,
+          },
+        });
+      if (operation !== "stop") {
+        const user = saved.frames.find(
+          (frame) => frame.turnId === requestId && frame.event.kind === "user",
+        )?.event;
+        if (user?.kind !== "user" || !user.session)
+          throw new Error("Missing prepared fixture launch");
+        const stdin = serializeClaudeLaunch(
+          user.session.launch,
+          user.session.capabilities,
+        ).stdin;
+        events.push({
+          kind: "prompt.submitted",
+          payload: { hash: hashText(stdin), length: stdin.length },
+        });
+      }
+      events.push({
+        kind: "session.ended",
+        payload: {
+          reason: turn.phase,
+          durationMs: Math.max(
+            0,
+            Date.parse(turn.updatedAt) - Date.parse(turn.createdAt),
+          ),
+        },
+      });
+      return events;
+    },
+    happened: async (h) => {
+      expect(
+        state(h).turns.find((item) => item.requestId === requestId)?.phase,
+      ).toBe(operation === "stop" ? "cancelled" : "completed");
+    },
+  };
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/sessions": ownedSessionFixture("start"),
+  "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
   "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
   "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
   "POST /projects/:id/keeper/briefs": {
@@ -1069,6 +1219,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+  "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects": "/projects",
   "GET /projects/summary": "/projects/summary",
   "GET /projects/:id/overview":
@@ -1122,6 +1274,7 @@ async function probed(
     ...options,
     api: {
       ...options.api,
+      git: options.api?.git ?? fixtureSessionGit,
       decorate: (routes) =>
         routes.map((route) =>
           route.kind !== "action"
@@ -1229,9 +1382,10 @@ describe("the route table", () => {
     expect(rows.filter((route) => route.kind === "stream").map(key)).toEqual([
       "GET /stream",
       "GET /projects/:id/keeper/events",
+      "GET /projects/:id/sessions/:sessionId/events",
     ]);
     expect(rows.length).toBe(
-      Object.keys(ACTIONS).length + Object.keys(READS).length + 2,
+      Object.keys(ACTIONS).length + Object.keys(READS).length + 3,
     );
   });
 });
@@ -1246,6 +1400,7 @@ describe("every action row (iterating the table)", () => {
         happened,
         outcome = [],
         effects = [],
+        settled,
       } = fixture(row);
       await prepare?.(h);
       const before = snapshot(h);
@@ -1253,6 +1408,7 @@ describe("every action row (iterating the table)", () => {
 
       const response = await post(h, valid.path, valid.body);
       const body = await envelope(response);
+      await settled?.(h);
       expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
         row: key(row),
         status: valid.status,
@@ -1274,7 +1430,9 @@ describe("every action row (iterating the table)", () => {
           kind: "operator.action",
           payload: { action: row.action, surface: "api", target: valid.target },
         },
-        ...outcome.map((event) => ({ row: key(row), ...event })),
+        ...(typeof outcome === "function" ? outcome(h) : outcome).map(
+          (event) => ({ row: key(row), ...event }),
+        ),
       ]);
 
       // The effect ran once, and that row was already stored when it started.
@@ -1628,12 +1786,15 @@ describe("a read row or the stream while another connection holds the write lock
       api: { git },
     });
     root = h.root;
+    await seedOwnedSession(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
     const pathOf = (row: ApiRoute): string => {
       if (row.kind === "stream")
-        return row.path.replace(":id", FIXTURE_PROJECT_ID);
+        return row.path
+          .replace(":id", FIXTURE_PROJECT_ID)
+          .replace(":sessionId", FIXTURE_OWNED_SESSION_ID);
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
@@ -2557,6 +2718,7 @@ describe("every read row (iterating the table)", () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
+    await seedOwnedSession(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -2582,6 +2744,7 @@ describe("every read row (iterating the table)", () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
+    await seedOwnedSession(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

@@ -37,6 +37,8 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
+import type { SessionRuntime } from "../sessions/admission";
+import { createClaudeSessionTransport } from "../sessions/claude-transport";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -146,6 +148,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
+  sessionRuntime?: SessionRuntime;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   /** The ledger file; defaults to `ledger.db` in the hearth's home. */
@@ -325,6 +329,16 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   const table = operatorRoutes({
     projectHome: home,
+    sessionRuntime:
+      options.api?.sessionRuntime ??
+      createClaudeSessionTransport({
+        root,
+        home,
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        operatorToken: expectedToken,
+      }),
     keeperOperatorPost: createKeeperOperatorPost({
       origin: () => {
         const address = server.address();

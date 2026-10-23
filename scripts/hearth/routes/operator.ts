@@ -24,6 +24,7 @@ import { reviewCommentFor } from "../../dashboard/forge-run-model";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { SessionRuntime } from "../../sessions/admission";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -62,6 +63,7 @@ import {
 } from "./project-summaries";
 import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
+import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
@@ -70,6 +72,7 @@ export interface OperatorDeps extends ReadDeps {
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
+  sessionRuntime: SessionRuntime;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
@@ -373,6 +376,12 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSnapshot,
     deps.keeperOperatorPost,
   );
+  const ownedSessions = createOwnedSessionRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+    deps.sessionRuntime,
+  );
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -394,6 +403,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     conversations.read,
     conversations.briefs,
     proposals.read,
+    ownedSessions.list,
+    ownedSessions.read,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -427,6 +438,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...reads,
       stream,
       conversations.events,
+      ownedSessions.events,
       ...actions(deps),
       preferences,
       conversations.send,
@@ -434,6 +446,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       proposals.approve,
       proposals.dismiss,
       conversations.stop,
+      ownedSessions.start,
+      ownedSessions.send,
+      ownedSessions.stop,
       ...beadRoutes({
         workspace,
         runBd: deps.runBd,
@@ -461,6 +476,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ],
     close: async () => {
       live.close();
+      await ownedSessions.close();
       await proposals.close();
       await conversations.close();
     },
