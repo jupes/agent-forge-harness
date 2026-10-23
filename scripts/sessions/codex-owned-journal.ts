@@ -204,7 +204,7 @@ const inProject = (value: {
 /** Whole states prove reported activity against its immutable private launch, not a public row. */
 function reportedTurn(
   value: {
-    binding: { provider: string } | null;
+    binding: { provider: string; sessionId: string } | null;
     frames: { turnId: string; event: ConversationEvent }[];
   },
   complete: boolean,
@@ -221,6 +221,14 @@ function reportedTurn(
       event.kind !== "coding-gemini-task"
     )
       return true;
+    if (
+      event.kind === "coding-chat" &&
+      event.event.kind === "outcome" &&
+      event.event.outcome.threadId !== null &&
+      (value.binding?.provider !== "codex" ||
+        value.binding.sessionId !== event.event.outcome.threadId)
+    )
+      return false;
     const user = value.frames.find(
       (candidate) =>
         candidate.turnId === frame.turnId && candidate.event.kind === "user",
@@ -228,13 +236,25 @@ function reportedTurn(
     if (user?.kind !== "user") {
       // Process ownership is saved before initialization can report a native
       // identity. Its preceding user frame may be on the prior private page.
-      // Only these known process events are valid without a binding; no native
-      // configuration, text, approval or usage gains identity from it.
+      // A failed initialization may also end before any native identity exists.
+      // Only process facts and terminal reports with no native identity or usage
+      // are valid without a binding; no other provider frame gains identity.
       if (
         !complete &&
         (event.kind === "coding-chat" || event.kind === "coding-gemini-task") &&
         event.event.kind === "process" &&
         value.binding === null
+      )
+        return true;
+      if (
+        !complete &&
+        value.binding === null &&
+        event.kind === "coding-chat" &&
+        event.event.kind === "outcome" &&
+        event.event.outcome.phase !== "completed" &&
+        event.event.outcome.threadId === null &&
+        event.event.outcome.turnId === null &&
+        event.event.outcome.usage === null
       )
         return true;
       return !complete && value.binding?.provider === event.provider;
@@ -274,6 +294,7 @@ function nativeChatHistory(value: {
     snapshot: PreparedCodexChat | undefined;
     pid: number | undefined;
     nativeTurn: string | undefined;
+    terminal: boolean;
     approvals: Map<string, CodexChatApproval>;
     intents: Map<string, CodexChatDecision>;
   };
@@ -289,11 +310,15 @@ function nativeChatHistory(value: {
         snapshot: undefined,
         pid: undefined,
         nativeTurn: undefined,
+        terminal: false,
         approvals: new Map(),
         intents: new Map(),
       };
       turns.set(frame.turnId, turn);
     }
+    // ConversationService.finish changes turn metadata without appending a
+    // provider frame. Nothing from this ended native turn may arrive afterward.
+    if (turn.terminal) return false;
     if (event.kind === "user") {
       turn.snapshot = event.codexChat;
       continue;
@@ -324,6 +349,19 @@ function nativeChatHistory(value: {
     const native = event.event,
       snapshot = turn.snapshot;
     if (!snapshot) return false;
+    if (native.kind === "outcome") {
+      const outcome = native.outcome;
+      if (
+        (outcome.exitCode !== null && turn.pid === undefined) ||
+        (outcome.threadId !== null &&
+          (value.binding?.provider !== "codex" ||
+            outcome.threadId !== value.binding.sessionId)) ||
+        (outcome.turnId !== null && outcome.turnId !== turn.nativeTurn)
+      )
+        return false;
+      turn.terminal = true;
+      continue;
+    }
     if (native.kind === "process") {
       if (
         turn.pid !== native.pid ||

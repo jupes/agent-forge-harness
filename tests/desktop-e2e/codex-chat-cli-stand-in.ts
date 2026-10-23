@@ -22,12 +22,15 @@ if (
     "approval-file",
     "approval-resolved",
     "approval-timeout",
+    "outcome-held",
     "hang-text",
     "provider-error",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");
 process.env.CODEX_CHAT_MODE =
-  mode === "approval-timeout" ? "approval-command" : String(mode);
+  mode === "approval-timeout" || mode === "outcome-held"
+    ? "approval-command"
+    : String(mode);
 process.env.CODEX_CHAT_LOG = join(home, "codex-chat-fixture-calls.jsonl");
 await import("../../scripts/sessions/fixtures/codex-app-server-cli");

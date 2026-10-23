@@ -1,3 +1,4 @@
+import type { CodexChatOutcome } from "../../../types/codex-chat";
 import type { CodexCodingUsageEvent } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
 import type {
@@ -5,6 +6,7 @@ import type {
   CodingActivityEvent,
   CodingOutcomeEvent,
 } from "../../../types/session-activity";
+import type { CodexChatDecisionView } from "./codex-chat-decisions";
 
 export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
@@ -83,12 +85,29 @@ export const unsupportedSessionStates = [
   },
 ] as const;
 
+export function sessionStateSupport(
+  nativeChat: boolean,
+  requestsEnabled = true,
+) {
+  return unsupportedSessionStates.map((item) =>
+    item.label === "Needs permission" && nativeChat
+      ? {
+          label: item.label,
+          reason: requestsEnabled
+            ? "Current verified native requests appear in the inline permission cards. Saved reports never authorize a decision."
+            : "Permission requests were disabled when this Chat started. Saved reports never authorize a decision.",
+        }
+      : item,
+  );
+}
+
 export interface OwnedSessionLifecycle {
   state:
     | "loading"
     | "empty"
     | "starting"
     | "running"
+    | "needs-permission"
     | "idle"
     | "ended"
     | "error"
@@ -98,6 +117,31 @@ export interface OwnedSessionLifecycle {
     | "unknown";
   label: string;
   detail: string;
+}
+
+/** A saved outcome describes this accepted turn only; it grants no process or reply authority. */
+export function ownedCodexChatOutcome(
+  page: ConversationPage | null,
+  turnId: string,
+): CodexChatOutcome | null {
+  const saved = [...(page?.frames ?? [])]
+    .reverse()
+    .find(
+      (frame) =>
+        frame.turnId === turnId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    )?.event;
+  if (saved?.kind !== "coding-chat" || saved.event.kind !== "outcome")
+    return null;
+  const outcome = saved.event.outcome;
+  if (
+    outcome.threadId !== null &&
+    (page?.binding?.provider !== "codex" ||
+      outcome.threadId !== page.binding.sessionId)
+  )
+    return null;
+  return outcome;
 }
 
 /** No clock heuristic or provider prose can establish process death, permissions or allowance. */
@@ -110,6 +154,7 @@ export function ownedSessionLifecycle(
     stopping: boolean;
     feedInterrupted: boolean;
     readError: string;
+    approvals?: CodexChatDecisionView | null;
   },
 ): OwnedSessionLifecycle {
   const turn = page?.turns.at(-1);
@@ -132,6 +177,7 @@ export function ownedSessionLifecycle(
           detail: "Reading the saved private conversation.",
         };
   const outcome = ownedSessionTurn(page, turn.requestId).outcome;
+  const chatOutcome = ownedCodexChatOutcome(page, turn.requestId);
   const geminiOutcome = page?.frames
     .filter(
       (frame) =>
@@ -142,6 +188,7 @@ export function ownedSessionLifecycle(
     .at(-1)?.event;
   if (
     outcome?.code === "timed-out" ||
+    chatOutcome?.timedOut ||
     (geminiOutcome?.kind === "coding-gemini-task" &&
       geminiOutcome.event.kind === "outcome" &&
       geminiOutcome.event.timedOut)
@@ -158,6 +205,24 @@ export function ownedSessionLifecycle(
       label: "Stopped",
       detail: "Stop is confirmed. Saved partial activity is retained.",
     };
+  if (chatOutcome && ["accepted", "running", "cancelling"].includes(turn.phase))
+    return chatOutcome.phase === "completed"
+      ? {
+          state: "ended",
+          label: "Native turn ended",
+          detail:
+            "The native process ended. Waiting for the final saved conversation status before another follow-up.",
+        }
+      : {
+          state: chatOutcome.phase === "failed" ? "error" : "unknown",
+          label:
+            chatOutcome.phase === "failed"
+              ? "Ended with error"
+              : "Outcome unknown",
+          detail:
+            chatOutcome.reason ??
+            "The native provider did not confirm successful completion. This turn was not resent.",
+        };
   if (turn.phase === "unknown")
     return {
       state: "unknown",
@@ -214,6 +279,29 @@ export function ownedSessionLifecycle(
       label: `Saved status: ${turn.phase === "accepted" ? "Starting" : "Running"}`,
       detail:
         "This hearth has no confirmed process ownership. The saved status does not prove the provider is still running; Stop is unavailable here.",
+    };
+  const approvals = view.approvals;
+  if (
+    view.mode === "chat" &&
+    page.binding?.provider === "codex" &&
+    view.loaded &&
+    view.live &&
+    !view.feedInterrupted &&
+    !view.readError &&
+    approvals?.actionable &&
+    !approvals.error &&
+    approvals.projectId === page.projectId &&
+    approvals.sessionId === page.conversationId &&
+    approvals.turnRequestId === turn.requestId &&
+    approvals.pending.some(
+      (item) => item.actionable && item.turnRequestId === turn.requestId,
+    )
+  )
+    return {
+      state: "needs-permission",
+      label: "Needs permission",
+      detail:
+        "The provider is waiting for a permission decision. Review the current inline request; saved history cannot approve it.",
     };
   return turn.phase === "accepted"
     ? {

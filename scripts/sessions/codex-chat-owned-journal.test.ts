@@ -8,6 +8,7 @@ import {
 } from "../hearth/routes/codex-chat-fixture";
 import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import { codexChatPrivateEventSchema } from "./codex-chat-owned-journal";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
@@ -58,6 +59,152 @@ test("private native approvals stay correlated with their exact Chat intent and 
       Object.assign(target.event.event.approval, change);
       expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
     }
+  } finally {
+    await h.close();
+  }
+});
+
+test("private Chat terminal reports are closed, one per accepted turn, and bound to its exact native identity on complete and partial reads", async () => {
+  const h = await startTestHearth();
+  try {
+    await seedChatDecision(h);
+    const state = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: FIXTURE_CHAT_SESSION,
+    }).read(FIXTURE_PROJECT_ID);
+    const turn = state.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" && frame.event.event.kind === "turn",
+    );
+    if (
+      !state.binding ||
+      turn?.event.kind !== "coding-chat" ||
+      turn.event.event.kind !== "turn"
+    )
+      throw Error("No exact native fixture identity");
+    const outcome = {
+      phase: "completed",
+      reason: null,
+      threadId: state.binding.sessionId,
+      turnId: turn.event.event.turnId,
+      observedModel: null,
+      usage: null,
+      exitCode: 0,
+      stopped: false,
+      timedOut: false,
+    } as const;
+    const terminal = {
+      seq: state.frames.length + 1,
+      turnId: turn.turnId,
+      at: turn.at,
+      event: {
+        kind: "coding-chat",
+        provider: "codex",
+        version: "0.163.0-alpha.10.2",
+        event: { kind: "outcome", outcome },
+      },
+    } as const;
+    const complete = {
+      ...state,
+      revision: state.revision + 1,
+      frames: [...state.frames, terminal],
+    };
+    expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+    expect(ownedCodingStateSchema.safeParse(complete).success).toBe(true);
+    for (const kind of ["user", "process", "identity"] as const) {
+      const original = state.frames.find(
+        (frame) => frame.turnId === turn.turnId && frame.event.kind === kind,
+      );
+      if (!original) throw Error(`Missing original ${kind} fixture`);
+      expect(
+        ownedCodingStateSchema.safeParse({
+          ...complete,
+          revision: complete.revision + 1,
+          frames: [...complete.frames, { ...original, seq: terminal.seq + 1 }],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      ownedCodingStateSchema.safeParse({
+        ...complete,
+        revision: complete.revision + 1,
+        frames: [
+          ...complete.frames,
+          {
+            ...terminal,
+            seq: terminal.seq + 1,
+            event: { kind: "text", text: "Late untrusted provider output" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(eventSchema.safeParse(terminal.event).success).toBe(false);
+    expect(
+      ownedCodingStateSchema.safeParse({
+        ...complete,
+        frames: [...complete.frames, { ...terminal, seq: terminal.seq + 1 }],
+      }).success,
+    ).toBe(false);
+    for (const changed of [
+      { ...outcome, threadId: randomUUID() },
+      { ...outcome, turnId: randomUUID() },
+      { ...outcome, timedOut: true },
+      { ...outcome, stopped: true },
+      { ...outcome, observedModel: "invented execution model" },
+      {
+        ...outcome,
+        usage: { lastResponse: { inputTokens: -1 }, threadTotal: {} },
+      },
+      { ...outcome, exitCode: "0" },
+      { ...outcome, command: ["caller-selected-executable"] },
+    ]) {
+      const forged = {
+        ...terminal,
+        event: {
+          ...terminal.event,
+          event: { kind: "outcome", outcome: changed },
+        },
+      };
+      expect(
+        ownedCodingStateSchema.safeParse({
+          ...complete,
+          frames: [...state.frames, forged],
+        }).success,
+      ).toBe(false);
+    }
+    const page = {
+      ...complete,
+      frames: [terminal],
+      more: false,
+      nextCursor: terminal.seq,
+      lastSequence: terminal.seq,
+      request: state.turns[0],
+      controllable: false,
+    };
+    expect(ownedCodingPageSchema.safeParse(page).success).toBe(true);
+    expect(
+      ownedCodingPageSchema.safeParse({
+        ...page,
+        binding: { ...state.binding, sessionId: randomUUID() },
+      }).success,
+    ).toBe(false);
+    expect(
+      codexChatPrivateEventSchema.safeParse({
+        ...terminal.event,
+        event: {
+          kind: "outcome",
+          outcome: {
+            ...outcome,
+            phase: "unknown",
+            threadId: null,
+            turnId: null,
+            exitCode: null,
+            usage: null,
+          },
+        },
+      }).success,
+    ).toBe(true);
   } finally {
     await h.close();
   }

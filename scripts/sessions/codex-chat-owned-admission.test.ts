@@ -2,12 +2,14 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type { CodexChatStartRequest } from "../../types/codex-owned-chat";
 import { conversationFile } from "../conversations/paths";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
+import { ownedCodingPageSchema } from "./codex-owned-journal";
 import { createSessionLibrary } from "./library";
 import { sessionTranscriptExportSchema } from "./library-protocol";
 import { sessionRegistryFile } from "./registry";
@@ -18,7 +20,7 @@ afterEach(async () => {
   for (const close of closing.splice(0).reverse()) await close();
   scratch.cleanup();
 });
-async function fixture(mode = "normal") {
+async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   const root = scratch.make("codex-chat-owned-"),
     home = join(root, "home"),
     configHome = join(root, "config");
@@ -51,6 +53,7 @@ async function fixture(mode = "normal") {
     syncCommand: [process.execPath, fake, "--sync"],
     environment: { ...process.env, CODEX_CHAT_MODE: mode, CODEX_CHAT_LOG: log },
     timeoutMs: 5000,
+    rpcTimeoutMs,
     approvalTimeoutMs: 3000,
   });
   const open = () => {
@@ -106,6 +109,27 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
   await service.settled(f.project.id, started.session.id);
   let page = await service.read(f.project.id, started.session.id);
   expect(page.turns[0]?.phase).toBe("completed");
+  expect(
+    page.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    )?.event,
+  ).toMatchObject({
+    kind: "coding-chat",
+    provider: "codex",
+    event: {
+      kind: "outcome",
+      outcome: {
+        phase: "completed",
+        exitCode: 0,
+        stopped: false,
+        timedOut: false,
+        threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        observedModel: null,
+      },
+    },
+  });
   expect(page.frames[0]?.event).toMatchObject({
     kind: "user",
     codexChat: {
@@ -178,6 +202,81 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
   ).toBe(false);
   expect(readFileSync(path)).toEqual(before);
   expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registryBefore);
+});
+
+test("a real initialization failure remains readable after the process cursor without inventing native identity or replaying a prompt", async () => {
+  const f = await fixture("hang-initialize", 1000);
+  let service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id;
+  await service.settled(f.project.id, sessionId);
+  const complete = await service.read(f.project.id, sessionId),
+    terminal = complete.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    );
+  if (
+    terminal?.event.kind !== "coding-chat" ||
+    terminal.event.event.kind !== "outcome"
+  )
+    throw Error("Missing actual pre-identity terminal report");
+  expect(complete.binding).toBeNull();
+  expect(terminal.event.event.outcome).toMatchObject({
+    phase: "unknown",
+    threadId: null,
+    turnId: null,
+    usage: null,
+    observedModel: null,
+    stopped: true,
+  });
+  const partial = await service.read(f.project.id, sessionId, {
+    after: terminal.seq - 1,
+  });
+  expect(partial.frames).toEqual([terminal]);
+  expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+  for (const change of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { usage: { lastResponse: {}, threadTotal: {} } },
+    { phase: "completed", exitCode: 0 },
+  ]) {
+    const forged = {
+      ...terminal,
+      event: {
+        ...terminal.event,
+        event: {
+          kind: "outcome",
+          outcome: { ...terminal.event.event.outcome, ...change },
+        },
+      },
+    };
+    expect(
+      ownedCodingPageSchema.safeParse({ ...partial, frames: [forged] }).success,
+    ).toBe(false);
+  }
+  await service.close();
+  service = f.open();
+  expect(
+    ownedCodingPageSchema.safeParse(
+      await service.read(f.project.id, sessionId, {
+        after: terminal.seq - 1,
+      }),
+    ).success,
+  ).toBe(true);
+  expect(
+    createSessionLibrary({ root: f.root, home: f.home }).exportTranscript(
+      f.project.id,
+      sessionId,
+    ).conversation.frames,
+  ).toContainEqual(terminal);
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "initialize")).toHaveLength(
+    1,
+  );
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    0,
+  );
 });
 
 test("a later Chat turn cannot replace the original captured canonical directory identity", async () => {
@@ -269,4 +368,91 @@ test.each([
     }),
   ).rejects.toThrow("recorded");
   expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+});
+
+test.each([
+  "deadline",
+  "Stop",
+] as const)("owned native Chat %s retains actual terminal facts and dead helper evidence after reopening without another prompt", async (action) => {
+  const f = await fixture("hang");
+  let service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id;
+  let tree: Record<string, unknown> | undefined;
+  const deadline = Date.now() + 4000;
+  while (!(tree = f.records().find((row) => row.kind === "tree"))) {
+    if (Date.now() > deadline)
+      throw Error("Native Chat did not reach its held live turn");
+    await Bun.sleep(10);
+  }
+  const pid = tree.pid,
+    childPid = tree.childPid;
+  expect(typeof pid).toBe("number");
+  expect(typeof childPid).toBe("number");
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  if (action === "Stop")
+    await service.stop(f.project.id, sessionId, f.request.requestId);
+  await service.settled(f.project.id, sessionId);
+  await service.close();
+  service = f.open();
+  const saved = await service.read(f.project.id, sessionId);
+  const report = saved.frames.find(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "outcome",
+  )?.event;
+  expect(report).toMatchObject({
+    kind: "coding-chat",
+    provider: "codex",
+    event: {
+      kind: "outcome",
+      outcome: {
+        timedOut: action === "deadline",
+        stopped: true,
+        observedModel: null,
+      },
+    },
+  });
+  expect(
+    ownedSessionLifecycle(saved, {
+      mode: "chat",
+      loaded: true,
+      live: false,
+      stopping: false,
+      feedInterrupted: false,
+      readError: "",
+    }).state,
+  ).toBe(action === "deadline" ? "timed-out" : "stopped");
+  const alive = (value: unknown) => {
+    if (typeof value !== "number") throw Error("Missing witnessed PID");
+    try {
+      if (
+        process.platform === "linux" &&
+        /\) Z(?: |$)/.test(readFileSync(`/proc/${value}/stat`, "utf8"))
+      )
+        return false;
+      process.kill(value, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  expect(alive(pid)).toBe(false);
+  expect(alive(childPid)).toBe(false);
+  const calls = f.records().filter((row) => row.method === "turn/start").length;
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    calls,
+  );
+  expect(
+    createSessionLibrary({ root: f.root, home: f.home })
+      .exportTranscript(f.project.id, sessionId)
+      .conversation.frames.some(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "outcome",
+      ),
+  ).toBe(true);
 });

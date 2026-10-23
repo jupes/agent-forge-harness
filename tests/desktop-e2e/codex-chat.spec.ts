@@ -1,9 +1,19 @@
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
+import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
+import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -81,6 +91,13 @@ async function startedChat(page: Page) {
 let previous = new Set<string>();
 test.beforeEach(() => {
   seedProjects();
+  for (const name of [
+    "codex-chat-outcome-held.json",
+    "codex-chat-outcome-release",
+  ]) {
+    const file = join(HEARTH_HOME, name);
+    if (existsSync(file)) unlinkSync(file);
+  }
   previous = new Set(records().map((record) => record.id));
   mode("approval-command");
 });
@@ -171,7 +188,7 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
         dialog.getByRole("textbox", { name: "Session prompt", exact: true }),
       ],
     });
-    await page.setViewportSize({ width: 1100, height: 750 });
+    await page.setViewportSize({ width: 1100, height: 700 });
   }
   return dialog;
 }
@@ -179,7 +196,8 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
 test("Codex Chat reviews native options, allows one actual command and resumes its exact saved thread after reload", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1100, height: 750 });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html#/desktop/project/${alpha.id}/beads?selectionKind=bead&selectionId=alpha-epic`,
@@ -220,6 +238,10 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
       exact: true,
     });
   await expect(approval).toContainText("inert example");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "needs-permission",
+  );
   await expect
     .poll(() =>
       pane.locator("header").evaluate((header) => {
@@ -231,6 +253,53 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
       }),
     )
     .toBe(true);
+  const actions = pane.getByRole("button", {
+    name: "Session actions",
+    exact: true,
+  });
+  await actions.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(actions).toBeFocused();
+  await expect(actions).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  const support = page.getByRole("dialog", {
+    name: "Session actions",
+    exact: true,
+  });
+  await expect(support).toContainText(
+    "Review the inline native permission cards",
+  );
+  await expect(
+    support.getByRole("button", { name: "Continue this Chat", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    support.getByRole("button", { name: "Fork session", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    support.getByRole("button", {
+      name: "Open session in terminal",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  const review = support.getByRole("button", {
+    name: "Review native permissions",
+    exact: true,
+  });
+  await expect(review).toBeEnabled();
+  await review.focus();
+  if (process.env.CODEX_CHAT_SHOTS)
+    await support.screenshot({
+      path: join(process.env.CODEX_CHAT_SHOTS, "native-chat-actions.png"),
+    });
+  await page.keyboard.press("Enter");
+  const refresh = pane.getByRole("button", {
+    name: "Refresh native approvals",
+    exact: true,
+  });
+  await expect(refresh).toBeFocused();
+  await expect(refresh).toHaveCSS("outline-width", "2px");
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(before);
   if (process.env.CODEX_CHAT_SHOTS) {
     await page
       .getByRole("button", { name: "Hide inspector", exact: true })
@@ -250,7 +319,7 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
           .filter({ hasText: /[A-Z]:[\\/]|\/Users\/|\/home\// }),
       ],
     });
-    await page.setViewportSize({ width: 1100, height: 750 });
+    await page.setViewportSize({ width: 1100, height: 700 });
   }
   await expect(
     approval.getByRole("button", { name: "Allow once", exact: true }),
@@ -280,6 +349,10 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
     },
   });
   await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "idle",
+  );
   const usage = pane.getByRole("region", {
     name: "Native Chat usage",
     exact: true,
@@ -295,10 +368,67 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   mode("normal");
   await reloadSettled(page);
   await expect(pane.getByText("Hello world", { exact: true })).toBeVisible();
+  await pane
+    .getByRole("button", { name: "Session actions", exact: true })
+    .click();
+  const continued = page.getByRole("dialog", {
+    name: "Session actions",
+    exact: true,
+  });
+  await expect(continued).not.toContainText("Native Chat is not connected");
+  await expect(
+    continued.getByRole("button", { name: "Continue this Chat", exact: true }),
+  ).toBeEnabled();
+  await page.evaluate(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          document.body.dataset.copiedCli = value;
+        },
+      },
+    }),
+  );
+  await continued
+    .getByRole("button", { name: "Copy original CLI preview", exact: true })
+    .click();
+  const original = saved(record.id).frames.find(
+    (frame) => frame.event.kind === "user",
+  )?.event;
+  if (
+    original?.kind !== "user" ||
+    !("codexChat" in original) ||
+    !original.codexChat
+  )
+    throw Error("Missing original native Chat snapshot");
+  const serialized = serializeCodexChat(
+    original.codexChat.launch,
+    original.codexChat.capabilities,
+  );
+  await expect
+    .poll(() => page.evaluate(() => document.body.dataset.copiedCli))
+    .toBe(`${serialized.equivalentCommand}\n\n${serialized.stdinNote}`);
+  const startsBeforeContinue = calls().filter(
+    (row) =>
+      row.kind === "rpc" &&
+      ["thread/start", "thread/resume"].includes(row.method ?? ""),
+  ).length;
+  await continued
+    .getByRole("button", { name: "Continue this Chat", exact: true })
+    .click();
   const message = pane.getByRole("textbox", {
     name: "Session reply prompt",
     exact: true,
   });
+  await expect(message).toBeFocused();
+  expect(saved(record.id).turns).toHaveLength(1);
+  expect(
+    calls().filter(
+      (row) =>
+        row.kind === "rpc" &&
+        ["thread/start", "thread/resume"].includes(row.method ?? ""),
+    ).length,
+  ).toBe(startsBeforeContinue);
   await message.fill("PRIVATE second explicit Chat turn");
   await pane
     .getByRole("button", { name: "Send session message", exact: true })
@@ -317,6 +447,50 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   expect(
     saved(record.id).frames.filter((frame) => frame.event.kind === "model"),
   ).toEqual([]);
+});
+
+test("native permission state cannot cross project scope or survive an interrupted feed and actual Stop", async ({
+  page,
+}) => {
+  const before = calls().filter((row) => row.kind === "answer").length;
+  const { pane, record } = await startedChat(page);
+  const state = pane.locator("[data-session-state]");
+  await expect(state).toHaveAttribute("data-session-state", "needs-permission");
+  await page.route("**/sessions/*/events*", (route) =>
+    route.abort("connectionreset"),
+  );
+  await reloadSettled(page);
+  await expect(state).toHaveAttribute("data-session-state", "stale");
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+  expect(saved(record.id).turns[0]?.phase).toBe("running");
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${beta.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  await expect(
+    page.getByRole("region", { name: "Session conversation", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('[data-session-state="needs-permission"]'),
+  ).toHaveCount(0);
+  await page.unroute("**/sessions/*/events*");
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  await expect(state).toHaveAttribute("data-session-state", "needs-permission");
+  await pane.getByRole("button", { name: "Stop session", exact: true }).click();
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("cancelled");
+  await expect(state).toHaveAttribute("data-session-state", "stopped");
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+  await reloadSettled(page);
+  await expect(state).toHaveAttribute("data-session-state", "stopped");
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(before);
+  expect(saved(record.id).turns).toHaveLength(1);
 });
 
 test("a decision held before native admission survives reload and checks only its original recorded intent", async ({
@@ -621,6 +795,24 @@ test("explicit Chat Stop waits for the actual native provider and helper to exit
   await expect(
     pane.getByRole("button", { name: "Allow once", exact: true }),
   ).toHaveCount(0);
+  await reloadSettled(page);
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  const outcome = pane.getByRole("region", {
+    name: "Native Chat outcome",
+    exact: true,
+  });
+  await expect(outcome).toContainText("Supervisor stopped the process");
+  expect(
+    saved(record.id).frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome" &&
+        frame.event.event.outcome.stopped,
+    ),
+  ).toBe(true);
 });
 
 test("Chat option checks show loading and failure without accepting a turn, then recover through a fresh native preview", async ({
@@ -840,4 +1032,220 @@ test("the native approval deadline removes stale choices without answering the r
   await expect(
     pane.getByRole("button", { name: "Refresh native approvals", exact: true }),
   ).toBeDisabled();
+});
+
+test("a saved native timeout withdraws old choices before final metadata settles, and reload/export never revive or resend them", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  mode("outcome-held");
+  const before = calls().filter((row) => row.method === "turn/start").length;
+  const { pane, record } = await startedChat(page);
+  const allow = pane.getByRole("button", { name: "Allow once", exact: true });
+  await expect(allow).toBeEnabled();
+  let releaseRead = () => {},
+    received = () => {},
+    rejectHeld = (_error: unknown) => {},
+    consumed = () => {},
+    heldOnce = false,
+    decisions = 0;
+  let fixtureFailure: unknown = null;
+  const gate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const held = new Promise<void>((resolve, reject) => {
+    received = resolve;
+    rejectHeld = reject;
+  });
+  const releasedResponse = new Promise<void>((resolve) => {
+    consumed = resolve;
+  });
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/approval-decisions")
+    )
+      decisions++;
+  });
+  await page.route(
+    `**/projects/${alpha.id}/sessions/${record.id}/approvals`,
+    async (route) => {
+      try {
+        if (heldOnce) {
+          await route.continue();
+          return;
+        }
+        heldOnce = true;
+        const response = await route.fetch({
+          headers: {
+            ...route.request().headers(),
+            origin: new URL(route.request().url()).origin,
+          },
+        });
+        if (response.status() !== 200)
+          throw Error(
+            `Protected approval fixture read refused: ${response.status()}`,
+          );
+        const body = await response.text();
+        let raw: unknown;
+        try {
+          raw = JSON.parse(body);
+        } catch {
+          throw Error("Malformed protected approval fixture read");
+        }
+        const originalOffer = z
+          .object({
+            ok: z.literal(true),
+            data: codexChatApprovalPageSchema,
+            error: z.null(),
+          })
+          .strict()
+          .parse(raw).data;
+        const offered = saved(record.id).frames.find(
+          (frame) =>
+            frame.turnId === record.requestId &&
+            frame.event.kind === "coding-chat" &&
+            frame.event.event.kind === "approval-request",
+        )?.event;
+        if (
+          offered?.kind !== "coding-chat" ||
+          offered.event.kind !== "approval-request"
+        )
+          throw Error("No original native approval witness");
+        expect(originalOffer.pending).toHaveLength(1);
+        expect(originalOffer.pending[0]).toMatchObject({
+          turnRequestId: record.requestId,
+          actionable: true,
+          approval: { id: offered.event.approval.id },
+        });
+        received();
+        await gate;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body,
+        });
+        consumed();
+      } catch (error) {
+        fixtureFailure = error;
+        rejectHeld(error);
+        consumed();
+        await route.abort().catch(() => {});
+      }
+    },
+  );
+  try {
+    await pane
+      .getByRole("button", { name: "Refresh native approvals", exact: true })
+      .click();
+    await held;
+    await expect
+      .poll(() => existsSync(join(HEARTH_HOME, "codex-chat-outcome-held.json")))
+      .toBe(true);
+    expect(saved(record.id).turns[0]?.phase).toBe("running");
+    await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+      "data-session-state",
+      "timed-out",
+    );
+    await expect(
+      pane.getByRole("button", { name: "Stop session", exact: true }),
+    ).toHaveCount(0);
+    await expect(allow).toHaveCount(0);
+    releaseRead();
+    await releasedResponse;
+    if (fixtureFailure) throw fixtureFailure;
+    // Wait through the fetch/body and Preact effect/render boundary before
+    // asserting that this genuinely actionable old response cannot revive UI.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(allow).toHaveCount(0);
+    expect(decisions).toBe(0);
+    await pane
+      .getByRole("button", { name: "Session actions", exact: true })
+      .click();
+    const actions = page.getByRole("dialog", {
+      name: "Session actions",
+      exact: true,
+    });
+    await expect(
+      actions.getByRole("button", {
+        name: "Review native permissions",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(
+      actions.getByRole("button", { name: "Continue this Chat", exact: true }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+  } finally {
+    releaseRead();
+    writeFileSync(
+      join(HEARTH_HOME, "codex-chat-outcome-release"),
+      "release this closed fixture only",
+    );
+  }
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("unknown");
+  await reloadSettled(page);
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "timed-out",
+  );
+  const outcome = pane.getByRole("region", {
+    name: "Native Chat outcome",
+    exact: true,
+  });
+  await expect(outcome).toContainText("Time limit reached");
+  await expect(outcome).toContainText("Supervisor stopped the process");
+  if (process.env.CODEX_CHAT_OUTCOME_SHOTS) {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await outcome.scrollIntoViewIfNeeded();
+    await expect(outcome).toBeInViewport({ ratio: 1 });
+    await outcome.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_OUTCOME_SHOTS,
+        "native-chat-outcome.png",
+      ),
+    });
+    await page.setViewportSize({ width: 1100, height: 700 });
+  }
+  const tree = calls()
+    .filter((row) => row.kind === "process")
+    .at(-1);
+  if (typeof tree?.pid !== "number")
+    throw Error("No actual native process witness");
+  expect(() => globalThis.process.kill(tree.pid!, 0)).toThrow();
+  await pane
+    .getByRole("button", { name: "Session actions", exact: true })
+    .click();
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("dialog", { name: "Session actions", exact: true })
+    .getByRole("button", { name: "Export saved transcript", exact: true })
+    .click();
+  const exportedPath = await (await download).path();
+  if (!exportedPath) throw Error("No complete transcript download");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(exportedPath, "utf8"));
+  } catch {
+    throw Error("Malformed complete transcript download");
+  }
+  const exported = sessionTranscriptExportSchema.parse(raw).conversation;
+  expect(
+    exported.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome" &&
+        frame.event.event.outcome.timedOut,
+    ),
+  ).toBe(true);
+  expect(calls().filter((row) => row.method === "turn/start")).toHaveLength(
+    before + 1,
+  );
+  expect(decisions).toBe(0);
 });

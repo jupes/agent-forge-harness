@@ -12,12 +12,14 @@ export function SessionLibraryControls({
   library,
   writesAllowed,
   onContinue,
+  onPermissions,
 }: {
   record: OwnedCodingSessionRecord;
   session: OwnedSessionView;
   library: SessionLibraryClient;
   writesAllowed: boolean;
   onContinue(): void;
+  onPermissions?: (() => void) | undefined;
 }) {
   const view = library.current();
   const selected =
@@ -38,6 +40,8 @@ export function SessionLibraryControls({
     live: session.live,
     pending: !!session.pending,
     stopping: !!session.stopping,
+    feedInterrupted: session.feedInterrupted,
+    readError: session.readError,
   });
   return (
     <>
@@ -165,7 +169,21 @@ export function SessionLibraryControls({
             </Button>
             <Button disabled>Fork session</Button>
             <Button disabled>Open session in terminal</Button>
-            <Button disabled>Live permission controls</Button>
+            <Button
+              disabled={
+                !writesAllowed ||
+                !controls.permissions.available ||
+                !onPermissions
+              }
+              onClick={() => {
+                setOpen(false);
+                requestAnimationFrame(() => onPermissions?.());
+              }}
+            >
+              {controls.permissions.inline
+                ? "Review native permissions"
+                : "Live permission controls"}
+            </Button>
           </div>
           <dl class="af-session-control-support">
             <dt>Continue Chat</dt>

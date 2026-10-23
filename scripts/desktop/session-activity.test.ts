@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { CodexChatTerminal } from "../../apps/desktop/src/CodexChatTerminal";
+import type { CodexChatDecisionView } from "../../apps/desktop/src/codex-chat-decisions";
 import {
   SessionActivity,
   SessionOutcome,
@@ -7,8 +9,10 @@ import {
 import {
   ownedSessionLifecycle,
   ownedSessionTurn,
+  sessionStateSupport,
   unsupportedSessionStates,
 } from "../../apps/desktop/src/session-activity";
+import type { CodexChatOutcome } from "../../types/codex-chat";
 import type {
   ConversationEvent,
   ConversationPage,
@@ -16,6 +20,97 @@ import type {
 import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 
 const turnId = "original-turn";
+test("native Chat terminal facts keep zero distinct from missing, render private prose inertly and grant no controls", () => {
+  expect(CodexChatTerminal({ value: null })).toBeNull();
+  const outcome: CodexChatOutcome = {
+    phase: "unknown",
+    reason: "<script>private</script>",
+    threadId: null,
+    turnId: null,
+    observedModel: null,
+    usage: null,
+    exitCode: null,
+    stopped: true,
+    timedOut: false,
+  };
+  const unknown = CodexChatTerminal({ value: outcome });
+  expect(textOf(unknown)).toContain("Process exit codeNot reported");
+  expect(textOf(unknown)).toContain("Supervisor stopped the processYes");
+  expect(textOf(unknown)).toContain(outcome.reason!);
+  expect(textOf(unknown)).not.toContain("Stop confirmed");
+  expect(findAll(unknown, "script")).toHaveLength(0);
+  expect(findAll(unknown, "button")).toHaveLength(0);
+  const zero = CodexChatTerminal({ value: { ...outcome, exitCode: 0 } });
+  expect(textOf(zero)).toContain("Process exit code0");
+});
+test("native Chat timeout facts survive a saved reload while internal cleanup, another thread and prose never confirm operator Stop", () => {
+  const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const outcome: CodexChatOutcome = {
+    phase: "unknown",
+    reason: "Native protocol stopped after its deadline",
+    threadId,
+    turnId: "0199a214-81c0-7800-8aa1-bbab2a035a53",
+    observedModel: null,
+    usage: null,
+    exitCode: 1,
+    stopped: true,
+    timedOut: true,
+  };
+  const current = page([
+    {
+      kind: "coding-chat",
+      provider: "codex",
+      version: "0.163.0-alpha.10.2",
+      event: { kind: "outcome", outcome },
+    },
+  ]);
+  current.binding = {
+    provider: "codex",
+    sessionId: threadId,
+    version: "0.163.0-alpha.10.2",
+  };
+  current.turns = [
+    {
+      requestId: turnId,
+      hash: "fixture",
+      phase: "unknown",
+      createdAt: "2026-10-23T00:00:00Z",
+      updatedAt: "2026-10-23T00:00:00Z",
+      reason: "Unverified timeout words",
+      owner: "fixture",
+    },
+  ];
+  const options = {
+    mode: "chat",
+    loaded: true,
+    live: false,
+    stopping: false,
+    feedInterrupted: false,
+    readError: "",
+  } as const;
+  expect(ownedSessionLifecycle(current, options).state).toBe("timed-out");
+  outcome.timedOut = false;
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  outcome.timedOut = true;
+  outcome.threadId = "0199a215-81c0-7800-8aa1-bbab2a035a53";
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  outcome.threadId = threadId;
+  current.frames[0]!.turnId = "another-accepted-turn";
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  current.frames[0]!.turnId = turnId;
+  outcome.timedOut = false;
+  current.turns[0]!.phase = "cancelled";
+  expect(ownedSessionLifecycle(current, options).state).toBe("stopped");
+  current.turns[0]!.phase = "running";
+  expect(ownedSessionLifecycle(current, options).state).toBe("unknown");
+  outcome.phase = "failed";
+  expect(ownedSessionLifecycle(current, options).state).toBe("error");
+  outcome.phase = "completed";
+  outcome.exitCode = 0;
+  outcome.stopped = false;
+  expect(ownedSessionLifecycle(current, options).state).toBe("ended");
+  expect(ownedSessionLifecycle(current, options).label).not.toContain("ready");
+});
 function page(events: ConversationEvent[]): ConversationPage {
   return {
     version: 1,
@@ -236,6 +331,157 @@ test("interrupted live observation is stale, saved ownership is explicit, and un
   expect(
     ownedSessionLifecycle(current, { ...options, stopping: true }).label,
   ).toBe("Stopping… waiting for confirmation");
+});
+
+test("Needs permission requires a current protected offer for this exact live owned Chat turn; held decision metadata alone cannot establish it", () => {
+  const current = page([]);
+  current.binding = {
+    provider: "codex",
+    sessionId: "native",
+    version: "fixture",
+  };
+  current.turns = [
+    {
+      requestId: turnId,
+      hash: "fixture",
+      phase: "running",
+      createdAt: "2026-10-23T00:00:00Z",
+      updatedAt: "2026-10-23T00:00:00Z",
+      reason: null,
+      owner: "fixture",
+    },
+  ];
+  const approvals: CodexChatDecisionView = {
+    projectId: current.projectId,
+    sessionId: current.conversationId,
+    turnRequestId: turnId,
+    actionable: true,
+    pending: [
+      {
+        turnRequestId: turnId,
+        actionable: true,
+        detailsUnavailableReason: null,
+        approval: {
+          id: "offer",
+          kind: "command",
+          command: "inert",
+          cwd: "/repo",
+          reason: null,
+          availableDecisions: ["accept", "decline"],
+        },
+      },
+    ],
+    identity: null,
+    identityError: "",
+    error: "",
+    notice: "",
+    loading: false,
+    checking: false,
+    posting: false,
+    receipt: null,
+  };
+  const options = {
+    mode: "chat",
+    loaded: true,
+    live: true,
+    stopping: false,
+    feedInterrupted: false,
+    readError: "",
+    approvals,
+  } as const;
+  expect(ownedSessionLifecycle(current, options)).toMatchObject({
+    state: "needs-permission",
+    label: "Needs permission",
+    detail: expect.stringContaining("inline"),
+  });
+  for (const change of [
+    { projectId: "foreign" },
+    { sessionId: "foreign" },
+    { turnRequestId: "old-turn" },
+    { actionable: false },
+    { error: "unverified" },
+    { pending: [] },
+    {
+      pending: approvals.pending.map((item) => ({
+        ...item,
+        turnRequestId: "old-turn",
+      })),
+    },
+  ])
+    expect(
+      ownedSessionLifecycle(current, {
+        ...options,
+        approvals: { ...approvals, ...change },
+      }).state,
+    ).toBe("running");
+  expect(
+    ownedSessionLifecycle(current, { ...options, stopping: true }).label,
+  ).toContain("Stopping");
+  expect(
+    ownedSessionLifecycle(current, {
+      ...options,
+      live: false,
+      feedInterrupted: true,
+    }).state,
+  ).toBe("stale");
+  expect(
+    ownedSessionLifecycle(current, { ...options, readError: "unavailable" })
+      .state,
+  ).not.toBe("needs-permission");
+  expect(
+    ownedSessionLifecycle({ ...current, controllable: false }, options).state,
+  ).toBe("running");
+  expect(
+    ownedSessionLifecycle(current, { ...options, mode: "task" }).state,
+  ).toBe("running");
+  for (const phase of [
+    "completed",
+    "failed",
+    "cancelled",
+    "unknown",
+  ] as const) {
+    const ended = {
+      ...current,
+      turns: current.turns.map((turn) => ({ ...turn, phase })),
+    };
+    expect(ownedSessionLifecycle(ended, options).state).not.toBe(
+      "needs-permission",
+    );
+  }
+  const held = {
+    ...approvals,
+    pending: [],
+    identity: {
+      projectId: current.projectId,
+      sessionId: current.conversationId,
+      turnRequestId: turnId,
+      approvalId: "old-offer",
+      requestId: "original",
+      decision: "accept" as const,
+    },
+  };
+  expect(
+    ownedSessionLifecycle(current, { ...options, approvals: held }).state,
+  ).toBe("running");
+  expect(
+    ownedSessionLifecycle(current, {
+      ...options,
+      approvals: { ...held, pending: approvals.pending },
+    }).state,
+  ).toBe("needs-permission");
+  expect(
+    sessionStateSupport(true).find((item) => item.label === "Needs permission")
+      ?.reason,
+  ).toContain("Current verified native requests");
+  expect(
+    sessionStateSupport(false).find((item) => item.label === "Needs permission")
+      ?.reason,
+  ).toContain("do not expose live permission");
+  expect(
+    sessionStateSupport(true, false).find(
+      (item) => item.label === "Needs permission",
+    )?.reason,
+  ).toContain("disabled when this Chat started");
 });
 
 test("reported activity is collapsed, inert and explicit about redaction, truncation and missing file counts", () => {

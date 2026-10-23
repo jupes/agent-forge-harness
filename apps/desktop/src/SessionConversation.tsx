@@ -18,9 +18,10 @@ import {
   SessionTurnUsage,
 } from "./SessionActivity";
 import {
+  ownedCodexChatOutcome,
   ownedSessionLifecycle,
   ownedSessionTurn,
-  unsupportedSessionStates,
+  sessionStateSupport,
 } from "./session-activity";
 import type { SessionsClient } from "./session-client";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./session-composer";
 import "./session.css";
 import { CodexChatApprovals } from "./CodexChatApprovals";
+import { CodexChatTerminal } from "./CodexChatTerminal";
 import { CodexChatUsage } from "./CodexChatUsage";
 import { SessionLibraryControls } from "./SessionLibraryControls";
 import type { SessionLibraryClient } from "./session-library-client";
@@ -65,19 +67,6 @@ export function SessionConversation({
       : record?.provider === "codex"
         ? "Codex"
         : "Claude";
-  const lifecycle = ownedSessionLifecycle(view.page, {
-    mode: record?.mode ?? null,
-    loaded: view.loaded,
-    live: view.live,
-    stopping: !!view.stopping,
-    feedInterrupted: view.feedInterrupted,
-    readError: view.readError,
-  });
-  const showLifecycleGuidance =
-    ["error", "unknown", "timed-out", "stale"].includes(lifecycle.state) ||
-    !!view.stopping ||
-    current?.phase === "cancelling" ||
-    (!!running && !view.page?.controllable);
   const observed = [...(view.page?.frames ?? [])]
     .reverse()
     .find(
@@ -105,6 +94,10 @@ export function SessionConversation({
     chatFirst?.kind === "user" ? chatFirst.codexChat : undefined;
   const isCodexChat =
     record?.provider === "codex" && record.mode === "chat" && !!chatSnapshot;
+  const chatOutcome =
+    isCodexChat && current
+      ? ownedCodexChatOutcome(view.page, current.requestId)
+      : null;
   const chatUsageEvent = view.page?.frames
     .filter(
       (frame) =>
@@ -123,6 +116,7 @@ export function SessionConversation({
             "approval-request",
             "approval-decision",
             "approval-resolved",
+            "outcome",
           ].includes(frame.event.event.kind),
       )
       .at(-1)?.seq ?? 0;
@@ -131,6 +125,7 @@ export function SessionConversation({
     writesAllowed &&
     !archived &&
     !!running &&
+    !chatOutcome &&
     current?.phase !== "cancelling" &&
     !!view.page?.controllable &&
     !view.stopping &&
@@ -146,6 +141,22 @@ export function SessionConversation({
     actionable: approvalActionable,
     approvalRevision,
   });
+  const lifecycle = ownedSessionLifecycle(view.page, {
+    mode: record?.mode ?? null,
+    loaded: view.loaded,
+    live: view.live,
+    stopping: !!view.stopping,
+    feedInterrupted: view.feedInterrupted,
+    readError: view.readError,
+    approvals: approvalActionable ? approvals.view() : null,
+  });
+  const showLifecycleGuidance =
+    ["error", "unknown", "timed-out", "stale", "needs-permission"].includes(
+      lifecycle.state,
+    ) ||
+    !!view.stopping ||
+    current?.phase === "cancelling" ||
+    (!!running && !view.page?.controllable);
   const usage = view.page?.frames
     .filter(
       (frame) =>
@@ -156,7 +167,8 @@ export function SessionConversation({
   const feed = useRef<HTMLDivElement>(null),
     following = useRef(true);
   const prompt = useRef<HTMLTextAreaElement>(null),
-    pickerRegion = useRef<HTMLDivElement>(null);
+    pickerRegion = useRef<HTMLDivElement>(null),
+    chatControls = useRef<HTMLDivElement>(null);
   const [away, setAway] = useState(false),
     [notice, setNotice] = useState("");
   const [caret, setCaret] = useState(0),
@@ -257,7 +269,7 @@ export function SessionConversation({
           >
             All sessions
           </Button>
-          {running && (
+          {running && !chatOutcome && (
             <Button
               disabled={
                 !writesAllowed ||
@@ -280,6 +292,16 @@ export function SessionConversation({
               library={library}
               writesAllowed={writesAllowed}
               onContinue={() => prompt.current?.focus()}
+              onPermissions={
+                approvalActionable
+                  ? () =>
+                      chatControls.current
+                        ?.querySelector<HTMLButtonElement>(
+                          "button:not(:disabled)",
+                        )
+                        ?.focus()
+                  : undefined
+              }
             />
           )}
         </div>
@@ -375,7 +397,10 @@ export function SessionConversation({
           <details class="af-session-state-support">
             <summary>State support for this route</summary>
             <dl>
-              {unsupportedSessionStates.map((item) => (
+              {sessionStateSupport(
+                isCodexChat,
+                chatSnapshot?.launch.approvalPolicy === "on-request",
+              ).map((item) => (
                 <div key={item.label}>
                   <dt>{item.label}</dt>
                   <dd>{item.reason}</dd>
@@ -535,6 +560,14 @@ export function SessionConversation({
               {record?.provider !== "gemini" && (
                 <>
                   <SessionOutcome value={activity.outcome} />
+                  {isCodexChat && row.turn && (
+                    <CodexChatTerminal
+                      value={ownedCodexChatOutcome(
+                        view.page,
+                        row.turn.requestId,
+                      )}
+                    />
+                  )}
                   <SessionTurnUsage
                     value={activity}
                     requestedModel={activity.requestedModel}
@@ -545,7 +578,7 @@ export function SessionConversation({
           );
         })}
         {isCodexChat && (
-          <div class="af-session-chat-controls">
+          <div class="af-session-chat-controls" ref={chatControls}>
             <CodexChatApprovals
               client={approvals}
               actionable={approvalActionable}
@@ -577,7 +610,9 @@ export function SessionConversation({
         <p role="status">
           {notice ||
             (running
-              ? "The provider is answering…"
+              ? chatOutcome
+                ? "The native process ended. Waiting for the final saved conversation status…"
+                : "The provider is answering…"
               : record?.mode === "task"
                 ? "This Task accepts one turn. Start another session explicitly."
                 : !view.page?.binding

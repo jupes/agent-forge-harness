@@ -36,7 +36,7 @@ Nocturne tokens without claiming verification against missing boards.
 | --- | --- |
 | Starting | Accepted original private turn, before a running report |
 | Running | Running private turn; unconfirmed ownership is explicitly labelled saved status |
-| Needs permission | Unavailable: these non-interactive routes have no live permission callback |
+| Needs permission | Native Codex Chat only: a current protected pending offer for the exact project, session and accepted turn, with current live ownership. Stop, terminal outcomes, interrupted reads and scope changes take precedence. Historical requests and held original-decision metadata alone do not establish this state. A current verified offer remains descriptive waiting even if an unresolved original decision blocks another choice. |
 | Waiting for input | Unavailable: these routes do not report an interactive input request |
 | Idle | Completed Chat with a confirmed native conversation binding |
 | Ended | Completed Task; a Chat without a native binding cannot claim resumability |
@@ -50,7 +50,7 @@ Outcome unknown remains distinct from a confirmed end. Internal protocol or
 storage kills do not become operator Stop. A pending Stop remains pending
 until the original turn's actual outcome is confirmed. Existing provider
 Task/Chat capabilities and launch hashes stay unchanged; supported lifecycle
-controls remain the separate child after this renderer.
+controls are described by the provider-specific matrix in `session-library.md`.
 
 ## Reading after a feed interruption
 
