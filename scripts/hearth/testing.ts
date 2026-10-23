@@ -357,6 +357,7 @@ export function system32(program: string, args: string[]): string {
   const result = Bun.spawnSync([join(SYSTEM32, program), ...args], {
     stdout: "pipe",
     stderr: "pipe",
+    timeout: 30_000,
   });
   if (result.exitCode !== 0)
     throw new Error(
