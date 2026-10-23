@@ -334,7 +334,9 @@ function ActionCard({
   const blocked = held || !writesAllowed || state.loading || !!state.error;
   const valid = keeperProposalDraftSchema.safeParse(draft).success;
   const edited = JSON.stringify(draft) !== JSON.stringify(card.proposal.draft);
-  const available = card.available || (card.destinationAvailable && edited);
+  const available =
+    draft.action.kind !== "start-session" &&
+    (card.available || (card.destinationAvailable && edited));
   const sessionReview =
     card.proposal.draft.action.kind === "start-session" && !!onReviewSession;
   const status = record
@@ -373,7 +375,9 @@ function ActionCard({
       )}
       {!record && card.reason && (
         <p class="af-keeper-warning">
-          {edited && card.destinationAvailable
+          {edited &&
+          card.destinationAvailable &&
+          draft.action.kind !== "start-session"
             ? "The edited values will be checked against current project scope and queue state before any change."
             : card.reason}
         </p>

@@ -202,7 +202,11 @@ export function createKeeperProposalService(options: Options) {
             409,
             "The reviewed repository is outside this project's scope.",
           );
-        if (options.sessionStarts && action.provider === "claude") return;
+        if (options.sessionStarts && action.provider === "claude")
+          throw new ConversationError(
+            409,
+            "Use the session review composer and press Start. Generic proposal approval cannot authorize a provider launch.",
+          );
         throw new ConversationError(
           409,
           "The session review composer is not available yet. This card cannot start a session.",

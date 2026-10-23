@@ -8,7 +8,7 @@ This backend increment implements cla5.4.3.1. A Keeper `start-session` suggestio
 
 Fresh admission verifies the completed Keeper source and hash, served project/workspace, current scope and supported full launch. It verifies the source again after preparation. Only then does the existing private proposal journal durably store the complete typed intent, original UUID and full reviewed body. The existing owned-session service alone admits the private user turn and dispatches it. Ordinary Start's request format and canonical hash are unchanged; the proposal review hash separately covers project, proposal, verified source and full Start.
 
-The old small proposal Approve route cannot authorize a session launch. An unsupported source provider is unavailable; it is never silently replaced with Claude.
+The old small proposal Approve route cannot authorize a session launch. Generic card availability stays false even after editing. Dedicated `destinationAvailable` can be true for the separate Review & start composer action. An unsupported source provider is unavailable; it is never silently replaced with Claude.
 
 ## Original request and recovery
 

@@ -109,6 +109,9 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
     await card
       .getByRole("button", { name: "Finish editing", exact: true })
       .click();
+    await expect(
+      card.getByRole("button", { name: "Approve", exact: true }),
+    ).toBeDisabled();
   }
   const decision = cards(page).getByRole("article", {
     name: "Record a scoped decision",
