@@ -115,6 +115,7 @@ export function projectSnapshotReader(
         const queue = queueEntries(JSON.stringify(issues));
         if (!queue.ok) throw new Error("Queue unavailable");
         source.queue = queue.entries;
+        source.beadRows = issues;
       } catch (error) {
         source.issues = null;
         source.queue = null;

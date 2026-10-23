@@ -56,6 +56,7 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
 import {
   projectSnapshotReader,
@@ -399,6 +400,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
+    projectBeadsRoute(projectSnapshot),
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,

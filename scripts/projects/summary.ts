@@ -8,11 +8,14 @@ import {
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { ProjectSummary } from "../../types/project-summary";
 import type { ProjectRecord } from "../../types/projects";
+import type { BdExportRow } from "../beads-dashboard";
 import { buildDerivedFromIssuesAndDeps } from "../beads-dashboard";
 import type { RunSummary } from "../forge/runs";
 import { selectProjectBeads, workspaceKey } from "./scope";
 
 export interface ProjectSources {
+  /** Server-only raw fields from the same checked live export; never sent as an unscoped payload. */
+  beadRows?: readonly BdExportRow[];
   workspace: string;
   asOf: string;
   issues: BeadsIssue[] | null;
