@@ -20,6 +20,7 @@ import {
 } from "./beads-model";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { desktopHref } from "./navigation";
+import { ScopedProjectActivity } from "./ProjectActivity";
 import type { DesktopBeadWrites } from "./use-bead-writes";
 import "./beads.css";
 
@@ -781,43 +782,12 @@ export function BeadPanel({
               )}
             </>
           ) : (
-            <>
-              <p>
-                Hearth-recorded bead activity · metadata only. Changes outside
-                this hearth may be absent.
-              </p>
-              {bead.activity === null ? (
-                <p>
-                  Recorded activity is unavailable. Refresh the selected bead to
-                  check again.
-                </p>
-              ) : bead.activity.length === 0 ? (
-                <p>No bead-bound events in this history read.</p>
-              ) : (
-                <ol>
-                  {bead.activity.map((event) => (
-                    <li key={event.id}>
-                      <a
-                        href={desktopHref({
-                          projectId,
-                          destination: "activity",
-                          selection: { kind: "event", id: String(event.id) },
-                        })}
-                      >
-                        #{event.id} · {event.kind}
-                      </a>{" "}
-                      ·{" "}
-                      <time dateTime={event.ts}>
-                        {new Date(event.ts).toLocaleString()}
-                      </time>
-                    </li>
-                  ))}
-                </ol>
-              )}
-              {!bead.activityComplete && (
-                <p>History is incomplete; older bead events may be absent.</p>
-              )}
-            </>
+            <ScopedProjectActivity
+              key={`${projectId}:${id}`}
+              projectId={projectId}
+              workspace={page.workspace}
+              scope={{ beadId: id }}
+            />
           )}
         </div>
       )}

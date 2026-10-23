@@ -54,6 +54,28 @@ metadata; requested registry models are not substituted when absent. Missing
 usage/cost remains absent, with each provider's actual cache field names retained.
 An `operator.action` records an attempted operation, not confirmation of its effect.
 
+## Renderer and recovery
+
+The project destination, bead Activity tab and session Activity link share the
+same protected filter contract and virtualized presentation. Object links retain
+verified IDs; unavailable Run/Review/shift integrations remain within the parent
+bead rather than acquiring invented routes or controls.
+
+One existing window ledger stream invalidates reads. The Activity controller
+uses immutable project/workspace/filter generations, at most 50 pages and 45
+seconds per pass, and retains at most 10,000 events/8 MiB. Suppressed empty pages
+advance the raw cursor. An incomplete pass requires explicit continuation; it
+never reports complete-empty history. Source failures retain last verified rows.
+Selected metadata is an independent protected read. A membership resync retains
+it as last verified with an explicit recheck notice; an earlier in-flight detail
+reply cannot clear that notice. Only an explicit successful metadata refresh
+does so. No write, provider dispatch or private journal read is added.
+
+Keyboard navigation uses one listbox focus stop with arrow, Home/End and
+Page Up/Page Down selection; Enter opens the metadata inspector. The list uses
+the shared timeline window calculation, fixed rows, the common 2px focus ring
+and reduced-motion treatment.
+
 ## Design provenance
 
 Authoritative source: `7e41bba140493849d9f9b2dd3b8ada6773e374a2`, desktop design

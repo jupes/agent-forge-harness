@@ -17,18 +17,28 @@ import {
 } from "./navigation";
 import { ObservedSessionDetail } from "./ObservedSessionDetail";
 import { OwnedSessions } from "./OwnedSessions";
+import {
+  ProjectActivityFeed,
+  ProjectActivityInspector,
+} from "./ProjectActivity";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
 import { Providers } from "./Providers";
+import {
+  activityHref,
+  emptyActivityFilters,
+  parseActivityFilters,
+} from "./project-activity-model";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
+import { useProjectActivity } from "./use-project-activity";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
@@ -50,6 +60,26 @@ export function DesktopApp(): JSX.Element {
   );
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
+  );
+  const activityFilters =
+    route.destination === "activity"
+      ? parseActivityFilters(window.location.hash)
+      : { filters: null, error: "" };
+  const activitySelection =
+    route.destination === "activity" && route.selection?.kind === "event"
+      ? route.selection.id
+      : null;
+  const selectedActivityId =
+    activitySelection !== null &&
+    /^[1-9]\d*$/.test(activitySelection) &&
+    Number.isSafeInteger(Number(activitySelection))
+      ? Number(activitySelection)
+      : null;
+  const activity = useProjectActivity(
+    route.destination === "activity" ? (project?.id ?? null) : null,
+    summary?.workspace ?? null,
+    activityFilters.filters,
+    selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
   const beads = useBeads(
@@ -217,6 +247,9 @@ export function DesktopApp(): JSX.Element {
     collapse();
     return () => compact.removeEventListener("change", collapse);
   }, []);
+  useEffect(() => {
+    if (selectedActivityId !== null) setInspectorOpen(true);
+  }, [route.projectId, selectedActivityId]);
   const global = GLOBAL_DESTINATIONS.find(
     (entry) => entry.id === route.destination,
   );
@@ -253,11 +286,22 @@ export function DesktopApp(): JSX.Element {
         }
         inspectorOpen={fullBead ? false : inspectorOpen}
         inspector={
-          (route.destination === "beads" ||
-            route.destination === "workbench") &&
-          !fullBead &&
-          route.selection?.kind === "bead" &&
-          project ? (
+          route.destination === "activity" && project ? (
+            activitySelection !== null && selectedActivityId === null ? (
+              <p role="alert">
+                This event address is invalid. Choose an event from Activity.
+              </p>
+            ) : (
+              <ProjectActivityInspector
+                projectId={project.id}
+                controller={activity}
+              />
+            )
+          ) : (route.destination === "beads" ||
+              route.destination === "workbench") &&
+            !fullBead &&
+            route.selection?.kind === "bead" &&
+            project ? (
             <BeadPanel
               key={`${project.id}:${route.selection.id}`}
               projectId={project.id}
@@ -328,6 +372,16 @@ export function DesktopApp(): JSX.Element {
               Ask Keeper
             </button>
           </div>
+        )}
+        {project && route.destination === "sessions" && selectedSession && (
+          <Button
+            href={activityHref(project.id, {
+              ...emptyActivityFilters(),
+              sessionId: selectedSession,
+            })}
+          >
+            View session Activity
+          </Button>
         )}
         {project?.archived && (
           <p role="status">
@@ -468,6 +522,28 @@ export function DesktopApp(): JSX.Element {
                 destination: "workbench",
                 selection: { kind: "bead", id },
               }).slice(1);
+            }}
+          />
+        ) : route.destination === "activity" && project ? (
+          <ProjectActivityFeed
+            controller={activity}
+            filters={activityFilters.filters}
+            filterError={activityFilters.error}
+            onApply={(filters) => {
+              window.location.hash = activityHref(
+                project.id,
+                filters,
+                selectedActivityId,
+              ).slice(1);
+            }}
+            onInspect={(id) => {
+              if (!activityFilters.filters) return;
+              setInspectorOpen(true);
+              window.location.hash = activityHref(
+                project.id,
+                activityFilters.filters,
+                id,
+              ).slice(1);
             }}
           />
         ) : route.destination === "overview" && project ? (
