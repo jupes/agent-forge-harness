@@ -95,6 +95,15 @@ export function killTree(pid: number): void {
   }
 }
 
+/** The root has exited: only its still-owned POSIX group is authority, never a reused positive PID. */
+export function killExitedProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // An absent group is already complete; never fall back to the exited numeric PID.
+  }
+}
+
 /** Kill every supervised child. Registered on process exit; exported for tests. */
 export function killAllLive(): void {
   for (const pid of live) killTree(pid);
@@ -531,7 +540,7 @@ export function supervise(
       if (interactive) {
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
         if (process.platform === "win32") guard.terminate?.();
-        else killTree(proc.pid);
+        else killExitedProcessGroup(proc.pid);
         failInput(new Error("Interactive stdin is closed."));
       }
       await pumped.catch(() => undefined);
