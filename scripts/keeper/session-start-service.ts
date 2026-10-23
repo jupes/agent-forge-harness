@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { KeeperProposalExecution } from "../../types/keeper-proposal";
 import type { KeeperSessionStartReceipt } from "../../types/keeper-session-start";
 import type { SessionStartRequest } from "../../types/session-requests";
@@ -7,6 +8,7 @@ import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import type { createOwnedSessionService } from "../sessions/admission";
+import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionStartReceiptSchema } from "../sessions/protocol";
 import { createKeeperProposalStore } from "./proposal-store";
 import { keeperProposals } from "./proposals";
@@ -122,6 +124,58 @@ export function createKeeperSessionStartService(options: Options) {
           limit: 1,
         })
       : null;
+    if (session && page?.request) {
+      const input = saved.intent.original.start;
+      const first = page.frames[0];
+      const user = first?.event;
+      const about = input.about ?? [];
+      const expectedLaunch = {
+        ...input.launch,
+        context: {
+          projectId,
+          repository: input.repository,
+          worktree: input.worktree,
+          ...(input.beadId ? { beadId: input.beadId } : {}),
+          about,
+        },
+      };
+      if (
+        session.smith !== input.smith ||
+        session.repository !== input.repository ||
+        session.worktree !== input.worktree ||
+        session.beadId !== input.beadId ||
+        session.mode !== input.launch.mode ||
+        session.requestedModel !== input.launch.model ||
+        session.requestedEffort !== (input.launch.effort ?? null) ||
+        first?.seq !== 1 ||
+        first.turnId !== input.requestId ||
+        user?.kind !== "user" ||
+        user.brief !== undefined ||
+        user.text !== input.launch.prompt ||
+        canonicalSessionInput(user.about) !== canonicalSessionInput(about) ||
+        !user.session ||
+        user.session.provider !== "claude" ||
+        user.session.smith !== input.smith ||
+        user.session.cwd !== input.worktree ||
+        canonicalSessionInput(user.session.launch) !==
+          canonicalSessionInput(expectedLaunch) ||
+        page.request.requestId !== input.requestId ||
+        page.request.hash !==
+          createHash("sha256")
+            .update(
+              JSON.stringify({
+                text: user.text,
+                about: user.about,
+                session: user.session,
+              }),
+            )
+            .digest("hex")
+      )
+        throw new ConversationError(
+          503,
+          "The original session turn does not match its reviewed private input. Its saved data has been kept.",
+        );
+    }
     const receipt =
       session && page?.request
         ? {
@@ -243,16 +297,11 @@ export function createKeeperSessionStartService(options: Options) {
                 "The original session turn was accepted. Open the session for its current outcome.",
               objects: [{ kind: "session", id: started.data.session.id }],
             };
-          } catch (error) {
+          } catch {
             return {
-              phase: error instanceof ConversationError ? "failed" : "unknown",
+              phase: "unknown",
               message:
-                error instanceof ConversationError
-                  ? `${error.message} The original reviewed input has been kept; it will not automatically repeat.`.slice(
-                      0,
-                      1000,
-                    )
-                  : "The original session Start is unconfirmed. Check its private request before explicitly retrying.",
+                "The original session Start is unconfirmed. Its private input has been kept; check its original request before explicitly retrying.",
               objects: [],
             };
           }

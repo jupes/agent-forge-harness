@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KeeperProposal } from "../../types/keeper-proposal";
@@ -9,6 +9,7 @@ import { writeOwnerOnly } from "../hearth/token";
 import {
   createKeeperProposalStore,
   keeperProposalFile,
+  keeperSessionStartHashes,
 } from "./proposal-store";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
@@ -70,6 +71,23 @@ function fixture() {
   homes.push(home);
   return { home, store: createKeeperProposalStore(home) };
 }
+
+test("the Keeper bridge retains the established ordinary Start hash bytes", () => {
+  const request = {
+    ...original,
+    start: {
+      requestId: "b14cc7eb-3231-4930-a288-d411c5ee0426",
+      smith: "claude-journeyman",
+      repository: "C:/fixture/repository",
+      worktree: "C:/fixture/repository",
+      launch: { mode: "task" as const, model: "sonnet", prompt: "  exact\n" },
+    },
+  };
+  // Fixed pre-bridge canonical Start fixture: no proposal, project, source or revision enters this hash.
+  expect(
+    keeperSessionStartHashes(projectId, proposal.id, request).startHash,
+  ).toBe("27ee47ceb1838b9a198d81dd975567dbc24928463fbb88857837eeb14716f3d6");
+});
 
 test("a full reviewed session intent is durable before its effect and a restarted read restores the exact original without replay", async () => {
   const { home, store } = fixture();
@@ -283,4 +301,153 @@ test("missing audit, refused preparation and corrupt or future journals preserve
     );
   }
   expect(effects).toBe(0);
+});
+
+test("row and byte bounds refuse overflow without evicting any original or invoking its effect", async () => {
+  const full = fixture();
+  const at = proposal.createdAt;
+  const records = Array.from({ length: 1000 }, () => {
+    const sourceRequestId = randomUUID();
+    return {
+      ...proposal,
+      sourceRequestId,
+      id: `proposal-${sourceRequestId}-0`,
+      requestId: randomUUID(),
+      requestHash: "b".repeat(64),
+      operation: "dismiss",
+      auditEventId: 1,
+      phase: "dismissed",
+      pending: false,
+      updatedAt: at,
+      message: "Dismissed.",
+      objects: [],
+    };
+  });
+  const fullPath = keeperProposalFile(full.home, projectId);
+  writeOwnerOnly(
+    fullPath,
+    JSON.stringify({ version: 1, projectId, revision: 1000, records }),
+  );
+  const fullBytes = readFileSync(fullPath, "utf8");
+  let prepares = 0,
+    effects = 0;
+  await expect(
+    full.store.startSession(
+      {
+        projectId,
+        proposalId: proposal.id,
+        request: { ...original, expectedRevision: 1000 },
+        auditEventId: 1,
+      },
+      {
+        prepare: async () => {
+          prepares++;
+          return { proposal, workspace: "C:/fixture/repository" };
+        },
+        execute: async () => {
+          effects++;
+          return { phase: "unknown", message: "Unconfirmed.", objects: [] };
+        },
+      },
+    ),
+  ).rejects.toThrow("full");
+  expect(prepares).toBe(0);
+  expect(effects).toBe(0);
+  expect(readFileSync(fullPath, "utf8")).toBe(fullBytes);
+  expect((await full.store.read(projectId)).records).toHaveLength(1000);
+
+  const bounded = fixture();
+  const boundedPath = keeperProposalFile(bounded.home, projectId);
+  const image = "AAAA".repeat(487_500);
+  let originalId = "";
+  for (let index = 0; index < 5; index++) {
+    const sourceRequestId = randomUUID();
+    const source = {
+      ...proposal,
+      sourceRequestId,
+      id: `proposal-${sourceRequestId}-0`,
+    };
+    const request = {
+      ...original,
+      expectedRevision: index * 2,
+      start: {
+        ...original.start,
+        requestId: randomUUID(),
+        launch: {
+          ...original.start.launch,
+          attachments: [
+            {
+              kind: "image" as const,
+              name: "bounded.png",
+              mediaType: "image/png" as const,
+              data: image,
+            },
+          ],
+        },
+      },
+    };
+    const before = index ? readFileSync(boundedPath, "utf8") : "";
+    const admission = bounded.store.startSession(
+      { projectId, proposalId: source.id, request, auditEventId: 1 },
+      {
+        prepare: async () => ({
+          proposal: source,
+          workspace: "C:/fixture/repository",
+        }),
+        execute: async () => {
+          effects++;
+          return { phase: "unknown", message: "Unconfirmed.", objects: [] };
+        },
+      },
+    );
+    if (index < 4) {
+      await admission;
+      if (!index) originalId = source.id;
+    } else {
+      await expect(admission).rejects.toThrow("full");
+      expect(readFileSync(boundedPath, "utf8")).toBe(before);
+    }
+  }
+  expect(effects).toBe(4);
+  expect((await bounded.store.read(projectId)).records).toHaveLength(4);
+  expect(
+    (await bounded.store.readSessionStart(projectId, originalId))?.intent
+      .original.start.launch.attachments?.[0],
+  ).toMatchObject({ data: image });
+}, 30_000);
+
+test("a linked journal directory preserves its target and cannot admit a reviewed Start", async () => {
+  const { home, store } = fixture();
+  const target = fixture().home;
+  const file = join(target, `keeper-${projectId}-proposals.json`);
+  writeOwnerOnly(file, "Keep the linked private bytes");
+  const link = join(home, "conversations");
+  symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+  let effects = 0;
+  try {
+    await expect(
+      store.startSession(
+        {
+          projectId,
+          proposalId: proposal.id,
+          request: original,
+          auditEventId: 1,
+        },
+        {
+          prepare: async () => {
+            effects++;
+            return { proposal, workspace: "C:/fixture/repository" };
+          },
+          execute: async () => {
+            effects++;
+            return { phase: "done", message: "Must not run.", objects: [] };
+          },
+        },
+      ),
+    ).rejects.toThrow("linked");
+    expect(effects).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("Keep the linked private bytes");
+  } finally {
+    rmSync(link);
+  }
 });
