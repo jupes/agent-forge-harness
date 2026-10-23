@@ -457,6 +457,14 @@ export function createConversationStore(
           400,
           "The private Codex Chat does not belong to this owned session.",
         );
+      if (
+        request.geminiTask &&
+        (!address || request.geminiTask.launch.context?.projectId !== projectId)
+      )
+        throw new ConversationError(
+          400,
+          "The private Gemini Task does not belong to this owned session.",
+        );
       const hash = createHash("sha256")
         .update(
           JSON.stringify({
@@ -466,6 +474,7 @@ export function createConversationStore(
             ...(request.session ? { session: request.session } : {}),
             ...(request.codexTask ? { codexTask: request.codexTask } : {}),
             ...(request.codexChat ? { codexChat: request.codexChat } : {}),
+            ...(request.geminiTask ? { geminiTask: request.geminiTask } : {}),
           }),
         )
         .digest("hex");
@@ -539,6 +548,7 @@ export function createConversationStore(
               ...(request.session ? { session: request.session } : {}),
               ...(request.codexTask ? { codexTask: request.codexTask } : {}),
               ...(request.codexChat ? { codexChat: request.codexChat } : {}),
+              ...(request.geminiTask ? { geminiTask: request.geminiTask } : {}),
             },
           });
           save(state);

@@ -94,6 +94,7 @@ export function createSessionLibrary(options: {
               ...(user.session ? { session: user.session } : {}),
               ...(user.codexTask ? { codexTask: user.codexTask } : {}),
               ...(user.codexChat ? { codexChat: user.codexChat } : {}),
+              ...(user.geminiTask ? { geminiTask: user.geminiTask } : {}),
             }),
           )
           .digest("hex");

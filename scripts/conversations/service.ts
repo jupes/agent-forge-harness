@@ -12,6 +12,7 @@ import type {
   OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
+import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
 import type {
   KeeperContinuationRequest,
@@ -32,6 +33,7 @@ import { createProjectStore } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { preparedCodexChatSchema } from "../sessions/codex-app-server-protocol";
 import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
+import { preparedGeminiTaskSchema } from "../sessions/gemini-task-runtime-protocol";
 import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
 import { conversationLeaseFile } from "./paths";
 import { parseSessionSend } from "./protocol";
@@ -86,6 +88,13 @@ interface ConversationOptions {
         resume: ConversationBinding | null;
       }) => Promise<PreparedCodexChat>)
     | undefined;
+  prepareGeminiTask?:
+    | ((request: {
+        project: ProjectRecord;
+        input: SessionMessage;
+        resume: ConversationBinding | null;
+      }) => Promise<PreparedGeminiTask>)
+    | undefined;
 }
 
 const activePhase = (phase: string) =>
@@ -105,7 +114,8 @@ export function createConversationService(options: ConversationOptions) {
   if (
     (options.prepareSession ||
       options.prepareCodexTask ||
-      options.prepareCodexChat) &&
+      options.prepareCodexChat ||
+      options.prepareGeminiTask) &&
     !options.address
   )
     throw new ConversationError(
@@ -117,6 +127,7 @@ export function createConversationService(options: ConversationOptions) {
       options.prepareSession,
       options.prepareCodexTask,
       options.prepareCodexChat,
+      options.prepareGeminiTask,
     ].filter(Boolean).length > 1
   )
     throw new ConversationError(
@@ -432,7 +443,8 @@ export function createConversationService(options: ConversationOptions) {
       const wireInput: SessionMessage =
         options.prepareSession ||
         options.prepareCodexTask ||
-        options.prepareCodexChat
+        options.prepareCodexChat ||
+        options.prepareGeminiTask
           ? parseSessionSend(rawInput)
           : parseConversationSend(rawInput);
       const privateInput: ConversationSend = {
@@ -451,6 +463,19 @@ export function createConversationService(options: ConversationOptions) {
             (frame) =>
               frame.turnId === input.requestId && frame.event.kind === "user",
           )?.event;
+        if (options.prepareGeminiTask) {
+          if (
+            user?.kind !== "user" ||
+            !user.geminiTask ||
+            JSON.stringify(wireInput.attachments ?? []) !==
+              JSON.stringify(user.geminiTask.launch.attachments ?? [])
+          )
+            throw new ConversationError(
+              409,
+              "This request id already names different content. Read the original request.",
+            );
+          return { ...privateInput, geminiTask: user.geminiTask };
+        }
         if (options.prepareCodexChat) {
           if (
             user?.kind !== "user" ||
@@ -506,7 +531,8 @@ export function createConversationService(options: ConversationOptions) {
       if (
         (options.prepareSession ||
           options.prepareCodexTask ||
-          options.prepareCodexChat) &&
+          options.prepareCodexChat ||
+          options.prepareGeminiTask) &&
         purpose !== "message"
       )
         throw new ConversationError(
@@ -729,6 +755,33 @@ export function createConversationService(options: ConversationOptions) {
                     "The private Codex Chat could not be verified. No turn was accepted.",
                   );
                 input = { ...privateInput, codexChat: snapshot.data };
+              }
+            }
+            if (options.prepareGeminiTask) {
+              const latest = store.read(projectId);
+              if (
+                latest.turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const snapshot = preparedGeminiTaskSchema.safeParse(
+                  await options.prepareGeminiTask({
+                    project: projectFor(projectId),
+                    input: wireInput,
+                    resume: latest.binding,
+                  }),
+                );
+                if (
+                  !snapshot.success ||
+                  snapshot.data.launch.prompt !== wireInput.text ||
+                  JSON.stringify(snapshot.data.launch.attachments ?? []) !==
+                    JSON.stringify(wireInput.attachments ?? [])
+                )
+                  throw new ConversationError(
+                    503,
+                    "The private Gemini Task could not be verified. No turn was accepted.",
+                  );
+                input = { ...privateInput, geminiTask: snapshot.data };
               }
             }
             if (closed || abort.signal.aborted)

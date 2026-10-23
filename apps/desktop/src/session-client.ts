@@ -49,7 +49,7 @@ const sameStart = (record: OwnedSessionRecord, input: SessionStartRequest) =>
   record.repository === input.repository &&
   record.worktree === input.worktree &&
   record.mode === input.launch.mode &&
-  record.requestedModel === input.launch.model &&
+  record.requestedModel === (input.launch.model ?? null) &&
   record.requestedEffort ===
     ("effort" in input.launch ? (input.launch.effort ?? null) : null) &&
   record.beadId === input.beadId;

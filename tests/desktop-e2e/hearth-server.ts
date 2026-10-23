@@ -9,6 +9,7 @@ import { isMain } from "../../scripts/is-main";
 import { createProviderLoginService } from "../../scripts/providers/login";
 import { createClaudeSessionTransport } from "../../scripts/sessions/claude-transport";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
+import { createGeminiTaskRuntime } from "../../scripts/sessions/gemini-task-runtime";
 
 async function main() {
   const home = process.env["AGENT_FORGE_HOME"];
@@ -51,6 +52,21 @@ async function main() {
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      geminiTaskRuntime: createGeminiTaskRuntime({
+        root,
+        home,
+        configHome: join(home, "gemini-native-fixture"),
+        command: [
+          join(
+            home,
+            "bd-stand-in",
+            "bin",
+            process.platform === "win32" ? "gemini.exe" : "gemini",
+          ),
+        ],
+        operatorToken: () => token,
+        timeoutMs: 60_000,
+      }),
       sessionRuntime: {
         provider: "claude",
         prepare: (input) => claude.prepare(input),

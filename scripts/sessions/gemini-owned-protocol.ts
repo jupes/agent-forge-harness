@@ -15,6 +15,13 @@ export const geminiTaskStartSchema = sessionStartSchema
         policyFiles: true,
         includeDirectories: true,
       })
+      .extend({
+        prompt: geminiTaskLaunchSchema.shape.prompt.max(16_384),
+        attachments: geminiTaskLaunchSchema.shape.attachments
+          .unwrap()
+          .max(8)
+          .optional(),
+      })
       .strict(),
   })
   .strict()

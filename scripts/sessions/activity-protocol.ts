@@ -130,6 +130,9 @@ const json = z
     }
   });
 const state = z.enum(["running", "completed", "failed"]);
+
+export { json as reportedJsonSchema, reported as reportedTextSchema };
+
 const activity = z.discriminatedUnion("kind", [
   z
     .object({

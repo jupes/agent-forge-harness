@@ -114,6 +114,7 @@ export function createOwnedSessionRoutes(
     runtime,
     codexTaskRuntime,
     codexChatRuntime,
+    geminiTaskRuntime,
     onApprovalChange: (sessionId) => feed.changed(sessionId),
     validateScope,
     onChange: (session, update) => {

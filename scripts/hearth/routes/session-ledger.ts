@@ -7,6 +7,7 @@ import type { AppendResult } from "../../ledger/append";
 import { serializeClaudeLaunch } from "../../sessions/claude-launch";
 import { serializeCodexChat } from "../../sessions/codex-app-server-protocol";
 import { serializeCodexTask } from "../../sessions/codex-task";
+import { serializeGeminiTask } from "../../sessions/gemini-task";
 
 /** Private transcript projection. No body or provider error is accepted by this ledger seam. */
 export function createOwnedSessionLedger(
@@ -64,23 +65,33 @@ export function createOwnedSessionLedger(
     };
     const spawned = state.frames.some(
       (frame) =>
-        frame.turnId === update.requestId && frame.event.kind === "process",
+        frame.turnId === update.requestId &&
+        (frame.event.kind === "process" ||
+          (frame.event.kind === "coding-gemini-task" &&
+            frame.event.event.kind === "process")),
     );
     if (turn.phase === "running" && user?.kind === "user" && spawned) {
-      const prompt = user.codexChat
-        ? serializeCodexChat(user.codexChat.launch, user.codexChat.capabilities)
-            .input.text
-        : user.codexTask
-          ? serializeCodexTask(
-              user.codexTask.launch,
-              user.codexTask.capabilities,
-            ).stdin
-          : user.session
-            ? serializeClaudeLaunch(
-                user.session.launch,
-                user.session.capabilities,
+      const prompt = user.geminiTask
+        ? serializeGeminiTask(
+            user.geminiTask.launch,
+            user.geminiTask.capabilities,
+          ).stdin
+        : user.codexChat
+          ? serializeCodexChat(
+              user.codexChat.launch,
+              user.codexChat.capabilities,
+            ).input.text
+          : user.codexTask
+            ? serializeCodexTask(
+                user.codexTask.launch,
+                user.codexTask.capabilities,
               ).stdin
-            : user.text;
+            : user.session
+              ? serializeClaudeLaunch(
+                  user.session.launch,
+                  user.session.capabilities,
+                ).stdin
+              : user.text;
       if (state.turns[0]?.requestId === update.requestId)
         emit(`${session.id}:start`, {
           ...base,

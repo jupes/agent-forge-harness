@@ -15,6 +15,7 @@ import {
   codexChatOwnedSessionSchema,
   codexOwnedSessionSchema,
 } from "./codex-owned-metadata";
+import { geminiOwnedSessionSchema } from "./gemini-owned-metadata";
 import {
   ownedSessionIdSchema,
   ownedSessionSchema,
@@ -121,6 +122,29 @@ export function originalSessionLaunchMatches(
     state.turns[0]?.requestId !== session.requestId
   )
     return false;
+  if (session.provider === "gemini") {
+    const snapshot = first.event.geminiTask;
+    return (
+      !!snapshot &&
+      snapshot.provider === "gemini" &&
+      snapshot.smith === session.smith &&
+      snapshot.launch.cwd === session.worktree &&
+      (snapshot.launch.model ?? null) === session.requestedModel &&
+      state.turns.length === 1 &&
+      state.frames.every(({ event }) => {
+        if (event.kind !== "user") return true;
+        const saved = event.geminiTask;
+        return (
+          saved?.smith === session.smith &&
+          saved.launch.cwd === session.worktree &&
+          saved.launch.context?.projectId === session.projectId &&
+          saved.launch.context.repository === session.repository &&
+          saved.launch.context.worktree === session.worktree &&
+          saved.launch.context.beadId === session.beadId
+        );
+      })
+    );
+  }
   const snapshot =
     first.event.session ?? first.event.codexTask ?? first.event.codexChat;
   return (
@@ -158,6 +182,7 @@ export const sessionTranscriptExportSchema: z.ZodType<SessionTranscriptExport> =
         ownedSessionSchema,
         codexOwnedSessionSchema,
         codexChatOwnedSessionSchema,
+        geminiOwnedSessionSchema,
       ]),
       lastSequence: z.number().int().nonnegative().max(20_000),
       conversation: z

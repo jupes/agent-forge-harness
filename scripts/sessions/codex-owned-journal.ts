@@ -30,6 +30,11 @@ import {
 } from "./codex-chat-owned-journal";
 import { codexExecCapabilitiesSchema } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
+import {
+  geminiTaskPrivateFrameSchema,
+  validGeminiTaskHistory,
+} from "./gemini-owned-journal";
+import { preparedGeminiTaskSchema } from "./gemini-task-runtime-protocol";
 
 const object = z
   .object({
@@ -57,6 +62,20 @@ const codexUser = z
         JSON.stringify(value.codexTask.launch.context?.about ?? []),
   );
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const geminiUser = z
+  .object({
+    kind: z.literal("user"),
+    text,
+    about: z.array(object).max(16),
+    geminiTask: preparedGeminiTaskSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.text === value.geminiTask.launch.prompt &&
+      JSON.stringify(value.about) ===
+        JSON.stringify(value.geminiTask.launch.context?.about ?? []),
+  );
 const codexChatUser = z
   .object({
     kind: z.literal("user"),
@@ -125,6 +144,8 @@ export const ownedCodingEventSchema = z.union([
   codexChatUser,
   codexChatPrivateEventSchema,
   codexChatDecisionIntentSchema,
+  geminiUser,
+  geminiTaskPrivateFrameSchema,
 ]);
 const frame = z
   .object({
@@ -142,11 +163,11 @@ const inProject = (value: {
   value.frames.every(
     ({ event }) =>
       event.kind !== "user" ||
-      !(event.codexTask ?? event.codexChat) ||
-      ((event.codexTask ?? event.codexChat)?.launch.context?.projectId ===
-        value.projectId &&
+      !(event.codexTask ?? event.codexChat ?? event.geminiTask) ||
+      ((event.codexTask ?? event.codexChat ?? event.geminiTask)?.launch.context
+        ?.projectId === value.projectId &&
         (!value.binding ||
-          (value.binding.provider === "codex" &&
+          (value.binding.provider === (event.geminiTask ? "gemini" : "codex") &&
             z.string().uuid().safeParse(value.binding.sessionId).success))),
   );
 /** Whole states prove reported activity against its immutable private launch, not a public row. */
@@ -165,7 +186,8 @@ function reportedTurn(
       event.kind !== "coding-account" &&
       event.kind !== "coding-usage" &&
       event.kind !== "coding-chat" &&
-      event.kind !== "coding-chat-decision"
+      event.kind !== "coding-chat-decision" &&
+      event.kind !== "coding-gemini-task"
     )
       return true;
     const user = value.frames.find(
@@ -173,7 +195,14 @@ function reportedTurn(
         candidate.turnId === frame.turnId && candidate.event.kind === "user",
     )?.event;
     if (user?.kind !== "user")
-      return !complete && value.binding?.provider === event.provider;
+      return (
+        !complete &&
+        (value.binding?.provider === event.provider ||
+          (value.binding === null &&
+            event.kind === "coding-gemini-task" &&
+            event.event.kind === "process"))
+      );
+    if (event.kind === "coding-gemini-task" && !user.geminiTask) return false;
     if (
       (event.kind === "coding-chat" || event.kind === "coding-chat-decision") &&
       !user.codexChat
@@ -185,7 +214,8 @@ function reportedTurn(
       (event.kind === "coding-usage" || event.kind === "coding-activity")
     )
       return false;
-    const snapshot = user.session ?? user.codexTask ?? user.codexChat;
+    const snapshot =
+      user.session ?? user.codexTask ?? user.codexChat ?? user.geminiTask;
     return (
       snapshot?.provider === event.provider &&
       snapshot.capabilities.version === event.version
@@ -305,7 +335,8 @@ export const ownedCodingStateSchema = stateSchema
   .strict()
   .refine(inProject)
   .refine((value) => reportedTurn(value, true))
-  .refine(nativeChatHistory);
+  .refine(nativeChatHistory)
+  .refine(validGeminiTaskHistory);
 export const ownedCodingPageSchema = conversationPageSchema
   .extend({ frames: z.array(frame).max(100) })
   .strict()
@@ -328,10 +359,27 @@ const preparedChat = prepared
   .omit({ codexTask: true })
   .extend({ codexChat: preparedCodexChatSchema })
   .strict();
+const preparedGemini = prepared
+  .omit({ codexTask: true })
+  .extend({ geminiTask: preparedGeminiTaskSchema })
+  .strict();
 
 export function parseOwnedPreparedConversationSend(
   input: unknown,
 ): PreparedConversationSend {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    Object.hasOwn(input, "geminiTask")
+  ) {
+    const parsed = preparedGemini.safeParse(input);
+    if (!parsed.success)
+      throw new ConversationError(
+        400,
+        "Expected a bounded private owned Gemini Task.",
+      );
+    return parsed.data;
+  }
   if (
     typeof input === "object" &&
     input !== null &&

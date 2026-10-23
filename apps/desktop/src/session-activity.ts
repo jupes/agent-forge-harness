@@ -54,7 +54,10 @@ export function ownedSessionTurn(
     else if (event.kind === "model") result.observedModel = event.model;
     else if (event.kind === "user")
       result.requestedModel =
-        event.session?.launch.model ?? event.codexTask?.launch.model ?? null;
+        event.session?.launch.model ??
+        event.codexTask?.launch.model ??
+        event.geminiTask?.launch.model ??
+        null;
     else if (event.kind === "process" && result.requestedModel === null)
       result.requestedModel = event.requestedModel;
   }
@@ -129,7 +132,20 @@ export function ownedSessionLifecycle(
           detail: "Reading the saved private conversation.",
         };
   const outcome = ownedSessionTurn(page, turn.requestId).outcome;
-  if (outcome?.code === "timed-out")
+  const geminiOutcome = page?.frames
+    .filter(
+      (frame) =>
+        frame.turnId === turn.requestId &&
+        frame.event.kind === "coding-gemini-task" &&
+        frame.event.event.kind === "outcome",
+    )
+    .at(-1)?.event;
+  if (
+    outcome?.code === "timed-out" ||
+    (geminiOutcome?.kind === "coding-gemini-task" &&
+      geminiOutcome.event.kind === "outcome" &&
+      geminiOutcome.event.timedOut)
+  )
     return {
       state: "timed-out",
       label: "Timed out",

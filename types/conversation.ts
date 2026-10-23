@@ -6,6 +6,8 @@ import type {
 } from "./codex-owned-chat";
 import type { CodexCodingUsageEvent } from "./codex-owned-task";
 import type { PreparedCodexTask } from "./codex-task-runtime";
+import type { GeminiTaskPrivateFrame } from "./gemini-owned-task";
+import type { PreparedGeminiTask } from "./gemini-task-runtime";
 import type { KeeperReadKind } from "./keeper";
 import type { KeeperBriefSnapshot } from "./keeper-brief";
 import type { KeeperRecoveryState } from "./keeper-recovery";
@@ -41,6 +43,7 @@ export interface PreparedConversationSend extends ConversationSend {
   session?: SessionTurnSnapshot | undefined;
   codexTask?: PreparedCodexTask | undefined;
   codexChat?: PreparedCodexChat | undefined;
+  geminiTask?: PreparedGeminiTask | undefined;
 }
 
 export type ConversationPhase =
@@ -77,6 +80,7 @@ export type ConversationEvent =
       session?: SessionTurnSnapshot | undefined;
       codexTask?: PreparedCodexTask | undefined;
       codexChat?: PreparedCodexChat | undefined;
+      geminiTask?: PreparedGeminiTask | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }
@@ -112,7 +116,8 @@ export type ConversationEvent =
   | ClaudeAccountReport
   | CodingOutcomeEvent
   | CodexChatPrivateEvent
-  | CodexChatDecisionIntent;
+  | CodexChatDecisionIntent
+  | GeminiTaskPrivateFrame;
 
 export interface ConversationFrame {
   seq: number;

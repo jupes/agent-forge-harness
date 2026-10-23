@@ -82,10 +82,15 @@ export function OwnedSessions({
                 })}
               >
                 {record.mode === "chat" ? "Chat" : "Task"} ·{" "}
-                {record.beadId ?? record.requestedModel}
+                {record.beadId ?? record.requestedModel ?? "CLI default model"}
               </a>{" "}
-              · {record.provider === "codex" ? "Codex" : "Claude"} ·{" "}
-              {record.smith} ·{" "}
+              ·{" "}
+              {record.provider === "gemini"
+                ? "Gemini"
+                : record.provider === "codex"
+                  ? "Codex"
+                  : "Claude"}{" "}
+              · {record.smith} ·{" "}
               <time dateTime={record.createdAt}>
                 {new Date(record.createdAt).toLocaleString()}
               </time>

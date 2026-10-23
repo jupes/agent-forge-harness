@@ -14,6 +14,7 @@ import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { createCodexOwnedTaskService } from "./codex-owned-admission";
 import { parseOwnedSessionStart } from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
+import { createGeminiOwnedTaskService } from "./gemini-owned-admission";
 import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { createSessionRegistry } from "./registry";
 
@@ -63,6 +64,7 @@ export function createOwnedCodingSessionService(options: {
   runtime: SessionRuntime;
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
   codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
+  geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
   onApprovalChange?(sessionId: string): void;
   validateScope(
     projectId: string,
@@ -88,13 +90,13 @@ export function createOwnedCodingSessionService(options: {
     ...options,
     runtime: options.codexChatRuntime ?? unavailableCodexChatRuntime,
   });
+  const gemini = createGeminiOwnedTaskService({
+    ...options,
+    runtime: options.geminiTaskRuntime ?? unavailableGeminiTaskRuntime,
+  });
   const selected = (projectId: string, sessionId: string) => {
     const record = registry.lookup(projectId, sessionId);
-    if (record.provider === "gemini")
-      throw new ConversationError(
-        503,
-        "Owned Gemini Task controls are not available yet. No other provider was selected.",
-      );
+    if (record.provider === "gemini") return gemini;
     return record.provider === "codex"
       ? record.mode === "chat"
         ? chat
@@ -105,10 +107,7 @@ export function createOwnedCodingSessionService(options: {
     start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
       if ("provider" in request && request.provider === "gemini")
-        throw new ConversationError(
-          503,
-          "Owned Gemini Task admission is not available yet. No Task was accepted.",
-        );
+        return gemini.start(projectId, request);
       return "provider" in request
         ? request.launch.mode === "chat"
           ? chat.start(projectId, request)
@@ -152,7 +151,12 @@ export function createOwnedCodingSessionService(options: {
       return selected(projectId, sessionId).settled(projectId, sessionId);
     },
     async close() {
-      await Promise.all([claude.close(), codex.close(), chat.close()]);
+      await Promise.all([
+        claude.close(),
+        codex.close(),
+        chat.close(),
+        gemini.close(),
+      ]);
     },
   };
 }

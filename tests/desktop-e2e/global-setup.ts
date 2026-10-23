@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import baseSetup from "../e2e/global-setup";
 import { BD_STAND_IN_BIN, bunPath, HEARTH_HOME } from "../e2e/servers";
@@ -6,6 +7,39 @@ import { BD_STAND_IN_BIN, bunPath, HEARTH_HOME } from "../e2e/servers";
 /** The desktop alone needs a provider stand-in. Its hearth can find no real provider. */
 export default async function setup(): Promise<void> {
   await baseSetup();
+  const geminiConfig = join(
+    HEARTH_HOME,
+    "gemini-native-fixture",
+    ".agent-forge",
+  );
+  mkdirSync(geminiConfig, { recursive: true });
+  writeFileSync(
+    join(geminiConfig, "config.toml"),
+    '[smiths.gemini-example]\nprovider = "gemini"\nmodel = "configured-example"\neffort = "default"\nenabled = true\n',
+  );
+  const gemini = join(
+    BD_STAND_IN_BIN,
+    process.platform === "win32" ? "gemini.exe" : "gemini",
+  );
+  const geminiBuilt = spawnSync(
+    bunPath(),
+    [
+      "build",
+      "--compile",
+      resolve("tests/desktop-e2e/gemini-cli-stand-in.ts"),
+      "--outfile",
+      gemini,
+    ],
+    { encoding: "utf8", timeout: 60_000 },
+  );
+  if (geminiBuilt.status !== 0)
+    throw Error(`Gemini inert fixture did not compile: ${geminiBuilt.stderr}`);
+  const geminiProbe = spawnSync(gemini, ["--version"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  if (geminiProbe.status !== 0 || geminiProbe.stdout.trim() !== "0.65.0")
+    throw Error("The compiled Gemini fixture did not identify itself.");
   const program = join(
     BD_STAND_IN_BIN,
     process.platform === "win32" ? "claude.exe" : "claude",

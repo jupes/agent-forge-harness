@@ -1,5 +1,9 @@
+import type { ConversationReceipt } from "./conversation";
 import type { GeminiTaskLaunch, SerializedGeminiTask } from "./gemini-task";
-import type { PreparedGeminiTask } from "./gemini-task-runtime";
+import type {
+  GeminiTaskRuntimeEvent,
+  PreparedGeminiTask,
+} from "./gemini-task-runtime";
 import type { OwnedSessionMetadata, OwnedSessionRecord } from "./owned-session";
 import type { SessionStartRequest } from "./session-requests";
 
@@ -34,4 +38,15 @@ export interface GeminiTaskPreviewReceipt {
   requestId: string;
   snapshot: PreparedGeminiTask;
   serialized: SerializedGeminiTask;
+}
+
+export interface GeminiTaskPrivateFrame {
+  kind: "coding-gemini-task";
+  provider: "gemini";
+  version: "0.65.0";
+  event: GeminiTaskRuntimeEvent;
+}
+export interface GeminiTaskStartReceipt {
+  session: GeminiOwnedSessionRecord;
+  receipt: ConversationReceipt;
 }

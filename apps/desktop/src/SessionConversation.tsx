@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
 import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
+import { serializeGeminiTask } from "../../../scripts/sessions/gemini-task";
 import type { ConversationObject } from "../../../types/conversation";
+import { GeminiTaskActivity } from "./GeminiTaskActivity";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
@@ -51,7 +53,12 @@ export function SessionConversation({
     current = view.page?.turns.at(-1);
   const running =
     current && ["accepted", "running", "cancelling"].includes(current.phase);
-  const providerName = record?.provider === "codex" ? "Codex" : "Claude";
+  const providerName =
+    record?.provider === "gemini"
+      ? "Gemini"
+      : record?.provider === "codex"
+        ? "Codex"
+        : "Claude";
   const lifecycle = ownedSessionLifecycle(view.page, {
     mode: record?.mode ?? null,
     loaded: view.loaded,
@@ -80,6 +87,11 @@ export function SessionConversation({
   )?.event;
   const codexSnapshot =
     codexFirst?.kind === "user" ? codexFirst.codexTask : undefined;
+  const geminiFirst = view.page?.frames.find(
+    (frame) => frame.event.kind === "user" && frame.event.geminiTask,
+  )?.event;
+  const geminiSnapshot =
+    geminiFirst?.kind === "user" ? geminiFirst.geminiTask : undefined;
   const usage = view.page?.frames
     .filter(
       (frame) =>
@@ -141,7 +153,11 @@ export function SessionConversation({
       <header class="af-owned-session-header">
         <div>
           <span class="af-keeper-chip">
-            {record?.provider === "codex" ? "Cx · Codex" : "Cl · Claude"}
+            {record?.provider === "gemini"
+              ? "Gm · Gemini"
+              : record?.provider === "codex"
+                ? "Cx · Codex"
+                : "Cl · Claude"}
           </span>
           <h2>
             {record?.mode === "task" ? "Task" : "Chat"} ·{" "}
@@ -149,9 +165,16 @@ export function SessionConversation({
           </h2>
         </div>
         <p>
-          Requested {record?.requestedModel ?? "model unavailable"} ·{" "}
-          {record?.requestedEffort ?? "CLI default effort"} ·{" "}
-          {record?.smith ?? "smith unavailable"}
+          Requested{" "}
+          {record?.requestedModel ??
+            (record?.provider === "gemini"
+              ? "CLI default model"
+              : "model unavailable")}{" "}
+          ·{" "}
+          {record?.provider === "gemini"
+            ? "Effort is not a native Gemini option"
+            : (record?.requestedEffort ?? "CLI default effort")}{" "}
+          · {record?.smith ?? "smith unavailable"}
           {observed?.kind === "model" &&
           observed.model !== record?.requestedModel
             ? ` · Observed ${observed.model}`
@@ -220,9 +243,11 @@ export function SessionConversation({
             <dd>{view.page?.binding?.version ?? "Not reported yet"}</dd>
             <dt>Permissions</dt>
             <dd>
-              {codexSnapshot
-                ? `${codexSnapshot.launch.sandbox} · approvals ${codexSnapshot.launch.approvalPolicy}`
-                : (snapshot?.launch.permissionMode ?? "Not reported yet")}
+              {geminiSnapshot
+                ? `${geminiSnapshot.launch.approvalMode ?? "CLI default approvals"} · ${geminiSnapshot.launch.sandbox === undefined ? "CLI default sandbox" : geminiSnapshot.launch.sandbox ? "Sandbox enabled" : "Sandbox disabled"}`
+                : codexSnapshot
+                  ? `${codexSnapshot.launch.sandbox} · approvals ${codexSnapshot.launch.approvalPolicy}`
+                  : (snapshot?.launch.permissionMode ?? "Not reported yet")}
             </dd>
           </dl>
           {snapshot && (
@@ -239,6 +264,16 @@ export function SessionConversation({
                 serializeCodexTask(
                   codexSnapshot.launch,
                   codexSnapshot.capabilities,
+                ).equivalentCommand
+              }
+            </pre>
+          )}
+          {geminiSnapshot && (
+            <pre>
+              {
+                serializeGeminiTask(
+                  geminiSnapshot.launch,
+                  geminiSnapshot.capabilities,
                 ).equivalentCommand
               }
             </pre>
@@ -371,6 +406,7 @@ export function SessionConversation({
                     if (frame.event.kind !== "user") return null;
                     const attachments =
                       frame.event.codexTask?.launch.attachments ??
+                      frame.event.geminiTask?.launch.attachments ??
                       frame.event.session?.launch.attachments;
                     return attachments?.length ? (
                       <p class="af-session-note" key={frame.seq}>
@@ -382,7 +418,10 @@ export function SessionConversation({
                     ) : null;
                   })}
               </article>
-              <SessionActivity value={activity} />
+              {record?.provider !== "gemini" && (
+                <SessionActivity value={activity} />
+              )}
+              <GeminiTaskActivity page={view.page} turnId={row.id} />
               {row.reply && (
                 <article class="af-owned-reply" aria-label="Session reply">
                   <KeeperMarkdown text={row.reply} />
@@ -417,11 +456,15 @@ export function SessionConversation({
                     {row.turn.reason}
                   </p>
                 )}
-              <SessionOutcome value={activity.outcome} />
-              <SessionTurnUsage
-                value={activity}
-                requestedModel={activity.requestedModel}
-              />
+              {record?.provider !== "gemini" && (
+                <>
+                  <SessionOutcome value={activity.outcome} />
+                  <SessionTurnUsage
+                    value={activity}
+                    requestedModel={activity.requestedModel}
+                  />
+                </>
+              )}
             </div>
           );
         })}

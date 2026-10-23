@@ -76,3 +76,30 @@ test("omitted native Gemini selections remain omitted instead of becoming invent
   expect(canonicalOwnedSessionStart(defaults)).not.toContain('"effort"');
   expect(canonicalOwnedSessionStart(defaults)).not.toContain('"model"');
 });
+
+test("public Gemini preview and admission share the private journal's message and attachment bounds", () => {
+  expect(
+    parseOwnedSessionStart({
+      ...request,
+      launch: {
+        ...request.launch,
+        prompt: "x".repeat(16_384),
+        attachments: Array.from(
+          { length: 8 },
+          () => request.launch.attachments[0],
+        ),
+      },
+    }),
+  ).toBeDefined();
+  for (const launch of [
+    { ...request.launch, prompt: "x".repeat(16_385) },
+    {
+      ...request.launch,
+      attachments: Array.from(
+        { length: 9 },
+        () => request.launch.attachments[0],
+      ),
+    },
+  ])
+    expect(() => parseOwnedSessionStart({ ...request, launch })).toThrow();
+});
