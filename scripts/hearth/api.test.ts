@@ -56,6 +56,7 @@ import {
   FIXTURE_KEEPER_PROPOSAL_SOURCE,
   seedKeeperProposalSource,
 } from "./routes/keeper-proposal-fixture";
+import { seedProjectBeadWriteFixture } from "./routes/project-bead-write-fixture";
 import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
@@ -270,6 +271,79 @@ interface ActionFixture {
   prepare?(h: TestHearth): Promise<void>;
   /** The effect itself, not its status: what the valid request must have changed. */
   happened(h: TestHearth, answer: unknown): Promise<void>;
+}
+
+function projectBeadFixture(
+  action: "create" | "claim" | "comment" | "close" | "propose",
+): ActionFixture {
+  const id =
+    action === "create"
+      ? "alpha-epic"
+      : action === "propose"
+        ? "alpha-propose"
+        : "alpha-task";
+  const path = `/projects/${FIXTURE_PROJECT_ID}/beads${action === "create" ? "" : `/${id}/${action}`}`;
+  const body =
+    action === "create"
+      ? { title: "Fixture project bead", parent: id }
+      : action === "comment"
+        ? { text: COMMENT }
+        : action === "close"
+          ? { reason: CLOSE_REASON }
+          : {};
+  const carried =
+    action === "create"
+      ? "Fixture project bead"
+      : action === "comment"
+        ? COMMENT
+        : action === "close"
+          ? CLOSE_REASON
+          : null;
+  return {
+    valid: {
+      path,
+      body,
+      status: action === "create" || action === "comment" ? 201 : 200,
+      target: id,
+    },
+    invalid: { path, body: { unexpected: true } },
+    prepare: async (h) => {
+      seedProjectBeadWriteFixture(h);
+    },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload:
+          action === "propose"
+            ? { from: null, to: "proposed", reason: "propose:operator" }
+            : {
+                action,
+                ...(carried !== null
+                  ? { hash: hashText(carried), length: carried.length }
+                  : {}),
+              },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        id: action === "create" ? "alpha-epic.1" : id,
+        action,
+        recorded: true,
+      });
+      const calls = h.bd.calls.filter((args) =>
+        ["create", "update", "comments", "close"].includes(args[0] ?? ""),
+      );
+      expect(calls.at(-1)?.[0]).toBe(
+        action === "create"
+          ? "create"
+          : action === "comment"
+            ? "comments"
+            : action === "close"
+              ? "close"
+              : "update",
+      );
+    },
+  };
 }
 
 interface Job {
@@ -1142,6 +1216,11 @@ const ACTIONS: Record<string, ActionFixture> = {
       ]);
     },
   },
+  "POST /projects/:id/beads": projectBeadFixture("create"),
+  "POST /projects/:id/beads/:beadId/claim": projectBeadFixture("claim"),
+  "POST /projects/:id/beads/:beadId/comment": projectBeadFixture("comment"),
+  "POST /projects/:id/beads/:beadId/close": projectBeadFixture("close"),
+  "POST /projects/:id/beads/:beadId/propose": projectBeadFixture("propose"),
   "POST /beads/:id/claim": {
     valid: {
       path: "/beads/demo-task/claim",
@@ -1319,6 +1398,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,

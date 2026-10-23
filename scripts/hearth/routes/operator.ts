@@ -57,6 +57,7 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
 import {
@@ -392,6 +393,25 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps,
     projectSnapshot,
   );
+  const trackerWrites = beadRoutes({
+    workspace: deps.workspace,
+    runBd: deps.runBd,
+    appendEvent: deps.appendEvent,
+  });
+  const queueWrites = queueRoutes({
+    root: deps.root,
+    workspace: deps.workspace,
+    runBd: deps.runBd,
+    appendEvent: deps.appendEvent,
+    lockFile: deps.queueLockFile,
+    configHome: deps.configHome,
+  });
+  const projectWrites = projectBeadWriteRoutes({
+    home: deps.projectHome,
+    workspace: deps.workspace,
+    load: projectSnapshot,
+    routes: [...trackerWrites, ...queueWrites],
+  });
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -465,19 +485,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.send,
       ownedSessions.stop,
       sessionWorktrees.create,
-      ...beadRoutes({
-        workspace,
-        runBd: deps.runBd,
-        appendEvent: deps.appendEvent,
-      }),
-      ...queueRoutes({
-        root: deps.root,
-        workspace,
-        runBd: deps.runBd,
-        appendEvent: deps.appendEvent,
-        lockFile: deps.queueLockFile,
-        configHome: deps.configHome,
-      }),
+      ...trackerWrites,
+      ...queueWrites,
+      ...projectWrites,
       ...shiftRoutes({
         workspace,
         shiftsDir: deps.shiftsDir,

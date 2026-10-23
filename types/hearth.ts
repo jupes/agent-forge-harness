@@ -730,6 +730,8 @@ export interface BeadOptions {
   types: string[];
   priorities: BeadPriorityOption[];
   defaultPriority: string;
+  /** Rich create fields are available when the server advertises these benches. */
+  complexities?: BenchName[];
   /** Longest text accepted, in UTF-16 units. */
   limits: {
     title: number;
@@ -737,6 +739,9 @@ export interface BeadOptions {
     acceptance: number;
     comment: number;
     reason: number;
+    labels?: number;
+    label?: number;
+    fileMap?: number;
   };
 }
 

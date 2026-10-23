@@ -38,6 +38,7 @@ export interface BdIssue {
   labels?: string[];
   metadata?: Record<string, unknown>;
   description?: string;
+  acceptance_criteria?: string;
   /** On a `show` only: the issues this one depends on, its parent among them. */
   dependencies?: Array<Record<string, unknown>>;
   close_reason?: string;
@@ -63,6 +64,8 @@ export type BdWrite =
       parent?: string;
       description?: string;
       acceptance?: string;
+      labels?: string[];
+      noInheritLabels?: boolean;
     }
   | { verb: "claim"; id: string }
   | { verb: "comment"; id: string; text: string }
@@ -113,6 +116,7 @@ export function readWrite(args: readonly string[]): BdWrite | null {
     const parent = text("parent");
     const description = text("description");
     const acceptance = text("acceptance");
+    const labels = text("labels");
     return {
       verb: "create",
       title,
@@ -121,6 +125,10 @@ export function readWrite(args: readonly string[]): BdWrite | null {
       ...(parent !== undefined ? { parent } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(acceptance !== undefined ? { acceptance } : {}),
+      ...(labels !== undefined ? { labels: labels.split(",") } : {}),
+      ...(options.get("no-inherit-labels") === true
+        ? { noInheritLabels: true }
+        : {}),
     };
   }
   if (command === "update" && options.get("claim") === true && second)

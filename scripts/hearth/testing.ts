@@ -101,7 +101,7 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
     const parent =
       write.parent === undefined ? undefined : bd.issues.get(write.parent);
     const inherited =
-      parent === undefined
+      parent === undefined || write.noInheritLabels
         ? undefined
         : childOf(
             {
@@ -122,7 +122,27 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
       ...(write.description !== undefined
         ? { description: write.description }
         : {}),
-      ...(inherited !== undefined ? { labels: [...inherited].sort() } : {}),
+      ...(write.acceptance !== undefined
+        ? { acceptance_criteria: write.acceptance }
+        : {}),
+      ...(inherited !== undefined || write.labels !== undefined
+        ? {
+            labels: [
+              ...new Set([...(inherited ?? []), ...(write.labels ?? [])]),
+            ].sort(),
+          }
+        : {}),
+      ...(write.parent !== undefined
+        ? {
+            dependencies: [
+              {
+                issue_id: id,
+                depends_on_id: write.parent,
+                type: "parent-child",
+              },
+            ],
+          }
+        : {}),
       created_at: now,
       updated_at: now,
     };
