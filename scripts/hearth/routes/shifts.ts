@@ -15,7 +15,7 @@
 import type { LedgerEventInput } from "../../../types/hearth";
 import type { AppendResult } from "../../ledger/append";
 import { shiftOptions } from "../../scheduler/shift";
-import { runOptions } from "../../scheduler/shift-cli";
+import { runOptions } from "../../scheduler/shift-cli-runtime";
 import {
   type RecoverFailure,
   recoverShift,
