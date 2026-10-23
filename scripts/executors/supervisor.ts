@@ -21,6 +21,10 @@ import {
   interactiveLifetimeMs,
 } from "./interactive-lifetime";
 import {
+  observeOwnedProcessGroup,
+  waitForOwnedProcessGroup,
+} from "./process-group";
+import {
   guardRequiredTree,
   guardSuspendedWindowsProcess,
   guardTree,
@@ -78,6 +82,7 @@ export interface InteractiveSupervised extends Supervised {
 }
 
 const live = new Set<number>();
+const exitedGroups = new Set<number>();
 let hooked = false;
 
 /** Kill a process and its children. Synchronous so it is safe inside `exit` handlers. */
@@ -116,8 +121,13 @@ export function killExitedProcessGroup(pid: number): void {
 
 /** Kill every supervised child. Registered on process exit; exported for tests. */
 export function killAllLive(): void {
-  for (const pid of live) killTree(pid);
+  for (const pid of live) {
+    if (process.platform !== "win32" && exitedGroups.has(pid))
+      killExitedProcessGroup(pid);
+    else killTree(pid);
+  }
   live.clear();
+  exitedGroups.clear();
 }
 
 export function liveChildCount(): number {
@@ -187,9 +197,14 @@ async function pumpLines(
   onLine: (line: string) => void,
   maxLineBytes?: number,
   maxTotalBytes?: number,
+  signal?: AbortSignal,
 ): Promise<void> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   let buffer = "";
   let total = 0;
   const drain = (final: boolean) => {
@@ -203,17 +218,24 @@ async function pumpLines(
     if (maxLineBytes !== undefined && Buffer.byteLength(buffer) > maxLineBytes)
       throw new Error("Child output exceeded its protocol bound.");
   };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (maxTotalBytes !== undefined && total > maxTotalBytes)
-      throw new Error("Child output exceeded its total byte bound.");
-    buffer += decoder.decode(value, { stream: true });
-    drain(false);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (maxTotalBytes !== undefined && total > maxTotalBytes)
+        throw new Error("Child output exceeded its total byte bound.");
+      buffer += decoder.decode(value, { stream: true });
+      drain(false);
+    }
+    if (!signal?.aborted) {
+      buffer += decoder.decode();
+      drain(true);
+    }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    reader.releaseLock();
   }
-  buffer += decoder.decode();
-  drain(true);
 }
 
 /** Read a stream to its end, keeping only its last `max` characters. */
@@ -221,20 +243,30 @@ async function readTail(
   stream: ReadableStream<Uint8Array>,
   max: number,
   maxTotalBytes?: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   let text = "";
   let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (maxTotalBytes !== undefined && total > maxTotalBytes)
-      throw new Error("Child stderr exceeded its total byte bound.");
-    text = (text + decoder.decode(value, { stream: true })).slice(-max);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (maxTotalBytes !== undefined && total > maxTotalBytes)
+        throw new Error("Child stderr exceeded its total byte bound.");
+      text = (text + decoder.decode(value, { stream: true })).slice(-max);
+    }
+    return (text + decoder.decode()).slice(-max);
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    reader.releaseLock();
   }
-  return (text + decoder.decode()).slice(-max);
 }
 
 export function supervise(
@@ -396,7 +428,8 @@ export function supervise(
   const kill = () => {
     failInput(new Error("Interactive stdin is closed."));
     if (interactive && process.platform === "win32") guard.terminate?.();
-    else if (!interactive || !exited) killTree(proc.pid);
+    else if (!exited) killTree(proc.pid);
+    else if (process.platform !== "win32") killExitedProcessGroup(proc.pid);
   };
 
   const timer =
@@ -525,6 +558,7 @@ export function supervise(
     }
   };
   if (prematureControl) outputFailure();
+  const outputControl = new AbortController();
   const pumped = pumpLines(
     proc.stdout,
     (line) => {
@@ -537,11 +571,13 @@ export function supervise(
     },
     options.maxLineBytes,
     interactive ? 16_777_216 : undefined,
+    outputControl.signal,
   ).catch(outputFailure);
   const stderrTail = readTail(
     proc.stderr,
     STDERR_TAIL_CHARS,
     interactive ? 1_048_576 : undefined,
+    outputControl.signal,
   ).catch(() => {
     if (interactive) outputFailure();
     return "";
@@ -550,30 +586,53 @@ export function supervise(
     try {
       const exitCode = await proc.exited;
       exited = true;
+      if (process.platform !== "win32") exitedGroups.add(proc.pid);
       if (interactive) {
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
         if (process.platform === "win32") guard.terminate?.();
         else killExitedProcessGroup(proc.pid);
         failInput(new Error("Interactive stdin is closed."));
       }
+      if (
+        process.platform !== "win32" &&
+        (interactive || stopped || timedOut)
+      ) {
+        // Work has exited. Cleanup cannot fabricate a work timeout while awaiting
+        // a helper's physical exit; its kernel observation has a separate bound.
+        if (timer) clearTimeout(timer);
+        await waitForOwnedProcessGroup((signal) =>
+          observeOwnedProcessGroup(proc.pid, signal),
+        );
+      }
       await pumped.catch(() => undefined);
       const stderr = await stderrTail;
       return { exitCode, timedOut, stopped, stderr };
+    } catch (error) {
+      // An unverified live helper can retain inherited pipes. A failed bounded
+      // cleanup must release this owner's readers as well as reject its result.
+      outputControl.abort();
+      throw error;
     } finally {
       if (timer) clearTimeout(timer);
       guard.release();
       live.delete(proc.pid);
+      exitedGroups.delete(proc.pid);
       cleanupIsolated();
     }
   })();
+  // Callers still observe the rejection when they await it. Event-driven Stop
+  // callers need not manufacture an unhandled rejection in the meantime.
+  void done.catch(() => undefined);
 
   const handle: Supervised = {
     pid: proc.pid,
     done,
-    async stop() {
+    stop() {
       stopped = true;
       kill();
-      await done;
+      const stopping = done.then(() => undefined);
+      void stopping.catch(() => undefined);
+      return stopping;
     },
   };
   if (!interactive) return handle;

@@ -571,11 +571,21 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
           },
         });
         const active = child;
-        void child.done.then((value) => {
-          exit = value;
-          if (stream.state().terminal === null && !failure)
-            latch("unknown", "Codex exited before a confirmed terminal turn.");
-        });
+        void child.done.then(
+          (value) => {
+            exit = value;
+            if (stream.state().terminal === null && !failure)
+              latch(
+                "unknown",
+                "Codex exited before a confirmed terminal turn.",
+              );
+          },
+          () =>
+            latch(
+              "unknown",
+              "The owned native process cleanup could not be confirmed.",
+            ),
+        );
         const providerPid = await bounded(
           () => active.providerPid,
           rpcTimeoutMs,
