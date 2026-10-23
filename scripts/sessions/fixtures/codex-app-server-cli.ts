@@ -283,6 +283,7 @@ while (true) {
         mode?.startsWith("approval-command") ||
         mode === "approval-conflict" ||
         mode === "approval-resolved" ||
+        mode === "approval-stale" ||
         mode === "approval-never"
       ) {
         if (mode === "approval-never") hangTree();
@@ -329,11 +330,12 @@ while (true) {
             ...request,
             params: { ...request.params, command: "different intent" },
           });
-        if (mode === "approval-resolved") {
+        if (mode === "approval-resolved" || mode === "approval-stale") {
           await send({
             method: "serverRequest/resolved",
             params: { threadId, requestId: 1 },
           });
+          if (mode === "approval-stale") await send(request);
           await finish();
         }
       } else if (mode === "approval-file") {
