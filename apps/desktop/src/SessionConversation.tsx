@@ -20,7 +20,7 @@ import {
 import {
   ownedSessionLifecycle,
   ownedSessionTurn,
-  unsupportedSessionStates,
+  sessionStateSupport,
 } from "./session-activity";
 import type { SessionsClient } from "./session-client";
 import {
@@ -65,19 +65,6 @@ export function SessionConversation({
       : record?.provider === "codex"
         ? "Codex"
         : "Claude";
-  const lifecycle = ownedSessionLifecycle(view.page, {
-    mode: record?.mode ?? null,
-    loaded: view.loaded,
-    live: view.live,
-    stopping: !!view.stopping,
-    feedInterrupted: view.feedInterrupted,
-    readError: view.readError,
-  });
-  const showLifecycleGuidance =
-    ["error", "unknown", "timed-out", "stale"].includes(lifecycle.state) ||
-    !!view.stopping ||
-    current?.phase === "cancelling" ||
-    (!!running && !view.page?.controllable);
   const observed = [...(view.page?.frames ?? [])]
     .reverse()
     .find(
@@ -146,6 +133,22 @@ export function SessionConversation({
     actionable: approvalActionable,
     approvalRevision,
   });
+  const lifecycle = ownedSessionLifecycle(view.page, {
+    mode: record?.mode ?? null,
+    loaded: view.loaded,
+    live: view.live,
+    stopping: !!view.stopping,
+    feedInterrupted: view.feedInterrupted,
+    readError: view.readError,
+    approvals: approvalActionable ? approvals.view() : null,
+  });
+  const showLifecycleGuidance =
+    ["error", "unknown", "timed-out", "stale", "needs-permission"].includes(
+      lifecycle.state,
+    ) ||
+    !!view.stopping ||
+    current?.phase === "cancelling" ||
+    (!!running && !view.page?.controllable);
   const usage = view.page?.frames
     .filter(
       (frame) =>
@@ -156,7 +159,8 @@ export function SessionConversation({
   const feed = useRef<HTMLDivElement>(null),
     following = useRef(true);
   const prompt = useRef<HTMLTextAreaElement>(null),
-    pickerRegion = useRef<HTMLDivElement>(null);
+    pickerRegion = useRef<HTMLDivElement>(null),
+    chatControls = useRef<HTMLDivElement>(null);
   const [away, setAway] = useState(false),
     [notice, setNotice] = useState("");
   const [caret, setCaret] = useState(0),
@@ -280,6 +284,16 @@ export function SessionConversation({
               library={library}
               writesAllowed={writesAllowed}
               onContinue={() => prompt.current?.focus()}
+              onPermissions={
+                approvalActionable
+                  ? () =>
+                      chatControls.current
+                        ?.querySelector<HTMLButtonElement>(
+                          "button:not(:disabled)",
+                        )
+                        ?.focus()
+                  : undefined
+              }
             />
           )}
         </div>
@@ -375,7 +389,10 @@ export function SessionConversation({
           <details class="af-session-state-support">
             <summary>State support for this route</summary>
             <dl>
-              {unsupportedSessionStates.map((item) => (
+              {sessionStateSupport(
+                isCodexChat,
+                chatSnapshot?.launch.approvalPolicy === "on-request",
+              ).map((item) => (
                 <div key={item.label}>
                   <dt>{item.label}</dt>
                   <dd>{item.reason}</dd>
@@ -545,7 +562,7 @@ export function SessionConversation({
           );
         })}
         {isCodexChat && (
-          <div class="af-session-chat-controls">
+          <div class="af-session-chat-controls" ref={chatControls}>
             <CodexChatApprovals
               client={approvals}
               actionable={approvalActionable}

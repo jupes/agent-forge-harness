@@ -44,15 +44,18 @@ and returns the original receipt for an exact retry. Stale revisions are refused
 | Export | Complete current saved private revision, subject to the verified 8 MiB limit. |
 | Archive / restore | Private reversible metadata; independent of running ownership. |
 | Stop | An active app-owned turn controlled by the current hearth; pending until its private receipt confirms cancellation. |
-| Continue this Chat | An idle Claude Chat with the confirmed native binding and supported `--resume` capability. This only focuses the reply box; the operator must explicitly send the next message. |
-| Codex exec Task continuation | Unavailable: the current Task route accepts one turn. |
+| Continue this Chat | A completed Claude Chat with confirmed native binding and supported `--resume`, or a completed native Codex Chat with the matching saved app-server version and thread binding. The live private view must be current, with no pending turn or Stop. This only focuses the reply box; the operator must explicitly send the next message. |
+| Task continuation | Claude, Codex exec and Gemini CLI Tasks accept one turn. Start another session explicitly. |
+| Copy original CLI preview | Uses the serializer for the exact original saved Claude, Codex exec, native Codex Chat or Gemini Task snapshot. The private input is not copied. Native Codex Chat's preview starts only its stdio server; its original handshake and private input are separate. |
 | Fork | Unavailable: no native fork or reviewed-summary continuation producer is connected to this view. |
 | Native terminal handoff | Unavailable: no authorized handoff is connected to this exact native conversation. Copy original CLI preview is a separate explicit clipboard action and includes its input instructions. |
-| Live permissions | Unavailable on these routes. Historical reported denials remain read-only evidence, not a pending approval request. |
+| Review native permissions | Native Codex Chat can focus its existing inline permission cards while the owned turn and live view are current. This navigation supplies no new approval authority and sends no decision. Only the current protected approval page supplies actionable choices. |
+| Other route permissions | Claude, Codex exec and Gemini CLI Tasks cannot receive live permission decisions here. Historical reported denials remain read-only evidence, not a pending approval request. |
 
-The matrix describes the current Claude and Codex exec Task producers. A future native
-Chat or permission producer must add its own strict codec and authorization before
-this view advertises the capability.
+The matrix distinguishes the saved provider and route. A registry row or a CLI
+preview cannot establish native approval or process authority. Managed shift origins
+remain outside these ordinary actions. Fork, terminal handoff and free-form live
+input remain unavailable; none is inferred from a provider name or historical report.
 
 ## Design and verification source
 

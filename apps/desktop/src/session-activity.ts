@@ -5,6 +5,7 @@ import type {
   CodingActivityEvent,
   CodingOutcomeEvent,
 } from "../../../types/session-activity";
+import type { CodexChatDecisionView } from "./codex-chat-decisions";
 
 export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
@@ -83,12 +84,29 @@ export const unsupportedSessionStates = [
   },
 ] as const;
 
+export function sessionStateSupport(
+  nativeChat: boolean,
+  requestsEnabled = true,
+) {
+  return unsupportedSessionStates.map((item) =>
+    item.label === "Needs permission" && nativeChat
+      ? {
+          label: item.label,
+          reason: requestsEnabled
+            ? "Current verified native requests appear in the inline permission cards. Saved reports never authorize a decision."
+            : "Permission requests were disabled when this Chat started. Saved reports never authorize a decision.",
+        }
+      : item,
+  );
+}
+
 export interface OwnedSessionLifecycle {
   state:
     | "loading"
     | "empty"
     | "starting"
     | "running"
+    | "needs-permission"
     | "idle"
     | "ended"
     | "error"
@@ -110,6 +128,7 @@ export function ownedSessionLifecycle(
     stopping: boolean;
     feedInterrupted: boolean;
     readError: string;
+    approvals?: CodexChatDecisionView | null;
   },
 ): OwnedSessionLifecycle {
   const turn = page?.turns.at(-1);
@@ -214,6 +233,29 @@ export function ownedSessionLifecycle(
       label: `Saved status: ${turn.phase === "accepted" ? "Starting" : "Running"}`,
       detail:
         "This hearth has no confirmed process ownership. The saved status does not prove the provider is still running; Stop is unavailable here.",
+    };
+  const approvals = view.approvals;
+  if (
+    view.mode === "chat" &&
+    page.binding?.provider === "codex" &&
+    view.loaded &&
+    view.live &&
+    !view.feedInterrupted &&
+    !view.readError &&
+    approvals?.actionable &&
+    !approvals.error &&
+    approvals.projectId === page.projectId &&
+    approvals.sessionId === page.conversationId &&
+    approvals.turnRequestId === turn.requestId &&
+    approvals.pending.some(
+      (item) => item.actionable && item.turnRequestId === turn.requestId,
+    )
+  )
+    return {
+      state: "needs-permission",
+      label: "Needs permission",
+      detail:
+        "The provider is waiting for a permission decision. Review the current inline request; saved history cannot approve it.",
     };
   return turn.phase === "accepted"
     ? {

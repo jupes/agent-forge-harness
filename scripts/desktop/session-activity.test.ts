@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { CodexChatDecisionView } from "../../apps/desktop/src/codex-chat-decisions";
 import {
   SessionActivity,
   SessionOutcome,
@@ -7,6 +8,7 @@ import {
 import {
   ownedSessionLifecycle,
   ownedSessionTurn,
+  sessionStateSupport,
   unsupportedSessionStates,
 } from "../../apps/desktop/src/session-activity";
 import type {
@@ -236,6 +238,157 @@ test("interrupted live observation is stale, saved ownership is explicit, and un
   expect(
     ownedSessionLifecycle(current, { ...options, stopping: true }).label,
   ).toBe("Stopping… waiting for confirmation");
+});
+
+test("Needs permission requires a current protected offer for this exact live owned Chat turn; held decision metadata alone cannot establish it", () => {
+  const current = page([]);
+  current.binding = {
+    provider: "codex",
+    sessionId: "native",
+    version: "fixture",
+  };
+  current.turns = [
+    {
+      requestId: turnId,
+      hash: "fixture",
+      phase: "running",
+      createdAt: "2026-10-23T00:00:00Z",
+      updatedAt: "2026-10-23T00:00:00Z",
+      reason: null,
+      owner: "fixture",
+    },
+  ];
+  const approvals: CodexChatDecisionView = {
+    projectId: current.projectId,
+    sessionId: current.conversationId,
+    turnRequestId: turnId,
+    actionable: true,
+    pending: [
+      {
+        turnRequestId: turnId,
+        actionable: true,
+        detailsUnavailableReason: null,
+        approval: {
+          id: "offer",
+          kind: "command",
+          command: "inert",
+          cwd: "/repo",
+          reason: null,
+          availableDecisions: ["accept", "decline"],
+        },
+      },
+    ],
+    identity: null,
+    identityError: "",
+    error: "",
+    notice: "",
+    loading: false,
+    checking: false,
+    posting: false,
+    receipt: null,
+  };
+  const options = {
+    mode: "chat",
+    loaded: true,
+    live: true,
+    stopping: false,
+    feedInterrupted: false,
+    readError: "",
+    approvals,
+  } as const;
+  expect(ownedSessionLifecycle(current, options)).toMatchObject({
+    state: "needs-permission",
+    label: "Needs permission",
+    detail: expect.stringContaining("inline"),
+  });
+  for (const change of [
+    { projectId: "foreign" },
+    { sessionId: "foreign" },
+    { turnRequestId: "old-turn" },
+    { actionable: false },
+    { error: "unverified" },
+    { pending: [] },
+    {
+      pending: approvals.pending.map((item) => ({
+        ...item,
+        turnRequestId: "old-turn",
+      })),
+    },
+  ])
+    expect(
+      ownedSessionLifecycle(current, {
+        ...options,
+        approvals: { ...approvals, ...change },
+      }).state,
+    ).toBe("running");
+  expect(
+    ownedSessionLifecycle(current, { ...options, stopping: true }).label,
+  ).toContain("Stopping");
+  expect(
+    ownedSessionLifecycle(current, {
+      ...options,
+      live: false,
+      feedInterrupted: true,
+    }).state,
+  ).toBe("stale");
+  expect(
+    ownedSessionLifecycle(current, { ...options, readError: "unavailable" })
+      .state,
+  ).not.toBe("needs-permission");
+  expect(
+    ownedSessionLifecycle({ ...current, controllable: false }, options).state,
+  ).toBe("running");
+  expect(
+    ownedSessionLifecycle(current, { ...options, mode: "task" }).state,
+  ).toBe("running");
+  for (const phase of [
+    "completed",
+    "failed",
+    "cancelled",
+    "unknown",
+  ] as const) {
+    const ended = {
+      ...current,
+      turns: current.turns.map((turn) => ({ ...turn, phase })),
+    };
+    expect(ownedSessionLifecycle(ended, options).state).not.toBe(
+      "needs-permission",
+    );
+  }
+  const held = {
+    ...approvals,
+    pending: [],
+    identity: {
+      projectId: current.projectId,
+      sessionId: current.conversationId,
+      turnRequestId: turnId,
+      approvalId: "old-offer",
+      requestId: "original",
+      decision: "accept" as const,
+    },
+  };
+  expect(
+    ownedSessionLifecycle(current, { ...options, approvals: held }).state,
+  ).toBe("running");
+  expect(
+    ownedSessionLifecycle(current, {
+      ...options,
+      approvals: { ...held, pending: approvals.pending },
+    }).state,
+  ).toBe("needs-permission");
+  expect(
+    sessionStateSupport(true).find((item) => item.label === "Needs permission")
+      ?.reason,
+  ).toContain("Current verified native requests");
+  expect(
+    sessionStateSupport(false).find((item) => item.label === "Needs permission")
+      ?.reason,
+  ).toContain("do not expose live permission");
+  expect(
+    sessionStateSupport(true, false).find(
+      (item) => item.label === "Needs permission",
+    )?.reason,
+  ).toContain("disabled when this Chat started");
 });
 
 test("reported activity is collapsed, inert and explicit about redaction, truncation and missing file counts", () => {
