@@ -12,8 +12,8 @@ import { mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  INTERACTIVE_BOOTSTRAP_CONTROL,
   INTERACTIVE_BOOTSTRAP_FLAG,
-  INTERACTIVE_BOOTSTRAP_PREFIX,
   INTERACTIVE_START_MAX_BYTES,
 } from "./interactive-bootstrap";
 import { guardSuspendedWindowsProcess, guardTree } from "./tree-guard";
@@ -167,10 +167,12 @@ async function pumpLines(
   stream: ReadableStream<Uint8Array>,
   onLine: (line: string) => void,
   maxLineBytes?: number,
+  maxTotalBytes?: number,
 ): Promise<void> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let buffer = "";
+  let total = 0;
   const drain = (final: boolean) => {
     const parts = buffer.split(/\r?\n/);
     buffer = final ? "" : (parts.pop() ?? "");
@@ -185,6 +187,9 @@ async function pumpLines(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    total += value.byteLength;
+    if (maxTotalBytes !== undefined && total > maxTotalBytes)
+      throw new Error("Child output exceeded its total byte bound.");
     buffer += decoder.decode(value, { stream: true });
     drain(false);
   }
@@ -196,13 +201,18 @@ async function pumpLines(
 async function readTail(
   stream: ReadableStream<Uint8Array>,
   max: number,
+  maxTotalBytes?: number,
 ): Promise<string> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let text = "";
+  let total = 0;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    total += value.byteLength;
+    if (maxTotalBytes !== undefined && total > maxTotalBytes)
+      throw new Error("Child stderr exceeded its total byte bound.");
     text = (text + decoder.decode(value, { stream: true })).slice(-max);
   }
   return (text + decoder.decode()).slice(-max);
@@ -261,7 +271,7 @@ export function supervise(
             "--no-env-file",
             "--no-install",
             `--config=${join(import.meta.dir, "interactive-bootstrap.bunfig.toml")}`,
-            join(import.meta.dir, "interactive-bootstrap.ts"),
+            join(import.meta.dir, "interactive-bootstrap-entry.ts"),
           ]
         : [process.execPath, INTERACTIVE_BOOTSTRAP_FLAG]
     : null;
@@ -283,15 +293,27 @@ export function supervise(
     bootstrapEnv.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0";
   }
   hookParentExit();
+  let receiveControl: ((message: unknown, senderPid: number) => void) | null =
+    null;
+  let prematureControl = false;
   const proc = (() => {
     try {
-      return Bun.spawn(bootstrap ?? options.command, {
+      return Bun.spawn<"pipe", "pipe", "pipe">(bootstrap ?? options.command, {
         cwd: isolated ?? options.cwd,
         env: interactive ? bootstrapEnv : options.env,
         stdin: "pipe",
         ...(process.platform === "win32" ? {} : { detached: true }),
         stdout: "pipe",
         stderr: "pipe",
+        ...(interactive
+          ? {
+              serialization: "json" as const,
+              ipc(message: unknown, sender: { pid: number }) {
+                if (receiveControl) receiveControl(message, sender.pid);
+                else prematureControl = true;
+              },
+            }
+          : {}),
       });
     } catch (error) {
       cleanupIsolated();
@@ -442,30 +464,66 @@ export function supervise(
     return tracked;
   };
 
+  const outputFailure = () => {
+    // A broken output protocol must not leave a producer blocked on its pipe.
+    kill();
+    options.onOutputError?.();
+  };
+  const beforeControl: string[] = [];
+  let beforeControlBytes = 0;
+  receiveControl = (message, senderPid) => {
+    if (inputFailure) return;
+    if (
+      !interactive ||
+      providerReady ||
+      senderPid !== proc.pid ||
+      typeof message !== "object" ||
+      message === null ||
+      Array.isArray(message) ||
+      Object.keys(message).length !== 2 ||
+      !("kind" in message) ||
+      message.kind !== INTERACTIVE_BOOTSTRAP_CONTROL ||
+      !("pid" in message) ||
+      typeof message.pid !== "number" ||
+      !Number.isSafeInteger(message.pid) ||
+      message.pid < 1 ||
+      message.pid === proc.pid
+    ) {
+      outputFailure();
+      return;
+    }
+    providerReady = true;
+    resolveProvider(message.pid);
+    try {
+      for (const line of beforeControl) options.onLine(line);
+      beforeControl.length = 0;
+      beforeControlBytes = 0;
+    } catch {
+      outputFailure();
+    }
+  };
+  if (prematureControl) outputFailure();
   const pumped = pumpLines(
     proc.stdout,
     (line) => {
       if (interactive && !providerReady) {
-        if (!line.startsWith(INTERACTIVE_BOOTSTRAP_PREFIX))
-          throw new Error(
-            "Interactive ownership acknowledgement is malformed.",
-          );
-        const pid = Number(line.slice(INTERACTIVE_BOOTSTRAP_PREFIX.length));
-        if (!Number.isSafeInteger(pid) || pid < 1 || pid === proc.pid)
-          throw new Error("Interactive provider identity is malformed.");
-        providerReady = true;
-        resolveProvider(pid);
-        return;
-      }
-      options.onLine(line);
+        beforeControlBytes += Buffer.byteLength(line);
+        if (beforeControl.length >= 256 || beforeControlBytes > 1_048_576)
+          throw new Error("Interactive startup output exceeded its bound.");
+        beforeControl.push(line);
+      } else options.onLine(line);
     },
     options.maxLineBytes,
+    interactive ? 16_777_216 : undefined,
+  ).catch(outputFailure);
+  const stderrTail = readTail(
+    proc.stderr,
+    STDERR_TAIL_CHARS,
+    interactive ? 1_048_576 : undefined,
   ).catch(() => {
-    // A broken output protocol must not leave a producer blocked on its pipe.
-    kill();
-    options.onOutputError?.();
+    if (interactive) outputFailure();
+    return "";
   });
-  const stderrTail = readTail(proc.stderr, STDERR_TAIL_CHARS).catch(() => "");
   const done = (async (): Promise<ChildExit> => {
     try {
       const exitCode = await proc.exited;

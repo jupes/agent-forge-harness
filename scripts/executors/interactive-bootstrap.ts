@@ -1,8 +1,7 @@
 import { isAbsolute } from "node:path";
-import { isMain } from "../is-main";
 
 export const INTERACTIVE_BOOTSTRAP_FLAG = "--interactive-bootstrap";
-export const INTERACTIVE_BOOTSTRAP_PREFIX = "agent-forge-owned-interactive:";
+export const INTERACTIVE_BOOTSTRAP_CONTROL = "agent-forge-owned-interactive";
 export const INTERACTIVE_START_MAX_BYTES = 131_072;
 
 function startEnvelope(value: unknown): {
@@ -67,7 +66,7 @@ function startEnvelope(value: unknown): {
 /** Trusted internal child mode. It runs no provider code before receiving the private ownership grant. */
 export async function runInteractiveBootstrap(): Promise<void> {
   const reader = Bun.stdin.stream().getReader();
-  let child: Bun.Subprocess<"pipe", "pipe", "pipe"> | null = null;
+  let child: Bun.Subprocess<"pipe", "inherit", "inherit"> | null = null;
   let deadline: ReturnType<typeof setTimeout> | null = setTimeout(
     () => process.exit(1),
     5000,
@@ -98,39 +97,22 @@ export async function runInteractiveBootstrap(): Promise<void> {
       throw new Error("Invalid ownership grant.");
     }
     const start = startEnvelope(raw);
+    if (typeof process.send !== "function")
+      throw new Error("Missing private ownership channel.");
     clearTimeout(deadline);
     child = Bun.spawn(start.command, {
       cwd: start.cwd,
       env: start.env,
       stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: "inherit",
+      stderr: "inherit",
     });
     const actual = child;
     deadline = setTimeout(() => {
       actual.kill("SIGKILL");
       process.exit(1);
     }, start.timeoutMs);
-    await Bun.stdout.write(`${INTERACTIVE_BOOTSTRAP_PREFIX}${actual.pid}\n`);
-    const forward = async (
-      stream: ReadableStream<Uint8Array>,
-      target: Bun.BunFile,
-      cap: number,
-    ) => {
-      const input = stream.getReader();
-      let total = 0;
-      try {
-        for (;;) {
-          const next = await input.read();
-          if (next.done) break;
-          total += next.value.byteLength;
-          if (total > cap) throw new Error("Output bound");
-          await target.write(next.value);
-        }
-      } finally {
-        input.releaseLock();
-      }
-    };
+    process.send({ kind: INTERACTIVE_BOOTSTRAP_CONTROL, pid: actual.pid });
     const stdin = (async () => {
       let total = remainder.byteLength;
       if (remainder.byteLength) await actual.stdin.write(remainder);
@@ -152,12 +134,7 @@ export async function runInteractiveBootstrap(): Promise<void> {
     const inputDone = stdin.catch((error: unknown) => {
       if (actual.exitCode === null) throw error;
     });
-    const results = await Promise.all([
-      exited,
-      inputDone,
-      forward(actual.stdout, Bun.stdout, 16_777_216),
-      forward(actual.stderr, Bun.stderr, 1_048_576),
-    ]);
+    const results = await Promise.all([exited, inputDone]);
     process.exitCode = results[0];
   } catch {
     child?.kill("SIGKILL");
@@ -168,7 +145,6 @@ export async function runInteractiveBootstrap(): Promise<void> {
     if (deadline) clearTimeout(deadline);
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
+    process.disconnect?.();
   }
 }
-
-if (isMain(import.meta)) await runInteractiveBootstrap();
