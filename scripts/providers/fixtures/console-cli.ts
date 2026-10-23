@@ -63,15 +63,27 @@ else if (args[0] === "exit-with-child") {
     stdout: "ignore",
     stderr: "ignore",
   });
-  writeFileSync(file, JSON.stringify({ childPid: child.pid }));
+  writeFileSync(
+    file,
+    JSON.stringify({ pid: process.pid, childPid: child.pid }),
+  );
   await new Promise(() => {});
 } else {
+  const consoleApi =
+    process.platform === "win32"
+      ? dlopen("kernel32.dll", {
+          GetConsoleWindow: { args: [], returns: FFIType.ptr },
+        })
+      : null;
   writeFileSync(
     file,
     JSON.stringify({
       args,
       marker: process.env["NATIVE_FIXTURE_SECRET"] ?? null,
       cwd: process.cwd(),
+      hasConsole: consoleApi
+        ? consoleApi.symbols.GetConsoleWindow() !== null
+        : false,
     }),
   );
   console.log("terminal-fixture-output-never-captured");

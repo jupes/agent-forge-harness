@@ -57,7 +57,6 @@ test.skipIf(process.platform !== "win32" || process.arch !== "x64")(
           CONSOLE_FIXTURE_RECORD: record,
         },
         timeoutMs: 5000,
-        visible: false,
       });
       const result = await child.done;
       expect(result.exitCode).toBe(0);
@@ -69,7 +68,7 @@ test.skipIf(process.platform !== "win32" || process.arch !== "x64")(
       } catch {
         throw Error("Synthetic native console record is missing");
       }
-      expect(raw).toMatchObject({ args, marker: null });
+      expect(raw).toMatchObject({ args, marker: null, hasConsole: true });
       if (
         !raw ||
         typeof raw !== "object" ||

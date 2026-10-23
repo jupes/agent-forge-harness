@@ -84,7 +84,11 @@ export const providerReadinessPageSchema: z.ZodType<ProviderReadinessPage> = z
               .object({ supported: z.boolean(), reason: text.nullable() })
               .strict(),
             signIn: z
-              .object({ command: text.nullable(), reason: text.nullable() })
+              .object({
+                command: text.nullable(),
+                reason: text.nullable(),
+                nativeAvailable: z.boolean(),
+              })
               .strict(),
             state: z.enum([
               "not-installed",

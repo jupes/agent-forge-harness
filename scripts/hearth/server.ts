@@ -43,6 +43,11 @@ import {
   createProviderInspector,
   type ProviderInspector,
 } from "../providers/inspect";
+import {
+  createProviderLoginService,
+  type ProviderLoginService,
+} from "../providers/login";
+import { createNativeLoginPreparation } from "../providers/login-native";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
@@ -158,6 +163,7 @@ export function hearthCouncilRunner(
 export interface OperatorApiOverrides {
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
   providerInspector?: ProviderInspector;
+  providerLogin?: ProviderLoginService;
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
@@ -358,15 +364,28 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         resolve(import.meta.dir, "../keeper/reader-entry.ts"),
       ],
     });
+  const providerInspector =
+    options.api?.providerInspector ??
+    createProviderInspector({
+      root,
+      home,
+      environment: options.environment ?? process.env,
+      operatorToken: expectedToken,
+    });
   const table = operatorRoutes({
     projectHome: home,
-    providerInspector:
-      options.api?.providerInspector ??
-      createProviderInspector({
+    providerInspector,
+    providerLogin:
+      options.api?.providerLogin ??
+      createProviderLoginService({
         root,
         home,
-        environment: options.environment ?? process.env,
-        operatorToken: expectedToken,
+        prepare: createNativeLoginPreparation({
+          root,
+          inspector: providerInspector,
+          environment: options.environment ?? process.env,
+          operatorToken: expectedToken,
+        }),
       }),
     sessionRuntime:
       options.api?.sessionRuntime ??

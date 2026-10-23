@@ -101,7 +101,11 @@ const observation = {
     reason: "Authentication has not been reported.",
   },
   adapter: { supported: true, reason: null },
-  signIn: { command: "claude auth login", reason: null },
+  signIn: {
+    command: "claude auth login",
+    reason: null,
+    nativeAvailable: false,
+  },
   reports: [],
   smiths: [],
 } as const;

@@ -160,6 +160,7 @@ export function createProviderInspector(options: {
               : "The desktop session adapter has not been delivered.",
         },
         signIn: {
+          nativeAvailable: false,
           command: definition.login,
           reason:
             definition.login === null
@@ -233,6 +234,16 @@ export function createProviderInspector(options: {
               : parseCodexAuthentication(status.exitCode, checkedAt);
         result.authentication = authentication;
       }
+      result.signIn.nativeAvailable =
+        supported &&
+        installation.compatibility === "supported" &&
+        definition.login !== null &&
+        process.platform === "win32" &&
+        process.arch === "x64" &&
+        /\.exe$/i.test(path);
+      if (definition.login && !result.signIn.nativeAvailable)
+        result.signIn.reason =
+          "Opening the vendor console requires a verified native Windows x64 executable. Use the vendor command in your terminal, then run doctor.";
       return result;
     },
   };

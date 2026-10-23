@@ -47,6 +47,7 @@ export function providerReadinessFixture(
             reason: index === 4 ? "Deferred OpenCode/ACP route." : null,
           },
           signIn: {
+            nativeAvailable: false,
             command:
               index === 0
                 ? "claude auth login"

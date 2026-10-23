@@ -26,6 +26,7 @@ import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import type { ProviderInspector } from "../../providers/inspect";
+import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
 import {
   type ActionRoute,
@@ -67,6 +68,7 @@ import {
 } from "./project-summaries";
 import { projectWorkbenchRoute } from "./project-workbench";
 import { projectRoutes } from "./projects";
+import { createProviderLoginRoutes } from "./provider-logins";
 import { createProviderReadinessRoutes } from "./providers";
 import { queueRoutes } from "./queue";
 import { createSessionWorktreeRoutes } from "./session-worktrees";
@@ -77,6 +79,7 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
   providerInspector: ProviderInspector;
+  providerLogin: ProviderLoginService;
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
@@ -422,7 +425,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.providerInspector,
     projectSnapshot,
   );
+  const providerLogins = createProviderLoginRoutes(deps.providerLogin);
   const reads: ReadRoute[] = [
+    ...providerLogins.reads,
     providers.read,
     sessions,
     runs,
@@ -488,6 +493,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.events,
       ...actions(deps),
       providers.doctor,
+      ...providerLogins.actions,
       preferences,
       conversations.send,
       conversations.refresh,
@@ -517,6 +523,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ],
     close: async () => {
       live.close();
+      await providerLogins.close();
       await ownedSessions.close();
       await proposals.close();
       await conversations.close();

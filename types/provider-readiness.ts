@@ -86,7 +86,11 @@ export interface ProviderReadiness {
   installation: ProviderInstallation;
   authentication: ProviderAuthentication;
   adapter: { supported: boolean; reason: string | null };
-  signIn: { command: string | null; reason: string | null };
+  signIn: {
+    command: string | null;
+    reason: string | null;
+    nativeAvailable: boolean;
+  };
   state: ProviderReadinessState;
   usage: ProviderUsageWindow[];
   usageReason: string | null;
