@@ -145,6 +145,7 @@ export function SessionComposer({
   useEffect(() => {
     const original = worktreeAction.original;
     if (
+      !view.inputLocked &&
       created &&
       original &&
       draft.where === "new" &&
@@ -165,6 +166,7 @@ export function SessionComposer({
         },
       });
   }, [
+    view.inputLocked,
     created?.path,
     worktreeAction.original,
     draft.where,

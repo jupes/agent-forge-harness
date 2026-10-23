@@ -43,3 +43,7 @@ Focused tests cover inert Cancel/edit, exact original retries, saved input/hash
 recovery, registry-only uncertainty, known-UUID 404 locking, deferred reply races
 and project isolation. Real-hearth browser coverage uses compiled fake providers
 and a recording tracker stand-in; no paid provider or real tracker is reachable.
+The guarded temporary-Git journey holds an actual worktree creation reply across
+Cancel and a protected history read. Once that read finishes, the confirmed path
+is selected without another creation; Cancel retains the worktree and starts no
+provider.
