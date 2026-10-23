@@ -6,7 +6,6 @@ import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
 import { serializeGeminiTask } from "../../../scripts/sessions/gemini-task";
 import type { ConversationObject } from "../../../types/conversation";
 import { GeminiTaskActivity } from "./GeminiTaskActivity";
-import { KeeperMarkdown } from "./KeeperMarkdown";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
@@ -33,6 +32,7 @@ import { CodexChatApprovals } from "./CodexChatApprovals";
 import { CodexChatTerminal } from "./CodexChatTerminal";
 import { CodexChatUsage } from "./CodexChatUsage";
 import { SessionLibraryControls } from "./SessionLibraryControls";
+import { SessionReply } from "./SessionReply";
 import type { SessionLibraryClient } from "./session-library-client";
 import { useCodexChatDecisions } from "./use-codex-chat-decisions";
 
@@ -174,6 +174,12 @@ export function SessionConversation({
   const [caret, setCaret] = useState(0),
     [pickerVisible, setPickerVisible] = useState(false),
     [attaching, setAttaching] = useState(false);
+  const copyReply = (text: string) => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => setNotice("Reply copied."))
+      .catch(() => setNotice("The reply could not be copied."));
+  };
   const choose = (value: string, object?: ConversationObject) => {
     const picker = keeperPicker(view.draft, caret);
     if (!picker) return;
@@ -522,29 +528,18 @@ export function SessionConversation({
               {record?.provider !== "gemini" && (
                 <SessionActivity value={activity} />
               )}
-              <GeminiTaskActivity page={view.page} turnId={row.id} />
+              <GeminiTaskActivity
+                page={view.page}
+                turnId={row.id}
+                streaming={streaming}
+                onCopy={copyReply}
+              />
               {row.reply && (
-                <article class="af-owned-reply" aria-label="Session reply">
-                  <KeeperMarkdown text={row.reply} />
-                  {streaming && (
-                    <span
-                      class="af-session-streaming-caret"
-                      aria-hidden="true"
-                    />
-                  )}
-                  <Button
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(row.reply)
-                        .then(() => setNotice("Reply copied."))
-                        .catch(() =>
-                          setNotice("The reply could not be copied."),
-                        );
-                    }}
-                  >
-                    Copy session reply
-                  </Button>
-                </article>
+                <SessionReply
+                  text={row.reply}
+                  streaming={streaming}
+                  onCopy={copyReply}
+                />
               )}
               {row.turn &&
                 ["failed", "unknown", "cancelled"].includes(row.turn.phase) && (

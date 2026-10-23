@@ -1,19 +1,21 @@
 import type { ConversationPage } from "../../../types/conversation";
+import { geminiTaskPresentation } from "./gemini-task-presentation";
+import { SessionReply } from "./SessionReply";
 
 /** Display native facts verbatim as private data; text delta flags never imply missing message identities. */
 export function GeminiTaskActivity({
   page,
   turnId,
+  streaming = false,
+  onCopy,
 }: {
   page: ConversationPage | null;
   turnId: string;
+  streaming?: boolean;
+  onCopy?: (text: string) => void;
 }) {
-  const frames =
-    page?.frames.filter(
-      (frame) =>
-        frame.turnId === turnId && frame.event.kind === "coding-gemini-task",
-    ) ?? [];
-  if (!frames.length) return null;
+  const reports = geminiTaskPresentation(page, turnId);
+  if (!reports.length) return null;
   return (
     <section aria-label="Gemini Task reports" class="af-session-activity">
       <p class="af-session-note">
@@ -21,16 +23,18 @@ export function GeminiTaskActivity({
         per-model usage is reported separately. Account allowance and context
         occupancy are unavailable.
       </p>
-      {frames.map((frame) => {
-        if (frame.event.kind !== "coding-gemini-task") return null;
-        const event = frame.event.event;
-        if (event.kind === "text")
+      {reports.map((report) => {
+        if (report.kind === "reply")
           return (
-            <article key={frame.seq} aria-label="Gemini native text">
-              <small>{event.delta ? "Native text delta" : "Native text"}</small>
-              <pre>{event.text}</pre>
-            </article>
+            <SessionReply
+              key={report.sequence}
+              text={report.text}
+              streaming={streaming && report.open}
+              onCopy={onCopy}
+            />
           );
+        const frame = { seq: report.sequence },
+          event = report.event;
         if (event.kind === "identity")
           return (
             <p key={frame.seq}>
