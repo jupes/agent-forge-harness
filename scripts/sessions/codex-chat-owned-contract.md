@@ -49,6 +49,8 @@ than generalizing every existing transport and request codec.
   optional original receipt selected by `requestId`. Actionable views carry no
   native RPC selector or process identity. Saved request history is never live
   authority; recreation has no actionable callbacks.
+  A `requestId` query is receipt-only, including when the original receipt is
+  unknown; it never carries another live approval alongside historical data.
   A pending view rechecks the current read-only project/worktree/About scope and
   then reads callback state again, so native resolution during validation cannot
   leave an actionable stale view. Historical receipt lookup does not reauthorize

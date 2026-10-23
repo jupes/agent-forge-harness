@@ -292,6 +292,34 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
     ).status,
   ).toBe(202);
   const second = await f.waitApproval(id);
+  // A historical receipt lookup must never smuggle a different current callback
+  // past fresh scope validation, even while the original receipt stays readable.
+  const archivedCatalog = projectCatalogFixture(f.h.workspace),
+    selectedProject = archivedCatalog.projects[0];
+  if (!selectedProject) throw Error("No planted project");
+  selectedProject.archived = true;
+  writeOwnerOnly(projectCatalogPath(f.h.home), JSON.stringify(archivedCatalog));
+  const receiptOnly = codexChatApprovalPageSchema.parse(
+    await f.get(`/${id}/approvals?requestId=${request.requestId}`),
+  );
+  expect(receiptOnly).toEqual({ pending: [], receipt: original.receipt });
+  expect(
+    codexChatApprovalPageSchema.parse(
+      await f.get(`/${id}/approvals?requestId=${randomUUID()}`),
+    ),
+  ).toEqual({ pending: [], receipt: null });
+  expect(
+    (
+      await fetch(
+        `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${id}/approvals`,
+        { headers: f.h.headers(f.h.hearth.token) },
+      )
+    ).status,
+  ).toBe(409);
+  expect((await f.post(`/${id}/approval-decisions`, request)).status).toBe(200);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+  selectedProject.archived = false;
+  writeOwnerOnly(projectCatalogPath(f.h.home), JSON.stringify(archivedCatalog));
   expect(
     (
       await f.post(`/${id}/approval-decisions`, {

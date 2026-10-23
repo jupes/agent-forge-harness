@@ -261,7 +261,9 @@ export function createCodexOwnedChatService(options: Options) {
       const page = broker.read(selected, requestId);
       // Reconciliation is history, not fresh execution authority. Pending callbacks
       // are advertised only while their current project/worktree scope still passes.
-      if (page.receipt || !page.pending.length) return page;
+      if (requestId !== undefined)
+        return { pending: [], receipt: page.receipt };
+      if (!page.pending.length) return page;
       const state = storeFor(session).read(projectId),
         turnId = page.pending[0]?.turnRequestId;
       const user = state.frames.find(
