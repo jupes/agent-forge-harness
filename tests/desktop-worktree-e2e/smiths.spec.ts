@@ -34,7 +34,7 @@ test.beforeEach(() => {
     throw Error(
       "Smiths fixtures require only the owned temporary repository and run home.",
     );
-  fixtureSmith = `inspection-${randomUUID()}`;
+  fixtureSmith = `inspection-${randomUUID().slice(0, 8)}`;
   const machine = `[smiths.${fixtureSmith}]\nprovider="claude"\nmodel="saved-machine-model"\neffort="medium"\ntags=["rank:apprentice", "inspection"]\n`;
   const workspace = `\uFEFF# Preserved inspection fixture\r\n[workflow]\r\ndefault_crew="${fixtureSmith}"\r\n[smiths.${fixtureSmith}]\r\neffort="low"\r\nenabled=false\r\n[benches]\r\nlow=["${fixtureSmith}:2", "codex-journeyman:1"]\r\n`;
   savedFiles = [
@@ -141,6 +141,15 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+  await row.locator("summary").click();
+  await config
+    .getByRole("heading", { name: "Saved smiths", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/smiths-inspection.png",
+    mask: [page.locator(".af-smith-path"), page.locator("time")],
+    maskColor: "#3f424d",
+  });
   const board = page.getByRole("region", {
     name: "Recorded workspace scoreboard",
   });
@@ -161,11 +170,20 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
   await current.locator("summary").click();
   await expect(current).toContainText("cacheReadInputTokens");
   await expect(current).toContainText("17");
+  await current.locator("summary").click();
   await page
     .getByRole("combobox", { name: "Recorded range" })
     .selectOption("24h");
   await expect(rows.getByRole("row")).toHaveCount(2);
   await expect(rows).not.toContainText("recorded-old");
+  await board
+    .getByRole("heading", { name: "Recorded scoreboard", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/smiths-scoreboard.png",
+    mask: [page.locator(".af-smith-path"), page.locator("time")],
+    maskColor: "#3f424d",
+  });
   await reloadSettled(page);
   await expect(
     config.getByRole("table", { name: "Configured smiths" }),
