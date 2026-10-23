@@ -56,6 +56,20 @@ export default async function setup() {
     throw new Error(
       "The dedicated Git fixture did not fence the real checkout.",
     );
+  if (process.platform !== "win32") {
+    const caseAlias = join(FIXTURE_ROOT, "Repository");
+    mkdirSync(caseAlias);
+    const alias = spawnSync(git, ["worktree", "list", "--porcelain", "-z"], {
+      cwd: caseAlias,
+      env: { ...process.env, AGENT_FORGE_WORKTREE_FIXTURE_ROOT: FIXTURE_ROOT },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (alias.status === 0)
+      throw new Error(
+        "The Git fixture treated distinct case-sensitive directories as one repository.",
+      );
+  }
   const listed = spawnSync(git, ["worktree", "list", "--porcelain", "-z"], {
     cwd: REPOSITORY,
     env: { ...process.env, AGENT_FORGE_WORKTREE_FIXTURE_ROOT: FIXTURE_ROOT },

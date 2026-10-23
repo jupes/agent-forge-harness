@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { workspaceKey } from "../../scripts/projects/scope";
 import { checkedFixtureRoot, fixturePlan, gitEnvironment } from "./environment";
 
 function refuse(): never {
@@ -15,7 +16,7 @@ const plan = fixturePlan(),
   cwd = realpathSync.native(process.cwd()),
   root = realpathSync.native(plan.root),
   args = process.argv.slice(2);
-const slash = (value: string) => value.replaceAll("\\", "/").toLowerCase();
+const slash = workspaceKey;
 if (
   slash(root) !== slash(join(checkedFixtureRoot(), "repository")) ||
   lstatSync(plan.root).isSymbolicLink() ||
