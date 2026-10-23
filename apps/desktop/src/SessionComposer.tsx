@@ -14,13 +14,13 @@ import type { SessionTurnSnapshot } from "../../../types/session-turn";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
-import type { SessionsClient } from "./session-client";
 import {
   chooseSessionSmith,
   sessionAttachments,
   sessionStartBody,
   validateSessionAttachments,
 } from "./session-composer";
+import type { SessionComposerOwner } from "./session-composer-owner";
 import "./session.css";
 
 const templates = [
@@ -55,7 +55,7 @@ export function SessionComposer({
   onStarted,
 }: {
   project: ProjectRecord;
-  client: SessionsClient;
+  client: SessionComposerOwner;
   keeper: KeeperClient;
   writesAllowed: boolean;
   onCancel(): void;
@@ -91,7 +91,9 @@ export function SessionComposer({
         if (!Array.isArray(smiths.smiths) || !Array.isArray(worktrees))
           throw new Error("The launch choices could not be read.");
         setSettings({ smiths, worktrees });
-        if (!client.project(project.id).composer.initialized) {
+        if (client.initializeComposer) {
+          client.initializeComposer(project, smiths, worktrees);
+        } else if (!client.project(project.id).composer.initialized) {
           const original = client.project(project.id).composer,
             selected = smiths.smiths.find(
               (item) => item.name === smiths.defaultSmith,
@@ -143,6 +145,7 @@ export function SessionComposer({
   useEffect(() => {
     const original = worktreeAction.original;
     if (
+      !view.inputLocked &&
       created &&
       original &&
       draft.where === "new" &&
@@ -163,6 +166,7 @@ export function SessionComposer({
         },
       });
   }, [
+    view.inputLocked,
     created?.path,
     worktreeAction.original,
     draft.where,
@@ -214,6 +218,7 @@ export function SessionComposer({
   const canStart =
     writesAllowed &&
     !project.archived &&
+    !view.inputLocked &&
     !busy &&
     !view.pendingStart &&
     !!serialized &&
@@ -235,7 +240,7 @@ export function SessionComposer({
     }
   };
   const check = async () => {
-    if (busy || view.pendingStart || !writesAllowed) return;
+    if (busy || view.pendingStart || view.inputLocked || !writesAllowed) return;
     setChecking(true);
     setProblem("");
     try {
@@ -343,7 +348,11 @@ export function SessionComposer({
         role="group"
         aria-label="Provider"
       >
-        <button type="button" aria-pressed="true">
+        <button
+          type="button"
+          aria-pressed={!view.providerUnavailable}
+          disabled={!!view.providerUnavailable}
+        >
           Cl · Claude<small>CLI checked below · usage not reported</small>
         </button>
         {["Codex", "Gemini", "Grok", "OpenRouter"].map((name) => (
@@ -367,6 +376,7 @@ export function SessionComposer({
           rows={5}
           maxLength={16_384}
           value={draft.prompt}
+          readOnly={!!view.inputLocked}
           onInput={(event) => {
             edit({ prompt: event.currentTarget.value });
             setCaret(event.currentTarget.selectionStart);
@@ -405,7 +415,7 @@ export function SessionComposer({
         client={keeper}
         text={draft.prompt}
         caret={caret}
-        visible={pickerVisible}
+        visible={pickerVisible && !view.inputLocked}
         region={pickerRegion}
         aboutCount={draft.about.length}
         recipient="this session"
@@ -420,6 +430,7 @@ export function SessionComposer({
           Templates
           <select
             aria-label="Session template"
+            disabled={!!view.inputLocked}
             value=""
             onChange={(event) => {
               const template = templates.find(
@@ -443,7 +454,7 @@ export function SessionComposer({
             aria-label="Session attachments"
             multiple
             accept=".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs,image/png,image/jpeg,image/gif,image/webp"
-            disabled={attaching || !!view.pendingStart}
+            disabled={attaching || !!view.pendingStart || !!view.inputLocked}
             onChange={(event) => {
               const files = [...(event.currentTarget.files ?? [])];
               event.currentTarget.value = "";
@@ -481,6 +492,7 @@ export function SessionComposer({
             <button
               type="button"
               aria-label={`Remove attachment ${item.name}`}
+              disabled={!!view.inputLocked}
               onClick={() =>
                 edit({
                   attachments: draft.attachments.filter(
@@ -499,6 +511,7 @@ export function SessionComposer({
             <button
               type="button"
               aria-label={`Remove ${item.kind} ${item.id} context`}
+              disabled={!!view.inputLocked}
               onClick={() =>
                 edit({ about: draft.about.filter((value) => value !== item) })
               }
@@ -508,7 +521,7 @@ export function SessionComposer({
           </span>
         ))}
       </div>
-      <fieldset>
+      <fieldset disabled={view.inputLocked}>
         <legend>Context</legend>
         <div class="af-session-composer-row">
           <label>
@@ -698,7 +711,7 @@ export function SessionComposer({
           </label>
         </div>
       </fieldset>
-      <fieldset>
+      <fieldset disabled={view.inputLocked}>
         <legend>Smith preset</legend>
         <label>
           Source smith
@@ -755,7 +768,7 @@ export function SessionComposer({
           Save as smith unavailable
         </Button>
       </fieldset>
-      <fieldset>
+      <fieldset disabled={view.inputLocked}>
         <legend>Provider options</legend>
         <div class="af-session-composer-row">
           <label>
@@ -906,7 +919,13 @@ export function SessionComposer({
       <footer class="af-session-preview">
         <h3>Equivalent command</h3>
         <Button
-          disabled={!writesAllowed || busy || !!view.pendingStart || !settings}
+          disabled={
+            !writesAllowed ||
+            busy ||
+            !!view.pendingStart ||
+            !settings ||
+            !!view.inputLocked
+          }
           onClick={() => {
             void check();
           }}

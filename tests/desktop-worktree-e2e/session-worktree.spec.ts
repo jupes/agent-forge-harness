@@ -131,7 +131,10 @@ test("a lost explicit creation is reconciled once before Preview and Start run i
     });
   expect(
     calls.filter(
-      (call) => call.args[0] === "worktree" && call.args[1] === "add",
+      (call) =>
+        call.args[0] === "worktree" &&
+        call.args[1] === "add" &&
+        call.args[3] === "feat/browser-created",
     ),
   ).toHaveLength(1);
   await dialog

@@ -85,8 +85,17 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
 }) => {
   await propose(page);
   expect(readComments(BD_STAND_IN_STATE)).toEqual({});
+  const session = cards(page).getByRole("article", {
+    name: "Review a session",
+    exact: true,
+  });
+  await expect(
+    session.getByRole("button", { name: "Review & start", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    session.getByRole("button", { name: "Approve", exact: true }),
+  ).toHaveCount(0);
   for (const [title, reason] of [
-    ["Review a session", "session review composer"],
     ["Review a shift", "attended project shift review"],
     ["Review council input", "project council review composer"],
   ] as const) {
@@ -97,10 +106,6 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
     ).toBeDisabled();
     await card.getByRole("button", { name: "Edit", exact: true }).click();
     await expect(card.getByRole("textbox").first()).toBeEditable();
-    if (title === "Review a session")
-      await card
-        .getByRole("textbox", { name: "Prompt" })
-        .fill("Edited full session suggestion");
     await card
       .getByRole("button", { name: "Finish editing", exact: true })
       .click();
