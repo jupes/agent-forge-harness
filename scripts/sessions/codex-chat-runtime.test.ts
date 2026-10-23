@@ -9,13 +9,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type {
-  CodexChatCallbacks,
-  CodexChatEvent,
-  CodexChatLaunch,
-} from "../../types/codex-chat";
+import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
-import { createCodexChatRuntime } from "./codex-chat-runtime";
+import {
+  type CodexChatCallbacks,
+  createCodexChatRuntime,
+} from "./codex-chat-runtime";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
