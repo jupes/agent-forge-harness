@@ -414,6 +414,13 @@ test("only typed provider errors establish auth or rate outcomes; private words 
         },
       }),
     );
+    expect(parser.outcome({ ...exit, exitCode: 1, stderr: "" }).code).toBe(
+      reported === "authentication_failed"
+        ? "auth-error"
+        : reported === "rate_limit"
+          ? "rate-limited"
+          : "provider-error",
+    );
     parser.line(
       packet({
         type: "result",
@@ -453,4 +460,144 @@ test("only typed provider errors establish auth or rate outcomes; private words 
       stderr: "",
     }).code,
   ).toBe("timed-out");
+});
+
+test("a crash flush preserves the last small reasoning fragment and clipping stays explicit across later deltas", () => {
+  const parser = createClaudeSessionParser({ version: "2.1.296" });
+  parser.line(
+    packet({
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "reasoning" } },
+    }),
+  );
+  parser.line(
+    packet({
+      type: "stream_event",
+      event: {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "" },
+      },
+    }),
+  );
+  parser.line(
+    packet({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "First" },
+      },
+    }),
+  );
+  parser.line(
+    packet({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "thinking_delta",
+          thinking: " last fragment before crash",
+        },
+      },
+    }),
+  );
+  expect(parser.flush()).toMatchObject([
+    {
+      kind: "coding-activity",
+      partial: true,
+      activity: {
+        kind: "reasoning",
+        content: { text: "First last fragment before crash", truncated: false },
+      },
+    },
+  ]);
+  expect(parser.flush()).toEqual([]);
+  const clipped = parser.line(
+    packet({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "x".repeat(20_000) },
+      },
+    }),
+  );
+  expect(clipped).toMatchObject([
+    { activity: { kind: "reasoning", content: { truncated: true } } },
+  ]);
+  parser.line(
+    packet({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "extra" },
+      },
+    }),
+  );
+  const last = parser.flush();
+  expect(last).toEqual([]);
+  expect(parser.outcome({ ...exit, exitCode: 1, stderr: "" }).code).toBe(
+    "cli-exit",
+  );
+});
+
+test("a structured tool result cannot be borrowed across native tool identities", () => {
+  const parser = createClaudeSessionParser({ version: "2.1.296" });
+  for (const id of ["one", "two"])
+    parser.line(
+      packet({
+        type: "assistant",
+        uuid: `input-${id}`,
+        message: {
+          id: `message-${id}`,
+          content: [
+            {
+              type: "tool_use",
+              id,
+              name: "Edit",
+              input: { file_path: `${id}.ts` },
+            },
+          ],
+        },
+      }),
+    );
+  expect(() =>
+    parser.line(
+      packet({
+        type: "user",
+        uuid: "ambiguous",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "one", content: "a" },
+            { type: "tool_result", tool_use_id: "two", content: "b" },
+          ],
+        },
+        tool_use_result: { filePath: "one.ts" },
+      }),
+    ),
+  ).toThrow("protocol");
+  expect(parser.finish(exit).phase).toBe("unknown");
+  const changed = createClaudeSessionParser({ version: "2.1.296" });
+  const tool = (uuid: string, command: string) =>
+    packet({
+      type: "assistant",
+      uuid,
+      message: {
+        id: uuid,
+        content: [
+          {
+            type: "tool_use",
+            id: "native-tool",
+            name: "Bash",
+            input: { command },
+          },
+        ],
+      },
+    });
+  changed.line(tool("first", "one"));
+  expect(() => changed.line(tool("second", "different"))).toThrow("protocol");
+  expect(changed.finish(exit).phase).toBe("unknown");
 });

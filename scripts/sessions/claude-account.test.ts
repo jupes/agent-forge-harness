@@ -177,4 +177,10 @@ test("latest factual report projection returns only typed metadata and never pri
   expect(JSON.stringify(projected)).not.toContain("private");
   expect(projected.authSource).toBe(null);
   expect(projected.usage).toBe(null);
+  expect(() =>
+    latestClaudeAccountReports([
+      { event: first[0] },
+      { event: { ...second[0], observedAt: "invalid" } },
+    ]),
+  ).toThrow("protocol");
 });

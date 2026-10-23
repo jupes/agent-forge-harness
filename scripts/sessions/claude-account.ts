@@ -212,7 +212,15 @@ export function latestClaudeAccountReports(
   } = { authSource: null, authFlow: null, rateLimit: null, usage: null };
   for (const frame of frames) {
     const parsed = claudeAccountReportSchema.safeParse(frame.event);
-    if (!parsed.success) continue;
+    if (!parsed.success) {
+      if (
+        record(frame.event) &&
+        frame.event.kind === "coding-account" &&
+        frame.event.provider === "claude"
+      )
+        throw bad();
+      continue;
+    }
     const event = parsed.data;
     if (event.source === "claude.system.init") result.authSource = event;
     else if (event.source === "claude.auth_status") result.authFlow = event;

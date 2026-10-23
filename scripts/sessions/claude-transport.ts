@@ -321,6 +321,12 @@ export function createClaudeSessionTransport(
         signal.addEventListener("abort", stop, { once: true });
         if (signal.aborted) stop();
         const exit = await child.done;
+        try {
+          for (const event of parser.flush())
+            if (event.kind !== "user") enqueue(event);
+        } catch {
+          fail();
+        }
         await writes;
         if (!storageFailed) {
           try {

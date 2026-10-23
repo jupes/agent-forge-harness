@@ -30,6 +30,8 @@ interface Block {
   text: string;
   complete: boolean;
   reportedLength?: number;
+  truncated?: boolean;
+  reportedTruncated?: boolean;
 }
 interface Message {
   active: number | null;
@@ -51,6 +53,7 @@ export function createClaudeSessionParser(options: {
   const messages = new Map<string, Message>();
   const packets = new Map<string, string>();
   const tools = new Map<string, ClaudeReportedTool>();
+  const toolPackets = new Map<string, string>();
   const results = new Map<string, string>();
   const budget = createPrivateReportBudget();
   let current: string | null = null;
@@ -102,6 +105,32 @@ export function createClaudeSessionParser(options: {
       return [];
     observed = value;
     return [{ kind: "model", model: value }];
+  };
+  const flushThinking = (): ConversationEvent[] => {
+    const events: ConversationEvent[] = [];
+    for (const [messageId, message] of messages)
+      for (const [index, block] of message.blocks) {
+        if (
+          block.type !== "thinking" ||
+          (block.reportedLength === block.text.length &&
+            block.reportedTruncated === (block.truncated ?? false))
+        )
+          continue;
+        const activity = claudeBlockActivity({
+          version: options.version,
+          id: `${messageId}:${index}`,
+          source: "claude.stream_event",
+          partial: !block.complete,
+          block: { type: "thinking", thinking: block.text },
+        });
+        if (activity && activity.activity.kind === "reasoning") {
+          activity.activity.content.truncated = block.truncated ?? false;
+          events.push(budget(activity));
+          block.reportedLength = block.text.length;
+          block.reportedTruncated = block.truncated ?? false;
+        }
+      }
+    return events;
   };
   return {
     line(line: string): ConversationEvent[] {
@@ -223,6 +252,17 @@ export function createClaudeSessionParser(options: {
                 block: event.content_block,
               });
               if (activity) events.push(budget(activity));
+              if (
+                activity?.activity.kind === "reasoning" &&
+                event.content_block.type === "thinking"
+              ) {
+                const block = state.blocks.get(event.index);
+                if (!block) throw bad();
+                block.text = activity.activity.content.text;
+                block.truncated = activity.activity.content.truncated;
+                block.reportedLength = block.text.length;
+                block.reportedTruncated = block.truncated;
+              }
             }
           } else if (event.type === "content_block_delta") {
             if (!record(event.delta)) throw bad();
@@ -250,8 +290,10 @@ export function createClaudeSessionParser(options: {
                 throw bad();
               const clipped = reportedText(block.text + event.delta.thinking);
               block.text = clipped.text;
+              block.truncated = (block.truncated ?? false) || clipped.truncated;
               if (
                 block.reportedLength === undefined ||
+                block.reportedLength === 0 ||
                 block.text.length - block.reportedLength >= 1024
               ) {
                 const activity = claudeBlockActivity({
@@ -262,9 +304,10 @@ export function createClaudeSessionParser(options: {
                   block: { type: "thinking", thinking: block.text },
                 });
                 if (activity && activity.activity.kind === "reasoning") {
-                  activity.activity.content.truncated = clipped.truncated;
+                  activity.activity.content.truncated = block.truncated;
                   events.push(budget(activity));
                   block.reportedLength = block.text.length;
+                  block.reportedTruncated = block.truncated;
                 }
               }
             }
@@ -274,6 +317,7 @@ export function createClaudeSessionParser(options: {
             const block = messageFor(current).blocks.get(event.index);
             if (!block) throw bad();
             block.complete = true;
+            events.push(...flushThinking());
           }
         } else if (value.type === "assistant") {
           const message = value.message;
@@ -327,6 +371,11 @@ export function createClaudeSessionParser(options: {
                     typeof item.name !== "string"
                   )
                     throw bad();
+                  const digest = privatePacketHash(item),
+                    previousTool = toolPackets.get(item.id);
+                  if (previousTool !== undefined && previousTool !== digest)
+                    throw bad();
+                  toolPackets.set(item.id, digest);
                   const input = reportedJson(item.input);
                   if (tools.size >= 2048 && !tools.has(item.id)) throw bad();
                   tools.set(item.id, {
@@ -336,13 +385,21 @@ export function createClaudeSessionParser(options: {
                   });
                 }
               }
+              const reported =
+                activity?.activity.kind === "reasoning"
+                  ? activity.activity.content
+                  : null;
               state.blocks.set(index, {
                 type: item.type,
-                text:
-                  item.type === "thinking" && typeof item.thinking === "string"
-                    ? reportedText(item.thinking).text
-                    : "",
+                text: reported?.text ?? "",
                 complete: true,
+                ...(reported
+                  ? {
+                      truncated: reported.truncated,
+                      reportedLength: reported.text.length,
+                      reportedTruncated: reported.truncated,
+                    }
+                  : {}),
               });
               continue;
             }
@@ -365,6 +422,14 @@ export function createClaudeSessionParser(options: {
           }
         } else if (value.type === "user") {
           if (!record(value.message)) throw bad();
+          if (
+            value.tool_use_result !== undefined &&
+            Array.isArray(value.message.content) &&
+            value.message.content.filter(
+              (block) => record(block) && block.type === "tool_result",
+            ).length !== 1
+          )
+            throw bad();
           if (Array.isArray(value.message.content))
             for (const block of value.message.content) {
               if (!record(block)) throw bad();
@@ -396,6 +461,7 @@ export function createClaudeSessionParser(options: {
                 events.push(budget(activity));
             }
         } else if (value.type === "result") {
+          events.push(...flushThinking());
           for (const report of claudeResultReports({
             version: options.version,
             value,
@@ -425,6 +491,14 @@ export function createClaudeSessionParser(options: {
           } else throw bad();
         }
         return events;
+      } catch (error) {
+        broken = true;
+        throw error;
+      }
+    },
+    flush(): ConversationEvent[] {
+      try {
+        return flushThinking();
       } catch (error) {
         broken = true;
         throw error;
@@ -486,7 +560,7 @@ export function createClaudeSessionParser(options: {
         phase,
         protocolFailure: broken || failure.protocolFailure === true,
         storageFailure: failure.storageFailure === true,
-        providerFailure: terminal?.error === true,
+        providerFailure: terminal?.error === true || reportedCode !== null,
         reportedCode,
         message: providerMessage,
       });
