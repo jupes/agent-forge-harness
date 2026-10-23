@@ -333,3 +333,35 @@ test("exhaustion, missing Keeper adapter and unavailable reporting have distinct
     await page.goto("about:blank");
   }
 });
+
+test("Overview explains why its brief Refresh is unavailable and links to Keeper recovery", async ({
+  page,
+}) => {
+  const reason =
+    "The selected Keeper CLI is unavailable. Check its installation before asking for a brief.";
+  await page.route(
+    "**/__agent-forge/projects/*/keeper/recovery*",
+    async (route) => {
+      const response = await forwarded(route);
+      const body = (await response.json()) as {
+        ok: boolean;
+        data: KeeperRecoveryPage;
+      };
+      if (body.ok)
+        for (const choice of body.data.choices) {
+          if (choice.smith.name === body.data.selectedSmith)
+            choice.readiness = { ...choice.readiness, canStart: false, reason };
+        }
+      await route.fulfill({ response, json: body });
+    },
+  );
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
+  const brief = page.getByRole("region", { name: "Keeper brief", exact: true });
+  await expect(
+    brief.getByRole("button", { name: "Refresh brief", exact: true }),
+  ).toBeDisabled();
+  await expect(brief.getByText(reason, { exact: false })).toBeVisible();
+  await brief.getByRole("link", { name: "Review Keeper readiness" }).click();
+  await expect(page).toHaveURL(new RegExp(`/project/${alpha.id}/keeper$`));
+  expect(state().turns).toHaveLength(1);
+});

@@ -317,6 +317,10 @@ context occupancy as unknown until the new conversation reports it. Confirmed
 historical briefs remain verified against their own completed turn identities,
 so changing native identity cannot erase the last confirmed brief. Full Keeper
 and drawer share original pending change identities and receipts at the app root.
+Overview's brief panel also explains unavailable or unverified readiness and
+links to that project's Keeper controls. A missing CLI keeps both attended
+brief Refresh and Send disabled; the packaged no-CLI smoke fixture verifies
+that refusal, while compiled fake-provider E2E tests verify available starts.
 
 `recovery-{store,service}.test.ts`, `readiness.test.ts`, the renderer recovery
 client tests and the common API authority matrix cover fencing, bounded history,
