@@ -9,6 +9,7 @@ import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
+import { ownedCodingPageSchema } from "./codex-owned-journal";
 import { createSessionLibrary } from "./library";
 import { sessionTranscriptExportSchema } from "./library-protocol";
 import { sessionRegistryFile } from "./registry";
@@ -19,7 +20,7 @@ afterEach(async () => {
   for (const close of closing.splice(0).reverse()) await close();
   scratch.cleanup();
 });
-async function fixture(mode = "normal") {
+async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   const root = scratch.make("codex-chat-owned-"),
     home = join(root, "home"),
     configHome = join(root, "config");
@@ -52,6 +53,7 @@ async function fixture(mode = "normal") {
     syncCommand: [process.execPath, fake, "--sync"],
     environment: { ...process.env, CODEX_CHAT_MODE: mode, CODEX_CHAT_LOG: log },
     timeoutMs: 5000,
+    rpcTimeoutMs,
     approvalTimeoutMs: 3000,
   });
   const open = () => {
@@ -200,6 +202,81 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
   ).toBe(false);
   expect(readFileSync(path)).toEqual(before);
   expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registryBefore);
+});
+
+test("a real initialization failure remains readable after the process cursor without inventing native identity or replaying a prompt", async () => {
+  const f = await fixture("hang-initialize", 1000);
+  let service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id;
+  await service.settled(f.project.id, sessionId);
+  const complete = await service.read(f.project.id, sessionId),
+    terminal = complete.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    );
+  if (
+    terminal?.event.kind !== "coding-chat" ||
+    terminal.event.event.kind !== "outcome"
+  )
+    throw Error("Missing actual pre-identity terminal report");
+  expect(complete.binding).toBeNull();
+  expect(terminal.event.event.outcome).toMatchObject({
+    phase: "unknown",
+    threadId: null,
+    turnId: null,
+    usage: null,
+    observedModel: null,
+    stopped: true,
+  });
+  const partial = await service.read(f.project.id, sessionId, {
+    after: terminal.seq - 1,
+  });
+  expect(partial.frames).toEqual([terminal]);
+  expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+  for (const change of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { usage: { lastResponse: {}, threadTotal: {} } },
+    { phase: "completed", exitCode: 0 },
+  ]) {
+    const forged = {
+      ...terminal,
+      event: {
+        ...terminal.event,
+        event: {
+          kind: "outcome",
+          outcome: { ...terminal.event.event.outcome, ...change },
+        },
+      },
+    };
+    expect(
+      ownedCodingPageSchema.safeParse({ ...partial, frames: [forged] }).success,
+    ).toBe(false);
+  }
+  await service.close();
+  service = f.open();
+  expect(
+    ownedCodingPageSchema.safeParse(
+      await service.read(f.project.id, sessionId, {
+        after: terminal.seq - 1,
+      }),
+    ).success,
+  ).toBe(true);
+  expect(
+    createSessionLibrary({ root: f.root, home: f.home }).exportTranscript(
+      f.project.id,
+      sessionId,
+    ).conversation.frames,
+  ).toContainEqual(terminal);
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "initialize")).toHaveLength(
+    1,
+  );
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    0,
+  );
 });
 
 test("a later Chat turn cannot replace the original captured canonical directory identity", async () => {

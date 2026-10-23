@@ -8,6 +8,8 @@ A saved native outcome immediately withdraws old permission choices and Stop con
 
 Earlier private histories without a terminal report remain readable. A new report is strict, belongs to one accepted turn and its saved native identities, and permits no later provider frames for that turn. Keeper events, request hashes, native wire parsing and process authority are unchanged.
 
+Initialization can fail before a native thread exists. A subsequent private page still retains that terminal report after the process cursor, with native identity and usage left empty. Reopening and export preserve the same facts; neither creates a native prompt.
+
 Each private save has its own bounded wait. Operator Stop cancels protocol work while allowing an already-started save to settle within that bound. Rejected or stalled final saves leave the application outcome unknown; they never resend a prompt or create a successful original receipt.
 
 Verification uses isolated native app-server fixtures, temporary homes and fake tracker data. Unit and HTTP tests cover actual completion, Stop/deadline and dead helper evidence, service recreation, complete export, strict identity/order, legacy compatibility, rejected/stalled writes and Stop during an in-flight private save. Browser tests exercise timeout plus retained old approval reads while final metadata is held, reload/export, and actual provider/helper Stop. The human Windows shell review remains a separate open checkpoint.

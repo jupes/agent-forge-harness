@@ -236,13 +236,25 @@ function reportedTurn(
     if (user?.kind !== "user") {
       // Process ownership is saved before initialization can report a native
       // identity. Its preceding user frame may be on the prior private page.
-      // Only these known process events are valid without a binding; no native
-      // configuration, text, approval or usage gains identity from it.
+      // A failed initialization may also end before any native identity exists.
+      // Only process facts and terminal reports with no native identity or usage
+      // are valid without a binding; no other provider frame gains identity.
       if (
         !complete &&
         (event.kind === "coding-chat" || event.kind === "coding-gemini-task") &&
         event.event.kind === "process" &&
         value.binding === null
+      )
+        return true;
+      if (
+        !complete &&
+        value.binding === null &&
+        event.kind === "coding-chat" &&
+        event.event.kind === "outcome" &&
+        event.event.outcome.phase !== "completed" &&
+        event.event.outcome.threadId === null &&
+        event.event.outcome.turnId === null &&
+        event.event.outcome.usage === null
       )
         return true;
       return !complete && value.binding?.provider === event.provider;
