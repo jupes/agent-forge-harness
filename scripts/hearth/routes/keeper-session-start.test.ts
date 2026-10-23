@@ -124,6 +124,15 @@ test("only the full strict audited Start can admit a session; stale source/revis
   try {
     const proposal = await seedKeeperSessionStartSource(h);
     const path = `${h.api}/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`;
+    const cards = await fetch(path, { headers: h.headers(h.hearth.token) });
+    const card = (await cards.json()).data.proposals.find(
+      (item: { proposal: { id: string } }) => item.proposal.id === proposal.id,
+    );
+    expect(card).toMatchObject({
+      available: false,
+      destinationAvailable: true,
+    });
+    expect(card.reason).toContain("session review composer");
     const body = {
       sourceHash: proposal.sourceHash,
       expectedRevision: 0,
