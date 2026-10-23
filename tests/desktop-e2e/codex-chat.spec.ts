@@ -449,6 +449,176 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   ).toEqual([]);
 });
 
+test("native Chat keeps both turns' response and thread usage across follow-up, reload and complete export", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  mode("scoped-usage");
+  const startsBefore = calls().filter(
+      (row) => row.method === "turn/start",
+    ).length,
+    resumesBefore = calls().filter(
+      (row) => row.method === "thread/resume",
+    ).length;
+  const { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  const firstUsage = pane
+    .locator(".af-owned-turn")
+    .first()
+    .getByRole("region", { name: "Native Chat usage", exact: true });
+  await expect(
+    firstUsage
+      .getByRole("row")
+      .filter({ hasText: /^Input/ })
+      .getByRole("cell"),
+  ).toHaveText(["9", "19"]);
+  const reply = pane.getByRole("textbox", {
+    name: "Session reply prompt",
+    exact: true,
+  });
+  await reply.fill("Explicit follow-up for distinct reported usage scopes");
+  const send = pane.getByRole("button", {
+    name: "Send session message",
+    exact: true,
+  });
+  await expect(send).toBeEnabled();
+  await send.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(send).toBeFocused();
+  await expect(send).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => saved(record.id).turns.map((turn) => turn.phase))
+    .toEqual(["completed", "completed"]);
+  const assertScopes = async () => {
+    const turns = pane.locator(".af-owned-turn");
+    await expect(turns).toHaveCount(2);
+    const older = turns
+        .nth(0)
+        .getByRole("region", { name: "Native Chat usage", exact: true }),
+      newer = turns
+        .nth(1)
+        .getByRole("region", { name: "Native Chat usage", exact: true });
+    await expect(
+      pane.getByRole("region", { name: "Native Chat usage", exact: true }),
+    ).toHaveCount(2);
+    await expect(
+      older
+        .getByRole("row")
+        .filter({ hasText: /^Input/ })
+        .getByRole("cell"),
+    ).toHaveText(["9", "19"]);
+    await expect(
+      newer
+        .getByRole("row")
+        .filter({ hasText: /^Input/ })
+        .getByRole("cell"),
+    ).toHaveText(["0", "42"]);
+    await expect(
+      newer
+        .getByRole("row")
+        .filter({ hasText: /^Output/ })
+        .getByRole("cell"),
+    ).toHaveText(["2", "8"]);
+    await expect(newer).toContainText("Observed model");
+    await expect(
+      newer.getByRole("columnheader", {
+        name: "Latest native response",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      newer.getByRole("columnheader", {
+        name: "Native thread total",
+        exact: true,
+      }),
+    ).toBeVisible();
+  };
+  await assertScopes();
+  await reloadSettled(page);
+  await assertScopes();
+  if (process.env.CODEX_CHAT_USAGE_SHOTS) {
+    // The minimum-desktop assertions above use the actual scrollable pane.
+    // Give its full neutral usage card room for a legible review capture.
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    const capture = pane
+      .locator(".af-owned-turn")
+      .nth(1)
+      .getByRole("region", { name: "Native Chat usage", exact: true });
+    await capture.evaluate((element) =>
+      element.scrollIntoView({ block: "center", inline: "nearest" }),
+    );
+    await capture.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_USAGE_SHOTS,
+        "native-chat-turn-usage.png",
+      ),
+    });
+    await page.setViewportSize({ width: 1100, height: 700 });
+  }
+  await pane
+    .getByRole("button", { name: "Session actions", exact: true })
+    .click();
+  const downloading = page.waitForEvent("download");
+  await page
+    .getByRole("dialog", { name: "Session actions", exact: true })
+    .getByRole("button", { name: "Export saved transcript", exact: true })
+    .click();
+  const file = await (await downloading).path();
+  if (!file) throw Error("Missing complete native usage transcript");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    throw Error("Invalid complete native usage transcript");
+  }
+  const exported = sessionTranscriptExportSchema.parse(raw).conversation,
+    accepted = saved(record.id).turns.map((turn) => turn.requestId);
+  expect(exported.turns.map((turn) => turn.requestId)).toEqual(accepted);
+  expect(
+    exported.frames
+      .filter(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "usage",
+      )
+      .map((frame) => ({ turnId: frame.turnId, event: frame.event })),
+  ).toMatchObject([
+    {
+      turnId: accepted[0],
+      event: {
+        event: {
+          kind: "usage",
+          usage: {
+            lastResponse: { inputTokens: 9 },
+            threadTotal: { inputTokens: 19 },
+          },
+        },
+      },
+    },
+    {
+      turnId: accepted[1],
+      event: {
+        event: {
+          kind: "usage",
+          usage: {
+            lastResponse: { inputTokens: 0 },
+            threadTotal: { inputTokens: 42 },
+          },
+        },
+      },
+    },
+  ]);
+  expect(calls().filter((row) => row.method === "turn/start")).toHaveLength(
+    startsBefore + 2,
+  );
+  expect(calls().filter((row) => row.method === "thread/resume")).toHaveLength(
+    resumesBefore + 1,
+  );
+});
+
 test("native permission state cannot cross project scope or survive an interrupted feed and actual Stop", async ({
   page,
 }) => {

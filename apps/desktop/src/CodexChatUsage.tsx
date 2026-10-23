@@ -1,10 +1,24 @@
 import type { CodexChatUsage as NativeUsage } from "../../../types/codex-chat";
 
 /** Native response and thread counters have distinct scopes; neither is an inferred turn sum. */
-export function CodexChatUsage({ usage }: { usage: NativeUsage | null }) {
+export function CodexChatUsage({
+  usage,
+  requestedModel,
+}: {
+  usage: NativeUsage | null;
+  requestedModel?: string | null;
+}) {
   return (
     <section class="af-session-chat-usage" aria-label="Native Chat usage">
       <h3>Native Chat usage</h3>
+      {requestedModel !== undefined && (
+        <dl class="af-session-kv">
+          <dt>Requested model</dt>
+          <dd>{requestedModel ?? "Not reported"}</dd>
+          <dt>Observed model</dt>
+          <dd>Not reported</dd>
+        </dl>
+      )}
       {usage ? (
         <table>
           <thead>

@@ -18,6 +18,7 @@ import {
 } from "./SessionActivity";
 import {
   ownedCodexChatOutcome,
+  ownedCodexChatUsage,
   ownedSessionLifecycle,
   ownedSessionTurn,
   sessionStateSupport,
@@ -98,14 +99,6 @@ export function SessionConversation({
     isCodexChat && current
       ? ownedCodexChatOutcome(view.page, current.requestId)
       : null;
-  const chatUsageEvent = view.page?.frames
-    .filter(
-      (frame) =>
-        frame.turnId === current?.requestId &&
-        frame.event.kind === "coding-chat" &&
-        frame.event.event.kind === "usage",
-    )
-    .at(-1)?.event;
   const approvalRevision =
     view.page?.frames
       .filter(
@@ -563,10 +556,17 @@ export function SessionConversation({
                       )}
                     />
                   )}
-                  <SessionTurnUsage
-                    value={activity}
-                    requestedModel={activity.requestedModel}
-                  />
+                  {isCodexChat ? (
+                    <CodexChatUsage
+                      usage={ownedCodexChatUsage(view.page, row.id)}
+                      requestedModel={activity.requestedModel}
+                    />
+                  ) : (
+                    <SessionTurnUsage
+                      value={activity}
+                      requestedModel={activity.requestedModel}
+                    />
+                  )}
                 </>
               )}
             </div>
@@ -577,14 +577,6 @@ export function SessionConversation({
             <CodexChatApprovals
               client={approvals}
               actionable={approvalActionable}
-            />
-            <CodexChatUsage
-              usage={
-                chatUsageEvent?.kind === "coding-chat" &&
-                chatUsageEvent.event.kind === "usage"
-                  ? chatUsageEvent.event.usage
-                  : null
-              }
             />
           </div>
         )}

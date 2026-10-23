@@ -39,6 +39,7 @@ const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53",
   turnId = "0199a213-81c0-7800-8aa1-bbab2a035a54";
 let model = "",
   cwd = "",
+  resuming = false,
   sandbox = "workspace-write",
   approvalPolicy = "on-request";
 const send = async (value: unknown) => {
@@ -76,13 +77,24 @@ const finish = async () => {
     reasoningOutputTokens: 1,
     totalTokens: 15,
   };
+  const total = { ...usage, inputTokens: 19, totalTokens: 25 };
+  if (mode === "scoped-usage" && resuming) {
+    Object.assign(usage, {
+      inputTokens: 0,
+      outputTokens: 2,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 2,
+    });
+    Object.assign(total, { inputTokens: 42, outputTokens: 8, totalTokens: 50 });
+  }
   await send({
     method: "thread/tokenUsage/updated",
     params: {
       ...scope,
       tokenUsage: {
         last: usage,
-        total: { ...usage, inputTokens: 19, totalTokens: 25 },
+        total,
         modelContextWindow: 100,
       },
     },
@@ -173,6 +185,7 @@ while (true) {
         params: { threadId: null, message: "Inert private global warning" },
       });
     } else if (method === "thread/start" || method === "thread/resume") {
+      resuming = method === "thread/resume";
       if (
         !("model" in params) ||
         !("cwd" in params) ||
