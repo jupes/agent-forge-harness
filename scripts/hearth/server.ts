@@ -52,6 +52,7 @@ import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";
+import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
@@ -110,6 +111,8 @@ export interface HearthOptions {
   harnessRoot?: string;
   /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
   keeperReaderCommand?: readonly string[];
+  /** Trusted packaged sync prefix; never read from an HTTP request or provider launch. */
+  codexSyncCommand?: readonly string[];
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -169,6 +172,7 @@ export interface OperatorApiOverrides {
   sessionRuntime?: SessionRuntime;
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>;
+  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime>;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
@@ -395,9 +399,26 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       createCodexTaskRuntime({
         root,
         home,
+        ...(options.codexSyncCommand
+          ? { syncCommand: options.codexSyncCommand }
+          : {}),
         ...(options.api?.configHome
           ? { configHome: options.api.configHome }
           : {}),
+        operatorToken: expectedToken,
+      }),
+    codexChatRuntime:
+      options.api?.codexChatRuntime ??
+      createCodexChatRuntime({
+        root,
+        home,
+        ...(options.codexSyncCommand
+          ? { syncCommand: options.codexSyncCommand }
+          : {}),
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        environment: options.environment ?? process.env,
         operatorToken: expectedToken,
       }),
     sessionRuntime:
@@ -650,6 +671,7 @@ function argValue(argv: string[], flag: string): string | undefined {
 async function main(
   argv: string[],
   keeperReaderCommand?: readonly string[],
+  codexSyncCommand?: readonly string[],
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
@@ -659,6 +681,7 @@ async function main(
   const hearth = await createHearth({
     root,
     ...(keeperReaderCommand ? { keeperReaderCommand } : {}),
+    ...(codexSyncCommand ? { codexSyncCommand } : {}),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
@@ -707,9 +730,10 @@ export function closeOnSignal(
 export async function runHearthServer(
   argv: string[],
   keeperReaderCommand?: readonly string[],
+  codexSyncCommand?: readonly string[],
 ): Promise<void> {
   try {
-    await main(argv, keeperReaderCommand);
+    await main(argv, keeperReaderCommand, codexSyncCommand);
   } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,

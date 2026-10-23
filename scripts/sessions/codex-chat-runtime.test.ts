@@ -1,0 +1,602 @@
+import { afterEach, expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
+import { scratchDirs } from "../test-scratch";
+import { createCodexChatRuntime } from "./codex-chat-runtime";
+
+const scratch = scratchDirs();
+afterEach(() => scratch.cleanup());
+const fake = join(import.meta.dir, "fixtures/codex-app-server-cli.ts");
+const version = "0.163.0-alpha.10.2";
+const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+function fixture(mode = "normal") {
+  const root = scratch.make("codex-chat-runtime-"),
+    home = join(root, "home"),
+    configHome = join(root, "config");
+  mkdirSync(home);
+  mkdirSync(configHome);
+  mkdirSync(join(root, ".git"));
+  writeFileSync(
+    join(root, "agent-forge.toml"),
+    '[execution.env]\npass = ["CODEX_CHAT_MODE", "CODEX_CHAT_LOG", "TEST_ALLOWED", "TEST_SECRET", "AGENT_FORGE_FORGED", "FORGE_SLUG"]\n',
+  );
+  const log = join(root, "fake.jsonl");
+  const options = {
+    root,
+    home,
+    configHome,
+    command: [process.execPath, fake],
+    syncCommand: [process.execPath, fake, "--sync"],
+    environment: {
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_CHAT_MODE: mode,
+      CODEX_CHAT_LOG: log,
+      TEST_ALLOWED: "allowed",
+      TEST_SECRET: "prefix-synthetic-operator-token",
+      AGENT_FORGE_FORGED: "forged",
+      FORGE_SLUG: "forged",
+    },
+    timeoutMs: 5000,
+    rpcTimeoutMs: 1000,
+    approvalTimeoutMs: 1000,
+    persistenceTimeoutMs: 500,
+    operatorToken: () => "synthetic-operator-token",
+    modelEfforts: [
+      {
+        model: "exact-model",
+        efforts: ["high"],
+        source: "model/list" as const,
+        cliVersion: version,
+        asOf: "2026-10-23T00:00:00.000Z",
+      },
+    ],
+  };
+  const runtime = createCodexChatRuntime(options);
+  const launch: CodexChatLaunch = {
+    mode: "chat",
+    cwd: root,
+    model: "exact-model",
+    effort: "high",
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+    prompt: "Private 🌱 $(literal)",
+    context: {
+      projectId: "project-a",
+      repository: root,
+      worktree: root,
+      about: [],
+    },
+  };
+  const records = (): Record<string, unknown>[] => {
+    if (!existsSync(log)) return [];
+    try {
+      return readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    } catch {
+      throw new Error("Malformed inert app-server recording.");
+    }
+  };
+  return { root, runtime, launch, records, options };
+}
+test("native Chat starts and resumes exactly one owned thread across two supervised processes", async () => {
+  const f = fixture();
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  expect(f.records().map((row) => row.kind)).toEqual(["version", "help"]);
+  const first: CodexChatEvent[] = [];
+  const result = await f.runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      first.push(event);
+    },
+    new AbortController().signal,
+    { requestApproval: async () => "decline" },
+  );
+  expect(result).toMatchObject({
+    phase: "completed",
+    threadId,
+    observedModel: null,
+    exitCode: 0,
+    stopped: false,
+    timedOut: false,
+  });
+  expect(first.filter((event) => event.kind === "text")).toEqual([
+    { kind: "text", itemId: "message-a", text: "Hello" },
+    { kind: "text", itemId: "message-a", text: " world" },
+  ]);
+  const second = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: { ...f.launch, prompt: "Second explicit private turn" },
+  });
+  const next = await f.runtime.run(
+    { prepared: second, resume: { provider: "codex", threadId, version } },
+    async () => {},
+    new AbortController().signal,
+    { requestApproval: async () => "decline" },
+  );
+  expect(next.phase).toBe("completed");
+  const calls = f.records().filter((row) => row.kind === "rpc");
+  expect(calls.filter((row) => row.method === "thread/start")).toHaveLength(1);
+  expect(calls.filter((row) => row.method === "thread/resume")).toHaveLength(1);
+  expect(
+    calls.find((row) => row.method === "thread/resume")?.params,
+  ).toMatchObject({ threadId, excludeTurns: true });
+  expect(JSON.stringify(calls)).not.toContain('"history"');
+  expect(JSON.stringify(calls)).not.toContain('"path"');
+  expect(
+    f
+      .records()
+      .filter((row) => row.kind === "process")
+      .map((row) => row.argv),
+  ).toEqual([
+    ["app-server", "--stdio"],
+    ["app-server", "--stdio"],
+  ]);
+});
+
+test("native approval is private and durable before one narrow reply reaches the live process", async () => {
+  const f = fixture("approval-command"),
+    events: CodexChatEvent[] = [];
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let calls = 0;
+  const result = await f.runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    new AbortController().signal,
+    {
+      async requestApproval(approval) {
+        calls++;
+        expect(
+          events.some(
+            (event) =>
+              event.kind === "approval-request" &&
+              event.approval.id === approval.id,
+          ),
+        ).toBe(true);
+        expect(approval).toMatchObject({
+          provider: "codex",
+          threadId,
+          nativeRequestId: 1,
+          kind: "command",
+          command: "inert example",
+          availableDecisions: ["accept", "decline", "cancel"],
+        });
+        expect(Object.isFrozen(approval)).toBe(true);
+        const processEvent = events.find((event) => event.kind === "process");
+        expect(processEvent?.pid).toBe(approval.processId);
+        expect(processEvent?.wrapperPid).not.toBe(approval.processId);
+        expect(f.records().find((row) => row.kind === "process")?.pid).toBe(
+          approval.processId,
+        );
+        return "accept";
+      },
+    },
+  );
+  expect(result.phase).toBe("completed");
+  expect(calls).toBe(1);
+  expect(f.records().filter((row) => row.kind === "answer")).toMatchObject([
+    { id: 1, result: { decision: "accept" } },
+  ]);
+  expect(
+    events
+      .filter((event) => event.kind.startsWith("approval-"))
+      .map((event) => event.kind),
+  ).toEqual(["approval-request", "approval-decision", "approval-resolved"]);
+});
+
+for (const decision of ["accept", "decline", "cancel"] as const) {
+  test(`native file approval supports exactly one ${decision} reply with a string RPC id`, async () => {
+    const f = fixture("approval-file");
+    const snapshot = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    let calls = 0;
+    const result = await f.runtime.run(
+      { prepared: snapshot, resume: null },
+      async () => {},
+      new AbortController().signal,
+      {
+        requestApproval: async (approval) => {
+          calls++;
+          expect(approval.kind).toBe("file-change");
+          expect(approval.nativeRequestId).toBe("1");
+          return decision;
+        },
+      },
+    );
+    expect(calls).toBe(1);
+    expect(result.phase).toBe(decision === "cancel" ? "failed" : "completed");
+    expect(f.records().filter((row) => row.kind === "answer")).toMatchObject([
+      { id: "1", result: { decision } },
+    ]);
+  });
+}
+
+const decline = { requestApproval: async () => "decline" as const };
+function alive(pid: number) {
+  try {
+    if (
+      process.platform === "linux" &&
+      /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+    )
+      return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function until<T>(read: () => T | null): Promise<T> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value !== null) return value;
+    await Bun.sleep(10);
+  }
+  throw new Error("The inert native fixture did not reach its expected state.");
+}
+function treeRecord(records: Record<string, unknown>[]) {
+  const row = records.find((record) => record.kind === "tree");
+  return row && typeof row.pid === "number" && typeof row.childPid === "number"
+    ? { pid: row.pid, childPid: row.childPid }
+    : null;
+}
+async function stoppedTree(pids: { pid: number; childPid: number }) {
+  return until(() => (!alive(pids.pid) && !alive(pids.childPid) ? true : null));
+}
+
+for (const mode of [
+  "foreign",
+  "malformed",
+  "premature",
+  "settings-mismatch",
+  "provider-error",
+  "bad-exit",
+  "approval-conflict",
+]) {
+  test(`native ${mode} cannot become successful private Chat completion`, async () => {
+    const f = fixture(mode),
+      events: CodexChatEvent[] = [];
+    const snapshot = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    const result = await f.runtime.run(
+      { prepared: snapshot, resume: null },
+      async (event) => {
+        events.push(event);
+      },
+      new AbortController().signal,
+      decline,
+    );
+    expect(result.phase).not.toBe("completed");
+    expect(result.reason).not.toContain("private-provider-error");
+    expect(
+      events
+        .filter((event) => event.kind === "text")
+        .map((event) => event.text)
+        .join(""),
+    ).not.toContain("foreign body");
+    const pids = treeRecord(f.records());
+    if (pids) expect(await stoppedTree(pids)).toBe(true);
+    if (mode === "settings-mismatch")
+      expect(
+        f.records().filter((row) => row.method === "turn/start"),
+      ).toHaveLength(0);
+    if (mode === "approval-conflict")
+      expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+        0,
+      );
+  });
+}
+
+test("duplicate native approval requests call authority once; native resolution prevents late answers", async () => {
+  for (const mode of ["approval-command-duplicate", "approval-resolved"]) {
+    const f = fixture(mode),
+      events: CodexChatEvent[] = [];
+    const snapshot = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    let calls = 0,
+      late: (() => void) | null = null;
+    const result = await f.runtime.run(
+      { prepared: snapshot, resume: null },
+      async (event) => {
+        events.push(event);
+      },
+      new AbortController().signal,
+      {
+        async requestApproval() {
+          calls++;
+          if (mode === "approval-command-duplicate") return "accept";
+          return new Promise((resolve) => {
+            late = () => resolve("accept");
+          });
+        },
+      },
+    );
+    expect(result.phase).toBe("completed");
+    expect(calls).toBeLessThanOrEqual(1);
+    const finishLate = (): (() => void) | null => late;
+    finishLate()?.();
+    await Bun.sleep(20);
+    expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+      mode === "approval-command-duplicate" ? 1 : 0,
+    );
+    expect(
+      events.filter((event) => event.kind === "approval-request"),
+    ).toHaveLength(1);
+  }
+});
+
+test("replaying an already resolved native approval refuses without another callback or reply", async () => {
+  const f = fixture("approval-stale");
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let calls = 0;
+  const result = await f.runtime.run(
+    { prepared: snapshot, resume: null },
+    async () => {},
+    new AbortController().signal,
+    {
+      requestApproval: () => {
+        calls++;
+        return new Promise(() => {});
+      },
+    },
+  );
+  expect(result.phase).toBe("unknown");
+  expect(calls).toBeLessThanOrEqual(1);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
+});
+
+test("never-settling approval and initialize acknowledgements stop real native descendants", async () => {
+  for (const mode of ["approval-never", "hang-initialize"]) {
+    const f = fixture(mode),
+      runtime = createCodexChatRuntime({
+        ...f.options,
+        rpcTimeoutMs: 200,
+        approvalTimeoutMs: 100,
+      });
+    const snapshot = await runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    const result = await runtime.run(
+      { prepared: snapshot, resume: null },
+      async () => {},
+      new AbortController().signal,
+      { requestApproval: () => new Promise(() => {}) },
+    );
+    expect(result.phase).toBe("unknown");
+    const pids = treeRecord(f.records());
+    expect(pids).not.toBeNull();
+    if (pids) expect(await stoppedTree(pids)).toBe(true);
+    expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
+  }
+});
+
+test("explicit Stop confirms actual native tree cleanup while a private writer never settles", async () => {
+  const f = fixture("hang-text"),
+    controller = new AbortController();
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let writing = false,
+    late: (() => void) | null = null;
+  const persisted: CodexChatEvent[] = [];
+  const running = f.runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      if (event.kind === "text") {
+        writing = true;
+        await new Promise<void>((resolve) => {
+          late = resolve;
+        });
+      }
+      persisted.push(event);
+    },
+    controller.signal,
+    decline,
+  );
+  const pids = await until(() => treeRecord(f.records()));
+  await until(() => (writing ? true : null));
+  controller.abort();
+  const result = await running;
+  expect(result.phase).toBe("unknown");
+  expect(result.stopped).toBe(true);
+  expect(await stoppedTree(pids)).toBe(true);
+  const before = persisted.length;
+  const finishLate = (): (() => void) | null => late;
+  finishLate()?.();
+  await Bun.sleep(20);
+  // The underlying external writer is caller-owned; late completion never restores runtime success.
+  expect(result.phase).toBe("unknown");
+  expect(persisted.length).toBeLessThanOrEqual(before + 1);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+});
+
+test("Task deadline and shutdown deadline stop native helpers instead of accepting terminal-plus-hang", async () => {
+  for (const mode of ["hang", "never-exit"]) {
+    const f = fixture(mode),
+      runtime = createCodexChatRuntime({
+        ...f.options,
+        timeoutMs: 2000,
+        rpcTimeoutMs: 200,
+      });
+    const snapshot = await runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    const result = await runtime.run(
+      { prepared: snapshot, resume: null },
+      async () => {},
+      new AbortController().signal,
+      decline,
+    );
+    expect(result.phase).toBe("unknown");
+    if (mode === "hang") expect(result.timedOut).toBe(true);
+    const pids = treeRecord(f.records());
+    expect(pids).not.toBeNull();
+    if (pids) expect(await stoppedTree(pids)).toBe(true);
+  }
+});
+
+test("a rejected private writer and queue pressure remain failures even with exit zero", async () => {
+  for (const mode of ["normal", "burst"]) {
+    const f = fixture(mode),
+      runtime = createCodexChatRuntime({
+        ...f.options,
+        persistenceTimeoutMs: 100,
+      });
+    const snapshot = await runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    let count = 0;
+    const result = await runtime.run(
+      { prepared: snapshot, resume: null },
+      async (event) => {
+        count++;
+        if (mode === "normal") return Promise.reject(undefined);
+        if (event.kind === "text") await new Promise(() => {});
+      },
+      new AbortController().signal,
+      decline,
+    );
+    expect(result.phase).toBe("unknown");
+    expect(count).toBeLessThanOrEqual(256);
+    const pids = treeRecord(f.records());
+    if (pids) expect(await stoppedTree(pids)).toBe(true);
+  }
+});
+
+test("native argv, filtered environment and acknowledged usage scopes preserve requested truth", async () => {
+  const f = fixture(),
+    events: CodexChatEvent[] = [];
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: {
+      ...f.launch,
+      attachments: [
+        { kind: "text", name: "a.txt", text: "private attachment" },
+      ],
+    },
+  });
+  writeFileSync(
+    join(f.root, "agent-forge.toml"),
+    '[smiths.codex-journeyman]\nmodel = "new-default"\neffort = "low"\n[execution.env]\npass = ["CODEX_CHAT_MODE", "CODEX_CHAT_LOG", "TEST_ALLOWED", "TEST_SECRET", "AGENT_FORGE_FORGED", "FORGE_SLUG"]\n',
+  );
+  const result = await f.runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    new AbortController().signal,
+    decline,
+  );
+  expect(result.phase).toBe("completed");
+  expect(result.observedModel).toBeNull();
+  const actual = f.records().find((row) => row.kind === "process");
+  expect(actual).toMatchObject({
+    argv: ["app-server", "--stdio"],
+    cwd: f.root,
+    allowed: "allowed",
+  });
+  expect(actual?.secret).toBeUndefined();
+  expect(actual?.forged).toBeUndefined();
+  expect(actual?.slug).toBeUndefined();
+  const turn = f.records().find((row) => row.method === "turn/start");
+  expect(turn?.params).toMatchObject({
+    model: "exact-model",
+    effort: "high",
+    approvalsReviewer: "user",
+  });
+  expect(JSON.stringify(turn?.params)).toContain("private attachment");
+  expect(result.usage).toMatchObject({
+    lastResponse: { inputTokens: 9 },
+    threadTotal: { inputTokens: 19 },
+  });
+  expect(events.find((event) => event.kind === "configuration")).toMatchObject({
+    model: "exact-model",
+    effort: "medium",
+  });
+});
+
+test("retargeting the prepared directory link and implicit resume selectors refuse before dispatch", async () => {
+  const f = fixture(),
+    a = join(f.root, "a"),
+    b = join(f.root, "b"),
+    link = join(f.root, "selected");
+  mkdirSync(a);
+  mkdirSync(b);
+  symlinkSync(a, link, process.platform === "win32" ? "junction" : "dir");
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: {
+      ...f.launch,
+      cwd: link,
+      context: { projectId: "project-a", repository: f.root, worktree: link },
+    },
+  });
+  if (process.platform === "win32") rmdirSync(link);
+  else unlinkSync(link);
+  symlinkSync(b, link, process.platform === "win32" ? "junction" : "dir");
+  const before = f.records().length;
+  await expect(
+    f.runtime.run(
+      { prepared: snapshot, resume: null },
+      async () => {},
+      new AbortController().signal,
+      decline,
+    ),
+  ).rejects.toThrow("directory changed");
+  expect(f.records()).toHaveLength(before);
+  const fresh = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  const prepared = f.records().length;
+  await expect(
+    f.runtime.run(
+      {
+        prepared: fresh,
+        resume: { provider: "codex", threadId: "--last", version },
+      },
+      async () => {},
+      new AbortController().signal,
+      decline,
+    ),
+  ).rejects.toThrow();
+  expect(f.records()).toHaveLength(prepared);
+});

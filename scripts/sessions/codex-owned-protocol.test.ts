@@ -55,9 +55,13 @@ test("Codex Task intent has an explicit provider and retains exact prompt/option
     canonicalOwnedSessionStart({ ...codex, launch: { ...codex.launch } }),
   );
   expect(canonicalOwnedSessionStart(codex)).toContain('"provider":"codex"');
+  expect(
+    createHash("sha256")
+      .update(canonicalOwnedSessionStart(codex))
+      .digest("hex"),
+  ).toBe("f8fa9819d5a1c22e081e91f262e1d9d040c7435f69a8f082071d2ac028acc360");
   expect(() => parseSessionStart(codex)).toThrow();
   for (const launch of [
-    { ...codex.launch, mode: "chat" },
     { ...codex.launch, cwd: "/arbitrary" },
     { ...codex.launch, context: { projectId: "forged" } },
     { ...codex.launch, command: ["codex"] },

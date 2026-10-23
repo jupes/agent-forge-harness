@@ -30,7 +30,7 @@ export function createCodexTaskPreview(options: {
     raw: unknown,
   ): Promise<CodexTaskPreviewReceipt> => {
     const request = parseOwnedSessionStart(raw);
-    if (!("provider" in request))
+    if (!("provider" in request) || request.launch.mode !== "task")
       throw new ConversationError(
         400,
         "An explicit Codex Task provider is required.",
@@ -44,7 +44,10 @@ export function createCodexTaskPreview(options: {
     await options.validateScope(projectId, metadata, request.about ?? []);
     const snapshot = await prepareReviewedCodexTask(options.runtime, {
       smith: request.smith,
-      launch: codexTaskLaunchFromStart(projectId, request),
+      launch: codexTaskLaunchFromStart(projectId, {
+        ...request,
+        launch: { ...request.launch, mode: "task" },
+      }),
     });
     await options.validateScope(projectId, metadata, request.about ?? []);
     return {

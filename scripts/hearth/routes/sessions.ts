@@ -1,3 +1,4 @@
+import type { CodexChatDecisionRequest } from "../../../types/codex-owned-chat";
 import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
 import type { LedgerEventInput } from "../../../types/hearth";
 import type { SessionMessage } from "../../../types/session-turn";
@@ -12,6 +13,8 @@ import {
   ProjectStoreError,
 } from "../../projects/store";
 import type { SessionRuntime } from "../../sessions/admission";
+import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
+import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
 import { parseOwnedSessionStart } from "../../sessions/codex-owned-protocol";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
@@ -76,6 +79,7 @@ export function createOwnedSessionRoutes(
   load: () => Promise<ProjectSnapshot>,
   runtime: SessionRuntime,
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>,
+  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime>,
 ) {
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
@@ -95,6 +99,8 @@ export function createOwnedSessionRoutes(
     root: deps.root,
     runtime,
     codexTaskRuntime,
+    codexChatRuntime,
+    onApprovalChange: (sessionId) => feed.changed(sessionId),
     validateScope,
     onChange: (session, update) => {
       feed.changed(session.id);
@@ -327,6 +333,67 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, sessionId, requestId }) =>
       answer(200, () => service.stop(projectId, sessionId, requestId)),
   };
+  const approvals: ReadRoute<Address & { requestId?: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/approvals",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            key !== "requestId" || request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported approval query.");
+      const requestId = request.query.get("requestId");
+      if (requestId !== null && !isConversationRequestId(requestId))
+        return fail("Expected the original decision UUID.");
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(requestId === null ? {} : { requestId }),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, requestId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.approvals(projectId, sessionId, requestId);
+      }),
+  };
+  const decide: ActionRoute<Address & { input: CodexChatDecisionRequest }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/approval-decisions",
+    action: "session.approval.decide",
+    maxBodyBytes: 2048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: {
+            ...selected.value,
+            input: parseCodexChatDecision(request.body),
+          },
+        };
+      } catch {
+        return fail(
+          "Expected an original decision UUID, accepted turn, opaque approval and offered narrow decision.",
+        );
+      }
+    },
+    subject: ({ sessionId }) => ({ target: sessionId }),
+    effect: ({ projectId, sessionId, input }) =>
+      answer(200, () => service.decide(projectId, sessionId, input)),
+  };
   return {
     list,
     read,
@@ -335,6 +402,8 @@ export function createOwnedSessionRoutes(
     preview,
     send,
     stop,
+    approvals,
+    decide,
     close: async () => {
       feed.close();
       await service.close();

@@ -4,6 +4,7 @@ import type {
   OwnedSessionStartRequest,
 } from "../../types/codex-owned-task";
 import { ConversationError } from "../conversations/error";
+import { codexChatStartSchema } from "./codex-chat-owned-protocol";
 import { codexTaskLaunchSchema } from "./codex-task";
 import { canonicalSessionInput } from "./preparation";
 import { parseSessionStart, sessionStartSchema } from "./request-protocol";
@@ -25,11 +26,13 @@ export function parseOwnedSessionStart(
     input !== null &&
     Object.hasOwn(input, "provider")
   ) {
-    const parsed = codexTaskStartSchema.safeParse(input);
+    const parsed = z
+      .union([codexTaskStartSchema, codexChatStartSchema])
+      .safeParse(input);
     if (!parsed.success)
       throw new ConversationError(
         400,
-        "Expected an explicit supported Codex Task request. Chat, approval round trips and staged artifacts are unavailable.",
+        "Expected an explicit supported Codex Task or Chat request with bounded options.",
       );
     return parsed.data;
   }

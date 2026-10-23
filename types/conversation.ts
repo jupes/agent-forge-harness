@@ -1,4 +1,9 @@
 import type { ClaudeAccountReport } from "./claude-account";
+import type { PreparedCodexChat } from "./codex-chat";
+import type {
+  CodexChatDecisionIntent,
+  CodexChatPrivateEvent,
+} from "./codex-owned-chat";
 import type { CodexCodingUsageEvent } from "./codex-owned-task";
 import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { KeeperReadKind } from "./keeper";
@@ -35,6 +40,7 @@ export interface PreparedConversationSend extends ConversationSend {
   brief?: KeeperBriefSnapshot | undefined;
   session?: SessionTurnSnapshot | undefined;
   codexTask?: PreparedCodexTask | undefined;
+  codexChat?: PreparedCodexChat | undefined;
 }
 
 export type ConversationPhase =
@@ -70,6 +76,7 @@ export type ConversationEvent =
       brief?: KeeperBriefSnapshot | undefined;
       session?: SessionTurnSnapshot | undefined;
       codexTask?: PreparedCodexTask | undefined;
+      codexChat?: PreparedCodexChat | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }
@@ -103,7 +110,9 @@ export type ConversationEvent =
   | ClaudeCodingUsageEvent
   | CodingActivityEvent
   | ClaudeAccountReport
-  | CodingOutcomeEvent;
+  | CodingOutcomeEvent
+  | CodexChatPrivateEvent
+  | CodexChatDecisionIntent;
 
 export interface ConversationFrame {
   seq: number;

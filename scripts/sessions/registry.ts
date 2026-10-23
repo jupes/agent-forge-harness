@@ -3,6 +3,10 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type {
+  CodexChatOwnedMetadata,
+  CodexChatOwnedRecord,
+} from "../../types/codex-owned-chat";
+import type {
   CodexOwnedSessionMetadata,
   CodexOwnedSessionRecord,
   OwnedCodingSessionMetadata,
@@ -21,6 +25,8 @@ import {
 import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
 import {
+  codexChatOwnedMetadataSchema,
+  codexChatOwnedSessionSchema,
   codexOwnedMetadataSchema,
   codexOwnedSessionSchema,
 } from "./codex-owned-metadata";
@@ -52,10 +58,18 @@ const canonicalPaths = (value: OwnedCodingSessionMetadata) =>
       comparableCheckout(resolve(path)) === comparableCheckout(path),
   );
 const metadataSchema = z
-  .union([ownedSessionMetadataSchema, codexOwnedMetadataSchema])
+  .union([
+    ownedSessionMetadataSchema,
+    codexOwnedMetadataSchema,
+    codexChatOwnedMetadataSchema,
+  ])
   .refine(canonicalPaths);
 const recordSchema = z
-  .union([ownedSessionSchema, codexOwnedSessionSchema])
+  .union([
+    ownedSessionSchema,
+    codexOwnedSessionSchema,
+    codexChatOwnedSessionSchema,
+  ])
   .refine(canonicalPaths);
 const registrySchema = z
   .object({
@@ -133,7 +147,13 @@ export function createSessionRegistry(
 ): SessionRegistry<CodexOwnedSessionMetadata, CodexOwnedSessionRecord>;
 export function createSessionRegistry(
   home: string,
+  provider: "codex",
+  mode: "chat",
+): SessionRegistry<CodexChatOwnedMetadata, CodexChatOwnedRecord>;
+export function createSessionRegistry(
+  home: string,
   provider: "claude" | "codex" = "claude",
+  mode: "task" | "chat" = "task",
 ) {
   const readState = (): Registry => {
     const { file } = checkedPaths(home);
@@ -205,12 +225,17 @@ export function createSessionRegistry(
       project(projectId);
       return readState().records.filter(
         (record) =>
-          record.projectId === projectId && record.provider === provider,
+          record.projectId === projectId &&
+          record.provider === provider &&
+          (provider !== "codex" || record.mode === mode),
       );
     },
     read(projectId: string, sessionId: string) {
       const record = lookup(projectId, sessionId);
-      if (record.provider !== provider)
+      if (
+        record.provider !== provider ||
+        (provider === "codex" && record.mode !== mode)
+      )
         throw new SessionRegistryError(
           409,
           "This session belongs to a different provider. No provider was selected implicitly.",
@@ -245,7 +270,8 @@ export function createSessionRegistry(
           if (
             existing.projectId !== projectId ||
             existing.requestHash !== requestHash ||
-            existing.provider !== provider
+            existing.provider !== provider ||
+            (provider === "codex" && existing.mode !== mode)
           )
             throw new SessionRegistryError(
               409,
@@ -259,7 +285,11 @@ export function createSessionRegistry(
             "The private session registry is full. Saved Start identities have been kept.",
           );
         const parsed = metadataSchema.safeParse(await prepare());
-        if (!parsed.success || parsed.data.provider !== provider)
+        if (
+          !parsed.success ||
+          parsed.data.provider !== provider ||
+          (provider === "codex" && parsed.data.mode !== mode)
+        )
           throw new SessionRegistryError(
             400,
             "Expected bounded trusted session metadata.",

@@ -4,7 +4,10 @@ import type {
   CodexTaskStartReceipt,
 } from "../../types/codex-owned-task";
 import { conversationReceiptSchema } from "../conversations/protocol";
-import { codexOwnedSessionSchema } from "./codex-owned-metadata";
+import {
+  codexChatOwnedSessionSchema,
+  codexOwnedSessionSchema,
+} from "./codex-owned-metadata";
 import { serializeCodexTask } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 import {
@@ -17,6 +20,7 @@ import {
 export const ownedCodingSessionSchema = z.union([
   ownedSessionSchema,
   codexOwnedSessionSchema,
+  codexChatOwnedSessionSchema,
 ]);
 const codexStartReceiptSchema = z
   .object({
@@ -32,6 +36,17 @@ const codexStartReceiptSchema = z
 export const ownedCodingStartReceiptSchema = z.union([
   sessionStartReceiptSchema,
   codexStartReceiptSchema,
+  z
+    .object({
+      session: codexChatOwnedSessionSchema,
+      receipt: conversationReceiptSchema,
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.session.id === value.receipt.conversationId &&
+        value.session.requestId === value.receipt.turn.requestId,
+    ),
 ]);
 export const codexTaskPreviewReceiptSchema = z
   .object({

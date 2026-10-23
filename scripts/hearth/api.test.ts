@@ -50,6 +50,11 @@ import {
   SESSION_KEY_HEADER,
   SURFACE_HEADER,
 } from "./paths";
+import {
+  FIXTURE_CHAT_DECISION,
+  FIXTURE_CHAT_SESSION,
+  seedChatDecision,
+} from "./routes/codex-chat-fixture";
 import { desktopControlRoutes } from "./routes/desktop-control";
 import type { BdResult } from "./routes/dev-api";
 import {
@@ -941,6 +946,27 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/sessions": ownedSessionFixture("start"),
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
+  "POST /projects/:id/sessions/:sessionId/approval-decisions": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approval-decisions`,
+      body: FIXTURE_CHAT_DECISION,
+      status: 200,
+      target: FIXTURE_CHAT_SESSION,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approval-decisions`,
+      body: { ...FIXTURE_CHAT_DECISION, nativeRequestId: 1 },
+    },
+    prepare: async (h) => {
+      await seedChatDecision(h);
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        ...FIXTURE_CHAT_DECISION,
+        state: "recorded",
+      });
+    },
+  },
   "POST /projects/:id/keeper/continuations": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
@@ -1565,6 +1591,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects": "/projects",
   "GET /projects/summary": "/projects/summary",
   "GET /projects/:id/overview":
@@ -2132,6 +2159,7 @@ describe("a read row or the stream while another connection holds the write lock
     });
     root = h.root;
     await seedOwnedSession(h);
+    await seedChatDecision(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -3081,6 +3109,7 @@ describe("every read row (iterating the table)", () => {
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
     await seedOwnedSession(h);
+    await seedChatDecision(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3107,6 +3136,7 @@ describe("every read row (iterating the table)", () => {
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
     await seedOwnedSession(h);
+    await seedChatDecision(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

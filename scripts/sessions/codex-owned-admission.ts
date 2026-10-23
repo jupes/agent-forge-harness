@@ -163,7 +163,11 @@ export function createCodexOwnedTaskService(options: Options) {
       raw: unknown,
     ): Promise<CodexTaskStartReceipt> {
       const request = parseOwnedSessionStart(raw);
-      if (!("provider" in request) || request.provider !== "codex")
+      if (
+        !("provider" in request) ||
+        request.provider !== "codex" ||
+        request.launch.mode !== "task"
+      )
         throw new ConversationError(
           400,
           "An explicit Codex Task provider is required.",

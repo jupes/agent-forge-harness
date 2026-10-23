@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { PreparedCodexTask } from "../../types/codex-task-runtime";
 import type {
   ConversationBinding,
@@ -29,6 +30,7 @@ import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { preparedCodexChatSchema } from "../sessions/codex-app-server-protocol";
 import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
 import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
 import { conversationLeaseFile } from "./paths";
@@ -77,6 +79,13 @@ interface ConversationOptions {
         resume: ConversationBinding | null;
       }) => Promise<PreparedCodexTask>)
     | undefined;
+  prepareCodexChat?:
+    | ((request: {
+        project: ProjectRecord;
+        input: SessionMessage;
+        resume: ConversationBinding | null;
+      }) => Promise<PreparedCodexChat>)
+    | undefined;
 }
 
 const activePhase = (phase: string) =>
@@ -93,12 +102,23 @@ const savedKeeperSmith = (state: ConversationState) => {
 
 /** Observers do not own provider lifetime. A held SQLite lease fences dispatch across hearths. */
 export function createConversationService(options: ConversationOptions) {
-  if ((options.prepareSession || options.prepareCodexTask) && !options.address)
+  if (
+    (options.prepareSession ||
+      options.prepareCodexTask ||
+      options.prepareCodexChat) &&
+    !options.address
+  )
     throw new ConversationError(
       400,
       "Session launch preparation requires an owned session address.",
     );
-  if (options.prepareSession && options.prepareCodexTask)
+  if (
+    [
+      options.prepareSession,
+      options.prepareCodexTask,
+      options.prepareCodexChat,
+    ].filter(Boolean).length > 1
+  )
     throw new ConversationError(
       400,
       "Choose one explicit owned session provider preparation.",
@@ -410,7 +430,9 @@ export function createConversationService(options: ConversationOptions) {
       purpose: "message" | "brief" = "message",
     ): Promise<ConversationReceipt> {
       const wireInput: SessionMessage =
-        options.prepareSession || options.prepareCodexTask
+        options.prepareSession ||
+        options.prepareCodexTask ||
+        options.prepareCodexChat
           ? parseSessionSend(rawInput)
           : parseConversationSend(rawInput);
       const privateInput: ConversationSend = {
@@ -429,6 +451,19 @@ export function createConversationService(options: ConversationOptions) {
             (frame) =>
               frame.turnId === input.requestId && frame.event.kind === "user",
           )?.event;
+        if (options.prepareCodexChat) {
+          if (
+            user?.kind !== "user" ||
+            !user.codexChat ||
+            JSON.stringify(wireInput.attachments ?? []) !==
+              JSON.stringify(user.codexChat.launch.attachments ?? [])
+          )
+            throw new ConversationError(
+              409,
+              "This request id already names different content. Read the original request.",
+            );
+          return { ...privateInput, codexChat: user.codexChat };
+        }
         if (options.prepareCodexTask) {
           if (
             user?.kind !== "user" ||
@@ -469,7 +504,9 @@ export function createConversationService(options: ConversationOptions) {
       if (current.turns.some((item) => item.requestId === input.requestId))
         return store.accept(projectId, original());
       if (
-        (options.prepareSession || options.prepareCodexTask) &&
+        (options.prepareSession ||
+          options.prepareCodexTask ||
+          options.prepareCodexChat) &&
         purpose !== "message"
       )
         throw new ConversationError(
@@ -665,6 +702,33 @@ export function createConversationService(options: ConversationOptions) {
                     "The private Codex Task could not be verified. No turn was accepted.",
                   );
                 input = { ...privateInput, codexTask: snapshot.data };
+              }
+            }
+            if (options.prepareCodexChat) {
+              const latest = store.read(projectId);
+              if (
+                latest.turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const snapshot = preparedCodexChatSchema.safeParse(
+                  await options.prepareCodexChat({
+                    project: projectFor(projectId),
+                    input: wireInput,
+                    resume: latest.binding,
+                  }),
+                );
+                if (
+                  !snapshot.success ||
+                  snapshot.data.launch.prompt !== wireInput.text ||
+                  JSON.stringify(snapshot.data.launch.attachments ?? []) !==
+                    JSON.stringify(wireInput.attachments ?? [])
+                )
+                  throw new ConversationError(
+                    503,
+                    "The private Codex Chat could not be verified. No turn was accepted.",
+                  );
+                input = { ...privateInput, codexChat: snapshot.data };
               }
             }
             if (closed || abort.signal.aborted)
