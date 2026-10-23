@@ -426,6 +426,30 @@ async function main(): Promise<void> {
       "The native project overview did not show its scoped session.",
     );
     await saveConnectionShot(socket, "native-project-overview.png");
+    await waitForPage(
+      socket,
+      `!!document.querySelector('.af-brief-panel') && Array.from(document.querySelectorAll('.af-brief-panel button')).some(b => b.textContent?.trim() === 'Refresh brief' && !b.disabled)`,
+      "The native Keeper brief panel did not expose its attended Refresh control.",
+    );
+    if (
+      !(await evaluate(
+        socket,
+        `(async () => {
+      const id=location.hash.split('/')[3];
+      const path='/__agent-forge/projects/'+id+'/keeper/briefs';
+      const refused=await fetch(path,{signal:AbortSignal.timeout(5000)});
+      const tokenResponse=await fetch(${JSON.stringify(tokenPath)},{headers:{${JSON.stringify(sessionKeyHeader)}:localStorage.getItem(${JSON.stringify(sessionKeyName)})},signal:AbortSignal.timeout(5000)});
+      const token=await tokenResponse.json();
+      if(!tokenResponse.ok || !token.ok || refused.status!==403) return false;
+      const response=await fetch(path,{headers:{${JSON.stringify(OPERATOR_HEADER)}:token.data.token},signal:AbortSignal.timeout(5000)});
+      const envelope=await response.json();
+      return response.ok && envelope.ok && envelope.data.projectId===id && envelope.data.latest===null && envelope.data.earlier.length===0 && envelope.data.refresh===null;
+    })()`,
+      ))
+    )
+      throw new Error(
+        "The packaged Keeper brief projection did not preserve its private empty state.",
+      );
     await evaluate(
       socket,
       `Array.from(document.querySelectorAll('.af-project-overview a')).find(a => a.textContent?.trim() === 'All sessions')?.click()`,
@@ -644,6 +668,7 @@ async function main(): Promise<void> {
           packagedKeeperReaderTested: true,
           keeperConversationTested: true,
           keeperSelectionTested: true,
+          keeperBriefTested: true,
           focusOutline,
           childrenStopped: true,
         },

@@ -6,6 +6,7 @@ import type {
   ConversationPage,
   ConversationSend,
 } from "../../types/conversation";
+import type { KeeperBriefs } from "../../types/keeper-brief";
 
 const alpha = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
 const beta = "project-b5832fa0-7a21-403b-8184-44892f0d8d86";
@@ -94,6 +95,70 @@ function fixture(
     },
   };
 }
+
+test("an unanswered brief refresh retains its action and UUID across draft edits and preserves the human draft", async () => {
+  const f = fixture();
+  f.client.activate(alpha);
+  f.deliver(page());
+  f.client.draft(alpha, "Keep this human question");
+  await f.client.refreshBrief(alpha);
+  expect(f.client.get(alpha).draft).toBe("Keep this human question");
+  expect(f.client.canRefreshBrief(alpha)).toBe(false);
+  f.client.draft(alpha, "A later question");
+  await f.client.retryOriginal(alpha);
+  expect(f.posts).toEqual([
+    {
+      projectId: alpha,
+      action: "briefs",
+      body: { requestId, expectedRevision: 0 },
+    },
+    {
+      projectId: alpha,
+      action: "briefs",
+      body: { requestId, expectedRevision: 0 },
+    },
+  ]);
+  f.deliver({ ...page(), revision: 1, turns: [turn], request: turn });
+  expect(f.client.get(alpha).draft).toBe("A later question");
+  f.client.dispose();
+});
+
+test("brief reads coalesce, catch a completion during a read and preserve verified state after a foreign reply", async () => {
+  const reads: Array<{ id: string; resolve(value: unknown): void }> = [];
+  const client = createKeeperClient({
+    canWrite: () => true,
+    requestId: () => requestId,
+    stream: () => () => ({ close() {} }),
+    read: async () => page(),
+    post: async () => ({ state: "refused", message: "No model in this test" }),
+    readBriefs: (id) => new Promise((resolve) => reads.push({ id, resolve })),
+  });
+  const empty = (revision: number, projectId = alpha): KeeperBriefs => ({
+    projectId,
+    revision,
+    latest: null,
+    earlier: [],
+    refresh: null,
+  });
+  const first = client.loadBriefs(alpha);
+  void client.loadBriefs(alpha);
+  void client.loadBriefs(alpha, true);
+  expect(reads).toHaveLength(1);
+  reads[0]?.resolve(empty(1));
+  await first;
+  expect(reads).toHaveLength(2);
+  reads[1]?.resolve(empty(2));
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(client.get(alpha).briefs?.revision).toBe(2);
+  const wrong = client.loadBriefs(alpha, true);
+  reads[2]?.resolve(empty(3, beta));
+  await wrong;
+  expect(client.get(alpha).briefs?.revision).toBe(2);
+  expect(client.get(alpha).briefsError).toContain("could not be verified");
+  expect(client.get(beta).briefs).toBeNull();
+  client.dispose();
+});
 
 test("unresolved and foreign About references hold Send; removal fences late reads and retries keep the original snapshot", async () => {
   const reads: Array<{ projectId: string; resolve(value: unknown): void }> = [];

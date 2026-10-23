@@ -393,6 +393,41 @@ function queueMove(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/keeper/briefs": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+        expectedRevision: 0,
+      },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+      body: { requestId: "not-a-request", expectedRevision: 0 },
+    },
+    prepare: async (h) => {
+      const fixture = ACTIONS["POST /projects/:id/keeper/briefs"];
+      if (fixture)
+        fixture.valid.body = {
+          requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+          expectedRevision: createConversationStore(h.home).read(
+            FIXTURE_PROJECT_ID,
+          ).revision,
+        };
+    },
+    happened: async (h) => {
+      const state = createConversationStore(h.home).read(FIXTURE_PROJECT_ID);
+      expect(
+        state.frames.some(
+          (frame) =>
+            frame.event.kind === "user" &&
+            frame.event.brief?.projectId === FIXTURE_PROJECT_ID,
+        ),
+      ).toBe(true);
+    },
+  },
   "POST /projects/:id/keeper/turns": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/turns`,
@@ -923,6 +958,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/overview":
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
+  "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
   "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",

@@ -232,3 +232,31 @@ only edits the draft. It does not invoke a CLI or expand a command's permissions
 Each Send snapshots references alongside its request UUID and text. Unknown
 delivery and explicit retry preserve that snapshot despite subsequent edits;
 an exact recorded retry reconciles its receipt even if membership later changes.
+
+## Briefs
+
+An explicit `POST /projects/:id/keeper/briefs` carries only a request UUID and
+expected conversation revision. It uses the existing audited action runner,
+standing conversation lease, provider identity and Stop lifecycle. Under that
+lease the server prepares a strict snapshot of actual project evidence, capped
+at 10,000 UTF-8 bytes and 40 facts. Public message input cannot supply a snapshot.
+The private user frame retains the original source time, scope, limitations and
+snapshot for exact retries. An uncertain response never creates a new request.
+An unrelated human draft and its About references survive Refresh.
+
+Only a completed, identity-confirmed turn whose structured output cites existing
+facts in the correct Moving, Waiting on you or Stuck section becomes a brief.
+Failed, unknown, cancelled or malformed refreshes preserve the last confirmed
+brief and its original time. Source titles and model prose are text, with no
+action authority. The metadata ledger contains neither snapshots nor prose.
+
+Operator-only `GET /projects/:id/keeper/briefs` projects the latest confirmed
+brief and at most ten earlier briefs from that same journal. Keeper, Overview
+and visible Projects home cards use the app-root client's scoped private cache.
+Reads coalesce and a completion during a read queues one follow-up read; a failed
+read retains the last verified projection and offers an explicit read retry.
+Brief age uses source time; missing source counts remain unknown. Runs are
+checkout-only observations, sessions are ledger observations, and bounded or
+unavailable evidence remains explicit. Follow-up quotes the selected brief and
+time into the existing draft and starts nothing. There is no approved scheduling
+producer, so this version introduces no timer or unattended paid generation.

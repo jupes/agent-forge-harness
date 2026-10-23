@@ -206,6 +206,7 @@ export function DesktopApp(): JSX.Element {
         )}
         {route.destination === "projects" ? (
           <ProjectsHome
+            keeper={keeper}
             home={projects.data}
             error={projects.error}
             loading={projects.loading}
@@ -225,7 +226,11 @@ export function DesktopApp(): JSX.Element {
             active={!keeperOpen}
           />
         ) : route.destination === "overview" && project ? (
-          <ProjectOverview key={project.id} projectId={project.id} />
+          <ProjectOverview
+            key={project.id}
+            projectId={project.id}
+            keeper={keeper}
+          />
         ) : route.destination === "sessions" && project ? (
           <ProjectSessions
             key={project.id}

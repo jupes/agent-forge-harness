@@ -15,6 +15,8 @@ import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperContext, keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
 import "./keeper.css";
+import { keeperBriefs } from "../../../scripts/keeper/brief-model";
+import { KeeperBriefCard, KeeperBriefPanel } from "./KeeperBrief";
 
 const suggestions = [
   "What changed since yesterday?",
@@ -184,6 +186,12 @@ export function KeeperConversation({
   const state = client.get(project.id);
   const rows = keeperTurns(state.page);
   const context = keeperContext(state.page);
+  const briefs = state.page ? keeperBriefs(state.page) : null;
+  const briefRows = new Map(
+    [briefs?.latest, ...(briefs?.earlier ?? [])].flatMap((brief) =>
+      brief ? [[brief.requestId, brief] as const] : [],
+    ),
+  );
   const process = state.page?.frames
     .map((frame) => frame.event)
     .reverse()
@@ -369,6 +377,14 @@ export function KeeperConversation({
           }
         }}
       >
+        {!compact && (
+          <KeeperBriefPanel
+            projectId={project.id}
+            client={client}
+            showCard={false}
+            onNavigate={onNavigate}
+          />
+        )}
         {!state.loaded && (!state.notice || state.live) && (
           <p role="status">
             {state.page
@@ -425,7 +441,15 @@ export function KeeperConversation({
                   FK
                 </span>
                 <div>
-                  <KeeperMarkdown text={row.reply} />
+                  {briefRows.has(row.id) ? (
+                    <KeeperBriefCard
+                      brief={briefRows.get(row.id)!}
+                      client={client}
+                      onNavigate={onNavigate}
+                    />
+                  ) : (
+                    <KeeperMarkdown text={row.reply} />
+                  )}
                   {row.reads.length > 0 && (
                     <ReadTraces
                       projectId={project.id}

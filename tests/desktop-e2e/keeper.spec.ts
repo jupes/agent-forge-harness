@@ -88,6 +88,171 @@ test.afterEach(async ({ page }) => {
   }
 });
 
+test("brief Refresh uses the real standing conversation, shares its source with Overview/home and supports earlier briefs and a quoted follow-up", async ({
+  page,
+}) => {
+  const before = starts();
+  seedSessions();
+  writeFileSync(
+    join(HEARTH_HOME, "keeper-fixture-mode.json"),
+    JSON.stringify("brief"),
+  );
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
+  const panel = page.getByRole("region", { name: "Keeper brief", exact: true });
+  await expect(panel).toContainText("No confirmed brief yet");
+  const refresh = panel.getByRole("button", {
+    name: "Refresh brief",
+    exact: true,
+  });
+  await expect(refresh).toBeEnabled();
+  await refresh.focus();
+  await page.keyboard.press("Enter");
+  const card = panel.getByRole("article", {
+    name: "Keeper brief card",
+    exact: true,
+  });
+  await expect(card).toContainText("Alpha:");
+  await expect(card).toContainText("Moving");
+  await expect(card).toContainText("Waiting on you");
+  await expect(card).toContainText("Stuck");
+  await expect(card).toContainText("project:alpha");
+  await expect(card).toContainText("session.started");
+  await expect(card).not.toContainText("beta-epic");
+  const first = await card.getAttribute("data-brief-id");
+  const sourceTime = await card
+    .locator("time")
+    .first()
+    .getAttribute("datetime");
+  await expect.poll(starts).toBe(before + 1);
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/keeper-brief-overview.png",
+  });
+  await refresh.click();
+  await expect(card).not.toHaveAttribute("data-brief-id", first ?? "");
+  await expect(panel.getByLabel("Earlier briefs")).toBeVisible();
+  await panel.getByLabel("Earlier briefs").selectOption(first ?? "");
+  await expect(card).toHaveAttribute("data-brief-id", first ?? "");
+  await expect(card.locator("time").first()).toHaveAttribute(
+    "datetime",
+    sourceTime ?? "",
+  );
+  await panel.getByLabel("Earlier briefs").selectOption("");
+  const latest = await card.getAttribute("data-brief-id");
+  writeFileSync(
+    join(HEARTH_HOME, "keeper-fixture-mode.json"),
+    JSON.stringify("brief-failed"),
+  );
+  await refresh.click();
+  await expect(panel).toContainText("previous brief has been kept");
+  await expect(card).toHaveAttribute("data-brief-id", latest ?? "");
+  writeFileSync(
+    join(HEARTH_HOME, "keeper-fixture-mode.json"),
+    JSON.stringify("brief"),
+  );
+  await page.route("**/keeper/briefs", (route) =>
+    route.request().method() === "GET"
+      ? route.abort("failed")
+      : route.continue(),
+  );
+  await refresh.click();
+  await expect(panel).toContainText("brief read could not be verified");
+  await expect(card).toHaveAttribute("data-brief-id", latest ?? "");
+  await expect
+    .poll(() => rawState(alpha.id).turns?.at(-1)?.phase)
+    .toBe("completed");
+  await page.unroute("**/keeper/briefs");
+  await panel
+    .getByRole("button", { name: "Retry brief read", exact: true })
+    .click();
+  await expect(card).not.toHaveAttribute("data-brief-id", latest ?? "");
+  await card
+    .getByRole("link", { name: "Ask a follow-up", exact: true })
+    .click();
+  const input = page.getByRole("textbox", {
+    name: "Message the Keeper",
+    exact: true,
+  });
+  await expect(input).toHaveValue(/Brief as of .*Alpha:/s);
+  await expect(
+    page
+      .getByRole("region", { name: "Conversation history" })
+      .getByRole("article", { name: "Keeper brief card" })
+      .first(),
+  ).toBeVisible();
+  await expect.poll(starts).toBe(before + 4);
+  await page
+    .getByRole("link", { name: "Projects", exact: true })
+    .first()
+    .click();
+  await expect(
+    page
+      .getByRole("article", { name: "Alpha", exact: true })
+      .locator(".af-project-keeper"),
+  ).toContainText("Alpha:");
+  await expect(
+    page
+      .getByRole("article", { name: "Beta", exact: true })
+      .locator(".af-project-keeper"),
+  ).not.toContainText("Alpha:");
+  expect(starts()).toBe(before + 4);
+});
+
+test("a refused brief Refresh is visible on Overview and an unanswered refresh retries the exact request once", async ({
+  page,
+}) => {
+  const before = starts();
+  writeFileSync(
+    join(HEARTH_HOME, "keeper-fixture-mode.json"),
+    JSON.stringify("brief"),
+  );
+  const bodies: string[] = [];
+  let mode: "refused" | "lost" | "success" = "refused";
+  await page.route("**/keeper/briefs", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    bodies.push(route.request().postData() ?? "");
+    if (mode === "refused")
+      return route.fulfill({
+        status: 409,
+        json: {
+          ok: false,
+          data: null,
+          error: "Synthetic provider unavailable; no turn accepted.",
+        },
+      });
+    if (mode === "lost") return route.abort("failed");
+    return route.continue();
+  });
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
+  const panel = page.getByRole("region", { name: "Keeper brief", exact: true });
+  const refresh = panel.getByRole("button", {
+    name: "Refresh brief",
+    exact: true,
+  });
+  await expect(refresh).toBeEnabled();
+  await refresh.click();
+  await expect(panel).toContainText("Synthetic provider unavailable");
+  expect(starts()).toBe(before);
+  mode = "lost";
+  await refresh.click();
+  await expect(
+    panel.getByRole("button", { name: "Retry original refresh", exact: true }),
+  ).toBeVisible();
+  await expect(refresh).toBeDisabled();
+  mode = "success";
+  await panel
+    .getByRole("button", { name: "Retry original refresh", exact: true })
+    .click();
+  await expect(
+    panel.getByRole("article", { name: "Keeper brief card", exact: true }),
+  ).toContainText("Alpha:");
+  expect(bodies).toHaveLength(3);
+  expect(bodies[2]).toBe(bodies[1]);
+  expect(starts()).toBe(before + 1);
+  expect(rawState(alpha.id).turns).toHaveLength(1);
+});
+
 test("Ctrl+J carries the selected bead through drawer/full view into one real fake-provider turn and returns focus", async ({
   page,
 }) => {

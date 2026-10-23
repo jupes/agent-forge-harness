@@ -172,6 +172,69 @@ test("brief sections can cite only provided evidence in the matching section; ho
   ).toBeNull();
 });
 
+test("stuck evidence comes from blocked beads or backed halted queue state, and movement respects the previous brief window", () => {
+  const since = "2026-10-22T11:00:00.000Z";
+  const snapshot = buildKeeperBriefSnapshot(
+    project,
+    3,
+    {
+      ...source,
+      issues: [
+        bead("alpha-epic"),
+        { ...bead("member", "alpha-epic"), status: "blocked" },
+      ],
+      queue: [
+        {
+          beadId: "member",
+          title: "Halted by gate",
+          state: "halted",
+          status: "open",
+          backed: true,
+        },
+        {
+          beadId: "alpha-epic",
+          title: "Inherited label only",
+          state: "proposed",
+          status: "open",
+          backed: false,
+        },
+      ],
+    },
+    {
+      events: [
+        { ...event(1, "member"), ts: "2026-10-22T10:59:59.000Z" },
+        event(2, "member"),
+        { ...event(3, "member"), ts: "2026-10-22T12:00:01.000Z" },
+      ],
+      more: false,
+    },
+    since,
+  );
+  expect(snapshot.since).toBe(since);
+  expect(
+    snapshot.facts
+      .filter((fact) => fact.section === "moving")
+      .map((fact) => fact.object.id),
+  ).toEqual(["2"]);
+  expect(
+    snapshot.facts.filter((fact) => fact.section === "waiting"),
+  ).toHaveLength(0);
+  expect(
+    snapshot.facts
+      .filter((fact) => fact.section === "stuck")
+      .map((fact) => fact.state),
+  ).toEqual(["queue:halted", "bead:blocked"]);
+  expect(JSON.stringify(snapshot)).not.toContain("Inherited label only");
+  expect(() =>
+    buildKeeperBriefSnapshot(
+      project,
+      3,
+      { ...source, workspace: "/foreign" },
+      { events: [], more: false },
+    ),
+  ).toThrow("does not serve");
+});
+
 test("failed, malformed and unknown refreshes preserve the last confirmed brief and its original source time", () => {
   const snapshot = buildKeeperBriefSnapshot(project, 1, source, {
     events: [],

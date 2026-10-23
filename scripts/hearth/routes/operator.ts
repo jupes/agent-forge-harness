@@ -40,6 +40,7 @@ import { beadRoutes } from "./beads";
 import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
+import { createKeeperBriefPreparer } from "./keeper-briefs-source";
 import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
 import {
   beadsReads,
@@ -361,6 +362,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.root,
     deps.conversationTransport,
     keeperAboutValidator(deps, projectSnapshot),
+    createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
   );
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
@@ -381,6 +383,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectOverviewRoute(deps, projectSnapshot),
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
+    conversations.briefs,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -417,6 +420,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...actions(deps),
       preferences,
       conversations.send,
+      conversations.refresh,
       conversations.stop,
       ...beadRoutes({
         workspace,

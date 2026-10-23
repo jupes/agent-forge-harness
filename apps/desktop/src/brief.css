@@ -1,0 +1,105 @@
+.af-brief-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.af-brief-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.af-brief-toolbar h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+}
+.af-brief-panel label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.af-brief-panel select {
+  max-width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-divider);
+  border-radius: 5px;
+  font: inherit;
+}
+.af-brief-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.af-brief-card h3 {
+  margin: 16px 0 6px;
+  font-size: 15px;
+  font-weight: 500;
+}
+.af-brief-source {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+}
+.af-brief-sections {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.af-brief-sections h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.af-brief-sections ul {
+  list-style: none;
+  padding: 0;
+}
+.af-brief-sections li p {
+  margin-bottom: 6px;
+}
+.af-brief-links {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.af-brief-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-divider);
+  border-radius: 5px;
+  color: var(--color-accent);
+  font-size: 12px;
+}
+.af-brief-card details {
+  margin: 12px 0;
+  font-size: 12px;
+}
+.af-brief-card summary {
+  min-height: 26px;
+  cursor: pointer;
+}
+.af-brief-panel :focus-visible,
+.af-brief-card :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.af-keeper-thread > .af-brief-panel {
+  max-width: 760px;
+  margin: 0 auto 18px;
+}
+@media (max-width: 700px) {
+  .af-brief-sections {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { briefSnapshotSchema } from "../brief-protocol";
 
 const args = process.argv.slice(2);
 const mode = process.env["KEEPER_FIXTURE_MODE"] ?? "normal";
@@ -17,6 +18,43 @@ if (args.includes("--version")) {
   );
 } else {
   const prompt = await Bun.stdin.text();
+  let reply = "Scoped reply 🌱";
+  if (mode.startsWith("brief")) {
+    let message: unknown;
+    try {
+      const raw: unknown = JSON.parse(prompt);
+      message =
+        raw && typeof raw === "object" && "message" in raw ? raw.message : null;
+    } catch {
+      throw new Error("Invalid brief fixture prompt");
+    }
+    if (typeof message !== "string")
+      throw new Error("Missing brief fixture message");
+    let raw: unknown;
+    try {
+      raw = JSON.parse(message.split("Snapshot:\n")[1] ?? "null");
+    } catch {
+      throw new Error("Invalid brief snapshot fixture");
+    }
+    const snapshot = briefSnapshotSchema.parse(raw);
+    const section = (kind: "moving" | "waiting" | "stuck") =>
+      snapshot.facts
+        .flatMap((fact, index) =>
+          fact.section === kind
+            ? [{ text: `${fact.title} · ${fact.state}`, facts: [index] }]
+            : [],
+        )
+        .slice(0, 4);
+    reply =
+      mode === "brief-malformed"
+        ? "Not a structured brief"
+        : JSON.stringify({
+            summary: `${snapshot.projectName}: ${snapshot.facts.length} recorded facts as of ${snapshot.asOf}`,
+            moving: section("moving"),
+            waiting: section("waiting"),
+            stuck: section("stuck"),
+          });
+  }
   const recordFile = process.env["KEEPER_FIXTURE_RECORD"];
   const arg = (flag: string) => args[args.indexOf(flag) + 1];
   let reader: StdioClientTransport | undefined;
@@ -144,11 +182,13 @@ if (args.includes("--version")) {
         event: {
           type: "content_block_delta",
           index: 0,
-          delta: { type: "text_delta", text: "Scoped reply 🌱" },
+          delta: { type: "text_delta", text: reply },
         },
       }) + "\n",
     );
-    const split = line.indexOf(Buffer.from("🌱")) + 1;
+    const split = reply.includes("🌱")
+      ? line.indexOf(Buffer.from("🌱")) + 1
+      : Math.floor(line.length / 2);
     await Bun.write(Bun.stdout, line.subarray(0, split));
     await Bun.write(Bun.stdout, line.subarray(split));
     if (mode === "hang") await new Promise(() => {});
@@ -161,7 +201,7 @@ if (args.includes("--version")) {
       message: {
         id: "reply-message",
         model: "fixture-observed-model",
-        content: [{ type: "text", text: "Scoped reply 🌱" }],
+        content: [{ type: "text", text: reply }],
       },
     };
     emit(complete);
@@ -170,7 +210,11 @@ if (args.includes("--version")) {
     if (mode === "bad-identity")
       emit({ type: "system", subtype: "status", session_id: randomUUID() });
     if (mode !== "missing-terminal")
-      emit({ type: "result", subtype: "success", is_error: false });
+      emit({
+        type: "result",
+        subtype: mode === "brief-failed" ? "error_during_execution" : "success",
+        is_error: mode === "brief-failed",
+      });
   } finally {
     await client?.close();
   }

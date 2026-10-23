@@ -12,6 +12,9 @@ const count = z
   .int()
   .nonnegative()
   .max(Number.MAX_SAFE_INTEGER - 1);
+export const briefRefreshSchema = z
+  .object({ requestId: z.string().uuid(), expectedRevision: count })
+  .strict();
 const object = z
   .object({
     kind: z.enum(["bead", "session", "run", "event"]),

@@ -17,6 +17,11 @@ export function useKeeper(projectId: string | null, writesAllowed: boolean) {
   client.current ??= createKeeperClient({
     canWrite: () => writes.current,
     requestId: () => crypto.randomUUID(),
+    readBriefs: (id) =>
+      readOperatorRoute(`/projects/${encodeURIComponent(id)}/keeper/briefs`, {
+        ...pageReads(),
+        fetch: operatorRead,
+      }),
     readObjects: (id, query) =>
       readOperatorRoute(
         `/projects/${encodeURIComponent(id)}/keeper/read?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`,

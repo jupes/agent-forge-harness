@@ -7,6 +7,8 @@ import type { ProjectOverview as Overview } from "../../../types/project-overvie
 import { desktopHref } from "./navigation";
 import { openProject } from "./projects-model";
 import "./overview.css";
+import { KeeperBriefPanel } from "./KeeperBrief";
+import type { KeeperClient } from "./keeper-client";
 
 export const PROJECT_READ_KINDS: readonly LedgerEventKind[] = [
   "operator.action",
@@ -28,8 +30,10 @@ export const PROJECT_READ_KINDS: readonly LedgerEventKind[] = [
 /** Keyed by project id by the caller, so a previous scope never paints this view. */
 export function ProjectOverview({
   projectId,
+  keeper,
 }: {
   projectId: string;
+  keeper?: KeeperClient;
 }): JSX.Element {
   const state = useOperatorRead<Overview>(
     `/projects/${encodeURIComponent(projectId)}/overview`,
@@ -43,6 +47,7 @@ export function ProjectOverview({
       data={data}
       error={state.error}
       reload={state.reload}
+      keeper={keeper}
     />
   );
 }
@@ -52,11 +57,13 @@ export function ProjectOverviewView({
   data,
   error,
   reload,
+  keeper,
 }: {
   projectId: string;
   data: Overview | null;
   error: string | null;
   reload(): void;
+  keeper?: KeeperClient | undefined;
 }): JSX.Element {
   if (!data)
     return (
@@ -97,17 +104,23 @@ export function ProjectOverviewView({
           {problem}
         </p>
       ))}
-      <section
-        class="af-overview-panel af-overview-brief"
-        aria-label="Keeper brief"
-      >
-        <h2>Keeper brief</h2>
-        <p>No project brief is available yet.</p>
-        <Button href={openProject(projectId, "keeper")}>Ask the Keeper</Button>
-        <Button disabled title="Keeper briefs are not available yet">
-          Refresh brief
-        </Button>
-      </section>
+      {keeper ? (
+        <KeeperBriefPanel projectId={projectId} client={keeper} />
+      ) : (
+        <section
+          class="af-overview-panel af-overview-brief"
+          aria-label="Keeper brief"
+        >
+          <h2>Keeper brief</h2>
+          <p>No project brief is available yet.</p>
+          <Button href={openProject(projectId, "keeper")}>
+            Ask the Keeper
+          </Button>
+          <Button disabled title="Keeper briefs are not available yet">
+            Refresh brief
+          </Button>
+        </section>
+      )}
       <section class="af-overview-counts" aria-label="Scoped bead counts">
         {(
           [

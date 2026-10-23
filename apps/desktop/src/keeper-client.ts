@@ -5,6 +5,11 @@ import {
   conversationPageSchema,
   conversationReceiptSchema,
 } from "../../../scripts/conversations/protocol";
+import {
+  KEEPER_BRIEF_REQUEST,
+  parseKeeperBrief,
+} from "../../../scripts/keeper/brief-model";
+import { briefsSchema } from "../../../scripts/keeper/brief-protocol";
 import { KEEPER_OBJECT_READS } from "../../../scripts/keeper/objects";
 import type {
   ConversationObject,
@@ -13,6 +18,7 @@ import type {
   ConversationTurn,
 } from "../../../types/conversation";
 import type { KeeperReadQuery } from "../../../types/keeper";
+import type { KeeperBriefs } from "../../../types/keeper-brief";
 import { type KeeperAbout, keeperObjects } from "./keeper-context";
 
 export interface KeeperView {
@@ -23,6 +29,7 @@ export interface KeeperView {
   loaded: boolean;
   live: boolean;
   pending: ConversationSend | null;
+  pendingKind: "turns" | "briefs";
   posting: boolean;
   stopping: string | null;
   stopPosting: boolean;
@@ -30,6 +37,9 @@ export interface KeeperView {
   notice: string;
   admitted: ConversationTurn | null;
   receiptRevision: number;
+  briefs: KeeperBriefs | null;
+  briefsError: string | null;
+  briefsLoading: boolean;
 }
 interface Deps {
   stream(projectId: string): StreamTransport;
@@ -39,11 +49,12 @@ interface Deps {
   ): Promise<unknown>;
   post(
     projectId: string,
-    action: "turns" | "stop",
-    body: ConversationSend | { requestId: string },
+    action: "turns" | "stop" | "briefs",
+    body: ConversationSend | { requestId: string; expectedRevision?: number },
   ): Promise<ActionOutcome>;
   requestId(): string;
   canWrite(): boolean;
+  readBriefs?: ((projectId: string) => Promise<unknown>) | undefined;
   readObjects?:
     | ((projectId: string, query: KeeperReadQuery) => Promise<unknown>)
     | undefined;
@@ -59,6 +70,11 @@ const held = (turn: ConversationTurn) =>
 export function createKeeperClient(deps: Deps) {
   const entries = new Map<string, KeeperView>();
   const listeners = new Set<() => void>();
+  const briefReads = new Map<
+    string,
+    { promise: Promise<void>; again: boolean }
+  >();
+  const briefKeys = new Map<string, string>();
   const timers = deps.timers ?? REAL_TIMERS;
   const now = deps.now ?? Date.now;
   let selected: string | null = null;
@@ -77,6 +93,7 @@ export function createKeeperClient(deps: Deps) {
         loaded: false,
         live: false,
         pending: null,
+        pendingKind: "turns",
         posting: false,
         stopping: null,
         stopPosting: false,
@@ -84,6 +101,9 @@ export function createKeeperClient(deps: Deps) {
         notice: "",
         admitted: null,
         receiptRevision: 0,
+        briefs: null,
+        briefsError: null,
+        briefsLoading: false,
       };
       entries.set(projectId, entry);
     }
@@ -91,6 +111,57 @@ export function createKeeperClient(deps: Deps) {
   };
   const tell = () => {
     for (const listener of [...listeners]) listener();
+  };
+  const loadBriefs = (projectId: string, force = false): Promise<void> => {
+    if (disposed || !deps.readBriefs) return Promise.resolve();
+    const entry = get(projectId);
+    const running = briefReads.get(projectId);
+    if (running) {
+      running.again ||= force;
+      return running.promise;
+    }
+    if (entry.briefs && !force) return Promise.resolve();
+    const read = { promise: Promise.resolve(), again: false };
+    briefReads.set(projectId, read);
+    entry.briefsLoading = true;
+    entry.briefsError = null;
+    tell();
+    read.promise = (async () => {
+      try {
+        const result = briefsSchema.safeParse(
+          await deps.readBriefs?.(projectId),
+        );
+        if (disposed) return;
+        if (
+          !result.success ||
+          result.data.projectId !== projectId ||
+          [result.data.latest, ...result.data.earlier].some(
+            (brief) =>
+              brief &&
+              (brief.snapshot.projectId !== projectId ||
+                !parseKeeperBrief(
+                  JSON.stringify(brief.content),
+                  brief.snapshot,
+                )),
+          )
+        )
+          throw new Error("Invalid brief projection");
+        if (!entry.briefs || result.data.revision >= entry.briefs.revision)
+          entry.briefs = result.data;
+      } catch {
+        if (!disposed)
+          entry.briefsError =
+            "The brief read could not be verified. The last confirmed brief has been kept.";
+      } finally {
+        briefReads.delete(projectId);
+        entry.briefsLoading = false;
+        if (!disposed) {
+          tell();
+          if (read.again) void loadBriefs(projectId, true);
+        }
+      }
+    })();
+    return read.promise;
   };
   const cancelTimer = () => {
     if (timer !== null) timers.clear(timer);
@@ -113,16 +184,18 @@ export function createKeeperClient(deps: Deps) {
   };
   const confirm = (entry: KeeperView, turn: ConversationTurn) => {
     if (entry.pending?.requestId === turn.requestId) {
-      if (
-        entry.about.length === entry.pending.about.length &&
-        entry.about.every(
-          (ref, index) =>
-            ref.kind === entry.pending?.about[index]?.kind &&
-            ref.id === entry.pending?.about[index]?.id,
+      if (entry.pendingKind === "turns") {
+        if (
+          entry.about.length === entry.pending.about.length &&
+          entry.about.every(
+            (ref, index) =>
+              ref.kind === entry.pending?.about[index]?.kind &&
+              ref.id === entry.pending?.about[index]?.id,
+          )
         )
-      )
-        entry.about = [];
-      if (entry.draft.trim() === entry.pending.text) entry.draft = "";
+          entry.about = [];
+        if (entry.draft.trim() === entry.pending.text) entry.draft = "";
+      }
       entry.pending = null;
       entry.admitted = turn;
       entry.notice = "The original request is recorded in this conversation.";
@@ -191,6 +264,19 @@ export function createKeeperClient(deps: Deps) {
     if (fromStream) entry.live = true;
     for (const turn of [...page.turns, ...(page.request ? [page.request] : [])])
       confirm(entry, turn);
+    const briefIds = new Set(
+      frames
+        .filter((frame) => frame.event.kind === "user" && frame.event.brief)
+        .map((frame) => frame.turnId),
+    );
+    const briefKey = page.turns
+      .filter((turn) => briefIds.has(turn.requestId))
+      .map((turn) => `${turn.requestId}:${turn.phase}`)
+      .join("|");
+    if (briefKeys.get(entry.projectId) !== briefKey) {
+      briefKeys.set(entry.projectId, briefKey);
+      void loadBriefs(entry.projectId, true);
+    }
     tell();
     return true;
   };
@@ -276,7 +362,16 @@ export function createKeeperClient(deps: Deps) {
     tell();
     let outcome: ActionOutcome;
     try {
-      outcome = await deps.post(entry.projectId, "turns", input);
+      outcome = await deps.post(
+        entry.projectId,
+        entry.pendingKind,
+        entry.pendingKind === "briefs"
+          ? {
+              requestId: input.requestId,
+              expectedRevision: input.expectedRevision,
+            }
+          : input,
+      );
     } catch {
       outcome = {
         state: "unknown",
@@ -313,7 +408,7 @@ export function createKeeperClient(deps: Deps) {
     if (entry.pending && selected === entry.projectId)
       await check(entry.projectId);
   };
-  const canSend = (projectId: string) => {
+  const canStart = (projectId: string) => {
     const entry = get(projectId);
     return (
       !disposed &&
@@ -325,16 +420,36 @@ export function createKeeperClient(deps: Deps) {
       !entry.posting &&
       !entry.stopping &&
       !entry.stopPosting &&
-      entry.about.every((ref) => ref.status === "ready") &&
-      Boolean(entry.draft.trim()) &&
-      entry.draft.trim().length <= 16_384 &&
       !entry.page?.turns.some(held) &&
       !(entry.admitted && held(entry.admitted))
+    );
+  };
+  const canSend = (projectId: string) => {
+    const entry = get(projectId);
+    return (
+      canStart(projectId) &&
+      entry.about.every((ref) => ref.status === "ready") &&
+      Boolean(entry.draft.trim()) &&
+      entry.draft.trim().length <= 16_384
     );
   };
   return {
     get,
     canSend,
+    loadBriefs,
+    canRefreshBrief: canStart,
+    async refreshBrief(projectId: string) {
+      if (!canStart(projectId)) return;
+      const entry = get(projectId);
+      entry.pendingKind = "briefs";
+      entry.pending = {
+        requestId: deps.requestId(),
+        expectedRevision: entry.page?.revision ?? 0,
+        text: KEEPER_BRIEF_REQUEST,
+        about: [],
+      };
+      await postTurn(entry, entry.pending, false);
+    },
     check,
     async objects(
       projectId: string,
@@ -449,6 +564,7 @@ export function createKeeperClient(deps: Deps) {
         about: entry.about.map(({ kind, id }) => ({ kind, id })),
       };
       entry.pending = input;
+      entry.pendingKind = "turns";
       await postTurn(entry, input, false);
     },
     async retryOriginal(projectId: string) {

@@ -8,6 +8,8 @@ import { type FrameProvider, ProviderMonogram } from "./DesktopFrame";
 import { desktopHref } from "./navigation";
 import { openProject, projectCards } from "./projects-model";
 import "./projects.css";
+import { ProjectKeeperLine } from "./KeeperBrief";
+import type { KeeperClient } from "./keeper-client";
 
 export interface ProjectsHomeProps {
   home: Home | null;
@@ -16,6 +18,7 @@ export interface ProjectsHomeProps {
   stale: boolean;
   held: boolean;
   writesAllowed: boolean;
+  keeper?: KeeperClient;
   reload(): void;
   change(id: string, patch: ProjectPreferences): Promise<void>;
 }
@@ -41,6 +44,7 @@ export function ProjectsHomeView({
   stale,
   held,
   writesAllowed,
+  keeper,
   reload,
   change,
   filter,
@@ -251,9 +255,13 @@ export function ProjectsHomeView({
               Run observations from this checkout only; other worktrees are not
               reported.
             </p>
-            <p class="af-project-keeper">
-              Keeper — no project brief available.
-            </p>
+            {keeper ? (
+              <ProjectKeeperLine projectId={project.id} client={keeper} />
+            ) : (
+              <p class="af-project-keeper">
+                Keeper — no project brief available.
+              </p>
+            )}
             <p class="af-projects-muted">
               Last activity{" "}
               {summary?.lastActivity ? (

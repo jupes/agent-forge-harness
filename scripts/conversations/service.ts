@@ -9,7 +9,7 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
-import { keeperBriefPrompt } from "../keeper/brief-model";
+import { keeperBriefPrompt, keeperBriefs } from "../keeper/brief-model";
 import { briefSnapshotSchema } from "../keeper/brief-protocol";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
@@ -105,12 +105,32 @@ export function createConversationService(options: ConversationOptions) {
       /* A failed metadata projection never repeats a turn. */
     }
   };
+  const observe = async (projectId: string) => {
+    projectFor(projectId);
+    let state = store.read(projectId);
+    if (
+      !jobs.has(projectId) &&
+      state.turns.some((item) => activePhase(item.phase))
+    ) {
+      const observed = await withQueueLock(
+        leaseFor(projectId),
+        async () => store.read(projectId),
+        { waitMs: 150 },
+      );
+      state = observed.ok
+        ? interruptedConversation(observed.value)
+        : store.read(projectId);
+    }
+    return state;
+  };
   return {
+    async briefs(projectId: string) {
+      return keeperBriefs(await observe(projectId));
+    },
     async read(
       projectId: string,
       query: { after?: number; limit?: number; requestId?: string } = {},
     ): Promise<ConversationPage> {
-      projectFor(projectId);
       const after = query.after ?? 0;
       const limit = query.limit ?? 100;
       if (
@@ -124,21 +144,7 @@ export function createConversationService(options: ConversationOptions) {
           400,
           "Expected a nonnegative cursor and a page size from 1 to 100.",
         );
-      let state = store.read(projectId);
-      if (
-        !jobs.has(projectId) &&
-        state.turns.some((item) => activePhase(item.phase))
-      ) {
-        // A live foreign owner keeps its lease. A crashed owner leaves no lock to steal.
-        const observed = await withQueueLock(
-          leaseFor(projectId),
-          async () => store.read(projectId),
-          { waitMs: 150 },
-        );
-        state = observed.ok
-          ? interruptedConversation(observed.value)
-          : store.read(projectId);
-      }
+      const state = await observe(projectId);
       const frames = state.frames
         .filter((frame) => frame.seq > after)
         .slice(0, limit);

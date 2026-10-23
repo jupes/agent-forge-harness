@@ -1,4 +1,5 @@
 import type { ConversationSend } from "../../../types/conversation";
+import type { KeeperBriefSnapshot } from "../../../types/keeper-brief";
 import {
   createConversationService,
   type ValidateConversationAbout,
@@ -9,6 +10,8 @@ import {
   parseConversationSend,
 } from "../../conversations/store";
 import type { ConversationTransport } from "../../conversations/transport";
+import { KEEPER_BRIEF_REQUEST } from "../../keeper/brief-model";
+import { briefRefreshSchema } from "../../keeper/brief-protocol";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ActionRoute,
@@ -55,6 +58,7 @@ export function conversationRoutes(
   root: string,
   transport: ConversationTransport = unavailable,
   validateAbout?: ValidateConversationAbout,
+  prepareBrief?: (projectId: string) => Promise<KeeperBriefSnapshot>,
 ) {
   const feed = createConversationFeed();
   const service = createConversationService({
@@ -62,6 +66,7 @@ export function conversationRoutes(
     root,
     transport,
     validateAbout,
+    prepareBrief,
     onChange: (update) => feed.changed(update.projectId),
   });
   const address = (request: RouteRequest): ValidationResult<string> => {
@@ -115,6 +120,54 @@ export function conversationRoutes(
       };
     },
     read: ({ id, ...query }) => answer(200, () => service.read(id, query)),
+  };
+  const briefs: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/keeper/briefs",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      return query.ok ? id : query;
+    },
+    read: (id) => answer(200, () => service.briefs(id)),
+  };
+  const refresh: ActionRoute<{
+    id: string;
+    requestId: string;
+    expectedRevision: number;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/keeper/briefs",
+    action: "keeper.brief.refresh",
+    maxBodyBytes: 2000,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      if (!query.ok) return query;
+      const input = briefRefreshSchema.safeParse(request.body);
+      return input.success
+        ? { ok: true, value: { id: id.value, ...input.data } }
+        : fail("Expected the original request id and conversation revision.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: ({ id, requestId, expectedRevision }) =>
+      answer(202, () =>
+        service.send(
+          id,
+          {
+            requestId,
+            expectedRevision,
+            text: KEEPER_BRIEF_REQUEST,
+            about: [],
+          },
+          "brief",
+        ),
+      ),
   };
   const send: ActionRoute<{ id: string; input: ConversationSend }> = {
     kind: "action",
@@ -194,6 +247,8 @@ export function conversationRoutes(
   };
   return {
     read,
+    briefs,
+    refresh,
     send,
     stop,
     events,
