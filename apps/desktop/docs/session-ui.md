@@ -76,3 +76,14 @@ close and confirmed Stop. No paid provider or real tracker participates.
 The browser assertions include keyboard focus with a computed 2px indicator
 and reduced motion at 1100×700. Native window and assistive-technology behavior
 remains covered by the epic's separate native/human checkpoints.
+
+`bun run verify:desktop-worktrees` runs the separate real Git journey. Its
+hearth serves a freshly committed temporary repository while Vite serves the
+renderer code. The compiled Git forwarder refuses the actual checkout and
+permits only bounded discovery and creation inside that repository and its own
+worktrees. Git receives an empty home/global configuration, disabled hooks and
+no network commands. The test loses both creation replies, verifies identical
+original request bodies and exactly one Git creation, reconciles the private
+receipt, then checks Preview and one provider Start in the confirmed branch and
+directory. Its traces use `test-results-desktop-worktrees/`, separately from the
+ordinary desktop suite. Shard 1 runs both journeys in CI.
