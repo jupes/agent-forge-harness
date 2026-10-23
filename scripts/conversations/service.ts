@@ -6,6 +6,7 @@ import type {
   ConversationSend,
   ConversationState,
   ConversationTurn,
+  OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
@@ -40,6 +41,8 @@ interface ConversationOptions {
     | ((projectId: string) => Promise<KeeperBriefSnapshot>)
     | undefined;
   onChange?(update: ConversationUpdate): void;
+  /** Trusted fixed partition for an app-owned session. Omission retains the standing Keeper. */
+  address?: OwnedConversationAddress | undefined;
 }
 
 const activePhase = (phase: string) =>
@@ -47,7 +50,11 @@ const activePhase = (phase: string) =>
 
 /** Observers do not own provider lifetime. A held SQLite lease fences dispatch across hearths. */
 export function createConversationService(options: ConversationOptions) {
-  const store = createConversationStore(options.home);
+  const store = createConversationStore(
+    options.home,
+    undefined,
+    options.address,
+  );
   const workspace = resolveCheckout(options.root).workspace;
   const jobs = new Map<
     string,
@@ -74,7 +81,7 @@ export function createConversationService(options: ConversationOptions) {
     return project;
   };
   const leaseFor = (projectId: string) =>
-    conversationLeaseFile(options.home, projectId);
+    conversationLeaseFile(options.home, projectId, options.address);
   const receipt = (
     state: ConversationState,
     requestId: string,
