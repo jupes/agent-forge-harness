@@ -85,6 +85,10 @@ test("Keeper prefill retains the exact proposed source and unsupported effort; c
     prefillKeeperSession(source, smiths, [{ ...main, path: "C:/another" }])
       .draft.worktree,
   ).toBe("");
+  expect(
+    prefillKeeperSession(source, smiths, [{ ...main, path: "C:/another" }])
+      .draft.where,
+  ).toBe("existing");
   const unsupported = structuredClone(source);
   if (unsupported.draft.action.kind !== "start-session")
     throw new Error("Wrong fixture");
@@ -399,5 +403,70 @@ test("an uncertain reviewed Start keeps every original byte and UUID across edit
     expectedRevision: 4,
     start: { ...expected, requestId: "b14cc7eb-3231-4930-a288-d411c5ee0426" },
   });
+  client.dispose();
+});
+
+test("confirmed original admission wins over a delayed malformed POST and foreign projects cannot edit or dispatch its draft", async () => {
+  let finish:
+    | ((value: import("../../docs/js/action-outcome").ActionOutcome) => void)
+    | undefined;
+  let raw: unknown = null,
+    adoptions = 0,
+    posts = 0;
+  const client = createKeeperSessionReviews({
+    canWrite: () => true,
+    requestId: () => "b14cc7eb-3231-4930-a288-d411c5ee0426",
+    read: async () => raw,
+    post: async () => {
+      posts++;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+    createWorktree: async () => {
+      throw new Error("No Git");
+    },
+    readWorktree: async () => null,
+    adopt: () => {
+      adoptions++;
+      return true;
+    },
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  const admitted = await savedStart(true);
+  const input = admitted.original.start;
+  review.owner.editComposer(projectId, {
+    prompt: input.launch.prompt,
+    mode: "chat",
+    effort: "",
+    attachments: input.launch.attachments ?? [],
+    about: input.about ?? [],
+    permissionMode: "plan",
+    fallbackModels: "haiku",
+    extraDirectories: "C:/fixture/repository/docs",
+  });
+  const starting = review.owner.start(
+    projectId,
+    sessionStartBody(review.view.composer),
+  );
+  raw = admitted;
+  await review.owner.refresh(projectId);
+  expect(review.view.lastStarted).toBe(admitted.session?.id ?? null);
+  const notice = review.view.notice;
+  finish?.({ state: "done", data: { malformed: true } });
+  await starting;
+  expect(review.view.notice).toBe(notice);
+  expect(review.view.pendingStart).toBeNull();
+  expect(adoptions).toBe(1);
+  expect(posts).toBe(1);
+  expect(() => review.owner.project("another-project")).toThrow(
+    "another project",
+  );
+  review.owner.editComposer("another-project", { prompt: "Wrong project" });
+  expect(review.view.composer.prompt).toBe(input.launch.prompt);
+  await review.owner.retryStart("another-project");
+  expect(posts).toBe(1);
   client.dispose();
 });

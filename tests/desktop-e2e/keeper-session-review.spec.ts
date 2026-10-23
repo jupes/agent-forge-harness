@@ -1,4 +1,10 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { openSettled } from "../e2e/fixtures";
@@ -105,6 +111,15 @@ test("Keeper review opens the shared composer; edits, Cancel, drawer navigation 
   await dialog
     .getByRole("combobox", { name: "Session mode" })
     .selectOption("chat");
+  if (process.env["SHOT_DIR"]) {
+    mkdirSync(process.env["SHOT_DIR"], { recursive: true });
+    await dialog.screenshot({
+      path: join(process.env["SHOT_DIR"], "keeper-session-review.png"),
+      animations: "disabled",
+      mask: [dialog.getByRole("combobox", { name: "Session repository" })],
+      maskColor: "#3f424d",
+    });
+  }
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(opener).toBeFocused();
   await page.keyboard.press("Tab");

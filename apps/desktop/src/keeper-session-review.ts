@@ -42,7 +42,7 @@ export function prefillKeeperSession(
     repository: action.repository,
     beadId: action.beadId,
     smith: action.smith,
-    where: action.worktree === "new" ? "new" : "main",
+    where: action.worktree === "new" ? "new" : "existing",
     mode: "task",
   };
   const selected = smiths.smiths.find((item) => item.name === action.smith);
@@ -62,8 +62,10 @@ export function prefillKeeperSession(
         !item.missing &&
         workspaceKey(item.path) === workspaceKey(action.repository),
     );
-    if (main) draft.worktree = main.path;
-    else
+    if (main) {
+      draft.worktree = main.path;
+      draft.where = "main";
+    } else
       reason ||=
         "The proposal has no checked current worktree path. Explicitly choose a registered worktree or create one before Start.";
   }
@@ -324,14 +326,22 @@ export function createKeeperSessionReviews(deps: {
       expectedRequestId: null,
       result: null,
       owner: {
-        project: (_id) => view,
-        editComposer(_id, update) {
-          if (view.inputLocked) return;
+        project: (id) => {
+          if (id !== entry.source.projectId)
+            throw new Error("This proposal belongs to another project.");
+          return view;
+        },
+        editComposer(id, update) {
+          if (id !== entry.source.projectId || view.inputLocked) return;
           view.composer = { ...view.composer, ...structuredClone(update) };
           tell();
         },
-        initializeComposer(_project, smiths, worktrees) {
-          if (view.composer.initialized) return;
+        initializeComposer(project, smiths, worktrees) {
+          if (
+            project.id !== entry.source.projectId ||
+            view.composer.initialized
+          )
+            return;
           const prefill = prefillKeeperSession(entry.source, smiths, worktrees);
           view.composer = prefill.draft;
           entry.reason = prefill.reason;
@@ -339,9 +349,10 @@ export function createKeeperSessionReviews(deps: {
           lock(entry);
           tell();
         },
-        async start(_id, input) {
+        async start(id, input) {
           if (
             disposed ||
+            id !== entry.source.projectId ||
             !deps.canWrite() ||
             view.inputLocked ||
             entry.original ||
@@ -378,13 +389,26 @@ export function createKeeperSessionReviews(deps: {
           }
           await post(entry);
         },
-        refresh: (_id) => check(entry),
-        retryStart: (_id) => post(entry),
+        refresh: (id) =>
+          id === entry.source.projectId ? check(entry) : Promise.resolve(),
+        retryStart: (id) =>
+          id === entry.source.projectId ? post(entry) : Promise.resolve(),
         worktrees: createSessionWorktreeClient({
           canWrite: () => deps.canWrite() && !view.inputLocked,
           requestId: deps.requestId,
-          post: deps.createWorktree,
-          read: deps.readWorktree,
+          post: (id, input) =>
+            id === entry.source.projectId
+              ? deps.createWorktree(id, input)
+              : Promise.resolve({
+                  state: "refused",
+                  message: "This proposal belongs to another project.",
+                }),
+          read: (id, requestId) =>
+            id === entry.source.projectId
+              ? deps.readWorktree(id, requestId)
+              : Promise.reject(
+                  new Error("This proposal belongs to another project."),
+                ),
           changed: tell,
         }),
       },
