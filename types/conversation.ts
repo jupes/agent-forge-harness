@@ -9,6 +9,13 @@ export interface OwnedConversationAddress {
   sessionId: string;
 }
 
+/** A trusted server-selected journal partition, separate from the provider's resume identity. */
+export interface OwnedConversationAddress {
+  kind: "session";
+  projectId: string;
+  sessionId: string;
+}
+
 /** Transcript bodies belong to private session storage, never LedgerEventInput. */
 export interface ConversationObject {
   kind: "bead" | "session" | "run" | "event";
