@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,12 +15,36 @@ import { codexChatApprovalPageSchema } from "../../sessions/codex-chat-owned-pro
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
+import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { fixtureSessionGit } from "./session-fixture";
 
 const opened: TestHearth[] = [],
   releaseHeld: Array<() => void> = [];
+const binaries = scratchDirs();
+let command: string;
+beforeAll(() => {
+  const folder = binaries.make("codex-chat-http-binary-");
+  command = join(
+    folder,
+    process.platform === "win32" ? "inert-codex.exe" : "inert-codex",
+  );
+  const built = Bun.spawnSync(
+    [
+      process.execPath,
+      "build",
+      join(import.meta.dir, "../../sessions/fixtures/codex-app-server-cli.ts"),
+      "--compile",
+      "--outfile",
+      command,
+    ],
+    { stdout: "pipe", stderr: "pipe", timeout: 30_000 },
+  );
+  if (built.exitCode !== 0)
+    throw Error("Could not compile the inert Chat provider");
+}, 35_000);
+afterAll(() => binaries.cleanup());
 function alive(pid: number) {
   try {
     if (
@@ -92,23 +116,6 @@ async function fixture(mode = "approval-command", holdDecision = false) {
     },
   });
   opened.push(h);
-  const command = join(
-    h.root,
-    process.platform === "win32" ? "inert-codex.exe" : "inert-codex",
-  );
-  const built = Bun.spawnSync(
-    [
-      process.execPath,
-      "build",
-      join(import.meta.dir, "../../sessions/fixtures/codex-app-server-cli.ts"),
-      "--compile",
-      "--outfile",
-      command,
-    ],
-    { stdout: "pipe", stderr: "pipe", timeout: 30_000 },
-  );
-  if (built.exitCode !== 0)
-    throw Error("Could not compile the inert Chat provider");
   const log = join(h.root, "codex-chat.jsonl");
   actual = createCodexChatRuntime({
     root: h.root,
@@ -154,14 +161,13 @@ async function fixture(mode = "approval-command", holdDecision = false) {
       body: JSON.stringify(body),
       ...(signal ? { signal } : {}),
     });
-  const get = async (suffix: string) =>
-    (
-      await (
-        await fetch(`${h.api}${path}${suffix}`, {
-          headers: h.headers(h.hearth.token),
-        })
-      ).json()
-    ).data;
+  const get = async (suffix: string) => {
+    const response = await fetch(`${h.api}${path}${suffix}`, {
+      headers: h.headers(h.hearth.token),
+    });
+    expect(response.status).toBe(200);
+    return (await response.json()).data;
+  };
   const page = async (id: string) =>
     ownedCodingPageSchema.parse(await get(`/${id}`));
   const waitApproval = async (id: string) => {
@@ -346,8 +352,11 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
 
 test("Stop invalidates a protected native approval and confirms cleanup of the actual compiled provider tree", async () => {
   const f = await fixture("approval-never");
-  const response = await f.post("", f.request),
-    started = ownedCodingStartReceiptSchema.parse((await response.json()).data),
+  const response = await f.post("", f.request);
+  expect(response.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await response.json()).data,
+    ),
     id = started.session.id;
   const pending = await f.waitApproval(id);
   expect(
