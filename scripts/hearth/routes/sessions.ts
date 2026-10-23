@@ -312,6 +312,9 @@ export function createOwnedSessionRoutes(
       answer(200, () => service.stop(projectId, sessionId, requestId)),
   };
   return {
+    /** Trusted server coordination only; these are not additional HTTP routes. */
+    service,
+    prepare: preparePreview,
     list,
     read,
     events,

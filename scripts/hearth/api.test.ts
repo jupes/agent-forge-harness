@@ -26,6 +26,7 @@ import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { createKeeperProposalStore } from "../keeper/proposal-store";
+import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
@@ -56,6 +57,13 @@ import {
   FIXTURE_KEEPER_PROPOSAL_SOURCE,
   seedKeeperProposalSource,
 } from "./routes/keeper-proposal-fixture";
+import {
+  FIXTURE_KEEPER_SESSION_HISTORY,
+  FIXTURE_KEEPER_SESSION_PROPOSAL,
+  FIXTURE_KEEPER_SESSION_REQUEST,
+  seedKeeperSessionStartHistory,
+  seedKeeperSessionStartSource,
+} from "./routes/keeper-session-start-fixture";
 import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
@@ -533,13 +541,14 @@ function keeperProposalFixture(dismiss: boolean): ActionFixture {
 
 function ownedSessionFixture(
   operation: "start" | "send" | "stop",
+  originalStartId = FIXTURE_SESSION_START,
 ): ActionFixture {
   const projectPath = `/projects/${FIXTURE_PROJECT_ID}/sessions`;
   const id =
     operation === "stop" ? FIXTURE_OWNED_STOP_ID : FIXTURE_OWNED_SESSION_ID;
   const requestId =
     operation === "start"
-      ? FIXTURE_SESSION_START
+      ? originalStartId
       : operation === "stop"
         ? FIXTURE_SESSION_STOP
         : FIXTURE_SESSION_SEND;
@@ -594,7 +603,7 @@ function ownedSessionFixture(
     valid,
     invalid: { path, body: { requestId: "invalid" } },
     prepare: async (h) => {
-      if (operation === "start") valid.body = sessionStartFixture(h);
+      if (operation === "start") valid.body = sessionStartFixture(h, requestId);
       else {
         await seedOwnedSession(h, operation === "stop");
         if (operation === "send")
@@ -661,6 +670,41 @@ function ownedSessionFixture(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/keeper/proposals/:proposalId/session-start": (() => {
+    const owned = ownedSessionFixture("start", FIXTURE_KEEPER_SESSION_REQUEST);
+    const valid: ActionFixture["valid"] = {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${FIXTURE_KEEPER_SESSION_PROPOSAL}/session-start`,
+      body: {},
+      status: 200,
+      target: FIXTURE_KEEPER_SESSION_PROPOSAL,
+    };
+    return {
+      valid,
+      invalid: { path: valid.path, body: { sourceHash: "invalid" } },
+      prepare: async (h: TestHearth) => {
+        const source = await seedKeeperSessionStartSource(h);
+        valid.body = {
+          sourceHash: source.sourceHash,
+          expectedRevision: (
+            await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID)
+          ).revision,
+          start: sessionStartFixture(h, FIXTURE_KEEPER_SESSION_REQUEST),
+        };
+      },
+      ...(owned.settled ? { settled: owned.settled } : {}),
+      ...(owned.outcome ? { outcome: owned.outcome } : {}),
+      happened: async (h: TestHearth, answer: unknown) => {
+        const checked = keeperSessionStartReceiptSchema.parse(answer);
+        expect(checked.record.id).toBe(FIXTURE_KEEPER_SESSION_PROPOSAL);
+        expect(checked.session).not.toBeNull();
+        expect(checked.receipt).not.toBeNull();
+        await owned.happened(h, {
+          session: checked.session,
+          receipt: checked.receipt,
+        });
+      },
+    };
+  })(),
   "POST /projects/:id/sessions/preview": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
@@ -1319,6 +1363,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/keeper/proposals/:proposalId/session-start": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${FIXTURE_KEEPER_SESSION_HISTORY}/session-start`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
@@ -1510,12 +1555,18 @@ describe("every action row (iterating the table)", () => {
 
       const response = await post(h, valid.path, valid.body);
       const body = await envelope(response);
-      await settled?.(h);
-      expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
+      expect({
+        row: key(row),
+        status: response.status,
+        ok: body.ok,
+        error: body.error,
+      }).toEqual({
         row: key(row),
         status: valid.status,
         ok: true,
+        error: null,
       });
+      await settled?.(h);
 
       // This row's audit row first, then exactly the events its fixture says
       // a successful effect leaves: for most rows, none.
@@ -1889,6 +1940,7 @@ describe("a read row or the stream while another connection holds the write lock
     });
     root = h.root;
     await seedOwnedSession(h);
+    await seedKeeperSessionStartHistory(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -2838,6 +2890,7 @@ describe("every read row (iterating the table)", () => {
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
     await seedOwnedSession(h);
+    await seedKeeperSessionStartHistory(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -2864,6 +2917,7 @@ describe("every read row (iterating the table)", () => {
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
     await seedOwnedSession(h);
+    await seedKeeperSessionStartHistory(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
