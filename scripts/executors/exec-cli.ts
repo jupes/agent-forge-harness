@@ -103,6 +103,7 @@ export interface ExecDeps {
   signal?: AbortSignal;
   /** Trusted attended shift owner; never populated by CLI flags or a model tool. */
   privateCapture?: PrivateExecCaptureFactory;
+  privateBootstrapCommand?: readonly string[];
 }
 
 /** An abort's reason as `session.ended` and the error name it: a short fixed text. */
@@ -310,6 +311,9 @@ export async function runExec(
       timeoutMs,
       command: deps.command,
       ...(deps.privateCapture ? { privateCapture: deps.privateCapture } : {}),
+      ...(deps.privateBootstrapCommand
+        ? { privateBootstrapCommand: deps.privateBootstrapCommand }
+        : {}),
       ...(deps.signal ? { signal: deps.signal } : {}),
       // The observed model goes where the run's events go: the ledger.
       ...(deps.sink

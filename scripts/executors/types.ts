@@ -41,6 +41,8 @@ export interface SpawnRequest {
   command?: string[] | undefined;
   /** Trusted attended execution only. Failure is fatal, unlike a metadata sink refusal. */
   privateCapture?: PrivateExecCaptureFactory | undefined;
+  /** Trusted fixed host entry for the mandatory private owned-tree bootstrap. */
+  privateBootstrapCommand?: readonly string[] | undefined;
   /** Cancels a pending private preparation before the process can be spawned. */
   signal?: AbortSignal | undefined;
   /**

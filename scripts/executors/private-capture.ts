@@ -16,7 +16,10 @@ export interface PrivateExecInput {
 
 /** An owner holds its private journal lease until finish, including on a failed spawn. */
 export interface PrivateExecCapture {
-  started(pid: number): void;
+  /** The separately guarded bootstrap may now own a provider; retain the lease until tree exit. */
+  holdTree(): void;
+  /** Resolves only after the actual provider's private process record has committed. */
+  started(pid: number): void | Promise<void>;
   line(line: string): void;
   finish(exit: ChildExit | null): Promise<void>;
 }
@@ -42,6 +45,7 @@ export class PrivateCaptureError extends Error {
 }
 
 export interface BoundedPrivateExecCapture extends PrivateExecCapture {
+  started(pid: number): Promise<void>;
   /** Fences private work after an output/protocol failure, including queued writes. */
   abort(): void;
 }
@@ -134,9 +138,25 @@ export async function preparePrivateExecCapture(
   let completion: Promise<void> | undefined;
   return {
     abort,
-    started(pid) {
+    holdTree() {
       try {
-        owner.started(pid);
+        if (controller.signal.aborted) throw new PrivateCaptureError();
+        owner.holdTree();
+      } catch {
+        failed();
+        throw new PrivateCaptureError();
+      }
+    },
+    async started(pid) {
+      try {
+        await bounded(
+          Promise.resolve().then(() => {
+            if (controller.signal.aborted) throw new PrivateCaptureError();
+            return owner.started(pid);
+          }),
+          deadlineMs,
+          controller.signal,
+        );
       } catch {
         failed();
         throw new PrivateCaptureError();

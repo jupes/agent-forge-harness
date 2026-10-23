@@ -247,6 +247,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // it. A ULID, as the protocol mints, only when an event must be written
       // before any line has.
       const mintedId = ulid();
+      let inputReady = !request.privateCapture,
+        privateProviderStarted = false;
       let session:
         | { id: string; base: EventBase; unmirror: () => void }
         | undefined;
@@ -289,17 +291,17 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
             ...(parentSessionId ? { parentSessionId } : {}),
           },
         });
-        // The prompt went to the child on stdin at spawn: its hash and
-        // length, as the prompt hook records them, never the text.
-        queue.push({
-          ...base,
-          ts: new Date().toISOString(),
-          kind: "prompt.submitted",
-          payload: {
-            hash: hashText(prepared.stdin),
-            length: prepared.stdin.length,
-          },
-        });
+        // Private attended input is announced only after its ordered write and EOF.
+        if (inputReady)
+          queue.push({
+            ...base,
+            ts: new Date().toISOString(),
+            kind: "prompt.submitted",
+            payload: {
+              hash: hashText(prepared.stdin),
+              length: prepared.stdin.length,
+            },
+          });
         return session;
       };
       const current = () => session ?? begin(mintedId);
@@ -341,51 +343,102 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         }
       }
 
+      const consumeLine = (line: string, metadata = true) => {
+        if (capture && !privateCaptureFailed) {
+          try {
+            capture.line(line);
+          } catch {
+            captureFailed();
+          }
+        }
+        if (!metadata) return;
+        const reported = spec.parseError(line);
+        if (reported !== undefined) providerErrors.add(reported);
+        const parsed = spec.parseLine(line);
+        if (!session && parsed.sessionId) begin(parsed.sessionId);
+        if (parsed.usage) usage = parsed.usage;
+        if (parsed.model !== undefined && parsed.model !== observedModel) {
+          observedModel = parsed.model;
+          try {
+            request.onModel?.({
+              sessionId: current().id,
+              provider: spec.provider,
+              model: parsed.model,
+            });
+          } catch {
+            // What the run was observed to be is not worth stopping it for.
+          }
+        }
+        for (const tool of parsed.tools) {
+          queue.push({
+            ...current().base,
+            ts: new Date().toISOString(),
+            kind: "tool.called",
+            payload: toolPayload(tool),
+          });
+        }
+      };
+      let pendingBytes = 0;
+      const pendingLines: string[] = [];
+      const flush = (metadata: boolean) => {
+        for (const line of pendingLines) consumeLine(line, metadata);
+        pendingLines.length = 0;
+        pendingBytes = 0;
+      };
+      let startup = Promise.resolve();
       try {
-        child = supervise({
+        const common = {
           command: prepared.command,
           cwd: prepared.cwd,
           env,
-          stdin: prepared.stdin,
           timeoutMs: prepared.timeoutMs ?? undefined,
           ...(capture
             ? { maxLineBytes: 1_048_576, onOutputError: captureFailed }
             : {}),
-          onLine: (line) => {
-            if (capture && !privateCaptureFailed) {
-              try {
-                capture.line(line);
-              } catch {
+          onLine: (line: string) => {
+            if (!inputReady) {
+              pendingBytes += Buffer.byteLength(line);
+              if (pendingLines.length >= 256 || pendingBytes > 1_048_576) {
                 captureFailed();
+                return;
               }
+              pendingLines.push(line);
+              return;
             }
-            const reported = spec.parseError(line);
-            if (reported !== undefined) providerErrors.add(reported);
-            const parsed = spec.parseLine(line);
-            if (!session && parsed.sessionId) begin(parsed.sessionId);
-            if (parsed.usage) usage = parsed.usage;
-            if (parsed.model !== undefined && parsed.model !== observedModel) {
-              observedModel = parsed.model;
-              try {
-                request.onModel?.({
-                  sessionId: current().id,
-                  provider: spec.provider,
-                  model: parsed.model,
-                });
-              } catch {
-                // What the run was observed to be is not worth stopping it for.
-              }
-            }
-            for (const tool of parsed.tools) {
-              queue.push({
-                ...current().base,
-                ts: new Date().toISOString(),
-                kind: "tool.called",
-                payload: toolPayload(tool),
-              });
-            }
+            consumeLine(line);
           },
-        });
+        };
+        if (capture) {
+          const privateOwner = capture;
+          const owned = supervise({
+            ...common,
+            stdinMode: "interactive",
+            maxStdinBytes: Math.max(1, Buffer.byteLength(prepared.stdin)),
+            ...(request.privateBootstrapCommand
+              ? { bootstrapCommand: request.privateBootstrapCommand }
+              : {}),
+            beforeStart: async () => privateOwner.holdTree(),
+          });
+          child = owned;
+          startup = (async () => {
+            let processRecorded = false;
+            try {
+              const pid = await owned.providerPid;
+              privateProviderStarted = true;
+              await privateOwner.started(pid);
+              processRecorded = true;
+              if (privateCaptureFailed || request.signal?.aborted)
+                throw new PrivateCaptureError();
+              await owned.write(prepared.stdin);
+              await owned.end();
+              inputReady = true;
+              flush(true);
+            } catch {
+              if (processRecorded) flush(false);
+              captureFailed();
+            }
+          })();
+        } else child = supervise({ ...common, stdin: prepared.stdin });
       } catch (error) {
         if (capture) {
           try {
@@ -396,17 +449,20 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         }
         throw error;
       }
-      if (capture) {
-        try {
-          capture.started(child.pid);
-        } catch {
-          captureFailed();
-        }
-      }
       const supervised = child;
+      const aborted = () => {
+        capture?.abort();
+        void supervised.stop("Operator stopped attended execution");
+      };
+      if (capture) {
+        request.signal?.addEventListener("abort", aborted, { once: true });
+        if (request.signal?.aborted) aborted();
+      }
 
       let stopReason: string | undefined;
       const done = supervised.done.then(async (exit): Promise<ExecResult> => {
+        await startup;
+        request.signal?.removeEventListener("abort", aborted);
         if (capture) {
           try {
             await capture.finish(exit);
@@ -431,18 +487,20 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
                 : result.providerErrors.length > 0
                   ? "failed: exit 0, provider reported an error"
                   : "completed";
-        const { base, unmirror } = current();
-        queue.push({
-          ...base,
-          ts: new Date().toISOString(),
-          kind: "session.ended",
-          payload: {
-            reason,
-            durationMs: Date.now() - startedAt,
-            ...(usage ? { usage } : {}),
-          },
-        });
-        unmirror();
+        if (!capture || privateProviderStarted) {
+          const { base, unmirror } = current();
+          queue.push({
+            ...base,
+            ts: new Date().toISOString(),
+            kind: "session.ended",
+            payload: {
+              reason,
+              durationMs: Date.now() - startedAt,
+              ...(usage ? { usage } : {}),
+            },
+          });
+          unmirror();
+        }
         queue.close();
         return result;
       });
@@ -456,6 +514,7 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         done,
         async stop(reason) {
           stopReason = reason;
+          capture?.abort();
           await supervised.stop(reason);
         },
       };

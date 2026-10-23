@@ -49,7 +49,7 @@ export interface InteractiveSuperviseOptions
   stdinTimeoutMs?: number;
   /** Trusted packaged-entry/fixture prefix only. Never a public command surface. */
   bootstrapCommand?: readonly string[];
-  /** Trusted startup-barrier fixture only; the normal process grants ownership immediately. */
+  /** Trusted ownership barrier before the provider grant; may persist the private owner's obligation. */
   beforeStart?: () => Promise<void>;
   /** Trusted ownership-failure fixture seam only; never an HTTP or launch option. */
   interactiveGuard?: (pid: number) => {

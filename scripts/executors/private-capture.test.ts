@@ -71,6 +71,7 @@ test("private capture retains the actual canonical input before spawn, then sett
         entered.resolve();
         await release.promise;
         return {
+          holdTree() {},
           started(pid) {
             expect(pid).toBeGreaterThan(0);
             order.push("process");
@@ -140,6 +141,201 @@ test("private capture retains the actual canonical input before spawn, then sett
   }
 }, 10000);
 
+test("attended execution owns its tree and persists the actual provider process before private stdin", async () => {
+  const f = setup(),
+    entered = deferred<void>(),
+    release = deferred<void>();
+  const order: string[] = [];
+  let providerPid = 0;
+  const handle = await claudeAdapter.spawn({
+    ...f.request,
+    privateCapture: {
+      prepare: async () => ({
+        holdTree() {
+          order.push("held-tree");
+        },
+        async started(pid) {
+          providerPid = pid;
+          order.push("process-pending");
+          entered.resolve();
+          await release.promise;
+          order.push("process-persisted");
+        },
+        line() {
+          order.push("private-output");
+        },
+        async finish() {
+          order.push("tree-exited");
+        },
+      }),
+    },
+  });
+  try {
+    await entered.promise;
+    await Bun.sleep(200);
+    expect(existsSync(f.dump)).toBe(false);
+    expect(order).toEqual(["held-tree", "process-pending"]);
+    expect(providerPid).not.toBe(handle.pid);
+    release.resolve();
+    expect((await handle.done).privateCaptureFailed).toBeUndefined();
+    let recorded: unknown;
+    try {
+      recorded = JSON.parse(readFileSync(f.dump, "utf8"));
+    } catch {
+      throw Error("Native fixture input was not published");
+    }
+    expect(recorded).toMatchObject({
+      pid: providerPid,
+      stdin: f.request.prompt,
+    });
+    expect(order.indexOf("process-persisted")).toBeLessThan(
+      order.indexOf("private-output"),
+    );
+    expect(order.at(-1)).toBe("tree-exited");
+  } finally {
+    release.resolve();
+    await handle.stop("fixture cleanup");
+    await handle.done;
+  }
+}, 10000);
+
+test("a process-record deadline stops its owned provider without sending private input or announcing a prompt", async () => {
+  const f = setup(),
+    entered = deferred<void>(),
+    late = deferred<void>();
+  let providerPid = 0,
+    finished = 0;
+  const handle = await claudeAdapter.spawn({
+    ...f.request,
+    privateCapture: {
+      deadlineMs: 100,
+      prepare: async () => ({
+        holdTree() {},
+        async started(pid) {
+          providerPid = pid;
+          entered.resolve();
+          await late.promise;
+        },
+        line() {
+          throw Error("No private input was sent");
+        },
+        async finish() {
+          finished++;
+          expect(() => process.kill(providerPid, 0)).toThrow();
+        },
+      }),
+    },
+  });
+  try {
+    await entered.promise;
+    const result = await Promise.race([
+      handle.done,
+      Bun.sleep(1000).then(() => null),
+    ]);
+    expect(result).toMatchObject({ privateCaptureFailed: true, stopped: true });
+    expect(finished).toBe(1);
+    expect(existsSync(f.dump)).toBe(false);
+    const events = [];
+    for await (const event of handle.events) events.push(event);
+    expect(events.some((event) => event.kind === "prompt.submitted")).toBe(
+      false,
+    );
+    late.resolve();
+    await Bun.sleep(0);
+    expect(existsSync(f.dump)).toBe(false);
+  } finally {
+    late.resolve();
+    await handle.stop("fixture cleanup");
+    await handle.done;
+  }
+}, 10000);
+
+test("Stop aborts an uncooperative private process write and settles after tree cleanup", async () => {
+  const f = setup(),
+    entered = deferred<void>(),
+    controller = new AbortController();
+  let providerPid = 0,
+    aborted = false;
+  const handle = await claudeAdapter.spawn({
+    ...f.request,
+    signal: controller.signal,
+    privateCapture: {
+      prepare: async (_input, control) => ({
+        holdTree() {},
+        started(pid) {
+          providerPid = pid;
+          control.signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+            },
+            { once: true },
+          );
+          entered.resolve();
+          return new Promise(() => {});
+        },
+        line() {},
+        async finish() {
+          expect(() => process.kill(providerPid, 0)).toThrow();
+        },
+      }),
+    },
+  });
+  try {
+    await entered.promise;
+    controller.abort();
+    expect(
+      await Promise.race([handle.done, Bun.sleep(1000).then(() => null)]),
+    ).toMatchObject({ privateCaptureFailed: true, stopped: true });
+    expect(aborted).toBe(true);
+    expect(existsSync(f.dump)).toBe(false);
+  } finally {
+    await handle.stop("fixture cleanup");
+    await handle.done;
+  }
+}, 10000);
+
+test("private capture finishes only after a normally exiting provider's held helper is gone", async () => {
+  const f = setup("orphan");
+  let descendant = 0;
+  const handle = await claudeAdapter.spawn({
+    ...f.request,
+    privateCapture: {
+      prepare: async () => ({
+        holdTree() {},
+        started() {},
+        line(line) {
+          let packet: unknown;
+          try {
+            packet = JSON.parse(line);
+          } catch {
+            return;
+          }
+          if (
+            packet &&
+            typeof packet === "object" &&
+            "childPid" in packet &&
+            typeof packet.childPid === "number"
+          )
+            descendant = packet.childPid;
+        },
+        async finish() {
+          expect(descendant).toBeGreaterThan(0);
+          expect(() => process.kill(descendant, 0)).toThrow();
+        },
+      }),
+    },
+  });
+  try {
+    expect(await handle.done).toMatchObject({ exitCode: 0, stopped: false });
+    expect(descendant).toBeGreaterThan(0);
+    expect(() => process.kill(descendant, 0)).toThrow();
+  } finally {
+    await handle.stop("fixture cleanup");
+    await handle.done;
+  }
+}, 10000);
+
 test("a refused private prepare starts no child and does not expose storage diagnostics", async () => {
   const f = setup();
   const pending = claudeAdapter.spawn({
@@ -172,6 +368,7 @@ test("private output failure stops and awaits the supervised tree and cannot bec
     ...f.request,
     privateCapture: {
       prepare: async () => ({
+        holdTree() {},
         started() {},
         line(line) {
           try {
@@ -215,7 +412,7 @@ test("private preparation cannot change the executed input or its metadata hash 
         input.command.length = 0;
         request.prompt = "mutated original";
         request.smith.model = "mutated-model";
-        return { started() {}, line() {}, async finish() {} };
+        return { holdTree() {}, started() {}, line() {}, async finish() {} };
       },
     },
   } satisfies SpawnRequest;
@@ -260,6 +457,7 @@ test("a late private write failure stays fatal through runExec while the metadat
       },
       privateCapture: {
         prepare: async () => ({
+          holdTree() {},
           started() {},
           line() {},
           async finish() {
@@ -344,6 +542,7 @@ test("Stop during private preparation prevents provider spawn after the preparat
           entered.resolve();
           await release.promise;
           return {
+            holdTree() {},
             started() {},
             line() {},
             async finish(exit) {
@@ -393,6 +592,7 @@ test("Stop settles a never-resolving prepare and fences a late owner without lau
     Bun.sleep(500).then(() => "hung"),
   ]);
   late.resolve({
+    holdTree() {},
     started() {
       throw Error("Late owner started");
     },
@@ -434,6 +634,7 @@ test("a prepare deadline settles fatally and a late owner cannot dispatch", asyn
     Bun.sleep(600).then(() => "hung"),
   ]);
   late.resolve({
+    holdTree() {},
     started() {
       throw Error("Late owner started");
     },
@@ -461,7 +662,12 @@ test("a never-resolving finish cannot hold provider done or Stop after actual tr
         control.signal?.addEventListener("abort", () => {
           aborted = true;
         });
-        return { started() {}, line() {}, finish: () => new Promise(() => {}) };
+        return {
+          holdTree() {},
+          started() {},
+          line() {},
+          finish: () => new Promise(() => {}),
+        };
       },
     },
   });
