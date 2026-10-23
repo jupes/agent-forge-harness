@@ -188,7 +188,14 @@ test("the actual compiled production hearth executes attended input through fixe
     const result = await child.done.finally(() => clearTimeout(timer));
     expect(expired).toBe(false);
     expect(await child.enginePid).not.toBe(child.pid);
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(
+      result.exitCode,
+      JSON.stringify({
+        provider: providerKind,
+        stdout: result.stdout.toString().slice(-4000),
+        stderr: result.stderr.toString().slice(-4000),
+      }),
+    ).toBe(0);
     const envelope = z
       .object({
         ok: z.literal(true),
