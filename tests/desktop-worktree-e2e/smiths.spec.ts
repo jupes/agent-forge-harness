@@ -273,56 +273,174 @@ test("a held initial configuration can fail while a genuine scoreboard succeeds,
   page,
 }) => {
   seedRecordedWork();
-  let release: (() => void) | undefined;
-  const waiting = new Promise<void>((resolve) => {
-    release = resolve;
+  const starts = providerStarts(),
+    posts: string[] = [];
+  let configurationReads = 0;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/__agent-forge/config")
+      configurationReads++;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
   });
+  let release: (() => void) | undefined,
+    releaseResync: (() => void) | undefined,
+    resyncEntered: (() => void) | undefined,
+    genuine = false;
+  const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+    heldResync = new Promise<void>((resolve) => {
+      releaseResync = resolve;
+    }),
+    readingResync = new Promise<void>((resolve) => {
+      resyncEntered = resolve;
+    });
   await page.route("**/__agent-forge/config", async (route) => {
+    const answerGenuinely = genuine;
     await waiting;
+    if (answerGenuinely) {
+      const actual = await route.fetch({
+        headers: {
+          ...(await route.request().allHeaders()),
+          origin: new URL(route.request().url()).origin,
+        },
+      });
+      expect(actual.status()).toBe(200);
+      resyncEntered?.();
+      await heldResync;
+      await route.fulfill({ response: actual });
+      return;
+    }
     await route.fulfill({
       status: 200,
       json: { ok: true, data: { malformed: true }, error: null },
     });
   });
-  await page.goto("/index.html#/desktop/smiths", {
-    waitUntil: "domcontentloaded",
-  });
-  const config = page.getByRole("region", {
-    name: "Saved smith configuration",
-  });
-  const board = page.getByRole("region", {
-    name: "Recorded workspace scoreboard",
-  });
-  await expect(
-    config.getByText("Reading saved smiths…", { exact: true }),
-  ).toBeVisible();
-  await expect(board.getByRole("table")).toContainText("recorded-current");
-  release?.();
-  await expect(
-    config.getByText("Saved smiths unavailable", { exact: true }),
-  ).toBeVisible();
-  await expect(config.getByRole("table")).toHaveCount(0);
-  await page.unroute("**/__agent-forge/config");
-  await config
-    .getByRole("button", { name: "Retry configuration", exact: true })
-    .click();
-  await expect(config.getByRole("table")).toContainText("saved-machine-model");
-  // Explicit empty response fixture covers the empty renderer state independently of other specs' records.
-  await page.route("**/__agent-forge/scoreboard*", (route) =>
-    route.fulfill({
-      status: 200,
-      json: {
-        ok: true,
-        data: { rows: [], events: 0, from: null, to: null },
-        error: null,
+  const navigation = openSettled(page, "/index.html#/desktop/smiths");
+  void navigation.catch(() => {});
+  try {
+    const config = page.getByRole("region", {
+      name: "Saved smith configuration",
+    });
+    const board = page.getByRole("region", {
+      name: "Recorded workspace scoreboard",
+    });
+    await expect(
+      config.getByText("Reading saved smiths…", { exact: true }),
+    ).toBeVisible();
+    await expect(board.getByRole("table")).toContainText("recorded-current");
+    release?.();
+    await navigation;
+    await expect(
+      config.getByText("Saved smiths unavailable", { exact: true }),
+    ).toBeVisible();
+    await expect(config.getByRole("table")).toHaveCount(0);
+    // Retry is covered while data is still absent. An older error alone does not
+    // prove this read is settled: resyncs retain that error while loading.
+    await expect(config).toHaveAttribute("aria-busy", "false");
+    const retryBefore = configurationReads;
+    const retryRead = page.waitForRequest(
+      (request) =>
+        request.method() === "GET" &&
+        new URL(request.url()).pathname === "/__agent-forge/config",
+    );
+    await config
+      .getByRole("button", { name: "Retry configuration", exact: true })
+      .click();
+    await retryRead;
+    await expect(config).toHaveAttribute("aria-busy", "false");
+    expect(configurationReads).toBe(retryBefore + 1);
+    await expect(config.getByRole("table")).toHaveCount(0);
+    const temporary = await config
+      .getByRole("button", { name: "Retry configuration", exact: true })
+      .elementHandle();
+    if (!temporary)
+      throw Error("The unavailable configuration lost its Retry control.");
+
+    // A real scoped ledger event starts an independent protected read. Its
+    // successful result legitimately replaces the temporary Retry branch.
+    genuine = true;
+    seedObservationEvents([
+      {
+        kind: "session.ended",
+        workspace: fixturePlan()
+          .root.replaceAll("\\", "/")
+          .replace(
+            /^([A-Z]):/,
+            (_, drive: string) => `${drive.toLowerCase()}:`,
+          ),
+        sessionId: `${fixtureSmith}-resync`,
+        executor: {
+          provider: "claude",
+          model: "recorded-resync",
+          smith: fixtureSmith,
+        },
+        payload: { reason: "completed" },
       },
-    }),
-  );
-  await board
-    .getByRole("button", { name: "Refresh scoreboard", exact: true })
-    .click();
-  await expect(
-    board.getByText("No recorded work in this range", { exact: true }),
-  ).toBeVisible();
-  unchangedConfig();
+    ]);
+    await readingResync;
+    await expect(config).toHaveAttribute("aria-busy", "true");
+    await expect(config.getByRole("alert")).toContainText(
+      "No saved values are available",
+    );
+    await expect(config.getByRole("table")).toHaveCount(0);
+    await expect(
+      config.getByRole("button", { name: "Retry configuration", exact: true }),
+    ).toHaveAttribute("aria-disabled", "true");
+    releaseResync?.();
+    await expect(config).toHaveAttribute("aria-busy", "false");
+    await expect(config.getByRole("table")).toContainText(
+      "saved-machine-model",
+    );
+    await expect(
+      config.getByRole("button", { name: "Retry configuration", exact: true }),
+    ).toHaveCount(0);
+    expect(await temporary.evaluate((element) => element.isConnected)).toBe(
+      false,
+    );
+    await page.unroute("**/__agent-forge/config");
+
+    // The stable header control must cause its own new GET; a background success
+    // is never accepted as evidence that this explicit gesture happened.
+    const explicitBefore = configurationReads;
+    const explicitRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === "/__agent-forge/config",
+    );
+    await config
+      .getByRole("button", { name: "Refresh configuration", exact: true })
+      .click();
+    expect((await explicitRead).status()).toBe(200);
+    await expect(config).toHaveAttribute("aria-busy", "false");
+    expect(configurationReads).toBe(explicitBefore + 1);
+    await expect(config.getByRole("table")).toContainText(
+      "saved-machine-model",
+    );
+    // Explicit empty response fixture covers the empty renderer state independently of other specs' records.
+    await page.route("**/__agent-forge/scoreboard*", (route) =>
+      route.fulfill({
+        status: 200,
+        json: {
+          ok: true,
+          data: { rows: [], events: 0, from: null, to: null },
+          error: null,
+        },
+      }),
+    );
+    await board
+      .getByRole("button", { name: "Refresh scoreboard", exact: true })
+      .click();
+    await expect(
+      board.getByText("No recorded work in this range", { exact: true }),
+    ).toBeVisible();
+    unchangedConfig();
+    expect(providerStarts()).toEqual(starts);
+    expect(posts).toEqual([]);
+  } finally {
+    release?.();
+    releaseResync?.();
+    await navigation.catch(() => {});
+  }
 });

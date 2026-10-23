@@ -103,6 +103,57 @@ test("independent reads retain verified stale values and refuse changed configur
   client.dispose();
 });
 
+test("a held resync keeps the earlier error while loading, then an explicit settled read is a separate request", async () => {
+  const resync = held<ReturnType<typeof configuration>>();
+  let configurationReads = 0;
+  const client = createSmithsClient({
+    now: () => at,
+    configuration: async () => {
+      configurationReads++;
+      if (configurationReads === 1)
+        return { config: { malformed: true }, smiths: {} };
+      return configurationReads === 2 ? resync.promise : configuration();
+    },
+    scoreboard: async () => empty,
+  });
+  await client.refreshConfiguration();
+  const earlierError = client.get().configuration.error;
+  expect(earlierError).toContain("could not be verified");
+  expect(client.get().configuration).toMatchObject({
+    data: null,
+    loading: false,
+  });
+  const settled = new Promise<void>((resolve) => {
+    client.subscribe(() => {
+      const state = client.get().configuration;
+      if (!state.loading && state.data) resolve();
+    });
+  });
+  client.changed();
+  expect(client.get().configuration).toMatchObject({
+    data: null,
+    loading: true,
+    error: earlierError,
+  });
+  resync.resolve(configuration());
+  await settled;
+  expect(client.get().configuration).toMatchObject({
+    loading: false,
+    error: "",
+  });
+  expect(client.get().configuration.data?.defaultSmith).toBe(
+    "claude-journeyman",
+  );
+  expect(configurationReads).toBe(2);
+  await client.refreshConfiguration();
+  expect(configurationReads).toBe(3);
+  expect(client.get().configuration).toMatchObject({
+    loading: false,
+    error: "",
+  });
+  client.dispose();
+});
+
 test("closing an observer fences its late reply and a never-ending read has a bounded failure", async () => {
   const later = held<unknown>();
   let expire: (() => void) | undefined;
