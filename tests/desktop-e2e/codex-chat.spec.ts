@@ -484,6 +484,9 @@ test("native Chat keeps both turns' response and thread usage across follow-up, 
   });
   await expect(send).toBeEnabled();
   await send.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(send).toBeFocused();
   await expect(send).toHaveCSS("outline-width", "2px");
   await page.keyboard.press("Enter");
   await expect
