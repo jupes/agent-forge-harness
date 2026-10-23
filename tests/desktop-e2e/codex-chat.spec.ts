@@ -540,16 +540,23 @@ test("native Chat keeps both turns' response and thread usage across follow-up, 
   await reloadSettled(page);
   await assertScopes();
   if (process.env.CODEX_CHAT_USAGE_SHOTS) {
-    await pane
+    // The minimum-desktop assertions above use the actual scrollable pane.
+    // Give its full neutral usage card room for a legible review capture.
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    const capture = pane
       .locator(".af-owned-turn")
       .nth(1)
-      .getByRole("region", { name: "Native Chat usage", exact: true })
-      .screenshot({
-        path: join(
-          process.env.CODEX_CHAT_USAGE_SHOTS,
-          "native-chat-turn-usage.png",
-        ),
-      });
+      .getByRole("region", { name: "Native Chat usage", exact: true });
+    await capture.evaluate((element) =>
+      element.scrollIntoView({ block: "center", inline: "nearest" }),
+    );
+    await capture.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_USAGE_SHOTS,
+        "native-chat-turn-usage.png",
+      ),
+    });
+    await page.setViewportSize({ width: 1100, height: 700 });
   }
   await pane
     .getByRole("button", { name: "Session actions", exact: true })
