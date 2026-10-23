@@ -1,0 +1,241 @@
+.af-session-dialog {
+  width: min(1040px, calc(100vw - 32px));
+}
+.af-session-dialog .af-dialog-body {
+  overflow: auto;
+  min-height: 0;
+}
+.af-session-composer {
+  display: grid;
+  gap: 14px;
+}
+.af-session-composer label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.af-session-composer
+  :is(input:not([type="checkbox"]):not([type="file"]), select, textarea),
+.af-owned-session textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  min-width: 0;
+}
+.af-session-composer fieldset {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+.af-session-composer legend {
+  color: var(--color-text);
+  padding: 0 6px;
+}
+.af-session-composer-row,
+.af-session-composer-actions {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.af-session-composer-row > label {
+  flex: 1 1 220px;
+}
+.af-session-composer-actions {
+  justify-content: flex-end;
+}
+.af-session-provider-picker {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.af-session-provider-picker button {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  text-align: left;
+  min-height: 68px;
+}
+.af-session-provider-picker button[aria-pressed="true"] {
+  border-color: var(--color-accent-400);
+}
+.af-session-provider-picker small {
+  display: block;
+  margin-top: 6px;
+  color: var(--color-neutral-400);
+}
+.af-session-provider-picker button:disabled {
+  color: var(--color-neutral-500);
+}
+.af-session-note {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+  margin: 0;
+}
+.af-session-warning {
+  border-left: 2px solid var(--color-accent-400);
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+.af-session-composer summary {
+  cursor: pointer;
+  min-height: 24px;
+  padding: 6px 0;
+}
+.af-session-preview {
+  border-top: 1px solid var(--color-divider);
+  padding-top: 12px;
+}
+.af-session-preview pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--color-bg);
+  padding: 12px;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+}
+.af-session-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.af-session-chips > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-divider);
+  border-radius: 99px;
+  font-size: 11px;
+}
+.af-session-chips button {
+  min-width: 24px;
+  min-height: 24px;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+}
+.af-session-composer
+  :is(button, input, select, textarea, summary):focus-visible,
+.af-owned-session
+  :is(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent-400);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .af-session-composer *,
+  .af-owned-session * {
+    scroll-behavior: auto;
+    animation: none;
+    transition: none;
+  }
+}
+.af-owned-session {
+  display: flex;
+  flex-direction: column;
+  min-height: 440px;
+  height: calc(100dvh - 205px);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.af-owned-session-header {
+  padding: 12px 18px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-divider);
+  max-height: 32vh;
+  overflow: auto;
+}
+.af-owned-session-header > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.af-owned-session-header h2 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+}
+.af-owned-session-header p {
+  margin: 6px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.af-owned-session summary {
+  cursor: pointer;
+  min-height: 24px;
+}
+.af-owned-session pre,
+.af-owned-session dd {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.af-owned-transcript {
+  flex: 1 1 80px;
+  overflow: auto;
+  min-height: 80px;
+  padding: 18px;
+}
+.af-owned-turn {
+  max-width: 800px;
+  margin: 0 auto 24px;
+}
+.af-owned-turn time {
+  font-size: 11px;
+  color: var(--color-neutral-400);
+}
+.af-owned-question {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  margin: 8px 0 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.af-owned-reply {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.af-owned-session > .af-session-warning {
+  max-height: 100px;
+  overflow: auto;
+  flex: none;
+  margin: 0;
+}
+.af-owned-session-composer {
+  flex: none;
+  padding: 10px 18px;
+  border-top: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  font-size: 12px;
+}
+.af-owned-session-composer label {
+  display: grid;
+  gap: 6px;
+}
+.af-owned-session-composer p {
+  margin: 0 0 6px;
+}
+.af-owned-session-list {
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+.af-owned-session-list li {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}

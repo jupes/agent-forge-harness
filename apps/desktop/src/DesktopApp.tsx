@@ -4,6 +4,7 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
+import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import {
@@ -13,13 +14,17 @@ import {
   navigateGlobal,
   PROJECT_DESTINATIONS,
 } from "./navigation";
+import { OwnedSessions } from "./OwnedSessions";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
+import { SessionComposer } from "./SessionComposer";
+import { SessionConversation } from "./SessionConversation";
 import { sessionRows } from "./sessions-model";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
+import { useSessions } from "./use-sessions";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
@@ -36,6 +41,28 @@ export function DesktopApp(): JSX.Element {
     (item) => item.projectId === project?.id,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const selectedOwnedSession =
+    route.destination === "sessions" &&
+    route.selection?.kind === "session" &&
+    /^session-[0-9a-f-]{36}$/.test(route.selection.id)
+      ? route.selection.id
+      : null;
+  const sessions = useSessions(
+    project?.id ?? null,
+    selectedOwnedSession,
+    writesAllowed,
+  );
+  const [composerOpen, setComposerOpen] = useState(false);
+  const composerOpener = useRef<HTMLElement>(null);
+  const openSession = (beadId?: string) => {
+    if (!project || project.archived) return;
+    composerOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (beadId) sessions.editComposer(project.id, { beadId });
+    setComposerOpen(true);
+  };
   const keeper = useKeeper(project?.id ?? null, writesAllowed);
   const proposals = useKeeperProposals(
     project?.id ?? null,
@@ -57,7 +84,7 @@ export function DesktopApp(): JSX.Element {
   // listener stable and read the current render's context for every shortcut.
   const keeperShortcut = useRef<(() => void) | null>(null);
   keeperShortcut.current = project && !keeperOpen ? openKeeper : null;
-  const frameSessions = summary
+  const frameSessions: FrameSession[] = summary
     ? sessionRows(summary.sessions, {}, summary.asOf).map((row) => ({
         id: row.session.sessionId,
         title: row.session.beadId ?? row.session.sessionId,
@@ -66,11 +93,21 @@ export function DesktopApp(): JSX.Element {
         depth: row.depth,
       }))
     : [];
+  if (project)
+    for (const record of sessions.project(project.id).records)
+      if (!frameSessions.some((item) => item.id === record.id))
+        frameSessions.push({
+          id: record.id,
+          title: `${record.mode === "chat" ? "Chat" : "Task"} · ${record.beadId ?? record.requestedModel}`,
+          provider: record.provider,
+          status: "unverified",
+        });
   const previousProject = useRef(route.projectId);
   useEffect(() => {
     if (previousProject.current !== route.projectId)
       document.getElementById("af-main")?.focus();
     if (previousProject.current !== route.projectId) setKeeperOpen(false);
+    if (previousProject.current !== route.projectId) setComposerOpen(false);
     previousProject.current = route.projectId;
   }, [route.projectId]);
   useEffect(() => {
@@ -175,8 +212,19 @@ export function DesktopApp(): JSX.Element {
                 ?.focus(),
             );
         }}
+        onNewSession={
+          project && !project.archived ? () => openSession() : undefined
+        }
       >
         <ConnectionBanner />
+        {project && route.selection?.kind === "bead" && (
+          <Button
+            disabled={!writesAllowed || project.archived}
+            onClick={() => openSession(route.selection?.id)}
+          >
+            Start session for bead {route.selection.id}
+          </Button>
+        )}
         {project && route.destination !== "keeper" && (
           <div class="af-keeper-launcher">
             <button
@@ -238,16 +286,33 @@ export function DesktopApp(): JSX.Element {
             projectId={project.id}
             keeper={keeper}
           />
-        ) : route.destination === "sessions" && project ? (
-          <ProjectSessions
-            keeper={keeper}
-            writesAllowed={writesAllowed}
-            key={project.id}
+        ) : route.destination === "sessions" &&
+          project &&
+          selectedOwnedSession ? (
+          <SessionConversation
+            key={`${project.id}:${selectedOwnedSession}`}
             projectId={project.id}
-            selectedId={
-              route.selection?.kind === "session" ? route.selection.id : null
-            }
+            sessionId={selectedOwnedSession}
+            client={sessions}
+            writesAllowed={writesAllowed}
           />
+        ) : route.destination === "sessions" && project ? (
+          <>
+            <OwnedSessions
+              projectId={project.id}
+              client={sessions}
+              onNew={() => openSession()}
+            />
+            <ProjectSessions
+              keeper={keeper}
+              writesAllowed={writesAllowed}
+              key={project.id}
+              projectId={project.id}
+              selectedId={
+                route.selection?.kind === "session" ? route.selection.id : null
+              }
+            />
+          </>
         ) : global ? (
           <EmptyState
             title={`${name} unavailable`}
@@ -268,6 +333,34 @@ export function DesktopApp(): JSX.Element {
           </EmptyState>
         )}
       </DesktopFrame>
+      <Dialog
+        open={composerOpen && Boolean(project)}
+        title={`New session · ${project?.name ?? ""}`}
+        titleId="af-session-composer-title"
+        onClose={() => setComposerOpen(false)}
+        returnFocusRef={composerOpener}
+        class="af-session-dialog"
+        initialFocus="content"
+      >
+        {project && composerOpen && (
+          <SessionComposer
+            key={project.id}
+            project={project}
+            client={sessions}
+            keeper={keeper}
+            writesAllowed={writesAllowed}
+            onCancel={() => setComposerOpen(false)}
+            onStarted={(id) => {
+              setComposerOpen(false);
+              window.location.hash = desktopHref({
+                projectId: project.id,
+                destination: "sessions",
+                selection: { kind: "session", id },
+              }).slice(1);
+            }}
+          />
+        )}
+      </Dialog>
       <Dialog
         open={keeperOpen && Boolean(project)}
         title={`Forge Keeper · ${project?.name ?? ""}`}
