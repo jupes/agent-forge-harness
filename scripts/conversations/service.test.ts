@@ -270,6 +270,10 @@ test("two service instances share one dispatch lease and duplicate requests do n
 test("a live foreign process keeps its lease; killing it preserves partial output and never replays delivery", async () => {
   const { home, root, projectId } = await fixture();
   const requestId = randomUUID();
+  let acknowledge = () => {};
+  const ready = new Promise<void>((resolve) => {
+    acknowledge = resolve;
+  });
   const child = Bun.spawn(
     [
       process.execPath,
@@ -279,14 +283,54 @@ test("a live foreign process keeps its lease; killing it preserves partial outpu
       projectId,
       requestId,
     ],
-    { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+    {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+      ipc(message: unknown) {
+        if (
+          message &&
+          typeof message === "object" &&
+          "kind" in message &&
+          message.kind === "lease-fixture.ready"
+        )
+          acknowledge();
+      },
+    },
   );
-  const deadline = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 20_000);
   cleanup.push(async () => {
     clearTimeout(deadline);
     child.kill("SIGKILL");
     await child.exited;
   });
+  // Startup/import time is separate from the service's state-transition budget.
+  // The acknowledgement follows the actual durable partial write, never spawn alone.
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      ready,
+      child.exited.then(async (code) => {
+        const stderr = await new Response(child.stderr).text();
+        throw new Error(
+          `Lease fixture exited before readiness (${code}): ${stderr.slice(-1000)}`,
+        );
+      }),
+      new Promise<never>((_resolve, reject) => {
+        startupTimer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Lease fixture did not acknowledge its durable partial write within 10 seconds",
+              ),
+            ),
+          10_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(startupTimer);
+  }
   const store = createConversationStore(home);
   await until(async () =>
     store.read(projectId).frames.some((frame) => frame.event.kind === "text"),
@@ -332,7 +376,7 @@ test("a live foreign process keeps its lease; killing it preserves partial outpu
     }),
   ).rejects.toThrow("outcome is unknown");
   expect(localStarts).toBe(0);
-});
+}, 25_000);
 
 test("stop stays pending until transport termination and a late success settles as cancelled", async () => {
   const { home, root, projectId } = await fixture();

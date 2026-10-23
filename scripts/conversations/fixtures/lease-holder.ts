@@ -21,6 +21,7 @@ async function main(): Promise<void> {
           kind: "text",
           text: "Partial output from the other process",
         });
+        process.send?.({ kind: "lease-fixture.ready" });
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, 15_000);
           signal.addEventListener(

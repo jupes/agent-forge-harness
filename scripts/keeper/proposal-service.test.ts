@@ -12,6 +12,7 @@ import { projectCatalogPath } from "../projects/store";
 import { projectCatalogFixture } from "../projects/testing";
 import type { KeeperOperatorCall, KeeperOperatorPost } from "./operator-post";
 import { createKeeperProposalService } from "./proposal-service";
+import { createKeeperProposalStore } from "./proposal-store";
 
 const homes: string[] = [];
 afterEach(() => {
@@ -118,6 +119,86 @@ const confirmed = (call: KeeperOperatorCall) => ({
         : null,
     error: null,
   }),
+});
+
+test("destination description limits are checked before consuming approval, while old source drafts remain readable and dismissible", async () => {
+  const draft: KeeperProposalDraft = {
+    title: "Create a child",
+    detail: "Review this source draft",
+    action: {
+      kind: "create-beads",
+      beads: [
+        {
+          title: "A child",
+          type: "task",
+          priority: 2,
+          parentId: "alpha-epic",
+          description: "x".repeat(5000),
+        },
+      ],
+    },
+  };
+  const f = await fixture([draft]);
+  let calls = 0;
+  const service = createKeeperProposalService({
+    home: f.home,
+    root: "/served",
+    load: async () => f.snapshot,
+    post: async (call) => {
+      calls++;
+      return confirmed(call);
+    },
+  });
+  const page = await service.read(f.project.id),
+    card = page.proposals[0]!;
+  expect(card.available).toBe(false);
+  expect(card.destinationAvailable).toBe(true);
+  expect(card.reason).toContain("4000");
+  const body = {
+    id: card.proposal.id,
+    sourceHash: card.proposal.sourceHash,
+    requestId: randomUUID(),
+    expectedRevision: page.revision,
+    draft,
+  };
+  await expect(service.approve(f.project.id, body, 12)).rejects.toThrow("4000");
+  if (draft.action.kind !== "create-beads")
+    throw new Error("Wrong fixture action");
+  await expect(
+    service.approve(
+      f.project.id,
+      {
+        ...body,
+        draft: {
+          ...draft,
+          action: {
+            ...draft.action,
+            beads: draft.action.beads.map((bead) => ({
+              ...bead,
+              description: "-",
+            })),
+          },
+        },
+      },
+      12,
+    ),
+  ).rejects.toThrow("placeholder");
+  expect(
+    (await createKeeperProposalStore(f.home).read(f.project.id)).records,
+  ).toHaveLength(0);
+  const result = await service.dismiss(
+    f.project.id,
+    {
+      id: body.id,
+      sourceHash: body.sourceHash,
+      requestId: body.requestId,
+      expectedRevision: 0,
+    },
+    12,
+  );
+  expect(result.record.phase).toBe("dismissed");
+  expect(calls).toBe(0);
+  await service.close();
 });
 
 test("each selected bead is rechecked just before dispatch; an earlier approved bead does not invalidate the remaining checked work", async () => {

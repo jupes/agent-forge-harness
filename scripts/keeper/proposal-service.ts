@@ -12,6 +12,7 @@ import {
   ConversationError,
   createConversationStore,
 } from "../conversations/store";
+import { BEAD_TEXT_LIMITS } from "../hearth/routes/beads";
 import type { ProjectSnapshot } from "../hearth/routes/project-summaries";
 import { isBeadId } from "../hearth/tracker-write";
 import { validateOperatorEnvelope } from "../hearth/validate";
@@ -164,7 +165,17 @@ export function createKeeperProposalService(options: Options) {
         member(scope, action.beadId);
         break;
       case "create-beads":
-        for (const bead of action.beads) member(scope, bead.parentId);
+        for (const bead of action.beads) {
+          member(scope, bead.parentId);
+          if (
+            bead.description.length > BEAD_TEXT_LIMITS.description ||
+            bead.description.trim() === "-"
+          )
+            throw new ConversationError(
+              409,
+              `Edit the bead description before approval: at most ${BEAD_TEXT_LIMITS.description} characters, and not the stdin placeholder '-'.`,
+            );
+        }
         break;
       case "manage-bead":
         queueMove(scope, action.beadId, action.operation.kind);

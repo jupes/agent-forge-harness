@@ -6,6 +6,7 @@ import {
   loopbackExchange,
 } from "../hearth/loopback";
 import { OPERATOR_HEADER } from "../hearth/paths";
+import { BEAD_TEXT_LIMITS } from "../hearth/routes/beads";
 import { keeperReaderOrigin } from "./reader";
 
 const id = z
@@ -42,7 +43,11 @@ const callSchema = z.discriminatedUnion("kind", [
       type: z.enum(["task", "feature", "bug", "chore", "epic"]),
       priority: z.number().int().min(0).max(4),
       parentId: id,
-      description: z.string().min(1).max(6000),
+      description: z
+        .string()
+        .min(1)
+        .max(BEAD_TEXT_LIMITS.description)
+        .refine((value) => value.trim() !== "-"),
     })
     .strict(),
 ]);
