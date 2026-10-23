@@ -35,7 +35,7 @@ import {
   writeShiftRecord,
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
-import type { ActionRoute, ApiRoute } from "./api";
+import type { ActionContext, ActionRoute, ApiRoute } from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
 import {
@@ -91,6 +91,38 @@ const RUN_STATE = JSON.stringify({
 });
 
 const key = (route: ApiRoute): string => `${route.method} ${route.path}`;
+
+test("an effect receives its actual persisted operator audit id; HTTP input cannot choose that trace", async () => {
+  let calls = 0;
+  const row: ActionRoute<null> = {
+    kind: "action",
+    method: "POST",
+    path: "/audit-trace-fixture",
+    action: "fixture.audit.trace",
+    validate: () => ({ ok: true, value: null }),
+    subject: () => ({ target: "trace-fixture" }),
+    effect: (_input, context?: { auditEventId: number }) => {
+      calls++;
+      return {
+        status: 200,
+        data: { auditEventId: context?.auditEventId ?? null },
+      };
+    },
+  };
+  const h = await start({ api: { decorate: (routes) => [...routes, row] } });
+  const response = await post(h, row.path, { auditEventId: 999_999 });
+  expect(response.status).toBe(200);
+  const result = await envelope<{ auditEventId: number | null }>(response);
+  const audit = h.events(["operator.action"]).at(-1);
+  expect(audit?.payload).toMatchObject({
+    action: row.action,
+    target: "trace-fixture",
+  });
+  expect(result.data?.auditEventId).toBe(audit?.id);
+  expect(calls).toBe(1);
+  expect((await post(h, row.path, {}, h.headers(null))).status).toBe(403);
+  expect(calls).toBe(1);
+});
 
 test("desktop recovery's action row refuses invalid input and failed audits before restart", async () => {
   let effects = 0;
@@ -1011,9 +1043,9 @@ async function probed(
             ? route
             : {
                 ...route,
-                effect: (input: unknown) => {
+                effect: (input: unknown, context?: ActionContext) => {
                   probes.push({ row: key(route), input, audit: audit() });
-                  return route.effect(input);
+                  return route.effect(input, context);
                 },
               },
         ),

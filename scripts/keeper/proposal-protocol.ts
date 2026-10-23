@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type {
+  KeeperProposal,
   KeeperProposalDraft,
+  KeeperProposalExecution,
+  KeeperProposalJournal,
   KeeperProposalMessage,
+  KeeperProposalRecord,
 } from "../../types/keeper-proposal";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
@@ -124,3 +128,88 @@ export function parseKeeperProposalMessage(
   const parsed = keeperProposalMessageSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
+
+const count = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER - 1);
+const hash = z.string().regex(/^[a-f0-9]{64}$/);
+export const keeperProposalSchema: z.ZodType<KeeperProposal> = z
+  .object({
+    id: z.string().max(100),
+    projectId: z.string().max(100),
+    sourceRequestId: z.string().uuid(),
+    sourceHash: hash,
+    createdAt: z.iso.datetime(),
+    draft: keeperProposalDraftSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.id.startsWith(`proposal-${value.sourceRequestId}-`) &&
+      /^[0-6]$/.test(value.id.slice(-1)) &&
+      value.id.length === `proposal-${value.sourceRequestId}-0`.length,
+  );
+const object = z
+  .object({
+    kind: z.enum(["bead", "session", "run", "event"]),
+    id: z.string().min(1).max(200),
+  })
+  .strict();
+export const keeperProposalExecutionSchema: z.ZodType<KeeperProposalExecution> =
+  z
+    .object({
+      phase: z.enum(["approved", "done", "failed", "unknown"]),
+      message: text(1000),
+      objects: z.array(object).max(16),
+    })
+    .strict();
+export const keeperProposalRecordSchema: z.ZodType<KeeperProposalRecord> = z
+  .object({
+    id: z.string().max(100),
+    projectId: z.string().max(100),
+    sourceRequestId: z.string().uuid(),
+    sourceHash: hash,
+    createdAt: z.iso.datetime(),
+    draft: keeperProposalDraftSchema,
+    requestId: z.string().uuid(),
+    requestHash: hash,
+    operation: z.enum(["approve", "dismiss"]),
+    auditEventId: count.min(1),
+    phase: z.enum(["approved", "done", "failed", "unknown", "dismissed"]),
+    pending: z.boolean(),
+    updatedAt: z.iso.datetime(),
+    message: text(1000),
+    objects: z.array(object).max(16),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      (!value.pending || value.phase === "approved") &&
+      (value.operation !== "dismiss" || value.phase === "dismissed") &&
+      keeperProposalSchema.safeParse({
+        id: value.id,
+        projectId: value.projectId,
+        sourceRequestId: value.sourceRequestId,
+        sourceHash: value.sourceHash,
+        createdAt: value.createdAt,
+        draft: value.draft,
+      }).success,
+  );
+export const keeperProposalJournalSchema: z.ZodType<KeeperProposalJournal> = z
+  .object({
+    version: z.literal(1),
+    projectId: z.string().max(100),
+    revision: count,
+    records: z.array(keeperProposalRecordSchema).max(1000),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      new Set(value.records.map((record) => record.id)).size ===
+        value.records.length &&
+      new Set(value.records.map((record) => record.requestId)).size ===
+        value.records.length &&
+      value.records.every((record) => record.projectId === value.projectId),
+  );

@@ -61,3 +61,31 @@ export interface KeeperProposal {
   createdAt: string;
   draft: KeeperProposalDraft;
 }
+
+export interface KeeperProposalRecord extends KeeperProposal {
+  requestId: string;
+  requestHash: string;
+  operation: "approve" | "dismiss";
+  auditEventId: number;
+  phase: "approved" | "done" | "failed" | "unknown" | "dismissed";
+  pending: boolean;
+  updatedAt: string;
+  message: string;
+  objects: import("./conversation").ConversationObject[];
+}
+export interface KeeperProposalJournal {
+  version: 1;
+  projectId: string;
+  revision: number;
+  records: KeeperProposalRecord[];
+}
+export interface KeeperProposalReceipt {
+  projectId: string;
+  revision: number;
+  record: KeeperProposalRecord;
+}
+export interface KeeperProposalExecution {
+  phase: "approved" | "done" | "failed" | "unknown";
+  message: string;
+  objects: import("./conversation").ConversationObject[];
+}
