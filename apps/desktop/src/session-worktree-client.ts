@@ -1,4 +1,5 @@
 import type { ActionOutcome } from "../../../docs/js/action-outcome";
+import { workspaceKey } from "../../../scripts/projects/scope";
 import {
   sessionWorktreeReceiptSchema,
   sessionWorktreeRequestSchema,
@@ -52,7 +53,8 @@ export function createSessionWorktreeClient(deps: {
       !original ||
       parsed.data.projectId !== projectId ||
       parsed.data.requestId !== original.requestId ||
-      parsed.data.repository !== original.repository ||
+      workspaceKey(parsed.data.repository) !==
+        workspaceKey(original.repository) ||
       parsed.data.baseRef !== original.baseRef ||
       parsed.data.branch !== original.branch
     ) {

@@ -106,3 +106,25 @@ test("a verified created lookup wins over a delayed malformed create response, w
   expect(client.get(projectId).receipt?.state).toBe("created");
   expect(client.get(projectId).notice).toContain("Worktree created");
 });
+
+test("a canonical Windows receipt matches the original scoped path without changing its immutable request", async () => {
+  const repository = "c:/fixture/repository",
+    native = "C:\\Fixture\\Repository";
+  const client = createSessionWorktreeClient({
+    canWrite: () => true,
+    requestId: () => requestId,
+    changed() {},
+    post: async () => ({
+      state: "done",
+      data: {
+        ...wireReceipt(),
+        repository: native,
+        worktree: { ...worktree, path: `${native}\\trees\\${worktree.id}` },
+      },
+    }),
+    read: async () => null,
+  });
+  await client.create(projectId, { ...input, repository });
+  expect(client.get(projectId).receipt?.state).toBe("created");
+  expect(client.get(projectId).original?.repository).toBe(repository);
+});
