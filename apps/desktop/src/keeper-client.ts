@@ -19,7 +19,9 @@ import type {
 } from "../../../types/conversation";
 import type { KeeperReadQuery } from "../../../types/keeper";
 import type { KeeperBriefs } from "../../../types/keeper-brief";
+import type { KeeperContinuationRequest } from "../../../types/keeper-recovery";
 import { type KeeperAbout, keeperObjects } from "./keeper-context";
+import { createKeeperRecoveryClient } from "./keeper-recovery-client";
 import { type KeeperSessionSelection, keeperSession } from "./keeper-session";
 
 export interface KeeperView {
@@ -50,12 +52,18 @@ interface Deps {
   ): Promise<unknown>;
   post(
     projectId: string,
-    action: "turns" | "stop" | "briefs",
-    body: ConversationSend | { requestId: string; expectedRevision?: number },
+    action: "turns" | "stop" | "briefs" | "continuations",
+    body:
+      | ConversationSend
+      | KeeperContinuationRequest
+      | { requestId: string; expectedRevision?: number },
   ): Promise<ActionOutcome>;
   requestId(): string;
   canWrite(): boolean;
   readBriefs?: ((projectId: string) => Promise<unknown>) | undefined;
+  readRecovery?:
+    | ((projectId: string, requestId?: string) => Promise<unknown>)
+    | undefined;
   readObjects?:
     | ((projectId: string, query: KeeperReadQuery) => Promise<unknown>)
     | undefined;
@@ -76,6 +84,7 @@ export function createKeeperClient(deps: Deps) {
     { promise: Promise<void>; again: boolean }
   >();
   const briefKeys = new Map<string, string>();
+  const recoveryKeys = new Map<string, string>();
   const timers = deps.timers ?? REAL_TIMERS;
   const now = deps.now ?? Date.now;
   let selected: string | null = null;
@@ -113,6 +122,22 @@ export function createKeeperClient(deps: Deps) {
   const tell = () => {
     for (const listener of [...listeners]) listener();
   };
+  const recovery: ReturnType<typeof createKeeperRecoveryClient> | null =
+    deps.readRecovery
+      ? createKeeperRecoveryClient({
+          read: (id, requestId) =>
+            deps.readRecovery?.(id, requestId) ??
+            Promise.reject(new Error("Recovery unavailable")),
+          post: (id, input) => deps.post(id, "continuations", input),
+          requestId: deps.requestId,
+          canChange: (id) => canStart(id, true),
+          revision: (id) => get(id).page?.revision ?? 0,
+          changed: tell,
+          confirmed: (id) => {
+            void check(id);
+          },
+        })
+      : null;
   const loadBriefs = (projectId: string, force = false): Promise<void> => {
     if (disposed || !deps.readBriefs) return Promise.resolve();
     const entry = get(projectId);
@@ -261,6 +286,11 @@ export function createKeeperClient(deps: Deps) {
     }
     const more = cursor < page.lastSequence;
     entry.page = { ...page, frames, nextCursor: cursor, more };
+    const recoveryKey = `${page.keeperRecovery?.generation ?? 0}:${[...frames].reverse().find((frame) => frame.event.kind === "process")?.seq ?? 0}`;
+    if (recoveryKeys.get(entry.projectId) !== recoveryKey) {
+      recoveryKeys.set(entry.projectId, recoveryKey);
+      void recovery?.read(entry.projectId);
+    }
     entry.loaded = !more;
     if (fromStream) entry.live = true;
     for (const turn of [...page.turns, ...(page.request ? [page.request] : [])])
@@ -409,7 +439,7 @@ export function createKeeperClient(deps: Deps) {
     if (entry.pending && selected === entry.projectId)
       await check(entry.projectId);
   };
-  const canStart = (projectId: string) => {
+  const canStart = (projectId: string, changing = false): boolean => {
     const entry = get(projectId);
     return (
       !disposed &&
@@ -422,7 +452,8 @@ export function createKeeperClient(deps: Deps) {
       !entry.stopping &&
       !entry.stopPosting &&
       !entry.page?.turns.some(held) &&
-      !(entry.admitted && held(entry.admitted))
+      !(entry.admitted && held(entry.admitted)) &&
+      (changing || !recovery || recovery.canStart(projectId))
     );
   };
   const canSend = (projectId: string) => {
@@ -436,6 +467,7 @@ export function createKeeperClient(deps: Deps) {
   };
   const client = {
     get,
+    recovery,
     canSend,
     loadBriefs,
     canRefreshBrief: canStart,
@@ -479,13 +511,17 @@ export function createKeeperClient(deps: Deps) {
       generation++;
       disconnect();
       if (selected) {
+        recovery?.release(selected);
+        recoveryKeys.delete(selected);
         const old = get(selected);
         old.page = null;
         old.loaded = false;
         old.live = false;
       }
       selected = projectId;
-      if (projectId) connect(projectId);
+      if (projectId) {
+        connect(projectId);
+      }
       tell();
     },
     reload(projectId: string) {
@@ -661,6 +697,7 @@ export function createKeeperClient(deps: Deps) {
       await client.stop(projectId, retry);
     },
     dispose() {
+      recovery?.dispose();
       disposed = true;
       generation++;
       disconnect();

@@ -507,6 +507,49 @@ function keeperProposalFixture(dismiss: boolean): ActionFixture {
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/keeper/continuations": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
+      body: {
+        requestId: "8b77d65d-18f9-4a15-ab82-8f48dfab6b09",
+        expectedRevision: 0,
+        mode: "switch",
+        smith: "claude-master",
+        summary: "",
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
+      body: {
+        requestId: "invalid",
+        mode: "switch",
+        smith: "claude-master",
+        summary: "",
+      },
+    },
+    prepare: async (h) => {
+      const fixture = ACTIONS["POST /projects/:id/keeper/continuations"];
+      if (fixture)
+        fixture.valid.body = {
+          requestId: "8b77d65d-18f9-4a15-ab82-8f48dfab6b09",
+          expectedRevision: createConversationStore(h.home).read(
+            FIXTURE_PROJECT_ID,
+          ).revision,
+          mode: "switch",
+          smith: "claude-master",
+          summary: "Reviewed fixture context",
+        };
+    },
+    effects: [],
+    happened: async (h) => {
+      expect(
+        createConversationStore(h.home).read(FIXTURE_PROJECT_ID).keeperRecovery
+          ?.smith,
+      ).toBe("claude-master");
+    },
+  },
   "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
   "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
   "POST /projects/:id/keeper/briefs": {
@@ -1075,6 +1118,7 @@ const READS: Record<string, string> = {
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
   "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+  "GET /projects/:id/keeper/recovery": `/projects/${FIXTURE_PROJECT_ID}/keeper/recovery`,
   "GET /projects/:id/keeper/proposals": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`,
   "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,
   "GET /sessions": "/sessions",

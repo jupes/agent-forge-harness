@@ -33,6 +33,10 @@ import { ownInterrupts } from "../executors/supervisor";
 import { isMain } from "../is-main";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
 import { createKeeperOperatorPost } from "../keeper/operator-post";
+import {
+  createKeeperRuntime,
+  type KeeperRuntime,
+} from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
@@ -148,6 +152,7 @@ export function hearthCouncilRunner(
 export interface OperatorApiOverrides {
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
+  keeperRuntime?: KeeperRuntime;
   /** The ledger file; defaults to `ledger.db` in the hearth's home. */
   ledgerPath?: string;
   /** Runs `bd` with an argument array; defaults to the real one, in the main checkout. */
@@ -323,6 +328,26 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     stopGraceMs: options.api?.shiftStopGraceMs,
     now: options.api?.shiftNow,
   });
+  const keeperTransport =
+    options.api?.conversationTransport ??
+    createClaudeConversationTransport({
+      root,
+      home,
+      ...(options.api?.configHome
+        ? { configHome: options.api.configHome }
+        : {}),
+      origin: () => {
+        const address = server.address();
+        if (!address || typeof address === "string")
+          throw new Error("The hearth is not listening.");
+        return `http://127.0.0.1:${address.port}`;
+      },
+      operatorToken: expectedToken,
+      readerCommand: options.keeperReaderCommand ?? [
+        process.execPath,
+        resolve(import.meta.dir, "../keeper/reader-entry.ts"),
+      ],
+    });
   const table = operatorRoutes({
     projectHome: home,
     keeperOperatorPost: createKeeperOperatorPost({
@@ -334,25 +359,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       },
       operatorToken: expectedToken,
     }),
-    conversationTransport:
-      options.api?.conversationTransport ??
-      createClaudeConversationTransport({
+    conversationTransport: keeperTransport,
+    keeperRuntime:
+      options.api?.keeperRuntime ??
+      createKeeperRuntime({
         root,
-        home,
         ...(options.api?.configHome
           ? { configHome: options.api.configHome }
           : {}),
-        origin: () => {
-          const address = server.address();
-          if (!address || typeof address === "string")
-            throw new Error("The hearth is not listening.");
-          return `http://127.0.0.1:${address.port}`;
-        },
-        operatorToken: expectedToken,
-        readerCommand: options.keeperReaderCommand ?? [
-          process.execPath,
-          resolve(import.meta.dir, "../keeper/reader-entry.ts"),
-        ],
+        transports: { [keeperTransport.provider]: keeperTransport },
       }),
     root,
     workspace,

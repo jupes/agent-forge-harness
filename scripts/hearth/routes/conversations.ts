@@ -1,5 +1,6 @@
 import type { ConversationSend } from "../../../types/conversation";
 import type { KeeperBriefSnapshot } from "../../../types/keeper-brief";
+import type { KeeperContinuationRequest } from "../../../types/keeper-recovery";
 import {
   createConversationService,
   type ValidateConversationAbout,
@@ -12,6 +13,8 @@ import {
 import type { ConversationTransport } from "../../conversations/transport";
 import { KEEPER_BRIEF_REQUEST } from "../../keeper/brief-model";
 import { briefRefreshSchema } from "../../keeper/brief-protocol";
+import { keeperContinuationSchema } from "../../keeper/recovery-protocol";
+import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ActionRoute,
@@ -59,6 +62,7 @@ export function conversationRoutes(
   transport: ConversationTransport = unavailable,
   validateAbout?: ValidateConversationAbout,
   prepareBrief?: (projectId: string) => Promise<KeeperBriefSnapshot>,
+  keeperRuntime?: KeeperRuntime,
 ) {
   const feed = createConversationFeed();
   const service = createConversationService({
@@ -67,6 +71,8 @@ export function conversationRoutes(
     transport,
     validateAbout,
     prepareBrief,
+    keeperRuntime,
+    onRecoveryChange: (projectId) => feed.changed(projectId),
     onChange: (update) => feed.changed(update.projectId),
   });
   const address = (request: RouteRequest): ValidationResult<string> => {
@@ -133,6 +139,55 @@ export function conversationRoutes(
       return query.ok ? id : query;
     },
     read: (id) => answer(200, () => service.briefs(id)),
+  };
+  const recovery: ReadRoute<{ id: string; requestId?: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/keeper/recovery",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            key !== "requestId" || request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported Keeper recovery query.");
+      const requestId = request.query.get("requestId");
+      return requestId !== null && !isConversationRequestId(requestId)
+        ? fail("Expected the original continuation request id.")
+        : {
+            ok: true,
+            value: { id: id.value, ...(requestId ? { requestId } : {}) },
+          };
+    },
+    read: ({ id, requestId }) =>
+      answer(200, () => service.recovery(id, requestId)),
+  };
+  const continuation: ActionRoute<{
+    id: string;
+    input: KeeperContinuationRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/keeper/continuations",
+    action: "keeper.continue",
+    maxBodyBytes: 64_000,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      if (!query.ok) return query;
+      const parsed = keeperContinuationSchema.safeParse(request.body);
+      return parsed.success
+        ? { ok: true, value: { id: id.value, input: parsed.data } }
+        : fail("Expected an explicit smith, revision and reviewed summary.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: ({ id, input }) =>
+      answer(200, () => service.continueKeeper(id, input)),
   };
   const refresh: ActionRoute<{
     id: string;
@@ -248,6 +303,8 @@ export function conversationRoutes(
   return {
     read,
     briefs,
+    recovery,
+    continuation,
     refresh,
     send,
     stop,

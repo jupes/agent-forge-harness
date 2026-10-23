@@ -41,6 +41,12 @@ export function keeperTurns(page: ConversationPage | null): KeeperTurnView[] {
 }
 export function keeperContext(page: ConversationPage | null) {
   const event = page?.frames
+    .filter(
+      (frame) =>
+        !page.keeperRecovery ||
+        page.keeperRecovery.continuation.resumed ||
+        frame.seq > page.keeperRecovery.continuation.sourceSequence,
+    )
     .map((frame) => frame.event)
     .reverse()
     .find((event) => event.kind === "context");

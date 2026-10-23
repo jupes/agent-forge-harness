@@ -33,7 +33,9 @@ export function keeperBriefPrompt(snapshot: KeeperBriefSnapshot): string {
 }
 
 /** Only a completed, identity-confirmed turn can replace a prior good brief. */
-export function keeperBriefs(state: ConversationState): KeeperBriefs {
+export function keeperBriefs(
+  state: Omit<ConversationState, "keeperRecovery">,
+): KeeperBriefs {
   const confirmed: KeeperBrief[] = [];
   let refresh: KeeperBriefs["refresh"] = null;
   for (const frame of state.frames) {
@@ -53,12 +55,16 @@ export function keeperBriefs(state: ConversationState): KeeperBriefs {
     const frames = state.frames.filter(
       (item) => item.turnId === turn.requestId,
     );
-    const identity = frames.some(
-      (item) =>
-        item.event.kind === "identity" &&
-        item.event.provider === state.binding?.provider &&
-        item.event.sessionId === state.binding.sessionId,
+    const identities = frames.flatMap((item) =>
+      item.event.kind === "identity" ? [item.event] : [],
     );
+    const identity =
+      identities.length > 0 &&
+      identities.every(
+        (item) =>
+          item.provider === identities[0]?.provider &&
+          item.sessionId === identities[0]?.sessionId,
+      );
     const text = frames
       .map((item) => (item.event.kind === "text" ? item.event.text : ""))
       .join("");

@@ -14,6 +14,8 @@ export interface ConversationTransport {
     project: ProjectRecord;
     root: string;
     resume: ConversationBinding | null;
+    /** Trusted saved Keeper selection, never a model argument or public Send field. */
+    smith?: string | undefined;
   }): Promise<void>;
   /** Settles only after the supervised process tree stops, including on error/abort. */
   run(
@@ -22,6 +24,7 @@ export interface ConversationTransport {
       root: string;
       input: ConversationSend;
       resume: ConversationBinding | null;
+      smith?: string | undefined;
     },
     persist: (
       event: Exclude<ConversationEvent, { kind: "user" }>,

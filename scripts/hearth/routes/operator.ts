@@ -22,6 +22,7 @@ import {
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
+import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import {
@@ -70,6 +71,7 @@ export interface OperatorDeps extends ReadDeps {
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
+  keeperRuntime?: KeeperRuntime | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
@@ -366,6 +368,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.conversationTransport,
     keeperAboutValidator(deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
+    deps.keeperRuntime,
   );
   const proposals = keeperProposalRoutes(
     deps.projectHome,
@@ -393,6 +396,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.recovery,
     proposals.read,
   ];
 
@@ -431,6 +435,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       preferences,
       conversations.send,
       conversations.refresh,
+      conversations.continuation,
       proposals.approve,
       proposals.dismiss,
       conversations.stop,

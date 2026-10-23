@@ -6,6 +6,7 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import { briefSnapshotSchema } from "../keeper/brief-protocol";
+import { keeperRecoveryStateSchema } from "../keeper/recovery-protocol";
 import { ConversationError } from "./error";
 
 // Select runtime validation before constructing schemas in the strict-CSP WebView.
@@ -164,6 +165,7 @@ export const stateSchema = z
       .nonnegative()
       .max(Number.MAX_SAFE_INTEGER - 1),
     binding: binding.nullable(),
+    keeperRecovery: keeperRecoveryStateSchema.optional(),
     turns: z.array(turn).max(1000),
     frames: z
       .array(
@@ -182,6 +184,9 @@ export const stateSchema = z
 
 export const conversationPageSchema = stateSchema
   .extend({
+    keeperRecovery: keeperRecoveryStateSchema
+      .omit({ records: true })
+      .optional(),
     turns: z.array(turn).max(50),
     frames: stateSchema.shape.frames.max(100),
     more: z.boolean(),
