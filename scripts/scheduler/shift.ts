@@ -48,6 +48,10 @@ import {
 } from "../config/load";
 import { resolveSmith } from "../config/resolve";
 import { type ExecDeps, runExec } from "../executors/exec-cli";
+import {
+  PRIVATE_CAPTURE_FAILURE,
+  type PrivateExecCaptureFactory,
+} from "../executors/private-capture";
 import { isValidSlug } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
@@ -289,6 +293,7 @@ export function endedComment(input: {
 /** How one run ended, as the loop needs it. */
 export interface Attempt {
   ok: boolean;
+  privateCaptureFailed?: true;
   /** The provider was never started (the run's own checks refused it). */
   notStarted: boolean;
   timedOut: boolean;
@@ -336,7 +341,19 @@ export interface ShiftDeps {
   /** `bun run pr:check` on a body file: null when every section is there and filled, else why not. */
   checkPrBody(path: string): Promise<string | null>;
   /** What `runExec` is given besides the run itself: the environment, the home, adapter and command overrides. */
-  exec?: Pick<ExecDeps, "env" | "home" | "adapters" | "command"> | undefined;
+  exec?:
+    | Pick<
+        ExecDeps,
+        "env" | "home" | "adapters" | "command" | "privateBootstrapCommand"
+      >
+    | undefined;
+  /** Trusted private owner per actual attempt; never populated from model tools or CLI flags. */
+  captureAttempt?: (source: {
+    shiftId: string;
+    beadId: string;
+    runId: string;
+    attempt: number;
+  }) => PrivateExecCaptureFactory;
   appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
   /**
    * The ledger's `queryEvents`, through which the pause watch reads whose
@@ -467,7 +484,12 @@ interface Slot {
   /** How a queue move after its run that never went through left it (`settle`). */
   unmoved?: Unmoved | null;
   /** Why it went back to queued, for its end comment. */
-  released?: "stopped" | "notStarted" | "failed" | "failedStopping";
+  released?:
+    | "stopped"
+    | "notStarted"
+    | "failed"
+    | "failedStopping"
+    | "privateCapture";
   /** How its pull request step ended; "failed" when the step itself threw. */
   pr?: PullRequestOutcome | "failed";
   done?: Promise<void>;
@@ -486,7 +508,9 @@ function endWhy(slot: Slot): string {
     return `${SHIFT_ENDINGS.submitted} No pull request was opened: ${why}.`;
   }
   if (entry.outcome === "released")
-    return SHIFT_ENDINGS[slot.released ?? "stopped"];
+    return slot.released === "privateCapture"
+      ? PRIVATE_CAPTURE_FAILURE
+      : SHIFT_ENDINGS[slot.released ?? "stopped"];
   if (entry.outcome === "halted") return SHIFT_ENDINGS.halted;
   if (entry.outcome === "left") {
     if (slot.stopKind === "left" && slot.takenBy !== undefined)
@@ -639,9 +663,15 @@ export async function runShift(
     (runId: string) =>
     (event: LedgerEventInput): AppendResult =>
       append({ ...event, runId });
+  let privateCaptureFailed = false;
   const queueFor = (runId: string) =>
     createQueue({
-      beforeStart: deps.beforeStart,
+      beforeStart: async (id, shown) => {
+        if (privateCaptureFailed) return false;
+        if (deps.beforeStart && !(await deps.beforeStart(id, shown)))
+          return false;
+        return !privateCaptureFailed;
+      },
       workspace,
       runBd: deps.runBd,
       appendEvent: appendFor(runId),
@@ -669,6 +699,13 @@ export async function runShift(
     const resume = wake;
     wake = null;
     resume?.();
+  };
+  const stopForPrivateCapture = () => {
+    privateCaptureFailed = true;
+    record.error = PRIVATE_CAPTURE_FAILURE;
+    for (const active of slots.values())
+      active.controller.abort(PRIVATE_CAPTURE_FAILURE);
+    wakeUp();
   };
   deps.signal?.addEventListener("abort", wakeUp, { once: true });
 
@@ -909,6 +946,24 @@ export async function runShift(
     timeoutMs: number,
   ): Promise<Attempt> {
     const { entry } = slot;
+    let privateCapture: PrivateExecCaptureFactory | undefined;
+    try {
+      privateCapture = deps.captureAttempt?.({
+        shiftId,
+        beadId: entry.beadId,
+        runId: entry.runId,
+        attempt: entry.attempts,
+      });
+    } catch {
+      return {
+        ok: false,
+        privateCaptureFailed: true,
+        notStarted: false,
+        timedOut: false,
+        stopped: false,
+        error: PRIVATE_CAPTURE_FAILURE,
+      };
+    }
     const out = await runExec(
       [
         "--bead",
@@ -930,6 +985,7 @@ export async function runShift(
         ledgerPath: deps.ledgerPath,
         signal: slot.controller.signal,
         ...(deps.exec ?? {}),
+        ...(privateCapture ? { privateCapture } : {}),
       },
     );
     const data =
@@ -939,8 +995,9 @@ export async function runShift(
     const usage = data?.["usage"] as { costUsd?: unknown } | null | undefined;
     const cost = usage?.costUsd;
     return {
-      ok: out.code === 0,
-      notStarted: data === null,
+      ok: out.code === 0 && !out.privateCaptureFailed,
+      ...(out.privateCaptureFailed ? { privateCaptureFailed: true } : {}),
+      notStarted: data === null && !out.privateCaptureFailed,
       timedOut: data?.["timedOut"] === true,
       stopped:
         data?.["stopped"] === true ||
@@ -995,6 +1052,12 @@ export async function runShift(
           record.spentUsd += run.costUsd;
           entry.costUsd = (entry.costUsd ?? 0) + run.costUsd;
         } else if (!run.notStarted) record.unpriced++;
+        if (run.privateCaptureFailed) {
+          note(entry, PRIVATE_CAPTURE_FAILURE);
+          slot.released = "privateCapture";
+          stopForPrivateCapture();
+          break;
+        }
         if (run.ok) {
           slot.unmoved = await settle(entry, "submit", "review");
           if (entry.outcome === "review") await pullRequest(slot);
@@ -1105,7 +1168,7 @@ export async function runShift(
     };
     // A stop that lands while the bead is admitted (each await below) admits
     // nothing further: what was taken is given back, and no run starts.
-    const stopped = () => deps.signal?.aborted === true;
+    const stopped = () => deps.signal?.aborted === true || privateCaptureFailed;
     const STOPPED_BEFORE = "the shift was stopped before its run started";
     if (stopped()) return giveBack(STOPPED_BEFORE);
 
@@ -1249,6 +1312,10 @@ export async function runShift(
   let lastWatch = clock();
   try {
     while (reason === null) {
+      if (privateCaptureFailed) {
+        reason = "halted";
+        break;
+      }
       if (deps.signal?.aborted || stopRequested(deps.shiftsDir, shiftId)) {
         reason = "operator";
         break;
@@ -1271,6 +1338,7 @@ export async function runShift(
         admitted < options.maxBeads &&
         record.spentUsd < options.maxUsd &&
         clock() < deadline &&
+        !privateCaptureFailed &&
         !deps.signal?.aborted
       ) {
         changed = false;
@@ -1306,10 +1374,14 @@ export async function runShift(
           break;
         }
         // Stopped while the host was sampled or the queue read: start nothing.
-        if (deps.signal?.aborted) break;
+        if (deps.signal?.aborted || privateCaptureFailed) break;
         await admit(next);
       }
       if (reason !== null) break;
+      if (privateCaptureFailed) {
+        reason = "halted";
+        break;
+      }
       if (deps.signal?.aborted) {
         reason = "operator";
         break;

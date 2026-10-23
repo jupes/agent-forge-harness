@@ -582,6 +582,229 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     });
   });
 
+  test("a fatal private transcript result stops the shift before repair or another claim", async () => {
+    const r = rig([queued("t-a-private"), queued("t-z-next")], () => ({
+      after: 10,
+      exit: 0,
+    }));
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          async spawn(request) {
+            const handle = await r.fake.adapter.spawn(request);
+            return {
+              ...handle,
+              done: handle.done.then((result) => ({
+                ...result,
+                privateCaptureFailed: true,
+              })),
+            };
+          },
+        },
+      },
+    };
+    const done = await shift(r, { concurrency: 1, repairs: 2 });
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-a-private"]);
+    expect(r.labels("t-a-private")).toEqual(["queue:queued"]);
+    expect(r.labels("t-z-next")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(r.gh).toHaveLength(0);
+    expect(done.record.error).toContain(
+      "private provider transcript could not be verified",
+    );
+    expect(done.record.beads[0]).toMatchObject({
+      attempts: 1,
+      outcome: "released",
+    });
+  });
+
+  test("private failure stops every active slot and awaits canonical releases before halting", async () => {
+    const r = rig([queued("t-a"), queued("t-b"), queued("t-z")], () => "hang");
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          async spawn(request) {
+            const handle = await r.fake.adapter.spawn(request);
+            return {
+              ...handle,
+              done: handle.done.then((result) =>
+                request.beadId === "t-a"
+                  ? { ...result, privateCaptureFailed: true }
+                  : result,
+              ),
+            };
+          },
+        },
+      },
+    };
+    const running = shift(r, { concurrency: 2, repairs: 3 });
+    await until(() => r.fake.runs.length === 2);
+    r.fake.endRun(0, 0);
+    const done = await running;
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-a", "t-b"]);
+    expect(r.fake.runs.every((run) => run.endedAt !== undefined)).toBe(true);
+    for (const id of ["t-a", "t-b", "t-z"])
+      expect(r.labels(id)).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(r.gh).toHaveLength(0);
+    expect(done.record.beads.map((row) => [row.attempts, row.outcome])).toEqual(
+      [
+        [1, "released"],
+        [1, "released"],
+      ],
+    );
+  });
+
+  test("the trusted capture factory receives each actual immutable run and repair number", async () => {
+    const r = rig([queued("t-a")], (_id, attempt) => ({
+      after: 10,
+      exit: attempt === 1 ? 1 : 0,
+    }));
+    const sources: Array<{
+      shiftId: string;
+      beadId: string;
+      runId: string;
+      attempt: number;
+    }> = [];
+    const factory = {
+      prepare: async () => {
+        throw Error("Fake adapter must not execute a real capture");
+      },
+    };
+    r.deps.captureAttempt = (source) => {
+      sources.push({ ...source });
+      return factory;
+    };
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          spawn(request) {
+            expect(request.privateCapture).toBe(factory);
+            return r.fake.adapter.spawn(request);
+          },
+        },
+      },
+    };
+    const done = await shift(r, { repairs: 1 });
+    const runId = done.record.beads[0]?.runId;
+    if (!runId) throw Error("The actual shift run was not saved.");
+    expect(sources).toEqual(
+      [1, 2].map((attempt) => ({
+        shiftId: done.shiftId,
+        beadId: "t-a",
+        runId,
+        attempt,
+      })),
+    );
+    expect(r.fake.runs).toHaveLength(2);
+    expect(r.labels("t-a")).toEqual(["queue:review"]);
+  });
+
+  test("a refused real private preparation also halts before repair or another admission", async () => {
+    const r = rig([queued("t-a"), queued("t-b")]);
+    let attempts = 0;
+    r.deps.captureAttempt = () => ({
+      prepare: async () => {
+        attempts++;
+        throw Error("Private storage detail must stay private");
+      },
+    });
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: { claude: claudeAdapter },
+      command: [
+        process.execPath,
+        FAKE,
+        "--fake-provider",
+        "claude",
+        "--fake-mode",
+        "ok",
+      ],
+    };
+    const done = await shift(r, { concurrency: 1, repairs: 3 });
+    expect(done.reason).toBe("halted");
+    expect(attempts).toBe(1);
+    expect(done.record.beads).toHaveLength(1);
+    expect(done.record.beads[0]).toMatchObject({
+      attempts: 1,
+      outcome: "released",
+    });
+    expect(r.reservations()).toBe(0);
+    expect(r.labels("t-b")).toEqual(["queue:queued"]);
+    expect(JSON.stringify(r.events())).not.toContain("Private storage detail");
+    expect(r.gh).toHaveLength(0);
+  });
+
+  test("a scope check held inside queue ownership cannot approve a late claim after private failure", async () => {
+    const controller = new AbortController();
+    const r = rig([queued("t-a"), queued("t-b")], () => "hang", {
+      signal: controller.signal,
+    });
+    let held = false,
+      release = () => {};
+    const pendingScope = new Promise<void>((done) => {
+      release = done;
+    });
+    r.deps.beforeStart = async (id) => {
+      if (id === "t-b") {
+        held = true;
+        await pendingScope;
+      }
+      return true;
+    };
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          async spawn(request) {
+            const handle = await r.fake.adapter.spawn(request);
+            return {
+              ...handle,
+              done: handle.done.then((result) => ({
+                ...result,
+                privateCaptureFailed: true,
+              })),
+            };
+          },
+        },
+      },
+    };
+    const running = shift(r, { concurrency: 2, repairs: 2 });
+    try {
+      await until(() => held);
+      r.fake.endRun(0, 0);
+      await until(() => r.fake.runs[0]?.endedAt !== undefined);
+      await Bun.sleep(0);
+      release();
+      const done = await running;
+      expect(done.reason).toBe("halted");
+      expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-a"]);
+      expect(r.labels("t-b")).toEqual(["queue:queued"]);
+      expect(
+        r
+          .events()
+          .filter(
+            (event) =>
+              event.beadId === "t-b" && event.kind === "bead.transitioned",
+          ),
+      ).toHaveLength(0);
+      expect(r.reservations()).toBe(0);
+    } finally {
+      release();
+      controller.abort("fixture cleanup");
+      await running;
+    }
+  });
+
   test("a run that fails and then succeeds on repair is submitted for review", async () => {
     const r = rig([queued("t-flaky")], (_id, attempt) => ({
       after: 10,
