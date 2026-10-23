@@ -1,6 +1,6 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   readComments,
   readState,
@@ -10,6 +10,7 @@ import {
 } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
+import { standInCalls } from "../e2e/stand-in";
 import { alpha, beta, seedProjects } from "./project-fixtures";
 
 const conversation = (id: string) =>
@@ -201,6 +202,40 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
   page,
 }) => {
   await propose(page);
+  let approvalPosts = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/keeper/proposals/approve`
+    )
+      approvalPosts++;
+  });
+  const epicWrites = () =>
+    standInCalls().filter(
+      (args) => args[0] === "update" && args.at(-1) === "alpha-epic",
+    ).length;
+  const writesBefore = epicWrites();
+  const approveManage = async (card: Locator, applied: () => boolean) => {
+    const before = approvalPosts;
+    // A background read can disable the button between the enabled check and
+    // the click. Repeat only that unsent gesture: any POST or applied effect
+    // permanently closes the retry boundary for this reviewed action.
+    await expect(async () => {
+      if (applied()) return;
+      if (approvalPosts === before) {
+        const button = card.getByRole("button", {
+          name: "Approve",
+          exact: true,
+        });
+        await expect(button).toBeEnabled({ timeout: 250 });
+        await button.click({ timeout: 250 });
+      }
+      expect(applied()).toBe(true);
+    }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
+    await expect(card).toContainText("Done");
+    expect(approvalPosts).toBe(before + 1);
+  };
   const approval = cards(page).getByRole("article", {
     name: "Approve scoped beads",
     exact: true,
@@ -239,11 +274,12 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
     name: "Manage scoped work",
     exact: true,
   });
-  await expect(
-    manage.getByRole("button", { name: "Approve", exact: true }),
-  ).toBeEnabled();
-  await manage.getByRole("button", { name: "Approve", exact: true }).click();
-  await expect(manage).toContainText("Done");
+  await approveManage(
+    manage,
+    () =>
+      readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata?.queue_state ===
+      "paused",
+  );
   expect(
     readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata?.queue_state,
   ).toBe("paused");
@@ -271,8 +307,12 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
       await next
         .getByRole("textbox", { name: "Smith", exact: true })
         .fill("claude-journeyman");
-    await next.getByRole("button", { name: "Approve", exact: true }).click();
-    await expect(next).toContainText("Done");
+    await approveManage(next, () => {
+      const metadata = readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata;
+      return operation === "reassign"
+        ? metadata?.smith === "claude-journeyman"
+        : metadata?.queue_state === expected;
+    });
     expect(
       readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata?.queue_state,
     ).toBe(expected);
@@ -281,6 +321,8 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
         "claude-journeyman",
       );
   }
+  expect(approvalPosts).toBe(5);
+  expect(epicWrites()).toBe(writesBefore + 4);
 });
 
 test("a pending action-card refresh stays in keyboard order and cannot queue duplicate reads", async ({
