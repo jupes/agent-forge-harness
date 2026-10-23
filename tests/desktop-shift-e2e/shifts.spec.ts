@@ -6,7 +6,13 @@ import { PROJECT_SHIFT_IDENTITIES } from "../../apps/desktop/src/project-shift-i
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
 import { projectShiftStartSchema } from "../../scripts/shifts/protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
-import { fixtureCalls, fixtureMode, resetTracker, STATE } from "./environment";
+import {
+  fixtureCalls,
+  fixtureMode,
+  holdStartup,
+  resetTracker,
+  STATE,
+} from "./environment";
 
 const route = `/index.html#/desktop/project/${FIXTURE_PROJECT_ID}/workbench`;
 const panel = (page: Page) =>
@@ -269,4 +275,116 @@ test("whole-shift Stop retains keyboard focus across a background read and waits
   await expect(
     row.getByRole("button", { name: "Stop shift", exact: true }),
   ).toHaveCount(0);
+});
+
+test("Starting Stop settles the held preflight tree before any record or provider and survives a lost reply and reload", async ({
+  page,
+}) => {
+  const before = fixtureCalls().length,
+    providerFile = join(STATE, "claude.json"),
+    providerBefore = existsSync(providerFile)
+      ? readFileSync(providerFile, "utf8")
+      : null;
+  holdStartup(true);
+  try {
+    await openSettled(page, route);
+    await review(page);
+    let starts = 0,
+      stops = 0;
+    page.on("request", (request) => {
+      if (request.method() !== "POST") return;
+      const path = new URL(request.url()).pathname;
+      if (path === `/__agent-forge/projects/${FIXTURE_PROJECT_ID}/shifts`)
+        starts++;
+      if (path.endsWith("/stop")) stops++;
+    });
+    await dialog(page)
+      .getByRole("button", { name: "Start reviewed shift", exact: true })
+      .click();
+    const row = panel(page).locator("[data-shift]").last();
+    await expect(row).toHaveAttribute("data-phase", "starting");
+    const treeFile = join(STATE, "startup-tree.json"),
+      tree = () => {
+        try {
+          return z
+            .object({
+              pid: z.number().int().positive(),
+              childPid: z.number().int().positive(),
+            })
+            .parse(JSON.parse(readFileSync(treeFile, "utf8")));
+        } catch {
+          return null;
+        }
+      };
+    await expect.poll(tree).not.toBeNull();
+    const held = tree();
+    if (!held) throw Error("Missing actual held preflight identity");
+    await page.route(
+      `**/__agent-forge/projects/${FIXTURE_PROJECT_ID}/shifts/*/stop`,
+      async (intercept) => {
+        const response = await intercept.fetch();
+        expect(response.status()).toBe(202);
+        await intercept.abort("failed");
+      },
+    );
+    const stop = row.getByRole("button", { name: "Stop shift", exact: true });
+    await expect(stop).toBeVisible();
+    await stop.focus();
+    await expect(stop).toBeFocused();
+    const lost = page.waitForEvent("requestfailed", {
+      predicate: (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname.endsWith("/stop"),
+    });
+    await page.keyboard.press("Enter");
+    await expect.poll(() => stops).toBe(1);
+    await lost;
+    const alive = (pid: number) => {
+      try {
+        if (
+          process.platform === "linux" &&
+          /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+        )
+          return false;
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (const pid of [held.pid, held.childPid])
+      await expect.poll(() => alive(pid)).toBe(false);
+    await page.unroute(
+      `**/__agent-forge/projects/${FIXTURE_PROJECT_ID}/shifts/*/stop`,
+    );
+    await reloadSettled(page);
+    const restored = panel(page).locator("[data-shift]").last();
+    await expect(restored).toHaveAttribute("data-phase", "stopped");
+    await expect(restored).toContainText(
+      "original held tree exited before a shift record",
+    );
+    await expect(restored).toContainText("No correlated actual shift record");
+    await expect(restored.getByText("Started", { exact: true })).toHaveCount(0);
+    expect(starts).toBe(1);
+    expect(stops).toBe(1);
+    expect(
+      existsSync(providerFile) ? readFileSync(providerFile, "utf8") : null,
+    ).toBe(providerBefore);
+    expect(
+      fixtureCalls()
+        .slice(before)
+        .filter(
+          (row) =>
+            row &&
+            typeof row === "object" &&
+            "tool" in row &&
+            row.tool === "bd" &&
+            "args" in row &&
+            Array.isArray(row.args) &&
+            ["update", "comments"].includes(String(row.args[0])),
+        ),
+    ).toEqual([]);
+  } finally {
+    holdStartup(false);
+  }
 });

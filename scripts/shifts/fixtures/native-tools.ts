@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
@@ -150,14 +151,44 @@ export async function runAttendedNativeToolFixture(
   const treeFile = join(state, "trees.json"),
     known = trees.parse(json(treeFile));
   if (tool === "git") {
+    if (args.length === 1 && args[0] === "--startup-held-helper") {
+      await Bun.sleep(60_000);
+      throw Error("Startup helper exceeded its inert fixture bound");
+    }
     if (
       args[0] === "fetch" &&
       args[1] === "--no-tags" &&
       args[2] === "origin" &&
       args[3] === "+refs/heads/main:refs/remotes/origin/main" &&
       args.length === 4
-    )
+    ) {
+      const held = join(state, "hold-startup");
+      if (existsSync(held)) {
+        const helper = Bun.spawn([process.execPath, "--startup-held-helper"], {
+          cwd: root,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+        const file = join(state, "startup-tree.json"),
+          draft = `${file}.draft`;
+        writeFileSync(
+          draft,
+          JSON.stringify({ pid: process.pid, childPid: helper.pid }),
+        );
+        renameSync(draft, file);
+        try {
+          const deadline = Date.now() + 60_000;
+          while (existsSync(held) && Date.now() < deadline) await Bun.sleep(10);
+          if (existsSync(held) || existsSync(join(state, "abandon-startup")))
+            process.exitCode = 1;
+        } finally {
+          helper.kill();
+          await helper.exited;
+        }
+      }
       return;
+    }
     if (args[0] === "rev-parse") {
       if (args[1] === "--show-toplevel" && args.length === 2) {
         console.log(cwd);
