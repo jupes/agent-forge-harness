@@ -30,6 +30,42 @@ export interface ProjectShiftIntent {
   attemptedAt: string | null;
 }
 
+export interface ProjectShiftObservation {
+  shiftId: string;
+  requestId: string;
+  phase:
+    | "reserved"
+    | "unknown"
+    | "starting"
+    | "failed"
+    | "running"
+    | "stopping"
+    | "stopped"
+    | "needs-recovery";
+  reason: string | null;
+  actual: {
+    startedAt: string;
+    endedAt: string | null;
+    deadline: string;
+    concurrency: number;
+    forMs: number;
+    maxBeads: number;
+    maxUsd: number;
+    repairs: number;
+    throttle: number | null;
+    base: string;
+    epic: string | null;
+    smith: string | null;
+    runTimeoutMs: number | null;
+    spentUsd: number;
+    unpriced: number;
+    admitted: number | null;
+    reviewed: number;
+    running: number;
+    halted: number;
+  } | null;
+}
+
 /** A protected projection of defaults and choices, never execution authority. */
 export interface ProjectShiftOptions {
   projectId: string;

@@ -433,6 +433,15 @@ async function until(ready: () => boolean, ms = 4000): Promise<void> {
 }
 
 describe("forge:shift — the loop, on a fake adapter", () => {
+  test("the actual record retains an explicit per-run timeout and admission count for read-only project observations", async () => {
+    const r = rig([queued("t-1"), queued("t-2")]);
+    const done = await shift(r, { maxBeads: 1, runTimeoutMs: 1_200_000 });
+    expect(done.record.options.runTimeoutMs).toBe(1_200_000);
+    expect(done.record.admitted).toBe(1);
+    const saved = readShiftRecord(r.deps.shiftsDir, done.record.shiftId);
+    expect(saved?.options.runTimeoutMs).toBe(1_200_000);
+    expect(saved?.admitted).toBe(1);
+  });
   test("runs at most --concurrency beads at once, each in a worktree of its own holding a reservation of its own, and ends drained when nothing is left", async () => {
     const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], () => ({
       after: 500,

@@ -581,10 +581,14 @@ export async function runShift(
       base: options.base,
       ...(options.epic !== undefined ? { epic: options.epic } : {}),
       ...(options.smith !== undefined ? { smith: options.smith } : {}),
+      ...(options.runTimeoutMs !== undefined
+        ? { runTimeoutMs: options.runTimeoutMs }
+        : {}),
     },
     baseSha,
     spentUsd: 0,
     unpriced: 0,
+    admitted: 0,
     beads: [],
   };
   /** The record is a report: one that cannot be written stops nothing once the shift runs. */
@@ -1162,6 +1166,7 @@ export async function runShift(
     entry.branch = branch;
     entry.outcome = "running";
     admitted++;
+    record.admitted = admitted;
     await comment(
       entry,
       "started",

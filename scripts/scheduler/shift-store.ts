@@ -161,6 +161,8 @@ export interface ShiftOptionsRecord {
   base?: string;
   epic?: string;
   smith?: string;
+  /** Explicit per-run limit; absent means the shift's remaining time. */
+  runTimeoutMs?: number;
 }
 
 export interface ShiftRecord {
@@ -184,6 +186,8 @@ export interface ShiftRecord {
   spentUsd: number;
   /** Runs that reported no cost (a provider that does not report one). */
   unpriced: number;
+  /** Admissions that reached a worktree; absent on older records, never inferred from outcomes. */
+  admitted?: number;
   beads: ShiftBeadRecord[];
 }
 
