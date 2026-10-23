@@ -24,6 +24,14 @@ const route = `/index.html#/desktop/project/${FIXTURE_PROJECT_ID}/workbench`,
   endpoint = `**${path}`;
 const panel = (page: Page) =>
   page.getByRole("region", { name: "Bounded project shifts", exact: true });
+async function minimumDesktopFits(page: Page) {
+  expect(
+    await panel(page).evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.left >= 0 && bounds.right <= window.innerWidth;
+    }),
+  ).toBe(true);
+}
 const reasonLabels: Record<ShiftStopReason, string> = {
   elapsed: "Duration limit reached",
   operator: "Stopped by operator",
@@ -180,6 +188,7 @@ test("held authenticated reads announce loading before verified empty and retain
     });
     await page.setViewportSize({ width: 1100, height: 700 });
     await status.scrollIntoViewIfNeeded();
+    await minimumDesktopFits(page);
     await page.screenshot({
       path: "apps/desktop/docs/screenshots/project-shift-loading-minimum.png",
       fullPage: true,
@@ -340,6 +349,7 @@ test("protected metadata renders Throttled and every canonical stopped reason wi
     await throttled
       .getByText("Throttled · waiting for host capacity", { exact: true })
       .scrollIntoViewIfNeeded();
+    await minimumDesktopFits(page);
     await page.screenshot({
       path: "apps/desktop/docs/screenshots/project-shift-states-minimum.png",
       fullPage: true,
