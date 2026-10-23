@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetSpawnClock } from "./spawn-clock";
@@ -7,9 +8,15 @@ import { resetSpawnClock } from "./spawn-clock";
 const FIXTURE = join(import.meta.dir, "fixtures", "spawn-clock-compiled.ts");
 
 const scratch = mkdtempSync(join(tmpdir(), "spawn-clock-"));
-afterAll(() => {
+afterAll(async () => {
   // The executable can stay locked for a moment on Windows after it exits.
-  rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
+  // Yield between bounded retries so process handles and scanner locks can close.
+  await rm(scratch, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 });
 
 describe("resetSpawnClock", () => {
