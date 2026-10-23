@@ -164,6 +164,18 @@ test("a lost session-list Stop is held and retried against its original turn eve
     JSON.stringify("hang"),
   );
   const stops: string[] = [];
+  // The app-root observation cache now has its own protected source. Fail it
+  // before the first read while keeping the independent Keeper controls live.
+  await page.route(`**/projects/${alpha.id}/session-observations`, (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        ok: false,
+        data: null,
+        error: "Synthetic session observations unavailable",
+      },
+    }),
+  );
   await page.route("**/keeper/stop", (route) => {
     stops.push(route.request().postData() ?? "");
     return stops.length === 1 ? route.abort("failed") : route.continue();
@@ -191,7 +203,9 @@ test("a lost session-list Stop is held and retried against its original turn eve
     exact: true,
   });
   await expect(
-    page.getByText("Sessions unavailable", { exact: true }),
+    page
+      .locator(".af-project-sessions")
+      .getByText("Sessions unavailable", { exact: true }),
   ).toBeVisible();
   await owned.getByRole("checkbox").check();
   const stop = owned.getByRole("button", {

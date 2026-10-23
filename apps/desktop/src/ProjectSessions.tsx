@@ -2,48 +2,54 @@ import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
-import { useOperatorRead } from "../../../docs/js/use-stream";
 import type { SessionSummary } from "../../../types/hearth";
-import type { ProjectOverview } from "../../../types/project-overview";
 import { ProviderMonogram } from "./DesktopFrame";
 import { KeeperSessionControl } from "./KeeperSessionControl";
 import type { KeeperClient } from "./keeper-client";
 import { desktopHref } from "./navigation";
-import { PROJECT_READ_KINDS } from "./ProjectOverview";
-import {
-  SESSION_GROUPS,
-  type SessionFilters,
-  sessionRows,
-} from "./sessions-model";
+import type { SessionObservationRow } from "./session-observations";
+import type { SessionObservationsClient } from "./session-observations-client";
+import type { SessionFilters } from "./sessions-model";
+
+const GROUPS = [
+  { id: "unverified", label: "Status unavailable" },
+  { id: "observed", label: "Observed" },
+  { id: "ended-today", label: "Ended today" },
+  { id: "older", label: "Older" },
+] as const;
 
 export function ProjectSessions({
   projectId,
   selectedId,
   keeper,
   writesAllowed,
+  client,
+  representedIds,
 }: {
   projectId: string;
   selectedId: string | null;
   keeper: KeeperClient;
   writesAllowed: boolean;
+  client: SessionObservationsClient;
+  representedIds: readonly string[];
 }): JSX.Element {
-  const read = useOperatorRead<ProjectOverview>(
-    `/projects/${encodeURIComponent(projectId)}/overview`,
-    PROJECT_READ_KINDS,
-    true,
-  );
+  const read = client.project(projectId);
+  const allRows = client
+    .rows(projectId)
+    .filter((row) => !representedIds.includes(row.id));
   const [filters, setFilters] = useState<SessionFilters>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   useEffect(() => {
-    const ids = new Set(
-      read.data?.summary.sessions.map((session) => session.sessionId),
-    );
+    const ids = new Set(allRows.map((row) => row.id));
     setSelected((previous) => {
       const next = new Set([...previous].filter((id) => ids.has(id)));
       return next.size === previous.size ? previous : next;
     });
-  }, [read.data?.summary.sessions]);
-  const data = read.data?.summary.projectId === projectId ? read.data : null;
+  }, [read.data, representedIds.join("|")]);
+  const data = read.data;
+  const reload = () => {
+    if (!read.loading) client.refreshIndex();
+  };
   const controls = (
     <KeeperSessionControl
       projectId={projectId}
@@ -58,14 +64,43 @@ export function ProjectSessions({
         {controls}
         <EmptyState
           title={read.error ? "Sessions unavailable" : "Loading sessions…"}
-          hint={read.error ?? "Reading this project's observations."}
+          hint={read.error || "Reading this project's observations."}
         >
-          <Button onClick={read.reload}>Refresh sessions</Button>
+          <Button aria-disabled={read.loading} onClick={reload}>
+            Refresh sessions
+          </Button>
         </EmptyState>
       </div>
     );
-  const sessions = data.summary.sessions;
-  const rows = sessionRows(sessions, filters, data.summary.asOf);
+  const sessions = allRows
+    .map((row) => row.observation)
+    .filter((session) => session !== null);
+  const query = filters.search?.trim().toLocaleLowerCase() ?? "";
+  const rows = allRows.filter(
+    (row) =>
+      (!filters.provider || row.provider === filters.provider) &&
+      (!filters.kind || row.observation?.kind === filters.kind) &&
+      (!filters.bead ||
+        (row.owner?.record.beadId ?? row.observation?.beadId) ===
+          filters.bead) &&
+      (!filters.smith ||
+        (row.owner?.record.smith ?? row.observation?.executor?.smith) ===
+          filters.smith) &&
+      (!filters.group || row.status === filters.group) &&
+      (!query ||
+        [
+          row.id,
+          row.title,
+          row.provider,
+          row.owner?.record.requestedModel,
+          row.observation?.executor?.model,
+          row.observation?.worktree,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(query)),
+  );
   const options = (key: "provider" | "kind" | "bead" | "smith") =>
     [
       ...new Set(
@@ -130,14 +165,16 @@ export function ProjectSessions({
             }
           >
             <option value="">All reported states</option>
-            {SESSION_GROUPS.map((group) => (
+            {GROUPS.map((group) => (
               <option value={group.id} key={group.id}>
                 {group.label}
               </option>
             ))}
           </select>
         </label>
-        <Button onClick={read.reload}>Refresh sessions</Button>
+        <Button aria-disabled={read.loading} onClick={reload}>
+          Refresh sessions
+        </Button>
       </div>
       {read.error && (
         <p role="status">
@@ -145,13 +182,12 @@ export function ProjectSessions({
         </p>
       )}
       <p class="af-overview-muted">
-        Ledger observations as of {new Date(data.summary.asOf).toLocaleString()}
-        {data.summary.sessionsComplete ? "" : " · partial or unavailable"}.
-        Running, idle, permission and per-session usage are not reported by this
-        source.
+        Ledger observations as of {new Date(data.asOf).toLocaleString()}
+        {data.observationsComplete ? "" : " · partial or unavailable"}. Running,
+        idle, permission and per-session usage are not reported by this source.
       </p>
       {controls}
-      {!sessions.length ? (
+      {!allRows.length ? (
         <EmptyState
           title="No scoped sessions observed"
           hint="Only sessions explicitly bound to this project's beads appear here."
@@ -162,8 +198,19 @@ export function ProjectSessions({
           hint="Change the filters or search."
         />
       ) : null}
-      {SESSION_GROUPS.map((group) => {
-        const grouped = rows.filter((row) => row.group === group.id);
+      {!data.ownership.available && (
+        <p role="status">
+          Ownership unavailable: {data.ownership.reason} Previously verified
+          ownership is kept.
+        </p>
+      )}
+      {data.problems.map((problem) => (
+        <p key={problem} role="status">
+          {problem}
+        </p>
+      ))}
+      {GROUPS.map((group) => {
+        const grouped = rows.filter((row) => row.status === group.id);
         return grouped.length ? (
           <section key={group.id} aria-label={group.label}>
             <h2>
@@ -183,70 +230,96 @@ export function ProjectSessions({
                   </tr>
                 </thead>
                 <tbody>
-                  {grouped.map(({ session, depth }) => (
-                    <tr
-                      key={session.sessionId}
-                      aria-selected={selectedId === session.sessionId}
-                    >
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${session.sessionId}`}
-                          checked={selected.has(session.sessionId)}
-                          onChange={(event) => {
-                            const next = new Set(selected);
-                            if (event.currentTarget.checked)
-                              next.add(session.sessionId);
-                            else next.delete(session.sessionId);
-                            setSelected(next);
+                  {grouped.map((row) => {
+                    const session = row.observation,
+                      record = row.owner?.record;
+                    return (
+                      <tr key={row.id} aria-selected={selectedId === row.id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${row.id}`}
+                            checked={selected.has(row.id)}
+                            onChange={(event) => {
+                              const next = new Set(selected);
+                              if (event.currentTarget.checked) next.add(row.id);
+                              else next.delete(row.id);
+                              setSelected(next);
+                            }}
+                          />
+                        </td>
+                        <td
+                          style={{
+                            paddingInlineStart: `${8 + row.depth * 12}px`,
                           }}
-                        />
-                      </td>
-                      <td style={{ paddingInlineStart: `${8 + depth * 12}px` }}>
-                        <ProviderMonogram
-                          provider={
-                            session.executor?.provider ??
-                            "Provider not reported"
-                          }
-                        />
-                        <a href={href(session.sessionId)}>
-                          {session.sessionId}
-                        </a>
-                        {session.parentSessionId && (
-                          <small>Parent: {session.parentSessionId}</small>
-                        )}
-                        <small>Title not reported</small>
-                      </td>
-                      <td>
-                        {session.executor?.model ?? "Model —"}
-                        <small>
-                          Effort: {session.executor?.effort ?? "—"} · Smith:{" "}
-                          {session.executor?.smith ?? "—"}
-                        </small>
-                      </td>
-                      <td>
-                        {session.kind ?? "Kind —"}
-                        <small>{session.beadId ?? "Bead —"}</small>
-                      </td>
-                      <td>
-                        {session.worktree ?? "Worktree —"}
-                        <small>Branch — not reported</small>
-                      </td>
-                      <td>
-                        {session.endedAt ? "Ended" : "Observed"}
-                        <small>
-                          <time dateTime={session.lastEventAt}>
-                            {new Date(session.lastEventAt).toLocaleString()}
-                          </time>
-                        </small>
-                      </td>
-                      <td>
-                        <Button href={href(session.sessionId)}>
-                          Open {session.sessionId}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
+                        >
+                          <ProviderMonogram provider={row.provider} />
+                          <a href={href(row.id)}>{row.id}</a>
+                          {session?.parentSessionId && (
+                            <small>Parent: {session.parentSessionId}</small>
+                          )}
+                          <small>
+                            {row.ownership === "owned"
+                              ? row.title
+                              : "Title not reported"}
+                          </small>
+                        </td>
+                        <td>
+                          {record?.requestedModel ??
+                            session?.executor?.model ??
+                            "Model —"}
+                          <small>
+                            Effort:{" "}
+                            {record?.requestedEffort ??
+                              session?.executor?.effort ??
+                              "—"}{" "}
+                            · Smith:{" "}
+                            {record?.smith ?? session?.executor?.smith ?? "—"}
+                          </small>
+                        </td>
+                        <td>
+                          {row.owner?.origin
+                            ? "Shift"
+                            : (session?.kind ?? "Kind —")}
+                          <small>
+                            {record?.beadId ?? session?.beadId ?? "Bead —"}
+                          </small>
+                        </td>
+                        <td>
+                          {record?.worktree ??
+                            session?.worktree ??
+                            "Worktree —"}
+                          <small>Branch — not reported</small>
+                        </td>
+                        <td>
+                          {row.ownership === "owned"
+                            ? "App-owned · Status unavailable"
+                            : row.ownership === "unavailable"
+                              ? "Ownership unavailable"
+                              : session?.endedAt
+                                ? "Ended"
+                                : "Observed"}
+                          <small>{row.reason}</small>
+                          <small>
+                            <time
+                              dateTime={
+                                session?.lastEventAt ?? record?.createdAt
+                              }
+                            >
+                              {new Date(
+                                session?.lastEventAt ??
+                                  record?.createdAt ??
+                                  data.asOf,
+                              ).toLocaleString()}
+                            </time>
+                          </small>
+                        </td>
+                        <td>
+                          <Button href={href(row.id)}>Open {row.id}</Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -261,11 +334,37 @@ export function SessionInspector({
   projectId,
   session,
   onAskKeeper,
+  row,
 }: {
   projectId: string;
   session: SessionSummary | undefined;
   onAskKeeper?: () => void;
+  row?: SessionObservationRow | undefined;
 }): JSX.Element {
+  if (!session && row?.owner)
+    return (
+      <section aria-label="Selected session">
+        <h3>{row.id}</h3>
+        <p>App-owned history</p>
+        <p>
+          {row.provider} · {row.owner.record.requestedModel}
+        </p>
+        <p>{row.reason}</p>
+        <p>
+          No ledger observation is available. Current status is not reported by
+          this source.
+        </p>
+        <Button
+          href={desktopHref({
+            projectId,
+            destination: "sessions",
+            selection: { kind: "session", id: row.id },
+          })}
+        >
+          Open session
+        </Button>
+      </section>
+    );
   if (!session)
     return (
       <EmptyState
@@ -281,7 +380,16 @@ export function SessionInspector({
         {session.executor?.model ?? "Model —"}
       </p>
       <p>{session.beadId ?? "Bead —"}</p>
-      <p>{session.endedAt ? "Ended" : "Observed; running state unknown"}</p>
+      <p>
+        {row?.ownership === "owned"
+          ? "App-owned; status unavailable until opened"
+          : row?.ownership === "unavailable"
+            ? "Ownership unavailable"
+            : session.endedAt
+              ? "Ended"
+              : "Observed; running state unknown"}
+      </p>
+      {row && <p>{row.reason}</p>}
       <p>{session.worktree ?? "Worktree —"}</p>
       <p>Last event: {new Date(session.lastEventAt).toLocaleString()}</p>
       <Button

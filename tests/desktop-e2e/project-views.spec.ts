@@ -114,6 +114,9 @@ test("session list and sidebar share scope, filtering and inspector; switching r
 }) => {
   seedSessions();
   await page.goto(`/index.html#/desktop/project/${alpha.id}/sessions`);
+  // Other cases record legitimate observations in the same isolated ledger.
+  // Select this fixture's identities through the actual list filter.
+  await page.getByLabel("Find sessions").fill("e2e-alpha-");
   const observed = page.getByRole("region", { name: "Observed", exact: true });
   await expect(observed.getByRole("row")).toHaveCount(3);
   await expect(observed).toContainText("e2e-alpha-parent");
@@ -139,6 +142,7 @@ test("session list and sidebar share scope, filtering and inspector; switching r
   await page.screenshot({
     path: test.info().outputPath("project-sessions.png"),
   });
+  await page.getByRole("link", { name: "All sessions", exact: true }).click();
   await page.getByLabel("Find sessions").fill("no match");
   await expect(
     page.getByText("No matching sessions", { exact: true }),
@@ -154,6 +158,10 @@ test("session list and sidebar share scope, filtering and inspector; switching r
   await expect(
     page.getByText("Session unavailable in this project", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Session metadata details", exact: true }),
+  ).toContainText("not in this project's verified metadata");
+  await page.getByRole("link", { name: "All sessions", exact: true }).click();
   await expect(
     page.getByRole("region", { name: "Observed", exact: true }),
   ).toContainText("e2e-beta-own");

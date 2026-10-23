@@ -496,6 +496,11 @@ async function main(): Promise<void> {
       `document.querySelector('[aria-label="Selected session"]')?.textContent?.includes('native-observed-session')`,
       "The native session inspector did not select its scoped session.",
     );
+    await waitForPage(
+      socket,
+      `(() => { const detail=document.querySelector('[aria-label="Observed session details"]'); return detail?.textContent?.includes('The conversation is not captured here') && detail.textContent.includes('Session start recorded') && detail.textContent.includes('Not verified by this metadata source') && !detail.querySelector('textarea,input') && !Array.from(detail.querySelectorAll('button')).some(b => /^(Stop|Resume|Send)/.test(b.textContent?.trim() ?? '')); })()`,
+      "The native external detail did not preserve its read-only metadata boundary.",
+    );
     await verifyNativeSessionLibrary(
       socket,
       nativeSession,
@@ -705,6 +710,7 @@ async function main(): Promise<void> {
           keeperBriefTested: true,
           keeperProposalsTested: true,
           observedSessionIneligibleTested: true,
+          scopedObservedSessionDetailsTested: true,
           completeOwnedTranscriptDownloadTested: true,
           reversibleOwnedArchiveTested: true,
           focusOutline,
