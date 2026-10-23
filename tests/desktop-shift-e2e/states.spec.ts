@@ -108,8 +108,11 @@ test("held authenticated reads announce loading before verified empty and retain
     await held;
     await intercept.fulfill({ response: actual });
   });
+  // The new document deliberately has an unfinished GET. Keep the standard
+  // navigation witness, but release the read before awaiting its quiet period.
+  const opened = openSettled(page, route);
+  void opened.catch(() => {});
   try {
-    await openSettled(page, route);
     await expect.poll(() => actualRead).toBe(true);
     const status = panel(page).getByRole("status");
     await expect(status).toHaveText("Loading project shifts…");
@@ -147,6 +150,7 @@ test("held authenticated reads announce loading before verified empty and retain
       fullPage: true,
     });
     release?.();
+    await opened;
     await expect(
       panel(page).getByText("No project shifts reported.", { exact: true }),
     ).toBeVisible();
@@ -160,6 +164,7 @@ test("held authenticated reads announce loading before verified empty and retain
     expect(trackerWrites()).toEqual(writes);
   } finally {
     release?.();
+    await opened.catch(() => {});
   }
 });
 
