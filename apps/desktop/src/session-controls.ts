@@ -75,18 +75,16 @@ export function ownedSessionControls(input: {
     },
     fork: {
       available: false,
-      reason:
-        "No native fork or reviewed-summary continuation route is connected to this session view.",
+      reason: "Forking this conversation is unavailable here.",
     },
     terminal: {
       available: false,
-      reason:
-        "No native terminal handoff is connected for this exact provider conversation.",
+      reason: "Opening this conversation in a terminal is unavailable here.",
     },
     permissions: {
       available: false,
       reason:
-        "Live approval callbacks are unavailable on this route. Historical permission denials remain read-only.",
+        "This provider cannot receive live permission decisions here. Historical permission denials remain read-only.",
     },
   };
 }
