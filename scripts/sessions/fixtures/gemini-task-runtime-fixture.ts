@@ -66,12 +66,56 @@ export async function runGeminiTaskRuntimeFixture() {
     session_id: "0199a213-81c0-7800-8aa1-bbab2a035a53",
     model: "auto-gemini-example",
   });
-  emit({
-    type: "message",
-    role: "assistant",
-    content: "Private reply 🌱",
-    delta: true,
-  });
+  if (mode === "markdown") {
+    emit({
+      type: "message",
+      role: "user",
+      content: "USER ECHO MUST STAY ABSENT",
+    });
+    for (const content of [
+      "**Read",
+      "able**\n\n```ts\nconst answer = ",
+      "42;\n```\n\n[Safe link](https://example.com) [Blocked](javascript:alert)\n\n<img src=x onerror=alert(1)>",
+    ])
+      emit({ type: "message", role: "assistant", content, delta: true });
+    if (!log) throw Error("The held Markdown fixture needs its private log");
+    const deadline = Date.now() + 25_000;
+    while (!existsSync(`${log}.markdown-release`)) {
+      if (Date.now() >= deadline)
+        throw Error("The held Markdown fixture was not released");
+      await Bun.sleep(10);
+    }
+    emit({
+      type: "tool_use",
+      tool_id: "markdown-tool",
+      tool_name: "read_file",
+      parameters: { path: "PRIVATE_REPORTED_PATH" },
+    });
+    emit({
+      type: "tool_result",
+      tool_id: "markdown-tool",
+      status: "success",
+      output: "PRIVATE_TOOL_TEXT",
+    });
+    emit({
+      type: "message",
+      role: "assistant",
+      content: "**Separate complete report**",
+      delta: false,
+    });
+    emit({
+      type: "message",
+      role: "assistant",
+      content: "Separate delta after complete.",
+      delta: true,
+    });
+  } else
+    emit({
+      type: "message",
+      role: "assistant",
+      content: "Private reply 🌱",
+      delta: true,
+    });
   if (mode === "hang-tree") {
     await new Promise(() => setInterval(() => {}, 1000));
     return;
