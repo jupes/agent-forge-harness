@@ -59,9 +59,11 @@ import {
 } from "./routes/keeper-proposal-fixture";
 import { seedProjectBeadWriteFixture } from "./routes/project-bead-write-fixture";
 import {
+  FIXTURE_SHIFT_ATTEMPT_SESSION_ID,
   FIXTURE_SHIFT_ID,
   FIXTURE_SHIFT_START,
   seedProjectShift,
+  seedProjectShiftAttempt,
 } from "./routes/project-shift-fixture";
 import {
   FIXTURE_OWNED_SESSION_ID,
@@ -1634,6 +1636,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 const READS: Record<string, string> = {
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
   "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
+  "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,
+  "GET /projects/:id/shifts/requests/:requestId/attempts/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts/${FIXTURE_SHIFT_ATTEMPT_SESSION_ID}`,
   "GET /providers/sign-in": "/providers/sign-in",
   "GET /providers/:provider/sign-in/:requestId":
     "/providers/claude/sign-in/7b5b2b32-4bcc-4a1c-92c8-61dd39234d82",
@@ -1807,9 +1811,10 @@ describe("the route table", () => {
       "GET /stream",
       "GET /projects/:id/keeper/events",
       "GET /projects/:id/sessions/:sessionId/events",
+      "GET /projects/:id/shifts/requests/:requestId/attempts/:sessionId/events",
     ]);
     expect(rows.length).toBe(
-      Object.keys(ACTIONS).length + Object.keys(READS).length + 3,
+      Object.keys(ACTIONS).length + Object.keys(READS).length + 4,
     );
   });
 });
@@ -2212,6 +2217,7 @@ describe("a read row or the stream while another connection holds the write lock
     root = h.root;
     await seedOwnedSession(h);
     await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
@@ -2220,7 +2226,13 @@ describe("a read row or the stream while another connection holds the write lock
       if (row.kind === "stream")
         return row.path
           .replace(":id", FIXTURE_PROJECT_ID)
-          .replace(":sessionId", FIXTURE_OWNED_SESSION_ID);
+          .replace(":requestId", FIXTURE_SHIFT_START.requestId)
+          .replace(
+            ":sessionId",
+            row.path.includes("/shifts/")
+              ? FIXTURE_SHIFT_ATTEMPT_SESSION_ID
+              : FIXTURE_OWNED_SESSION_ID,
+          );
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
@@ -3163,6 +3175,7 @@ describe("every read row (iterating the table)", () => {
     });
     await seedOwnedSession(h);
     await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
@@ -3191,6 +3204,7 @@ describe("every read row (iterating the table)", () => {
     });
     await seedOwnedSession(h);
     await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");

@@ -15,6 +15,7 @@ import { localStateRoot } from "./dev-api";
 import type { OperatorDeps } from "./operator";
 import { bodyFields, fail, type ReadDeps } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
+import { createProjectShiftAttemptRoutes } from "./shift-attempts";
 import { shiftRoutes } from "./shifts";
 
 /** Project-scoped defaults are read-only and cannot reserve or dispatch a shift. */
@@ -99,6 +100,10 @@ export function projectShiftRoutes(
     home: deps.projectHome,
     root: deps.root,
     validateStart: scope.validateStart,
+  });
+  const attempts = createProjectShiftAttemptRoutes({
+    home: deps.projectHome,
+    root: deps.root,
   });
   const canonical = shiftRoutes({
     workspace: deps.workspace,
@@ -232,7 +237,16 @@ export function projectShiftRoutes(
     },
   );
   return {
-    routes: [list, original, start, ...controls] as ApiRoute[],
-    close: () => service.close(),
+    routes: [
+      list,
+      original,
+      start,
+      ...controls,
+      ...attempts.routes,
+    ] as ApiRoute[],
+    close: () => {
+      attempts.close();
+      service.close();
+    },
   };
 }
