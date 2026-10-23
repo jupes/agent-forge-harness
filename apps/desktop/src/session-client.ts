@@ -31,6 +31,10 @@ import {
   newCodexTaskDraft,
 } from "./codex-session-composer";
 import {
+  type GeminiTaskComposerDraft,
+  newGeminiTaskDraft,
+} from "./gemini-task-composer";
+import {
   newSessionDraft,
   type SessionComposerDraft,
   validateSessionAttachments,
@@ -63,10 +67,11 @@ export interface SessionProjectView {
   loading: boolean;
   error: string;
   composer: SessionComposerDraft;
-  composerProvider: "claude" | "codex";
+  composerProvider: "claude" | "codex" | "gemini";
   codexMode: "task" | "chat";
   codexComposer: CodexTaskComposerDraft;
   codexChatComposer: CodexChatComposerDraft;
+  geminiComposer: GeminiTaskComposerDraft;
   pendingStart: SessionStartRequest | null;
   startIdentity: SessionStartIdentity | null;
   startIdentityError: string;
@@ -143,6 +148,7 @@ export function createSessionsClient(deps: {
         codexMode: "task",
         codexComposer: newCodexTaskDraft(),
         codexChatComposer: newCodexChatDraft(),
+        geminiComposer: newGeminiTaskDraft(),
         pendingStart: null,
         startIdentity: null,
         startIdentityError: "",
@@ -597,7 +603,10 @@ export function createSessionsClient(deps: {
       };
       tell();
     },
-    chooseComposerProvider(projectId: string, provider: "claude" | "codex") {
+    chooseComposerProvider(
+      projectId: string,
+      provider: "claude" | "codex" | "gemini",
+    ) {
       project(projectId).composerProvider = provider;
       tell();
     },
@@ -621,6 +630,16 @@ export function createSessionsClient(deps: {
     ) {
       project(projectId).codexComposer = {
         ...project(projectId).codexComposer,
+        ...update,
+      };
+      tell();
+    },
+    editGeminiComposer(
+      projectId: string,
+      update: Partial<GeminiTaskComposerDraft>,
+    ) {
+      project(projectId).geminiComposer = {
+        ...project(projectId).geminiComposer,
         ...update,
       };
       tell();

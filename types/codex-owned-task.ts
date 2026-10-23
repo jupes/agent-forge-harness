@@ -16,6 +16,7 @@ import type {
   GeminiOwnedSessionMetadata,
   GeminiOwnedSessionRecord,
   GeminiTaskPreviewReceipt,
+  GeminiTaskStartReceipt,
   GeminiTaskStartRequest,
 } from "./gemini-owned-task";
 import type { OwnedSessionMetadata, OwnedSessionRecord } from "./owned-session";
@@ -78,7 +79,8 @@ export interface CodexTaskStartReceipt {
 export type OwnedCodingSessionStartReceipt =
   | SessionStartReceipt
   | CodexTaskStartReceipt
-  | CodexChatStartReceipt;
+  | CodexChatStartReceipt
+  | GeminiTaskStartReceipt;
 export interface CodexTaskPreviewReceipt {
   provider: "codex";
   projectId: string;

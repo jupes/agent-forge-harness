@@ -27,6 +27,9 @@ export function CodexChatComposer({
   onStarted,
   providers,
 }: SessionComposerProps) {
+  const geminiReadiness = providers?.providers.find(
+    (provider) => provider.provider === "gemini",
+  );
   const codexReadiness = providers?.providers.find(
       (provider) => provider.provider === "codex",
     ),
@@ -314,7 +317,21 @@ export function CodexChatComposer({
             · {providerUsageLabel(codexReadiness)}
           </small>
         </button>
-        {["Gemini", "Grok", "OpenRouter"].map((name) => (
+        <button
+          type="button"
+          aria-pressed="false"
+          onClick={() => client.chooseComposerProvider(project.id, "gemini")}
+        >
+          Gm · Gemini
+          <small>
+            Task ·{" "}
+            {geminiReadiness
+              ? readinessLabel(geminiReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(geminiReadiness)}
+          </small>
+        </button>
+        {["Grok", "OpenRouter"].map((name) => (
           <button
             type="button"
             key={name}

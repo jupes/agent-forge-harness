@@ -49,6 +49,17 @@ export const ownedCodingStartReceiptSchema = z.union([
         value.session.id === value.receipt.conversationId &&
         value.session.requestId === value.receipt.turn.requestId,
     ),
+  z
+    .object({
+      session: geminiOwnedSessionSchema,
+      receipt: conversationReceiptSchema,
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.session.id === value.receipt.conversationId &&
+        value.session.requestId === value.receipt.turn.requestId,
+    ),
 ]);
 export const codexTaskPreviewReceiptSchema = z
   .object({

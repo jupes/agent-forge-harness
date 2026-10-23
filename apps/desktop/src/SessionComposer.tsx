@@ -26,6 +26,7 @@ import {
 import "./session.css";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexTaskComposer } from "./CodexTaskComposer";
+import { GeminiTaskComposer } from "./GeminiTaskComposer";
 
 export interface SessionComposerProps {
   providers?: ProviderReadinessPage | null;
@@ -38,7 +39,9 @@ export interface SessionComposerProps {
 }
 export function SessionComposer(props: SessionComposerProps) {
   const view = props.client.project(props.project.id);
-  return view.composerProvider === "codex" ? (
+  return view.composerProvider === "gemini" ? (
+    <GeminiTaskComposer {...props} />
+  ) : view.composerProvider === "codex" ? (
     view.codexMode === "chat" ? (
       <CodexChatComposer {...props} />
     ) : (
@@ -110,6 +113,9 @@ function ClaudeSessionComposer({
   );
   const codexReadiness = providers?.providers.find(
     (provider) => provider.provider === "codex",
+  );
+  const geminiReadiness = providers?.providers.find(
+    (provider) => provider.provider === "gemini",
   );
   const edit = (change: Partial<typeof draft>) =>
     client.editComposer(project.id, change);
@@ -410,7 +416,21 @@ function ClaudeSessionComposer({
             · {providerUsageLabel(codexReadiness)}
           </small>
         </button>
-        {["Gemini", "Grok", "OpenRouter"].map((name) => (
+        <button
+          type="button"
+          aria-pressed="false"
+          onClick={() => client.chooseComposerProvider(project.id, "gemini")}
+        >
+          Gm · Gemini
+          <small>
+            Task ·{" "}
+            {geminiReadiness
+              ? readinessLabel(geminiReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(geminiReadiness)}
+          </small>
+        </button>
+        {["Grok", "OpenRouter"].map((name) => (
           <button
             type="button"
             key={name}

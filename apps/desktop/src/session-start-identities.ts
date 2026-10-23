@@ -19,7 +19,7 @@ const identitySchema = z
       ),
     requestId: z.uuid().refine((value) => value === value.toLowerCase()),
     requestHash: z.string().regex(/^[a-f0-9]{64}$/),
-    provider: z.enum(["claude", "codex"]),
+    provider: z.enum(["claude", "codex", "gemini"]),
   })
   .strict();
 const schema = z
