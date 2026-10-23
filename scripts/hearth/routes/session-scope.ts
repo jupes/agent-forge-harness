@@ -16,19 +16,15 @@ function refuse(reason: string): never {
   throw new ConversationError(409, `${reason} No new turn was accepted.`);
 }
 
-/** Every mutable launch rechecks the current catalog and this hearth's Git registry. */
-export function createSessionScopeValidator(
-  home: string,
+/** Shared current project/repository authority for Start and explicit worktree creation. */
+export function createSessionRepositoryScopeValidator(
   deps: ReadDeps,
   load: () => Promise<ProjectSnapshot>,
 ) {
-  const validateAbout = keeperAboutValidator(deps, load);
   return async (
     projectId: string,
-    metadata: OwnedSessionMetadata,
-    about: ConversationObject[],
-    launch?: ClaudeSessionLaunch,
-  ): Promise<void> => {
+    metadata: Pick<OwnedSessionMetadata, "workspace" | "repository" | "beadId">,
+  ) => {
     const snapshot = await load();
     const project = snapshot.catalog.projects.find(
       (item) => item.id === projectId,
@@ -64,6 +60,37 @@ export function createSessionScopeValidator(
       refuse(
         "Open the hearth for that repository before starting its session.",
       );
+    if (
+      metadata.beadId &&
+      !selectProjectBeads(
+        project,
+        deps.workspace,
+        snapshot.source.issues ?? [],
+      ).some((bead) => bead.id === metadata.beadId)
+    )
+      refuse("The selected bead could not be confirmed in this project.");
+    return { project, scope, repository: main };
+  };
+}
+
+/** Every mutable launch rechecks the current catalog and this hearth's Git registry. */
+export function createSessionScopeValidator(
+  home: string,
+  deps: ReadDeps,
+  load: () => Promise<ProjectSnapshot>,
+) {
+  const validateAbout = keeperAboutValidator(deps, load);
+  const repositoryScope = createSessionRepositoryScopeValidator(deps, load);
+  return async (
+    projectId: string,
+    metadata: OwnedSessionMetadata,
+    about: ConversationObject[],
+    launch?: ClaudeSessionLaunch,
+  ): Promise<void> => {
+    const { scope, repository: main } = await repositoryScope(
+      projectId,
+      metadata,
+    );
     const listed = listWorktrees(main, deps.git ? { git: deps.git } : {});
     if (!listed.ok)
       refuse(
@@ -107,15 +134,6 @@ export function createSessionScopeValidator(
           );
         }
       }
-    if (
-      metadata.beadId &&
-      !selectProjectBeads(
-        project,
-        deps.workspace,
-        snapshot.source.issues ?? [],
-      ).some((bead) => bead.id === metadata.beadId)
-    )
-      refuse("The selected bead could not be confirmed in this project.");
     const ordinary: ConversationObject[] = [];
     for (const reference of about) {
       if (reference.kind === "session") {

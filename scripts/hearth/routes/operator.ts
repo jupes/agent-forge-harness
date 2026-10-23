@@ -63,6 +63,7 @@ import {
 } from "./project-summaries";
 import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
+import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
 
@@ -382,6 +383,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSnapshot,
     deps.sessionRuntime,
   );
+  const sessionWorktrees = createSessionWorktreeRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+  );
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -405,6 +411,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     proposals.read,
     ownedSessions.list,
     ownedSessions.read,
+    sessionWorktrees.read,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -449,6 +456,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.start,
       ownedSessions.send,
       ownedSessions.stop,
+      sessionWorktrees.create,
       ...beadRoutes({
         workspace,
         runBd: deps.runBd,
