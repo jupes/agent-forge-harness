@@ -15,6 +15,8 @@ import {
   STATE,
 } from "./environment";
 
+test.use({ viewport: { width: 1280, height: 900 } });
+
 const route = `/index.html#/desktop/project/${FIXTURE_PROJECT_ID}/workbench`,
   path = `/__agent-forge/projects/${FIXTURE_PROJECT_ID}/shifts`,
   endpoint = `**${path}`;
