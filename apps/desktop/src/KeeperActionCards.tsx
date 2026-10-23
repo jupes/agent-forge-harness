@@ -4,6 +4,7 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { keeperProposalDraftSchema } from "../../../scripts/keeper/proposal-protocol";
 import type {
+  KeeperProposal,
   KeeperProposalAction,
   KeeperProposalDraft,
   KeeperProposalView,
@@ -311,12 +312,16 @@ function ActionCard({
   client,
   writesAllowed,
   onNavigate,
+  onReviewSession,
 }: {
   projectId: string;
   card: KeeperProposalView;
   client: KeeperProposalsClient;
   writesAllowed: boolean;
   onNavigate?: (() => void) | undefined;
+  onReviewSession?:
+    | ((source: KeeperProposal, revision: number, requestId?: string) => void)
+    | undefined;
 }): JSX.Element {
   const state = client.get(projectId),
     record = client.record(projectId, card);
@@ -330,6 +335,8 @@ function ActionCard({
   const valid = keeperProposalDraftSchema.safeParse(draft).success;
   const edited = JSON.stringify(draft) !== JSON.stringify(card.proposal.draft);
   const available = card.available || (card.destinationAvailable && edited);
+  const sessionReview =
+    card.proposal.draft.action.kind === "start-session" && !!onReviewSession;
   const status = record
     ? {
         approved: "Approved · awaiting outcome",
@@ -354,7 +361,7 @@ function ActionCard({
         <Fields
           draft={draft}
           original={card.proposal.draft}
-          editable={editing && !held}
+          editable={editing && !held && !sessionReview}
           update={(value) => client.draft(projectId, card.proposal.id, value)}
         />
       </details>
@@ -412,19 +419,36 @@ function ActionCard({
         </>
       ) : (
         <div class="af-proposal-actions">
-          <Button
-            variant="primary"
-            disabled={blocked || !available || !valid}
-            onClick={() => {
-              setEditing(false);
-              void client.review(projectId, card.proposal.id, "approve");
-            }}
-          >
-            Approve
-          </Button>
-          <Button disabled={held} onClick={() => setEditing(!editing)}>
-            {editing ? "Finish editing" : "Edit"}
-          </Button>
+          {sessionReview ? (
+            <Button
+              variant="primary"
+              disabled={state.loading || !!state.error}
+              onClick={() =>
+                onReviewSession?.(
+                  card.proposal,
+                  state.page?.revision ?? state.fence,
+                )
+              }
+            >
+              Review &amp; start
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              disabled={blocked || !available || !valid}
+              onClick={() => {
+                setEditing(false);
+                void client.review(projectId, card.proposal.id, "approve");
+              }}
+            >
+              Approve
+            </Button>
+          )}
+          {!sessionReview && (
+            <Button disabled={held} onClick={() => setEditing(!editing)}>
+              {editing ? "Finish editing" : "Edit"}
+            </Button>
+          )}
           <Button
             disabled={blocked}
             onClick={() => {
@@ -435,6 +459,25 @@ function ActionCard({
             Dismiss
           </Button>
         </div>
+      )}
+      {sessionReview && (
+        <p>
+          Review &amp; start opens the shared composer. Only its explicit Start
+          authorizes the reviewed session.
+        </p>
+      )}
+      {record && sessionReview && record.phase !== "dismissed" && (
+        <Button
+          onClick={() =>
+            onReviewSession?.(
+              card.proposal,
+              state.page?.revision ?? state.fence,
+              record.requestId,
+            )
+          }
+        >
+          Review original Start
+        </Button>
       )}
       <Dialog
         open={activityOpen}
@@ -471,11 +514,15 @@ export function KeeperActionCards({
   client,
   writesAllowed,
   onNavigate,
+  onReviewSession,
 }: {
   projectId: string;
   client: KeeperProposalsClient;
   writesAllowed: boolean;
   onNavigate?: (() => void) | undefined;
+  onReviewSession?:
+    | ((source: KeeperProposal, revision: number, requestId?: string) => void)
+    | undefined;
 }): JSX.Element {
   const state = client.get(projectId);
   return (
@@ -485,7 +532,10 @@ export function KeeperActionCards({
       aria-busy={state.loading}
     >
       <h2>Proposed actions</h2>
-      <p>Review each card. Only Approve can carry out its reviewed change.</p>
+      <p>
+        Review each card. Approve carries out its reviewed change; session
+        proposals open a composer for an explicit Start.
+      </p>
       {state.loading && !state.page && (
         <p role="status">Loading action cards…</p>
       )}
@@ -531,6 +581,7 @@ export function KeeperActionCards({
           client={client}
           writesAllowed={writesAllowed}
           onNavigate={onNavigate}
+          onReviewSession={onReviewSession}
         />
       ))}
       {[...state.receipts.values()]

@@ -61,6 +61,45 @@ const input = {
   launch: { mode: "chat" as const, model: "sonnet", prompt: "Original prompt" },
 };
 
+test("a verified proposal admission is adopted without an ordinary Start, clearing another draft or triggering its navigation", () => {
+  let posts = 0;
+  const client = createSessionsClient({
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "No dispatch" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+  client.editComposer(projectId, {
+    prompt: "Keep the normal new-session draft",
+  });
+  const original = { ...input, requestId };
+  expect(
+    client.adoptStartReceipt(projectId, original, {
+      session: record,
+      receipt: { conversationId: id, revision: 2, turn },
+    }),
+  ).toBe(true);
+  expect(client.project(projectId).records).toEqual([record]);
+  expect(client.project(projectId).composer.prompt).toBe(
+    "Keep the normal new-session draft",
+  );
+  expect(client.project(projectId).lastStarted).toBeNull();
+  expect(client.session(projectId, id).receiptRevision).toBe(2);
+  expect(
+    client.adoptStartReceipt("project-other", original, {
+      session: record,
+      receipt: { conversationId: id, revision: 2, turn },
+    }),
+  ).toBe(false);
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
 test("lost Start responses retain the immutable original until its actual admitted turn is found; reads never start another provider", async () => {
   const sent: SessionStartRequest[] = [];
   let listed = false,

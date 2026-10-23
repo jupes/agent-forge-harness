@@ -471,6 +471,36 @@ export function createSessionsClient(deps: {
     session,
     refresh,
     check,
+    /** The proposal bridge already verified the full original body/hash; never dispatch here. */
+    adoptStartReceipt(
+      projectId: string,
+      input: SessionStartRequest,
+      raw: unknown,
+    ) {
+      const parsed = sessionStartReceiptSchema.safeParse(raw);
+      if (
+        disposed ||
+        !parsed.success ||
+        parsed.data.session.projectId !== projectId ||
+        !sameStart(parsed.data.session, input) ||
+        parsed.data.receipt.conversationId !== parsed.data.session.id ||
+        parsed.data.receipt.turn.requestId !== input.requestId
+      )
+        return false;
+      const entry = project(projectId),
+        accepted = parsed.data;
+      entry.records = [
+        ...entry.records.filter((record) => record.id !== accepted.session.id),
+        accepted.session,
+      ];
+      const observed = session(projectId, accepted.session.id);
+      observed.receiptRevision = Math.max(
+        observed.receiptRevision,
+        accepted.receipt.revision,
+      );
+      tell();
+      return true;
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
