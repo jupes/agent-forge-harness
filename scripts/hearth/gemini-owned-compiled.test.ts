@@ -20,6 +20,23 @@ const scratch = scratchDirs(),
   repo = resolve(import.meta.dir, "../.."),
   extension = process.platform === "win32" ? ".exe" : "";
 let bin: string, hearth: string;
+function captureTail(stream: ReadableStream<Uint8Array>) {
+  let tail = "";
+  const decoder = new TextDecoder();
+  void (async () => {
+    const reader = stream.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        tail = (tail + decoder.decode(value, { stream: true })).slice(-2048);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  })().catch(() => {});
+  return () => tail;
+}
 beforeAll(() => {
   bin = scratch.make("gemini-owned-packaged-bin-");
   hearth = join(bin, `hearth${extension}`);
@@ -104,9 +121,11 @@ test("the production compiled hearth owns Gemini Task bootstrap, private history
       cwd: root,
       env,
       stdin: "ignore",
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "pipe",
     });
+    const stdout = captureTail(child.stdout),
+      stderr = captureTail(child.stderr);
     let url = "",
       headers: Record<string, string> = {},
       sessionId: string | null = null;
@@ -117,7 +136,7 @@ test("the production compiled hearth owns Gemini Task bootstrap, private history
       while (!lock || !existsSync(lock.tokenFile)) {
         if (child.exitCode !== null || Date.now() > deadline)
           throw Error(
-            "The isolated packaged hearth did not publish its own lock/token",
+            `The isolated packaged hearth did not publish its own lock/token (exit ${child.exitCode ?? "still running"}; stdout ${stdout()}; stderr ${stderr()})`,
           );
         await Bun.sleep(20);
         lock = readLock(lockPath(home, root));
