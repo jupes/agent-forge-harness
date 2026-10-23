@@ -45,18 +45,22 @@ interface Options {
 }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.entries(value)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+  if (value && typeof value === "object") {
+    const fields = new Map(
+      Object.entries(value).filter(([, item]) => item !== undefined),
+    );
+    return `{${[...fields.keys()]
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(fields.get(key))}`)
       .join(",")}}`;
+  }
   return JSON.stringify(value) ?? "null";
 }
 
 /** The registry fixes Start identity; only the private journal can authorize dispatch. */
 export function createOwnedSessionService(options: Options) {
   const registry = createSessionRegistry(options.home);
+  const workspace = workspaceKey(resolveCheckout(options.root).workspace);
   const services = new Map<
     string,
     ReturnType<typeof createConversationService>
@@ -69,8 +73,18 @@ export function createOwnedSessionService(options: Options) {
     sessionId: session.id,
   });
   const serviceFor = (session: OwnedSessionRecord) => {
+    if (workspaceKey(session.workspace) !== workspace)
+      throw new ConversationError(
+        409,
+        "This owned session belongs to a different workspace. Open its hearth to read or control it.",
+      );
     const found = services.get(session.id);
     if (found) return found;
+    if (closed)
+      throw new ConversationError(
+        503,
+        "This hearth is closing. No new session was accepted.",
+      );
     const selected = address(session);
     const service = createConversationService({
       root: options.root,
@@ -194,6 +208,11 @@ export function createOwnedSessionService(options: Options) {
           return metadata;
         },
       );
+      if (closed)
+        throw new ConversationError(
+          503,
+          "This hearth is closing. No new session was accepted.",
+        );
       initial.set(session.id, request.launch);
       try {
         const receipt = await serviceFor(session).send(projectId, {
@@ -209,6 +228,11 @@ export function createOwnedSessionService(options: Options) {
       }
     },
     async send(projectId: string, sessionId: string, raw: SessionMessage) {
+      if (closed)
+        throw new ConversationError(
+          503,
+          "This hearth is closing. No turn was accepted.",
+        );
       const input = parseSessionSend(raw),
         session = registry.read(projectId, sessionId);
       if (session.mode !== "chat")
@@ -226,7 +250,9 @@ export function createOwnedSessionService(options: Options) {
       return forId(projectId, sessionId).read(projectId, query);
     },
     list(projectId: string) {
-      return registry.list(projectId);
+      return registry
+        .list(projectId)
+        .filter((session) => workspaceKey(session.workspace) === workspace);
     },
     stop(projectId: string, sessionId: string, requestId: string) {
       return forId(projectId, sessionId).stop(projectId, requestId);
