@@ -191,6 +191,44 @@ test("a delayed live read after Stop or a foreign accepted turn cannot revive ap
   client.dispose();
 });
 
+test("same-scope background checks retain the reviewed offer and cannot repopulate it after a decision dispatch", async () => {
+  const fixture = sessionStartFixture(),
+    identities = createCodexChatDecisionIdentities({
+      storage: fixture.storage,
+      withLock: fixture.withLock,
+    });
+  let release = (_value: unknown) => {},
+    reads = 0,
+    posts = 0;
+  const waiting = new Promise<unknown>((resolve) => {
+    release = resolve;
+  });
+  const client = createCodexChatDecisions({
+    identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    read: async () =>
+      ++reads === 1 ? { pending: [offer], receipt: null } : waiting,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Lost answer" };
+    },
+  });
+  client.activate({ ...address, turnRequestId, actionable: true });
+  await client.refreshPending();
+  const retained = client.view()?.pending;
+  const background = client.refreshPending();
+  expect(client.view()?.pending).toBe(retained);
+  expect(client.view()?.loading).toBe(false);
+  await client.decide(approvalId, "accept");
+  expect(posts).toBe(1);
+  release({ pending: [offer], receipt: null });
+  await background;
+  expect(client.view()?.pending).toEqual([]);
+  expect(client.view()?.identity?.requestId).toBe(requestId);
+  client.dispose();
+});
+
 test("Stop while the origin lock is pending releases only the proven-unsent reservation and makes no POST", async () => {
   const storage = sessionStartFixture();
   let grant = () => {},
@@ -224,6 +262,48 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   expect(posts).toBe(0);
   expect(identities.read(projectId, sessionId)).toBeNull();
   expect(client.view()?.notice).toContain("No decision was sent");
+  client.dispose();
+});
+
+test("a protected refresh that withdraws an offer during origin-lock acquisition prevents its pending decision dispatch", async () => {
+  const fixture = sessionStartFixture();
+  let grant = () => {},
+    reads = 0,
+    posts = 0;
+  const waiting = new Promise<void>((resolve) => {
+    grant = resolve;
+  });
+  const identities = createCodexChatDecisionIdentities({
+    storage: fixture.storage,
+    withLock: async (work) => {
+      await waiting;
+      return fixture.withLock(work);
+    },
+  });
+  const client = createCodexChatDecisions({
+    identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    read: async () => ({
+      pending: ++reads === 1 ? [offer] : [],
+      receipt: null,
+    }),
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate({ ...address, turnRequestId, actionable: true });
+  await client.refreshPending();
+  // Start a protected refresh before the decision's lock wait; it may complete
+  // while the original is being durably reserved.
+  const refresh = client.refreshPending(),
+    sending = client.decide(approvalId, "accept");
+  await refresh;
+  grant();
+  await sending;
+  expect(posts).toBe(0);
+  expect(client.view()?.identity).toBeNull();
   client.dispose();
 });
 

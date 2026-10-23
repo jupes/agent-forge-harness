@@ -193,12 +193,21 @@ export function CodexChatComposer({
   const start = () => {
     if (!canStart) return;
     try {
+      const fresh = client.project(project.id);
+      if (
+        !matchesCodexChatPreview(
+          project.id,
+          fresh.composer,
+          fresh.codexChatComposer,
+          preview,
+        )
+      )
+        throw Error(
+          "The Chat selection changed. Check supported options again before Start.",
+        );
       void client.start(
         project.id,
-        codexChatStartBody(
-          client.project(project.id).composer,
-          client.project(project.id).codexChatComposer,
-        ),
+        codexChatStartBody(fresh.composer, fresh.codexChatComposer),
       );
     } catch (error) {
       setProblem(

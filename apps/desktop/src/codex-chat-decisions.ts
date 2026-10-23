@@ -171,8 +171,9 @@ export function createCodexChatDecisions(deps: {
       if (!entry || !live(entry) || entry.posting) return;
       const current = ++generation,
         turn = entry.turnRequestId;
-      entry.pending = [];
-      entry.loading = true;
+      // A same-scope background check must not remove a choice being read or
+      // keyboard-focused. Invalid scope, Stop and failed reads clear it below.
+      entry.loading = entry.pending.length === 0;
       entry.error = "";
       tell();
       try {
@@ -282,7 +283,10 @@ export function createCodexChatDecisions(deps: {
         if (
           !live(entry) ||
           entry.turnRequestId !== turn ||
-          generation !== current
+          generation !== current ||
+          !entry.pending.some(
+            (item) => JSON.stringify(item) === JSON.stringify(offered),
+          )
         ) {
           // This process has not dispatched: only this proven-unsent reservation can be released locally.
           await deps.identities.release(reserved.identity);
@@ -292,6 +296,9 @@ export function createCodexChatDecisions(deps: {
           return;
         }
         entry.pending = [];
+        // A pre-dispatch read must not repopulate an offer consumed by this
+        // original, even if its protected answer arrives after the POST.
+        generation++;
         const result = await deps.post(
           entry.projectId,
           entry.sessionId,
