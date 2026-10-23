@@ -47,7 +47,7 @@ import {
   wholeNumberError,
 } from "../config/load";
 import { resolveSmith } from "../config/resolve";
-import { type ExecDeps, runExec } from "../executors/exec-cli";
+import { type ExecDeps, runExec } from "../executors/exec-runtime";
 import { isValidSlug } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
