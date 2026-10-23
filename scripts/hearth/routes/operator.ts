@@ -409,7 +409,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
-    projectBeadsRoute(projectSnapshot),
+    projectBeadsRoute(deps, projectSnapshot),
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,

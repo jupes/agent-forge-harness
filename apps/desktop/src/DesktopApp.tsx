@@ -15,12 +15,14 @@ import {
   PROJECT_DESTINATIONS,
 } from "./navigation";
 import { OwnedSessions } from "./OwnedSessions";
+import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { sessionRows } from "./sessions-model";
+import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
@@ -41,6 +43,18 @@ export function DesktopApp(): JSX.Element {
     (item) => item.projectId === project?.id,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const beads = useBeads(
+    route.destination === "beads" ? (project?.id ?? null) : null,
+    route.destination === "beads" && route.selection?.kind === "bead"
+      ? route.selection.id
+      : null,
+  );
+  const fullBead =
+    route.destination === "beads" &&
+    route.selection?.kind === "bead" &&
+    new URL(window.location.hash.slice(1), "http://127.0.0.1").searchParams.get(
+      "view",
+    ) === "full";
   const selectedOwnedSession =
     route.destination === "sessions" &&
     route.selection?.kind === "session" &&
@@ -187,9 +201,28 @@ export function DesktopApp(): JSX.Element {
             ? "Restarting"
             : (recovery?.connection.label ?? "Connecting")
         }
-        inspectorOpen={inspectorOpen}
+        inspectorOpen={fullBead ? false : inspectorOpen}
         inspector={
-          route.selection?.kind === "session" && project ? (
+          route.destination === "beads" &&
+          !fullBead &&
+          route.selection?.kind === "bead" &&
+          project ? (
+            <BeadPanel
+              key={`${project.id}:${route.selection.id}`}
+              projectId={project.id}
+              id={route.selection.id}
+              error={beads.error}
+              loading={beads.loading}
+              reload={beads.reload}
+              page={beads.data}
+              sessions={summary?.sessions ?? []}
+              sessionsComplete={summary?.sessionsComplete ?? false}
+              onAskKeeper={openKeeper}
+              onStart={
+                writesAllowed && !project.archived ? openSession : undefined
+              }
+            />
+          ) : route.selection?.kind === "session" && project ? (
             <SessionInspector
               projectId={project.id}
               session={summary?.sessions.find(
@@ -280,6 +313,54 @@ export function DesktopApp(): JSX.Element {
             onScope={() => setInspectorOpen(true)}
             active={!keeperOpen}
           />
+        ) : route.destination === "beads" && project ? (
+          fullBead && route.selection?.kind === "bead" ? (
+            <>
+              <Button
+                href={desktopHref({
+                  projectId: project.id,
+                  destination: "beads",
+                  selection: null,
+                })}
+              >
+                Back to Beads
+              </Button>
+              <BeadPanel
+                key={`full:${project.id}:${route.selection.id}`}
+                projectId={project.id}
+                id={route.selection.id}
+                error={beads.error}
+                loading={beads.loading}
+                reload={beads.reload}
+                page={beads.data}
+                sessions={summary?.sessions ?? []}
+                sessionsComplete={summary?.sessionsComplete ?? false}
+                onAskKeeper={openKeeper}
+                onStart={
+                  writesAllowed && !project.archived ? openSession : undefined
+                }
+              />
+            </>
+          ) : (
+            <ProjectBeads
+              key={project.id}
+              projectId={project.id}
+              page={beads.data}
+              error={beads.error}
+              loading={beads.loading}
+              reload={beads.reload}
+              selectedId={
+                route.selection?.kind === "bead" ? route.selection.id : null
+              }
+              onSelect={(id) => {
+                setInspectorOpen(true);
+                window.location.hash = beadHref(project.id, id).slice(1);
+              }}
+              onOpen={(id) => {
+                window.location.hash = beadHref(project.id, id, true).slice(1);
+              }}
+            />
+          )
         ) : route.destination === "overview" && project ? (
           <ProjectOverview
             key={project.id}

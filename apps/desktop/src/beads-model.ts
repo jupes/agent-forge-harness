@@ -60,7 +60,7 @@ export function filterBeads(
           : filters.view === "epics"
             ? bead.type === "epic"
             : filters.view === "blocked"
-              ? bead.blocked
+              ? bead.status !== "closed" && bead.blocked
               : bead.status === filters.view)) &&
       (!query ||
         `${bead.id}\n${bead.title}`.toLocaleLowerCase().includes(query)) &&
@@ -110,7 +110,8 @@ export function epicProgress(rows: readonly ProjectBead[], id: string) {
   return {
     total: children.length,
     closed: children.filter((bead) => bead.status === "closed").length,
-    blocked: children.filter((bead) => bead.blocked).length,
+    blocked: children.filter((bead) => bead.status !== "closed" && bead.blocked)
+      .length,
     states: [...new Set(children.map((bead) => bead.status))].map((status) => ({
       status,
       count: children.filter((bead) => bead.status === status).length,

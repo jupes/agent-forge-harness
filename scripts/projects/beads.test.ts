@@ -22,19 +22,23 @@ function row(id: string, extra: Partial<BdExportRow> = {}): BdExportRow {
     ...extra,
   };
 }
-function page(rows: BdExportRow[]) {
+function page(rows: BdExportRow[], detailId?: string) {
   const normalized = issuesAndDepsFromExportRows(rows);
-  return projectBeads(projectFixture(workspace), {
-    workspace,
-    asOf: "2026-10-23T00:00:00.000Z",
-    issues: normalized.issues,
-    dependencies: normalized.deps,
-    beadRows: rows,
-    queue: [],
-    sessions: [],
-    sessionsComplete: true,
-    problems: [],
-  });
+  return projectBeads(
+    projectFixture(workspace),
+    {
+      workspace,
+      asOf: "2026-10-23T00:00:00.000Z",
+      issues: normalized.issues,
+      dependencies: normalized.deps,
+      beadRows: rows,
+      queue: [],
+      sessions: [],
+      sessionsComplete: true,
+      problems: [],
+    },
+    detailId,
+  );
 }
 const epic = row("alpha-epic", { issue_type: "epic" });
 test("live project beads preserve P0–P4 and raw deferred status without treating creator as a claim", () => {
@@ -123,21 +127,24 @@ test("scope precedes projection; foreign blocker content is hidden and missing b
   });
 });
 test("details keep description and acceptance criteria separate and bound embedded comments", () => {
-  const value = page([
-    epic,
-    row("detail", {
-      description: "Exact description",
-      acceptance_criteria: "- [ ] First\n- [x] Second",
-      comment_count: 2,
-      comments: [
-        {
-          text: "worklog: checked",
-          author: "worker",
-          created_at: "2026-10-22T00:00:00Z",
-        },
-      ],
-    }),
-  ]);
+  const value = page(
+    [
+      epic,
+      row("detail", {
+        description: "Exact description",
+        acceptance_criteria: "- [ ] First\n- [x] Second",
+        comment_count: 2,
+        comments: [
+          {
+            text: "worklog: checked",
+            author: "worker",
+            created_at: "2026-10-22T00:00:00Z",
+          },
+        ],
+      }),
+    ],
+    "detail",
+  );
   expect(value.beads.find((item) => item.id === "detail")).toMatchObject({
     description: "Exact description",
     acceptanceCriteria: "- [ ] First\n- [x] Second",
@@ -150,6 +157,42 @@ test("details keep description and acceptance criteria separate and bound embedd
       },
     ],
   });
+});
+test("closed dependents stay out of Blocked and long unselected detail never fills the list response", () => {
+  const rows = [
+    epic,
+    row("active"),
+    row("done", {
+      status: "closed",
+      dependencies: [
+        { issue_id: "done", depends_on_id: "alpha-epic", type: "parent-child" },
+        { issue_id: "done", depends_on_id: "active", type: "blocks" },
+      ],
+    }),
+    ...Array.from({ length: 30 }, (_, index) =>
+      row(`large-${index}`, { description: "x".repeat(60_000) }),
+    ),
+  ];
+  const list = page(rows);
+  expect(list.beads.find((bead) => bead.id === "done")).toMatchObject({
+    blocked: false,
+    ready: false,
+  });
+  expect(JSON.stringify(list).length).toBeLessThan(40_000);
+  expect(
+    list.beads.every((bead) => !bead.detailsLoaded && bead.description === ""),
+  ).toBe(true);
+  const selected = page(rows, "large-4");
+  expect(
+    selected.beads.filter((bead) => bead.detailsLoaded).map((bead) => bead.id),
+  ).toEqual(["large-4"]);
+  expect(
+    selected.beads.find((bead) => bead.id === "large-4")?.description,
+  ).toHaveLength(60_000);
+  expect(() => page(rows, "foreign")).toThrow("outside");
+  expect(() => page([epic, row("invalid", { priority: 6 })])).toThrow(
+    "priority",
+  );
 });
 test("an unavailable tracker is refused instead of an empty project", () => {
   expect(() =>

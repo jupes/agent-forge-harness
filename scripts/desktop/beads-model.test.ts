@@ -33,6 +33,7 @@ const bead = (id: string, extra: Record<string, unknown> = {}) =>
     smith: null,
     comments: [],
     commentsComplete: true,
+    detailsLoaded: true,
     ...extra,
   });
 test("saved views and combined filters preserve P4, explicit claim and tracker Ready authority", () => {

@@ -1,3 +1,4 @@
+import type { JSX } from "preact";
 import { useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
@@ -19,6 +20,29 @@ import {
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { desktopHref } from "./navigation";
 import "./beads.css";
+
+const tabsKeyDown: JSX.KeyboardEventHandler<HTMLDivElement> = (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const buttons = [
+    ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+      'button[role="tab"]',
+    ),
+  ];
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLButtonElement)) return;
+  const index = buttons.indexOf(focused);
+  if (index < 0 || buttons.length === 0) return;
+  const next =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? buttons.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) %
+          buttons.length;
+  event.preventDefault();
+  buttons[next]?.focus();
+  buttons[next]?.click();
+};
 
 export const beadHref = (projectId: string, id: string, full = false) =>
   `${desktopHref({ projectId, destination: "beads", selection: { kind: "bead", id } })}${full ? "&view=full" : ""}`;
@@ -101,7 +125,12 @@ export function ProjectBeads({
           Refresh beads
         </Button>
       </header>
-      <div class="af-beads-tabs" role="tablist" aria-label="Bead views">
+      <div
+        class="af-beads-tabs"
+        role="tablist"
+        onKeyDown={tabsKeyDown}
+        aria-label="Bead views"
+      >
         {BEAD_VIEWS.map(([id, label]) => (
           <button
             class="af-btn af-btn-secondary"
@@ -362,20 +391,40 @@ export function BeadPanel({
   projectId,
   id,
   page,
+  error,
+  loading,
+  reload,
   sessions = [],
+  sessionsComplete = false,
   onAskKeeper,
   onStart,
 }: {
   projectId: string;
   id: string;
   page: ProjectBeadsPage | null;
+  error: string | null;
+  loading: boolean;
+  reload(): void;
   sessions?: readonly SessionSummary[];
+  sessionsComplete?: boolean;
   onAskKeeper(): void;
   onStart?: ((id: string) => void) | undefined;
 }) {
   const [tab, setTab] = useState("Details"),
     bead = page?.beads.find((item) => item.id === id);
-  if (!page) return <p role="status">Loading the selected bead…</p>;
+  if (!page)
+    return (
+      <section class="af-bead-panel" aria-label={`Bead ${id}`}>
+        {error ? (
+          <p role="alert">{error}</p>
+        ) : (
+          <p role="status">Loading the selected bead…</p>
+        )}
+        <Button disabled={loading} onClick={reload}>
+          Retry bead read
+        </Button>
+      </section>
+    );
   if (!bead)
     return (
       <EmptyState
@@ -390,6 +439,14 @@ export function BeadPanel({
     children = page.beads.filter((item) => item.parent === id);
   return (
     <section class="af-bead-panel" aria-label={`Bead ${id}`}>
+      {error && <p role="alert">{error} Showing the last confirmed read.</p>}
+      <p class="af-beads-meta">
+        {loading ? "Checking the tracker… · " : ""}Read{" "}
+        <time dateTime={page.asOf}>{new Date(page.asOf).toLocaleString()}</time>
+      </p>
+      <Button disabled={loading} onClick={reload}>
+        Refresh selected bead
+      </Button>
       <p class="af-beads-eyebrow">
         {parents
           .slice()
@@ -412,7 +469,10 @@ export function BeadPanel({
       </p>
       <div class="af-beads-actions">
         <Button href={beadHref(projectId, id, true)}>Open full-width</Button>
-        <Button onClick={() => onStart?.(id)} disabled={!onStart}>
+        <Button
+          onClick={() => onStart?.(id)}
+          disabled={!onStart || !!error || loading || !bead.detailsLoaded}
+        >
           Start session
         </Button>
         <Button onClick={onAskKeeper}>Ask the Keeper</Button>
@@ -421,6 +481,7 @@ export function BeadPanel({
         class="af-beads-tabs"
         role="tablist"
         aria-label="Bead inspector tabs"
+        onKeyDown={tabsKeyDown}
       >
         {[
           "Details",
@@ -442,209 +503,297 @@ export function BeadPanel({
           </button>
         ))}
       </div>
-      <div role="tabpanel" aria-label={`${tab} for ${id}`}>
-        {tab === "Details" ? (
-          <>
-            <h3>Acceptance criteria</h3>
-            {bead.acceptanceCriteria ? (
-              <KeeperMarkdown text={bead.acceptanceCriteria} />
-            ) : (
-              <p>Acceptance criteria are not reported.</p>
-            )}
-            <h3>Description</h3>
-            {bead.description ? (
-              <KeeperMarkdown text={bead.description} />
-            ) : (
-              <p>No description reported.</p>
-            )}
-            <dl>
-              <dt>Labels</dt>
-              <dd>{bead.labels.join(", ") || "None reported"}</dd>
-              <dt>Assignee</dt>
-              <dd>{bead.assignee ?? "Unclaimed"}</dd>
-              <dt>Owner</dt>
-              <dd>{bead.owner ?? "Not reported"}</dd>
-              <dt>Estimate / time spent</dt>
-              <dd>
-                {bead.estimate ?? "—"} / {bead.spent ?? "—"} minutes
-              </dd>
-              <dt>Due</dt>
-              <dd>{bead.due ?? "Not reported"}</dd>
-              <dt>Queue state</dt>
-              <dd>{bead.queue ? status(bead.queue) : "Not reported"}</dd>
-              <dt>Smith</dt>
-              <dd>{bead.smith ?? "Not reported"}</dd>
-            </dl>
-            {children.length > 0 && (
-              <>
-                <h3>Child beads</h3>
-                <ul>
-                  {children.map((child) => (
-                    <li key={child.id}>
-                      <a href={beadHref(projectId, child.id, true)}>
-                        {child.id} · {child.title}
-                      </a>{" "}
-                      · {status(child.status)}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </>
-        ) : tab === "Dependencies" ? (
-          <>
-            <p>
-              Arrows point from a dependent bead to its prerequisite. Parent
-              hierarchy is separate.
-            </p>
-            {edges.length === 0 && (
-              <p>No dependencies between visible project beads.</p>
-            )}
-            <div
-              class="af-bead-graph"
-              role="img"
-              aria-label={`Dependency graph for ${id}`}
-            >
-              {edges.slice(0, 20).map((edge) => (
-                <div
-                  class="af-bead-graph-edge"
-                  key={`${edge.from}:${edge.to}:${edge.type}`}
-                >
-                  <a href={beadHref(projectId, edge.from, true)}>
-                    {edge.from}
-                    <small>
-                      {status(
-                        page.beads.find((item) => item.id === edge.from)
-                          ?.status ?? "unknown",
-                      )}
-                    </small>
-                  </a>
-                  <span
-                    role="img"
-                    aria-label={
-                      edge.type === "relates" ? "related to" : "depends on"
-                    }
+      {!bead.detailsLoaded ? (
+        <p role="status">Loading the selected bead details…</p>
+      ) : (
+        <div role="tabpanel" aria-label={`${tab} for ${id}`}>
+          {tab === "Details" ? (
+            <>
+              <h3>Acceptance criteria</h3>
+              {bead.acceptanceCriteria ? (
+                <KeeperMarkdown text={bead.acceptanceCriteria} />
+              ) : (
+                <p>Acceptance criteria are not reported.</p>
+              )}
+              <h3>Description</h3>
+              {bead.description ? (
+                <KeeperMarkdown text={bead.description} />
+              ) : (
+                <p>No description reported.</p>
+              )}
+              <dl>
+                <dt>Labels</dt>
+                <dd>{bead.labels.join(", ") || "None reported"}</dd>
+                <dt>Assignee</dt>
+                <dd>{bead.assignee ?? "Unclaimed"}</dd>
+                <dt>Owner</dt>
+                <dd>{bead.owner ?? "Not reported"}</dd>
+                <dt>Estimate / time spent</dt>
+                <dd>
+                  {bead.estimate ?? "—"} / {bead.spent ?? "—"} minutes
+                </dd>
+                <dt>Due</dt>
+                <dd>{bead.due ?? "Not reported"}</dd>
+                <dt>Queue state</dt>
+                <dd>{bead.queue ? status(bead.queue) : "Not reported"}</dd>
+                <dt>Smith</dt>
+                <dd>{bead.smith ?? "Not reported"}</dd>
+              </dl>
+              {children.length > 0 && (
+                <>
+                  <h3>Child beads</h3>
+                  <ul>
+                    {children.map((child) => (
+                      <li key={child.id}>
+                        <a href={beadHref(projectId, child.id, true)}>
+                          {child.id} · {child.title}
+                        </a>{" "}
+                        · {status(child.status)}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </>
+          ) : tab === "Dependencies" ? (
+            <>
+              <p>
+                Arrows point from a dependent bead to its prerequisite. Parent
+                hierarchy is separate.
+              </p>
+              {edges.length === 0 && (
+                <p>No dependencies between visible project beads.</p>
+              )}
+              <div
+                class="af-bead-graph"
+                role="group"
+                aria-label={`Dependency graph for ${id}`}
+              >
+                {edges.slice(0, 20).map((edge) => (
+                  <div
+                    class="af-bead-graph-edge"
+                    key={`${edge.from}:${edge.to}:${edge.type}`}
                   >
-                    {edge.type === "relates" ? "↔" : "→"}
-                  </span>
-                  <a href={beadHref(projectId, edge.to, true)}>
-                    {edge.to}
-                    <small>
+                    <a href={beadHref(projectId, edge.from, true)}>
+                      {edge.from}
+                      <small>
+                        {status(
+                          page.beads.find((item) => item.id === edge.from)
+                            ?.status ?? "unknown",
+                        )}
+                      </small>
+                    </a>
+                    <span
+                      role="img"
+                      aria-label={
+                        edge.type === "relates" ? "related to" : "depends on"
+                      }
+                    >
+                      {edge.type === "relates" ? "↔" : "→"}
+                    </span>
+                    <a href={beadHref(projectId, edge.to, true)}>
+                      {edge.to}
+                      <small>
+                        {status(
+                          page.beads.find((item) => item.id === edge.to)
+                            ?.status ?? "unknown",
+                        )}
+                      </small>
+                    </a>
+                  </div>
+                ))}
+              </div>
+              {edges.length > 20 && (
+                <p>
+                  {edges.length - 20} additional connections are listed below.
+                </p>
+              )}
+              <h3>Blocked by</h3>
+              <ul>
+                {edges
+                  .filter((edge) => edge.from === id && edge.type !== "relates")
+                  .map((edge) => (
+                    <li key={edge.to}>
+                      <a href={beadHref(projectId, edge.to, true)}>{edge.to}</a>{" "}
+                      ·{" "}
                       {status(
                         page.beads.find((item) => item.id === edge.to)
                           ?.status ?? "unknown",
                       )}
-                    </small>
-                  </a>
-                </div>
-              ))}
-            </div>
-            {edges.length > 20 && (
+                    </li>
+                  ))}
+              </ul>
+              {bead.unavailableBlockers > 0 && (
+                <p>
+                  {bead.unavailableBlockers} prerequisite outside this project
+                  or unavailable. Ready remains unavailable while it is
+                  unresolved.
+                </p>
+              )}
+              <h3>Blocks</h3>
+              <ul>
+                {edges
+                  .filter((edge) => edge.to === id && edge.type !== "relates")
+                  .map((edge) => (
+                    <li key={edge.from}>
+                      <a href={beadHref(projectId, edge.from, true)}>
+                        {edge.from}
+                      </a>
+                    </li>
+                  ))}
+              </ul>
+            </>
+          ) : tab === "Comments" ? (
+            <>
+              {!bead.commentsComplete && (
+                <p role="status">
+                  Embedded tracker comments may be incomplete; this read does
+                  not claim a full comment history.
+                </p>
+              )}
+              {bead.comments.length === 0 ? (
+                <p>No comments in this tracker read.</p>
+              ) : (
+                bead.comments.map((comment, index) => (
+                  <article
+                    class="af-bead-comment"
+                    key={`${comment.createdAt}:${index}`}
+                  >
+                    <p>
+                      <span>
+                        {/^(worklog|ac|design|deps|review):/.exec(
+                          comment.body,
+                        )?.[1] ?? "comment"}
+                      </span>{" "}
+                      · {comment.author || "Author not reported"} ·{" "}
+                      <time dateTime={comment.createdAt}>
+                        {comment.createdAt || "Time not reported"}
+                      </time>
+                    </p>
+                    <KeeperMarkdown text={comment.body} />
+                  </article>
+                ))
+              )}
+            </>
+          ) : tab === "Sessions" ? (
+            <>
+              {!sessionsComplete && (
+                <p role="status">
+                  Session observations are incomplete or unavailable. Missing
+                  rows do not confirm that this bead has no sessions.
+                </p>
+              )}
+              {sessions.filter((session) => session.beadId === id).length ===
+              0 ? (
+                <p>
+                  No bead-bound sessions in the current project observations.
+                </p>
+              ) : (
+                <ul>
+                  {sessions
+                    .filter((session) => session.beadId === id)
+                    .map((session) => (
+                      <li key={session.sessionId}>
+                        <a
+                          href={desktopHref({
+                            projectId,
+                            destination: "sessions",
+                            selection: {
+                              kind: "session",
+                              id: session.sessionId,
+                            },
+                          })}
+                        >
+                          {session.sessionId}
+                        </a>{" "}
+                        ·{" "}
+                        {session.executor?.provider ?? "Provider not reported"}
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </>
+          ) : tab === "Files" ? (
+            <>
+              <h3>Declared file map</h3>
               <p>
-                {edges.length - 20} additional connections are listed below.
+                Parsed from this bead's Files section. This is declared scope,
+                not a list of files changed.
               </p>
-            )}
-            <h3>Blocked by</h3>
-            <ul>
-              {edges
-                .filter((edge) => edge.from === id && edge.type !== "relates")
-                .map((edge) => (
-                  <li key={edge.to}>
-                    <a href={beadHref(projectId, edge.to, true)}>{edge.to}</a> ·{" "}
-                    {status(
-                      page.beads.find((item) => item.id === edge.to)?.status ??
-                        "unknown",
-                    )}
-                  </li>
-                ))}
-            </ul>
-            {bead.unavailableBlockers > 0 && (
-              <p>
-                {bead.unavailableBlockers} prerequisite outside this project or
-                unavailable. Ready remains unavailable while it is unresolved.
-              </p>
-            )}
-            <h3>Blocks</h3>
-            <ul>
-              {edges
-                .filter((edge) => edge.to === id && edge.type !== "relates")
-                .map((edge) => (
-                  <li key={edge.from}>
-                    <a href={beadHref(projectId, edge.from, true)}>
-                      {edge.from}
-                    </a>
-                  </li>
-                ))}
-            </ul>
-          </>
-        ) : tab === "Comments" ? (
-          <>
-            {!bead.commentsComplete && (
-              <p role="status">
-                Embedded tracker comments may be incomplete; this read does not
-                claim a full comment history.
-              </p>
-            )}
-            {bead.comments.length === 0 ? (
-              <p>No comments in this tracker read.</p>
-            ) : (
-              bead.comments.map((comment, index) => (
-                <article
-                  class="af-bead-comment"
-                  key={`${comment.createdAt}:${index}`}
-                >
-                  <p>
-                    <span>
-                      {/^(worklog|ac|design|deps|review):/.exec(
-                        comment.body,
-                      )?.[1] ?? "comment"}
-                    </span>{" "}
-                    · {comment.author || "Author not reported"} ·{" "}
-                    <time dateTime={comment.createdAt}>
-                      {comment.createdAt || "Time not reported"}
+              {bead.fileMap ? (
+                <ul>
+                  {bead.fileMap.map((glob) => (
+                    <li key={glob}>
+                      <code>{glob}</code>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{bead.fileMapReason ?? "File map unavailable."}</p>
+              )}
+              <h3>Active reservations</h3>
+              {bead.reservations === null ? (
+                <p>
+                  Reservation read unavailable. A missing report does not mean
+                  files are free.
+                </p>
+              ) : bead.reservations.length === 0 ? (
+                <p>
+                  No active bead-bound reservations in this hearth's ledger.
+                </p>
+              ) : (
+                bead.reservations.map((reservation) => (
+                  <article key={reservation.worktree}>
+                    <code>{reservation.worktree}</code>
+                    <p>{reservation.globs.join(", ")}</p>
+                    <time dateTime={reservation.acquiredAt}>
+                      {reservation.acquiredAt}
                     </time>
-                  </p>
-                  <KeeperMarkdown text={comment.body} />
-                </article>
-              ))
-            )}
-          </>
-        ) : tab === "Sessions" ? (
-          sessions.filter((session) => session.beadId === id).length === 0 ? (
-            <p>No bead-bound sessions in the current project observations.</p>
+                  </article>
+                ))
+              )}
+            </>
           ) : (
-            <ul>
-              {sessions
-                .filter((session) => session.beadId === id)
-                .map((session) => (
-                  <li key={session.sessionId}>
-                    <a
-                      href={desktopHref({
-                        projectId,
-                        destination: "sessions",
-                        selection: { kind: "session", id: session.sessionId },
-                      })}
-                    >
-                      {session.sessionId}
-                    </a>{" "}
-                    · {session.executor?.provider ?? "Provider not reported"}
-                  </li>
-                ))}
-            </ul>
-          )
-        ) : tab === "Files" ? (
-          <p>
-            File maps and active reservations are not reported by this bead
-            read. Inspect the current reservation view before starting
-            overlapping work.
-          </p>
-        ) : (
-          <p>
-            Activity details are not reported by this bead read. Comments and
-            linked sessions retain their own provenance.
-          </p>
-        )}
-      </div>
+            <>
+              <p>
+                Hearth-recorded bead activity · metadata only. Changes outside
+                this hearth may be absent.
+              </p>
+              {bead.activity === null ? (
+                <p>
+                  Recorded activity is unavailable. Refresh the selected bead to
+                  check again.
+                </p>
+              ) : bead.activity.length === 0 ? (
+                <p>No bead-bound events in this history read.</p>
+              ) : (
+                <ol>
+                  {bead.activity.map((event) => (
+                    <li key={event.id}>
+                      <a
+                        href={desktopHref({
+                          projectId,
+                          destination: "activity",
+                          selection: { kind: "event", id: String(event.id) },
+                        })}
+                      >
+                        #{event.id} · {event.kind}
+                      </a>{" "}
+                      ·{" "}
+                      <time dateTime={event.ts}>
+                        {new Date(event.ts).toLocaleString()}
+                      </time>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {!bead.activityComplete && (
+                <p>History is incomplete; older bead events may be absent.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </section>
   );
 }

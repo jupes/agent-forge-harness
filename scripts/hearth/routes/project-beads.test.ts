@@ -69,6 +69,38 @@ test("live project bead read is operator protected, scoped and refuses unavailab
   expect(JSON.stringify(envelope)).not.toContain("FOREIGN");
   expect(
     (
+      await fetch(`${path}?beadId=private-beta`, {
+        headers: h.headers(h.hearth.token),
+      })
+    ).status,
+  ).toBe(404);
+  const detail = await fetch(`${path}?beadId=alpha-epic`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect((await detail.json()).data.beads[0].detailsLoaded).toBe(true);
+  h.append({
+    kind: "reservation.acquired",
+    beadId: "alpha-epic",
+    sessionId: "owned",
+    payload: { worktree: h.workspace, globs: ["scripts/**"] },
+  });
+  h.append({
+    kind: "reservation.acquired",
+    beadId: "private-beta",
+    sessionId: "FOREIGN_SESSION",
+    payload: { worktree: h.workspace, globs: ["PRIVATE_GLOB/**"] },
+  });
+  const observations = await fetch(`${path}?beadId=alpha-epic`, {
+    headers: h.headers(h.hearth.token),
+  });
+  const observed = await observations.json();
+  expect(observed.data.beads[0].reservations).toHaveLength(1);
+  expect(observed.data.beads[0].activity).toHaveLength(1);
+  expect(observed.data.beads[0].activity[0].kind).toBe("reservation.acquired");
+  expect(JSON.stringify(observed)).not.toContain("PRIVATE_GLOB");
+  expect(JSON.stringify(observed)).not.toContain("FOREIGN_SESSION");
+  expect(
+    (
       await fetch(`${path}?workspace=elsewhere`, {
         headers: h.headers(h.hearth.token),
       })

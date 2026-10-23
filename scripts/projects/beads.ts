@@ -1,7 +1,9 @@
 import { z } from "zod";
+import type { LedgerEvent, Reservation } from "../../types/hearth";
 import type { ProjectBead, ProjectBeadsPage } from "../../types/project-beads";
 import type { ProjectRecord } from "../../types/projects";
 import { ConversationError } from "../conversations/error";
+import { parseFileMap } from "../scheduler/filemap";
 import { projectBeadSchema, projectBeadsPageSchema } from "./beads-protocol";
 import { selectProjectBeads, workspaceKey } from "./scope";
 import type { ProjectSources } from "./summary";
@@ -38,6 +40,12 @@ const amount = (value: unknown): number | null => {
 export function projectBeads(
   project: ProjectRecord,
   source: ProjectSources,
+  detailId?: string,
+  observations?: {
+    events: LedgerEvent[] | null;
+    more: boolean;
+    reservations: Reservation[] | null;
+  },
 ): ProjectBeadsPage {
   const scope = project.workspaces.find(
     (item) => workspaceKey(item.root) === workspaceKey(source.workspace),
@@ -54,10 +62,19 @@ export function projectBeads(
   const members = selectProjectBeads(project, source.workspace, source.issues),
     ids = new Set(members.map((item) => item.id));
   const all = new Map(source.beadRows.map((row) => [row.id, row]));
+  if (detailId && !ids.has(detailId))
+    throw new ConversationError(
+      404,
+      "This bead is outside the current project read.",
+    );
   const edges = source.dependencies ?? [];
   const beads: ProjectBead[] = members.map((issue) => {
     const raw = all.get(issue.id),
-      parsed = rawDetails.safeParse(raw);
+      parsed = rawDetails.safeParse(
+        issue.id === detailId
+          ? raw
+          : { priority: raw?.priority, status: raw?.status },
+      );
     if (!raw || !parsed.success)
       problem(
         "A live tracker bead has unsupported details or priority. The read has not been presented as complete.",
@@ -76,7 +93,9 @@ export function projectBeads(
       ),
     ];
     const blockers = active.filter((id) => ids.has(id));
-    const blocked = data.status === "blocked" || active.length > 0;
+    const blocked =
+      data.status !== "closed" &&
+      (data.status === "blocked" || active.length > 0);
     const queue = source.queue?.find(
       (item) => item.beadId === issue.id && item.backed,
     );
@@ -90,6 +109,16 @@ export function projectBeads(
         author: comment.author ?? "",
         createdAt: comment.created_at ?? "",
       }));
+    const fileMap =
+      issue.id === detailId ? parseFileMap(data.description ?? "") : null;
+    const observedEvents =
+      issue.id === detailId
+        ? (observations?.events?.filter(
+            (event) =>
+              event.beadId === issue.id &&
+              workspaceKey(event.workspace) === workspaceKey(source.workspace),
+          ) ?? null)
+        : null;
     const candidate = projectBeadSchema.safeParse({
       id: issue.id,
       title: issue.title,
@@ -114,7 +143,39 @@ export function projectBeads(
       queue: queue?.state ?? null,
       smith: queue?.smith ?? null,
       comments,
+      fileMap: fileMap?.ok ? fileMap.globs : null,
+      fileMapReason:
+        fileMap && !fileMap.ok ? fileMap.error.slice(0, 2048) : null,
+      reservations:
+        issue.id === detailId
+          ? (observations?.reservations
+              ?.filter(
+                (item) =>
+                  item.beadId === issue.id &&
+                  workspaceKey(item.workspace) ===
+                    workspaceKey(source.workspace),
+              )
+              .map((item) => ({
+                worktree: item.worktree,
+                globs: item.globs,
+                acquiredAt: item.acquiredAt,
+                sessionId: item.sessionId ?? null,
+              })) ?? null)
+          : null,
+      activity:
+        observedEvents?.slice(-100).map((event) => ({
+          id: event.id,
+          kind: event.kind,
+          ts: event.ts,
+          sessionId: event.sessionId ?? null,
+        })) ?? null,
+      activityComplete:
+        observedEvents !== null &&
+        !observations?.more &&
+        observedEvents.length <= 100,
+      detailsLoaded: issue.id === detailId,
       commentsComplete:
+        issue.id === detailId &&
         data.comment_count !== undefined &&
         data.comment_count === comments.length,
     });

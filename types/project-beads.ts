@@ -27,6 +27,21 @@ export interface ProjectBead {
   smith: string | null;
   comments: { body: string; author: string; createdAt: string }[];
   commentsComplete: boolean;
+  detailsLoaded: boolean;
+  fileMap: string[] | null;
+  fileMapReason: string | null;
+  reservations:
+    | {
+        worktree: string;
+        globs: string[];
+        acquiredAt: string;
+        sessionId: string | null;
+      }[]
+    | null;
+  activity:
+    | { id: number; kind: string; ts: string; sessionId: string | null }[]
+    | null;
+  activityComplete: boolean;
 }
 export interface ProjectBeadsPage {
   projectId: string;

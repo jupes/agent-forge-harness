@@ -52,6 +52,38 @@ export const projectBeadSchema = z
       )
       .max(100),
     commentsComplete: z.boolean(),
+    detailsLoaded: z.boolean(),
+    fileMap: z.array(label).max(500).nullable().default(null),
+    fileMapReason: z.string().max(2048).nullable().default(null),
+    reservations: z
+      .array(
+        z
+          .object({
+            worktree: label,
+            globs: z.array(label).max(500),
+            acquiredAt: z.string().max(100),
+            sessionId: label.nullable(),
+          })
+          .strict(),
+      )
+      .max(100)
+      .nullable()
+      .default(null),
+    activity: z
+      .array(
+        z
+          .object({
+            id: z.number().int().positive(),
+            kind: label.max(100),
+            ts: z.string().max(100),
+            sessionId: label.nullable(),
+          })
+          .strict(),
+      )
+      .max(100)
+      .nullable()
+      .default(null),
+    activityComplete: z.boolean().default(false),
   })
   .strict();
 export const projectBeadsPageSchema: z.ZodType<ProjectBeadsPage> = z
@@ -85,6 +117,7 @@ export const projectBeadsPageSchema: z.ZodType<ProjectBeadsPage> = z
       value.beads.some(
         (bead) =>
           (bead.parent !== null && !ids.has(bead.parent)) ||
+          (bead.status === "closed" && bead.blocked) ||
           bead.blockers.some((id) => !ids.has(id)) ||
           (bead.ready &&
             (bead.status !== "open" || bead.assignee !== null || bead.blocked)),
