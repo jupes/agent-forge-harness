@@ -125,7 +125,9 @@ test("explicit shift provenance stays owned even when no generic controllable ro
     status: "unverified",
     owner: shift,
   });
-  expect(sessionObservationRows(data)[0]?.reason).toContain("grants no");
+  expect(sessionObservationRows(data)[0]?.reason).toContain(
+    "unavailable in this view",
+  );
 });
 
 test("a known owned history remains visible when its later complete index omits it, without claiming current control", () => {

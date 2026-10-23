@@ -60,7 +60,9 @@ export function createSessionObservationsClient(deps: Dependencies) {
     sessionId: string | null;
   } | null = null;
   let projectGeneration = 0,
+    verifiedIndexGeneration = -1,
     selectionGeneration = 0,
+    explicitDetailRead = false,
     disposed = false,
     indexRefresh: Refetcher | null = null,
     detailRefresh: Refetcher | null = null;
@@ -149,9 +151,14 @@ export function createSessionObservationsClient(deps: Dependencies) {
       const data = parsed.data;
       if (view.workspace !== null && view.workspace !== data.workspace) {
         view.owners = [];
-        for (const selected of details.values())
-          if (selected.projectId === id) clearDetail(selected, data.workspace);
       }
+      for (const selected of details.values())
+        if (
+          selected.projectId === id &&
+          selected.workspace !== null &&
+          selected.workspace !== data.workspace
+        )
+          clearDetail(selected, data.workspace);
       const retained = new Map(
         view.owners
           .filter(
@@ -172,6 +179,11 @@ export function createSessionObservationsClient(deps: Dependencies) {
       view.loaded = true;
       view.error = "";
       view.owners = [...retained.values()];
+      const unlocksDetail =
+        workspace === null && verifiedIndexGeneration !== generation;
+      verifiedIndexGeneration = generation;
+      if (unlocksDetail && active?.projectId === id && active.sessionId)
+        detailRefresh?.request();
     } catch (cause) {
       if (projectCurrent(id, generation)) {
         view.loaded = true;
@@ -191,6 +203,10 @@ export function createSessionObservationsClient(deps: Dependencies) {
     generation: number,
   ) {
     if (!detailCurrent(id, session, generation)) return;
+    // With no independently verified workspace yet, the index establishes the
+    // source before a selected detail can be requested or exposed.
+    if (workspace === null && verifiedIndexGeneration !== projectGeneration)
+      return;
     const view = detail(id, session);
     if (view.capped) return;
     const after = view.nextAfter;
@@ -206,7 +222,9 @@ export function createSessionObservationsClient(deps: Dependencies) {
         parsed.data.sessionId !== session ||
         parsed.data.after !== after ||
         view.nextAfter !== after ||
-        (workspace !== null && parsed.data.workspace !== workspace)
+        (workspace !== null && parsed.data.workspace !== workspace) ||
+        (project(id).workspace !== null &&
+          parsed.data.workspace !== project(id).workspace)
       )
         throw Error(
           "The returned activity page does not match this selected session and workspace.",
@@ -273,6 +291,7 @@ export function createSessionObservationsClient(deps: Dependencies) {
         if (active) project(active.projectId).loading = false;
       }
       if (selectedChanged) {
+        explicitDetailRead = false;
         detailRefresh?.dispose();
         detailRefresh = null;
         selectionGeneration++;
@@ -318,7 +337,13 @@ export function createSessionObservationsClient(deps: Dependencies) {
         const generation = selectionGeneration;
         detailRefresh = createRefetcher({
           ...deps.refetch,
-          run: () => readDetail(projectId!, sessionId, workspace, generation),
+          run: async () => {
+            if (!detailCurrent(projectId!, sessionId, generation)) return;
+            const selected = detail(projectId!, sessionId);
+            if (selected.loaded && selected.more && !explicitDetailRead) return;
+            explicitDetailRead = false;
+            return readDetail(projectId!, sessionId, workspace, generation);
+          },
         });
         detailRefresh.request();
       }
@@ -363,6 +388,7 @@ export function createSessionObservationsClient(deps: Dependencies) {
       indexRefresh?.request();
     },
     refreshDetail() {
+      explicitDetailRead = true;
       detailRefresh?.request();
     },
     changed() {

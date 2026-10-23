@@ -304,3 +304,65 @@ test("retained ownership has an aggregate ceiling and overflow cannot poison ear
   ).toHaveLength(1000);
   client.dispose();
 });
+
+test("a null initial workspace waits for this generation's index and refuses another workspace's first detail", async () => {
+  for (const detailAlreadyReady of [false, true]) {
+    const source = index(),
+      foreign = index(alpha, "/other"),
+      indexReply = held<unknown>(),
+      detailReply = held<unknown>();
+    let reads = 0;
+    if (detailAlreadyReady) detailReply.resolve(page(foreign));
+    const client = createSessionObservationsClient({
+      refetch: { windowMs: 0 },
+      index: async () => indexReply.promise,
+      detail: async () => {
+        reads++;
+        return detailReply.promise;
+      },
+    });
+    client.activate(alpha, "external-alpha", null);
+    await settle();
+    expect(reads).toBe(0);
+    expect(client.detail(alpha, "external-alpha").data).toBeNull();
+    indexReply.resolve(source);
+    await settle();
+    if (!detailAlreadyReady) detailReply.resolve(page(foreign));
+    await settle();
+    expect(reads).toBe(1);
+    expect(client.project(alpha).workspace).toBe("/alpha");
+    expect(client.detail(alpha, "external-alpha").activity).toEqual([]);
+    expect(client.detail(alpha, "external-alpha").error).toContain(
+      "does not match",
+    );
+    client.dispose();
+  }
+});
+
+test("a stream burst queued before a paged reply cannot consume the next page without explicit Load more", async () => {
+  const source = index(),
+    first = held<unknown>();
+  let reads = 0;
+  const client = createSessionObservationsClient({
+    refetch: { windowMs: 0 },
+    index: async () => source,
+    detail: async (_project, _session, after) => {
+      reads++;
+      return after === 0 ? first.promise : page(source, after);
+    },
+  });
+  client.activate(alpha, "external-alpha", "/alpha");
+  await settle();
+  client.changed();
+  client.changed();
+  first.resolve(page(source, 0, 100, true));
+  await settle();
+  await settle();
+  expect(reads).toBe(1);
+  expect(client.detail(alpha, "external-alpha").activity).toHaveLength(100);
+  client.refreshDetail();
+  await settle();
+  expect(reads).toBe(2);
+  expect(client.detail(alpha, "external-alpha").activity).toHaveLength(101);
+  client.dispose();
+});

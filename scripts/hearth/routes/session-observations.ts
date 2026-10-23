@@ -1,7 +1,7 @@
 import type { LedgerEvent } from "../../../types/hearth";
 import type { ProjectSessionObservations } from "../../../types/session-observations";
 import { queryEventPage } from "../../ledger/query";
-import { workspaceKey } from "../../projects/scope";
+import { selectProjectBeads, workspaceKey } from "../../projects/scope";
 import {
   observationSessionIdSchema,
   projectSessionObservationsSchema,
@@ -116,7 +116,10 @@ export function createSessionObservationRoutes(
 ) {
   const index = async (
     projectId: string,
-  ): Promise<ProjectSessionObservations> => {
+  ): Promise<{
+    metadata: ProjectSessionObservations;
+    memberBeadIds: Set<string>;
+  }> => {
     const snapshot = await load();
     const project = snapshot.catalog.projects.find(
       (item) => item.id === projectId,
@@ -189,7 +192,16 @@ export function createSessionObservationRoutes(
         503,
         "The session metadata is invalid, unsupported or exceeds this view's limit. No private conversation was read.",
       );
-    return parsed.data;
+    return {
+      metadata: parsed.data,
+      memberBeadIds: new Set(
+        selectProjectBeads(
+          project,
+          deps.workspace,
+          snapshot.source.issues ?? [],
+        ).map((bead) => bead.id),
+      ),
+    };
   };
   const list: ReadRoute<string> = {
     kind: "read",
@@ -201,7 +213,7 @@ export function createSessionObservationRoutes(
         query = noParameters(request);
       return !project.ok ? project : !query.ok ? query : project;
     },
-    read: (projectId) => answer(() => index(projectId)),
+    read: (projectId) => answer(async () => (await index(projectId)).metadata),
   };
   const detail: ReadRoute<{
     projectId: string;
@@ -252,7 +264,7 @@ export function createSessionObservationRoutes(
     },
     read: (input) =>
       answer(async () => {
-        const metadata = await index(input.projectId);
+        const { metadata, memberBeadIds } = await index(input.projectId);
         const observation =
           metadata.observations.find(
             (row) => row.sessionId === input.sessionId,
@@ -322,7 +334,15 @@ export function createSessionObservationRoutes(
           after: input.after,
           nextAfter: page.events.at(-1)?.id ?? input.after,
           more: page.more,
-          activity: page.events.map(activity),
+          // A session may move between projects. Its address admits selection,
+          // not another project's explicitly tagged activity. Advance the raw
+          // cursor even across a fully suppressed page and preserve raw more.
+          activity: page.events
+            .filter(
+              (event) =>
+                event.beadId === undefined || memberBeadIds.has(event.beadId),
+            )
+            .map(activity),
           problems: metadata.problems,
         });
         if (!parsed.success)

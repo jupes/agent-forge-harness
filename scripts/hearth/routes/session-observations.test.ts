@@ -211,6 +211,51 @@ test("foreign membership and widened cursors refuse before any selected-session 
   ).toBe(404);
 });
 
+test("a shared session excludes explicitly foreign bead metadata while retaining untagged activity and advancing across an empty visible page", async () => {
+  const { h, project } = await fixture();
+  const foreign = h.append({
+    kind: "tool.called",
+    sessionId: "external-child",
+    beadId: "beta-epic",
+    payload: { tool: "Foreign project tool", argsHash: "d".repeat(64) },
+  });
+  h.append({
+    kind: "tool.called",
+    sessionId: "external-child",
+    payload: { tool: "Untagged session tool", argsHash: "e".repeat(64) },
+  });
+  h.append({
+    kind: "tool.called",
+    sessionId: "external-child",
+    beadId: "alpha-epic",
+    payload: { tool: "Current project tool", argsHash: "f".repeat(64) },
+  });
+  const path = `${h.api}/projects/${project.id}/session-observations/external-child`;
+  const read = async (after: number, limit: number) => {
+    const response = await fetch(`${path}?after=${after}&limit=${limit}`, {
+      headers: h.headers(h.hearth.token),
+    });
+    expect(response.status).toBe(200);
+    const envelope = await response.json();
+    expect(envelope.ok).toBe(true);
+    return sessionObservationDetailSchema.parse(envelope.data);
+  };
+  const filtered = await read(foreign - 1, 1);
+  expect(filtered.activity).toEqual([]);
+  expect(filtered.nextAfter).toBe(foreign);
+  expect(filtered.more).toBe(true);
+  const next = await read(filtered.nextAfter, 100);
+  expect(
+    next.activity
+      .filter((event) => event.kind === "tool.called")
+      .map((event) => event.tool),
+  ).toEqual(["Untagged session tool", "Current project tool"]);
+  expect(next.more).toBe(false);
+  expect(JSON.stringify(await read(0, 100))).not.toContain(
+    "Foreign project tool",
+  );
+});
+
 test("an unreadable registry reports unknown ownership while preserving scoped metadata, and an unserved catalog scope is refused", async () => {
   const { h, project } = await fixture();
   writeOwnerOnly(sessionRegistryFile(h.home), "{corrupt registry");
