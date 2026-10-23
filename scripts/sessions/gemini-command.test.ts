@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdirSync,
+  realpathSync,
   rmdirSync,
   symlinkSync,
   unlinkSync,
@@ -54,7 +55,11 @@ test("a Windows npm Gemini shim resolves the official fixed package entry and na
       return which(name);
     },
   });
-  expect(command).toEqual([nativeNode, entry]);
+  // OS temp may use RUNNER~1 while the resolver returns the same files' long paths.
+  expect(command).toEqual([
+    realpathSync.native(nativeNode),
+    realpathSync.native(entry),
+  ]);
   expect(command).not.toContain(shim);
   expect(calls).toEqual(["gemini", "node"]);
 });
