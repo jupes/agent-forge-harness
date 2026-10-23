@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -92,7 +92,7 @@ async function fixture(mode = "normal") {
       throw Error("Invalid completed fake log");
     }
   };
-  return { root, home, project, request, open, records };
+  return { root, home, project, request, open, records, runtime };
 }
 
 test("owned Chat persists its private snapshot and resumes the exact native thread after service recreation", async () => {
@@ -139,6 +139,39 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
   expect(page.frames.some((frame) => frame.event.kind === "model")).toBe(false);
 });
 
+test("a later Chat turn cannot replace the original captured canonical directory identity", async () => {
+  const f = await fixture(),
+    service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const page = await service.read(f.project.id, started.session.id),
+    prepare = f.runtime.prepare;
+  const changed = spyOn(f.runtime, "prepare").mockImplementation(
+    async (input) => ({
+      ...(await prepare(input)),
+      canonicalCwd: `${f.root}-retargeted`,
+    }),
+  );
+  try {
+    await expect(
+      service.send(f.project.id, started.session.id, {
+        requestId: randomUUID(),
+        expectedRevision: page.revision,
+        text: "Second turn",
+        about: [],
+      }),
+    ).rejects.toThrow("changed");
+    expect(
+      f.records().filter((row) => row.method === "turn/start"),
+    ).toHaveLength(1);
+    expect(
+      (await service.read(f.project.id, started.session.id)).turns,
+    ).toHaveLength(1);
+  } finally {
+    changed.mockRestore();
+  }
+});
+
 test.each([
   "accept",
   "decline",
@@ -149,12 +182,12 @@ test.each([
   const started = await service.start(f.project.id, f.request),
     sessionId = started.session.id;
   const deadline = Date.now() + 4000;
-  while (!service.approvals(f.project.id, sessionId).pending.length) {
+  while (!(await service.approvals(f.project.id, sessionId)).pending.length) {
     if (Date.now() > deadline)
       throw Error("The native approval never became actionable");
     await Bun.sleep(20);
   }
-  const pending = service.approvals(f.project.id, sessionId).pending[0];
+  const pending = (await service.approvals(f.project.id, sessionId)).pending[0];
   if (!pending) throw Error("Missing live native callback");
   const request = {
     requestId: randomUUID(),
@@ -177,7 +210,9 @@ test.each([
     page.frames.find((frame) => frame.event.kind === "coding-chat-decision")
       ?.event,
   ).toMatchObject({ receipt });
-  expect(service.approvals(f.project.id, sessionId).pending).toEqual([]);
+  expect((await service.approvals(f.project.id, sessionId)).pending).toEqual(
+    [],
+  );
   const answers = f.records().filter((row) => row.kind === "answer");
   expect(answers).toHaveLength(1);
   expect(answers[0]?.result).toEqual({ decision });

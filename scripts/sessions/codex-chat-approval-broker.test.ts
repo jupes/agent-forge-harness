@@ -223,3 +223,74 @@ test("foreign or widened decisions and a competing original UUID cannot answer a
   expect(receipt).not.toHaveProperty("nativeRequestId");
   expect(intents).toHaveLength(1);
 });
+
+test("file-change approval without correlated actual diffs never offers or accepts an allow decision", async () => {
+  const intents: CodexChatDecisionIntent[] = [],
+    broker = createCodexChatApprovalBroker({ readIntents: () => intents });
+  const selected = {
+      ...approval(),
+      kind: "file-change" as const,
+      command: null,
+    },
+    controller = new AbortController(),
+    turnRequestId = randomUUID();
+  const offered = broker.offer({
+    ...address,
+    approval: selected,
+    turnRequestId,
+    version: "0.163.0-alpha.10.2",
+    signal: controller.signal,
+    persist: async (event) => {
+      intents.push(event);
+    },
+  });
+  expect(broker.read(address).pending[0]?.approval.availableDecisions).toEqual([
+    "decline",
+    "cancel",
+  ]);
+  expect(broker.read(address).pending[0]).toHaveProperty(
+    "detailsUnavailableReason",
+    "Actual file-change details are unavailable. Allow is disabled.",
+  );
+  const request = {
+    requestId: randomUUID(),
+    turnRequestId,
+    approvalId: selected.id,
+    decision: "accept" as const,
+  };
+  await expect(broker.decide(address, request)).rejects.toThrow("offer");
+  expect(intents).toEqual([]);
+  await broker.decide(address, { ...request, decision: "decline" });
+  expect(await offered).toBe("decline");
+});
+
+test("the live approval deadline removes actionability without fabricating or saving an answer", async () => {
+  const intents: CodexChatDecisionIntent[] = [],
+    broker = createCodexChatApprovalBroker({
+      readIntents: () => intents,
+      approvalTimeoutMs: 20,
+    });
+  const selected = approval(),
+    turnRequestId = randomUUID();
+  const offered = broker.offer({
+    ...address,
+    approval: selected,
+    turnRequestId,
+    version: "0.163.0-alpha.10.2",
+    signal: new AbortController().signal,
+    persist: async (event) => {
+      intents.push(event);
+    },
+  });
+  await expect(offered).rejects.toThrow("no longer live");
+  expect(broker.read(address).pending).toEqual([]);
+  await expect(
+    broker.decide(address, {
+      requestId: randomUUID(),
+      turnRequestId,
+      approvalId: selected.id,
+      decision: "accept",
+    }),
+  ).rejects.toThrow("live");
+  expect(intents).toEqual([]);
+});

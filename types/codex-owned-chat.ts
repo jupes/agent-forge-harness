@@ -68,6 +68,7 @@ export interface CodexChatApprovalPage {
   pending: Array<{
     turnRequestId: string;
     actionable: true;
+    detailsUnavailableReason: string | null;
     approval: Pick<
       CodexChatApproval,
       "id" | "kind" | "command" | "cwd" | "reason" | "availableDecisions"

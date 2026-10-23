@@ -14,7 +14,10 @@ import {
   codexChatApprovalSchema,
   codexChatDecisionIntentSchema,
 } from "./codex-chat-owned-journal";
-import { parseCodexChatDecision } from "./codex-chat-owned-protocol";
+import {
+  CODEX_FILE_DETAILS_UNAVAILABLE,
+  parseCodexChatDecision,
+} from "./codex-chat-owned-protocol";
 import { privatePacketHash } from "./private-packet";
 import {
   ownedSessionIdSchema,
@@ -122,10 +125,15 @@ export function createCodexChatApprovalBroker(options: {
       const approval = codexChatApprovalSchema.parse(
         structuredClone(input.approval),
       );
+      if (approval.kind === "file-change")
+        approval.availableDecisions = approval.availableDecisions.filter(
+          (decision) => decision !== "accept",
+        );
       if (
         input.version !== CODEX_APP_SERVER_VERSION ||
         !sessionRequestIdSchema.safeParse(input.turnRequestId).success ||
         input.signal.aborted ||
+        approval.availableDecisions.length === 0 ||
         live.has(approval.id) ||
         live.size >= 128
       )
@@ -322,6 +330,8 @@ export function createCodexChatApprovalBroker(options: {
             return {
               turnRequestId: entry.turnRequestId,
               actionable: true,
+              detailsUnavailableReason:
+                kind === "file-change" ? CODEX_FILE_DETAILS_UNAVAILABLE : null,
               approval: {
                 id,
                 kind,

@@ -13,6 +13,9 @@ import {
 } from "./protocol";
 import { sessionStartSchema } from "./request-protocol";
 
+export const CODEX_FILE_DETAILS_UNAVAILABLE =
+  "Actual file-change details are unavailable. Allow is disabled.";
+
 export const codexChatStartSchema = sessionStartSchema
   .omit({ launch: true })
   .extend({
@@ -42,6 +45,47 @@ export const codexChatDecisionReceiptSchema = codexChatDecisionRequestSchema
     recordedAt: z.iso.datetime(),
   })
   .strict() satisfies z.ZodType<CodexChatDecisionReceipt>;
+
+export const codexChatApprovalPageSchema = z
+  .object({
+    pending: z
+      .array(
+        z
+          .object({
+            turnRequestId: sessionRequestIdSchema,
+            actionable: z.literal(true),
+            detailsUnavailableReason: z
+              .literal(CODEX_FILE_DETAILS_UNAVAILABLE)
+              .nullable(),
+            approval: z
+              .object({
+                id: sessionRequestIdSchema,
+                kind: z.enum(["command", "file-change"]),
+                command: z.string().max(16_384).nullable(),
+                cwd: z.string().max(1024).nullable(),
+                reason: z.string().max(16_384).nullable(),
+                availableDecisions: z
+                  .array(z.enum(["accept", "decline", "cancel"]))
+                  .min(1)
+                  .max(3),
+              })
+              .strict(),
+          })
+          .strict()
+          .refine((value) =>
+            value.approval.kind === "file-change"
+              ? value.detailsUnavailableReason ===
+                  CODEX_FILE_DETAILS_UNAVAILABLE &&
+                !value.approval.availableDecisions.includes("accept")
+              : value.detailsUnavailableReason === null &&
+                !!value.approval.command &&
+                !!value.approval.cwd,
+          ),
+      )
+      .max(128),
+    receipt: codexChatDecisionReceiptSchema.nullable(),
+  })
+  .strict();
 
 export function parseCodexChatDecision(
   input: unknown,

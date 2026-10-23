@@ -255,9 +255,26 @@ export function createCodexOwnedChatService(options: Options) {
     ) {
       return forId(projectId, sessionId).read(projectId, query);
     },
-    approvals(projectId: string, sessionId: string, requestId?: string) {
-      checked(projectId, sessionId);
-      return broker.read({ projectId, sessionId }, requestId);
+    async approvals(projectId: string, sessionId: string, requestId?: string) {
+      const session = checked(projectId, sessionId),
+        selected = { projectId, sessionId };
+      const page = broker.read(selected, requestId);
+      // Reconciliation is history, not fresh execution authority. Pending callbacks
+      // are advertised only while their current project/worktree scope still passes.
+      if (page.receipt || !page.pending.length) return page;
+      const state = storeFor(session).read(projectId),
+        turnId = page.pending[0]?.turnRequestId;
+      const user = state.frames.find(
+        (frame) => frame.turnId === turnId && frame.event.kind === "user",
+      )?.event;
+      if (user?.kind !== "user")
+        throw new ConversationError(
+          409,
+          "The live approval has no matching private accepted turn.",
+        );
+      await options.validateScope(projectId, session, user.about);
+      // Native resolution/Stop may have arrived while the read-only scope check waited.
+      return broker.read(selected, requestId);
     },
     async decide(
       projectId: string,

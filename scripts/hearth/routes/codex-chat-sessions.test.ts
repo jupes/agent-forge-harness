@@ -11,6 +11,7 @@ import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
 } from "../../projects/testing";
+import { codexChatApprovalPageSchema } from "../../sessions/codex-chat-owned-protocol";
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
@@ -20,6 +21,19 @@ import { fixtureSessionGit } from "./session-fixture";
 
 const opened: TestHearth[] = [],
   releaseHeld: Array<() => void> = [];
+function alive(pid: number) {
+  try {
+    if (
+      process.platform === "linux" &&
+      /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+    )
+      return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 afterEach(async () => {
   for (const release of releaseHeld.splice(0)) release();
   for (const h of opened.splice(0).reverse()) await h.close();
@@ -153,8 +167,11 @@ async function fixture(mode = "approval-command", holdDecision = false) {
   const waitApproval = async (id: string) => {
     const deadline = Date.now() + 5000;
     for (;;) {
-      const data = await get(`/${id}/approvals`);
-      if (data.pending.length) return data.pending[0];
+      const data = codexChatApprovalPageSchema.parse(
+        await get(`/${id}/approvals`),
+      );
+      const pending = data.pending[0];
+      if (pending) return pending;
       if (Date.now() > deadline)
         throw Error("Native approval never became actionable");
       await Bun.sleep(20);
@@ -324,7 +341,79 @@ test("Stop invalidates a protected native approval and confirms cleanup of the a
   const tree = f.records().find((row) => row.kind === "tree");
   if (typeof tree?.pid !== "number" || typeof tree.childPid !== "number")
     throw Error("No actual native fixture tree");
-  for (const pid of [tree.pid, tree.childPid])
-    expect(() => process.kill(pid, 0)).toThrow();
+  const pids = [tree.pid, tree.childPid],
+    deadline = Date.now() + 5000;
+  while (pids.some(alive) && Date.now() < deadline) await Bun.sleep(10);
+  expect(pids.map(alive)).toEqual([false, false]);
   expect(f.records().filter((row) => row.kind === "answer")).toEqual([]);
+});
+
+test("file Allow stays unavailable without actual diffs, current/foreign scope refuses effects, and explicit native cancel is preserved", async () => {
+  const f = await fixture("approval-file"),
+    response = await f.post("", f.request),
+    started = ownedCodingStartReceiptSchema.parse((await response.json()).data),
+    id = started.session.id;
+  const pending = await f.waitApproval(id);
+  expect(pending.approval.availableDecisions).toEqual(["decline", "cancel"]);
+  expect(pending.detailsUnavailableReason).toBe(
+    "Actual file-change details are unavailable. Allow is disabled.",
+  );
+  const request: CodexChatDecisionRequest = {
+    requestId: randomUUID(),
+    approvalId: pending.approval.id,
+    turnRequestId: pending.turnRequestId,
+    decision: "accept",
+  };
+  expect((await f.post(`/${id}/approval-decisions`, request)).status).toBe(409);
+  expect(f.records().filter((row) => row.kind === "answer")).toEqual([]);
+  const foreign = await fetch(
+    `${f.h.api}/projects/project-${randomUUID()}/sessions/${id}/approval-decisions`,
+    {
+      method: "POST",
+      headers: f.h.headers(f.h.hearth.token),
+      body: JSON.stringify({ ...request, decision: "decline" }),
+    },
+  );
+  expect(foreign.status).toBe(409);
+  const catalog = projectCatalogFixture(f.h.workspace),
+    project = catalog.projects[0];
+  if (!project) throw Error("No planted project");
+  project.archived = true;
+  writeOwnerOnly(projectCatalogPath(f.h.home), JSON.stringify(catalog));
+  expect(
+    (
+      await f.post(`/${id}/approval-decisions`, {
+        ...request,
+        decision: "decline",
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await fetch(
+        `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${id}/approvals`,
+        { headers: f.h.headers(f.h.hearth.token) },
+      )
+    ).status,
+  ).toBe(409);
+  expect(f.records().filter((row) => row.kind === "answer")).toEqual([]);
+  project.archived = false;
+  writeOwnerOnly(projectCatalogPath(f.h.home), JSON.stringify(catalog));
+  expect(
+    (
+      await f.post(`/${id}/approval-decisions`, {
+        ...request,
+        decision: "cancel",
+      })
+    ).status,
+  ).toBe(200);
+  const page = await f.settle(id);
+  expect(page.turns[0]?.phase).toBe("failed");
+  expect(
+    f
+      .records()
+      .filter((row) => row.kind === "answer")
+      .map((row) => row.result),
+  ).toEqual([{ decision: "cancel" }]);
+  expect((await f.get(`/${id}/approvals`)).pending).toEqual([]);
 });

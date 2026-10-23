@@ -49,6 +49,14 @@ than generalizing every existing transport and request codec.
   optional original receipt selected by `requestId`. Actionable views carry no
   native RPC selector or process identity. Saved request history is never live
   authority; recreation has no actionable callbacks.
+  A pending view rechecks the current read-only project/worktree/About scope and
+  then reads callback state again, so native resolution during validation cannot
+  leave an actionable stale view. Historical receipt lookup does not reauthorize
+  execution and therefore does not need fresh mutable execution scope.
+- File-change Allow is disabled while actual correlated diff details are
+  unavailable. The protected view names that limitation, and accepts only a
+  native-offered decline/cancel. Native reason/item identity does not synthesize
+  a diff or justify a public Allow action.
 - `POST /projects/:id/sessions/:sessionId/approval-decisions` is an audited action
   (`session.approval.decide`). Scope is part of the original decision hash.
   A private `coding-chat-decision` intent is durably appended through the live

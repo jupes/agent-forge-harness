@@ -68,7 +68,10 @@ export const codexChatApprovalSchema = z
       .max(3)
       .refine((values) => new Set(values).size === values.length),
   })
-  .strict() satisfies z.ZodType<CodexChatApproval>;
+  .strict()
+  .refine(
+    (value) => value.kind !== "command" || (!!value.command && !!value.cwd),
+  ) satisfies z.ZodType<CodexChatApproval>;
 const nativeEvent = z.discriminatedUnion("kind", [
   z
     .object({
