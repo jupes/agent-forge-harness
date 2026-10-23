@@ -3,6 +3,10 @@ import { interactiveLifetimeMs } from "./interactive-lifetime";
 
 export const INTERACTIVE_BOOTSTRAP_FLAG = "--interactive-bootstrap";
 export const INTERACTIVE_BOOTSTRAP_CONTROL = "agent-forge-owned-interactive";
+export const INTERACTIVE_BOOTSTRAP_TERMINAL =
+  "agent-forge-owned-interactive-terminal";
+export const INTERACTIVE_BOOTSTRAP_ACK = "agent-forge-owned-interactive-ack";
+export const INTERACTIVE_CONTROL_TIMEOUT_MS = 1000;
 export const INTERACTIVE_START_MAX_BYTES = 131_072;
 
 function startEnvelope(value: unknown): {
@@ -119,11 +123,16 @@ export async function runInteractiveBootstrap(): Promise<void> {
       stderr: "inherit",
     });
     const actual = child;
+    let timedOut = false;
     deadline = setTimeout(() => {
+      timedOut = true;
       actual.kill("SIGKILL");
-      process.exit(1);
     }, start.timeoutMs);
-    process.send({ kind: INTERACTIVE_BOOTSTRAP_CONTROL, pid: actual.pid });
+    process.send({
+      kind: INTERACTIVE_BOOTSTRAP_CONTROL,
+      version: 1,
+      pid: actual.pid,
+    });
     const stdin = (async () => {
       let total = remainder.byteLength;
       if (remainder.byteLength) await actual.stdin.write(remainder);
@@ -146,7 +155,49 @@ export async function runInteractiveBootstrap(): Promise<void> {
       if (actual.exitCode === null) throw error;
     });
     const results = await Promise.all([exited, inputDone]);
-    process.exitCode = results[0];
+    clearTimeout(deadline);
+    // This fixed private receipt precedes wrapper exit. The provider has no IPC
+    // capability; acknowledgement proves the owner received the terminal fact.
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        process.off("message", receive);
+        if (error) reject(error);
+        else resolve();
+      };
+      const receive = (value: unknown) => {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          Array.isArray(value) ||
+          Object.keys(value).length !== 3 ||
+          !("kind" in value) ||
+          value.kind !== INTERACTIVE_BOOTSTRAP_ACK ||
+          !("version" in value) ||
+          value.version !== 1 ||
+          !("pid" in value) ||
+          value.pid !== actual.pid
+        )
+          finish(new Error("Invalid private terminal acknowledgement."));
+        else finish();
+      };
+      const timer = setTimeout(
+        () => finish(new Error("Missing private terminal acknowledgement.")),
+        INTERACTIVE_CONTROL_TIMEOUT_MS,
+      );
+      process.on("message", receive);
+      try {
+        process.send?.({
+          kind: INTERACTIVE_BOOTSTRAP_TERMINAL,
+          version: 1,
+          pid: actual.pid,
+          timedOut,
+        });
+      } catch {
+        finish(new Error("Private terminal acknowledgement failed."));
+      }
+    });
+    process.exitCode = timedOut ? 1 : results[0];
   } catch {
     child?.kill("SIGKILL");
     // Never include the envelope, provider environment, prompt or exception body.

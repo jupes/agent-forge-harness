@@ -9,6 +9,7 @@ import {
   writeState,
 } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
+import { createPostFencedGesture } from "../e2e/post-fenced-gesture";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import { standInCalls } from "../e2e/stand-in";
 import { alpha, beta, seedProjects } from "./project-fixtures";
@@ -216,25 +217,26 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
       (args) => args[0] === "update" && args.at(-1) === "alpha-epic",
     ).length;
   const writesBefore = epicWrites();
-  const approveManage = async (card: Locator, applied: () => boolean) => {
-    const before = approvalPosts;
+  const approveReviewed = async (card: Locator, applied: () => boolean) => {
+    const button = card.getByRole("button", {
+      name: "Approve",
+      exact: true,
+    });
+    const fence = createPostFencedGesture({
+      posts: () => approvalPosts,
+      applied,
+      ready: () => expect(button).toBeEnabled({ timeout: 250 }),
+      gesture: () => button.click({ timeout: 250 }),
+    });
     // A background read can disable the button between the enabled check and
     // the click. Repeat only that unsent gesture: any POST or applied effect
     // permanently closes the retry boundary for this reviewed action.
     await expect(async () => {
-      if (applied()) return;
-      if (approvalPosts === before) {
-        const button = card.getByRole("button", {
-          name: "Approve",
-          exact: true,
-        });
-        await expect(button).toBeEnabled({ timeout: 250 });
-        await button.click({ timeout: 250 });
-      }
+      await fence.attempt();
       expect(applied()).toBe(true);
     }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
     await expect(card).toContainText("Done");
-    expect(approvalPosts).toBe(before + 1);
+    expect(approvalPosts).toBe(fence.postsBefore + 1);
   };
   const approval = cards(page).getByRole("article", {
     name: "Approve scoped beads",
@@ -244,8 +246,12 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
   await approval
     .getByRole("checkbox", { name: "alpha-epic.1", exact: true })
     .uncheck();
-  await approval.getByRole("button", { name: "Approve", exact: true }).click();
-  await expect(approval).toContainText("Done");
+  await approveReviewed(
+    approval,
+    () =>
+      readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata?.queue_state ===
+      "approved",
+  );
   expect(
     readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata?.queue_state,
   ).toBe("approved");
@@ -263,18 +269,22 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
   await create
     .getByRole("textbox", { name: "Title", exact: true })
     .fill("Reviewed fixture child");
-  await create.getByRole("button", { name: "Approve", exact: true }).click();
-  await expect(create).toContainText("Done");
-  const child = Object.values(readState(BD_STAND_IN_STATE)).find(
-    (item) => item.title === "Reviewed fixture child",
-  );
+  const childrenBefore = new Set(Object.keys(readState(BD_STAND_IN_STATE)));
+  const reviewedChildren = () =>
+    Object.values(readState(BD_STAND_IN_STATE)).filter(
+      (item) =>
+        !childrenBefore.has(item.id) && item.title === "Reviewed fixture child",
+    );
+  await approveReviewed(create, () => reviewedChildren().length === 1);
+  expect(reviewedChildren()).toHaveLength(1);
+  const child = reviewedChildren()[0];
   expect(child?.metadata?.queue_state).toBe("proposed");
   expect(child?.labels).toContain("project:alpha");
   const manage = cards(page).getByRole("article", {
     name: "Manage scoped work",
     exact: true,
   });
-  await approveManage(
+  await approveReviewed(
     manage,
     () =>
       readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata?.queue_state ===
@@ -307,7 +317,7 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
       await next
         .getByRole("textbox", { name: "Smith", exact: true })
         .fill("claude-journeyman");
-    await approveManage(next, () => {
+    await approveReviewed(next, () => {
       const metadata = readState(BD_STAND_IN_STATE)["alpha-epic"]?.metadata;
       return operation === "reassign"
         ? metadata?.smith === "claude-journeyman"
