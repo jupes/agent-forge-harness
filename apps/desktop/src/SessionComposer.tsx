@@ -233,6 +233,8 @@ function ClaudeSessionComposer({
     !project.archived &&
     !busy &&
     !view.pendingStart &&
+    !view.startIdentity &&
+    !view.startIdentityError &&
     !!serialized &&
     selectedSmith?.enabled === true &&
     selectedSmith.provider === "claude";
@@ -252,7 +254,14 @@ function ClaudeSessionComposer({
     }
   };
   const check = async () => {
-    if (busy || view.pendingStart || !writesAllowed) return;
+    if (
+      busy ||
+      view.pendingStart ||
+      view.startIdentity ||
+      view.startIdentityError ||
+      !writesAllowed
+    )
+      return;
     setChecking(true);
     setProblem("");
     try {
@@ -930,7 +939,14 @@ function ClaudeSessionComposer({
       <footer class="af-session-preview">
         <h3>Equivalent command</h3>
         <Button
-          disabled={!writesAllowed || busy || !!view.pendingStart || !settings}
+          disabled={
+            !writesAllowed ||
+            busy ||
+            !!view.pendingStart ||
+            !!view.startIdentity ||
+            !!view.startIdentityError ||
+            !settings
+          }
           onClick={() => {
             void check();
           }}
@@ -957,7 +973,9 @@ function ClaudeSessionComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        {view.pendingStart && (
+        {(view.pendingStart ||
+          view.startIdentity ||
+          view.startIdentityError) && (
           <div class="af-session-composer-row">
             <Button
               onClick={() => {
@@ -967,19 +985,21 @@ function ClaudeSessionComposer({
             >
               Check original Start
             </Button>
-            <Button
-              onClick={() => {
-                void client.retryStart(project.id);
-              }}
-              disabled={!writesAllowed || view.starting}
-            >
-              Retry original Start
-            </Button>
+            {view.pendingStart && (
+              <Button
+                onClick={() => {
+                  void client.retryStart(project.id);
+                }}
+                disabled={!writesAllowed || view.starting}
+              >
+                Retry original Start
+              </Button>
+            )}
           </div>
         )}
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
-            {view.pendingStart
+            {view.pendingStart || view.startIdentity
               ? "Close composer (Start still pending)"
               : "Cancel"}
           </Button>

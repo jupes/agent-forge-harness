@@ -314,17 +314,20 @@ export function SessionConversation({
                   (frame) =>
                     frame.turnId === row.id && frame.event.kind === "user",
                 )
-                .map((frame) =>
-                  frame.event.kind === "user" &&
-                  frame.event.session?.launch.attachments?.length ? (
+                .map((frame) => {
+                  if (frame.event.kind !== "user") return null;
+                  const attachments =
+                    frame.event.codexTask?.launch.attachments ??
+                    frame.event.session?.launch.attachments;
+                  return attachments?.length ? (
                     <p class="af-session-note" key={frame.seq}>
                       Attachments:{" "}
-                      {frame.event.session.launch.attachments
+                      {attachments
                         .map((item) => `${item.name} (${item.kind})`)
                         .join(", ")}
                     </p>
-                  ) : null,
-                )}
+                  ) : null;
+                })}
             </article>
             {row.reply && (
               <article class="af-owned-reply" aria-label="Session reply">
@@ -379,7 +382,7 @@ export function SessionConversation({
                   : "Enter a follow-up for this same provider conversation.")}
         </p>
         <label>
-          Reply to Claude
+          Reply to {record?.provider === "codex" ? "Codex" : "Claude"}
           <textarea
             ref={prompt}
             aria-label="Session reply prompt"

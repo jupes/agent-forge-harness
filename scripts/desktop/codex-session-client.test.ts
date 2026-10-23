@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { createSessionsClient } from "../../apps/desktop/src/session-client";
+import { sessionStartHash } from "../../apps/desktop/src/session-start-identities";
 import type {
   OwnedCodingSessionRecord,
   OwnedSessionStartRequest,
 } from "../../types/codex-owned-task";
+import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
 const requestId = "18da5c95-3218-439c-a33d-e5662465f505";
@@ -41,6 +43,7 @@ const record = {
   requestedEffort: null,
   createdAt: at,
 };
+record.requestHash = await sessionStartHash({ ...input, requestId });
 const turn = {
   requestId,
   hash: "a".repeat(64),
@@ -73,6 +76,7 @@ test("Codex lost Start preserves its explicit immutable provider intent across e
   const sent: OwnedSessionStartRequest[] = [];
   let listed = false;
   const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => requestId,
     list: async () => (listed ? [record] : []),
@@ -135,6 +139,7 @@ test("a same-UUID receipt from another provider cannot confirm Codex Start", asy
   let listed: OwnedCodingSessionRecord[] = [];
   let reads = 0;
   const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => requestId,
     list: async () => listed,
@@ -153,4 +158,127 @@ test("a same-UUID receipt from another provider cannot confirm Codex Start", asy
   expect(client.project(projectId).lastStarted).toBeNull();
   expect(client.project(projectId).error).toContain("could not be verified");
   client.dispose();
+});
+
+test("recreating the client cannot replace a Start whose original POST has not reached admission", async () => {
+  const sent: unknown[] = [];
+  const journal = sessionStartFixture();
+  let next = 0;
+  const make = () =>
+    createSessionsClient({
+      identities: journal.make(),
+      canWrite: () => true,
+      requestId: () =>
+        next++ === 0 ? requestId : "28da5c95-3218-439c-a33d-e5662465f505",
+      list: async () => [],
+      read: async () => {
+        throw Error("No admission yet");
+      },
+      post: async (_project, _session, _action, body) => {
+        sent.push(body);
+        return { state: "unknown", message: "POST delivery unknown" };
+      },
+      stream: () => () => ({ close() {} }),
+    });
+  const first = make();
+  await first.start(projectId, input);
+  first.dispose();
+  const second = make();
+  await second.refresh(projectId);
+  await second.start(projectId, {
+    ...input,
+    launch: { ...input.launch, prompt: "A replacement must stay blocked" },
+  });
+  expect(sent).toHaveLength(1);
+  expect(next).toBe(1);
+  expect(second.project(projectId).startIdentity?.requestId).toBe(requestId);
+  expect(JSON.stringify([...journal.values])).not.toContain(
+    input.launch.prompt,
+  );
+  second.dispose();
+});
+
+test("a restored metadata hold clears only after matching protected provider/hash and actual admitted turn", async () => {
+  const journal = sessionStartFixture();
+  let listed: OwnedCodingSessionRecord[] = [],
+    admitted = false,
+    posts = 0;
+  const make = () =>
+    createSessionsClient({
+      identities: journal.make(),
+      canWrite: () => true,
+      requestId: () => requestId,
+      list: async () => listed,
+      read: async () =>
+        admitted ? page : { ...page, turns: [], request: null },
+      post: async () => {
+        posts++;
+        return { state: "unknown", message: "Unknown" };
+      },
+      stream: () => () => ({ close() {} }),
+    });
+  const first = make();
+  await first.start(projectId, input);
+  first.dispose();
+  const second = make();
+  expect(second.project(projectId).startIdentity?.requestId).toBe(requestId);
+  listed = [{ ...record, requestHash: "f".repeat(64) }];
+  await second.refresh(projectId);
+  expect(second.project(projectId).lastStarted).toBeNull();
+  expect(journal.identities.read(projectId)).not.toBeNull();
+  listed = [record];
+  await second.refresh(projectId);
+  expect(journal.identities.read(projectId)).not.toBeNull();
+  admitted = true;
+  await second.refresh(projectId);
+  await journal.withLock(() => {});
+  expect(second.project(projectId).lastStarted).toBe(id);
+  expect(journal.identities.read(projectId)).toBeNull();
+  expect(posts).toBe(1);
+  second.dispose();
+});
+
+test("uncertain refusals and failed durable erasure retain the hold; only a guaranteed unsent request can release it", async () => {
+  for (const kind of ["generic-refusal", "not-sent", "erase-fails"] as const) {
+    const journal = sessionStartFixture();
+    let posts = 0;
+    const identities =
+      kind === "erase-fails"
+        ? {
+            ...journal.identities,
+            release: async () => {
+              throw Error("Storage unavailable");
+            },
+          }
+        : journal.identities;
+    const client = createSessionsClient({
+      identities,
+      canWrite: () => true,
+      requestId: () => requestId,
+      list: async () => [],
+      read: async () => page,
+      post: async () => {
+        posts++;
+        return kind === "generic-refusal"
+          ? { state: "refused", message: "No admission guarantee" }
+          : {
+              state: "refused",
+              message: "The request never left this browser",
+              notSent: true,
+            };
+      },
+      stream: () => () => ({ close() {} }),
+    });
+    await client.start(projectId, input);
+    expect(posts).toBe(1);
+    expect(journal.identities.read(projectId) === null).toBe(
+      kind === "not-sent",
+    );
+    expect(client.project(projectId).pendingStart === null).toBe(
+      kind === "not-sent",
+    );
+    if (kind === "erase-fails")
+      expect(client.project(projectId).startIdentityError).toContain("durably");
+    client.dispose();
+  }
 });
