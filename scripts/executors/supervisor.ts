@@ -9,7 +9,7 @@
  */
 
 import { join } from "node:path";
-import { guardTree } from "./tree-guard";
+import { guardSuspendedWindowsProcess, guardTree } from "./tree-guard";
 import type { ChildExit } from "./types";
 
 /** How much of a child's stderr is kept: the end, where a failure says why. */
@@ -40,6 +40,11 @@ export interface InteractiveSuperviseOptions
   /** Cumulative process input and currently queued byte cap; not proof of child consumption. */
   maxStdinBytes?: number;
   stdinTimeoutMs?: number;
+  /** Trusted ownership-failure fixture seam only; never an HTTP or launch option. */
+  interactiveGuard?: (pid: number) => {
+    release(): void;
+    terminate(): void;
+  } | null;
 }
 
 export interface InteractiveSupervised extends Supervised {
@@ -223,10 +228,30 @@ export function supervise(
   });
   live.add(proc.pid);
   // For a harness ended outright, which runs no exit hook (`tree-guard.ts`).
-  const guard = guardTree(proc.pid);
+  const guard = interactive
+    ? options.interactiveGuard
+      ? options.interactiveGuard(proc.pid)
+      : process.platform === "win32"
+        ? guardSuspendedWindowsProcess(proc.pid)
+        : guardTree(proc.pid)
+    : guardTree(proc.pid);
+  if (guard === null) {
+    // No protocol input has been written. Refuse rather than claim an unowned tree.
+    proc.kill("SIGKILL");
+    try {
+      Promise.resolve(proc.stdin.end()).catch(() => undefined);
+    } catch {
+      // The failed child may already have closed its pipe.
+    }
+    void proc.stdout.cancel().catch(() => undefined);
+    void proc.stderr.cancel().catch(() => undefined);
+    live.delete(proc.pid);
+    throw new Error("Interactive child ownership could not be established.");
+  }
 
   let timedOut = false;
   let stopped = false;
+  let exited = false;
   let inputFailure: Error | null = null;
   const inputWaiters = new Set<(error: Error) => void>();
   const failInput = (error: Error) => {
@@ -236,8 +261,8 @@ export function supervise(
   };
   const kill = () => {
     failInput(new Error("Interactive stdin is closed."));
-    killTree(proc.pid);
-    if (interactive) guard.terminate?.();
+    if (interactive && process.platform === "win32") guard.terminate?.();
+    else if (!interactive || !exited) killTree(proc.pid);
   };
 
   const timer =
@@ -340,10 +365,11 @@ export function supervise(
   const done = (async (): Promise<ChildExit> => {
     try {
       const exitCode = await proc.exited;
+      exited = true;
       if (interactive) {
-        // This per-turn owner retains no native helpers after the parent exits.
-        killTree(proc.pid);
-        guard.terminate?.();
+        // Windows retains an owned job handle; POSIX descendants keep their process group alive.
+        if (process.platform === "win32") guard.terminate?.();
+        else killTree(proc.pid);
         failInput(new Error("Interactive stdin is closed."));
       }
       await pumped.catch(() => undefined);

@@ -100,7 +100,8 @@ test("a non-reader cannot accept unlimited buffered input across settled writes"
     await f.handle.write("x".repeat(512));
     await expect(f.handle.write("x")).rejects.toThrow("total byte bound");
     const exit = await f.handle.done;
-    expect(exit.exitCode).not.toBe(0);
+    // Windows job termination may report zero; the rejected write is independent failure evidence.
+    expect(exit.timedOut).toBe(false);
     expect(await gone(f.handle.pid)).toBe(true);
     expect(await gone(child)).toBe(true);
   } finally {
@@ -195,4 +196,30 @@ test("interactive queue bounds reject before buffering oversized input and prese
   });
   expect((await legacy.done).exitCode).toBe(0);
   expect(lines).toEqual(['{"received":"one-shot"}', '{"ended":true}']);
+});
+
+test("a failed mandatory ownership guard refuses before any protocol stdin", async () => {
+  let pid = 0;
+  const before = liveChildCount();
+  expect(() =>
+    supervise({
+      command: [process.execPath, fake],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      timeoutMs: 5000,
+      interactiveGuard(value) {
+        pid = value;
+        return null;
+      },
+      onLine: () => {
+        throw new Error(
+          "No failed-ownership child may deliver a protocol frame.",
+        );
+      },
+    }),
+  ).toThrow("ownership");
+  expect(pid).toBeGreaterThan(0);
+  expect(await gone(pid)).toBe(true);
+  expect(liveChildCount()).toBe(before);
 });
