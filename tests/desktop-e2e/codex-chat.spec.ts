@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
+import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
@@ -1035,6 +1036,8 @@ test("the native approval deadline removes stale choices without answering the r
 test("a saved native timeout withdraws old choices before final metadata settles, and reload/export never revive or resend them", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
   mode("outcome-held");
   const before = calls().filter((row) => row.method === "turn/start").length;
   const { pane, record } = await startedChat(page);
@@ -1042,12 +1045,17 @@ test("a saved native timeout withdraws old choices before final metadata settles
   await expect(allow).toBeEnabled();
   let releaseRead = () => {},
     received = () => {},
+    consumed = () => {},
+    heldOnce = false,
     decisions = 0;
   const gate = new Promise<void>((resolve) => {
     releaseRead = resolve;
   });
   const held = new Promise<void>((resolve) => {
     received = resolve;
+  });
+  const releasedResponse = new Promise<void>((resolve) => {
+    consumed = resolve;
   });
   page.on("request", (request) => {
     if (
@@ -1059,6 +1067,11 @@ test("a saved native timeout withdraws old choices before final metadata settles
   await page.route(
     `**/projects/${alpha.id}/sessions/${record.id}/approvals`,
     async (route) => {
+      if (heldOnce) {
+        await route.continue();
+        return;
+      }
+      heldOnce = true;
       const response = await route.fetch({
         headers: {
           ...route.request().headers(),
@@ -1070,6 +1083,30 @@ test("a saved native timeout withdraws old choices before final metadata settles
           `Protected approval fixture read refused: ${response.status()}`,
         );
       const body = await response.text();
+      let raw: unknown;
+      try {
+        raw = JSON.parse(body);
+      } catch {
+        throw Error("Malformed protected approval fixture read");
+      }
+      const originalOffer = codexChatApprovalPageSchema.parse(raw);
+      const offered = saved(record.id).frames.find(
+        (frame) =>
+          frame.turnId === record.requestId &&
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "approval-request",
+      )?.event;
+      if (
+        offered?.kind !== "coding-chat" ||
+        offered.event.kind !== "approval-request"
+      )
+        throw Error("No original native approval witness");
+      expect(originalOffer.pending).toHaveLength(1);
+      expect(originalOffer.pending[0]).toMatchObject({
+        turnRequestId: record.requestId,
+        actionable: true,
+        approval: { id: offered.event.approval.id },
+      });
       received();
       await gate;
       await route.fulfill({
@@ -1077,6 +1114,7 @@ test("a saved native timeout withdraws old choices before final metadata settles
         contentType: "application/json",
         body,
       });
+      consumed();
     },
   );
   try {
@@ -1097,6 +1135,15 @@ test("a saved native timeout withdraws old choices before final metadata settles
     ).toHaveCount(0);
     await expect(allow).toHaveCount(0);
     releaseRead();
+    await releasedResponse;
+    // Wait through the fetch/body and Preact effect/render boundary before
+    // asserting that this genuinely actionable old response cannot revive UI.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
     await expect(allow).toHaveCount(0);
     expect(decisions).toBe(0);
     await pane
