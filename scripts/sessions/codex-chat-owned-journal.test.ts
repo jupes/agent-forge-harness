@@ -8,7 +8,10 @@ import {
 } from "../hearth/routes/codex-chat-fixture";
 import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
-import { ownedCodingStateSchema } from "./codex-owned-journal";
+import {
+  ownedCodingPageSchema,
+  ownedCodingStateSchema,
+} from "./codex-owned-journal";
 
 test("private native approvals stay correlated with their exact Chat intent and native identity, and Keeper stays closed", async () => {
   const h = await startTestHearth();
@@ -55,6 +58,77 @@ test("private native approvals stay correlated with their exact Chat intent and 
       Object.assign(target.event.event.approval, change);
       expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
     }
+  } finally {
+    await h.close();
+  }
+});
+
+test("a partial pre-identity Chat page can retain its already-saved actual process without treating it as native identity", async () => {
+  const h = await startTestHearth();
+  try {
+    await seedChatDecision(h);
+    const state = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: FIXTURE_CHAT_SESSION,
+    }).read(FIXTURE_PROJECT_ID);
+    const savedProcess = state.frames.find(
+      (frame) => frame.event.kind === "process",
+    );
+    if (savedProcess?.event.kind !== "process")
+      throw Error("No saved process fixture");
+    const processFrame = {
+      ...savedProcess,
+      event: {
+        kind: "coding-chat",
+        provider: "codex",
+        version: "0.163.0-alpha.10.2",
+        event: {
+          kind: "process",
+          pid: savedProcess.event.pid,
+          wrapperPid: 1_999_999_999,
+          smith: "codex-journeyman",
+          requestedModel: "exact-model",
+          requestedEffort: null,
+        },
+      },
+    };
+    const page = {
+      ...state,
+      binding: null,
+      frames: [processFrame],
+      more: true,
+      nextCursor: processFrame.seq,
+      lastSequence: state.frames.length,
+      request: state.turns[0],
+      controllable: true,
+    };
+    expect(ownedCodingPageSchema.safeParse(page).success).toBe(true);
+    const nativeFrame = {
+      ...processFrame,
+      event: {
+        ...processFrame.event,
+        event: {
+          kind: "configuration",
+          model: "exact-model",
+          modelProvider: "openai",
+          effort: null,
+          cwd: h.workspace,
+        },
+      },
+    };
+    expect(
+      ownedCodingPageSchema.safeParse({ ...page, frames: [nativeFrame] })
+        .success,
+    ).toBe(false);
+    expect(
+      ownedCodingStateSchema.safeParse({
+        ...state,
+        binding: null,
+        frames: [processFrame],
+      }).success,
+    ).toBe(false);
+    expect(eventSchema.safeParse(processFrame.event).success).toBe(false);
   } finally {
     await h.close();
   }

@@ -172,8 +172,20 @@ function reportedTurn(
       (candidate) =>
         candidate.turnId === frame.turnId && candidate.event.kind === "user",
     )?.event;
-    if (user?.kind !== "user")
+    if (user?.kind !== "user") {
+      // Process ownership is saved before initialization can report a native
+      // identity. Its preceding user frame may be on the prior private page.
+      // Only this known process event is valid without a binding; no native
+      // configuration, text, approval or usage gains identity from it.
+      if (
+        !complete &&
+        event.kind === "coding-chat" &&
+        event.event.kind === "process" &&
+        value.binding === null
+      )
+        return true;
       return !complete && value.binding?.provider === event.provider;
+    }
     if (
       (event.kind === "coding-chat" || event.kind === "coding-chat-decision") &&
       !user.codexChat
