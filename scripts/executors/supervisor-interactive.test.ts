@@ -223,3 +223,79 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
   expect(await gone(pid)).toBe(true);
   expect(liveChildCount()).toBe(before);
 });
+
+test("private PID controls reject malformed or duplicate messages independently of provider stdout", async () => {
+  for (const mode of ["malformed", "duplicate"]) {
+    let errors = 0;
+    const handle = supervise({
+      command: [process.execPath, fake],
+      bootstrapCommand: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/interactive-control.ts"),
+        mode,
+      ],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      timeoutMs: 2000,
+      onOutputError: () => {
+        errors++;
+      },
+      onLine: () => {
+        throw Error("Control frames cannot enter provider output.");
+      },
+    });
+    try {
+      await handle.done;
+      expect(errors).toBe(1);
+      await expect(handle.write("late")).rejects.toThrow("closed");
+      expect(await gone(handle.pid)).toBe(true);
+    } finally {
+      await handle.stop("fixture cleanup");
+    }
+  }
+});
+
+test("the actual provider inherits neither bootstrap IPC API nor channel environment", async () => {
+  const lines: string[] = [];
+  const handle = supervise({
+    command: [process.execPath, fake, "ipc-probe"],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    timeoutMs: 2000,
+    onLine: (line) => {
+      lines.push(line);
+    },
+  });
+  try {
+    expect((await handle.done).exitCode).toBe(0);
+    expect(lines).toEqual(['{"providerHasIpc":false,"channelEnvironment":[]}']);
+  } finally {
+    await handle.stop("fixture cleanup");
+  }
+});
+
+test("interactive inherited stdout and stderr retain cumulative byte bounds in the parent", async () => {
+  for (const mode of ["stdout-flood", "stderr-flood"]) {
+    let errors = 0;
+    const handle = supervise({
+      command: [process.execPath, fake, mode],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      timeoutMs: 3000,
+      onLine: () => {},
+      onOutputError: () => {
+        errors++;
+      },
+    });
+    try {
+      expect((await handle.done).timedOut).toBe(false);
+      expect(errors).toBe(1);
+      expect(await gone(handle.pid)).toBe(true);
+    } finally {
+      await handle.stop("fixture cleanup");
+    }
+  }
+});

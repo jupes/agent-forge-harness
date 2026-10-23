@@ -3,6 +3,25 @@ import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 
 const mode = process.argv[2];
+if (mode === "stdout-flood" || mode === "stderr-flood") {
+  const target = mode === "stdout-flood" ? Bun.stdout : Bun.stderr;
+  const bytes = mode === "stdout-flood" ? 16_777_216 : 1_048_576;
+  const chunk = `${"x".repeat(8191)}\n`;
+  for (let written = 0; written <= bytes; written += chunk.length)
+    await target.write(chunk);
+  process.exit(0);
+}
+if (mode === "ipc-probe") {
+  console.log(
+    JSON.stringify({
+      providerHasIpc: typeof process.send === "function",
+      channelEnvironment: Object.keys(process.env).filter((name) =>
+        /(?:node_channel|bun.*ipc)/i.test(name),
+      ),
+    }),
+  );
+  process.exit(0);
+}
 if (mode === "child") await new Promise(() => setInterval(() => {}, 1000));
 if (
   mode === "blocked" ||
