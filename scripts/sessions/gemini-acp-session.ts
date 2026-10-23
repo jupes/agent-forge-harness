@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { GeminiAcpEvent } from "../../types/gemini-acp";
-import { decodeAcpServerFrame, encodeAcpClientRequest } from "./acp-wire";
+import {
+  type AcpRpcId,
+  decodeAcpServerFrame,
+  encodeAcpClientRequest,
+  encodeAcpPermissionReply,
+} from "./acp-wire";
+import { reportedJson, reportedText } from "./activity-protocol";
 
 const invalid = () =>
   new Error(
@@ -74,7 +80,69 @@ const notification = z
   .passthrough();
 const chunk = z.object({ content }).passthrough();
 const context = z.object({ used: count, size: count }).passthrough();
-type State = "cold" | "initialize" | "open" | "ready" | "prompt" | "dead";
+const nativeId = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((value) => !/[\p{Cc}\p{Cs}]/u.test(value));
+const toolStatus = z.enum(["pending", "in_progress", "completed", "failed"]);
+const tool = z
+  .object({
+    toolCallId: nativeId,
+    title: text.nullable().optional(),
+    status: toolStatus.nullable().optional(),
+    kind: z
+      .enum([
+        "read",
+        "edit",
+        "delete",
+        "move",
+        "search",
+        "execute",
+        "think",
+        "fetch",
+        "switch_mode",
+        "other",
+      ])
+      .nullable()
+      .optional(),
+    content: z.array(z.unknown()).max(128).nullable().optional(),
+    locations: z.array(z.unknown()).max(128).nullable().optional(),
+    rawInput: z.unknown().optional(),
+    rawOutput: z.unknown().optional(),
+  })
+  .passthrough();
+const nativePermission = z
+  .object({
+    sessionId: uuid,
+    toolCall: tool,
+    options: z
+      .array(
+        z
+          .object({
+            optionId: nativeId,
+            name: text,
+            kind: z.enum([
+              "allow_once",
+              "reject_once",
+              "allow_always",
+              "reject_always",
+            ]),
+          })
+          .strip(),
+      )
+      .min(1)
+      .max(16),
+  })
+  .passthrough();
+type State =
+  | "cold"
+  | "initialize"
+  | "open"
+  | "ready"
+  | "prompt"
+  | "cancelling"
+  | "dead";
 
 /** Pure protocol state; the caller persists ownership and decisions before sending returned frames. */
 export function createGeminiAcpSession(options: {
@@ -94,6 +162,17 @@ export function createGeminiAcpSession(options: {
     frames = 0,
     outputBytes = 0;
   const originals = new Set<string>();
+  const permissions = new Map<
+    AcpRpcId,
+    {
+      requestId: string;
+      toolCallId: string;
+      options: Extract<GeminiAcpEvent, { kind: "permission" }>["options"];
+    }
+  >();
+  const seenPermissionIds = new Set<AcpRpcId>();
+  const tools = new Map<string, z.infer<typeof toolStatus>>();
+  const thoughtTools = new Set<string>();
   const request = (method: string, params: Record<string, unknown>) => {
     pending = ++id;
     return encodeAcpClientRequest({ id: pending, method, params });
@@ -134,6 +213,43 @@ export function createGeminiAcpSession(options: {
       outputBytes = 0;
       return frame;
     },
+    /** Trusted owner must first persist the exact original decision intent; this consumes the offer once. */
+    answerPermission(input: {
+      rpcId: AcpRpcId;
+      requestId: string;
+      optionId: string | null;
+    }): string {
+      const offered = permissions.get(input.rpcId);
+      if (
+        state !== "prompt" ||
+        !requestId ||
+        offered?.requestId !== requestId ||
+        input.requestId !== requestId ||
+        (input.optionId !== null &&
+          !offered.options.some((option) => option.optionId === input.optionId))
+      )
+        throw invalid();
+      const frame = encodeAcpPermissionReply(
+        input.rpcId,
+        input.optionId === null
+          ? { outcome: "cancelled" }
+          : { outcome: "selected", optionId: input.optionId },
+      );
+      permissions.delete(input.rpcId);
+      return frame;
+    },
+    cancel(originalRequestId: string): string | null {
+      if (state === "ready" && originals.has(originalRequestId)) return null;
+      if (state !== "prompt" || !sessionId || requestId !== originalRequestId)
+        throw invalid();
+      // Invalidate callbacks synchronously before the caller yields while writing cancellation.
+      state = "cancelling";
+      permissions.clear();
+      return encodeAcpClientRequest({
+        method: "session/cancel",
+        params: { sessionId },
+      });
+    },
     read(line: string): { send: string[]; events: GeminiAcpEvent[] } {
       try {
         bytes += Buffer.byteLength(line);
@@ -148,7 +264,78 @@ export function createGeminiAcpSession(options: {
         const events: GeminiAcpEvent[] = [],
           send: string[] = [];
         if ("method" in frame) {
-          if (frame.method !== "session/update" || !sessionId) throw invalid();
+          if (!sessionId) throw invalid();
+          if (frame.method === "session/request_permission") {
+            const value = nativePermission.parse(frame.params);
+            if (
+              value.sessionId !== sessionId ||
+              state !== "prompt" ||
+              !requestId ||
+              seenPermissionIds.has(frame.id) ||
+              permissions.size >= 32 ||
+              seenPermissionIds.size >= 128 ||
+              new Set(value.options.map((option) => option.optionId)).size !==
+                value.options.length ||
+              [...permissions.values()].some(
+                (offer) => offer.toolCallId === value.toolCall.toolCallId,
+              ) ||
+              value.toolCall.status === "completed" ||
+              value.toolCall.status === "failed" ||
+              tools.get(value.toolCall.toolCallId) === "completed" ||
+              tools.get(value.toolCall.toolCallId) === "failed"
+            )
+              throw invalid();
+            if (value.toolCall.kind === "think")
+              thoughtTools.add(value.toolCall.toolCallId);
+            const detail = reportedJson(value.toolCall);
+            const detailsComplete =
+              !detail.truncated &&
+              !thoughtTools.has(value.toolCall.toolCallId) &&
+              (typeof value.toolCall.title === "string" ||
+                value.toolCall.rawInput !== undefined ||
+                (value.toolCall.content?.length ?? 0) > 0);
+            const selectable: Extract<
+              GeminiAcpEvent,
+              { kind: "permission" }
+            >["options"] = [];
+            for (const option of value.options)
+              if (
+                option.kind === "reject_once" ||
+                (option.kind === "allow_once" && detailsComplete)
+              )
+                selectable.push({
+                  optionId: option.optionId,
+                  name: option.name,
+                  kind: option.kind,
+                });
+            if (tools.size >= 128 && !tools.has(value.toolCall.toolCallId))
+              throw invalid();
+            tools.set(
+              value.toolCall.toolCallId,
+              value.toolCall.status ?? "pending",
+            );
+            permissions.set(frame.id, {
+              requestId,
+              toolCallId: value.toolCall.toolCallId,
+              options: selectable,
+            });
+            seenPermissionIds.add(frame.id);
+            events.push({
+              kind: "permission",
+              rpcId: frame.id,
+              requestId,
+              toolCallId: value.toolCall.toolCallId,
+              detail: thoughtTools.has(value.toolCall.toolCallId)
+                ? reportedJson({
+                    toolCallId: value.toolCall.toolCallId,
+                    detail: "Native thought tool details are not retained.",
+                  })
+                : detail,
+              detailsComplete,
+              options: selectable,
+            });
+            return { send, events };
+          }
           const value = notification.parse(frame.params);
           if (value.sessionId !== sessionId) throw invalid();
           const tag = value.update.sessionUpdate;
@@ -161,7 +348,9 @@ export function createGeminiAcpSession(options: {
           ) {
             const parsed = chunk.parse(value.update);
             if (
-              (!resume && (state !== "prompt" || !requestId)) ||
+              (!resume &&
+                ((state !== "prompt" && state !== "cancelling") ||
+                  !requestId)) ||
               (resume && state === "initialize")
             )
               throw invalid();
@@ -174,6 +363,32 @@ export function createGeminiAcpSession(options: {
                 role: tag === "agent_message_chunk" ? "assistant" : "user",
                 scope: resume ? "native-session" : "turn",
                 requestId: resume ? null : requestId,
+              });
+          } else if (tag === "tool_call" || tag === "tool_call_update") {
+            const value = tool.parse(notification.parse(frame.params).update);
+            if (
+              !resume &&
+              ((state !== "prompt" && state !== "cancelling") || !requestId)
+            )
+              throw invalid();
+            if (tools.size >= 128 && !tools.has(value.toolCallId))
+              throw invalid();
+            const status =
+              value.status ?? tools.get(value.toolCallId) ?? "pending";
+            tools.set(value.toolCallId, status);
+            if (value.kind === "think") thoughtTools.add(value.toolCallId);
+            if (status === "completed" || status === "failed")
+              for (const [rpc, offer] of permissions)
+                if (offer.toolCallId === value.toolCallId)
+                  permissions.delete(rpc);
+            if (!thoughtTools.has(value.toolCallId))
+              events.push({
+                kind: "tool",
+                toolCallId: value.toolCallId,
+                status,
+                scope: resume ? "native-session" : "turn",
+                requestId: resume ? null : requestId,
+                detail: reportedJson(value),
               });
           } else if (tag === "usage_update") {
             const parsed = context.parse(value.update);
@@ -193,7 +408,18 @@ export function createGeminiAcpSession(options: {
             throw invalid();
           return { send, events };
         }
-        if (frame.id !== pending || "error" in frame) throw invalid();
+        if (frame.id !== pending) throw invalid();
+        if ("error" in frame) {
+          state = "dead";
+          permissions.clear();
+          events.push({
+            kind: "error",
+            requestId,
+            code: frame.error.code,
+            message: reportedText(frame.error.message),
+          });
+          return { send, events };
+        }
         if (state === "initialize") {
           const evidence = initialized.parse(frame.result);
           if (resume && evidence.agentCapabilities?.loadSession !== true)
@@ -217,8 +443,21 @@ export function createGeminiAcpSession(options: {
             sessionId,
             resumed: resume !== null,
           });
-        } else if (state === "prompt" && requestId) {
+        } else if (
+          (state === "prompt" || state === "cancelling") &&
+          requestId
+        ) {
           const result = completed.parse(frame.result);
+          if (state === "cancelling" && result.stopReason !== "cancelled")
+            throw invalid();
+          if (
+            result.stopReason === "end_turn" &&
+            (permissions.size ||
+              [...tools.values()].some(
+                (status) => status === "pending" || status === "in_progress",
+              ))
+          )
+            throw invalid();
           events.push({
             kind: "result",
             requestId,
@@ -227,16 +466,19 @@ export function createGeminiAcpSession(options: {
           });
           state = "ready";
           requestId = null;
+          permissions.clear();
         } else throw invalid();
         return { send, events };
       } catch {
         state = "dead";
+        permissions.clear();
         throw invalid();
       }
     },
     invalidate(): void {
       state = "dead";
       requestId = null;
+      permissions.clear();
     },
   };
 }
