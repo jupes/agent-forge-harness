@@ -18,6 +18,7 @@ try {
 if (
   ![
     "normal",
+    "scoped-usage",
     "approval-command",
     "approval-file",
     "approval-resolved",

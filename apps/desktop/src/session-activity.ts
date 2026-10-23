@@ -1,4 +1,7 @@
-import type { CodexChatOutcome } from "../../../types/codex-chat";
+import type {
+  CodexChatOutcome,
+  CodexChatUsage,
+} from "../../../types/codex-chat";
 import type { CodexCodingUsageEvent } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
 import type {
@@ -142,6 +145,39 @@ export function ownedCodexChatOutcome(
   )
     return null;
   return outcome;
+}
+
+export function ownedCodexChatUsage(
+  page: ConversationPage | null,
+  turnId: string,
+): CodexChatUsage | null {
+  if (
+    page?.binding?.provider !== "codex" ||
+    !page.turns.some((turn) => turn.requestId === turnId)
+  )
+    return null;
+  const latest = [...page.frames].reverse();
+  const saved = latest.find(
+    (frame) =>
+      frame.turnId === turnId &&
+      frame.event.kind === "coding-chat" &&
+      frame.event.version === page.binding?.version &&
+      frame.event.event.kind === "usage",
+  )?.event;
+  if (saved?.kind === "coding-chat" && saved.event.kind === "usage")
+    return saved.event.usage;
+  const terminal = latest.find(
+    (frame) =>
+      frame.turnId === turnId &&
+      frame.event.kind === "coding-chat" &&
+      frame.event.version === page.binding?.version &&
+      frame.event.event.kind === "outcome",
+  )?.event;
+  return terminal?.kind === "coding-chat" &&
+    terminal.event.kind === "outcome" &&
+    terminal.event.outcome.threadId === page.binding.sessionId
+    ? terminal.event.outcome.usage
+    : null;
 }
 
 /** No clock heuristic or provider prose can establish process death, permissions or allowance. */
