@@ -4,6 +4,7 @@
  * hearth events. A provider supplies only its flags and its line parser.
  */
 
+import { realpathSync } from "node:fs";
 import type {
   Executor,
   LedgerEventBase,
@@ -21,7 +22,12 @@ import {
 import { ulid } from "../ledger/ulid";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
-import { supervise } from "./supervisor";
+import {
+  PrivateCaptureError,
+  type PrivateExecCapture,
+  type PrivateExecInput,
+} from "./private-capture";
+import { type Supervised, supervise } from "./supervisor";
 import type {
   DoctorResult,
   ExecResult,
@@ -217,6 +223,23 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // it), and the checkout the executor runs in.
       const { workspace } = resolveCheckout(request.workspace);
       const { worktree } = resolveCheckout(request.worktree);
+      // Resolve once before private preparation can await. The saved input,
+      // child and metadata never diverge if a caller changes its request.
+      const prepared: PrivateExecInput = {
+        provider: spec.provider,
+        beadId: request.beadId,
+        runId: request.runId ?? null,
+        workspace,
+        cwd: request.privateCapture
+          ? realpathSync.native(request.worktree)
+          : request.worktree,
+        smith: structuredClone(request.smith),
+        command: [...resolved.command, ...spec.buildArgs(request)],
+        stdin: request.prompt,
+        timeoutMs: request.timeoutMs ?? null,
+      };
+      const env = childEnv(request);
+      const parentSessionId = request.parentSessionId;
       const queue = eventQueue();
       const startedAt = Date.now();
       // The session's id is the provider's, from the first line that reports
@@ -237,15 +260,15 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       const begin = (sessionId: string) => {
         const executor: Executor = {
           provider: spec.provider,
-          model: request.smith.model,
-          effort: request.smith.effort,
-          smith: request.smith.name,
+          model: prepared.smith.model,
+          effort: prepared.smith.effort,
+          smith: prepared.smith.name,
           sessionId,
         };
         const base: EventBase = {
           workspace,
-          beadId: request.beadId,
-          ...(request.runId ? { runId: request.runId } : {}),
+          beadId: prepared.beadId,
+          ...(prepared.runId ? { runId: prepared.runId } : {}),
           sessionId,
           executor,
         };
@@ -262,9 +285,7 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
             source: `headless:${spec.provider}`,
             kind: "headless",
             worktree,
-            ...(request.parentSessionId
-              ? { parentSessionId: request.parentSessionId }
-              : {}),
+            ...(parentSessionId ? { parentSessionId } : {}),
           },
         });
         // The prompt went to the child on stdin at spawn: its hash and
@@ -274,8 +295,8 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
           ts: new Date().toISOString(),
           kind: "prompt.submitted",
           payload: {
-            hash: hashText(request.prompt),
-            length: request.prompt.length,
+            hash: hashText(prepared.stdin),
+            length: prepared.stdin.length,
           },
         });
         return session;
@@ -287,54 +308,128 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // The model the stream's responses last named, handed on when it changes.
       let observedModel: string | undefined;
 
-      const child = supervise({
-        command: [...resolved.command, ...spec.buildArgs(request)],
-        cwd: request.worktree,
-        env: childEnv(request),
-        stdin: request.prompt,
-        timeoutMs: request.timeoutMs,
-        onLine: (line) => {
-          const reported = spec.parseError(line);
-          if (reported !== undefined) providerErrors.add(reported);
-          const parsed = spec.parseLine(line);
-          if (!session && parsed.sessionId) begin(parsed.sessionId);
-          if (parsed.usage) usage = parsed.usage;
-          if (parsed.model !== undefined && parsed.model !== observedModel) {
-            observedModel = parsed.model;
-            try {
-              request.onModel?.({
-                sessionId: current().id,
-                provider: spec.provider,
-                model: parsed.model,
-              });
-            } catch {
-              // What the run was observed to be is not worth stopping it for.
+      let capture: PrivateExecCapture | undefined,
+        child: Supervised | undefined,
+        privateCaptureFailed = false;
+      const captureFailed = () => {
+        privateCaptureFailed = true;
+        void child?.stop("Private transcript unavailable");
+      };
+      if (request.privateCapture) {
+        try {
+          capture = await request.privateCapture.prepare(
+            structuredClone(prepared),
+            {
+              fail: captureFailed,
+              ...(request.signal ? { signal: request.signal } : {}),
+            },
+          );
+        } catch {
+          throw new PrivateCaptureError();
+        }
+        if (privateCaptureFailed || request.signal?.aborted) {
+          try {
+            await capture.finish(null);
+          } catch {
+            privateCaptureFailed = true;
+          }
+          if (privateCaptureFailed) throw new PrivateCaptureError();
+          throw new Error(
+            "The turn was stopped before the provider was started.",
+          );
+        }
+      }
+
+      try {
+        child = supervise({
+          command: prepared.command,
+          cwd: prepared.cwd,
+          env,
+          stdin: prepared.stdin,
+          timeoutMs: prepared.timeoutMs ?? undefined,
+          ...(capture
+            ? { maxLineBytes: 1_048_576, onOutputError: captureFailed }
+            : {}),
+          onLine: (line) => {
+            if (capture && !privateCaptureFailed) {
+              try {
+                capture.line(line);
+              } catch {
+                captureFailed();
+              }
             }
+            const reported = spec.parseError(line);
+            if (reported !== undefined) providerErrors.add(reported);
+            const parsed = spec.parseLine(line);
+            if (!session && parsed.sessionId) begin(parsed.sessionId);
+            if (parsed.usage) usage = parsed.usage;
+            if (parsed.model !== undefined && parsed.model !== observedModel) {
+              observedModel = parsed.model;
+              try {
+                request.onModel?.({
+                  sessionId: current().id,
+                  provider: spec.provider,
+                  model: parsed.model,
+                });
+              } catch {
+                // What the run was observed to be is not worth stopping it for.
+              }
+            }
+            for (const tool of parsed.tools) {
+              queue.push({
+                ...current().base,
+                ts: new Date().toISOString(),
+                kind: "tool.called",
+                payload: toolPayload(tool),
+              });
+            }
+          },
+        });
+      } catch (error) {
+        if (capture) {
+          try {
+            await capture.finish(null);
+          } catch {
+            /* retain the original private identity */
           }
-          for (const tool of parsed.tools) {
-            queue.push({
-              ...current().base,
-              ts: new Date().toISOString(),
-              kind: "tool.called",
-              payload: toolPayload(tool),
-            });
-          }
-        },
-      });
+        }
+        throw error;
+      }
+      if (capture) {
+        try {
+          capture.started(child.pid);
+        } catch {
+          captureFailed();
+        }
+      }
+      const supervised = child;
 
       let stopReason: string | undefined;
-      const done = child.done.then((exit): ExecResult => {
-        const result = { ...exit, providerErrors: [...providerErrors] };
+      const done = supervised.done.then(async (exit): Promise<ExecResult> => {
+        if (capture) {
+          try {
+            await capture.finish(exit);
+          } catch {
+            captureFailed();
+          }
+        }
+        const result: ExecResult = {
+          ...exit,
+          providerErrors: [...providerErrors],
+          ...(privateCaptureFailed ? { privateCaptureFailed: true } : {}),
+        };
         // Fixed wording only: the provider's own text stays out of the ledger.
-        const reason = result.timedOut
-          ? "timeout"
-          : result.stopped
-            ? `stopped: ${stopReason ?? "operator"}`
-            : result.exitCode !== 0
-              ? `failed: exit ${result.exitCode}`
-              : result.providerErrors.length > 0
-                ? "failed: exit 0, provider reported an error"
-                : "completed";
+        const reason = result.privateCaptureFailed
+          ? "failed: private transcript unavailable"
+          : result.timedOut
+            ? "timeout"
+            : result.stopped
+              ? `stopped: ${stopReason ?? "operator"}`
+              : result.exitCode !== 0
+                ? `failed: exit ${result.exitCode}`
+                : result.providerErrors.length > 0
+                  ? "failed: exit 0, provider reported an error"
+                  : "completed";
         const { base, unmirror } = current();
         queue.push({
           ...base,
@@ -355,12 +450,12 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
         get sessionId() {
           return session?.id ?? mintedId;
         },
-        pid: child.pid,
+        pid: supervised.pid,
         events: queue.iterate(),
         done,
         async stop(reason) {
           stopReason = reason;
-          await child.stop(reason);
+          await supervised.stop(reason);
         },
       };
     },

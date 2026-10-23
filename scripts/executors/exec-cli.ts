@@ -71,6 +71,10 @@ import {
 } from "../run-correlation-store";
 import { buildChildEnv } from "./env";
 import { runFailure } from "./outcome";
+import {
+  PrivateCaptureError,
+  type PrivateExecCaptureFactory,
+} from "./private-capture";
 import { ADAPTERS } from "./registry";
 import { ledgerSink } from "./sinks";
 import type { EventSink, ExecutorAdapter, SinkResult } from "./types";
@@ -97,6 +101,8 @@ export interface ExecDeps {
    * ends `stopped: <reason>` (the abort's reason, when it is a string).
    */
   signal?: AbortSignal;
+  /** Trusted attended shift owner; never populated by CLI flags or a model tool. */
+  privateCapture?: PrivateExecCaptureFactory;
 }
 
 /** An abort's reason as `session.ended` and the error name it: a short fixed text. */
@@ -107,6 +113,8 @@ function abortReason(signal: AbortSignal): string {
 }
 
 export interface ExecOutcome {
+  /** Fatal private-capture failure; callers must not repair or admit another bead. */
+  privateCaptureFailed?: true;
   code: 0 | 2;
   body: { ok: boolean; data: unknown; error: string | null };
 }
@@ -301,6 +309,8 @@ export async function runExec(
       parentSessionId: launchingSession(deps.cwd ?? process.cwd()),
       timeoutMs,
       command: deps.command,
+      ...(deps.privateCapture ? { privateCapture: deps.privateCapture } : {}),
+      ...(deps.signal ? { signal: deps.signal } : {}),
       // The observed model goes where the run's events go: the ledger.
       ...(deps.sink
         ? {}
@@ -318,7 +328,12 @@ export async function runExec(
           }),
     });
   } catch (error) {
-    return failure(error instanceof Error ? error.message : String(error));
+    const result = failure(
+      error instanceof Error ? error.message : String(error),
+    );
+    return error instanceof PrivateCaptureError
+      ? { ...result, privateCaptureFailed: true }
+      : result;
   }
 
   // An abort stops the child: the supervisor kills its tree. The handle's
@@ -357,6 +372,7 @@ export async function runExec(
   const ok = runError === null;
   return {
     code: ok ? 0 : 2,
+    ...(result.privateCaptureFailed ? { privateCaptureFailed: true } : {}),
     body: {
       ok,
       data: {
