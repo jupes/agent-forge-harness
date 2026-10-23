@@ -4,6 +4,7 @@ import type {
   ConversationEvent,
   ConversationReceipt,
   ConversationState,
+  OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
 import {
@@ -14,7 +15,11 @@ import {
 import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { ConversationError } from "./error";
-import { conversationDirectory, conversationFile } from "./paths";
+import {
+  conversationDirectory,
+  conversationFile,
+  conversationId,
+} from "./paths";
 
 import {
   eventSchema,
@@ -50,8 +55,10 @@ export function interruptedConversation(
 export function createConversationStore(
   home: string,
   now: () => Date = () => new Date(),
+  address?: OwnedConversationAddress,
 ) {
-  const fileFor = (projectId: string) => conversationFile(home, projectId);
+  const fileFor = (projectId: string) =>
+    conversationFile(home, projectId, address);
   const read = (projectId: string): ConversationState => {
     const found = readSessionTranscript(home, fileFor(projectId));
     if (found.problem)
@@ -63,7 +70,7 @@ export function createConversationStore(
       return {
         version: 1,
         projectId,
-        conversationId: `keeper-${projectId}`,
+        conversationId: conversationId(projectId, address),
         revision: 0,
         binding: null,
         turns: [],
@@ -82,7 +89,7 @@ export function createConversationStore(
     if (
       !parsed.success ||
       parsed.data.projectId !== projectId ||
-      parsed.data.conversationId !== `keeper-${projectId}` ||
+      parsed.data.conversationId !== conversationId(projectId, address) ||
       parsed.data.frames.some(
         (frame, index) =>
           frame.seq !== index + 1 ||
@@ -114,10 +121,11 @@ export function createConversationStore(
     projectId: string,
     update: (state: ConversationState) => T,
   ): Promise<T> => {
+    const id = conversationId(projectId, address);
     const directory = conversationDirectory(home, projectId);
     ensurePrivateHome(home);
     const result = await withQueueLock(
-      join(directory, "write.lock.db"),
+      join(directory, address ? `${id}.write.lock.db` : "write.lock.db"),
       async () => {
         const state = read(projectId);
         const value = update(state);

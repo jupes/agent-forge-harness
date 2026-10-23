@@ -1,8 +1,10 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
+import type { OwnedConversationAddress } from "../../types/conversation";
 import { readHomeFile } from "../hearth/home-guard";
 import { isProjectId } from "../projects/store";
 import { ConversationError } from "./error";
+import { isConversationRequestId } from "./protocol";
 
 /** Reject pre-existing links before even opening the write/dispatch lock. */
 function directory(path: string): void {
@@ -36,15 +38,46 @@ export function conversationDirectory(home: string, projectId: string): string {
   return path;
 }
 
-export function conversationFile(home: string, projectId: string): string {
-  return join(
-    conversationDirectory(home, projectId),
-    `keeper-${projectId}.json`,
-  );
+export function conversationId(
+  projectId: string,
+  address?: OwnedConversationAddress,
+): string {
+  if (!isProjectId(projectId))
+    throw new ConversationError(400, "Expected a project id.");
+  if (address === undefined) return `keeper-${projectId}`;
+  if (
+    !address ||
+    address.kind !== "session" ||
+    typeof address.sessionId !== "string" ||
+    !address.sessionId.startsWith("session-") ||
+    !isConversationRequestId(address.sessionId.slice(8))
+  )
+    throw new ConversationError(400, "Expected an owned session id.");
+  if (address.projectId !== projectId)
+    throw new ConversationError(
+      400,
+      "This owned session belongs to a different project.",
+    );
+  return address.sessionId;
 }
 
-export function conversationLeaseFile(home: string, projectId: string): string {
+export function conversationFile(
+  home: string,
+  projectId: string,
+  address?: OwnedConversationAddress,
+): string {
+  const name = conversationId(projectId, address);
+  return join(conversationDirectory(home, projectId), `${name}.json`);
+}
+
+export function conversationLeaseFile(
+  home: string,
+  projectId: string,
+  address?: OwnedConversationAddress,
+): string {
+  const name =
+    address === undefined ? projectId : conversationId(projectId, address);
   const folder = join(conversationDirectory(home, projectId), "leases");
   directory(folder);
-  return join(folder, `${projectId}.db`);
+  return join(folder, `${name}.db`);
 }
