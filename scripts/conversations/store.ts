@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { join } from "node:path";
 import type {
   ConversationEvent,
   ConversationReceipt,
@@ -16,9 +15,9 @@ import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { ConversationError } from "./error";
 import {
-  conversationDirectory,
   conversationFile,
   conversationId,
+  conversationWriteLockFile,
 } from "./paths";
 
 import {
@@ -121,11 +120,10 @@ export function createConversationStore(
     projectId: string,
     update: (state: ConversationState) => T,
   ): Promise<T> => {
-    const id = conversationId(projectId, address);
-    const directory = conversationDirectory(home, projectId);
+    const lock = conversationWriteLockFile(home, projectId, address);
     ensurePrivateHome(home);
     const result = await withQueueLock(
-      join(directory, address ? `${id}.write.lock.db` : "write.lock.db"),
+      lock,
       async () => {
         const state = read(projectId);
         const value = update(state);
@@ -288,10 +286,10 @@ export function createConversationStore(
           }),
         )
         .digest("hex");
-      const directory = conversationDirectory(home, projectId);
+      const lock = conversationWriteLockFile(home, projectId, address);
       ensurePrivateHome(home);
       const result = await withQueueLock(
-        join(directory, "write.lock.db"),
+        lock,
         async () => {
           const state = read(projectId);
           const previous = state.turns.find(
