@@ -166,7 +166,18 @@ test("real hearth and compiled fake providers retain private activity through pr
       await Bun.sleep(20);
     } while (Date.now() <= deadline);
     if (!page) throw Error("Missing protected private activity page");
-    expect(page.turns[0]?.phase).toBe("completed");
+    expect(
+      page.turns[0]?.phase,
+      JSON.stringify({
+        provider,
+        binding: page.binding,
+        turn: page.turns[0],
+        outcomes: page.frames.filter(
+          (frame) => frame.event.kind === "coding-outcome",
+        ),
+        kinds: page.frames.map((frame) => frame.event.kind),
+      }),
+    ).toBe("completed");
     const activity = page.frames.filter(
       (frame) => frame.event.kind === "coding-activity",
     );
