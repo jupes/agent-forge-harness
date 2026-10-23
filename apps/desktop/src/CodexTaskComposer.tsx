@@ -155,6 +155,8 @@ export function CodexTaskComposer({
     ...new Set(project.workspaces.flatMap((scope) => scope.repositories)),
   ];
   const busy = checking || attaching || view.starting;
+  const pending =
+    !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
   let serialized: SerializedCodexTask | null = null,
     validation =
       "Check supported options before starting. This check starts no model.";
@@ -173,7 +175,7 @@ export function CodexTaskComposer({
     writesAllowed &&
     !project.archived &&
     !busy &&
-    !view.pendingStart &&
+    !pending &&
     !!serialized &&
     source?.enabled === true &&
     source.provider === "codex";
@@ -196,7 +198,7 @@ export function CodexTaskComposer({
     }
   };
   const check = async () => {
-    if (busy || view.pendingStart || !writesAllowed || project.archived) return;
+    if (busy || pending || !writesAllowed || project.archived) return;
     setChecking(true);
     setProblem("");
     try {
@@ -249,7 +251,6 @@ export function CodexTaskComposer({
         entry.model === options.model &&
         entry.cliVersion === snapshot.capabilities.version,
     )?.efforts ?? [];
-  const pending = !!view.pendingStart;
   return (
     <section
       class="af-session-composer"
@@ -321,7 +322,12 @@ export function CodexTaskComposer({
                     throw Error(
                       "Images require server-owned staging and are unavailable for Codex Tasks.",
                     );
-                  edit({ attachments: [...draft.attachments, ...items] });
+                  edit({
+                    attachments: [
+                      ...client.project(project.id).composer.attachments,
+                      ...items,
+                    ],
+                  });
                 })
                 .catch((error) =>
                   setProblem(
@@ -707,14 +713,16 @@ export function CodexTaskComposer({
             >
               Check original Start
             </Button>
-            <Button
-              disabled={!writesAllowed || view.starting}
-              onClick={() => {
-                void client.retryStart(project.id);
-              }}
-            >
-              Retry original Start
-            </Button>
+            {view.pendingStart && (
+              <Button
+                disabled={!writesAllowed || view.starting}
+                onClick={() => {
+                  void client.retryStart(project.id);
+                }}
+              >
+                Retry original Start
+              </Button>
+            )}
           </div>
         )}
         <div class="af-session-composer-actions">

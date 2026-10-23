@@ -31,6 +31,10 @@ import {
   type SessionComposerDraft,
   validateSessionAttachments,
 } from "./session-composer";
+import type {
+  SessionStartIdentities,
+  SessionStartIdentity,
+} from "./session-start-identities";
 import { createSessionWorktreeClient } from "./session-worktree-client";
 
 const listSchema = z.array(ownedCodingSessionSchema).max(1000);
@@ -57,6 +61,8 @@ export interface SessionProjectView {
   composerProvider: "claude" | "codex";
   codexComposer: CodexTaskComposerDraft;
   pendingStart: SessionStartRequest | null;
+  startIdentity: SessionStartIdentity | null;
+  startIdentityError: string;
   starting: boolean;
   notice: string;
   lastStarted: string | null;
@@ -83,6 +89,7 @@ export interface OwnedSessionView {
 export function createSessionsClient(deps: {
   canWrite(): boolean;
   requestId(): string;
+  identities: SessionStartIdentities;
   list(projectId: string): Promise<unknown>;
   read(
     projectId: string,
@@ -94,7 +101,7 @@ export function createSessionsClient(deps: {
     sessionId: string | null,
     action: "start" | "turns" | "stop",
     body: SessionStartRequest | SessionMessage | { requestId: string },
-  ): Promise<ActionOutcome>;
+  ): Promise<ActionOutcome & { notSent?: true }>;
   stream(projectId: string, sessionId: string): StreamTransport;
   timers?: Timers;
   createWorktree?(
@@ -125,11 +132,14 @@ export function createSessionsClient(deps: {
         composerProvider: "claude",
         codexComposer: newCodexTaskDraft(),
         pendingStart: null,
+        startIdentity: null,
+        startIdentityError: "",
         starting: false,
         notice: "",
         lastStarted: null,
       };
       projects.set(id, value);
+      hydrateStart(id, value);
     }
     return value;
   };
@@ -161,6 +171,22 @@ export function createSessionsClient(deps: {
   const tell = () => {
     if (!disposed) for (const listener of [...listeners]) listener();
   };
+  function hydrateStart(projectId: string, entry: SessionProjectView) {
+    try {
+      // A failed durable release stays latched until protected admission (or a
+      // proven unsent attempt) retries that release; absence alone is no proof.
+      if (entry.startIdentityError && entry.startIdentity) return;
+      entry.startIdentity = deps.identities.read(projectId);
+      entry.startIdentityError = "";
+      if (entry.startIdentity && !entry.pendingStart)
+        entry.notice =
+          "An original Start identity is saved. Check its protected admission before starting another session; its private input is not stored in this browser.";
+    } catch {
+      entry.startIdentityError =
+        "Original Start identities could not be verified. Saved data was kept; starting another session is blocked.";
+      entry.notice = entry.startIdentityError;
+    }
+  }
   const disconnect = () => {
     connection?.close();
     connection = null;
@@ -187,29 +213,56 @@ export function createSessionsClient(deps: {
         turn.phase === "cancelled" ? "Stop confirmed." : "The turn has ended.";
     }
     const view = project(entry.projectId);
-    if (view.pendingStart?.requestId === turn.requestId) {
+    if (
+      (view.pendingStart?.requestId ?? view.startIdentity?.requestId) ===
+      turn.requestId
+    ) {
       const record = view.records.find(
         (item) => item.id === entry.id && item.requestId === turn.requestId,
       );
-      if (record) {
-        view.composer = {
-          ...view.composer,
-          ...(view.composer.prompt === view.pendingStart.launch.prompt
-            ? { prompt: "" }
-            : {}),
-          ...(JSON.stringify(view.composer.attachments) ===
-          JSON.stringify(view.pendingStart.launch.attachments ?? [])
-            ? { attachments: [] }
-            : {}),
-          ...(JSON.stringify(view.composer.about) ===
-          JSON.stringify(view.pendingStart.about ?? [])
-            ? { about: [] }
-            : {}),
-        };
+      const identity = view.startIdentity;
+      if (
+        record &&
+        (!identity ||
+          (record.requestHash === identity.requestHash &&
+            record.provider === identity.provider))
+      ) {
+        if (view.pendingStart) {
+          view.composer = {
+            ...view.composer,
+            ...(view.composer.prompt === view.pendingStart.launch.prompt
+              ? { prompt: "" }
+              : {}),
+            ...(JSON.stringify(view.composer.attachments) ===
+            JSON.stringify(view.pendingStart.launch.attachments ?? [])
+              ? { attachments: [] }
+              : {}),
+            ...(JSON.stringify(view.composer.about) ===
+            JSON.stringify(view.pendingStart.about ?? [])
+              ? { about: [] }
+              : {}),
+          };
+        }
         view.pendingStart = null;
         view.lastStarted = record.id;
         view.notice =
           "The original Start is recorded. The session is available.";
+        if (identity)
+          void deps.identities
+            .release(identity)
+            .then(() => {
+              if (view.startIdentity?.requestId === identity.requestId) {
+                view.startIdentity = null;
+                view.startIdentityError = "";
+              }
+              tell();
+            })
+            .catch(() => {
+              view.startIdentityError =
+                "The confirmed original Start identity could not be cleared durably. Check it again before starting another session.";
+              view.notice = view.startIdentityError;
+              tell();
+            });
       }
     }
   };
@@ -307,6 +360,7 @@ export function createSessionsClient(deps: {
     const entry = project(projectId),
       read = { work: Promise.resolve(), again: false };
     reads.set(projectId, read);
+    hydrateStart(projectId, entry);
     entry.loading = true;
     tell();
     read.work = (async () => {
@@ -323,12 +377,20 @@ export function createSessionsClient(deps: {
         entry.records = parsed.data;
         entry.loaded = true;
         entry.error = "";
-        if (entry.pendingStart) {
+        const original = entry.startIdentity;
+        if (entry.pendingStart || original) {
           const record = entry.records.find(
-            (item) => item.requestId === entry.pendingStart?.requestId,
+            (item) =>
+              item.requestId ===
+              (entry.pendingStart?.requestId ?? original?.requestId),
           );
           if (record) {
-            if (!sameStart(record, entry.pendingStart))
+            if (
+              (entry.pendingStart && !sameStart(record, entry.pendingStart)) ||
+              (original &&
+                (record.requestHash !== original.requestHash ||
+                  record.provider !== original.provider))
+            )
               throw new Error("Start metadata changed");
             const page = await deps.read(projectId, record.id, {
               after: 0,
@@ -357,7 +419,7 @@ export function createSessionsClient(deps: {
     entry.starting = true;
     entry.notice = "Starting the original session request…";
     tell();
-    let outcome: ActionOutcome;
+    let outcome: ActionOutcome & { notSent?: true };
     try {
       outcome = await deps.post(
         projectId,
@@ -406,7 +468,22 @@ export function createSessionsClient(deps: {
       entry.pendingStart?.requestId === input.requestId
     ) {
       entry.notice = outcome.message;
-      if (outcome.state === "refused" && !retry) entry.pendingStart = null;
+      if (
+        outcome.state === "refused" &&
+        !retry &&
+        outcome.notSent &&
+        entry.startIdentity
+      ) {
+        try {
+          await deps.identities.release(entry.startIdentity);
+          entry.startIdentity = null;
+          entry.pendingStart = null;
+        } catch {
+          entry.startIdentityError =
+            "The unsent original Start identity could not be cleared durably. Check it before starting another session.";
+          entry.notice = entry.startIdentityError;
+        }
+      }
     }
     tell();
     await refresh(projectId);
@@ -480,6 +557,10 @@ export function createSessionsClient(deps: {
     project,
     session,
     refresh,
+    refreshIdentities() {
+      for (const [projectId, entry] of projects) hydrateStart(projectId, entry);
+      tell();
+    },
     check,
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -528,10 +609,32 @@ export function createSessionsClient(deps: {
       const entry = project(projectId);
       if (disposed || entry.pendingStart || entry.starting || !deps.canWrite())
         return;
-      entry.pendingStart = structuredClone({
-        ...input,
-        requestId: deps.requestId(),
-      });
+      entry.starting = true;
+      tell();
+      try {
+        const held = await deps.identities.reserve(
+          projectId,
+          input,
+          deps.requestId,
+        );
+        entry.startIdentity = held.identity;
+        entry.startIdentityError = "";
+        if (!held.created || !held.request) {
+          entry.notice =
+            "The original Start is still held. Check its protected admission before starting another session.";
+          return;
+        }
+        entry.pendingStart = held.request;
+      } catch {
+        entry.startIdentityError =
+          "The original Start identity could not be saved and verified. No request was sent. Saved identities were kept.";
+        entry.notice = entry.startIdentityError;
+        return;
+      } finally {
+        entry.starting = false;
+        tell();
+      }
+      if (disposed) return;
       await postStart(projectId, false);
     },
     retryStart: (projectId: string) => postStart(projectId, true),

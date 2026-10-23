@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { createSessionsClient } from "../../apps/desktop/src/session-client";
+import { sessionStartHash } from "../../apps/desktop/src/session-start-identities";
 import type { ActionOutcome } from "../../docs/js/action-outcome";
 import type { StreamHandlers } from "../../docs/js/use-stream";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SessionStartRequest } from "../../types/session-requests";
+import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
   requestId = "18da5c95-3218-439c-a33d-e5662465f505",
@@ -60,12 +62,14 @@ const input = {
   worktree: "/repo",
   launch: { mode: "chat" as const, model: "sonnet", prompt: "Original prompt" },
 };
+record.requestHash = await sessionStartHash({ ...input, requestId });
 
 test("lost Start responses retain the immutable original until its actual admitted turn is found; reads never start another provider", async () => {
   const sent: SessionStartRequest[] = [];
   let listed = false,
     admitted = false;
   const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => requestId,
     list: async () => (listed ? [record] : []),
@@ -106,6 +110,7 @@ test("lost Start responses retain the immutable original until its actual admitt
 test("Start confirmation preserves attachments and About context edited while its original response is unknown", async () => {
   let admitted = false;
   const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => requestId,
     list: async () => [record],
@@ -142,6 +147,7 @@ test("terminal stream confirmation wins over a delayed malformed Stop receipt, a
     finish: ((value: ActionOutcome) => void) | undefined;
   const posts: string[] = [];
   const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => requestId,
     list: async () => [record],
@@ -198,6 +204,7 @@ test("a delayed malformed message receipt cannot overwrite stream confirmation o
     request: null,
   };
   const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => nextId,
     list: async (scope) => (scope === projectId ? [record] : []),
