@@ -192,6 +192,17 @@ test("approved moves and reassignment refresh live while selection and keyboard 
   const before = standInCalls().filter(
     (args) => args[0] === "update" && args.at(-1) === "alpha-proposed",
   ).length;
+  const writeRequests: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      path.startsWith(
+        `/__agent-forge/projects/${alpha.id}/beads/alpha-proposed/`,
+      )
+    )
+      writeRequests.push(path.split("/").at(-1) ?? "");
+  });
   for (const [action, to] of [
     ["Approve", "approved"],
     ["Queue", "queued"],
@@ -202,17 +213,28 @@ test("approved moves and reassignment refresh live while selection and keyboard 
       name: `${action} alpha-proposed`,
       exact: true,
     });
-    await expect(button).toBeEnabled();
-    await button.focus();
-    await page.keyboard.press("Enter");
-    await expect
-      .poll(
-        () =>
-          readState(BD_STAND_IN_STATE)["alpha-proposed"]?.metadata?.[
-            "queue_state"
-          ],
+    const requestsBefore = writeRequests.length;
+    // A live read can disable this control between focus and Enter. Retry the
+    // keyboard gesture only while the isolated tracker proves it has not moved;
+    // an already applied move never receives another gesture or write request.
+    await expect(async () => {
+      if (
+        readState(BD_STAND_IN_STATE)["alpha-proposed"]?.metadata?.[
+          "queue_state"
+        ] === to
       )
-      .toBe(to);
+        return;
+      if (writeRequests.length === requestsBefore) {
+        await expect(button).toBeEnabled({ timeout: 250 });
+        await button.focus({ timeout: 250 });
+        await page.keyboard.press("Enter");
+      }
+      expect(
+        readState(BD_STAND_IN_STATE)["alpha-proposed"]?.metadata?.[
+          "queue_state"
+        ],
+      ).toBe(to);
+    }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
     await expect(
       board.locator(`[data-column="${to}"] [data-bead="alpha-proposed"]`),
     ).toHaveCount(1);
@@ -223,22 +245,36 @@ test("approved moves and reassignment refresh live while selection and keyboard 
     name: "Smith for alpha-proposed",
     exact: true,
   });
-  await expect(choice).toBeEnabled();
-  await choice.selectOption("claude-master");
-  await card
-    .getByRole("button", { name: "Reassign alpha-proposed", exact: true })
-    .click();
-  await expect
-    .poll(
-      () => readState(BD_STAND_IN_STATE)["alpha-proposed"]?.metadata?.["smith"],
+  const requestsBeforeReassign = writeRequests.length;
+  await expect(async () => {
+    if (
+      readState(BD_STAND_IN_STATE)["alpha-proposed"]?.metadata?.["smith"] ===
+      "claude-master"
     )
-    .toBe("claude-master");
+      return;
+    if (writeRequests.length === requestsBeforeReassign) {
+      await choice.selectOption("claude-master", { timeout: 250 });
+      await card
+        .getByRole("button", { name: "Reassign alpha-proposed", exact: true })
+        .click({ timeout: 250 });
+    }
+    expect(
+      readState(BD_STAND_IN_STATE)["alpha-proposed"]?.metadata?.["smith"],
+    ).toBe("claude-master");
+  }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
   await expect(card).toContainText("smith claude-master");
   expect(
     standInCalls().filter(
       (args) => args[0] === "update" && args.at(-1) === "alpha-proposed",
     ),
   ).toHaveLength(before + 5);
+  expect(writeRequests).toEqual([
+    "approve",
+    "queue",
+    "pause",
+    "resume",
+    "reassign",
+  ]);
 });
 
 test("a lost actual approval reply remains held after reload and appears in Inbox without another move", async ({
