@@ -97,6 +97,7 @@ type SmokeChecks = {
   tokenStatus: number | null;
   hasSessionKey: boolean;
   workspaceMatches: boolean;
+  writeJournalReady: boolean;
 };
 
 async function main(): Promise<void> {
@@ -1739,6 +1740,16 @@ async function readChecks(
         .then((response) => response.headers.get("content-type")?.includes("javascript") === true)
         .catch(() => false);
       const app = document.querySelector("#app");
+      let writeJournalReady = false;
+      const probeKey = "agent-forge.native-write-probe." + crypto.randomUUID();
+      try {
+        if (navigator.locks) writeJournalReady = await navigator.locks.request(probeKey, { signal: AbortSignal.timeout(2500) }, () => {
+          try {
+            localStorage.setItem(probeKey, "verified");
+            return localStorage.getItem(probeKey) === "verified";
+          } finally { localStorage.removeItem(probeKey); }
+        });
+      } catch { /* The required desktop write mechanism stays unavailable. */ }
       return {
         hashCleared: location.hash === "",
         rendered: !!app && app.children.length > 0,
@@ -1752,6 +1763,7 @@ async function readChecks(
         tokenStatus,
         hasSessionKey,
         workspaceMatches,
+        writeJournalReady,
       };
     })()`,
     awaitPromise: true,
@@ -1775,12 +1787,14 @@ async function readChecks(
       typeof value?.tokenStatus === "number" ? value.tokenStatus : null,
     hasSessionKey: value?.hasSessionKey === true,
     workspaceMatches: value?.workspaceMatches === true,
+    writeJournalReady: value?.writeJournalReady === true,
   };
 }
 
 function allChecksPassed(checks: SmokeChecks): boolean {
   return (
     checks.workspaceMatches &&
+    checks.writeJournalReady &&
     checks.hashCleared &&
     checks.rendered &&
     checks.health &&
