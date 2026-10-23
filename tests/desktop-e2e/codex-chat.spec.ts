@@ -250,7 +250,24 @@ test("native Chat command reports show inert streamed and aggregate output with 
   await expect(
     activity.getByRole("region", { name: "Command report", exact: true }),
   ).toHaveCSS("outline-width", "2px");
-  if (process.env.CODEX_CHAT_COMMAND_SHOTS)
+  if (process.env.CODEX_CHAT_COMMAND_SHOTS) {
+    // The live1100px assertions above remain the behavior check. Capture the
+    // entire inert report in a taller review viewport, outside the reply bar.
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    await activity.evaluate((node) => node.scrollIntoView({ block: "center" }));
+    await expect
+      .poll(() =>
+        activity.evaluate((node) => {
+          const outer = node
+            .closest(".af-owned-transcript")
+            ?.getBoundingClientRect();
+          const inner = node.getBoundingClientRect();
+          return Boolean(
+            outer && inner.top >= outer.top && inner.bottom <= outer.bottom,
+          );
+        }),
+      )
+      .toBe(true);
     await activity.screenshot({
       path: join(
         process.env.CODEX_CHAT_COMMAND_SHOTS,
@@ -263,6 +280,8 @@ test("native Chat command reports show inert streamed and aggregate output with 
         }),
       ],
     });
+    await page.setViewportSize({ width: 1100, height: 700 });
+  }
   const beforeReload = saved(record.id).frames;
   await reloadSettled(page);
   await activity
