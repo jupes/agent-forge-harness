@@ -1,3 +1,5 @@
+import type { CodexCodingUsageEvent } from "./codex-owned-task";
+import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { KeeperReadKind } from "./keeper";
 import type { KeeperBriefSnapshot } from "./keeper-brief";
 import type { KeeperRecoveryState } from "./keeper-recovery";
@@ -26,6 +28,7 @@ export interface ConversationSend {
 export interface PreparedConversationSend extends ConversationSend {
   brief?: KeeperBriefSnapshot | undefined;
   session?: SessionTurnSnapshot | undefined;
+  codexTask?: PreparedCodexTask | undefined;
 }
 
 export type ConversationPhase =
@@ -60,6 +63,7 @@ export type ConversationEvent =
       about: ConversationObject[];
       brief?: KeeperBriefSnapshot | undefined;
       session?: SessionTurnSnapshot | undefined;
+      codexTask?: PreparedCodexTask | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }
@@ -88,7 +92,8 @@ export type ConversationEvent =
       basis: "reported" | "estimated" | "unknown";
       source: string;
       asOf: string;
-    };
+    }
+  | CodexCodingUsageEvent;
 
 export interface ConversationFrame {
   seq: number;

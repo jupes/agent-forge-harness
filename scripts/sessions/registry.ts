@@ -3,6 +3,12 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type {
+  CodexOwnedSessionMetadata,
+  CodexOwnedSessionRecord,
+  OwnedCodingSessionMetadata,
+  OwnedCodingSessionRecord,
+} from "../../types/codex-owned-task";
+import type {
   OwnedSessionMetadata,
   OwnedSessionRecord,
 } from "../../types/owned-session";
@@ -14,6 +20,10 @@ import {
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
+import {
+  codexOwnedMetadataSchema,
+  codexOwnedSessionSchema,
+} from "./codex-owned-metadata";
 import {
   ownedSessionIdSchema,
   ownedSessionMetadataSchema,
@@ -35,14 +45,18 @@ export class SessionRegistryError extends Error {
   }
 }
 
-const canonicalPaths = (value: OwnedSessionMetadata) =>
+const canonicalPaths = (value: OwnedCodingSessionMetadata) =>
   [value.workspace, value.repository, value.worktree].every(
     (path) =>
       isAbsolute(path) &&
       comparableCheckout(resolve(path)) === comparableCheckout(path),
   );
-const metadataSchema = ownedSessionMetadataSchema.refine(canonicalPaths);
-const recordSchema = ownedSessionSchema.refine(canonicalPaths);
+const metadataSchema = z
+  .union([ownedSessionMetadataSchema, codexOwnedMetadataSchema])
+  .refine(canonicalPaths);
+const recordSchema = z
+  .union([ownedSessionSchema, codexOwnedSessionSchema])
+  .refine(canonicalPaths);
 const registrySchema = z
   .object({
     version: z.literal(1),
@@ -97,7 +111,29 @@ function checkedPaths(home: string) {
 }
 
 /** A metadata-only index. Reservation never dispatches or replays a provider request. */
-export function createSessionRegistry(home: string) {
+interface SessionRegistry<Metadata, Record> {
+  list(projectId: string): Record[];
+  listAll(projectId: string): OwnedCodingSessionRecord[];
+  lookup(projectId: string, sessionId: string): OwnedCodingSessionRecord;
+  read(projectId: string, sessionId: string): Record;
+  reserve(
+    projectId: string,
+    requestId: string,
+    requestHash: string,
+    prepare: () => Metadata | Promise<Metadata>,
+  ): Promise<Record>;
+}
+export function createSessionRegistry(
+  home: string,
+): SessionRegistry<OwnedSessionMetadata, OwnedSessionRecord>;
+export function createSessionRegistry(
+  home: string,
+  provider: "codex",
+): SessionRegistry<CodexOwnedSessionMetadata, CodexOwnedSessionRecord>;
+export function createSessionRegistry(
+  home: string,
+  provider: "claude" | "codex" = "claude",
+) {
   const readState = (): Registry => {
     const { file } = checkedPaths(home);
     const found = readSessionTranscript(home, file);
@@ -130,27 +166,47 @@ export function createSessionRegistry(home: string) {
     if (!sessionProjectIdSchema.safeParse(projectId).success)
       throw new SessionRegistryError(400, "Expected a project id.");
   };
+  const lookup = (
+    projectId: string,
+    sessionId: string,
+  ): OwnedCodingSessionRecord => {
+    project(projectId);
+    if (!ownedSessionIdSchema.safeParse(sessionId).success)
+      throw new SessionRegistryError(400, "Expected an owned session id.");
+    const record = readState().records.find((item) => item.id === sessionId);
+    if (!record)
+      throw new SessionRegistryError(
+        404,
+        "This owned session is not in the registry.",
+      );
+    if (record.projectId !== projectId)
+      throw new SessionRegistryError(
+        409,
+        "This owned session belongs to a different project.",
+      );
+    return record;
+  };
   return {
-    list(projectId: string): OwnedSessionRecord[] {
+    lookup,
+    listAll(projectId: string) {
       project(projectId);
       return readState().records.filter(
         (record) => record.projectId === projectId,
       );
     },
-    read(projectId: string, sessionId: string): OwnedSessionRecord {
+    list(projectId: string) {
       project(projectId);
-      if (!ownedSessionIdSchema.safeParse(sessionId).success)
-        throw new SessionRegistryError(400, "Expected an owned session id.");
-      const record = readState().records.find((item) => item.id === sessionId);
-      if (!record)
-        throw new SessionRegistryError(
-          404,
-          "This owned session is not in the registry.",
-        );
-      if (record.projectId !== projectId)
+      return readState().records.filter(
+        (record) =>
+          record.projectId === projectId && record.provider === provider,
+      );
+    },
+    read(projectId: string, sessionId: string) {
+      const record = lookup(projectId, sessionId);
+      if (record.provider !== provider)
         throw new SessionRegistryError(
           409,
-          "This owned session belongs to a different project.",
+          "This session belongs to a different provider. No provider was selected implicitly.",
         );
       return record;
     },
@@ -158,8 +214,10 @@ export function createSessionRegistry(home: string) {
       projectId: string,
       requestId: string,
       requestHash: string,
-      prepare: () => OwnedSessionMetadata | Promise<OwnedSessionMetadata>,
-    ): Promise<OwnedSessionRecord> {
+      prepare: () =>
+        | OwnedCodingSessionMetadata
+        | Promise<OwnedCodingSessionMetadata>,
+    ): Promise<OwnedCodingSessionRecord> {
       project(projectId);
       if (
         !sessionRequestIdSchema.safeParse(requestId).success ||
@@ -179,7 +237,8 @@ export function createSessionRegistry(home: string) {
         if (existing) {
           if (
             existing.projectId !== projectId ||
-            existing.requestHash !== requestHash
+            existing.requestHash !== requestHash ||
+            existing.provider !== provider
           )
             throw new SessionRegistryError(
               409,
@@ -193,12 +252,12 @@ export function createSessionRegistry(home: string) {
             "The private session registry is full. Saved Start identities have been kept.",
           );
         const parsed = metadataSchema.safeParse(await prepare());
-        if (!parsed.success)
+        if (!parsed.success || parsed.data.provider !== provider)
           throw new SessionRegistryError(
             400,
             "Expected bounded trusted session metadata.",
           );
-        const record: OwnedSessionRecord = {
+        const record: OwnedCodingSessionRecord = {
           ...parsed.data,
           projectId,
           id: `session-${randomUUID()}`,

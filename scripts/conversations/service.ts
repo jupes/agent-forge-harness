@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PreparedCodexTask } from "../../types/codex-task-runtime";
 import type {
   ConversationBinding,
   ConversationObject,
@@ -28,6 +29,7 @@ import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
 import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
 import { conversationLeaseFile } from "./paths";
 import { parseSessionSend } from "./protocol";
@@ -67,6 +69,14 @@ interface ConversationOptions {
         resume: ConversationBinding | null;
       }) => Promise<SessionTurnSnapshot>)
     | undefined;
+  /** Additive private Task path; never normalizes or replaces a Claude snapshot. */
+  prepareCodexTask?:
+    | ((request: {
+        project: ProjectRecord;
+        input: SessionMessage;
+        resume: ConversationBinding | null;
+      }) => Promise<PreparedCodexTask>)
+    | undefined;
 }
 
 const activePhase = (phase: string) =>
@@ -83,10 +93,15 @@ const savedKeeperSmith = (state: ConversationState) => {
 
 /** Observers do not own provider lifetime. A held SQLite lease fences dispatch across hearths. */
 export function createConversationService(options: ConversationOptions) {
-  if (options.prepareSession && !options.address)
+  if ((options.prepareSession || options.prepareCodexTask) && !options.address)
     throw new ConversationError(
       400,
       "Session launch preparation requires an owned session address.",
+    );
+  if (options.prepareSession && options.prepareCodexTask)
+    throw new ConversationError(
+      400,
+      "Choose one explicit owned session provider preparation.",
     );
   const store = createConversationStore(
     options.home,
@@ -394,9 +409,10 @@ export function createConversationService(options: ConversationOptions) {
       rawInput: SessionMessage,
       purpose: "message" | "brief" = "message",
     ): Promise<ConversationReceipt> {
-      const wireInput: SessionMessage = options.prepareSession
-        ? parseSessionSend(rawInput)
-        : parseConversationSend(rawInput);
+      const wireInput: SessionMessage =
+        options.prepareSession || options.prepareCodexTask
+          ? parseSessionSend(rawInput)
+          : parseConversationSend(rawInput);
       const privateInput: ConversationSend = {
         requestId: wireInput.requestId,
         expectedRevision: wireInput.expectedRevision,
@@ -413,6 +429,19 @@ export function createConversationService(options: ConversationOptions) {
             (frame) =>
               frame.turnId === input.requestId && frame.event.kind === "user",
           )?.event;
+        if (options.prepareCodexTask) {
+          if (
+            user?.kind !== "user" ||
+            !user.codexTask ||
+            JSON.stringify(wireInput.attachments ?? []) !==
+              JSON.stringify(user.codexTask.launch.attachments ?? [])
+          )
+            throw new ConversationError(
+              409,
+              "This request id already names different content. Read the original request.",
+            );
+          return { ...privateInput, codexTask: user.codexTask };
+        }
         if (options.prepareSession) {
           if (user?.kind !== "user" || !user.session)
             throw new ConversationError(
@@ -439,7 +468,10 @@ export function createConversationService(options: ConversationOptions) {
       };
       if (current.turns.some((item) => item.requestId === input.requestId))
         return store.accept(projectId, original());
-      if (options.prepareSession && purpose !== "message")
+      if (
+        (options.prepareSession || options.prepareCodexTask) &&
+        purpose !== "message"
+      )
         throw new ConversationError(
           400,
           "Owned coding sessions cannot create Keeper briefs.",
@@ -606,6 +638,33 @@ export function createConversationService(options: ConversationOptions) {
                     "The private session launch could not be verified. No turn was accepted.",
                   );
                 input = { ...privateInput, session: snapshot.data };
+              }
+            }
+            if (options.prepareCodexTask) {
+              const latest = store.read(projectId);
+              if (
+                latest.turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const snapshot = preparedCodexTaskSchema.safeParse(
+                  await options.prepareCodexTask({
+                    project: projectFor(projectId),
+                    input: wireInput,
+                    resume: latest.binding,
+                  }),
+                );
+                if (
+                  !snapshot.success ||
+                  snapshot.data.launch.prompt !== wireInput.text ||
+                  JSON.stringify(snapshot.data.launch.attachments ?? []) !==
+                    JSON.stringify(wireInput.attachments ?? [])
+                )
+                  throw new ConversationError(
+                    503,
+                    "The private Codex Task could not be verified. No turn was accepted.",
+                  );
+                input = { ...privateInput, codexTask: snapshot.data };
               }
             }
             if (closed || abort.signal.aborted)

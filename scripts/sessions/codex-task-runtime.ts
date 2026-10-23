@@ -1,6 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { z } from "zod";
 import type {
   CodexExecCapabilities,
   CodexExecOutcome,
@@ -19,11 +18,13 @@ import {
   CODEX_EXEC_STREAM_LIMITS,
   createCodexExecParser,
 } from "./codex-exec-stream";
+import { codexTaskLaunchSchema, serializeCodexTask } from "./codex-task";
 import {
-  codexExecCapabilitiesSchema,
-  codexTaskLaunchSchema,
-  serializeCodexTask,
-} from "./codex-task";
+  preparedCodexCapabilitiesSchema,
+  preparedCodexTaskSchema,
+} from "./codex-task-runtime-protocol";
+
+export { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 
 export interface CodexTaskRuntimeOptions {
   root: string;
@@ -41,62 +42,6 @@ export interface CodexTaskRuntimeOptions {
   modelEfforts?: readonly CodexModelEffortEvidence[];
 }
 
-const privateLaunchSchema = codexTaskLaunchSchema.transform(
-  (value): CodexTaskLaunch => ({
-    mode: value.mode,
-    cwd: value.cwd,
-    model: value.model,
-    sandbox: value.sandbox,
-    approvalPolicy: value.approvalPolicy,
-    prompt: value.prompt,
-    ...(value.effort === undefined ? {} : { effort: value.effort }),
-    ...(value.attachments === undefined
-      ? {}
-      : { attachments: value.attachments }),
-    ...(value.context === undefined
-      ? {}
-      : {
-          context: {
-            projectId: value.context.projectId,
-            repository: value.context.repository,
-            worktree: value.context.worktree,
-            ...(value.context.beadId === undefined
-              ? {}
-              : { beadId: value.context.beadId }),
-            ...(value.context.about === undefined
-              ? {}
-              : { about: value.context.about }),
-          },
-        }),
-  }),
-);
-const privateCapabilitiesSchema = codexExecCapabilitiesSchema.transform(
-  (value): CodexExecCapabilities => ({
-    version: value.version,
-    flags: value.flags,
-    ...(value.modelEfforts === undefined
-      ? {}
-      : { modelEfforts: value.modelEfforts }),
-  }),
-);
-export const preparedCodexTaskSchema: z.ZodType<PreparedCodexTask> = z
-  .object({
-    version: z.literal(1),
-    provider: z.literal("codex"),
-    smith: z
-      .string()
-      .min(1)
-      .max(80)
-      .refine(
-        (value) => value.trim() === value && !/[\p{Cc}\p{Cs}]/u.test(value),
-      ),
-    cwd: z.string().max(1024),
-    canonicalCwd: z.string().min(1).max(1024).refine(isAbsolute),
-    launch: privateLaunchSchema,
-    capabilities: privateCapabilitiesSchema,
-  })
-  .strict()
-  .refine((value) => value.cwd === value.launch.cwd);
 const unavailable = (reason: string) =>
   new Error(`${reason} No provider turn was started.`);
 const directory = (path: string): string => {
@@ -244,7 +189,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         ),
       ),
     ];
-    return privateCapabilitiesSchema.parse({
+    return preparedCodexCapabilitiesSchema.parse({
       version,
       flags,
       ...(modelEfforts ? { modelEfforts } : {}),
