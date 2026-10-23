@@ -93,6 +93,7 @@ export function createSessionLibrary(options: {
               ...(user.brief ? { brief: user.brief } : {}),
               ...(user.session ? { session: user.session } : {}),
               ...(user.codexTask ? { codexTask: user.codexTask } : {}),
+              ...(user.codexChat ? { codexChat: user.codexChat } : {}),
             }),
           )
           .digest("hex");

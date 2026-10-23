@@ -3,10 +3,14 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CodexChatStartRequest } from "../../types/codex-owned-chat";
+import { conversationFile } from "../conversations/paths";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
+import { createSessionLibrary } from "./library";
+import { sessionTranscriptExportSchema } from "./library-protocol";
+import { sessionRegistryFile } from "./registry";
 
 const scratch = scratchDirs(),
   closing: Array<() => Promise<void>> = [];
@@ -137,6 +141,43 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
     calls.find((row) => row.method === "thread/resume")?.params,
   ).toMatchObject({ threadId: page.binding?.sessionId, excludeTurns: true });
   expect(page.frames.some((frame) => frame.event.kind === "model")).toBe(false);
+  const path = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    }),
+    before = readFileSync(path),
+    registryBefore = readFileSync(sessionRegistryFile(f.home));
+  const library = createSessionLibrary({ root: f.root, home: f.home });
+  const exported = library.exportTranscript(f.project.id, started.session.id);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  expect(exported.session).toMatchObject({ provider: "codex", mode: "chat" });
+  expect(exported.conversation.turns).toHaveLength(2);
+  expect(
+    exported.conversation.frames
+      .filter((frame) => frame.event.kind === "user")
+      .map((frame) => frame.event),
+  ).toMatchObject([
+    { codexChat: { launch: { prompt: f.request.launch.prompt } } },
+    { codexChat: { launch: { prompt: "Second explicit turn" } } },
+  ]);
+  const archived = await library.archive(f.project.id, started.session.id, {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    archived: true,
+  });
+  expect(archived.receipt?.outcome).toBe("applied");
+  expect(
+    (
+      await library.archive(f.project.id, started.session.id, {
+        requestId: randomUUID(),
+        expectedRevision: archived.entry.revision,
+        archived: false,
+      })
+    ).entry.archived,
+  ).toBe(false);
+  expect(readFileSync(path)).toEqual(before);
+  expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registryBefore);
 });
 
 test("a later Chat turn cannot replace the original captured canonical directory identity", async () => {
