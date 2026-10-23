@@ -60,6 +60,7 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { createProjectActivityRoutes } from "./project-activity";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
@@ -431,6 +432,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   );
   const providerLogins = createProviderLoginRoutes(deps.providerLogin);
   const observations = createSessionObservationRoutes(deps, projectSnapshot);
+  const activity = createProjectActivityRoutes(deps, projectSnapshot);
   const reads: ReadRoute[] = [
     ...providerLogins.reads,
     providers.read,
@@ -451,6 +453,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectOverviewRoute(deps, projectSnapshot),
     observations.list,
     observations.detail,
+    activity.list,
+    activity.detail,
     projectBeadsRoute(deps, projectSnapshot),
     projectWorkbenchRoute(deps, projectSnapshot, async () => {
       const result = await readEligible();
