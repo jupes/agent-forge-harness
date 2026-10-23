@@ -85,3 +85,50 @@ malformed output; line/aggregate/text/frame limits; process exit, timeout, Stop,
 partial text and storage failure. A compiled inert provider exercises actual
 supervised stdin/stdout and persistence. No desktop Start is enabled until the
 owned admission and ACP Chat follow-up slices meet the parent's acceptance criteria.
+
+## Runtime boundaries and controls
+
+The standalone runtime is not registered in the scheduler's metadata-only
+`ADAPTERS` map. That would expose unattended Gemini execution before the owned
+admission and capability work is complete. Its explicit factory is the private
+Task seam; the existing public composer continues to refuse unsupported Gemini
+Start. Existing Claude/Codex hashes and adapter behavior are unchanged.
+
+| Route or control | Current evidence and behavior |
+| --- | --- |
+| Gemini CLI Task | Verified `0.65.0` stream-json contract; exact help flags required |
+| Gemini CLI Chat | ACP owned admission/duplex integration remains a separate slice |
+| Antigravity | Settled deferred route; never substituted or offered here |
+| Task tool denial | Native `policy_violation`/error report retained; no live approval answer invented |
+| Stop and timeout | Only the actual owned provider/bootstrap tree is stopped; partial output remains private |
+| Resume, fork, terminal handoff | This one-turn Task runtime grants no such authority |
+| Effort, thinking budget, output schema | No verified launch field or invented flag |
+| Account access, allowance, cost | Not established by version/help, usage tokens or exit0 |
+
+Preparation captures physical directory identities before any capability probe,
+then rechecks them after the probes and immediately before dispatch. It retains
+the canonical native command, selected policy/include paths and exact private
+launch. A changed directory link, command, version or required flag refuses;
+preparation never silently adopts a new directory during a probe.
+
+Read-only probes and the actual Task use the gated interactive bootstrap. The
+runtime distinguishes the provider PID from the separately owned bootstrap PID.
+The provider process record must finish saving before the first prompt byte is
+sent. Input uses ordered bounded writes followed by EOF, with no prompt in argv.
+
+Private writes have a five-second default deadline (trusted range1ms–30s), a
+256-frame/1MiB pending queue and no replay. Stop or protocol failure suppresses
+remaining queued writes; at most the currently accepted bounded write is awaited.
+Any suppressed/failed frames make the outcome unknown. A trusted journal writer
+must additionally fence late callbacks with its own accepted-turn lease; a
+JavaScript timeout cannot cancel an external storage operation already issued.
+Terminal success, exact native identity, resolved tools and clean supervised
+exit must agree, and failure to save the final receipt cannot confirm completion.
+
+The compiled inert fixture verifies real stdin/stdout, native denial/error,
+partial output, malformed/oversized/missing results, nonzero exit, Stop/timeout,
+normal-exit helper cleanup, missing/stalled persistence and queued-write liveness.
+The Windows installation test also runs a planted official-layout package through
+the actual native Node executable. It proves the `.cmd` shim is never executed,
+private stdin is exact and preload variables are absent; the planted package
+does not read credentials or make a model/account request.
