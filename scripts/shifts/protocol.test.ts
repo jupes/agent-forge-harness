@@ -30,6 +30,9 @@ test("reviewed shift Start is closed and accepts full bounds without caller runt
     { ...request.options, repairs: 11 },
     { ...request.options, maxUsd: 0 },
     { ...request.options, shell: "other" },
+    { ...request.options, for: "25h" },
+    { ...request.options, base: "--upload-pack=x" },
+    { ...request.options, base: "shift/other/work" },
   ])
     expect(
       projectShiftStartSchema.safeParse({ ...request, options }).success,

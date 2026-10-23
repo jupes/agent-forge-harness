@@ -7,6 +7,8 @@ import type {
   ProjectShiftsPage,
 } from "../../types/project-shifts";
 import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
+import { parseDuration } from "../config/duration";
+import { isBaseBranch } from "../scheduler/shift-base";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 export const ATTENDED_SHIFT_UNAVAILABLE =
@@ -40,7 +42,14 @@ export const projectShiftStartSchema: z.ZodType<ProjectShiftStartRequest> = z
     expectedCatalogRevision: count,
     options: z
       .object({
-        for: word.max(20).regex(/^[1-9]\d{0,5}[smh]$/),
+        for: word.max(20).refine((text) => {
+          const ms = parseDuration(text);
+          return (
+            ms !== null &&
+            ms >= SHIFT_LIMITS.forMs[0] &&
+            ms <= SHIFT_LIMITS.forMs[1]
+          );
+        }),
         concurrency: z
           .number()
           .int()
@@ -57,7 +66,7 @@ export const projectShiftStartSchema: z.ZodType<ProjectShiftStartRequest> = z
           .int()
           .min(SHIFT_LIMITS.repairs[0])
           .max(SHIFT_LIMITS.repairs[1]),
-        base: word.max(200),
+        base: word.refine(isBaseBranch),
         epic: id.optional(),
         smith: word
           .max(64)
@@ -150,8 +159,13 @@ export const projectShiftsPageSchema: z.ZodType<ProjectShiftsPage> = z
     items: z.array(projectShiftReceiptSchema).max(1000),
   })
   .strict()
-  .refine((page) =>
-    page.items.every((item) => item.intent.projectId === page.projectId),
+  .refine(
+    (page) =>
+      page.items.every((item) => item.intent.projectId === page.projectId) &&
+      new Set(page.items.map((item) => item.intent.request.requestId)).size ===
+        page.items.length &&
+      new Set(page.items.map((item) => item.intent.shiftId)).size ===
+        page.items.length,
   );
 
 /** This module is renderer-safe; no private store or native runtime imports. */
