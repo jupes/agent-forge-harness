@@ -27,6 +27,8 @@ export interface ProjectShiftRuntime {
   attended: true;
   mint(): string;
   launch(intent: ProjectShiftIntent): void | Promise<void>;
+  /** True only after the matching locally held startup tree has settled. No persisted PID grants this capability. */
+  stopStarting?(intent: ProjectShiftIntent): Promise<boolean>;
   unrecorded?(): unknown[];
 }
 
@@ -93,6 +95,7 @@ export function createProjectShiftService(options: {
   runtime?: ProjectShiftRuntime;
 }) {
   const registry = createProjectShiftRegistry(options);
+  const stops = new Map<string, Promise<ProjectShiftReceipt | null>>();
   let closed = false;
   const open = () => {
     if (closed)
@@ -126,6 +129,19 @@ export function createProjectShiftService(options: {
       );
     return result;
   };
+  const originalFor = (projectId: string, shiftId: string) => {
+    if (!isShiftId(shiftId))
+      throw new ConversationError(400, "Expected a shift id.");
+    const intent = registry
+      .list(projectId)
+      .find((item) => item.shiftId === shiftId);
+    if (!intent)
+      throw new ConversationError(
+        404,
+        "No original project Start names this shift in this workspace.",
+      );
+    return intent;
+  };
   return {
     read(projectId: string, requestId: string): ProjectShiftReceipt {
       return receipt(registry.read(projectId, requestId));
@@ -147,16 +163,7 @@ export function createProjectShiftService(options: {
       return page;
     },
     authorizeControl(projectId: string, shiftId: string): ProjectShiftReceipt {
-      if (!isShiftId(shiftId))
-        throw new ConversationError(400, "Expected a shift id.");
-      const intent = registry
-        .list(projectId)
-        .find((item) => item.shiftId === shiftId);
-      if (!intent)
-        throw new ConversationError(
-          404,
-          "No original project Start names this shift in this workspace.",
-        );
+      const intent = originalFor(projectId, shiftId);
       const current = receipt(intent);
       if (current.observation.actual === null)
         throw new ConversationError(
@@ -164,6 +171,45 @@ export function createProjectShiftService(options: {
           "The actual original shift record could not be verified. Check the original request before using its controls.",
         );
       return current;
+    },
+    /** Null delegates to the canonical record's existing Stop/Recover authority. */
+    async stopStarting(
+      projectId: string,
+      shiftId: string,
+    ): Promise<ProjectShiftReceipt | null> {
+      open();
+      const intent = originalFor(projectId, shiftId);
+      if (receipt(intent).observation.actual !== null) return null;
+      if (intent.startupStop?.completedAt) return receipt(intent);
+      const key = `${projectId}/${intent.request.requestId}/${intent.requestHash}`;
+      const previous = stops.get(key);
+      if (previous) return previous;
+      const pending = (async () => {
+        const marked = await registry.requestStartupStop(intent);
+        // A record published during the private write wins; keep its canonical cleanup controls.
+        if (evidence(options.home, marked.intent).record !== undefined) {
+          const observed = receipt(marked.intent);
+          return observed.observation.actual !== null ? null : observed;
+        }
+        try {
+          const settled = await options.runtime?.stopStarting?.(marked.intent);
+          if (
+            settled === true &&
+            evidence(options.home, marked.intent).record === undefined
+          ) {
+            await registry.completeStartupStop(marked.intent);
+          }
+        } catch {
+          /* A held tree may already have ended. Only the durable receipt may confirm completion. */
+        }
+        return receipt(registry.read(projectId, intent.request.requestId));
+      })();
+      stops.set(key, pending);
+      try {
+        return await pending;
+      } finally {
+        stops.delete(key);
+      }
     },
     async start(
       projectId: string,
@@ -196,7 +242,7 @@ export function createProjectShiftService(options: {
           /* The durable truth may already have advanced. Read it; never infer refusal or repeat. */
         }
       }
-      return receipt(marked.intent);
+      return receipt(registry.read(projectId, saved.intent.request.requestId));
     },
     close() {
       closed = true;

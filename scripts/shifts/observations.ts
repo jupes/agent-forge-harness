@@ -189,6 +189,14 @@ export function observeProjectShift(
       },
     };
   }
+  if (intent.startupStop?.completedAt)
+    return {
+      ...base,
+      phase: "stopped",
+      reason:
+        "Startup Stop is confirmed: the original held tree exited before a shift record was created.",
+      actual: null,
+    };
   if (source.launch !== undefined && source.launch !== null) {
     const checked = launchSchema.safeParse(source.launch);
     if (
@@ -201,6 +209,16 @@ export function observeProjectShift(
         (checked.data.alive || checked.data.endedAt === undefined))
     )
       return unknown();
+    if (intent.startupStop)
+      return checked.data.alive
+        ? {
+            ...base,
+            phase: "stopping",
+            reason:
+              "Startup Stop was requested. Waiting for the original held tree to exit.",
+            actual: null,
+          }
+        : unknown();
     const requested = projectShiftStartSchema.safeParse({
       ...intent.request,
       options: checked.data.requested,

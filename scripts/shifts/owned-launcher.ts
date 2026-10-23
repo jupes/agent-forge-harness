@@ -48,6 +48,7 @@ export function createOwnedProjectShiftLauncher(options: {
       const saved = originals.read(intent.projectId, intent.request.requestId);
       if (
         !saved.attemptedAt ||
+        saved.startupStop ||
         saved.executionStartedAt ||
         canonicalSessionInput(saved) !== canonicalSessionInput(intent) ||
         workspaceKey(saved.workspace) !== workspaceKey(workspace) ||

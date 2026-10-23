@@ -180,6 +180,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
     if (
       !saved.attemptedAt ||
       !saved.executionStartedAt ||
+      saved.startupStop ||
       canonicalSessionInput(saved) !== canonicalSessionInput(intent)
     )
       throw new ConversationError(
@@ -259,6 +260,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
             join(base.shiftsDir, intent.shiftId),
           ),
           async beforeStart(id, shown) {
+            checkedOriginal(intent);
             if (!(await beforeStart(id, shown))) return false;
             const config = load().config;
             const selected = intent.request.options.smith

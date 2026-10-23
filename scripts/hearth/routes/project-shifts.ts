@@ -217,6 +217,13 @@ export function projectShiftRoutes(
         subject: ({ shiftId }) => ({ target: shiftId }),
         effect: (input, context) =>
           reply(async () => {
+            if (control === "stop") {
+              const startup = await service.stopStarting(
+                input.projectId,
+                input.shiftId,
+              );
+              if (startup) return { status: 202, data: startup };
+            }
             const original = service.authorizeControl(
               input.projectId,
               input.shiftId,

@@ -96,8 +96,25 @@ export const projectShiftIntentSchema: z.ZodType<ProjectShiftIntent> = z
     createdAt: z.iso.datetime(),
     attemptedAt: z.iso.datetime().nullable(),
     executionStartedAt: z.iso.datetime().nullable().optional(),
+    startupStop: z
+      .object({
+        requestedAt: z.iso.datetime(),
+        completedAt: z.iso.datetime().nullable(),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (intent) =>
+      !intent.startupStop ||
+      (intent.attemptedAt !== null &&
+        Date.parse(intent.startupStop.requestedAt) >=
+          Date.parse(intent.attemptedAt) &&
+        (intent.startupStop.completedAt === null ||
+          Date.parse(intent.startupStop.completedAt) >=
+            Date.parse(intent.startupStop.requestedAt))),
+  );
 export const projectShiftReceiptSchema: z.ZodType<ProjectShiftReceipt> = z
   .object({
     intent: projectShiftIntentSchema,
@@ -150,10 +167,17 @@ export const projectShiftReceiptSchema: z.ZodType<ProjectShiftReceipt> = z
     (value) =>
       value.intent.shiftId === value.observation.shiftId &&
       value.intent.request.requestId === value.observation.requestId &&
-      (value.observation.actual === null) ===
-        ["reserved", "unknown", "starting", "failed"].includes(
-          value.observation.phase,
-        ),
+      (value.observation.actual === null
+        ? ["reserved", "unknown", "starting", "failed"].includes(
+            value.observation.phase,
+          ) ||
+          (value.observation.phase === "stopping" &&
+            value.intent.startupStop?.completedAt === null) ||
+          (value.observation.phase === "stopped" &&
+            typeof value.intent.startupStop?.completedAt === "string")
+        : !["reserved", "unknown", "starting", "failed"].includes(
+            value.observation.phase,
+          )),
   );
 export const projectShiftsPageSchema: z.ZodType<ProjectShiftsPage> = z
   .object({

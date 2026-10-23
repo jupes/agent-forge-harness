@@ -194,6 +194,20 @@ export function fixtureMode(mode: "rich" | "hang-tree") {
   checkedFixtureRoot();
   writeFileSync(join(STATE, "mode.json"), JSON.stringify(mode));
 }
+/** Held Git preflight is always disposable; cleanup refuses the fetch if an assertion failed before Stop. */
+export function holdStartup(hold: boolean) {
+  checkedFixtureRoot();
+  const flag = join(STATE, "hold-startup"),
+    abandoned = join(STATE, "abandon-startup");
+  if (hold) {
+    rmSync(abandoned, { force: true });
+    rmSync(join(STATE, "startup-tree.json"), { force: true });
+    writeFileSync(flag, "held-before-shift-record");
+  } else {
+    writeFileSync(abandoned, "refuse-after-test-cleanup");
+    rmSync(flag, { force: true });
+  }
+}
 export function fixtureCalls() {
   const file = join(STATE, "calls.jsonl");
   if (!existsSync(file)) return [];

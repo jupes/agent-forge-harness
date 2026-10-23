@@ -200,6 +200,43 @@ test("the private original is checked again immediately before the grant, not tr
   }
 });
 
+test("a persisted startup Stop fences an awaited ownership grant even before the cancel response settles", async () => {
+  const f = await fixture();
+  let release = () => {},
+    entered = false;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const child = createOwnedProjectShiftLauncher({
+    ...f,
+    ownership: {
+      beforeStart: () => {
+        entered = true;
+        return held;
+      },
+    },
+  })(f.spec, f.intent);
+  try {
+    await until(() => (entered ? true : null));
+    await f.originals.requestStartupStop(f.intent);
+    release();
+    await child.done;
+    await expect(child.enginePid).rejects.toThrow();
+    expect(existsSync(f.log)).toBe(false);
+    expect(liveChildCount()).toBe(0);
+    expect(
+      f.originals.read(f.intent.projectId, f.intent.request.requestId)
+        .startupStop?.completedAt,
+    ).toBeNull();
+    expect(() => createOwnedProjectShiftLauncher(f)(f.spec, f.intent)).toThrow(
+      "original",
+    );
+  } finally {
+    release();
+    await child.stop();
+  }
+});
+
 test("abrupt outer owner death ends the engine and its independently guarded nested provider/helper", async () => {
   const f = await fixture(),
     holder = Bun.spawn(

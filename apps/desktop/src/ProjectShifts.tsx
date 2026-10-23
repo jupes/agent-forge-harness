@@ -21,7 +21,7 @@ const money = (value: number) => `$${value.toFixed(2)}`;
 const percent = (value: number | null) =>
   value === null ? "Not reported" : `${Math.round(value * 100)}%`;
 const clock = (value: string) => new Date(value).toLocaleString();
-const live = new Set(["running", "throttled"]);
+const stoppable = new Set(["starting", "running", "throttled"]);
 function elapsed(startedAt: string, now: number) {
   const minutes = Math.max(
     0,
@@ -473,7 +473,7 @@ function ShiftRow({
         </div>
         <div class="af-shift-actions">
           <Button onClick={onCheck}>Check original</Button>
-          {live.has(observation.phase) && (
+          {stoppable.has(observation.phase) && (
             <Button
               aria-disabled={busy}
               onClick={() => {
