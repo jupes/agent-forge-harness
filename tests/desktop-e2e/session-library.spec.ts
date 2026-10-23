@@ -469,6 +469,11 @@ test("Continue Chat only focuses the composer; the explicit next send resumes th
     .getByRole("button", { name: "Send session message", exact: true })
     .click();
   await expect.poll(() => state(record.id).turns.length).toBe(2);
+  // Acceptance can precede provider dispatch while the prior idle DOM remains.
+  // Wait for the actual second turn, then retain the exact count/native checks.
+  await expect
+    .poll(() => state(record.id).turns.at(-1)?.phase)
+    .toBe("completed");
   await expect(page.locator("[data-session-state]")).toHaveAttribute(
     "data-session-state",
     "idle",
