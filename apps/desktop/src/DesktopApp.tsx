@@ -19,6 +19,7 @@ import { OwnedSessions } from "./OwnedSessions";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
+import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
 import { Providers } from "./Providers";
@@ -29,6 +30,7 @@ import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
+import { useProjectShifts } from "./use-project-shifts";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
 import { useSessions } from "./use-sessions";
@@ -62,6 +64,13 @@ export function DesktopApp(): JSX.Element {
   );
   const workbench = useWorkbench(
     route.destination === "workbench" ? (project?.id ?? null) : null,
+  );
+  const shifts = useProjectShifts(
+    route.destination === "workbench" ? (project?.id ?? null) : null,
+    workbench.data?.projectId === project?.id
+      ? (workbench.data?.workspace ?? null)
+      : null,
+    writesAllowed,
   );
   const fullBead =
     route.destination === "beads" &&
@@ -439,6 +448,17 @@ export function DesktopApp(): JSX.Element {
             loading={workbench.loading}
             reload={workbench.reload}
             writes={beadWrites}
+            shifts={
+              shifts.scope && (
+                <ProjectShifts
+                  key={project.id}
+                  client={shifts.client}
+                  scope={shifts.scope}
+                  writesAllowed={writesAllowed}
+                  archived={project.archived}
+                />
+              )
+            }
             selectedId={
               route.selection?.kind === "bead" ? route.selection.id : null
             }

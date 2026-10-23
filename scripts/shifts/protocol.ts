@@ -3,6 +3,7 @@ import type {
   ProjectShiftIntent,
   ProjectShiftOptions,
   ProjectShiftReceipt,
+  ProjectShiftStartOptions,
   ProjectShiftStartRequest,
   ProjectShiftsPage,
 } from "../../types/project-shifts";
@@ -36,48 +37,50 @@ export const shiftHostSnapshotSchema = z
 export const shiftRequestIdSchema = z
   .uuid()
   .refine((value) => value === value.toLowerCase());
+export const projectShiftStartOptionsSchema: z.ZodType<ProjectShiftStartOptions> =
+  z
+    .object({
+      for: word.max(20).refine((text) => {
+        const ms = parseDuration(text);
+        return (
+          ms !== null &&
+          ms >= SHIFT_LIMITS.forMs[0] &&
+          ms <= SHIFT_LIMITS.forMs[1]
+        );
+      }),
+      concurrency: z
+        .number()
+        .int()
+        .min(SHIFT_LIMITS.concurrency[0])
+        .max(SHIFT_LIMITS.concurrency[1]),
+      maxBeads: z
+        .number()
+        .int()
+        .min(SHIFT_LIMITS.maxBeads[0])
+        .max(SHIFT_LIMITS.maxBeads[1]),
+      maxUsd: z.number().finite().positive().max(SHIFT_MAX_USD),
+      repairs: z
+        .number()
+        .int()
+        .min(SHIFT_LIMITS.repairs[0])
+        .max(SHIFT_LIMITS.repairs[1]),
+      base: word.refine(isBaseBranch),
+      epic: id.optional(),
+      smith: word
+        .max(64)
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+        .optional(),
+      runTimeout: word
+        .max(20)
+        .regex(/^[1-9]\d{0,5}[smh]$/)
+        .optional(),
+    })
+    .strict();
 export const projectShiftStartSchema: z.ZodType<ProjectShiftStartRequest> = z
   .object({
     requestId: shiftRequestIdSchema,
     expectedCatalogRevision: count,
-    options: z
-      .object({
-        for: word.max(20).refine((text) => {
-          const ms = parseDuration(text);
-          return (
-            ms !== null &&
-            ms >= SHIFT_LIMITS.forMs[0] &&
-            ms <= SHIFT_LIMITS.forMs[1]
-          );
-        }),
-        concurrency: z
-          .number()
-          .int()
-          .min(SHIFT_LIMITS.concurrency[0])
-          .max(SHIFT_LIMITS.concurrency[1]),
-        maxBeads: z
-          .number()
-          .int()
-          .min(SHIFT_LIMITS.maxBeads[0])
-          .max(SHIFT_LIMITS.maxBeads[1]),
-        maxUsd: z.number().finite().positive().max(SHIFT_MAX_USD),
-        repairs: z
-          .number()
-          .int()
-          .min(SHIFT_LIMITS.repairs[0])
-          .max(SHIFT_LIMITS.repairs[1]),
-        base: word.refine(isBaseBranch),
-        epic: id.optional(),
-        smith: word
-          .max(64)
-          .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
-          .optional(),
-        runTimeout: word
-          .max(20)
-          .regex(/^[1-9]\d{0,5}[smh]$/)
-          .optional(),
-      })
-      .strict(),
+    options: projectShiftStartOptionsSchema,
   })
   .strict();
 
