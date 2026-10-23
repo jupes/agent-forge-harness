@@ -261,7 +261,10 @@ test("exit zero without a verified terminal private result is fatal to the shift
 
 test("Codex uses the same private attempt owner and exact versioned activity without an inferred model", async () => {
   const f = fixture("codex");
-  const adapter = createCodexAdapter({ prepare: async () => {} });
+  const adapter = createCodexAdapter({
+    approvalPolicy: "never",
+    prepare: async () => {},
+  });
   const handle = await adapter.spawn({
     beadId: "bounded-task-1",
     runId: "bounded-run-1",
@@ -298,6 +301,10 @@ test("Codex uses the same private attempt owner and exact versioned activity wit
       provider: "codex",
       version: "0.163.0-alpha.10.2",
     });
+    const user = state.frames[0]?.event;
+    if (user?.kind !== "user" || !user.shift)
+      throw Error("Codex original input is missing");
+    expect(user.shift.command).toContain('approval_policy="never"');
     expect(
       state.frames.filter(
         (frame) =>
