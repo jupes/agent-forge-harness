@@ -10,6 +10,7 @@ import type {
   CodingOutcomeEvent,
 } from "./session-activity";
 import type { SessionTurnSnapshot } from "./session-turn";
+import type { ShiftTurnSnapshot } from "./shift-turn";
 
 /** A trusted server-selected journal partition, separate from the provider's resume identity. */
 export interface OwnedConversationAddress {
@@ -35,6 +36,7 @@ export interface PreparedConversationSend extends ConversationSend {
   brief?: KeeperBriefSnapshot | undefined;
   session?: SessionTurnSnapshot | undefined;
   codexTask?: PreparedCodexTask | undefined;
+  shift?: ShiftTurnSnapshot | undefined;
 }
 
 export type ConversationPhase =
@@ -70,6 +72,7 @@ export type ConversationEvent =
       brief?: KeeperBriefSnapshot | undefined;
       session?: SessionTurnSnapshot | undefined;
       codexTask?: PreparedCodexTask | undefined;
+      shift?: ShiftTurnSnapshot | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
   | { kind: "text"; text: string; messageId?: string | undefined }

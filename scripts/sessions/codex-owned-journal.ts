@@ -11,6 +11,7 @@ import {
   parsePreparedConversationSend,
   stateSchema,
 } from "../conversations/protocol";
+import { shiftTurnSnapshotSchema } from "../shifts/turn-protocol";
 import {
   claudeCodingUsageSchema,
   codingActivitySchema,
@@ -44,6 +45,23 @@ const codexUser = z
       value.text === value.codexTask.launch.prompt &&
       JSON.stringify(value.about) ===
         JSON.stringify(value.codexTask.launch.context?.about ?? []),
+  );
+const shiftUser = z
+  .object({
+    kind: z.literal("user"),
+    text,
+    about: z.array(object).max(16),
+    shift: shiftTurnSnapshotSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.text === value.shift.stdin &&
+      JSON.stringify(value.about) ===
+        JSON.stringify([
+          { kind: "bead", id: value.shift.beadId },
+          { kind: "run", id: value.shift.runId },
+        ]),
   );
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const codingUsage = z
@@ -92,6 +110,7 @@ const codingUsage = z
 export const ownedCodingEventSchema = z.union([
   eventSchema,
   codexUser,
+  shiftUser,
   codingUsage,
   claudeCodingUsageSchema,
   codingActivitySchema,
@@ -108,8 +127,9 @@ const frame = z
   .strict();
 const inProject = (value: {
   projectId: string;
-  binding: { provider: string; sessionId: string } | null;
-  frames: { event: ConversationEvent }[];
+  conversationId: string;
+  binding: { provider: string; sessionId: string; version: string } | null;
+  frames: { turnId: string; event: ConversationEvent }[];
 }) =>
   value.frames.every(
     ({ event }) =>
@@ -119,6 +139,17 @@ const inProject = (value: {
         (!value.binding ||
           (value.binding.provider === "codex" &&
             z.string().uuid().safeParse(value.binding.sessionId).success))),
+  ) &&
+  value.frames.every(
+    ({ turnId, event }) =>
+      event.kind !== "user" ||
+      !event.shift ||
+      (event.shift.projectId === value.projectId &&
+        event.shift.conversationId === value.conversationId &&
+        event.shift.turnId === turnId &&
+        (!value.binding ||
+          (value.binding.provider === event.shift.provider &&
+            value.binding.version === event.shift.cliVersion))),
   );
 /** Whole states prove reported activity against its immutable private launch, not a public row. */
 function reportedTurn(
@@ -143,6 +174,11 @@ function reportedTurn(
     )?.event;
     if (user?.kind !== "user")
       return !complete && value.binding?.provider === event.provider;
+    if (user.shift)
+      return (
+        user.shift.provider === event.provider &&
+        user.shift.cliVersion === event.version
+      );
     const snapshot = user.session ?? user.codexTask;
     return (
       snapshot?.provider === event.provider &&
@@ -173,10 +209,46 @@ const prepared = z
     codexTask: preparedCodexTaskSchema,
   })
   .strict();
+const preparedShift = z
+  .object({
+    requestId: z.uuid(),
+    expectedRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER - 1),
+    text,
+    about: z.array(object).max(16),
+    shift: shiftTurnSnapshotSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.requestId === value.shift.turnId &&
+      shiftUser.safeParse({
+        kind: "user",
+        text: value.text,
+        about: value.about,
+        shift: value.shift,
+      }).success,
+  );
 
 export function parseOwnedPreparedConversationSend(
   input: unknown,
 ): PreparedConversationSend {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    Object.hasOwn(input, "shift")
+  ) {
+    const parsed = preparedShift.safeParse(input);
+    if (!parsed.success)
+      throw new ConversationError(
+        400,
+        "Expected a bounded private shift attempt.",
+      );
+    return parsed.data;
+  }
   if (
     typeof input === "object" &&
     input !== null &&

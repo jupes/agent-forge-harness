@@ -36,6 +36,30 @@ import {
 export { ConversationError } from "./error";
 export { isConversationRequestId, parseConversationSend } from "./protocol";
 
+function validShiftInputs(state: ConversationState): boolean {
+  return state.frames.every((frame) => {
+    const event = frame.event;
+    if (event.kind !== "user" || !event.shift) return true;
+    const turn = state.turns.find((row) => row.requestId === frame.turnId);
+    const users = state.frames.filter(
+      (row) => row.turnId === frame.turnId && row.event.kind === "user",
+    );
+    return (
+      users.length === 1 &&
+      turn?.hash ===
+        createHash("sha256")
+          .update(
+            JSON.stringify({
+              text: event.text,
+              about: event.about,
+              shift: event.shift,
+            }),
+          )
+          .digest("hex")
+    );
+  });
+}
+
 function validKeeperRecovery(state: ConversationState): boolean {
   const recovery = state.keeperRecovery;
   if (!recovery) return true;
@@ -136,6 +160,7 @@ export function createConversationStore(
       parsed.data.projectId !== projectId ||
       parsed.data.conversationId !== conversationId(projectId, address) ||
       !validKeeperRecovery(parsed.data) ||
+      !validShiftInputs(parsed.data) ||
       parsed.data.frames.some(
         (frame, index) =>
           frame.seq !== index + 1 ||
@@ -156,6 +181,7 @@ export function createConversationStore(
     if (
       !valid.success ||
       !validKeeperRecovery(state) ||
+      !validShiftInputs(state) ||
       Buffer.byteLength(content) > MAX_SESSION_TRANSCRIPT_BYTES
     )
       throw new ConversationError(
@@ -449,6 +475,17 @@ export function createConversationStore(
           400,
           "The private Codex Task does not belong to this owned session.",
         );
+      if (
+        request.shift &&
+        (!address ||
+          request.shift.projectId !== projectId ||
+          request.shift.conversationId !== address.sessionId ||
+          request.shift.turnId !== request.requestId)
+      )
+        throw new ConversationError(
+          400,
+          "The private shift attempt does not belong to this owned session.",
+        );
       const hash = createHash("sha256")
         .update(
           JSON.stringify({
@@ -457,6 +494,7 @@ export function createConversationStore(
             ...(request.brief ? { brief: request.brief } : {}),
             ...(request.session ? { session: request.session } : {}),
             ...(request.codexTask ? { codexTask: request.codexTask } : {}),
+            ...(request.shift ? { shift: request.shift } : {}),
           }),
         )
         .digest("hex");
@@ -529,6 +567,7 @@ export function createConversationStore(
               ...(request.brief ? { brief: request.brief } : {}),
               ...(request.session ? { session: request.session } : {}),
               ...(request.codexTask ? { codexTask: request.codexTask } : {}),
+              ...(request.shift ? { shift: request.shift } : {}),
             },
           });
           save(state);
