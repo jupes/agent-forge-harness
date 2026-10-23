@@ -27,6 +27,7 @@ import { closeLedger } from "../ledger/db";
 import { ledgerPath } from "../ledger/paths";
 import { resolveCheckout } from "../ledger/workspace";
 import { createProjectStore } from "../projects/store";
+import { verifyProjectShiftEntry } from "../shifts/verify-entry";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");
@@ -107,6 +108,7 @@ async function main(): Promise<void> {
     throw new Error("Build the Windows release stage before running smoke.");
 
   await verifyKeeperReader([join(stage, "hearth.exe"), "--keeper-reader"]);
+  await verifyProjectShiftEntry([join(stage, "hearth.exe")]);
 
   const temp = mkdtempSync(join(tmpdir(), "agent-forge-desktop-smoke-"));
   const desktopSmokeHome = resolve(temp, "home");

@@ -100,6 +100,8 @@ export interface HearthOptions {
   harnessRoot?: string;
   /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
   keeperReaderCommand?: readonly string[];
+  /** Explicit runtime command for the packaged, original-id project shift mode. */
+  projectShiftCommand?: readonly string[];
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -322,6 +324,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   // A shift this hearth starts runs in its root with its home, so it takes
   // the same queue lock and writes the same ledger and shifts directory.
   const shiftStarts = createShiftStarts({
+    projectCommand: options.projectShiftCommand,
     root,
     home,
     shiftsDir,
@@ -604,6 +607,7 @@ function argValue(argv: string[], flag: string): string | undefined {
 async function main(
   argv: string[],
   keeperReaderCommand?: readonly string[],
+  projectShiftCommand?: readonly string[],
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
@@ -613,6 +617,7 @@ async function main(
   const hearth = await createHearth({
     root,
     ...(keeperReaderCommand ? { keeperReaderCommand } : {}),
+    ...(projectShiftCommand ? { projectShiftCommand } : {}),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
@@ -661,9 +666,10 @@ export function closeOnSignal(
 export async function runHearthServer(
   argv: string[],
   keeperReaderCommand?: readonly string[],
+  projectShiftCommand?: readonly string[],
 ): Promise<void> {
   try {
-    await main(argv, keeperReaderCommand);
+    await main(argv, keeperReaderCommand, projectShiftCommand);
   } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,

@@ -9,7 +9,8 @@ if (process.argv[2] === "--keeper-reader")
 else if (process.argv[2] === "--project-shift-run")
   await runProjectShiftExecutionEntry(process.argv.slice(3));
 else
-  await runHearthServer(process.argv.slice(2), [
-    process.execPath,
-    "--keeper-reader",
-  ]);
+  await runHearthServer(
+    process.argv.slice(2),
+    [process.execPath, "--keeper-reader"],
+    [process.execPath, "--project-shift-run"],
+  );
