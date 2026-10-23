@@ -1,3 +1,4 @@
+import type { CodexChatPreviewReceipt } from "./codex-chat-ui";
 import type {
   CodexChatOwnedMetadata,
   CodexChatOwnedRecord,
@@ -88,7 +89,8 @@ export interface CodexTaskPreviewReceipt {
 export type OwnedCodingSessionPreviewReceipt =
   | SessionPreviewReceipt
   | CodexTaskPreviewReceipt
-  | GeminiTaskPreviewReceipt;
+  | GeminiTaskPreviewReceipt
+  | CodexChatPreviewReceipt;
 
 /** Reported counts in the owned coding journal only; no model, cost or allowance is inferred. */
 export interface CodexCodingUsageEvent {

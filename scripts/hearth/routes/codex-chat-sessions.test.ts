@@ -12,6 +12,7 @@ import {
   projectCatalogFixture,
 } from "../../projects/testing";
 import { codexChatApprovalPageSchema } from "../../sessions/codex-chat-owned-protocol";
+import { codexChatPreviewReceiptSchema } from "../../sessions/codex-chat-preview-protocol";
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
@@ -88,9 +89,11 @@ async function fixture(mode = "approval-command", holdDecision = false) {
           const event = h.events(["operator.action"]).at(-1);
           expect(
             event?.kind === "operator.action" &&
-              ["session.start", "session.turn.send"].includes(
-                event.payload.action,
-              ),
+              [
+                "session.start",
+                "session.turn.send",
+                "session.preview",
+              ].includes(event.payload.action),
           ).toBe(true);
           return selected().prepare(input);
         },
@@ -221,6 +224,42 @@ async function fixture(mode = "approval-command", holdDecision = false) {
     held: () => held,
   };
 }
+
+test("an explicit Chat preview checks native capabilities without starting a conversation, sync or session reservation", async () => {
+  const f = await fixture();
+  const response = await f.post("/preview", f.request);
+  expect(response.status).toBe(200);
+  const envelope = await response.json();
+  expect(envelope.ok).toBe(true);
+  expect(codexChatPreviewReceiptSchema.safeParse(envelope.data).success).toBe(
+    true,
+  );
+  expect(envelope.data).toMatchObject({
+    provider: "codex",
+    mode: "chat",
+    projectId: FIXTURE_PROJECT_ID,
+    requestId: f.request.requestId,
+    snapshot: {
+      smith: f.request.smith,
+      cwd: f.request.worktree,
+      launch: { mode: "chat", approvalPolicy: "on-request" },
+    },
+    serialized: { argv: ["app-server", "--stdio"] },
+  });
+  expect(envelope.data.serialized.input.text).toContain("PRIVATE-CHAT-PROMPT");
+  expect(envelope.data.serialized.input.text).toContain("PRIVATE-CHAT-CONTEXT");
+  expect(envelope.data.serialized.equivalentCommand).not.toContain("PRIVATE-");
+  expect(envelope.data.serialized.stdinNote).toContain("handshake");
+  expect(f.records().map((record) => record.kind)).toEqual(["version", "help"]);
+  expect(await f.get("")).toEqual([]);
+  expect(
+    f.h
+      .events(["operator.action"])
+      .map((event) =>
+        event.kind === "operator.action" ? event.payload.action : null,
+      ),
+  ).toEqual(["session.preview"]);
+});
 
 test("protected HTTP Chat with a compiled native provider preserves two turns and reconciles a lost decision answer without another effect", async () => {
   const f = await fixture("approval-command", true);

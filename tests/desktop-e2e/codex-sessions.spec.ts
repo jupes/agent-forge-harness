@@ -159,8 +159,8 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     dialog.getByRole("combobox", { name: "Session mode", exact: true }),
   ).toHaveValue("task");
   await expect(
-    dialog.getByRole("option", { name: /Chat · native permission/ }),
-  ).toHaveAttribute("disabled", "");
+    dialog.getByRole("option", { name: /Chat · native approvals/ }),
+  ).toBeEnabled();
   await expect(
     dialog.getByRole("combobox", { name: "Session effort", exact: true }),
   ).toHaveValue("medium");

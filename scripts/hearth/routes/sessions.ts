@@ -13,6 +13,7 @@ import {
   ProjectStoreError,
 } from "../../projects/store";
 import type { SessionRuntime } from "../../sessions/admission";
+import { createCodexChatPreview } from "../../sessions/codex-chat-owned-preview";
 import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
@@ -22,6 +23,7 @@ import { createGeminiTaskPreview } from "../../sessions/gemini-owned-preview";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import {
   createOwnedCodingSessionService,
+  unavailableCodexChatRuntime,
   unavailableCodexTaskRuntime,
   unavailableGeminiTaskRuntime,
 } from "../../sessions/owned-coding-service";
@@ -106,6 +108,11 @@ export function createOwnedSessionRoutes(
   const prepareGeminiPreview = createGeminiTaskPreview({
     root: deps.root,
     runtime: geminiTaskRuntime ?? unavailableGeminiTaskRuntime,
+    validateScope,
+  });
+  const prepareChatPreview = createCodexChatPreview({
+    root: deps.root,
+    runtime: codexChatRuntime ?? unavailableCodexChatRuntime,
     validateScope,
   });
   const service = createOwnedCodingSessionService({
@@ -330,7 +337,9 @@ export function createOwnedSessionRoutes(
         if ("provider" in input && input.provider === "gemini")
           return prepareGeminiPreview(projectId, input);
         return "provider" in input
-          ? prepareCodexPreview(projectId, input)
+          ? input.launch.mode === "chat"
+            ? prepareChatPreview(projectId, input)
+            : prepareCodexPreview(projectId, input)
           : preparePreview(projectId, input);
       }),
   };

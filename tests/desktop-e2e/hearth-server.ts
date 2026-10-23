@@ -8,6 +8,7 @@ import { closeOnSignal, createHearth } from "../../scripts/hearth/server";
 import { isMain } from "../../scripts/is-main";
 import { createProviderLoginService } from "../../scripts/providers/login";
 import { createClaudeSessionTransport } from "../../scripts/sessions/claude-transport";
+import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
 import { createGeminiTaskRuntime } from "../../scripts/sessions/gemini-task-runtime";
 
@@ -46,6 +47,30 @@ async function main() {
     ...claudeOptions,
     timeoutMs: 1500,
   });
+  const chatOptions = {
+    root,
+    home,
+    configHome: home,
+    command: [
+      join(
+        home,
+        "bd-stand-in",
+        "bin",
+        process.platform === "win32" ? "codex-chat.exe" : "codex-chat",
+      ),
+    ],
+    syncCommand: [command, "--sync"],
+    operatorToken: () => token,
+    timeoutMs: 60_000,
+  };
+  const chat = createCodexChatRuntime({
+      ...chatOptions,
+      approvalTimeoutMs: 45_000,
+    }),
+    timedChat = createCodexChatRuntime({
+      ...chatOptions,
+      approvalTimeoutMs: 5000,
+    });
   const hearth = await createHearth({
     root,
     home,
@@ -139,6 +164,21 @@ async function main() {
         operatorToken: () => token,
         timeoutMs: 60_000,
       }),
+      codexChatRuntime: {
+        check: (input) => chat.check(input),
+        prepare: (input) => chat.prepare(input),
+        run: (...args) => {
+          let mode: unknown = null;
+          try {
+            mode = JSON.parse(
+              readFileSync(join(home, "codex-chat-fixture-mode.json"), "utf8"),
+            );
+          } catch {
+            /* Only the explicit inert mode selects a shorter approval deadline. */
+          }
+          return (mode === "approval-timeout" ? timedChat : chat).run(...args);
+        },
+      },
     },
   });
   console.log(

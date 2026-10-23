@@ -23,6 +23,10 @@ import type { SessionAttachment } from "../../../types/session-launch";
 import type { SessionMessage } from "../../../types/session-turn";
 import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
 import {
+  type CodexChatComposerDraft,
+  newCodexChatDraft,
+} from "./codex-chat-composer";
+import {
   type CodexTaskComposerDraft,
   newCodexTaskDraft,
 } from "./codex-session-composer";
@@ -60,7 +64,9 @@ export interface SessionProjectView {
   error: string;
   composer: SessionComposerDraft;
   composerProvider: "claude" | "codex";
+  codexMode: "task" | "chat";
   codexComposer: CodexTaskComposerDraft;
+  codexChatComposer: CodexChatComposerDraft;
   pendingStart: SessionStartRequest | null;
   startIdentity: SessionStartIdentity | null;
   startIdentityError: string;
@@ -134,7 +140,9 @@ export function createSessionsClient(deps: {
         error: "",
         composer: newSessionDraft(),
         composerProvider: "claude",
+        codexMode: "task",
         codexComposer: newCodexTaskDraft(),
+        codexChatComposer: newCodexChatDraft(),
         pendingStart: null,
         startIdentity: null,
         startIdentityError: "",
@@ -591,6 +599,20 @@ export function createSessionsClient(deps: {
     },
     chooseComposerProvider(projectId: string, provider: "claude" | "codex") {
       project(projectId).composerProvider = provider;
+      tell();
+    },
+    chooseCodexMode(projectId: string, mode: "task" | "chat") {
+      project(projectId).codexMode = mode;
+      tell();
+    },
+    editCodexChatComposer(
+      projectId: string,
+      update: Partial<CodexChatComposerDraft>,
+    ) {
+      project(projectId).codexChatComposer = {
+        ...project(projectId).codexChatComposer,
+        ...update,
+      };
       tell();
     },
     editCodexComposer(

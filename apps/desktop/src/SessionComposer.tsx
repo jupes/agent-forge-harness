@@ -24,6 +24,7 @@ import {
   validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
+import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexTaskComposer } from "./CodexTaskComposer";
 
 export interface SessionComposerProps {
@@ -36,8 +37,13 @@ export interface SessionComposerProps {
   onStarted(id: string): void;
 }
 export function SessionComposer(props: SessionComposerProps) {
-  return props.client.project(props.project.id).composerProvider === "codex" ? (
-    <CodexTaskComposer {...props} />
+  const view = props.client.project(props.project.id);
+  return view.composerProvider === "codex" ? (
+    view.codexMode === "chat" ? (
+      <CodexChatComposer {...props} />
+    ) : (
+      <CodexTaskComposer {...props} />
+    )
   ) : (
     <ClaudeSessionComposer {...props} />
   );

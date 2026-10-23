@@ -567,10 +567,19 @@ export function CodexTaskComposer({
           </label>
           <label>
             Run as
-            <select aria-label="Session mode" value="task">
+            <select
+              aria-label="Session mode"
+              value="task"
+              onChange={(event) =>
+                client.chooseCodexMode(
+                  project.id,
+                  event.currentTarget.value === "chat" ? "chat" : "task",
+                )
+              }
+            >
               <option value="task">Task · one run, then ends</option>
-              <option value="chat" disabled>
-                Chat · native permission round trips unavailable
+              <option value="chat">
+                Chat · native approvals and exact thread resume
               </option>
             </select>
           </label>

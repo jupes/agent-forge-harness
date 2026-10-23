@@ -81,6 +81,22 @@ export default async function setup(): Promise<void> {
   );
   if (codexBuilt.status !== 0)
     throw Error(`Codex stand-in did not compile: ${codexBuilt.stderr}`);
+  const chatBuilt = spawnSync(
+    bunPath(),
+    [
+      "build",
+      "--compile",
+      resolve("tests/desktop-e2e/codex-chat-cli-stand-in.ts"),
+      "--outfile",
+      join(
+        BD_STAND_IN_BIN,
+        process.platform === "win32" ? "codex-chat.exe" : "codex-chat",
+      ),
+    ],
+    { encoding: "utf8", timeout: 60_000 },
+  );
+  if (chatBuilt.status !== 0)
+    throw Error(`Codex Chat stand-in did not compile: ${chatBuilt.stderr}`);
   const loginBuilt = spawnSync(
     bunPath(),
     [

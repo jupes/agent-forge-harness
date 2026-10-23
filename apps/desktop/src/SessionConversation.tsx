@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
+import { serializeCodexChat } from "../../../scripts/sessions/codex-app-server-protocol";
 import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
 import { serializeGeminiTask } from "../../../scripts/sessions/gemini-task";
 import type { ConversationObject } from "../../../types/conversation";
@@ -27,8 +28,11 @@ import {
   validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
+import { CodexChatApprovals } from "./CodexChatApprovals";
+import { CodexChatUsage } from "./CodexChatUsage";
 import { SessionLibraryControls } from "./SessionLibraryControls";
 import type { SessionLibraryClient } from "./session-library-client";
+import { useCodexChatDecisions } from "./use-codex-chat-decisions";
 
 export function SessionConversation({
   projectId,
@@ -37,6 +41,7 @@ export function SessionConversation({
   keeper,
   writesAllowed,
   library,
+  archived = false,
 }: {
   projectId: string;
   sessionId: string;
@@ -44,6 +49,7 @@ export function SessionConversation({
   keeper: KeeperClient;
   writesAllowed: boolean;
   library?: SessionLibraryClient;
+  archived?: boolean;
 }) {
   const view = client.session(projectId, sessionId),
     record = client
@@ -92,6 +98,54 @@ export function SessionConversation({
   )?.event;
   const geminiSnapshot =
     geminiFirst?.kind === "user" ? geminiFirst.geminiTask : undefined;
+  const chatFirst = view.page?.frames.find(
+    (frame) => frame.event.kind === "user" && frame.event.codexChat,
+  )?.event;
+  const chatSnapshot =
+    chatFirst?.kind === "user" ? chatFirst.codexChat : undefined;
+  const isCodexChat =
+    record?.provider === "codex" && record.mode === "chat" && !!chatSnapshot;
+  const chatUsageEvent = view.page?.frames
+    .filter(
+      (frame) =>
+        frame.turnId === current?.requestId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "usage",
+    )
+    .at(-1)?.event;
+  const approvalRevision =
+    view.page?.frames
+      .filter(
+        (frame) =>
+          frame.turnId === current?.requestId &&
+          frame.event.kind === "coding-chat" &&
+          [
+            "approval-request",
+            "approval-decision",
+            "approval-resolved",
+          ].includes(frame.event.event.kind),
+      )
+      .at(-1)?.seq ?? 0;
+  const approvalActionable =
+    isCodexChat &&
+    writesAllowed &&
+    !archived &&
+    !!running &&
+    current?.phase !== "cancelling" &&
+    !!view.page?.controllable &&
+    !view.stopping &&
+    !view.stopPosting &&
+    !view.stopUnknown &&
+    !view.readError &&
+    !view.feedInterrupted;
+  const approvals = useCodexChatDecisions({
+    projectId,
+    sessionId,
+    turnRequestId: current?.requestId ?? null,
+    enabled: isCodexChat,
+    actionable: approvalActionable,
+    approvalRevision,
+  });
   const usage = view.page?.frames
     .filter(
       (frame) =>
@@ -182,7 +236,9 @@ export function SessionConversation({
         </p>
         {record?.provider === "codex" && (
           <p class="af-session-note">
-            Observed model is not reported by Codex exec.
+            {isCodexChat
+              ? "The execution model is not reported by this native Chat protocol. Thread configuration is not execution telemetry."
+              : "Observed model is not reported by Codex exec."}
           </p>
         )}
         <p class="af-session-note">
@@ -210,6 +266,7 @@ export function SessionConversation({
                 current.phase === "cancelling"
               }
               onClick={() => {
+                approvals.invalidate();
                 void client.stop(projectId, sessionId);
               }}
             >
@@ -245,9 +302,11 @@ export function SessionConversation({
             <dd>
               {geminiSnapshot
                 ? `${geminiSnapshot.launch.approvalMode ?? "CLI default approvals"} · ${geminiSnapshot.launch.sandbox === undefined ? "CLI default sandbox" : geminiSnapshot.launch.sandbox ? "Sandbox enabled" : "Sandbox disabled"}`
-                : codexSnapshot
-                  ? `${codexSnapshot.launch.sandbox} · approvals ${codexSnapshot.launch.approvalPolicy}`
-                  : (snapshot?.launch.permissionMode ?? "Not reported yet")}
+                : chatSnapshot
+                  ? `${chatSnapshot.launch.sandbox} · approvals ${chatSnapshot.launch.approvalPolicy}`
+                  : codexSnapshot
+                    ? `${codexSnapshot.launch.sandbox} · approvals ${codexSnapshot.launch.approvalPolicy}`
+                    : (snapshot?.launch.permissionMode ?? "Not reported yet")}
             </dd>
           </dl>
           {snapshot && (
@@ -277,6 +336,22 @@ export function SessionConversation({
                 ).equivalentCommand
               }
             </pre>
+          )}
+          {chatSnapshot && (
+            <>
+              <p>
+                Native Chat initialization · later turns resume only the saved
+                native thread.
+              </p>
+              <pre>
+                {
+                  serializeCodexChat(
+                    chatSnapshot.launch,
+                    chatSnapshot.capabilities,
+                  ).equivalentCommand
+                }
+              </pre>
+            </>
           )}
           {usage?.kind === "coding-usage" && (
             <dl>
@@ -405,6 +480,7 @@ export function SessionConversation({
                   .map((frame) => {
                     if (frame.event.kind !== "user") return null;
                     const attachments =
+                      frame.event.codexChat?.launch.attachments ??
                       frame.event.codexTask?.launch.attachments ??
                       frame.event.geminiTask?.launch.attachments ??
                       frame.event.session?.launch.attachments;
@@ -468,6 +544,22 @@ export function SessionConversation({
             </div>
           );
         })}
+        {isCodexChat && (
+          <div class="af-session-chat-controls">
+            <CodexChatApprovals
+              client={approvals}
+              actionable={approvalActionable}
+            />
+            <CodexChatUsage
+              usage={
+                chatUsageEvent?.kind === "coding-chat" &&
+                chatUsageEvent.event.kind === "usage"
+                  ? chatUsageEvent.event.usage
+                  : null
+              }
+            />
+          </div>
+        )}
       </div>
       {away && (
         <Button
@@ -563,12 +655,16 @@ export function SessionConversation({
               }}
             />
             <label class="af-session-files">
-              Attach text or images
+              {isCodexChat ? "Attach text" : "Attach text or images"}
               <input
                 type="file"
                 multiple
                 aria-label="Session reply attachments"
-                accept=".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs,image/png,image/jpeg,image/gif,image/webp"
+                accept={
+                  isCodexChat
+                    ? ".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs"
+                    : ".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs,image/png,image/jpeg,image/gif,image/webp"
+                }
                 disabled={attaching || !!view.pending}
                 onChange={(event) => {
                   const files = [...(event.currentTarget.files ?? [])];
@@ -576,6 +672,13 @@ export function SessionConversation({
                   setAttaching(true);
                   void sessionAttachments(files)
                     .then((items) => {
+                      if (
+                        isCodexChat &&
+                        items.some((item) => item.kind !== "text")
+                      )
+                        throw Error(
+                          "Images require server-owned staging and are unavailable for Codex Chat.",
+                        );
                       const combined = [
                         ...client.session(projectId, sessionId).attachments,
                         ...items,
