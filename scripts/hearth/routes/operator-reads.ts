@@ -30,7 +30,7 @@ import {
 import { type LoadedConfig, loadConfig } from "../../config/load";
 import { isValidSlug, summarizeRun } from "../../forge/runs";
 import { listRuns, readRunState } from "../../forge/runs-store";
-import { parseAuditArgs } from "../../ledger/audit-cli";
+import { parseAuditArgs } from "../../ledger/audit-core";
 import { openLedger } from "../../ledger/db";
 import {
   activeReservations,
