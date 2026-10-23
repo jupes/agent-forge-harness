@@ -131,6 +131,7 @@ test("the production compiled hearth syncs its chosen cwd without ambient Bun or
     timeout: 3000,
   });
   expect(result.exitCode, result.stderr.toString()).toBe(0);
+  expect(result.stderr.toString()).toBe("");
   let receipt: unknown;
   try {
     receipt = JSON.parse(result.stdout.toString());
@@ -224,6 +225,7 @@ test("fixed packaged sync rejects extra caller paths or commands without creatin
       timeout: 3000,
     });
     expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toBe("");
     let value: unknown;
     try {
       value = JSON.parse(result.stdout.toString());

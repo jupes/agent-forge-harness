@@ -8,9 +8,9 @@ import {
 if (process.argv[2] === INTERACTIVE_BOOTSTRAP_FLAG)
   await runInteractiveBootstrap();
 else if (process.argv[2] === "--codex-sync")
-  process.exitCode = (await import("../sync-codex")).runCodexSyncEntry();
+  process.exitCode = (await import("../sync-codex-core")).runCodexSyncEntry();
 else if (process.argv[2] === "--keeper-reader")
-  (await import("../keeper/reader-entry")).runKeeperReader(
+  (await import("../keeper/reader-runtime")).runKeeperReader(
     process.argv.slice(3),
   );
 else
