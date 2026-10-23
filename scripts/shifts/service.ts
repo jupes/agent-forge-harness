@@ -170,19 +170,23 @@ export function createProjectShiftService(options: {
       request: ProjectShiftStartRequest,
     ): Promise<ProjectShiftReceipt> {
       open();
-      const saved = await registry.reserve(projectId, request, async () => {
-        open();
-        if (options.runtime?.attended !== true)
-          throw new ConversationError(503, ATTENDED_SHIFT_UNAVAILABLE);
-        await options.validateStart(projectId, request);
-        open();
-        return { shiftId: options.runtime.mint() };
-      });
+      const saved = await registry.reserve(
+        projectId,
+        request,
+        async (reviewed) => {
+          open();
+          if (options.runtime?.attended !== true)
+            throw new ConversationError(503, ATTENDED_SHIFT_UNAVAILABLE);
+          await options.validateStart(projectId, reviewed);
+          open();
+          return { shiftId: options.runtime.mint() };
+        },
+      );
       // An exact retry can observe an intent left at any crash point, but can never launch it again.
       if (!saved.created || closed) return receipt(saved.intent);
       const marked = await registry.markAttempted(
         projectId,
-        request.requestId,
+        saved.intent.request.requestId,
         saved.intent.requestHash,
       );
       if (marked.created && !closed) {

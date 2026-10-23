@@ -291,7 +291,9 @@ export function createProjectShiftRegistry(options: {
     async reserve(
       projectId: string,
       raw: ProjectShiftStartRequest,
-      prepare: () => Promise<{ shiftId: string }>,
+      prepare: (
+        reviewed: ProjectShiftStartRequest,
+      ) => Promise<{ shiftId: string }>,
     ): Promise<{ intent: ProjectShiftIntent; created: boolean }> {
       project(projectId);
       const request = parsedRequest(raw),
@@ -314,7 +316,7 @@ export function createProjectShiftRegistry(options: {
         }
         if (state.records.length >= MAX_PROJECT_SHIFT_REQUESTS)
           unavailable("The private shift intent store is full.");
-        const trusted = await prepare();
+        const trusted = await prepare(structuredClone(request));
         if (!shiftId.safeParse(trusted.shiftId).success)
           throw new ConversationError(400, "Expected a trusted shift id.");
         const intent: ProjectShiftIntent = {

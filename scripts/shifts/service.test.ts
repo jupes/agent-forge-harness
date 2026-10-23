@@ -132,6 +132,33 @@ test("production refuses Start before any durable reservation until attended cap
   expect(existsSync(projectShiftRegistryFile(paths.home))).toBe(false);
 });
 
+test("the validated and dispatched bounds are the parsed immutable original even if a caller mutates its object while admission waits", async () => {
+  const paths = fixture(),
+    body = structuredClone(request);
+  const checked: number[] = [],
+    dispatched: number[] = [];
+  const service = createProjectShiftService({
+    ...paths,
+    validateStart: async (_id, reviewed) => {
+      checked.push(reviewed.options.maxBeads);
+    },
+    runtime: {
+      attended: true,
+      mint: () => shiftId,
+      launch: (intent) => {
+        dispatched.push(intent.request.options.maxBeads);
+      },
+    },
+  });
+  const pending = service.start(FIXTURE_PROJECT_ID, body);
+  body.options.maxBeads = 9;
+  body.requestId = "5bb5fd7a-0729-457b-af9d-4f49ca690f01";
+  const receipt = await pending;
+  expect(checked).toEqual([4]);
+  expect(dispatched).toEqual([4]);
+  expect(receipt.intent.request.options.maxBeads).toBe(4);
+});
+
 test("a reserved original is read before mutable preparation but never implicitly launched, and closing fences late admission", async () => {
   const paths = fixture();
   await createProjectShiftRegistry(paths).reserve(
