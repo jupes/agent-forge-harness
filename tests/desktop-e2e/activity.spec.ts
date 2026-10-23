@@ -6,6 +6,10 @@ import type { LedgerEventInput } from "../../types/hearth";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
+import {
+  activityFixtureSessionCount,
+  clearActivityMembershipFixtures,
+} from "./activity-fixtures";
 import { seedObservationEvents } from "./observed-session-fixtures";
 import {
   alpha,
@@ -404,29 +408,36 @@ test("complete empty history and bounded incomplete membership have different st
       exact: true,
     }),
   ).toBeVisible();
-  seedObservationEvents(
-    Array.from(
-      { length: 1001 },
-      (_, i): LedgerEventInput => ({
-        kind: "session.started",
-        workspace,
-        beadId: "activity-empty-epic",
-        sessionId: `bounded-${empty.id}-${i}`,
-        payload: { kind: "interactive" },
+  const before = activityFixtureSessionCount();
+  try {
+    seedObservationEvents(
+      Array.from(
+        { length: 1001 },
+        (_, i): LedgerEventInput => ({
+          kind: "session.started",
+          workspace,
+          beadId: "activity-empty-epic",
+          sessionId: `bounded-${empty.id}-${i}`,
+          payload: { kind: "interactive" },
+        }),
+      ),
+    );
+    await page.goto(
+      `/index.html#/desktop/project/${empty.id}/activity?provider=not-reported-in-fixture`,
+    );
+    await expect(
+      activity.getByRole("heading", {
+        name: "Activity is incomplete",
+        exact: true,
       }),
-    ),
-  );
-  await page.goto(
-    `/index.html#/desktop/project/${empty.id}/activity?provider=not-reported-in-fixture`,
-  );
-  await expect(
-    activity.getByRole("heading", {
-      name: "Activity is incomplete",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(activity).toContainText(
-    "this read cannot prove an empty history",
-  );
-  await expect(activity).toContainText("Some project sources are incomplete");
+    ).toBeVisible();
+    await expect(activity).toContainText(
+      "this read cannot prove an empty history",
+    );
+    await expect(activity).toContainText("Some project sources are incomplete");
+  } finally {
+    await page.close();
+    clearActivityMembershipFixtures(empty.id, before);
+    expect(activityFixtureSessionCount()).toBe(before);
+  }
 });
