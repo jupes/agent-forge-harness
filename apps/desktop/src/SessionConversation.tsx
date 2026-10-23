@@ -211,12 +211,13 @@ export function SessionConversation({
               <dd>{usage.usage.inputTokens ?? "Not reported"}</dd>
               <dt>Reported output tokens</dt>
               <dd>{usage.usage.outputTokens ?? "Not reported"}</dd>
-              {usage.usage.cachedInputTokens !== undefined && (
-                <>
-                  <dt>Reported cached input tokens</dt>
-                  <dd>{usage.usage.cachedInputTokens}</dd>
-                </>
-              )}
+              {usage.provider === "codex" &&
+                usage.usage.cachedInputTokens !== undefined && (
+                  <>
+                    <dt>Reported cached input tokens</dt>
+                    <dd>{usage.usage.cachedInputTokens}</dd>
+                  </>
+                )}
             </dl>
           )}
           <p class="af-session-note">

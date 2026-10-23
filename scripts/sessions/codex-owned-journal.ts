@@ -131,7 +131,7 @@ function reportedTurn(
     if (
       event.kind !== "coding-activity" &&
       event.kind !== "coding-outcome" &&
-      !(event.kind === "coding-usage" && event.provider === "claude")
+      event.kind !== "coding-usage"
     )
       return true;
     const user = value.frames.find(

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { createContext, runInContext } from "node:vm";
 import type { CodingActivityEvent } from "../../types/session-activity";
 import { eventSchema } from "../conversations/protocol";
 import {
+  claudeCodingUsageSchema,
   codingActivitySchema,
   codingOutcomeSchema,
   reportedJson,
@@ -38,6 +40,56 @@ test("strict private activity accepts inert reported data without granting the K
   expect(
     codingActivitySchema.safeParse({ ...value, provider: "codex" }).success,
   ).toBe(false);
+});
+
+test("Claude cache counters keep provider-specific names and cannot overwrite the existing Codex wire", () => {
+  const usage = {
+    kind: "coding-usage",
+    provider: "claude",
+    source: "claude.result",
+    version: "2.1.296",
+    usage: { cacheReadInputTokens: 12, cacheCreationInputTokens: 3 },
+  };
+  expect(claudeCodingUsageSchema.safeParse(usage).success).toBe(true);
+  expect(
+    claudeCodingUsageSchema.safeParse({
+      ...usage,
+      usage: { cachedInputTokens: 12 },
+    }).success,
+  ).toBe(false);
+  const codex = {
+    kind: "coding-usage",
+    provider: "codex",
+    source: "exec.turn.completed",
+    version: "0.163.0",
+    usage: { cachedInputTokens: 12, cacheWriteInputTokens: 3 },
+  };
+  expect(JSON.stringify(ownedCodingEventSchema.parse(codex))).toBe(
+    JSON.stringify(codex),
+  );
+});
+
+test("standalone activity codecs parse in a browser bundle with dynamic code generation forbidden", async () => {
+  const bundle = await Bun.build({
+    entrypoints: [`${import.meta.dir}/activity-protocol.ts`],
+    target: "browser",
+    format: "cjs",
+  });
+  expect(bundle.success).toBe(true);
+  const code = await bundle.outputs[0]?.text();
+  if (!code) throw Error("Missing activity protocol bundle");
+  expect(code).not.toMatch(/require\(["'](?:node:|bun:)/);
+  const context = createContext(
+    { window: {}, TextEncoder, module: { exports: {} } },
+    { codeGeneration: { strings: false, wasm: false } },
+  );
+  runInContext(code, context);
+  expect(
+    runInContext(
+      'module.exports.codingActivitySchema.safeParse({kind:"coding-activity",provider:"codex",version:"0.163.0",id:"r1",source:"codex.item.completed",partial:false,activity:{kind:"reasoning",content:{text:"summary",truncated:false},redacted:false}}).success',
+      context,
+    ),
+  ).toBe(true);
 });
 
 test("UTF-8 clipping and nested JSON limits remain explicit and cannot emit a forged complete value", () => {

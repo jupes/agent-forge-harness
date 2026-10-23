@@ -159,4 +159,64 @@ test("a saved Codex intent cannot project another project's private context", ()
       frames: [richState.frames[1]],
     }).success,
   ).toBe(false);
+  const usageState = {
+    ...state,
+    frames: [
+      ...state.frames,
+      {
+        seq: 2,
+        turnId: requestId,
+        at: "2026-10-23T00:00:01.000Z",
+        event: usage,
+      },
+    ],
+  };
+  expect(ownedCodingStateSchema.safeParse(usageState).success).toBe(true);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...usageState,
+      frames: [
+        state.frames[0],
+        { ...usageState.frames[1], event: { ...usage, version: "0.164.0" } },
+      ],
+    }).success,
+  ).toBe(false);
+  const claudeUser = {
+    kind: "user",
+    text: user.text,
+    about: [],
+    session: {
+      version: 1,
+      provider: "claude",
+      smith: "claude-test",
+      cwd: "/fixture",
+      launch: {
+        mode: "task",
+        model: "reported-only",
+        prompt: user.text,
+        context: snapshot.launch.context,
+      },
+      capabilities: {
+        version: "2.1.296",
+        flags: [
+          "--print",
+          "--input-format",
+          "--output-format",
+          "--verbose",
+          "--include-partial-messages",
+          "--model",
+          "--permission-mode",
+          "--permission-prompts",
+          "--allowedTools",
+        ],
+      },
+    },
+  };
+  expect(ownedCodingEventSchema.safeParse(claudeUser).success).toBe(true);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...usageState,
+      frames: [{ ...state.frames[0], event: claudeUser }, usageState.frames[1]],
+    }).success,
+  ).toBe(false);
 });

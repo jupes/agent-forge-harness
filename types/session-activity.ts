@@ -97,8 +97,8 @@ export interface ClaudeCodingUsageEvent {
   usage: {
     inputTokens?: number | undefined;
     outputTokens?: number | undefined;
-    cachedInputTokens?: number | undefined;
-    cacheWriteInputTokens?: number | undefined;
+    cacheReadInputTokens?: number | undefined;
+    cacheCreationInputTokens?: number | undefined;
   };
   /** The provider reports an estimate restored/cumulated across resume, not this turn's bill. */
   cumulativeEstimateUsd?: number | undefined;

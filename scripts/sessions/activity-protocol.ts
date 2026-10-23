@@ -7,6 +7,8 @@ import type {
   ReportedText,
 } from "../../types/session-activity";
 
+if (typeof window !== "undefined") z.config({ jitless: true });
+
 export const SESSION_ACTIVITY_LIMITS = {
   textBytes: 16_384,
   jsonBytes: 32_768,
@@ -271,8 +273,8 @@ export const claudeCodingUsageSchema: z.ZodType<ClaudeCodingUsageEvent> = z
       .object({
         inputTokens: count.optional(),
         outputTokens: count.optional(),
-        cachedInputTokens: count.optional(),
-        cacheWriteInputTokens: count.optional(),
+        cacheReadInputTokens: count.optional(),
+        cacheCreationInputTokens: count.optional(),
       })
       .strict(),
     cumulativeEstimateUsd: z.number().finite().nonnegative().optional(),
