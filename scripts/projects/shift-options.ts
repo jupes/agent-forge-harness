@@ -23,6 +23,7 @@ export function projectShiftOptions(
   source: ProjectSources,
   loaded: LoadedConfig,
   catalogRevision: number,
+  attended = false,
 ): ProjectShiftOptions {
   const scope = project.workspaces.find(
     (item) => workspaceKey(item.root) === workspaceKey(source.workspace),
@@ -85,10 +86,12 @@ export function projectShiftOptions(
         : null,
     },
     availability: {
-      start: false,
+      start: attended && !project.archived,
       reason: project.archived
         ? "This project is archived. Unarchive it before starting a shift."
-        : ATTENDED_SHIFT_UNAVAILABLE,
+        : attended
+          ? null
+          : ATTENDED_SHIFT_UNAVAILABLE,
     },
   };
   const checked = projectShiftOptionsSchema.safeParse(result);

@@ -29,6 +29,7 @@ import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
+import type { ProjectShiftRuntime } from "../../shifts/service";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -98,6 +99,8 @@ export interface OperatorDeps extends ReadDeps {
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
   shiftStarts: ShiftStarts;
+  /** Trusted attended launcher only; null holds Start while retaining original reads and controls. */
+  projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
@@ -450,7 +453,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
     projectBeadsRoute(deps, projectSnapshot),
-    projectShiftOptionsRoute(deps, projectSnapshot),
+    projectShiftOptionsRoute(
+      deps,
+      projectSnapshot,
+      deps.projectShiftRuntime?.attended === true,
+    ),
     projectWorkbenchRoute(deps, projectSnapshot, async () => {
       const result = await readEligible();
       return result.ok ? result.value : null;

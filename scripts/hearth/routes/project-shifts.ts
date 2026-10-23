@@ -22,6 +22,7 @@ import { shiftRoutes } from "./shifts";
 export function projectShiftOptionsRoute(
   deps: ReadDeps,
   load: () => Promise<ProjectSnapshot>,
+  attended = false,
 ): ReadRoute<string> {
   return {
     kind: "read",
@@ -67,6 +68,7 @@ export function projectShiftOptionsRoute(
             snapshot.source,
             loaded,
             snapshot.catalog.revision,
+            attended,
           ),
         };
       } catch (error) {
@@ -100,6 +102,7 @@ export function projectShiftRoutes(
     home: deps.projectHome,
     root: deps.root,
     validateStart: scope.validateStart,
+    ...(deps.projectShiftRuntime ? { runtime: deps.projectShiftRuntime } : {}),
   });
   const attempts = createProjectShiftAttemptRoutes({
     home: deps.projectHome,

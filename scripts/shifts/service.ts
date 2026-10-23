@@ -22,7 +22,7 @@ import {
 } from "./protocol";
 import { createProjectShiftRegistry } from "./registry";
 
-/** Trusted server runtime only. The production facade supplies no attended launcher yet. */
+/** Trusted server runtime only; a launch marker is distinct from an actual private provider turn. */
 export interface ProjectShiftRuntime {
   attended: true;
   mint(): string;

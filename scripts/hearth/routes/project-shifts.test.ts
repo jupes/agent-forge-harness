@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectCatalogPath } from "../../projects/store";
 import {
@@ -7,7 +7,10 @@ import {
   projectCatalogFixture,
 } from "../../projects/testing";
 import { projectShiftOptionsSchema } from "../../shifts/protocol";
-import { createProjectShiftRegistry } from "../../shifts/registry";
+import {
+  createProjectShiftRegistry,
+  projectShiftRegistryFile,
+} from "../../shifts/registry";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { seedProjectBeadWriteFixture } from "./project-bead-write-fixture";
@@ -152,4 +155,119 @@ test("protected shift options read current project scope without a launch, durab
       })
     ).status,
   ).toBe(400);
+});
+
+test("the installed attended launcher admits one audited original and exact retries read it before changed scope without relaunch", async () => {
+  const h = await startTestHearth({ api: { projectShiftRuntime: undefined } });
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace);
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  seedProjectBeadWriteFixture(h);
+  const path = `${h.api}/projects/${FIXTURE_PROJECT_ID}/shifts`;
+  const post = (body: unknown, token: string | null = h.hearth.token) =>
+    fetch(path, {
+      method: "POST",
+      headers: { ...h.headers(token), "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post(FIXTURE_SHIFT_START, null)).status).toBe(403);
+  expect(h.bd.calls).toEqual([]);
+  expect(existsSync(projectShiftRegistryFile(h.home))).toBe(false);
+  const options = await fetch(`${path}/options`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect((await options.json()).data.availability).toEqual({
+    start: true,
+    reason: null,
+  });
+  h.bd.calls.length = 0;
+  const first = await post(FIXTURE_SHIFT_START);
+  expect(first.status).toBe(202);
+  const one = (await first.json()).data;
+  expect(one.observation.phase).toBe("starting");
+  expect(one.observation.actual).toBeNull();
+  expect(one.intent.request).toEqual(FIXTURE_SHIFT_START);
+  expect(one.intent.attemptedAt).not.toBeNull();
+  expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+    action: "shift.start",
+    target: FIXTURE_SHIFT_START.requestId,
+  });
+  expect(h.shifts.launches).toHaveLength(1);
+  expect(h.shifts.launches[0]?.spec.argv.slice(-2)).toEqual([
+    FIXTURE_PROJECT_ID,
+    FIXTURE_SHIFT_START.requestId,
+  ]);
+  expect(h.bd.calls.some((args) => args[0] === "export")).toBe(true);
+  const bytes = readFileSync(projectShiftRegistryFile(h.home), "utf8");
+  if (catalog.projects[0]) catalog.projects[0].archived = true;
+  catalog.revision++;
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  h.bd.answer = () => ({ status: 1, stdout: "", stderr: "UNAVAILABLE" });
+  h.bd.calls.length = 0;
+  const repeated = await post(FIXTURE_SHIFT_START);
+  expect(repeated.status).toBe(202);
+  expect((await repeated.json()).data.intent).toEqual(one.intent);
+  expect(h.bd.calls).toEqual([]);
+  expect(h.shifts.launches).toHaveLength(1);
+  expect(readFileSync(projectShiftRegistryFile(h.home), "utf8")).toBe(bytes);
+  expect(
+    (
+      await post({
+        ...FIXTURE_SHIFT_START,
+        options: { ...FIXTURE_SHIFT_START.options, maxBeads: 5 },
+      })
+    ).status,
+  ).toBe(409);
+  expect(h.shifts.launches).toHaveLength(1);
+});
+
+test("a new attended original validates current catalog and archive before reserving or launching", async () => {
+  const h = await startTestHearth({ api: { projectShiftRuntime: undefined } });
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace);
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  seedProjectBeadWriteFixture(h);
+  const post = (request = FIXTURE_SHIFT_START) =>
+    fetch(`${h.api}/projects/${FIXTURE_PROJECT_ID}/shifts`, {
+      method: "POST",
+      headers: {
+        ...h.headers(h.hearth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+  expect(
+    (await post({ ...FIXTURE_SHIFT_START, expectedCatalogRevision: 999 }))
+      .status,
+  ).toBe(409);
+  if (catalog.projects[0]) catalog.projects[0].archived = true;
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  expect((await post()).status).toBe(409);
+  expect(existsSync(projectShiftRegistryFile(h.home))).toBe(false);
+  expect(h.shifts.launches).toEqual([]);
+});
+
+test("failed Start audit refuses before current-scope reads, original persistence or the attended child", async () => {
+  const h = await startTestHearth({
+    api: {
+      projectShiftRuntime: undefined,
+      appendEvent: () => ({ ok: false, error: "fixture audit unavailable" }),
+    },
+  });
+  opened.push(h);
+  const response = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/shifts`,
+    {
+      method: "POST",
+      headers: {
+        ...h.headers(h.hearth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(FIXTURE_SHIFT_START),
+    },
+  );
+  expect(response.status).toBe(503);
+  expect(h.bd.calls).toEqual([]);
+  expect(existsSync(projectShiftRegistryFile(h.home))).toBe(false);
+  expect(h.shifts.launches).toEqual([]);
 });

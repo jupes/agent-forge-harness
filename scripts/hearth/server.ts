@@ -53,6 +53,9 @@ import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
+import { createAttendedProjectShiftLauncher } from "../shifts/launch-runtime";
+import { createOwnedProjectShiftLauncher } from "../shifts/owned-launcher";
+import type { ProjectShiftRuntime } from "../shifts/service";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -96,6 +99,7 @@ import { QUEUE_LOCK_FILE } from "./routes/queue";
 import {
   createShiftStarts,
   endLiveShifts,
+  PROJECT_SHIFT_ENTRY,
   type ShiftLauncher,
   superviseShift,
 } from "./shift-launcher";
@@ -172,6 +176,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted attended project launcher; null explicitly holds Start. Never public request data. */
+  projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
   providerInspector?: ProviderInspector;
   providerLogin?: ProviderLoginService;
@@ -344,10 +350,24 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   // Under the same home: a shift given it keeps its record and stop request there.
   const shiftsDir = join(home, SHIFTS_DIR);
+  const projectShiftCommand = options.projectShiftCommand ?? [
+    process.execPath,
+    PROJECT_SHIFT_ENTRY,
+  ];
   // A shift this hearth starts runs in its root with its home, so it takes
   // the same queue lock and writes the same ledger and shifts directory.
   const shiftStarts = createShiftStarts({
     projectCommand: options.projectShiftCommand,
+    projectLaunch:
+      options.api?.launchShift ??
+      createOwnedProjectShiftLauncher({
+        root,
+        home,
+        command: projectShiftCommand,
+        ...(options.interactiveBootstrapCommand
+          ? { bootstrapCommand: options.interactiveBootstrapCommand }
+          : {}),
+      }),
     root,
     home,
     shiftsDir,
@@ -455,6 +475,11 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     queueLockFile: join(home, QUEUE_LOCK_FILE),
     shiftsDir,
     shiftStarts,
+    projectShiftRuntime:
+      options.api?.projectShiftRuntime === null
+        ? null
+        : (options.api?.projectShiftRuntime ??
+          createAttendedProjectShiftLauncher(shiftStarts)),
     bdTimeoutMs: options.api?.bdTimeoutMs,
     configHome: options.api?.configHome,
     git: options.api?.git,

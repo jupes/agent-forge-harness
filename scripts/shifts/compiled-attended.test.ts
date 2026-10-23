@@ -17,6 +17,7 @@ import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { createSessionRegistry } from "../sessions/registry";
 import { scratchDirs } from "../test-scratch";
 import { createProjectShiftAttemptReader } from "./attempt-read";
+import { createOwnedProjectShiftLauncher } from "./owned-launcher";
 import { projectShiftReceiptSchema } from "./protocol";
 import {
   createProjectShiftRegistry,
@@ -160,22 +161,33 @@ test("the actual compiled production hearth executes attended input through fixe
       request,
       async () => ({ shiftId: "shift-20261023-180000-1234" }),
     );
-    await registry.markAttempted(
+    const marked = await registry.markAttempted(
       FIXTURE_PROJECT_ID,
       request.requestId,
       saved.intent.requestHash,
     );
-    const result = Bun.spawnSync(
-      [hearth, "--project-shift-run", FIXTURE_PROJECT_ID, request.requestId],
-      {
-        cwd: root,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: 20000,
-      },
-    );
+    const command = [hearth, "--project-shift-run"],
+      child = createOwnedProjectShiftLauncher({
+        root,
+        home,
+        command,
+        bootstrapCommand: [hearth, "--interactive-bootstrap"],
+      })(
+        {
+          argv: [...command, FIXTURE_PROJECT_ID, request.requestId],
+          cwd: root,
+          env,
+        },
+        marked.intent,
+      );
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      void child.stop();
+    }, 20000);
+    const result = await child.done.finally(() => clearTimeout(timer));
+    expect(expired).toBe(false);
+    expect(await child.enginePid).not.toBe(child.pid);
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     const envelope = z
       .object({

@@ -547,6 +547,7 @@ export async function startTestHearth(
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,
+      projectShiftRuntime: null,
       mintShiftId: () => shifts.mint(),
       // Its children never stop on their own; a test that waits on a close sets its own.
       shiftStopGraceMs: 200,

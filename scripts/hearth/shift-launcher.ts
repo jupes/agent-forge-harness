@@ -32,6 +32,7 @@
  */
 
 import { resolve } from "node:path";
+import type { ProjectShiftIntent } from "../../types/project-shifts";
 import { buildChildEnv } from "../executors/env";
 import { killTree, STDERR_TAIL_CHARS } from "../executors/supervisor";
 import { guardTree, type TreeGuard } from "../executors/tree-guard";
@@ -97,6 +98,8 @@ export interface ShiftChildExit {
 /** A started shift's process. */
 export interface LaunchedShiftChild {
   pid: number;
+  /** Attended launches expose the separately confirmed engine identity; pid remains the owned wrapper root. */
+  enginePid?: Promise<number>;
   /** Resolves once it has exited. */
   done: Promise<ShiftChildExit>;
   /** End it and its process tree; resolves once it has exited. */
@@ -212,6 +215,8 @@ export interface ShiftLaunchEntry {
   state: "starting" | "failed";
   /** The child the hearth started. */
   pid: number;
+  wrapperPid?: number;
+  enginePid?: number | null;
   /** Whether that child is still running. */
   alive: boolean;
   workspace: string;
@@ -239,6 +244,13 @@ export interface ShiftStartsDeps {
   /** The hearth's environment, handed to the child with `AGENT_FORGE_HOME` set to `home`. */
   environment: Readonly<Record<string, string | undefined>>;
   launch: ShiftLauncher;
+  /** Attended project children have a mandatory grant before engine code; ordinary global shifts keep launch. */
+  projectLaunch?:
+    | ((
+        spec: ShiftLaunchSpec,
+        original: ProjectShiftIntent,
+      ) => LaunchedShiftChild)
+    | undefined;
   /** A new shift id; `mintShiftId` at the current second by default. */
   mintShiftId?: (() => string) | undefined;
   stopGraceMs?: number | undefined;
@@ -274,6 +286,7 @@ interface Launch {
   /** This hearth's count of launches when it was started: breaks a tie between equal `startedAt`. */
   seq: number;
   child: LaunchedShiftChild;
+  enginePid?: number;
   startedAt: string;
   requested: Record<string, unknown>;
   exit?: { exitCode: number | null; endedAt: string; error: string };
@@ -361,7 +374,10 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
     return {
       shiftId: launch.shiftId,
       state: launch.exit === undefined ? "starting" : "failed",
-      pid: launch.child.pid,
+      pid: launch.enginePid ?? launch.child.pid,
+      ...(launch.child.enginePid
+        ? { wrapperPid: launch.child.pid, enginePid: launch.enginePid ?? null }
+        : {}),
       alive: launch.exit === undefined,
       workspace: deps.workspace,
       startedAt: launch.startedAt,
@@ -380,7 +396,7 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
     shiftId: string,
     argv: string[],
     requested: Record<string, unknown>,
-    project = false,
+    project?: ProjectShiftIntent,
   ): StartOutcome {
     if (closing)
       return {
@@ -407,11 +423,15 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
     env["AGENT_FORGE_HOME"] = deps.home;
     let child: LaunchedShiftChild;
     try {
-      child = deps.launch({
+      const spec = {
         argv,
         cwd: deps.root,
         env,
-      });
+      };
+      child =
+        project && deps.projectLaunch
+          ? deps.projectLaunch(spec, project)
+          : deps.launch(spec);
     } catch (error) {
       return {
         ok: false,
@@ -432,6 +452,11 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
       }),
     };
     launches.set(shiftId, launch);
+    void child.enginePid
+      ?.then((pid) => {
+        if (!launch.exit) launch.enginePid = pid;
+      })
+      .catch(() => {});
     const exited = (exit: ShiftChildExit): void => {
       launch.exit = {
         exitCode: exit.exitCode,
@@ -528,7 +553,7 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
           intent.shiftId,
           [...command, projectId, requestId],
           { ...intent.request.options },
-          true,
+          intent,
         );
       } catch {
         return {
