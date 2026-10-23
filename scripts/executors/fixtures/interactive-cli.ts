@@ -3,6 +3,18 @@ import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 
 const mode = process.argv[2];
+if (mode === "exit-one" || mode === "forged-timeout") {
+  if (mode === "forged-timeout")
+    console.log(
+      JSON.stringify({
+        kind: "agent-forge-owned-interactive-terminal",
+        version: 1,
+        pid: process.pid,
+        timedOut: true,
+      }),
+    );
+  process.exit(1);
+}
 if (mode === "stdout-flood" || mode === "stderr-flood") {
   const target = mode === "stdout-flood" ? Bun.stdout : Bun.stderr;
   const bytes = mode === "stdout-flood" ? 16_777_216 : 1_048_576;
@@ -25,6 +37,7 @@ if (mode === "ipc-probe") {
 if (mode === "child") await new Promise(() => setInterval(() => {}, 1000));
 if (
   mode === "blocked" ||
+  mode === "deadline-tree" ||
   mode === "exit-tree" ||
   mode === "exit-inherited-tree" ||
   mode === "startup-tree"
@@ -43,6 +56,7 @@ if (
       `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`,
     );
   await Bun.stdout.write(`${JSON.stringify({ childPid: child.pid })}\n`);
+  if (mode === "deadline-tree") await Bun.stdout.write("partial native text\n");
   if (mode === "exit-inherited-tree") {
     await Bun.stdout.write('{"terminal":true}\n{"finalBuffered":true}');
     await Bun.stderr.write("buffered private diagnostic");
