@@ -261,6 +261,75 @@ unavailable evidence remains explicit. Follow-up quotes the selected brief and
 time into the existing draft and starts nothing. There is no approved scheduling
 producer, so this version introduces no timer or unattended paid generation.
 
+## Keeper readiness and explicit continuation
+
+`GET /projects/:id/keeper/recovery` is an operator-only, bounded read. It
+projects the selected smith, configured alternatives, timestamped readiness,
+the current continuation and an optional exact UUID receipt lookup. Connection
+(`ready`, `signed-out`, `adapter-missing`, `unknown`) and allowance
+(`available`, `exhausted`, `unreported`) remain separate. A failed report never
+establishes sign-out or exhaustion. Unreported allowance permits an explicitly
+requested turn when the sealed adapter capability check succeeds. No report
+ranks or automatically selects smiths.
+
+Concurrent reads of the same conversation revision and smith catalog share
+their in-flight readiness checks. A service-wide budget permits at most four
+native capability checks across projects; later reads recheck rather than
+cache a readiness claim indefinitely. Closing rejects queued checks and waits
+for active checks to settle. Continuation writes independently recheck readiness
+under the dispatch lease, so a read never authorizes a later change.
+
+`KeeperRuntime` in `scripts/keeper/recovery-runtime.ts` is the trusted provider
+report/adapter seam. Production currently supplies the sealed Claude Keeper
+transport, with read-only version/help probes. It does not probe authentication,
+read credentials or invent usage. Other coding adapters do not become Keeper
+adapters: alternatives without a sealed reader remain unavailable. The known
+Haiku/effort verification gap stays explicit. Real provider readiness producers
+can supply specific reports later; browser reports and multi-provider transport
+tests are synthetic fixtures, not evidence of a live signed-in provider.
+
+`POST /projects/:id/keeper/continuations` is an ordinary audited action carrying
+the original UUID, expected conversation revision, explicit smith, `switch` or
+`fresh`, and at most 12,000 characters of operator-reviewed retained summary.
+The client and private journal preserve that text exactly; whitespace-only
+text cannot satisfy the required retained context for a new native identity.
+The service holds the conversation dispatch lease, rechecks current configuration
+and readiness, then atomically commits selection and continuation in the same
+private journal. Active or unknown turns, disabled/unknown smiths, stale
+revisions and unavailable adapters refuse without changing selection or history.
+Exact retries reconcile the original record before mutable readiness checks;
+lost responses never cause a second change or a model start.
+
+The optional `keeperRecovery` journal extension retains all prior frames and up
+to 100 immutable continuation receipts; it refuses further changes rather than
+evicting UUID history. Generic session journals do not populate it. Private body
+replay exposes only current selection/generation/continuation, not raw receipt
+history. Native identity remains for a same-provider smith change. Start fresh
+or a different provider clears that identity; another provider never receives
+the old provider's resume id. A change itself starts no provider. The next
+explicit Send receives the exact reviewed summary on stdin; subsequent turns
+resume the new observed native identity without redundantly injecting it.
+
+Start fresh never silently generates a summary. The operator can review text
+prefilled from the last confirmed brief or write the exact context to keep. The
+UI describes that retention, preserves the saved transcript and draft, and shows
+context occupancy as unknown until the new conversation reports it. Confirmed
+historical briefs remain verified against their own completed turn identities,
+so changing native identity cannot erase the last confirmed brief. Full Keeper
+and drawer share original pending change identities and receipts at the app root.
+Overview's brief panel also explains unavailable or unverified readiness and
+links to that project's Keeper controls. A missing CLI keeps both attended
+brief Refresh and Send disabled; the packaged no-CLI smoke fixture verifies
+that refusal, while compiled fake-provider E2E tests verify available starts.
+
+`recovery-{store,service}.test.ts`, `readiness.test.ts`, the renderer recovery
+client tests and the common API authority matrix cover fencing, bounded history,
+cross-provider identity isolation, no silent fallback, changed readiness,
+unknown delivery and delayed responses. `keeper-recovery.spec.ts` uses the real
+isolated hearth and compiled fake CLI to verify explicit switching, a lost
+response, shared drawer selection, reviewed-summary stdin, new/resumed native
+ids, distinct unavailable reasons, keyboard focus and the minimum viewport.
+
 ## Keeper proposals and explicit review
 
 Completed, identity-confirmed ordinary replies may contain one strict

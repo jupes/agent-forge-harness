@@ -7,6 +7,9 @@
 .af-proposals > p {
   margin: 0;
 }
+.af-proposals-refresh {
+  justify-self: start;
+}
 .af-proposal-card {
   border: 1px solid var(--color-divider);
   border-radius: 10px;

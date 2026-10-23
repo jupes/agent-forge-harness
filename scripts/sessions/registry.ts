@@ -13,9 +13,15 @@ import {
   readSessionTranscript,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
-import { isBeadId } from "../hearth/tracker-write";
-import { isProjectId } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
+import {
+  ownedSessionIdSchema,
+  ownedSessionMetadataSchema,
+  ownedSessionSchema,
+  sessionProjectIdSchema,
+  sessionRequestHashSchema,
+  sessionRequestIdSchema,
+} from "./protocol";
 
 export const MAX_OWNED_SESSIONS = 1000;
 export const MAX_SESSION_REGISTRY_BYTES = 1_048_576;
@@ -29,61 +35,14 @@ export class SessionRegistryError extends Error {
   }
 }
 
-const projectIdSchema = z.string().refine(isProjectId);
-const requestIdSchema = z
-  .string()
-  .uuid()
-  .refine((value) => value === value.toLowerCase());
-const sessionIdSchema = z
-  .string()
-  .max(44)
-  .refine(
-    (value) =>
-      value.startsWith("session-") &&
-      requestIdSchema.safeParse(value.slice(8)).success,
+const canonicalPaths = (value: OwnedSessionMetadata) =>
+  [value.workspace, value.repository, value.worktree].every(
+    (path) =>
+      isAbsolute(path) &&
+      comparableCheckout(resolve(path)) === comparableCheckout(path),
   );
-const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const label = (max: number) =>
-  z
-    .string()
-    .min(1)
-    .max(max)
-    .refine(
-      (value) => value.trim() === value && !/[\p{Cc}\p{Cs}]/u.test(value),
-    );
-const pathSchema = label(1024).refine(
-  (value) =>
-    isAbsolute(value) &&
-    comparableCheckout(resolve(value)) === comparableCheckout(value),
-);
-const metadataSchema = z
-  .object({
-    mode: z.enum(["task", "chat"]),
-    provider: z.literal("claude"),
-    workspace: pathSchema,
-    repository: pathSchema,
-    worktree: pathSchema,
-    beadId: z.string().max(200).refine(isBeadId).optional(),
-    smith: label(80),
-    requestedModel: z
-      .string()
-      .max(200)
-      .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/),
-    requestedEffort: z
-      .enum(["low", "medium", "high", "xhigh", "max"])
-      .nullable(),
-  })
-  .strict() satisfies z.ZodType<OwnedSessionMetadata>;
-const recordSchema: z.ZodType<OwnedSessionRecord> = z
-  .object({
-    projectId: projectIdSchema,
-    id: sessionIdSchema,
-    requestId: requestIdSchema,
-    requestHash: hashSchema,
-    createdAt: z.iso.datetime(),
-    ...metadataSchema.shape,
-  })
-  .strict();
+const metadataSchema = ownedSessionMetadataSchema.refine(canonicalPaths);
+const recordSchema = ownedSessionSchema.refine(canonicalPaths);
 const registrySchema = z
   .object({
     version: z.literal(1),
@@ -168,7 +127,7 @@ export function createSessionRegistry(home: string) {
     return parsed.data;
   };
   const project = (projectId: string) => {
-    if (!projectIdSchema.safeParse(projectId).success)
+    if (!sessionProjectIdSchema.safeParse(projectId).success)
       throw new SessionRegistryError(400, "Expected a project id.");
   };
   return {
@@ -180,7 +139,7 @@ export function createSessionRegistry(home: string) {
     },
     read(projectId: string, sessionId: string): OwnedSessionRecord {
       project(projectId);
-      if (!sessionIdSchema.safeParse(sessionId).success)
+      if (!ownedSessionIdSchema.safeParse(sessionId).success)
         throw new SessionRegistryError(400, "Expected an owned session id.");
       const record = readState().records.find((item) => item.id === sessionId);
       if (!record)
@@ -203,8 +162,8 @@ export function createSessionRegistry(home: string) {
     ): Promise<OwnedSessionRecord> {
       project(projectId);
       if (
-        !requestIdSchema.safeParse(requestId).success ||
-        !hashSchema.safeParse(requestHash).success
+        !sessionRequestIdSchema.safeParse(requestId).success ||
+        !sessionRequestHashSchema.safeParse(requestHash).success
       )
         throw new SessionRegistryError(
           400,

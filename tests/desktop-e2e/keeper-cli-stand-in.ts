@@ -1,6 +1,7 @@
 /** Compiled as `claude` only inside the desktop suite's isolated CLI directory. */
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { codingFlags, runCodingFixture } from "./session-cli-stand-in";
 
 const home = process.env["AGENT_FORGE_HOME"];
 if (!home)
@@ -34,9 +35,21 @@ if (
   throw new Error("Unknown Keeper browser fixture mode.");
 process.env["KEEPER_FIXTURE_MODE"] = mode;
 process.env["KEEPER_FIXTURE_RECORD"] = join(home, "keeper-fixture-record.json");
-if (!process.argv.includes("--version") && !process.argv.includes("--help"))
-  appendFileSync(
-    join(home, "keeper-fixture-starts.jsonl"),
-    JSON.stringify({ started: true }) + "\n",
+if (process.argv.includes("--help") && mode !== "legacy") {
+  process.stdout.write(
+    `${codingFlags} --tools --restricted --strict-mcp-config --mcp-config --setting-sources --settings --disable-slash-commands --no-chrome --append-system-prompt\n`,
   );
-await import("../../scripts/keeper/fixtures/claude-conversation");
+} else if (
+  !process.argv.includes("--version") &&
+  !process.argv.includes("--help") &&
+  !process.argv.includes("--restricted")
+) {
+  await runCodingFixture(home);
+} else {
+  if (!process.argv.includes("--version") && !process.argv.includes("--help"))
+    appendFileSync(
+      join(home, "keeper-fixture-starts.jsonl"),
+      JSON.stringify({ started: true }) + "\n",
+    );
+  await import("../../scripts/keeper/fixtures/claude-conversation");
+}

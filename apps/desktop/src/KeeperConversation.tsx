@@ -11,6 +11,7 @@ import type {
 import type { ProjectRecord } from "../../../types/projects";
 import { KeeperActionCards } from "./KeeperActionCards";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import { KeeperRecovery } from "./KeeperRecovery";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
@@ -239,6 +240,7 @@ export function KeeperConversation({
   const follow = useRef(true);
   const [away, setAway] = useState(false);
   const [copyNotice, setCopyNotice] = useState("");
+  const [showRecovery, setShowRecovery] = useState(false);
   const lastSeq = state.page?.frames.at(-1)?.seq ?? 0;
   useEffect(() => {
     if (!compact) return;
@@ -277,7 +279,9 @@ export function KeeperConversation({
           </h2>
         </div>
         <div class="af-keeper-chips">
-          <span
+          <button
+            type="button"
+            onClick={() => setShowRecovery((value) => !value)}
             class="af-keeper-chip"
             title={
               process?.kind === "process"
@@ -285,10 +289,11 @@ export function KeeperConversation({
                 : undefined
             }
           >
-            {process?.kind === "process"
-              ? process.smith
-              : "Smith checked on Send"}
-          </span>
+            {client.recovery?.get(project.id).page?.selectedSmith ??
+              (process?.kind === "process"
+                ? process.smith
+                : "Smith checked on Send")}
+          </button>
           {observed?.kind === "model" && (
             <span class="af-keeper-chip">Observed {observed.model}</span>
           )}
@@ -314,58 +319,71 @@ export function KeeperConversation({
         {context.nearlyFull && (
           <p class="af-keeper-warning" role="status">
             Conversation context is nearly full. Review this conversation before
-            continuing.
+            continuing.{" "}
+            <Button onClick={() => setShowRecovery(true)}>
+              Review Start fresh
+            </Button>
           </p>
         )}
       </header>
-      {state.notice && (
-        <div class="af-keeper-notice" role="status">
-          <p>{state.notice}</p>
-          {state.pending && !state.posting && (
-            <>
+      <div class="af-keeper-feedback">
+        <KeeperRecovery
+          key={project.id}
+          projectId={project.id}
+          client={client}
+          open={showRecovery}
+          onClose={() => setShowRecovery(false)}
+          writesAllowed={writesAllowed}
+        />
+        {state.notice && (
+          <div class="af-keeper-notice" role="status">
+            <p>{state.notice}</p>
+            {state.pending && !state.posting && (
+              <>
+                <Button
+                  onClick={() => {
+                    void client.check(project.id);
+                  }}
+                >
+                  Check original request
+                </Button>
+                <Button
+                  onClick={() => {
+                    void client.retryOriginal(project.id);
+                  }}
+                  disabled={!writesAllowed}
+                >
+                  Retry original request
+                </Button>
+              </>
+            )}
+            {state.stopping && (
               <Button
                 onClick={() => {
                   void client.check(project.id);
                 }}
               >
-                Check original request
+                Check stop
               </Button>
+            )}
+            {state.stopUnknown && (
               <Button
+                disabled={!writesAllowed || state.stopPosting}
                 onClick={() => {
-                  void client.retryOriginal(project.id);
+                  void client.stop(project.id, true);
                 }}
-                disabled={!writesAllowed}
               >
-                Retry original request
+                Retry stop
               </Button>
-            </>
-          )}
-          {state.stopping && (
-            <Button
-              onClick={() => {
-                void client.check(project.id);
-              }}
-            >
-              Check stop
-            </Button>
-          )}
-          {state.stopUnknown && (
-            <Button
-              disabled={!writesAllowed || state.stopPosting}
-              onClick={() => {
-                void client.stop(project.id, true);
-              }}
-            >
-              Retry stop
-            </Button>
-          )}
-          {!state.live && (
-            <Button onClick={() => client.reload(project.id)}>
-              Reload conversation
-            </Button>
-          )}
-        </div>
-      )}
+            )}
+            {!state.live && (
+              <Button onClick={() => client.reload(project.id)}>
+                Reload conversation
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
       <div
         ref={feed}
         class="af-keeper-thread"
@@ -535,7 +553,9 @@ export function KeeperConversation({
                 : current?.phase === "unknown"
                   ? "This turn has an unknown outcome and was not resent."
                   : state.live && state.loaded
-                    ? "Ready"
+                    ? client.recovery && !client.recovery.canStart(project.id)
+                      ? "Keeper unavailable; review its smith or recheck readiness."
+                      : "Ready"
                     : "Conversation updates unavailable"}
           {copyNotice ? ` · ${copyNotice}` : ""}
         </p>

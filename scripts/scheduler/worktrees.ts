@@ -10,9 +10,9 @@
  * leaves in it.
  *
  * git is run with argument arrays, never through a shell, so a path with
- * spaces is one argument. A read writes nothing. A create that git refuses
- * leaves no branch and no record; a remove never discards work unless asked
- * to (`force`), and removes only worktrees this module made.
+ * spaces is one argument. A read writes nothing. A failed Git creation attempts
+ * branch cleanup unless a durable caller preserves partial state. A remove never
+ * discards work unless asked to (`force`), and removes only worktrees this module made.
  */
 
 import { spawnSync } from "node:child_process";
@@ -556,6 +556,8 @@ function order(a: WorktreeEntry, b: WorktreeEntry): number {
 
 export interface CreateRequest {
   branch: string;
+  /** Durable callers reconcile their saved intent; preserve partial creation instead of deleting its branch. */
+  preserveOnFailure?: true | undefined;
   beadId?: string | undefined;
   /** Defaults to the session mirrored into the checkout the worktree is made from. */
   sessionId?: string | undefined;
@@ -640,8 +642,8 @@ function ignoredHere(main: string, rel: string, git: GitRun): boolean {
  * main checkout), else at the HEAD of `from`, the checkout the command runs
  * in. Refused before anything is made: a name that is not a new branch, a
  * bead or session id that is not one, a start point that names no commit, a
- * repository that does not ignore `trees/` itself, the OS home. A create git
- * refuses leaves no branch and no record.
+ * repository that does not ignore `trees/` itself, the OS home. Failed Git
+ * creation attempts branch cleanup unless preserveOnFailure is set.
  */
 export function createWorktree(
   main: string,
@@ -701,6 +703,10 @@ export function createWorktree(
     WRITE_MS,
   );
   if (added.status !== 0) {
+    if (request.preserveOnFailure)
+      return no(
+        `git worktree add did not confirm creation: ${said(added)} (partial work was preserved for inspection)`,
+      );
     // git can make the branch and then fail on the directory: take it back.
     const left = deps.git(
       ["rev-parse", "--verify", "--quiet", `refs/heads/${request.branch}`],

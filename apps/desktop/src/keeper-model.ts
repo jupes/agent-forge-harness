@@ -40,7 +40,26 @@ export function keeperTurns(page: ConversationPage | null): KeeperTurnView[] {
   return [...rows.values()];
 }
 export function keeperContext(page: ConversationPage | null) {
+  const binding = page?.binding;
+  // A later resumed switch must not revive occupancy from an older native identity.
+  const currentTurns = new Set(
+    page?.frames
+      .filter(
+        (frame) =>
+          frame.event.kind === "identity" &&
+          frame.event.provider === binding?.provider &&
+          frame.event.sessionId === binding?.sessionId,
+      )
+      .map((frame) => frame.turnId),
+  );
   const event = page?.frames
+    .filter(
+      (frame) =>
+        currentTurns.has(frame.turnId) &&
+        (!page.keeperRecovery ||
+          page.keeperRecovery.continuation.resumed ||
+          frame.seq > page.keeperRecovery.continuation.sourceSequence),
+    )
     .map((frame) => frame.event)
     .reverse()
     .find((event) => event.kind === "context");

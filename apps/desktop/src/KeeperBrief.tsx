@@ -2,6 +2,7 @@ import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type { KeeperBrief } from "../../../types/keeper-brief";
+import type { KeeperReadiness } from "../../../types/keeper-recovery";
 import type { KeeperClient } from "./keeper-client";
 import { desktopHref } from "./navigation";
 import { openProject } from "./projects-model";
@@ -155,6 +156,35 @@ export function KeeperBriefCard({
   );
 }
 
+export function KeeperBriefAvailability({
+  projectId,
+  readiness,
+  onNavigate,
+}: {
+  projectId: string;
+  readiness: KeeperReadiness | undefined;
+  onNavigate?: (() => void) | undefined;
+}): JSX.Element | null {
+  if (readiness?.canStart) return null;
+  return (
+    <p
+      class="af-brief-availability"
+      data-readiness={readiness ? "unavailable" : "unknown"}
+      role="status"
+    >
+      {readiness
+        ? `Brief refresh is unavailable. ${readiness.reason}`
+        : "Keeper readiness has not been verified. Check it before requesting a brief."}{" "}
+      <Button
+        href={openProject(projectId, "keeper")}
+        onClick={() => onNavigate?.()}
+      >
+        Review Keeper readiness
+      </Button>
+    </p>
+  );
+}
+
 export function KeeperBriefPanel({
   projectId,
   client,
@@ -172,6 +202,10 @@ export function KeeperBriefPanel({
   }, [client, projectId]);
   const state = client.get(projectId),
     data = state.briefs;
+  const recovery = client.recovery?.get(projectId).page;
+  const readiness = recovery?.choices.find(
+    (choice) => choice.smith.name === recovery.selectedSmith,
+  )?.readiness;
   const selected =
     data?.earlier.find((brief) => brief.requestId === earlier) ?? data?.latest;
   const pending =
@@ -194,6 +228,13 @@ export function KeeperBriefPanel({
           Refresh brief
         </Button>
       </div>
+      {client.recovery && (
+        <KeeperBriefAvailability
+          projectId={projectId}
+          readiness={readiness}
+          onNavigate={onNavigate}
+        />
+      )}
       {state.briefsLoading && <p role="status">Reading saved briefs…</p>}
       {state.briefsError && (
         <p role="status">

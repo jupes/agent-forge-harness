@@ -298,4 +298,24 @@ test("failed, malformed and unknown refreshes preserve the last confirmed brief 
   expect(projection.latest?.snapshot.asOf).toBe(asOf);
   expect(projection.earlier).toEqual([]);
   expect(projection.refresh?.phase).toBe("unknown");
+  // Explicit continuation must not invalidate a brief confirmed by its own turn.
+  expect(keeperBriefs({ ...state, binding: null }).latest).toEqual(
+    projection.latest,
+  );
+  expect(
+    keeperBriefs({
+      ...state,
+      binding: { ...binding, provider: "codex", sessionId: "new-provider" },
+    }).latest,
+  ).toEqual(projection.latest);
+  expect(
+    keeperBriefs({
+      ...state,
+      frames: state.frames.filter(
+        (frame) =>
+          frame.turnId !== state.turns[0]?.requestId ||
+          frame.event.kind !== "identity",
+      ),
+    }).latest,
+  ).toBeNull();
 });

@@ -16,6 +16,8 @@ export function KeeperSuggestions({
   region,
   onChoose,
   onClose,
+  aboutCount,
+  recipient = "the Keeper",
 }: {
   projectId: string;
   client: KeeperClient;
@@ -25,6 +27,8 @@ export function KeeperSuggestions({
   region: RefObject<HTMLDivElement>;
   onChoose(value: string, object?: ConversationObject): void;
   onClose(): void;
+  aboutCount?: number;
+  recipient?: string;
 }): JSX.Element | null {
   const picker = visible ? keeperPicker(text, caret) : null;
   const kind = picker?.mode === "mention" ? picker.kind : null;
@@ -111,7 +115,7 @@ export function KeeperSuggestions({
       {picker.mode === "command" ? (
         <>
           <p>
-            Harness commands · inserts a request for the Keeper. Review before
+            Harness commands · inserts a request for {recipient}. Review before
             sending.
           </p>
           <div class="af-keeper-picker-options">
@@ -169,7 +173,9 @@ export function KeeperSuggestions({
                   <button
                     key={item.id}
                     type="button"
-                    disabled={client.get(projectId).about.length >= 16}
+                    disabled={
+                      (aboutCount ?? client.get(projectId).about.length) >= 16
+                    }
                     onClick={() =>
                       onChoose(`@${item.kind}:${item.id}`, {
                         kind: item.kind,

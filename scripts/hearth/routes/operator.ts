@@ -22,6 +22,7 @@ import {
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
+import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import type { SessionRuntime } from "../../sessions/admission";
@@ -64,6 +65,7 @@ import {
 } from "./project-summaries";
 import { projectRoutes } from "./projects";
 import { queueRoutes } from "./queue";
+import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
 
@@ -74,6 +76,7 @@ export interface OperatorDeps extends ReadDeps {
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
   sessionRuntime: SessionRuntime;
+  keeperRuntime?: KeeperRuntime | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
@@ -370,6 +373,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.conversationTransport,
     keeperAboutValidator(deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
+    deps.keeperRuntime,
   );
   const proposals = keeperProposalRoutes(
     deps.projectHome,
@@ -382,6 +386,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps,
     projectSnapshot,
     deps.sessionRuntime,
+  );
+  const sessionWorktrees = createSessionWorktreeRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
   );
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
@@ -404,9 +413,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.recovery,
     proposals.read,
     ownedSessions.list,
     ownedSessions.read,
+    sessionWorktrees.read,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -445,12 +456,15 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       preferences,
       conversations.send,
       conversations.refresh,
+      conversations.continuation,
       proposals.approve,
       proposals.dismiss,
       conversations.stop,
       ownedSessions.start,
+      ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,
+      sessionWorktrees.create,
       ...beadRoutes({
         workspace,
         runBd: deps.runBd,

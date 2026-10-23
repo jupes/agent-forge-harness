@@ -35,7 +35,8 @@ export type FrameSessionStatus =
   | "idle"
   | "observed"
   | "ended-today"
-  | "older";
+  | "older"
+  | "unverified";
 export interface FrameSession {
   id: string;
   title: string;
@@ -81,6 +82,7 @@ const GROUPS: readonly {
   { status: "observed", label: "Observed", icon: "circle" },
   { status: "ended-today", label: "Ended today", icon: "circle" },
   { status: "older", label: "Older", icon: "circle" },
+  { status: "unverified", label: "Status unavailable", icon: "circle" },
 ];
 
 export interface DesktopFrameProps {
@@ -91,6 +93,7 @@ export interface DesktopFrameProps {
   onInspectorToggle(): void;
   children: ComponentChildren;
   inspector?: ComponentChildren;
+  onNewSession?: (() => void) | undefined;
 }
 
 /** One content outlet; changing destinations never owns or recreates the page stream. */
@@ -102,6 +105,7 @@ export function DesktopFrame({
   onInspectorToggle,
   children,
   inspector,
+  onNewSession,
 }: DesktopFrameProps): JSX.Element {
   const project = supplied?.id === route.projectId ? supplied : null;
   const projectName =
@@ -258,16 +262,23 @@ export function DesktopFrame({
           <Button
             variant="ghost"
             icon="plus-circle"
-            disabled
+            disabled={!project || !onNewSession}
+            onClick={() => onNewSession?.()}
             title={
               project
-                ? "Starting a session is not available yet"
+                ? "Start a session in this project"
                 : "Choose a project before starting a session"
             }
-            aria-label="New session unavailable"
+            aria-label={
+              project && onNewSession
+                ? "New session"
+                : "New session unavailable"
+            }
           >
             <span class="af-desktop-sidebar-label">
-              New session unavailable
+              {project && onNewSession
+                ? "New session"
+                : "New session unavailable"}
             </span>
           </Button>
           <nav class="af-desktop-project-nav" aria-label="Project destinations">

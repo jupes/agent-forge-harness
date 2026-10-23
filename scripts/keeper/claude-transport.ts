@@ -71,7 +71,7 @@ function checkResume(binding: ConversationBinding | null) {
 export function createClaudeConversationTransport(
   options: Options,
 ): ConversationTransport {
-  const prepare = async (resume: ConversationBinding | null) => {
+  const prepare = async (resume: ConversationBinding | null, name?: string) => {
     checkResume(resume);
     let smith: Smith;
     let env: Record<string, string>;
@@ -81,7 +81,10 @@ export function createClaudeConversationTransport(
         env: {},
         ...(options.configHome ? { home: options.configHome } : {}),
       });
-      const selected = config.smiths[config.workflow.defaultCrew];
+      const key = name ?? config.workflow.defaultCrew;
+      const selected = Object.hasOwn(config.smiths, key)
+        ? config.smiths[key]
+        : undefined;
       if (!selected?.enabled || selected.provider !== "claude")
         throw unavailable(
           "The configured Keeper smith is not an enabled Claude smith.",
@@ -166,11 +169,11 @@ export function createClaudeConversationTransport(
   };
   return {
     provider: "claude",
-    async check({ resume }) {
-      await prepare(resume);
+    async check({ resume, smith }) {
+      await prepare(resume, smith);
     },
     async run(request, persist, signal) {
-      const ready = await prepare(request.resume);
+      const ready = await prepare(request.resume, request.smith);
       if (signal.aborted)
         return {
           phase: "failed",
