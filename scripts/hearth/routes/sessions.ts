@@ -312,11 +312,16 @@ export function createOwnedSessionRoutes(
     path: "/projects/:id/sessions/preview",
     action: "session.preview",
     effect: ({ projectId, input }) =>
-      answer(200, () =>
-        "provider" in input
+      answer(200, () => {
+        if ("provider" in input && input.provider === "gemini")
+          throw new ConversationError(
+            503,
+            "Owned Gemini Task preview is not available yet. No Task was started.",
+          );
+        return "provider" in input
           ? prepareCodexPreview(projectId, input)
-          : preparePreview(projectId, input),
-      ),
+          : preparePreview(projectId, input);
+      }),
   };
   const stop: ActionRoute<Address & { requestId: string }> = {
     kind: "action",

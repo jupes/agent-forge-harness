@@ -30,7 +30,11 @@ export function createCodexTaskPreview(options: {
     raw: unknown,
   ): Promise<CodexTaskPreviewReceipt> => {
     const request = parseOwnedSessionStart(raw);
-    if (!("provider" in request) || request.launch.mode !== "task")
+    if (
+      !("provider" in request) ||
+      request.provider !== "codex" ||
+      request.launch.mode !== "task"
+    )
       throw new ConversationError(
         400,
         "An explicit Codex Task provider is required.",

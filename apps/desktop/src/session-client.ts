@@ -50,7 +50,8 @@ const sameStart = (record: OwnedSessionRecord, input: SessionStartRequest) =>
   record.worktree === input.worktree &&
   record.mode === input.launch.mode &&
   record.requestedModel === input.launch.model &&
-  record.requestedEffort === (input.launch.effort ?? null) &&
+  record.requestedEffort ===
+    ("effort" in input.launch ? (input.launch.effort ?? null) : null) &&
   record.beadId === input.beadId;
 export interface SessionProjectView {
   records: OwnedSessionRecord[];

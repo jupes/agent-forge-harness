@@ -6,6 +6,7 @@ import type {
 import { ConversationError } from "../conversations/error";
 import { codexChatStartSchema } from "./codex-chat-owned-protocol";
 import { codexTaskLaunchSchema } from "./codex-task";
+import { geminiTaskStartSchema } from "./gemini-owned-protocol";
 import { canonicalSessionInput } from "./preparation";
 import { parseSessionStart, sessionStartSchema } from "./request-protocol";
 
@@ -27,19 +28,23 @@ export function parseOwnedSessionStart(
     Object.hasOwn(input, "provider")
   ) {
     const parsed = z
-      .union([codexTaskStartSchema, codexChatStartSchema])
+      .union([
+        codexTaskStartSchema,
+        codexChatStartSchema,
+        geminiTaskStartSchema,
+      ])
       .safeParse(input);
     if (!parsed.success)
       throw new ConversationError(
         400,
-        "Expected an explicit supported Codex Task or Chat request with bounded options.",
+        "Expected explicit supported provider, route and mode selections with bounded native options.",
       );
     return parsed.data;
   }
   return parseSessionStart(input);
 }
 
-/** Legacy parsing and canonical bytes stay exact; only the new Codex branch adds a provider key. */
+/** Legacy parsing and canonical bytes stay exact; explicit native branches add their own provider key. */
 export function canonicalOwnedSessionStart(input: unknown): string {
   return canonicalSessionInput(parseOwnedSessionStart(input));
 }

@@ -85,6 +85,11 @@ export function createOwnedCodingSessionService(options: {
   return {
     start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
+      if ("provider" in request && request.provider === "gemini")
+        throw new ConversationError(
+          503,
+          "Owned Gemini Task admission is not available yet. No Task was accepted.",
+        );
       return "provider" in request
         ? request.launch.mode === "chat"
           ? chat.start(projectId, request)
