@@ -279,3 +279,51 @@ test("actual compiled hearth entry provides private bootstrap and preserves the 
   }
   await verifyKeeperReader([hearth, "--keeper-reader"]);
 });
+
+test("normal native exit closes inherited helper pipes without losing buffered final frames", async () => {
+  const home = scratch.make("interactive-inherited-pipe-"),
+    executable = compile(fake, home, "inherited-pipe"),
+    log = join(home, "tree.jsonl");
+  const lines: string[] = [];
+  const handle = supervise({
+    command: [executable, "exit-inherited-tree"],
+    cwd: home,
+    env: { ...env(home), INTERACTIVE_TREE_LOG: log },
+    stdinMode: "interactive",
+    timeoutMs: 2000,
+    onLine: (line) => lines.push(line),
+  });
+  let childPid: number | null = null;
+  try {
+    const result = await handle.done;
+    let tree: unknown;
+    try {
+      tree = JSON.parse(readFileSync(log, "utf8"));
+    } catch {
+      throw new Error("Malformed inherited helper identity.");
+    }
+    if (
+      typeof tree !== "object" ||
+      tree === null ||
+      !("childPid" in tree) ||
+      typeof tree.childPid !== "number"
+    )
+      throw new Error("Missing inherited helper identity.");
+    childPid = tree.childPid;
+    expect(result).toEqual({
+      exitCode: 0,
+      timedOut: false,
+      stopped: false,
+      stderr: "buffered private diagnostic",
+    });
+    expect(lines).toEqual([
+      JSON.stringify({ childPid }),
+      '{"terminal":true}',
+      '{"finalBuffered":true}',
+    ]);
+    expect(await until(() => (!alive(childPid ?? 0) ? true : null))).toBe(true);
+  } finally {
+    await handle.stop("fixture cleanup");
+    if (childPid && alive(childPid)) killTree(childPid);
+  }
+});

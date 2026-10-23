@@ -20,4 +20,6 @@ Any input refusal/deadline, output-reader failure or Stop closes the owned tree.
 
 Focused tests use actual inert native processes. They cover source and compiled entry points, a planted preload which runs without isolation, blocked pre-grant execution despite hostile config/environment, zero native dispatch when the owner is killed before the grant, and actual immediate-native-helper cleanup when the owner is killed after it. The compiled entry test also verifies the sealed Keeper reader against its hermetic hearth fixture. No live model, account, provider credential file or real tracker is used.
 
+A compiled native normal-exit regression starts a helper inheriting stdout and stderr, writes a terminal line plus a buffered unterminated final frame, and exits zero. Both output frames and buffered stderr reach the caller; completion does not wait for the turn timeout, and the held ownership job removes the helper. This checks the runtime's observed pipe-close behavior rather than assuming that inherited pipes always close themselves.
+
 The cache-disable value and `--no-env-file` behavior follow [Bun's environment documentation](https://bun.com/docs/runtime/environment-variables). CLI config flags were checked against the pinned Bun 1.4.2 help and exercised directly by the source bootstrap tests.
