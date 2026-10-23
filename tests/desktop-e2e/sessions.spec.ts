@@ -293,6 +293,7 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/session-chat.png",
     mask: [page.getByText(created.worktree, { exact: true })],
+    maskColor: "#3f424d",
   });
 });
 
@@ -434,6 +435,7 @@ test("a bead-prefilled Task exposes locked modes, and project drafts and session
   ).toContainText("--max-budget-usd");
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/session-composer.png",
+    maskColor: "#3f424d",
     mask: [
       dialog.getByRole("combobox", { name: "Session repository", exact: true }),
     ],
@@ -443,6 +445,7 @@ test("a bead-prefilled Task exposes locked modes, and project drafts and session
   });
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/session-composer-prompt.png",
+    maskColor: "#3f424d",
     mask: [
       dialog.getByRole("combobox", { name: "Session repository", exact: true }),
     ],
