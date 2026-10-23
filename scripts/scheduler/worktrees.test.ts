@@ -505,6 +505,25 @@ describe("createWorktree", () => {
     expect(existsSync(join(dir, "trees", ".state.json"))).toBe(false);
   });
 
+  test("a durable create preserves a partially created branch and occupied directory for reconciliation", () => {
+    const dir = repo();
+    mkdirSync(join(dir, "trees", "taken"), { recursive: true });
+    const file = join(dir, "trees", "taken", "file.txt");
+    writeFileSync(file, "keep this work\n");
+    const failed = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/blocked", preserveOnFailure: true },
+      deps({ newId: () => "taken" }),
+    );
+    expect(failed.ok).toBe(false);
+    expect(git(dir, "branch", "--list", "feat/blocked")).toContain(
+      "feat/blocked",
+    );
+    expect(readFileSync(file, "utf8")).toBe("keep this work\n");
+    expect(existsSync(join(dir, "trees", ".state.json"))).toBe(false);
+  });
+
   test("a name that is not a new branch is refused before anything is made", () => {
     const dir = repo();
     git(dir, "branch", "already");

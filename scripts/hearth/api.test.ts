@@ -69,6 +69,11 @@ import {
   waitOwnedTurn,
 } from "./routes/session-fixture";
 import {
+  FIXTURE_WORKTREE_REQUEST,
+  seedSessionWorktreeFixture,
+  sessionWorktreeFixtureRequest,
+} from "./routes/session-worktree-fixture";
+import {
   startTestHearth,
   type TestHearth,
   type TestHearthOptions,
@@ -88,6 +93,7 @@ async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
     projectCatalogPath(hearth.home),
     JSON.stringify(projectCatalogFixture(hearth.workspace)),
   );
+  seedSessionWorktreeFixture(hearth);
   return hearth;
 }
 
@@ -676,6 +682,35 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(parsed.snapshot.launch.prompt).toBe(FIXTURE_SESSION_PROMPT);
     },
   },
+  "POST /projects/:id/session-worktrees": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-worktrees`,
+      body: {
+        requestId: FIXTURE_WORKTREE_REQUEST,
+        repository: "/fixture",
+        baseRef: "HEAD",
+        branch: "feat/worktree-fixture",
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-worktrees`,
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      const fixture = ACTIONS["POST /projects/:id/session-worktrees"];
+      if (fixture) fixture.valid.body = sessionWorktreeFixtureRequest(h);
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        projectId: FIXTURE_PROJECT_ID,
+        requestId: FIXTURE_WORKTREE_REQUEST,
+        state: "created",
+        branch: "feat/worktree-fixture",
+      });
+    },
+  },
   "POST /projects/:id/sessions": ownedSessionFixture("start"),
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
@@ -1241,6 +1276,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects": "/projects",
@@ -2719,6 +2755,23 @@ function get(
 ): Promise<Response> {
   return fetch(`${h.api}${path}`, { headers });
 }
+
+test("worktree receipt lookup requires operator authority and never writes an audit or repeats creation", async () => {
+  const h = await start();
+  const path = `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`;
+  for (const token of [null, "wrong-token"])
+    expect((await get(h, path, h.headers(token))).status).toBe(403);
+  const response = await get(h, path, h.headers(h.hearth.token));
+  expect(response.status).toBe(200);
+  expect((await envelope(response)).data).toMatchObject({
+    state: "created",
+    requestId: FIXTURE_WORKTREE_REQUEST,
+  });
+  expect(
+    (await get(h, `${path}?retry=true`, h.headers(h.hearth.token))).status,
+  ).toBe(400);
+  expect(h.events()).toEqual([]);
+});
 
 /** Append to the hearth's ledger under another workspace: what a second checkout on this machine would write. */
 function appendElsewhere(
