@@ -41,9 +41,9 @@ function git(root: string, ...args: string[]): string {
 async function fixture() {
   const base = mkdtempSync(join(tmpdir(), "session worktree "));
   folders.push(base);
-  const root = join(base, "repo"),
-    home = join(base, "home");
-  mkdirSync(root);
+  const home = join(base, "home");
+  mkdirSync(join(base, "repo"));
+  const root = realpathSync.native(join(base, "repo"));
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.email", "fixture@example.invalid");
   git(root, "config", "user.name", "Fixture");
@@ -219,6 +219,39 @@ test("two service owners and a restart reconcile a lost Git answer without anoth
     "created",
   );
   expect(f.adds()).toBe(1);
+});
+
+test("another repository's hearth cannot read or retry the same project's worktree receipt in a shared private home", async () => {
+  const source = await fixture(),
+    other = await fixture();
+  source.loseAnswer();
+  expect(
+    (await source.service().create(source.project.id, source.request)).state,
+  ).toBe("unknown");
+  const before = readFileSync(sessionWorktreeJournalFile(source.home), "utf8"),
+    calls: string[] = [];
+  const service = createSessionWorktreeService({
+    home: source.home,
+    root: other.root,
+    git: (args, cwd, timeout) => {
+      calls.push(cwd);
+      return gitRun(args, cwd, timeout);
+    },
+    validateScope: async () => {
+      throw Error("Mutable configuration must not run for an original receipt");
+    },
+  });
+  await expect(
+    service.read(source.project.id, source.request.requestId),
+  ).rejects.toMatchObject({ status: 409 });
+  await expect(
+    service.create(source.project.id, source.request),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(calls).toEqual([]);
+  expect(readFileSync(sessionWorktreeJournalFile(source.home), "utf8")).toBe(
+    before,
+  );
+  expect(source.adds()).toBe(1);
 });
 
 test("partial creation stays unknown and original retries never rerun or clean Git", async () => {

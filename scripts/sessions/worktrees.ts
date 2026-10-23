@@ -13,6 +13,7 @@ import {
   readSessionTranscript,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { isProjectId } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
@@ -227,6 +228,14 @@ interface Options {
 /** Durable original intent fences Git. Reads/retries only reconcile; they never replay a write. */
 export function createSessionWorktreeService(options: Options) {
   const git = options.git ?? gitRun;
+  const repository = workspaceKey(resolveCheckout(options.root).workspace);
+  const served = (record: Record) => {
+    if (workspaceKey(record.plan.repository) !== repository)
+      throw new ConversationError(
+        409,
+        "This worktree request belongs to a different repository. Open its hearth to read or reconcile it.",
+      );
+  };
   const find = (projectId: string, requestId: string): Record => {
     if (
       !isProjectId(projectId) ||
@@ -249,6 +258,7 @@ export function createSessionWorktreeService(options: Options) {
         409,
         "This worktree request belongs to a different project.",
       );
+    served(record);
     return record;
   };
   const reconcile = (record: Record): SessionWorktreeReceipt => {
@@ -346,6 +356,7 @@ export function createSessionWorktreeService(options: Options) {
               (item) => item.request.requestId === request.requestId,
             );
           if (existing) {
+            served(existing);
             if (
               existing.plan.projectId !== projectId ||
               existing.requestHash !== hash
