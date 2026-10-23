@@ -51,6 +51,7 @@ async function fixture(
   provider: "claude" | "codex" = "claude",
   mode = "rich",
   beadCount = 1,
+  duration = "1m",
 ) {
   const root = realpathSync.native(scratch.make("actual attended runtime ")),
     home = join(root, "home"),
@@ -159,7 +160,7 @@ async function fixture(
     requestId: "2230bb02-1119-4c69-adad-c44116b375c1",
     expectedCatalogRevision: 1,
     options: {
-      for: "1m",
+      for: duration,
       concurrency: 1,
       maxBeads: beadCount,
       maxUsd: 5,
@@ -285,7 +286,7 @@ async function fixture(
 
 test("the actual canonical engine privately captures each supervised provider and exact input, then reconciles without replay", async () => {
   for (const provider of ["claude", "codex"] as const) {
-    const f = await fixture(provider);
+    const f = await fixture(provider, "rich", 1, "2h");
     const receipt = await f.run();
     expect(receipt.observation.phase).toBe("stopped");
     expect(receipt.observation.actual?.admitted).toBe(1);
@@ -328,6 +329,7 @@ test("the actual canonical engine privately captures each supervised provider an
     const actual = nativeLog.parse(raw);
     expect(user.shift.command.slice(1)).toEqual(actual.argv);
     expect(user.shift.stdin).toBe(actual.stdin);
+    expect(user.shift.timeoutMs).toBeGreaterThan(30 * 60_000);
     expect(user.shift.cwd).toBe(actual.cwd);
     expect(
       page.frames.find((frame) => frame.event.kind === "process")?.event,

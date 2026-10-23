@@ -26,6 +26,8 @@ export interface PrivateExecCapture {
 
 /** Trusted only; private bodies never pass through the metadata EventSink. */
 export interface PrivateExecCaptureFactory {
+  /** Trusted shift-only long-running execution; no caller launch field can set it. */
+  lifetime?: "shift-attempt";
   /** Trusted owner budget, bounded from 100ms to 30s. Production defaults to 10s. */
   deadlineMs?: number;
   prepare(

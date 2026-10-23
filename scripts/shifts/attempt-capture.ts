@@ -27,6 +27,7 @@ export function createShiftAttemptCapture(
     throw new PrivateCaptureError();
   const intent = structuredClone(options.intent);
   return {
+    lifetime: "shift-attempt",
     deadlineMs,
     async prepare(input, control) {
       const opened = await openShiftAttempt({

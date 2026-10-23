@@ -413,6 +413,9 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
           const owned = supervise({
             ...common,
             stdinMode: "interactive",
+            ...(request.privateCapture?.lifetime
+              ? { lifetime: request.privateCapture.lifetime }
+              : {}),
             maxStdinBytes: Math.max(1, Buffer.byteLength(prepared.stdin)),
             ...(request.privateBootstrapCommand
               ? { bootstrapCommand: request.privateBootstrapCommand }
