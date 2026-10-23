@@ -36,9 +36,12 @@ export function createShiftProviderPreparer(options: {
     signal: AbortSignal,
   ): Promise<{ version: string }> => {
     try {
-      const provider = input.provider;
-      if (signal.aborted || (provider !== "claude" && provider !== "codex"))
+      if (
+        signal.aborted ||
+        (input.provider !== "claude" && input.provider !== "codex")
+      )
         throw new PrivateCaptureError();
+      const provider = input.provider === "claude" ? "claude" : "codex";
       const loaded = loadConfig({
         harnessRoot: options.root,
         env: {},
