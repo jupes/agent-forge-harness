@@ -16,6 +16,10 @@ session state machine, over the existing owned interactive supervisor. The codec
 grants no launch, scope, storage, permission or retry authority. The runtime
 verifies the exact native version/command/directory and accepted prompt; its
 trusted caller owns original UUIDs, current scope, private journal and decisions.
+Task and ACP share `gemini-native.ts` for the existing read-only version/help
+probes, physical path identity and filtered native environment. Task retains its
+separate serializer and one-way result parser; ACP cannot inherit Task completion
+or use its output as a bidirectional permission protocol.
 
 ## Pinned primary evidence
 
