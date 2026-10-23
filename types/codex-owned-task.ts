@@ -1,4 +1,10 @@
 import type {
+  CodexChatOwnedMetadata,
+  CodexChatOwnedRecord,
+  CodexChatStartReceipt,
+  CodexChatStartRequest,
+} from "./codex-owned-chat";
+import type {
   CodexExecUsage,
   CodexTaskTextAttachment,
   SerializedCodexTask,
@@ -30,10 +36,12 @@ export interface CodexTaskStartRequest
 /** The original untagged Claude request remains unchanged for saved UUID/hash compatibility. */
 export type OwnedSessionStartRequest =
   | SessionStartRequest
-  | CodexTaskStartRequest;
+  | CodexTaskStartRequest
+  | CodexChatStartRequest;
 export type OwnedSessionStartInput =
   | Omit<SessionStartRequest, "requestId">
-  | Omit<CodexTaskStartRequest, "requestId">;
+  | Omit<CodexTaskStartRequest, "requestId">
+  | Omit<CodexChatStartRequest, "requestId">;
 
 export interface CodexOwnedSessionMetadata
   extends Omit<OwnedSessionMetadata, "provider" | "mode" | "requestedEffort"> {
@@ -46,17 +54,20 @@ export interface CodexOwnedSessionRecord
     Omit<OwnedSessionRecord, keyof OwnedSessionMetadata> {}
 export type OwnedCodingSessionRecord =
   | OwnedSessionRecord
-  | CodexOwnedSessionRecord;
+  | CodexOwnedSessionRecord
+  | CodexChatOwnedRecord;
 export type OwnedCodingSessionMetadata =
   | OwnedSessionMetadata
-  | CodexOwnedSessionMetadata;
+  | CodexOwnedSessionMetadata
+  | CodexChatOwnedMetadata;
 export interface CodexTaskStartReceipt {
   session: CodexOwnedSessionRecord;
   receipt: ConversationReceipt;
 }
 export type OwnedCodingSessionStartReceipt =
   | SessionStartReceipt
-  | CodexTaskStartReceipt;
+  | CodexTaskStartReceipt
+  | CodexChatStartReceipt;
 export interface CodexTaskPreviewReceipt {
   provider: "codex";
   projectId: string;

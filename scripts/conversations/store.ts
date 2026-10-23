@@ -449,6 +449,14 @@ export function createConversationStore(
           400,
           "The private Codex Task does not belong to this owned session.",
         );
+      if (
+        request.codexChat &&
+        (!address || request.codexChat.launch.context?.projectId !== projectId)
+      )
+        throw new ConversationError(
+          400,
+          "The private Codex Chat does not belong to this owned session.",
+        );
       const hash = createHash("sha256")
         .update(
           JSON.stringify({
@@ -457,6 +465,7 @@ export function createConversationStore(
             ...(request.brief ? { brief: request.brief } : {}),
             ...(request.session ? { session: request.session } : {}),
             ...(request.codexTask ? { codexTask: request.codexTask } : {}),
+            ...(request.codexChat ? { codexChat: request.codexChat } : {}),
           }),
         )
         .digest("hex");
@@ -529,6 +538,7 @@ export function createConversationStore(
               ...(request.brief ? { brief: request.brief } : {}),
               ...(request.session ? { session: request.session } : {}),
               ...(request.codexTask ? { codexTask: request.codexTask } : {}),
+              ...(request.codexChat ? { codexChat: request.codexChat } : {}),
             },
           });
           save(state);

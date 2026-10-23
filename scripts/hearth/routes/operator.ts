@@ -28,6 +28,7 @@ import { latestEventId, queryEvents } from "../../ledger/query";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
+import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import {
   type ActionRoute,
@@ -86,6 +87,7 @@ export interface OperatorDeps extends ReadDeps {
   conversationTransport?: ConversationTransport | undefined;
   sessionRuntime: SessionRuntime;
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
+  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
   keeperRuntime?: KeeperRuntime | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
@@ -397,6 +399,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSnapshot,
     deps.sessionRuntime,
     deps.codexTaskRuntime,
+    deps.codexChatRuntime,
   );
   const sessionWorktrees = createSessionWorktreeRoutes(
     deps.projectHome,
@@ -459,6 +462,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     proposals.read,
     ownedSessions.list,
     ownedSessions.read,
+    ownedSessions.approvals,
     sessionWorktrees.read,
   ];
 
@@ -508,6 +512,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,
+      ownedSessions.decide,
       sessionWorktrees.create,
       ...trackerWrites,
       ...queueWrites,

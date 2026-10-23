@@ -52,6 +52,7 @@ import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";
+import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
@@ -171,6 +172,7 @@ export interface OperatorApiOverrides {
   sessionRuntime?: SessionRuntime;
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>;
+  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime>;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
@@ -403,6 +405,20 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         ...(options.api?.configHome
           ? { configHome: options.api.configHome }
           : {}),
+        operatorToken: expectedToken,
+      }),
+    codexChatRuntime:
+      options.api?.codexChatRuntime ??
+      createCodexChatRuntime({
+        root,
+        home,
+        ...(options.codexSyncCommand
+          ? { syncCommand: options.codexSyncCommand }
+          : {}),
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        environment: options.environment ?? process.env,
         operatorToken: expectedToken,
       }),
     sessionRuntime:

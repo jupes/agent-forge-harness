@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type {
+  CodexChatOwnedMetadata,
+  CodexChatOwnedRecord,
+} from "../../types/codex-owned-chat";
+import type {
   CodexOwnedSessionMetadata,
   CodexOwnedSessionRecord,
 } from "../../types/codex-owned-task";
@@ -35,3 +39,9 @@ export const codexOwnedSessionSchema = codexOwnedMetadataSchema
     createdAt: z.iso.datetime(),
   })
   .strict() satisfies z.ZodType<CodexOwnedSessionRecord>;
+export const codexChatOwnedMetadataSchema = codexOwnedMetadataSchema
+  .extend({ mode: z.literal("chat") })
+  .strict() satisfies z.ZodType<CodexChatOwnedMetadata>;
+export const codexChatOwnedSessionSchema = codexOwnedSessionSchema
+  .extend({ mode: z.literal("chat") })
+  .strict() satisfies z.ZodType<CodexChatOwnedRecord>;

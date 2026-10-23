@@ -5,6 +5,7 @@ import { createConversationStore } from "../../conversations/store";
 import type { ConversationUpdate } from "../../conversations/transport";
 import type { AppendResult } from "../../ledger/append";
 import { serializeClaudeLaunch } from "../../sessions/claude-launch";
+import { serializeCodexChat } from "../../sessions/codex-app-server-protocol";
 import { serializeCodexTask } from "../../sessions/codex-task";
 
 /** Private transcript projection. No body or provider error is accepted by this ledger seam. */
@@ -66,15 +67,20 @@ export function createOwnedSessionLedger(
         frame.turnId === update.requestId && frame.event.kind === "process",
     );
     if (turn.phase === "running" && user?.kind === "user" && spawned) {
-      const prompt = user.codexTask
-        ? serializeCodexTask(user.codexTask.launch, user.codexTask.capabilities)
-            .stdin
-        : user.session
-          ? serializeClaudeLaunch(
-              user.session.launch,
-              user.session.capabilities,
+      const prompt = user.codexChat
+        ? serializeCodexChat(user.codexChat.launch, user.codexChat.capabilities)
+            .input.text
+        : user.codexTask
+          ? serializeCodexTask(
+              user.codexTask.launch,
+              user.codexTask.capabilities,
             ).stdin
-          : user.text;
+          : user.session
+            ? serializeClaudeLaunch(
+                user.session.launch,
+                user.session.capabilities,
+              ).stdin
+            : user.text;
       if (state.turns[0]?.requestId === update.requestId)
         emit(`${session.id}:start`, {
           ...base,

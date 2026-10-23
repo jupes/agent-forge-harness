@@ -1,3 +1,4 @@
+import type { CodexChatDecisionRequest } from "../../types/codex-owned-chat";
 import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
 import type { ConversationObject } from "../../types/conversation";
 import type { OwnedSessionMetadata } from "../../types/owned-session";
@@ -8,6 +9,8 @@ import type { ConversationUpdate } from "../conversations/transport";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createOwnedSessionService, type SessionRuntime } from "./admission";
+import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
+import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { createCodexOwnedTaskService } from "./codex-owned-admission";
 import { parseOwnedSessionStart } from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
@@ -26,12 +29,27 @@ export const unavailableCodexTaskRuntime: ReturnType<
     throw new ConversationError(503, "The Codex Task runtime is unavailable.");
   },
 };
+export const unavailableCodexChatRuntime: ReturnType<
+  typeof createCodexChatRuntime
+> = {
+  async check() {
+    throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
+  },
+  async prepare() {
+    throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
+  },
+  async run() {
+    throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
+  },
+};
 /** Routing only. Neither a smith name nor a provider fallback can select an execution branch. */
 export function createOwnedCodingSessionService(options: {
   root: string;
   home: string;
   runtime: SessionRuntime;
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
+  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
+  onApprovalChange?(sessionId: string): void;
   validateScope(
     projectId: string,
     metadata: Pick<
@@ -52,13 +70,25 @@ export function createOwnedCodingSessionService(options: {
     runtime: options.codexTaskRuntime ?? unavailableCodexTaskRuntime,
   });
   const registry = createSessionRegistry(options.home);
-  const selected = (projectId: string, sessionId: string) =>
-    registry.lookup(projectId, sessionId).provider === "codex" ? codex : claude;
+  const chat = createCodexOwnedChatService({
+    ...options,
+    runtime: options.codexChatRuntime ?? unavailableCodexChatRuntime,
+  });
+  const selected = (projectId: string, sessionId: string) => {
+    const record = registry.lookup(projectId, sessionId);
+    return record.provider === "codex"
+      ? record.mode === "chat"
+        ? chat
+        : codex
+      : claude;
+  };
   return {
     start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
       return "provider" in request
-        ? codex.start(projectId, request)
+        ? request.launch.mode === "chat"
+          ? chat.start(projectId, request)
+          : codex.start(projectId, request)
         : claude.start(projectId, request);
     },
     send(projectId: string, sessionId: string, input: SessionMessage) {
@@ -77,6 +107,16 @@ export function createOwnedCodingSessionService(options: {
         .listAll(projectId)
         .filter((record) => workspaceKey(record.workspace) === workspace);
     },
+    approvals(projectId: string, sessionId: string, requestId?: string) {
+      return chat.approvals(projectId, sessionId, requestId);
+    },
+    decide(
+      projectId: string,
+      sessionId: string,
+      request: CodexChatDecisionRequest,
+    ) {
+      return chat.decide(projectId, sessionId, request);
+    },
     stop(projectId: string, sessionId: string, requestId: string) {
       return selected(projectId, sessionId).stop(
         projectId,
@@ -88,7 +128,7 @@ export function createOwnedCodingSessionService(options: {
       return selected(projectId, sessionId).settled(projectId, sessionId);
     },
     async close() {
-      await Promise.all([claude.close(), codex.close()]);
+      await Promise.all([claude.close(), codex.close(), chat.close()]);
     },
   };
 }
