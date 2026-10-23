@@ -5,6 +5,8 @@ import { writeFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { briefSnapshotSchema } from "../brief-protocol";
+import { keeperProposalMessageSchema } from "../proposal-protocol";
+import { KEEPER_RESULT_SCHEMA } from "../protocol";
 
 const args = process.argv.slice(2);
 const mode = process.env["KEEPER_FIXTURE_MODE"] ?? "normal";
@@ -152,6 +154,108 @@ if (args.includes("--version")) {
       name: "read_project",
       arguments: { kind: "beads" },
     });
+    if (mode === "proposals") {
+      const block = answer.content.find((item) => item.type === "text");
+      if (!block || block.type !== "text")
+        throw new Error("Missing scoped proposal fixture read");
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(block.text);
+      } catch {
+        throw new Error("Invalid scoped proposal fixture read");
+      }
+      if (!envelope || typeof envelope !== "object" || !("data" in envelope))
+        throw new Error("Missing project records");
+      const scoped = KEEPER_RESULT_SCHEMA.parse(envelope.data);
+      const beadId = scoped.records[0]?.id;
+      if (!beadId) throw new Error("No scoped proposal fixture bead");
+      reply = JSON.stringify(
+        keeperProposalMessageSchema.parse({
+          kind: "keeper.proposals.v1",
+          message:
+            "Seven suggestions from the scoped fixture read. Review before any change.",
+          proposals: [
+            {
+              title: "Approve scoped beads",
+              detail: "Only your checked beads will be approved.",
+              action: {
+                kind: "approve-beads",
+                beadIds: scoped.records.map((item) => item.id).slice(0, 2),
+              },
+            },
+            {
+              title: "Review a session",
+              detail: "The session composer will check availability.",
+              action: {
+                kind: "start-session",
+                provider: "claude",
+                smith: "fixture-smith",
+                beadId,
+                repository:
+                  scoped.scope.repositories[0] ?? scoped.scope.workspace,
+                worktree: "new",
+                prompt: "Implement the reviewed bead",
+              },
+            },
+            {
+              title: "Review a shift",
+              detail: "An attended review is required.",
+              action: {
+                kind: "start-shift",
+                durationMinutes: 15,
+                concurrency: 1,
+                beadLimit: 1,
+                spendLimitUsd: 1,
+              },
+            },
+            {
+              title: "Review council input",
+              detail: "Review this question first.",
+              action: {
+                kind: "send-to-council",
+                beadId,
+                profile: "architecture",
+                question: "Does this fit the settled contract?",
+              },
+            },
+            {
+              title: "Create a scoped follow-up",
+              detail: "Create one proposed child bead.",
+              action: {
+                kind: "create-beads",
+                beads: [
+                  {
+                    title: "Keeper fixture child",
+                    type: "task",
+                    priority: 2,
+                    parentId: beadId,
+                    description: "A reviewed browser fixture child.",
+                  },
+                ],
+              },
+            },
+            {
+              title: "Manage scoped work",
+              detail: "Pause after owner approval.",
+              action: {
+                kind: "manage-bead",
+                beadId,
+                operation: { kind: "pause" },
+              },
+            },
+            {
+              title: "Record a scoped decision",
+              detail: "Save reviewed design wording.",
+              action: {
+                kind: "record-decision",
+                beadId,
+                decision: "Use the shared project reader.",
+              },
+            },
+          ],
+        }),
+      );
+    }
     emit({
       type: "user",
       message: {

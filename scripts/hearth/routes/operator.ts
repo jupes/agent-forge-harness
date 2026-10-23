@@ -21,6 +21,7 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import {
@@ -41,6 +42,7 @@ import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
 import { createKeeperBriefPreparer } from "./keeper-briefs-source";
+import { keeperProposalRoutes } from "./keeper-proposals";
 import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
 import {
   beadsReads,
@@ -68,6 +70,7 @@ export interface OperatorDeps extends ReadDeps {
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
+  keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
   appendEvent(event: LedgerEventInput): AppendResult;
@@ -364,6 +367,12 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperAboutValidator(deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
   );
+  const proposals = keeperProposalRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+    deps.keeperOperatorPost,
+  );
   // In the order section 6 lists them.
   const reads: ReadRoute[] = [
     sessions,
@@ -384,6 +393,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    proposals.read,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -421,6 +431,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       preferences,
       conversations.send,
       conversations.refresh,
+      proposals.approve,
+      proposals.dismiss,
       conversations.stop,
       ...beadRoutes({
         workspace,
@@ -449,6 +461,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ],
     close: async () => {
       live.close();
+      await proposals.close();
       await conversations.close();
     },
   };

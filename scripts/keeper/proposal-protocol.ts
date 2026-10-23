@@ -5,6 +5,8 @@ import type {
   KeeperProposalExecution,
   KeeperProposalJournal,
   KeeperProposalMessage,
+  KeeperProposalPage,
+  KeeperProposalReceipt,
   KeeperProposalRecord,
 } from "../../types/keeper-proposal";
 
@@ -135,6 +137,18 @@ const count = z
   .nonnegative()
   .max(Number.MAX_SAFE_INTEGER - 1);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
+export const keeperProposalApprovalSchema = z
+  .object({
+    id: z.string().min(1).max(100),
+    sourceHash: hash,
+    requestId: z.string().uuid(),
+    expectedRevision: count,
+    draft: keeperProposalDraftSchema,
+  })
+  .strict();
+export const keeperProposalDismissalSchema = keeperProposalApprovalSchema
+  .omit({ draft: true })
+  .strict();
 export const keeperProposalSchema: z.ZodType<KeeperProposal> = z
   .object({
     id: z.string().max(100),
@@ -212,4 +226,64 @@ export const keeperProposalJournalSchema: z.ZodType<KeeperProposalJournal> = z
       new Set(value.records.map((record) => record.requestId)).size ===
         value.records.length &&
       value.records.every((record) => record.projectId === value.projectId),
+  );
+export const keeperProposalReceiptSchema: z.ZodType<KeeperProposalReceipt> = z
+  .object({
+    projectId: z.string().max(100),
+    revision: count,
+    record: keeperProposalRecordSchema,
+  })
+  .strict()
+  .refine((value) => value.record.projectId === value.projectId);
+export const keeperProposalPageSchema: z.ZodType<KeeperProposalPage> = z
+  .object({
+    projectId: z.string().max(100),
+    revision: count,
+    conversationRevision: count,
+    request: keeperProposalRecordSchema.nullable(),
+    asOf: z.iso.datetime(),
+    complete: z.boolean(),
+    problems: z.array(z.string().max(1000)).max(16),
+    proposals: z
+      .array(
+        z
+          .object({
+            proposal: keeperProposalSchema,
+            record: keeperProposalRecordSchema.nullable(),
+            available: z.boolean(),
+            destinationAvailable: z.boolean(),
+            reason: z.string().max(1000).nullable(),
+            activity: z
+              .object({
+                id: count.min(1),
+                at: z.iso.datetime(),
+                action: z.enum([
+                  "keeper.proposal.approve",
+                  "keeper.proposal.dismiss",
+                ]),
+                surface: z.string().min(1).max(40),
+                target: z.string().max(100),
+              })
+              .strict()
+              .nullable(),
+          })
+          .strict(),
+      )
+      .max(40),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      (!value.request || value.request.projectId === value.projectId) &&
+      value.proposals.every(
+        (card) =>
+          card.proposal.projectId === value.projectId &&
+          (!card.record ||
+            (card.record.id === card.proposal.id &&
+              card.record.projectId === value.projectId &&
+              card.record.sourceHash === card.proposal.sourceHash)) &&
+          (!card.activity ||
+            (card.activity.id === card.record?.auditEventId &&
+              card.activity.target === card.proposal.id)),
+      ),
   );

@@ -223,6 +223,17 @@ function run(): Printed {
             ? { description: write.description }
             : {}),
           ...(labels !== undefined ? { labels: [...labels].sort() } : {}),
+          ...(write.parent !== undefined
+            ? {
+                dependencies: [
+                  {
+                    issue_id: id,
+                    depends_on_id: write.parent,
+                    type: "parent-child",
+                  },
+                ],
+              }
+            : {}),
           created_at: now,
           updated_at: now,
         }),

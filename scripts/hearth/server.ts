@@ -32,6 +32,7 @@ import { loadDashboardServerEnvironment } from "../dashboard/server-environment"
 import { ownInterrupts } from "../executors/supervisor";
 import { isMain } from "../is-main";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
+import { createKeeperOperatorPost } from "../keeper/operator-post";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
@@ -324,6 +325,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   const table = operatorRoutes({
     projectHome: home,
+    keeperOperatorPost: createKeeperOperatorPost({
+      origin: () => {
+        const address = server.address();
+        if (!address || typeof address === "string")
+          throw new Error("The hearth is not listening.");
+        return `http://127.0.0.1:${address.port}`;
+      },
+      operatorToken: expectedToken,
+    }),
     conversationTransport:
       options.api?.conversationTransport ??
       createClaudeConversationTransport({

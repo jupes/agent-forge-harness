@@ -674,6 +674,7 @@ async function main(): Promise<void> {
           keeperConversationTested: true,
           keeperSelectionTested: true,
           keeperBriefTested: true,
+          keeperProposalsTested: true,
           observedSessionIneligibleTested: true,
           focusOutline,
           childrenStopped: true,
@@ -1003,6 +1004,15 @@ async function verifyKeeperConversation(socket: WebSocket): Promise<void> {
       socket,
       "!!document.querySelector('.af-keeper-welcome')",
       "The packaged Keeper did not load its empty standing conversation",
+    );
+    await waitForPage(
+      socket,
+      "document.querySelector('.af-proposals')?.getAttribute('aria-busy') === 'false' && document.querySelector('.af-proposals')?.textContent.includes('No verified action cards')",
+      "The packaged Keeper did not verify its protected empty proposal read",
+    );
+    await evaluate(
+      socket,
+      `(async()=>{const response=await fetch('/__agent-forge/projects/'+location.hash.split('/')[3]+'/keeper/proposals',{signal:AbortSignal.timeout(5000)});if(response.status!==403)throw Error('Proposal read exposed without operator token');})()`,
     );
     await evaluate(
       socket,

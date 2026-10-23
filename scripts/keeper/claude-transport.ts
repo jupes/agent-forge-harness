@@ -13,6 +13,7 @@ import {
   isClaudeSessionId,
   KEEPER_CLAUDE_TOOL,
 } from "./claude-stream";
+import { KEEPER_PROPOSAL_GUIDE } from "./proposal-guide";
 import { keeperReaderOrigin } from "./reader";
 
 interface Options {
@@ -222,7 +223,7 @@ export function createClaudeConversationTransport(
         "--disable-slash-commands",
         "--no-chrome",
         "--append-system-prompt",
-        INSTRUCTIONS,
+        `${INSTRUCTIONS}\n${KEEPER_PROPOSAL_GUIDE}`,
         ...(request.resume ? ["--resume", request.resume.sessionId] : []),
       ];
       const parser = createClaudeConversationParser({

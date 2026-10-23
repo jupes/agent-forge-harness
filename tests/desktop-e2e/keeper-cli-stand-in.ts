@@ -28,6 +28,7 @@ if (
     "brief",
     "brief-failed",
     "brief-malformed",
+    "proposals",
   ].includes(mode)
 )
   throw new Error("Unknown Keeper browser fixture mode.");

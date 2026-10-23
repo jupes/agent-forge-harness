@@ -2,17 +2,20 @@ import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Icon } from "../../../docs/js/ds/Icon";
+import { parseKeeperProposalMessage } from "../../../scripts/keeper/proposal-protocol";
 import type {
   ConversationEvent,
   ConversationObject,
   ConversationPage,
 } from "../../../types/conversation";
 import type { ProjectRecord } from "../../../types/projects";
+import { KeeperActionCards } from "./KeeperActionCards";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperContext, keeperTurns } from "./keeper-model";
+import type { KeeperProposalsClient } from "./keeper-proposals-client";
 import { desktopHref } from "./navigation";
 import "./keeper.css";
 import { keeperBriefs } from "../../../scripts/keeper/brief-model";
@@ -169,6 +172,7 @@ export function KeeperScope({
 export function KeeperConversation({
   project,
   client,
+  proposals,
   writesAllowed,
   compact = false,
   onNavigate,
@@ -177,6 +181,7 @@ export function KeeperConversation({
 }: {
   project: ProjectRecord;
   client: KeeperClient;
+  proposals?: KeeperProposalsClient;
   writesAllowed: boolean;
   compact?: boolean;
   onNavigate?: (() => void) | undefined;
@@ -448,7 +453,12 @@ export function KeeperConversation({
                       onNavigate={onNavigate}
                     />
                   ) : (
-                    <KeeperMarkdown text={row.reply} />
+                    <KeeperMarkdown
+                      text={
+                        parseKeeperProposalMessage(row.reply)?.message ??
+                        row.reply
+                      }
+                    />
                   )}
                   {row.reads.length > 0 && (
                     <ReadTraces
@@ -491,6 +501,14 @@ export function KeeperConversation({
               )}
           </div>
         ))}
+        {proposals && (
+          <KeeperActionCards
+            projectId={project.id}
+            client={proposals}
+            writesAllowed={writesAllowed}
+            onNavigate={onNavigate}
+          />
+        )}
       </div>
       {away && (
         <Button class="af-keeper-jump" onClick={jump}>

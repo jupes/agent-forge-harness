@@ -260,3 +260,36 @@ checkout-only observations, sessions are ledger observations, and bounded or
 unavailable evidence remains explicit. Follow-up quotes the selected brief and
 time into the existing draft and starts nothing. There is no approved scheduling
 producer, so this version introduces no timer or unattended paid generation.
+
+## Keeper proposals and explicit review
+
+Completed, identity-confirmed ordinary replies may contain one strict
+`keeper.proposals.v1` message with at most seven inert drafts, capped at 24 KB.
+The server derives each source id and reply hash from the private transcript.
+Partials, examples embedded in prose, brief replies and model-supplied result or
+approval fields never become action cards. The provider still receives only
+the sealed `read_project` tool; no operator token or mutation tool is added.
+
+Protected `GET /projects/:id/keeper/proposals` shows up to forty recent cards,
+bounded at 128 KB. Its optional request UUID reconciles an original review even
+when the source card falls outside that window. The app-root client shares local
+drafts, pending requests and confirmed receipts between full Keeper and drawer.
+It follows existing private conversation updates and the shared ledger stream;
+there is no extra stream, polling loop or automatic business retry.
+
+Approve and Dismiss are ordinary audited action rows. Owner-only private
+`conversations/keeper-<project-id>-proposals.json` retains reviewed arguments,
+request UUID/hash, the actual audit event id and result under a lease. Approval
+is persisted before dispatch. Exact retries observe the original attempt;
+changed attempts or a second review of the same card are refused. Interrupted
+effects remain outcome unknown and are never replayed on read or restart.
+Ledger rows contain metadata, never reviewed prose or decision bodies.
+
+The fixed server dispatch map reuses the existing operator routes for checked
+queue approvals, child creation then queue proposal, pause/resume/reassign, and
+`design:` decision comments. Each step rechecks current project membership and
+legal queue capability. Partial or unverifiable responses stop later steps and
+retain links to affected objects. The provider cannot select routes or headers.
+Activity opens verified metadata from the original audit row. Session, attended
+shift and council cards expose review fields with a concrete unavailable reason
+until their destination integration beads land; they never report success.

@@ -18,6 +18,7 @@ import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
 import { sessionRows } from "./sessions-model";
 import { useKeeper } from "./use-keeper";
+import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
@@ -36,6 +37,11 @@ export function DesktopApp(): JSX.Element {
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
   const keeper = useKeeper(project?.id ?? null, writesAllowed);
+  const proposals = useKeeperProposals(
+    project?.id ?? null,
+    writesAllowed,
+    keeper,
+  );
   const [keeperOpen, setKeeperOpen] = useState(false);
   const keeperOpener = useRef<HTMLElement>(null);
   const openKeeper = () => {
@@ -221,6 +227,7 @@ export function DesktopApp(): JSX.Element {
             key={project.id}
             project={project}
             client={keeper}
+            proposals={proposals}
             writesAllowed={writesAllowed}
             onScope={() => setInspectorOpen(true)}
             active={!keeperOpen}
@@ -288,6 +295,7 @@ export function DesktopApp(): JSX.Element {
               key={project.id}
               project={project}
               client={keeper}
+              proposals={proposals}
               writesAllowed={writesAllowed}
               compact
               active={keeperOpen}

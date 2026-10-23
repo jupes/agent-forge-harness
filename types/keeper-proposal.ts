@@ -89,3 +89,28 @@ export interface KeeperProposalExecution {
   message: string;
   objects: import("./conversation").ConversationObject[];
 }
+export interface KeeperProposalView {
+  proposal: KeeperProposal;
+  record: KeeperProposalRecord | null;
+  available: boolean;
+  destinationAvailable: boolean;
+  reason: string | null;
+  activity: KeeperProposalActivity | null;
+}
+export interface KeeperProposalActivity {
+  id: number;
+  at: string;
+  action: string;
+  surface: string;
+  target: string;
+}
+export interface KeeperProposalPage {
+  projectId: string;
+  revision: number;
+  conversationRevision: number;
+  request: KeeperProposalRecord | null;
+  asOf: string;
+  proposals: KeeperProposalView[];
+  complete: boolean;
+  problems: string[];
+}

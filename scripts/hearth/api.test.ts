@@ -24,6 +24,7 @@ import type { CommandResult, CommandRunner } from "../council/pr-source";
 import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
+import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
@@ -46,6 +47,11 @@ import {
 } from "./paths";
 import { desktopControlRoutes } from "./routes/desktop-control";
 import type { BdResult } from "./routes/dev-api";
+import {
+  FIXTURE_KEEPER_DECISION,
+  FIXTURE_KEEPER_PROPOSAL_SOURCE,
+  seedKeeperProposalSource,
+} from "./routes/keeper-proposal-fixture";
 import {
   startTestHearth,
   type TestHearth,
@@ -232,6 +238,8 @@ interface ActionFixture {
    * so a row that starts recording something else fails the suite.
    */
   outcome?: Array<Pick<LedgerEvent, "kind" | "payload">>;
+  /** Additional existing operator rows intentionally reached through a reviewed dispatch. */
+  effects?: string[];
   /** What the valid request needs to exist first. */
   prepare?(h: TestHearth): Promise<void>;
   /** The effect itself, not its status: what the valid request must have changed. */
@@ -423,8 +431,84 @@ function queueMove(
   };
 }
 
+function keeperProposalFixture(dismiss: boolean): ActionFixture {
+  const suffix = dismiss ? "dismiss" : "approve",
+    proposalId = `proposal-${FIXTURE_KEEPER_PROPOSAL_SOURCE}-${dismiss ? 1 : 0}`;
+  const valid: ActionFixture["valid"] = {
+    path: `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${suffix}`,
+    body: {},
+    status: 200,
+    target: proposalId,
+  };
+  const text = `design: ${FIXTURE_KEEPER_DECISION}`;
+  return {
+    valid,
+    invalid: {
+      path: valid.path,
+      body: {
+        id: proposalId,
+        sourceHash: "a".repeat(64),
+        requestId: "invalid",
+        expectedRevision: 0,
+      },
+    },
+    prepare: async (h) => {
+      const sources = await seedKeeperProposalSource(h),
+        source = sources[dismiss ? 1 : 0];
+      if (!source) throw new Error("Missing proposal fixture source");
+      valid.body = {
+        id: source.id,
+        sourceHash: source.sourceHash,
+        requestId: `8b77d65d-18f9-4a15-ab82-8f48dfab6b0${dismiss ? 2 : 1}`,
+        expectedRevision: (
+          await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID)
+        ).revision,
+        ...(dismiss ? {} : { draft: source.draft }),
+      };
+    },
+    effects: dismiss ? [] : ["POST /beads/:id/comment"],
+    outcome: dismiss
+      ? []
+      : [
+          {
+            kind: "operator.action",
+            payload: {
+              action: "bead.comment",
+              surface: "api",
+              target: "alpha-epic",
+            },
+          },
+          {
+            kind: "bead.transitioned",
+            payload: {
+              action: "comment",
+              hash: hashText(text),
+              length: text.length,
+            },
+          },
+        ],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        projectId: FIXTURE_PROJECT_ID,
+        record: {
+          id: proposalId,
+          phase: dismiss ? "dismissed" : "done",
+          pending: false,
+        },
+      });
+      expect(
+        (
+          await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID)
+        ).records.some((record) => record.id === proposalId),
+      ).toBe(true);
+    },
+  };
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
+  "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
   "POST /projects/:id/keeper/briefs": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
@@ -991,6 +1075,7 @@ const READS: Record<string, string> = {
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
   "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+  "GET /projects/:id/keeper/proposals": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`,
   "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",
@@ -1155,7 +1240,13 @@ describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
     for (const row of actionRows(h)) {
-      const { valid, prepare, happened, outcome = [] } = fixture(row);
+      const {
+        valid,
+        prepare,
+        happened,
+        outcome = [],
+        effects = [],
+      } = fixture(row);
       await prepare?.(h);
       const before = snapshot(h);
       const seen = probes.length;
@@ -1188,7 +1279,7 @@ describe("every action row (iterating the table)", () => {
 
       // The effect ran once, and that row was already stored when it started.
       const calls = probes.slice(seen);
-      expect(calls.map((call) => call.row)).toEqual([key(row)]);
+      expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
       expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
       await happened(h, body.data);
