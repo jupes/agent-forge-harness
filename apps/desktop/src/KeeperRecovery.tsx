@@ -58,14 +58,16 @@ export function KeeperRecovery({
     >
       <div class="af-keeper-recovery-heading">
         <KeeperReadinessLabel readiness={selected?.readiness} />
-        <Button
+        <button
+          type="button"
+          class="af-btn af-btn-secondary"
+          aria-disabled={view.loading}
           onClick={() => {
-            void recovery.read(projectId);
+            if (!view.loading) void recovery.read(projectId);
           }}
-          disabled={view.loading}
         >
           Recheck readiness
-        </Button>
+        </button>
       </div>
       <p role="status">
         {view.loading && !page
@@ -84,14 +86,16 @@ export function KeeperRecovery({
       {view.notice && <p role="status">{view.notice}</p>}
       {view.pending && (
         <div class="af-keeper-recovery-actions">
-          <Button
-            disabled={view.loading}
+          <button
+            type="button"
+            class="af-btn af-btn-secondary"
+            aria-disabled={view.loading}
             onClick={() => {
-              void recovery.read(projectId);
+              if (!view.loading) void recovery.read(projectId);
             }}
           >
             Check original Keeper change
-          </Button>
+          </button>
           <Button
             disabled={!writesAllowed || view.posting}
             onClick={() => {

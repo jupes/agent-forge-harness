@@ -177,7 +177,7 @@ test("Start fresh retains exactly the reviewed summary and old history, then sta
   await expect(page.locator(".af-keeper-context")).toBeVisible();
   await page.getByRole("button", { name: "Review Start fresh" }).click();
   const summary =
-    "Operator-reviewed summary: keep the agreed scope. <img src=x onerror=alert(1)>";
+    "  Operator-reviewed summary: keep the agreed scope. <img src=x onerror=alert(1)>\n";
   await page
     .getByRole("textbox", {
       name: "Retained summary (review before continuing)",
@@ -216,6 +216,55 @@ test("Start fresh retains exactly the reviewed summary and old history, then sta
   expect(record().argv).toContain("--resume");
   expect(record().input.message).toBe("Next turn");
   expect(state().frames.slice(0, before.frames.length)).toEqual(before.frames);
+});
+
+test("rechecking readiness keeps keyboard focus and prevents duplicate reads while the answer is held", async ({
+  page,
+}) => {
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  const recheck = page.getByRole("button", {
+    name: "Recheck readiness",
+    exact: true,
+  });
+  await expect(recheck).toBeEnabled();
+  let checks = 0,
+    release: (() => void) | undefined,
+    began: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    began = resolve;
+  });
+  await page.route(
+    "**/__agent-forge/projects/*/keeper/recovery*",
+    async (route) => {
+      checks++;
+      began?.();
+      await held;
+      const response = await forwarded(route);
+      await route.fulfill({ response });
+    },
+  );
+  try {
+    await recheck.focus();
+    await page.keyboard.press("Enter");
+    await started;
+    await expect(recheck).toBeFocused();
+    await expect(recheck).toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    expect(checks).toBe(1);
+    release?.();
+    await expect(recheck).toHaveAttribute("aria-disabled", "false");
+    await expect(recheck).toBeFocused();
+    expect(
+      await recheck.evaluate((node) => getComputedStyle(node).outlineWidth),
+    ).toBe("2px");
+  } finally {
+    release?.();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 });
 
 test("exhaustion, missing Keeper adapter and unavailable reporting have distinct truthful copy and actions", async ({
