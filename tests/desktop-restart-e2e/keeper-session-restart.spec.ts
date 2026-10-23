@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { KEEPER_SESSION_IDENTITIES } from "../../apps/desktop/src/keeper-session-identities";
 import { OPERATOR_HEADER, SESSION_ROUTE } from "../../scripts/hearth/paths";
 import { keeperSessionStartRequestSchema } from "../../scripts/keeper/session-start-protocol";
 import type { KeeperSessionStartRequest } from "../../types/keeper-session-start";
@@ -34,7 +35,7 @@ async function pid(page: Page) {
   });
 }
 
-test("a lost reviewed Start recovers its full original after an actual owned hearth restart and explicitly retries one fake provider", async ({
+test("a held pre-admission Start survives reload404, then recovers its late original after an actual owned hearth restart and explicitly retries one fake provider", async ({
   page,
 }) => {
   test.setTimeout(90000);
@@ -116,6 +117,11 @@ test("a lost reviewed Start recovers its full original after an actual owned hea
   ).toBeEnabled();
   const originalPid = await pid(page),
     sent: KeeperSessionStartRequest[] = [];
+  let deliver = () => {},
+    delivered = false;
+  const delivery = new Promise<void>((resolve) => {
+    deliver = resolve;
+  });
   writeFileSync(
     join(HEARTH_HOME, "restart-capability-mode.json"),
     JSON.stringify("refuse-recorded-intent"),
@@ -128,6 +134,7 @@ test("a lost reviewed Start recovers its full original after an actual owned hea
     sent.push(
       keeperSessionStartRequestSchema.parse(route.request().postDataJSON()),
     );
+    if (sent.length === 1) await delivery;
     const response = await route.fetch({
       headers: {
         ...(await route.request().allHeaders()),
@@ -135,101 +142,152 @@ test("a lost reviewed Start recovers its full original after an actual owned hea
         "Sec-Fetch-Site": "same-origin",
       },
     });
-    if (sent.length === 1) await route.abort("connectionfailed");
-    else await route.fulfill({ response });
+    if (sent.length === 1) {
+      delivered = true;
+      // The observer reloaded while this exact original request was held.
+      await route.abort("connectionfailed").catch(() => {});
+    } else await route.fulfill({ response });
   });
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(
-    dialog.getByRole("button", { name: "Retry original Start", exact: true }),
-  ).toBeEnabled();
-  expect(sent).toHaveLength(1);
-  expect(lines("restart-capability-refusals.jsonl")).toBeGreaterThan(0);
-  expect(lines("coding-fixture-starts.jsonl")).toBe(0);
-  const original = sent[0];
-  if (!original) throw new Error("Missing actual reviewed request.");
-  expect(original.start.launch.prompt).toBe(text);
-  expect(original.start.launch.attachments).toHaveLength(2);
-  expect(original.start.launch).toMatchObject({
-    mode: "task",
-    model: "claude-fixture-reviewed",
-    permissionMode: "plan",
-    maxBudgetUsd: 1.25,
-    fallbackModels: ["haiku"],
-  });
-  const token = await pageToken(page);
-  const restart = await page.evaluate(
-    async ({ token, header }) => {
-      const reply = await fetch("/__agent-forge/desktop/restart", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", [header]: token },
-        body: "{}",
-      });
-      const value: unknown = await reply.json();
-      if (
-        !reply.ok ||
-        !value ||
-        typeof value !== "object" ||
-        !("data" in value) ||
-        !value.data ||
-        typeof value.data !== "object" ||
-        !("url" in value.data) ||
-        typeof value.data.url !== "string"
-      )
-        throw new Error("The actual owned restart did not return a launch.");
-      return value.data.url;
-    },
-    { token, header: OPERATOR_HEADER },
-  );
-  expect(await pid(page)).not.toBe(originalPid);
-  expect(lines("coding-fixture-starts.jsonl")).toBe(0);
-  writeFileSync(
-    join(HEARTH_HOME, "restart-capability-mode.json"),
-    JSON.stringify("normal"),
-  );
-  const exchanged = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === SESSION_ROUTE,
-  );
-  await page.goto(restart);
-  expect((await exchanged).status()).toBe(200);
-  await page.goto(`/index.html#/desktop/project/${alpha.id}/keeper`);
-  await card
-    .getByRole("button", { name: "Review original Start", exact: true })
-    .click();
-  await expect(prompt).toHaveValue(text);
-  await expect(prompt).not.toBeEditable();
-  await expect(
-    dialog.getByRole("button", { name: "Retry original Start", exact: true }),
-  ).toBeEnabled();
-  expect(sent).toHaveLength(1);
-  expect(lines("coding-fixture-starts.jsonl")).toBe(0);
-  await dialog
-    .getByRole("button", { name: "Retry original Start", exact: true })
-    .click();
-  await expect(page).toHaveURL(
-    /\/sessions\?selectionKind=session&selectionId=session-/,
-  );
-  await expect(
-    page.getByRole("region", { name: "Session conversation", exact: true }),
-  ).toContainText("Coding reply 🌱");
-  expect(sent).toHaveLength(2);
-  expect(sent[1]).toEqual(sent[0]);
-  expect(lines("coding-fixture-starts.jsonl")).toBe(1);
-  const recording = JSON.parse(
-    readFileSync(join(HEARTH_HOME, "coding-fixture-record.json"), "utf8"),
-  );
-  expect(recording.cwd.replaceAll("\\", "/").toLowerCase()).toBe(
-    ROOT.replaceAll("\\", "/").toLowerCase(),
-  );
-  expect(recording.argv).toContain("--json-schema");
-  expect(recording.argv).toContain("claude-fixture-reviewed");
-  expect(recording.stdin).toContain("Private attachment");
-  expect(recording.stdin).toContain("iVBORw0KGgo=");
-  expect(recording.stdin).toContain(text.replaceAll("\n", "\\n"));
-  await page.reload();
-  await expect(
-    page.getByRole("region", { name: "Session conversation", exact: true }),
-  ).toContainText("Coding reply 🌱");
-  expect(lines("coding-fixture-starts.jsonl")).toBe(1);
+  try {
+    await dialog.getByRole("button", { name: "Start", exact: true }).click();
+    await expect.poll(() => sent.length).toBe(1);
+    const stored = await page.evaluate(
+      (key) => localStorage.getItem(key),
+      KEEPER_SESSION_IDENTITIES,
+    );
+    expect(stored).toContain(sent[0]?.start.requestId ?? "missing");
+    expect(stored).not.toContain(text);
+    expect(stored).not.toContain("private.txt");
+    expect(stored).not.toContain("iVBORw0KGgo=");
+    expect(lines("coding-fixture-starts.jsonl")).toBe(0);
+    const proposalFile = join(
+      HEARTH_HOME,
+      "conversations",
+      `keeper-${alpha.id}-proposals.json`,
+    );
+    const before: { sessionStarts?: unknown[] } = existsSync(proposalFile)
+      ? JSON.parse(readFileSync(proposalFile, "utf8"))
+      : {};
+    expect(before.sessionStarts ?? []).toHaveLength(0);
+    await page.reload();
+    await card
+      .getByRole("button", { name: "Review & start", exact: true })
+      .click();
+    await expect(prompt).not.toBeEditable();
+    await expect(
+      dialog.getByText(
+        /The known original Start is not available in this read/,
+      ),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: "Retry original Start", exact: true }),
+    ).toHaveCount(0);
+    expect(sent).toHaveLength(1);
+    expect(lines("coding-fixture-starts.jsonl")).toBe(0);
+    deliver();
+    await expect.poll(() => delivered).toBe(true);
+    await dialog
+      .getByRole("button", { name: "Check saved proposal Start", exact: true })
+      .click();
+    await expect(prompt).toHaveValue(text);
+    await expect(
+      dialog.getByRole("button", { name: "Retry original Start", exact: true }),
+    ).toBeEnabled();
+    expect(sent).toHaveLength(1);
+    expect(lines("restart-capability-refusals.jsonl")).toBeGreaterThan(0);
+    expect(lines("coding-fixture-starts.jsonl")).toBe(0);
+    const original = sent[0];
+    if (!original) throw new Error("Missing actual reviewed request.");
+    expect(original.start.launch.prompt).toBe(text);
+    expect(original.start.launch.attachments).toHaveLength(2);
+    expect(original.start.launch).toMatchObject({
+      mode: "task",
+      model: "claude-fixture-reviewed",
+      permissionMode: "plan",
+      maxBudgetUsd: 1.25,
+      fallbackModels: ["haiku"],
+    });
+    const token = await pageToken(page);
+    const restart = await page.evaluate(
+      async ({ token, header }) => {
+        const reply = await fetch("/__agent-forge/desktop/restart", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", [header]: token },
+          body: "{}",
+        });
+        const value: unknown = await reply.json();
+        if (
+          !reply.ok ||
+          !value ||
+          typeof value !== "object" ||
+          !("data" in value) ||
+          !value.data ||
+          typeof value.data !== "object" ||
+          !("url" in value.data) ||
+          typeof value.data.url !== "string"
+        )
+          throw new Error("The actual owned restart did not return a launch.");
+        return value.data.url;
+      },
+      { token, header: OPERATOR_HEADER },
+    );
+    expect(await pid(page)).not.toBe(originalPid);
+    expect(lines("coding-fixture-starts.jsonl")).toBe(0);
+    writeFileSync(
+      join(HEARTH_HOME, "restart-capability-mode.json"),
+      JSON.stringify("normal"),
+    );
+    const exchanged = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === SESSION_ROUTE,
+    );
+    await page.goto(restart);
+    expect((await exchanged).status()).toBe(200);
+    await page.goto(`/index.html#/desktop/project/${alpha.id}/keeper`);
+    await card
+      .getByRole("button", { name: "Review original Start", exact: true })
+      .click();
+    await expect(prompt).toHaveValue(text);
+    await expect(prompt).not.toBeEditable();
+    await expect(
+      dialog.getByRole("button", { name: "Retry original Start", exact: true }),
+    ).toBeEnabled();
+    expect(sent).toHaveLength(1);
+    expect(lines("coding-fixture-starts.jsonl")).toBe(0);
+    await dialog
+      .getByRole("button", { name: "Retry original Start", exact: true })
+      .click();
+    await expect(page).toHaveURL(
+      /\/sessions\?selectionKind=session&selectionId=session-/,
+    );
+    await expect(
+      page.getByRole("region", { name: "Session conversation", exact: true }),
+    ).toContainText("Coding reply 🌱");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(lines("coding-fixture-starts.jsonl")).toBe(1);
+    const recording = JSON.parse(
+      readFileSync(join(HEARTH_HOME, "coding-fixture-record.json"), "utf8"),
+    );
+    expect(recording.cwd.replaceAll("\\", "/").toLowerCase()).toBe(
+      ROOT.replaceAll("\\", "/").toLowerCase(),
+    );
+    expect(recording.argv).toContain("--json-schema");
+    expect(recording.argv).toContain("claude-fixture-reviewed");
+    expect(recording.stdin).toContain("Private attachment");
+    expect(recording.stdin).toContain("iVBORw0KGgo=");
+    expect(recording.stdin).toContain(text.replaceAll("\n", "\\n"));
+    await page.reload();
+    await expect(
+      page.getByRole("region", { name: "Session conversation", exact: true }),
+    ).toContainText("Coding reply 🌱");
+    expect(lines("coding-fixture-starts.jsonl")).toBe(1);
+  } finally {
+    deliver();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 });

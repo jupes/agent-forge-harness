@@ -23,6 +23,15 @@ Even a 404 cannot rule out an earlier request still reaching admission. After
 reload, a card's recorded request UUID also keeps a replacement Start locked until
 the full original can be recovered.
 
+Before any Start or retry is sent, a bounded browser journal reserves and reads
+back only its source-bound UUID metadata under an origin-wide Web Lock. It stores
+no prompt, attachment, launch options or input fingerprint. An existing identity
+from another window wins. Unavailable, corrupt or full storage refuses dispatch;
+uncertain identities are never evicted. If the app reloads before the server has
+recorded the original, its UUID remains held through a protected 404. The exact
+private input is unavailable until a later protected read recovers it; there is
+no replacement Start or automatic resend.
+
 The protected recovery receipt is checked against the source, original UUID and
 the SHA-256 of the complete canonical Start input. A registry reservation alone
 does not confirm admission. The owner adopts only a matching session plus original

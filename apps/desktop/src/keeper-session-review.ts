@@ -17,6 +17,7 @@ import type {
   SessionStartRequest,
 } from "../../../types/session-requests";
 import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
+import type { KeeperSessionIdentities } from "./keeper-session-identities";
 import {
   chooseSessionSmith,
   newSessionDraft,
@@ -132,6 +133,7 @@ export interface KeeperSessionReview {
 export function createKeeperSessionReviews(deps: {
   canWrite(): boolean;
   requestId(): string;
+  identities: KeeperSessionIdentities;
   read(
     projectId: string,
     proposalId: string,
@@ -164,6 +166,7 @@ export function createKeeperSessionReviews(deps: {
       !entry.loaded ||
       !entry.view.composer.initialized ||
       entry.view.loading ||
+      entry.view.starting ||
       entry.providerLocked ||
       !!entry.original;
   };
@@ -221,6 +224,12 @@ export function createKeeperSessionReviews(deps: {
     lock(entry);
     tell();
     try {
+      const held = deps.identities.read(entry.source);
+      if (held && entry.expectedRequestId && held !== entry.expectedRequestId)
+        throw Error(
+          "The recorded Start identities conflict. A replacement is locked.",
+        );
+      entry.expectedRequestId ??= held;
       const raw = await deps.read(
         entry.source.projectId,
         entry.source.id,
@@ -270,16 +279,32 @@ export function createKeeperSessionReviews(deps: {
     tell();
     let outcome: ActionOutcome;
     try {
+      const held = await deps.identities.reserve(
+        entry.source,
+        () => original.start.requestId,
+      );
+      if (held.requestId !== original.start.requestId)
+        throw Error(
+          "The saved Start identity conflicts with this original. No request was sent.",
+        );
+      if (disposed || !deps.canWrite()) {
+        entry.view.starting = false;
+        lock(entry);
+        tell();
+        return;
+      }
       outcome = await deps.post(
         entry.source.projectId,
         entry.source.id,
         structuredClone(original),
       );
-    } catch {
+    } catch (error) {
       outcome = {
         state: "unknown",
         message:
-          "The Start reply was lost. Check the original Start; retry uses the exact same input and identity.",
+          error instanceof Error
+            ? `${error.message} Check the original Start; its exact input and identity are kept.`
+            : "The Start reply was lost. Check the original Start; retry uses the exact same input and identity.",
       };
     }
     if (disposed) return;
@@ -360,6 +385,7 @@ export function createKeeperSessionReviews(deps: {
             !entry.loaded
           )
             return;
+          let reserving = false;
           try {
             if (
               canonicalSessionInput(input) !==
@@ -369,23 +395,47 @@ export function createKeeperSessionReviews(deps: {
             const parsed = keeperSessionStartRequestSchema.safeParse({
               sourceHash: entry.source.sourceHash,
               expectedRevision: entry.revision,
-              start: { ...input, requestId: deps.requestId() },
+              start: {
+                ...input,
+                // Validate the full body before reserving the real durable identity.
+                requestId: "00000000-0000-4000-8000-000000000000",
+              },
             });
             if (!parsed.success)
               throw new Error(
                 "Review a valid full session request before Start.",
               );
+            view.starting = true;
+            reserving = true;
+            lock(entry);
+            tell();
+            const held = await deps.identities.reserve(
+              entry.source,
+              deps.requestId,
+            );
+            entry.expectedRequestId = held.requestId;
+            if (!held.created) {
+              entry.loaded = false;
+              view.notice =
+                "An original Start identity is already recorded. Check it to recover the exact input before proceeding. A replacement Start is locked.";
+              return;
+            }
+            parsed.data.start.requestId = held.requestId;
             entry.original = structuredClone(parsed.data);
-            entry.expectedRequestId = parsed.data.start.requestId;
             view.pendingStart = structuredClone(parsed.data.start);
             lock(entry);
           } catch (error) {
+            if (reserving) entry.loaded = false;
             view.notice =
               error instanceof Error
                 ? error.message
                 : "Review the session options.";
             tell();
             return;
+          } finally {
+            view.starting = false;
+            lock(entry);
+            tell();
           }
           await post(entry);
         },

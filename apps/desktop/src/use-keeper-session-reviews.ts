@@ -3,6 +3,10 @@ import { actionOutcome } from "../../../docs/js/action-outcome";
 import { readHearth } from "../../../docs/js/hearth-read";
 import { operatorPost, operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
+import {
+  createKeeperSessionIdentities,
+  KEEPER_SESSION_IDENTITIES,
+} from "./keeper-session-identities";
 import { createKeeperSessionReviews } from "./keeper-session-review";
 import type { SessionsClient } from "./session-client";
 
@@ -17,54 +21,80 @@ export function useKeeperSessionReviews(
   writes.current = writesAllowed;
   const [, paint] = useState(0),
     held = useRef<ReturnType<typeof createKeeperSessionReviews> | null>(null);
-  held.current ??= createKeeperSessionReviews({
-    canWrite: () => writes.current,
-    requestId: () => crypto.randomUUID(),
-    read: (projectId, proposalId, requestId) =>
-      readHearth(
-        `/__agent-forge${base(projectId, proposalId)}${requestId ? `?${new URLSearchParams({ requestId })}` : ""}`,
-        async (response) => {
-          const raw: unknown = await response.json();
-          if (
-            !raw ||
-            typeof raw !== "object" ||
-            !("ok" in raw) ||
-            !("data" in raw)
-          )
-            throw new Error(
-              "The protected proposal read could not be verified.",
-            );
-          if (response.status === 404 && raw.ok === false && raw.data === null)
-            return null;
-          if (!response.ok || raw.ok !== true)
-            throw new Error("The protected proposal Start could not be read.");
-          return raw.data;
+  if (!held.current) {
+    let storage: Storage | null = null;
+    try {
+      storage = window.localStorage;
+    } catch {
+      /* Refuse Start before sending. */
+    }
+    held.current = createKeeperSessionReviews({
+      canWrite: () => writes.current,
+      requestId: () => crypto.randomUUID(),
+      identities: createKeeperSessionIdentities({
+        storage,
+        withLock: async (work) => {
+          if (!navigator.locks)
+            throw Error("Shared Start identity lock is unavailable.");
+          return navigator.locks.request(
+            KEEPER_SESSION_IDENTITIES,
+            { signal: AbortSignal.timeout(30_000) },
+            work,
+          );
         },
-        { ...pageReads(), fetch: operatorRead },
-      ),
-    post: (projectId, proposalId, body) =>
-      actionOutcome(
-        () =>
-          operatorPost(`/__agent-forge${base(projectId, proposalId)}`, body),
-        "Check the original proposal Start before retrying. The exact reviewed input is kept.",
-      ),
-    createWorktree: (projectId, body) =>
-      actionOutcome(
-        () =>
-          operatorPost(
-            `/__agent-forge/projects/${encodeURIComponent(projectId)}/session-worktrees`,
-            body,
-          ),
-        "Check the original worktree request before retrying.",
-      ),
-    readWorktree: (projectId, requestId) =>
-      readOperatorRoute(
-        `/projects/${encodeURIComponent(projectId)}/session-worktrees/${encodeURIComponent(requestId)}`,
-        { ...pageReads(), fetch: operatorRead },
-      ),
-    adopt: (projectId, input, raw) =>
-      sessions.adoptStartReceipt(projectId, input, raw),
-  });
+      }),
+      read: (projectId, proposalId, requestId) =>
+        readHearth(
+          `/__agent-forge${base(projectId, proposalId)}${requestId ? `?${new URLSearchParams({ requestId })}` : ""}`,
+          async (response) => {
+            const raw: unknown = await response.json();
+            if (
+              !raw ||
+              typeof raw !== "object" ||
+              !("ok" in raw) ||
+              !("data" in raw)
+            )
+              throw new Error(
+                "The protected proposal read could not be verified.",
+              );
+            if (
+              response.status === 404 &&
+              raw.ok === false &&
+              raw.data === null
+            )
+              return null;
+            if (!response.ok || raw.ok !== true)
+              throw new Error(
+                "The protected proposal Start could not be read.",
+              );
+            return raw.data;
+          },
+          { ...pageReads(), fetch: operatorRead },
+        ),
+      post: (projectId, proposalId, body) =>
+        actionOutcome(
+          () =>
+            operatorPost(`/__agent-forge${base(projectId, proposalId)}`, body),
+          "Check the original proposal Start before retrying. The exact reviewed input is kept.",
+        ),
+      createWorktree: (projectId, body) =>
+        actionOutcome(
+          () =>
+            operatorPost(
+              `/__agent-forge/projects/${encodeURIComponent(projectId)}/session-worktrees`,
+              body,
+            ),
+          "Check the original worktree request before retrying.",
+        ),
+      readWorktree: (projectId, requestId) =>
+        readOperatorRoute(
+          `/projects/${encodeURIComponent(projectId)}/session-worktrees/${encodeURIComponent(requestId)}`,
+          { ...pageReads(), fetch: operatorRead },
+        ),
+      adopt: (projectId, input, raw) =>
+        sessions.adoptStartReceipt(projectId, input, raw),
+    });
+  }
   const client = held.current;
   useEffect(
     () => client.subscribe(() => paint((value) => value + 1)),

@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  createKeeperSessionIdentities,
+  KEEPER_SESSION_IDENTITIES,
+} from "../../apps/desktop/src/keeper-session-identities";
+import {
   createKeeperSessionReviews,
   prefillKeeperSession,
   reviewedStartHash,
@@ -14,6 +18,21 @@ import type {
 } from "../../types/keeper-session-start";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
+function identityFixture() {
+  const values = new Map<string, string>();
+  return {
+    values,
+    identities: createKeeperSessionIdentities({
+      storage: {
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => {
+          values.set(key, value);
+        },
+      },
+      withLock: async (work) => work(),
+    }),
+  };
+}
 const source: KeeperProposal = {
   id: "proposal-1a5832fa-7a21-403b-8184-44892f0d8d86-0",
   projectId,
@@ -191,6 +210,7 @@ test("reload restores the full saved envelope without dispatch, and a registry-o
     posts = 0,
     adoptions = 0;
   const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
     canWrite: () => true,
     requestId: () => {
       throw new Error("Reads must not mint identities");
@@ -238,6 +258,7 @@ test("a saved envelope with an altered prompt cannot borrow a matching registry 
   const raw = await savedStart(true);
   raw.original.start.launch.prompt = "Altered private body";
   const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
     canWrite: () => true,
     requestId: () => crypto.randomUUID(),
     read: async () => raw,
@@ -266,6 +287,7 @@ test("a recorded proposal request identity survives an absent recovery read afte
   const queries: Array<string | undefined> = [];
   const known = "b14cc7eb-3231-4930-a288-d411c5ee0426";
   const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
     canWrite: () => true,
     requestId: () => {
       minted++;
@@ -310,6 +332,7 @@ test("opening, editing and cancelling preserves a separate proposal draft withou
   let writes = 0,
     reads = 0;
   const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
     canWrite: () => true,
     requestId: () => "b14cc7eb-3231-4930-a288-d411c5ee0426",
     read: async () => {
@@ -354,6 +377,7 @@ test("opening, editing and cancelling preserves a separate proposal draft withou
 test("an uncertain reviewed Start keeps every original byte and UUID across edits, absent checks and explicit retries", async () => {
   const sent: KeeperSessionStartRequest[] = [];
   const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
     canWrite: () => true,
     requestId: () => "b14cc7eb-3231-4930-a288-d411c5ee0426",
     read: async () => null,
@@ -414,6 +438,7 @@ test("confirmed original admission wins over a delayed malformed POST and foreig
     adoptions = 0,
     posts = 0;
   const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
     canWrite: () => true,
     requestId: () => "b14cc7eb-3231-4930-a288-d411c5ee0426",
     read: async () => raw,
@@ -451,6 +476,7 @@ test("confirmed original admission wins over a delayed malformed POST and foreig
     projectId,
     sessionStartBody(review.view.composer),
   );
+  while (!finish) await Bun.sleep(1);
   raw = admitted;
   await review.owner.refresh(projectId);
   expect(review.view.lastStarted).toBe(admitted.session?.id ?? null);
@@ -468,5 +494,143 @@ test("confirmed original admission wins over a delayed malformed POST and foreig
   expect(review.view.composer.prompt).toBe(input.launch.prompt);
   await review.owner.retryStart("another-project");
   expect(posts).toBe(1);
+  client.dispose();
+});
+
+test("a reload before durable server admission keeps the pre-POST UUID through404 and recovers only the protected original", async () => {
+  const held = identityFixture(),
+    saved = await savedStart(false);
+  let raw: unknown = null,
+    posts = 0,
+    minted = 0;
+  const queries: Array<string | undefined> = [];
+  const make = () =>
+    createKeeperSessionReviews({
+      identities: held.identities,
+      canWrite: () => true,
+      requestId: () => {
+        minted++;
+        return saved.original.start.requestId;
+      },
+      read: async (_project, _proposal, requestId) => {
+        queries.push(requestId);
+        return raw;
+      },
+      post: async () => {
+        posts++;
+        return { state: "unknown", message: "Not yet recorded" };
+      },
+      createWorktree: async () => {
+        throw Error("No Git");
+      },
+      readWorktree: async () => null,
+      adopt: () => {
+        throw Error("Reservation is unconfirmed");
+      },
+    });
+  const one = make(),
+    review = one.get(source, 4);
+  await one.open(review);
+  review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  review.owner.editComposer(projectId, {
+    effort: "",
+    prompt: "Private pending input",
+    attachments: [{ kind: "text", name: "private.txt", text: "Private file" }],
+  });
+  await review.owner.start(projectId, sessionStartBody(review.view.composer));
+  expect(posts).toBe(1);
+  expect(held.values.get(KEEPER_SESSION_IDENTITIES)).not.toContain("Private");
+  one.dispose();
+  const two = make(),
+    reopened = two.get(source, 4);
+  await two.open(reopened);
+  reopened.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  expect(reopened.expectedRequestId).toBe(saved.original.start.requestId);
+  expect(reopened.view.inputLocked).toBe(true);
+  expect(reopened.view.notice).toContain("known original");
+  await reopened.owner.start(projectId, saved.original.start);
+  await reopened.owner.retryStart(projectId);
+  expect(posts).toBe(1);
+  expect(minted).toBe(1);
+  raw = saved;
+  await reopened.owner.refresh(projectId);
+  expect(reopened.original).toEqual(saved.original);
+  expect(reopened.view.composer.attachments).toHaveLength(2);
+  expect(reopened.view.pendingStart?.requestId).toBe(
+    saved.original.start.requestId,
+  );
+  expect(queries).toEqual([
+    undefined,
+    saved.original.start.requestId,
+    saved.original.start.requestId,
+  ]);
+  expect(posts).toBe(1);
+  two.dispose();
+});
+
+test("a storage failure after opening refuses dispatch and keeps the review held", async () => {
+  const held = identityFixture();
+  let posts = 0;
+  const client = createKeeperSessionReviews({
+    identities: held.identities,
+    canWrite: () => true,
+    requestId: () => crypto.randomUUID(),
+    read: async () => null,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+    createWorktree: async () => {
+      throw Error("No Git");
+    },
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  review.owner.editComposer(projectId, { effort: "" });
+  held.values.set(KEEPER_SESSION_IDENTITIES, "{");
+  await review.owner.start(projectId, sessionStartBody(review.view.composer));
+  expect(posts).toBe(0);
+  expect(review.view.inputLocked).toBe(true);
+  expect(review.view.notice).toContain("identity storage");
+  client.dispose();
+});
+
+test("another window's pre-POST identity wins after this window already opened an editable draft", async () => {
+  const held = identityFixture(),
+    known = "b14cc7eb-3231-4930-a288-d411c5ee0426";
+  let posts = 0,
+    minted = 0;
+  const client = createKeeperSessionReviews({
+    identities: held.identities,
+    canWrite: () => true,
+    requestId: () => {
+      minted++;
+      return crypto.randomUUID();
+    },
+    read: async () => null,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+    createWorktree: async () => {
+      throw Error("No Git");
+    },
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  review.owner.editComposer(projectId, { effort: "" });
+  await held.identities.reserve(source, () => known);
+  await review.owner.start(projectId, sessionStartBody(review.view.composer));
+  expect(posts).toBe(0);
+  expect(minted).toBe(0);
+  expect(review.expectedRequestId).toBe(known);
+  expect(review.original).toBeNull();
+  expect(review.view.inputLocked).toBe(true);
   client.dispose();
 });
