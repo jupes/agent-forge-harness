@@ -11,7 +11,10 @@ import {
 import { join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
-import { createCodexChatRuntime } from "./codex-chat-runtime";
+import {
+  type CodexChatCallbacks,
+  createCodexChatRuntime,
+} from "./codex-chat-runtime";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -281,6 +284,21 @@ for (const mode of [
   test(`native ${mode} cannot become successful private Chat completion`, async () => {
     const f = fixture(mode),
       events: CodexChatEvent[] = [];
+    let offered = 0;
+    // The owner has not answered when the conflicting native request arrives.
+    // Separate pipe writes may otherwise deliver an already authorized decline
+    // before the later conflict; future protocol input cannot undo that reply.
+    const waitingAuthority: CodexChatCallbacks = {
+      requestApproval: async (_approval, signal) => {
+        offered++;
+        return new Promise((_resolve, reject) => {
+          const abort = () =>
+            reject(Error("Conflicting native request stopped"));
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        });
+      },
+    };
     const snapshot = await f.runtime.prepare({
       smith: "codex-journeyman",
       launch: f.launch,
@@ -291,7 +309,7 @@ for (const mode of [
         events.push(event);
       },
       new AbortController().signal,
-      decline,
+      mode === "approval-conflict" ? waitingAuthority : decline,
     );
     expect(result.phase).not.toBe("completed");
     expect(result.reason).not.toContain("private-provider-error");
@@ -307,10 +325,15 @@ for (const mode of [
       expect(
         f.records().filter((row) => row.method === "turn/start"),
       ).toHaveLength(0);
-    if (mode === "approval-conflict")
+    if (mode === "approval-conflict") {
+      expect(offered).toBeLessThanOrEqual(1);
+      expect(events.some((event) => event.kind === "approval-decision")).toBe(
+        false,
+      );
       expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
         0,
       );
+    }
   });
 }
 

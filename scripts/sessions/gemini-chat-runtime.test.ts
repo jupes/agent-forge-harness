@@ -752,12 +752,20 @@ test.each([
       );
     };
     if (!during) retarget();
-    const pending = f.runtime.run(
-      { prepared, requestId: randomUUID(), resume: null },
-      async () => {},
-      new AbortController().signal,
-      noPermission,
-    );
+    let persisted = 0;
+    const pending = f.runtime
+      .run(
+        { prepared, requestId: randomUUID(), resume: null },
+        async () => {
+          persisted++;
+        },
+        new AbortController().signal,
+        noPermission,
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
     if (during) {
       const deadline = Date.now() + 3000;
       while (
@@ -768,8 +776,22 @@ test.each([
       expect(f.records().filter((row) => row.kind === "help")).toHaveLength(2);
       retarget();
     }
-    await expect(pending).rejects.toThrow("changed");
-    expect(f.records().filter((row) => row.kind === "start")).toEqual([]);
+    const refusal = await pending;
+    expect(refusal).toBeInstanceOf(Error);
+    // Both checks precede native Chat admission. A failing in-flight probe
+    // may refuse before the later canonical-scope check observes the change.
+    expect(refusal instanceof Error ? refusal.message : "").toMatch(
+      during
+        ? /^The (?:prepared Gemini Chat scope changed|Gemini read-only capability check failed)\. No Gemini Chat prompt was started\.$/
+        : /^The prepared Gemini Chat scope changed\. No Gemini Chat prompt was started\.$/,
+    );
+    expect(persisted).toBe(0);
+    expect(
+      f
+        .records()
+        .filter((row) => !["version", "help"].includes(String(row.kind))),
+    ).toEqual([]);
+    expect(methodCount(f, "session/prompt")).toBe(0);
     if (!during)
       expect(f.records().map((row) => row.kind)).toEqual(["version", "help"]);
   } finally {

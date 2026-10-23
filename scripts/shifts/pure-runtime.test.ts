@@ -58,7 +58,14 @@ test("packaged shift and executor implementations import without dispatch, sourc
       stderr: "pipe",
       timeout: 5000,
     });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(
+      result.exitCode,
+      JSON.stringify({
+        mode,
+        stdout: result.stdout.toString().slice(-4000),
+        stderr: result.stderr.toString().slice(-4000),
+      }),
+    ).toBe(0);
     expect(result.stdout.toString()).toBe(
       `${JSON.stringify({ ok: true, data: { imported: mode }, error: null })}\n`,
     );

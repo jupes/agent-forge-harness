@@ -66,6 +66,19 @@ session reading area. The supplied eleven HTML pages were inspected as multi-boa
 documents. No unseen Composer-Claude or dark Session-Codex board is claimed as
 verified design evidence.
 
+The native Chat follow-up verifies the unchanged initial header geometry before
+keyboard navigation intentionally scrolls that header. At 1100 by 700 with reduced
+motion, Session actions keeps its 2px focus indicator, Review native permissions
+focuses the existing inline controls, and Continue this Chat focuses the reply box
+without accepting another turn. Copy uses the exact saved serializer; only the next
+explicit Send resumes the confirmed native thread. Actual inert-provider journeys
+also verify interrupted updates, project isolation, Stop through reload, archived
+scope and native approval deadlines. A protected still-current offer is descriptive
+waiting even when a held original decision prevents a duplicate choice.
+
+Current captures: [session actions](screenshots/native-chat-actions.png) and
+[native permission state](screenshots/native-chat-permission-state.png).
+
 Focused units cover complete revision and scope/hash validation, oversized refusal,
 separate archive revision chains, before/after-save faults, cross-window reservation,
 unknown recovery, late replies and response bounds. Real-hearth browser journeys use

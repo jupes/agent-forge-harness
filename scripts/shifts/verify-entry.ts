@@ -77,12 +77,19 @@ export async function verifyProjectShiftEntry(
       },
     });
     const result = await child.done;
+    const diagnostic = JSON.stringify({
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      stopped: result.stopped,
+      stdout: stdout.slice(-4000),
+      stderr: result.stderr.slice(-4000),
+    });
     let envelope: unknown;
     try {
       envelope = JSON.parse(stdout);
     } catch {
       throw Error(
-        "Packaged shift entry returned no verified refusal envelope.",
+        `Packaged shift entry returned no verified refusal envelope: ${diagnostic}`,
       );
     }
     if (
@@ -98,7 +105,7 @@ export async function verifyProjectShiftEntry(
       existsSync(join(home, "shifts"))
     )
       throw Error(
-        "Packaged shift entry did not preserve its closed original-id boundary.",
+        `Packaged shift entry did not preserve its closed original-id boundary: ${diagnostic}`,
       );
     const original = registry.read(FIXTURE_PROJECT_ID, requestId),
       receipt = projectShiftReceiptSchema.safeParse(envelope.data);

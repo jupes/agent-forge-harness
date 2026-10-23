@@ -240,6 +240,17 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
     "data-session-state",
     "needs-permission",
   );
+  await expect
+    .poll(() =>
+      pane.locator("header").evaluate((header) => {
+        const heading = header.querySelector("h2");
+        if (!heading) return false;
+        const outer = header.getBoundingClientRect(),
+          inner = heading.getBoundingClientRect();
+        return inner.top >= outer.top && inner.bottom <= outer.bottom;
+      }),
+    )
+    .toBe(true);
   const actions = pane.getByRole("button", {
     name: "Session actions",
     exact: true,
@@ -275,6 +286,10 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   });
   await expect(review).toBeEnabled();
   await review.focus();
+  if (process.env.CODEX_CHAT_SHOTS)
+    await support.screenshot({
+      path: join(process.env.CODEX_CHAT_SHOTS, "native-chat-actions.png"),
+    });
   await page.keyboard.press("Enter");
   const refresh = pane.getByRole("button", {
     name: "Refresh native approvals",
@@ -283,17 +298,6 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   await expect(refresh).toBeFocused();
   await expect(refresh).toHaveCSS("outline-width", "2px");
   expect(calls().filter((row) => row.kind === "answer")).toHaveLength(before);
-  await expect
-    .poll(() =>
-      pane.locator("header").evaluate((header) => {
-        const heading = header.querySelector("h2");
-        if (!heading) return false;
-        const outer = header.getBoundingClientRect(),
-          inner = heading.getBoundingClientRect();
-        return inner.top >= outer.top && inner.bottom <= outer.bottom;
-      }),
-    )
-    .toBe(true);
   if (process.env.CODEX_CHAT_SHOTS) {
     await page
       .getByRole("button", { name: "Hide inspector", exact: true })
