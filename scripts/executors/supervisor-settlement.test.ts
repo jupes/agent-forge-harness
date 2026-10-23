@@ -8,6 +8,37 @@ import { PRIVATE_CAPTURE_FAILURE } from "./private-capture";
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
 
+test("an actually settled handle cannot signal or terminate ownership after its guard is released", async () => {
+  const child = Bun.spawn(
+    [process.execPath, join(import.meta.dir, "fixtures/settled-supervisor.ts")],
+    { env: buildChildEnv(process.env, []), stdout: "pipe", stderr: "pipe" },
+  );
+  const deadline = setTimeout(() => child.kill(), 5000);
+  try {
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" });
+    let reply: unknown;
+    try {
+      reply = JSON.parse(stdout);
+    } catch {
+      throw Error("Invalid settled ownership fixture reply");
+    }
+    expect(reply).toEqual({
+      ok: true,
+      data: { released: true, lateTermination: 0, lateSignal: 0 },
+      error: null,
+    });
+  } finally {
+    clearTimeout(deadline);
+    if (child.exitCode === null) child.kill();
+    await child.exited;
+  }
+});
+
 test("a rejected owned cleanup closes the real adapter iterator, preserves unknown capture and blocks runExec", async () => {
   const root = scratch.make("rejected supervisor ");
   mkdirSync(join(root, ".git"));
