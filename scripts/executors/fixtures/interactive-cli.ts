@@ -1,0 +1,50 @@
+/** Inert bidirectional process fixture; never invokes a provider or shell. */
+import { appendFileSync } from "node:fs";
+import { basename } from "node:path";
+
+const mode = process.argv[2];
+if (mode === "child") await new Promise(() => setInterval(() => {}, 1000));
+if (
+  mode === "blocked" ||
+  mode === "exit-tree" ||
+  mode === "exit-inherited-tree" ||
+  mode === "startup-tree"
+) {
+  const self = /^bun(?:\.exe)?$/i.test(basename(process.execPath))
+    ? [process.execPath, import.meta.filename]
+    : [process.execPath];
+  const child = Bun.spawn([...self, "child"], {
+    stdin: "ignore",
+    stdout: mode === "exit-inherited-tree" ? "inherit" : "ignore",
+    stderr: mode === "exit-inherited-tree" ? "inherit" : "ignore",
+  });
+  if (process.env.INTERACTIVE_TREE_LOG)
+    appendFileSync(
+      process.env.INTERACTIVE_TREE_LOG,
+      `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`,
+    );
+  await Bun.stdout.write(`${JSON.stringify({ childPid: child.pid })}\n`);
+  if (mode === "exit-inherited-tree") {
+    await Bun.stdout.write('{"terminal":true}\n{"finalBuffered":true}');
+    await Bun.stderr.write("buffered private diagnostic");
+    process.exit(0);
+  }
+  if (mode === "exit-tree") process.exit(0);
+  await new Promise(() => setInterval(() => {}, 1000));
+}
+const decoder = new TextDecoder();
+let pending = "";
+const reader = Bun.stdin.stream().getReader();
+while (true) {
+  const { done, value: chunk } = await reader.read();
+  if (done) break;
+  pending += decoder.decode(chunk, { stream: true });
+  let newline = pending.indexOf("\n");
+  while (newline >= 0) {
+    const line = pending.slice(0, newline);
+    pending = pending.slice(newline + 1);
+    await Bun.stdout.write(`${JSON.stringify({ received: line })}\n`);
+    newline = pending.indexOf("\n");
+  }
+}
+await Bun.stdout.write(`${JSON.stringify({ ended: true })}\n`);
