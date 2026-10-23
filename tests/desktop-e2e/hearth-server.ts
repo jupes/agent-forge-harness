@@ -1,8 +1,10 @@
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
 import { join } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
+import { supervise } from "../../scripts/executors/supervisor";
 import { closeOnSignal, createHearth } from "../../scripts/hearth/server";
 import { isMain } from "../../scripts/is-main";
+import { createProviderLoginService } from "../../scripts/providers/login";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
 
 async function main() {
@@ -27,6 +29,54 @@ async function main() {
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      providerLogin: createProviderLoginService({
+        root,
+        home,
+        prepare: async (provider) => ({
+          command: [
+            join(
+              home,
+              "bd-stand-in",
+              "bin",
+              process.platform === "win32"
+                ? "provider-login.exe"
+                : "provider-login",
+            ),
+            provider,
+          ],
+          cwd: root,
+          env: { PROVIDER_LOGIN_FIXTURE_HOME: home },
+          timeoutMs: 60000,
+          visible: false,
+        }),
+        ...(process.platform === "win32"
+          ? {}
+          : {
+              launch: (spec) => {
+                const child = supervise({
+                  ...spec,
+                  command: [...spec.command],
+                  env: { ...spec.env },
+                  stdin: "",
+                  maxLineBytes: 1024,
+                  onLine: () => {},
+                });
+                const done = child.done.then((result) => ({
+                  exitCode: result.exitCode ?? 1,
+                  stopped: result.stopped,
+                  timedOut: result.timedOut,
+                }));
+                return {
+                  pid: child.pid,
+                  done,
+                  stop: async () => {
+                    await child.stop("Close inert login fixture");
+                    return done;
+                  },
+                };
+              },
+            }),
+      }),
       codexTaskRuntime: createCodexTaskRuntime({
         root,
         home,

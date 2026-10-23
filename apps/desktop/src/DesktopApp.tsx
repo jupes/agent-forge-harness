@@ -21,6 +21,7 @@ import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
+import { Providers } from "./Providers";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { sessionRows } from "./sessions-model";
@@ -29,6 +30,7 @@ import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
+import { useProviders } from "./use-providers";
 import { useSessions } from "./use-sessions";
 import { useWorkbench } from "./use-workbench";
 
@@ -40,6 +42,7 @@ export function DesktopApp(): JSX.Element {
   );
   const recovery = useDesktopRecovery();
   const projects = useProjects();
+  const providers = useProviders();
   const project = projects.data?.catalog.projects.find(
     (item) => item.id === route.projectId,
   );
@@ -212,6 +215,8 @@ export function DesktopApp(): JSX.Element {
   return (
     <>
       <DesktopFrame
+        providers={providers.data}
+        providerStale={providers.stale}
         route={route}
         project={
           project
@@ -333,6 +338,8 @@ export function DesktopApp(): JSX.Element {
         )}
         {route.destination === "projects" ? (
           <ProjectsHome
+            providers={providers.data}
+            providerStale={providers.stale}
             keeper={keeper}
             home={projects.data}
             error={projects.error}
@@ -342,6 +349,18 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={recovery?.connection.writesAllowed ?? false}
             reload={projects.reload}
             change={projects.change}
+          />
+        ) : route.destination === "providers" ? (
+          <Providers
+            data={providers.data}
+            error={providers.error}
+            loading={providers.loading}
+            stale={providers.stale}
+            reload={providers.reload}
+            doctor={providers.doctor}
+            checking={providers.checking}
+            logins={providers.logins}
+            writesAllowed={writesAllowed}
           />
         ) : route.destination === "keeper" && project ? (
           <KeeperConversation
@@ -434,6 +453,8 @@ export function DesktopApp(): JSX.Element {
           />
         ) : route.destination === "overview" && project ? (
           <ProjectOverview
+            providers={providers.data}
+            providerStale={providers.stale}
             key={project.id}
             projectId={project.id}
             keeper={keeper}
@@ -517,6 +538,7 @@ export function DesktopApp(): JSX.Element {
       >
         {project && composerOpen && (
           <SessionComposer
+            providers={providers.data}
             key={project.id}
             project={project}
             client={sessions}

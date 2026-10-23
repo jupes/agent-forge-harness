@@ -29,6 +29,9 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { createProviderInspector } from "../providers/inspect";
+import { createProviderLoginService } from "../providers/login";
+import type { NativeConsoleExit } from "../providers/native-console";
 import { childOf } from "../scheduler/queue-fixture";
 import { unavailableCodexTaskRuntime } from "../sessions/owned-coding-service";
 import { makeOwnerOnly } from "./acl-windows";
@@ -508,6 +511,36 @@ export async function startTestHearth(
     ...(options.launchNow ? { launchNow: options.launchNow } : {}),
     api: {
       ledgerPath: ledger,
+      providerInspector: createProviderInspector({
+        root,
+        home,
+        environment: {},
+        which: () => null,
+      }),
+      providerLogin: createProviderLoginService({
+        root,
+        home,
+        prepare: async () => ({
+          command: ["C:\\inert-fixture.exe"],
+          cwd: root,
+          env: {},
+          timeoutMs: 5000,
+        }),
+        launch: () => {
+          let finish: (value: NativeConsoleExit) => void = () => {};
+          const done = new Promise<NativeConsoleExit>((resolve) => {
+            finish = resolve;
+          });
+          return {
+            pid: 0,
+            done,
+            stop: async () => {
+              finish({ exitCode: 1, stopped: true, timedOut: false });
+              return done;
+            },
+          };
+        },
+      }),
       conversationTransport: fakeConversationTransport(),
       sessionRuntime: fakeSessionRuntime().runtime,
       codexTaskRuntime: unavailableCodexTaskRuntime,

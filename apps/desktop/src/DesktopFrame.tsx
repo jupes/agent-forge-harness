@@ -12,6 +12,8 @@ import {
   PROJECT_DESTINATIONS,
 } from "./navigation";
 import "./frame.css";
+import type { ProviderReadinessPage } from "../../../types/provider-readiness";
+import { providerUsageLabel } from "./providers-model";
 
 const PROVIDERS = {
   claude: { name: "Claude", monogram: "Cl" },
@@ -86,6 +88,8 @@ const GROUPS: readonly {
 ];
 
 export interface DesktopFrameProps {
+  providers?: ProviderReadinessPage | null;
+  providerStale?: boolean;
   route: DesktopRoute;
   project: FrameProject | null;
   connectionLabel: string;
@@ -106,6 +110,8 @@ export function DesktopFrame({
   children,
   inspector,
   onNewSession,
+  providers,
+  providerStale,
 }: DesktopFrameProps): JSX.Element {
   const project = supplied?.id === route.projectId ? supplied : null;
   const projectName =
@@ -163,11 +169,22 @@ export function DesktopFrame({
           <a
             class="af-desktop-chip"
             href={desktopHref(navigateGlobal(route, "providers"))}
-            title="Provider usage has not been reported"
-            aria-label="Providers and usage: reporting unavailable"
+            title={
+              providers?.providers
+                .map(
+                  (provider) =>
+                    `${provider.name}: ${providerUsageLabel(provider)}`,
+                )
+                .join(" · ") ?? "Provider usage has not been reported"
+            }
+            aria-label={`Providers and usage: ${providerStale ? "last-known report" : "provider report"}`}
           >
             <Icon name="gauge" />
-            Usage —
+            {providers?.providers.some((provider) =>
+              provider.usage.some((report) => report.kind !== "local-counted"),
+            )
+              ? `Usage · ${providers.providers.filter((provider) => provider.usage.some((report) => report.kind !== "local-counted")).length} reported`
+              : "Usage —"}
           </a>
           <a
             class="af-desktop-chip"

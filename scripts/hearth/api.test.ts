@@ -30,6 +30,7 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import { providerLoginFile } from "../providers/login";
 import { queueTracker } from "../scheduler/queue-fixture";
 import {
   readShiftRecord,
@@ -100,6 +101,24 @@ async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
     JSON.stringify(projectCatalogFixture(hearth.workspace)),
   );
   seedSessionWorktreeFixture(hearth);
+  writeOwnerOnly(
+    providerLoginFile(hearth.home, hearth.root),
+    JSON.stringify({
+      version: 1,
+      records: [
+        {
+          provider: "claude",
+          requestId: "7b5b2b32-4bcc-4a1c-92c8-61dd39234d82",
+          phase: "closed",
+          startedAt: "2026-10-23T00:00:00Z",
+          endedAt: "2026-10-23T00:00:01Z",
+          exitCode: 0,
+          stopped: false,
+          timedOut: false,
+        },
+      ],
+    }),
+  );
   return hearth;
 }
 
@@ -801,6 +820,79 @@ function ownedSessionFixture(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /providers/:provider/sign-in": {
+    valid: {
+      path: "/providers/claude/sign-in",
+      body: { requestId: "f43b9a50-c1c9-441c-86ab-a150ad1775d8" },
+      status: 200,
+      target: "claude",
+    },
+    invalid: {
+      path: "/providers/claude/sign-in",
+      body: {
+        requestId: "f43b9a50-c1c9-441c-86ab-a150ad1775d8",
+        command: "arbitrary",
+      },
+    },
+    happened: async (h) => {
+      const response = await get(
+        h,
+        "/providers/claude/sign-in/f43b9a50-c1c9-441c-86ab-a150ad1775d8",
+        h.headers(h.hearth.token),
+      );
+      expect((await envelope<{ phase: string }>(response)).data?.phase).toBe(
+        "running",
+      );
+    },
+  },
+  "POST /providers/:provider/sign-in/:requestId/stop": {
+    valid: {
+      path: "/providers/codex/sign-in/b6d6d91f-670f-425f-880a-ce511ff55cfa/stop",
+      body: {},
+      status: 200,
+      target: "codex",
+    },
+    invalid: {
+      path: "/providers/codex/sign-in/b6d6d91f-670f-425f-880a-ce511ff55cfa/stop",
+      body: { command: "arbitrary" },
+    },
+    prepare: async (h) => {
+      const response = await post(h, "/providers/codex/sign-in", {
+        requestId: "b6d6d91f-670f-425f-880a-ce511ff55cfa",
+      });
+      expect(response.status).toBe(200);
+    },
+    happened: async (h) => {
+      const response = await get(
+        h,
+        "/providers/codex/sign-in/b6d6d91f-670f-425f-880a-ce511ff55cfa",
+        h.headers(h.hearth.token),
+      );
+      expect(
+        (await envelope<{ phase: string; stopped: boolean }>(response)).data,
+      ).toMatchObject({ phase: "closed", stopped: true });
+    },
+  },
+  "POST /providers/:provider/doctor": {
+    valid: {
+      path: "/providers/claude/doctor",
+      body: {},
+      status: 200,
+      target: "claude",
+    },
+    invalid: { path: "/providers/claude/doctor", body: { task: true } },
+    happened: async (h) => {
+      expect(
+        h
+          .events(["operator.action"])
+          .some(
+            (event) =>
+              event.kind === "operator.action" &&
+              event.payload.action === "provider.doctor",
+          ),
+      ).toBe(true);
+    },
+  },
   "POST /projects/:id/sessions/preview": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
@@ -1542,6 +1634,10 @@ const ACTIONS: Record<string, ActionFixture> = {
 const READS: Record<string, string> = {
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
   "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
+  "GET /providers/sign-in": "/providers/sign-in",
+  "GET /providers/:provider/sign-in/:requestId":
+    "/providers/claude/sign-in/7b5b2b32-4bcc-4a1c-92c8-61dd39234d82",
+  "GET /providers/readiness": "/providers/readiness",
   "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
   "GET /projects/:id/shifts/options": `/projects/${FIXTURE_PROJECT_ID}/shifts/options`,

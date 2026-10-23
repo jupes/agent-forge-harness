@@ -11,7 +11,7 @@ import type {
   PreparedCodexTask,
 } from "../../types/codex-task-runtime";
 import { loadConfig } from "../config/load";
-import { codexSyncDirectory } from "../executors/codex";
+import { syncCodexSkills } from "../executors/codex-sync";
 import { buildChildEnv } from "../executors/env";
 import { type Supervised, supervise } from "../executors/supervisor";
 import {
@@ -268,47 +268,22 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         snapshot.launch,
         snapshot.capabilities,
       );
-      const syncDirectory = codexSyncDirectory({
-        workspace: options.root,
-        worktree: snapshot.cwd,
-      });
       if (signal.aborted)
         return outcome("failed", "The Task was stopped before dispatch.");
-      if (syncDirectory) {
-        let invalid = false,
-          size = 0;
-        const sync = supervise({
-          command: native(
-            syncOverride ?? [process.execPath, "run", "codex:sync"],
-          ),
-          cwd: syncDirectory,
+      try {
+        await syncCodexSkills({
+          workspace: options.root,
+          worktree: snapshot.cwd,
+          command: syncOverride ?? [process.execPath, "run", "codex:sync"],
           env: runtime.env,
-          timeoutMs: Math.min(timeoutMs, 30_000),
-          maxLineBytes: 65_536,
-          onOutputError: () => {
-            invalid = true;
-          },
-          onLine: (line) => {
-            size += line.length;
-            if (size > 131_072) throw new Error("Sync overflow");
-          },
+          signal,
+          timeoutMs,
         });
-        const stop = () => {
-          void sync.stop("Task sync stopped");
-        };
-        signal.addEventListener("abort", stop, { once: true });
-        if (signal.aborted) stop();
-        try {
-          const exit = await sync.done;
-          if (invalid || exit.exitCode !== 0 || exit.timedOut || exit.stopped)
-            return outcome(
-              "failed",
-              "Skill sync did not complete successfully. No Codex Task was started.",
-            );
-        } finally {
-          signal.removeEventListener("abort", stop);
-          await sync.done;
-        }
+      } catch {
+        return outcome(
+          "failed",
+          "Skill sync did not complete successfully. No Codex Task was started.",
+        );
       }
       if (signal.aborted)
         return outcome("failed", "The Task was stopped before dispatch.");

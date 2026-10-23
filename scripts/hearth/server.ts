@@ -39,6 +39,15 @@ import {
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import {
+  createProviderInspector,
+  type ProviderInspector,
+} from "../providers/inspect";
+import {
+  createProviderLoginService,
+  type ProviderLoginService,
+} from "../providers/login";
+import { createNativeLoginPreparation } from "../providers/login-native";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
@@ -93,16 +102,24 @@ import {
 import { isHealthy } from "./supervisor";
 import { createToken, readToken } from "./token";
 
-export interface HearthOptions {
+/** Trusted process entries, supplied only by the source/packaged host. Never public launch fields. */
+export interface HearthInternalCommands {
+  /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
+  keeperReaderCommand?: readonly string[];
+  /** Explicit runtime command for the packaged, original-id project shift mode. */
+  projectShiftCommand?: readonly string[];
+  /** Trusted packaged sync prefix; never read from an HTTP request or provider launch. */
+  codexSyncCommand?: readonly string[];
+  /** Mandatory owned bootstrap for private attended execution; no caller-provided command. */
+  interactiveBootstrapCommand?: readonly string[];
+}
+
+export interface HearthOptions extends HearthInternalCommands {
   root: string;
   /** Hearth state directory; defaults to `AGENT_FORGE_HOME` / `~/.agent-forge`. */
   home?: string;
   /** Where `councils/` lives; defaults to `root` (the harness checkout). */
   harnessRoot?: string;
-  /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
-  keeperReaderCommand?: readonly string[];
-  /** Explicit runtime command for the packaged, original-id project shift mode. */
-  projectShiftCommand?: readonly string[];
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -155,6 +172,9 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
+  providerInspector?: ProviderInspector;
+  providerLogin?: ProviderLoginService;
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
@@ -358,13 +378,37 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         resolve(import.meta.dir, "../keeper/reader-entry.ts"),
       ],
     });
+  const providerInspector =
+    options.api?.providerInspector ??
+    createProviderInspector({
+      root,
+      home,
+      environment: options.environment ?? process.env,
+      operatorToken: expectedToken,
+    });
   const table = operatorRoutes({
     projectHome: home,
+    providerInspector,
+    providerLogin:
+      options.api?.providerLogin ??
+      createProviderLoginService({
+        root,
+        home,
+        prepare: createNativeLoginPreparation({
+          root,
+          inspector: providerInspector,
+          environment: options.environment ?? process.env,
+          operatorToken: expectedToken,
+        }),
+      }),
     codexTaskRuntime:
       options.api?.codexTaskRuntime ??
       createCodexTaskRuntime({
         root,
         home,
+        ...(options.codexSyncCommand
+          ? { syncCommand: options.codexSyncCommand }
+          : {}),
         ...(options.api?.configHome
           ? { configHome: options.api.configHome }
           : {}),
@@ -619,8 +663,7 @@ function argValue(argv: string[], flag: string): string | undefined {
 
 async function main(
   argv: string[],
-  keeperReaderCommand?: readonly string[],
-  projectShiftCommand?: readonly string[],
+  commands: HearthInternalCommands,
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
@@ -629,8 +672,7 @@ async function main(
   const { operatorCouncilLedger } = await import("../council/ledger-wiring");
   const hearth = await createHearth({
     root,
-    ...(keeperReaderCommand ? { keeperReaderCommand } : {}),
-    ...(projectShiftCommand ? { projectShiftCommand } : {}),
+    ...commands,
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
@@ -678,11 +720,10 @@ export function closeOnSignal(
 
 export async function runHearthServer(
   argv: string[],
-  keeperReaderCommand?: readonly string[],
-  projectShiftCommand?: readonly string[],
+  commands: HearthInternalCommands = {},
 ): Promise<void> {
   try {
-    await main(argv, keeperReaderCommand, projectShiftCommand);
+    await main(argv, commands);
   } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,

@@ -109,9 +109,7 @@
   border-radius: 10px;
 }
 .af-projects-subscriptions {
-  display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
+  display: block;
   border-top: 1px solid #42475f;
 }
 .af-projects-home[data-last-known="true"] .af-project-card {

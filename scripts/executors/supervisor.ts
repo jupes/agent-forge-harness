@@ -8,8 +8,15 @@
  * (`tree-guard.ts`).
  */
 
-import { join } from "node:path";
-import { guardTree } from "./tree-guard";
+import { mkdtempSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import {
+  INTERACTIVE_BOOTSTRAP_CONTROL,
+  INTERACTIVE_BOOTSTRAP_FLAG,
+  INTERACTIVE_START_MAX_BYTES,
+} from "./interactive-bootstrap";
+import { guardSuspendedWindowsProcess, guardTree } from "./tree-guard";
 import type { ChildExit } from "./types";
 
 /** How much of a child's stderr is kept: the end, where a failure says why. */
@@ -31,6 +38,33 @@ export interface Supervised {
   pid: number;
   done: Promise<ChildExit>;
   stop(reason: string): Promise<void>;
+}
+
+/** Trusted bidirectional protocols only. The ordinary serialized-stdin path is unchanged. */
+export interface InteractiveSuperviseOptions
+  extends Omit<SuperviseOptions, "stdin"> {
+  stdinMode: "interactive";
+  /** Cumulative process input and currently queued byte cap; not proof of child consumption. */
+  maxStdinBytes?: number;
+  stdinTimeoutMs?: number;
+  /** Trusted packaged-entry/fixture prefix only. Never a public command surface. */
+  bootstrapCommand?: readonly string[];
+  /** Trusted startup-barrier fixture only; the normal process grants ownership immediately. */
+  beforeStart?: () => Promise<void>;
+  /** Trusted ownership-failure fixture seam only; never an HTTP or launch option. */
+  interactiveGuard?: (pid: number) => {
+    release(): void;
+    terminate(): void;
+  } | null;
+}
+
+export interface InteractiveSupervised extends Supervised {
+  /** Actual provider identity; pid is the separately owned bootstrap tree root. */
+  providerPid: Promise<number>;
+  /** Ordered, bounded input acceptance; native protocol acknowledgements prove consumption. */
+  write(input: string): Promise<void>;
+  /** Sends EOF after all earlier writes. Later writes refuse. */
+  end(): Promise<void>;
 }
 
 const live = new Set<number>();
@@ -58,6 +92,15 @@ export function killTree(pid: number): void {
     } catch {
       // already gone
     }
+  }
+}
+
+/** The root has exited: only its still-owned POSIX group is authority, never a reused positive PID. */
+export function killExitedProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // An absent group is already complete; never fall back to the exited numeric PID.
   }
 }
 
@@ -133,10 +176,12 @@ async function pumpLines(
   stream: ReadableStream<Uint8Array>,
   onLine: (line: string) => void,
   maxLineBytes?: number,
+  maxTotalBytes?: number,
 ): Promise<void> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let buffer = "";
+  let total = 0;
   const drain = (final: boolean) => {
     const parts = buffer.split(/\r?\n/);
     buffer = final ? "" : (parts.pop() ?? "");
@@ -151,6 +196,9 @@ async function pumpLines(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    total += value.byteLength;
+    if (maxTotalBytes !== undefined && total > maxTotalBytes)
+      throw new Error("Child output exceeded its total byte bound.");
     buffer += decoder.decode(value, { stream: true });
     drain(false);
   }
@@ -162,35 +210,181 @@ async function pumpLines(
 async function readTail(
   stream: ReadableStream<Uint8Array>,
   max: number,
+  maxTotalBytes?: number,
 ): Promise<string> {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let text = "";
+  let total = 0;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    total += value.byteLength;
+    if (maxTotalBytes !== undefined && total > maxTotalBytes)
+      throw new Error("Child stderr exceeded its total byte bound.");
     text = (text + decoder.decode(value, { stream: true })).slice(-max);
   }
   return (text + decoder.decode()).slice(-max);
 }
 
-export function supervise(options: SuperviseOptions): Supervised {
+export function supervise(
+  options: InteractiveSuperviseOptions,
+): InteractiveSupervised;
+export function supervise(options: SuperviseOptions): Supervised;
+export function supervise(
+  options: SuperviseOptions | InteractiveSuperviseOptions,
+): Supervised | InteractiveSupervised {
+  const interactive = "stdinMode" in options;
+  const maxStdinBytes = interactive
+    ? (options.maxStdinBytes ?? 1024 * 1024)
+    : 0;
+  const stdinTimeoutMs = interactive ? (options.stdinTimeoutMs ?? 5000) : 0;
+  if (
+    interactive &&
+    (!Number.isSafeInteger(maxStdinBytes) ||
+      maxStdinBytes < 1 ||
+      maxStdinBytes > 16 * 1024 * 1024 ||
+      !Number.isSafeInteger(stdinTimeoutMs) ||
+      stdinTimeoutMs < 1 ||
+      stdinTimeoutMs > 30_000)
+  )
+    throw new Error("Interactive stdin bounds are invalid.");
+  const target = interactive ? Bun.which(options.command[0] ?? "") : null;
+  if (
+    interactive &&
+    (!target ||
+      options.command.length > 32 ||
+      options.command.some(
+        (word) => !word || word.length > 8192 || word.includes("\0"),
+      ))
+  )
+    throw new Error("The trusted interactive command is invalid.");
+  const isolated = interactive
+    ? mkdtempSync(join(tmpdir(), "agent-forge-interactive-"))
+    : null;
+  const cleanupIsolated = () => {
+    if (isolated) {
+      try {
+        rmdirSync(isolated);
+      } catch {
+        /* Preserve unexpected files; never recursively remove another process's data. */
+      }
+    }
+  };
+  const bootstrap = interactive
+    ? options.bootstrapCommand
+      ? [...options.bootstrapCommand]
+      : /^bun(?:\.exe)?$/i.test(basename(process.execPath))
+        ? [
+            process.execPath,
+            "--no-env-file",
+            "--no-install",
+            `--config=${join(import.meta.dir, "interactive-bootstrap.bunfig.toml")}`,
+            join(import.meta.dir, "interactive-bootstrap-entry.ts"),
+          ]
+        : [process.execPath, INTERACTIVE_BOOTSTRAP_FLAG]
+    : null;
+  const bootstrapEnv: Record<string, string> = {};
+  if (isolated) {
+    for (const [name, value] of Object.entries(options.env))
+      if (/^(?:systemroot|windir|temp|tmp)$/i.test(name))
+        bootstrapEnv[name] = value;
+    for (const name of [
+      "HOME",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "XDG_CONFIG_HOME",
+      "XDG_CACHE_HOME",
+      "BUN_INSTALL",
+    ])
+      bootstrapEnv[name] = isolated;
+    bootstrapEnv.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0";
+  }
   hookParentExit();
-  const proc = Bun.spawn(options.command, {
-    cwd: options.cwd,
-    env: options.env,
-    stdin: "pipe",
-    ...(process.platform === "win32" ? {} : { detached: true }),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  let receiveControl: ((message: unknown, senderPid: number) => void) | null =
+    null;
+  let prematureControl = false;
+  const proc = (() => {
+    try {
+      return Bun.spawn<"pipe", "pipe", "pipe">(bootstrap ?? options.command, {
+        cwd: isolated ?? options.cwd,
+        env: interactive ? bootstrapEnv : options.env,
+        stdin: "pipe",
+        ...(process.platform === "win32" ? {} : { detached: true }),
+        stdout: "pipe",
+        stderr: "pipe",
+        ...(interactive
+          ? {
+              serialization: "json" as const,
+              ipc(message: unknown, sender: { pid: number }) {
+                if (receiveControl) receiveControl(message, sender.pid);
+                else prematureControl = true;
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      cleanupIsolated();
+      throw error;
+    }
+  })();
   live.add(proc.pid);
   // For a harness ended outright, which runs no exit hook (`tree-guard.ts`).
-  const guard = guardTree(proc.pid);
+  const selectGuard = () =>
+    interactive
+      ? options.interactiveGuard
+        ? options.interactiveGuard(proc.pid)
+        : process.platform === "win32"
+          ? guardSuspendedWindowsProcess(proc.pid)
+          : guardTree(proc.pid)
+      : guardTree(proc.pid);
+  let guard: ReturnType<typeof guardTree> | null;
+  try {
+    guard = selectGuard();
+  } catch {
+    guard = null;
+  }
+  if (guard === null) {
+    // No protocol input has been written. Refuse rather than claim an unowned tree.
+    proc.kill("SIGKILL");
+    try {
+      Promise.resolve(proc.stdin.end()).catch(() => undefined);
+    } catch {
+      // The failed child may already have closed its pipe.
+    }
+    void proc.stdout.cancel().catch(() => undefined);
+    void proc.stderr.cancel().catch(() => undefined);
+    live.delete(proc.pid);
+    void proc.exited.then(cleanupIsolated);
+    throw new Error("Interactive child ownership could not be established.");
+  }
+
+  let providerReady = false;
+  let resolveProvider: (pid: number) => void = () => undefined;
+  let rejectProvider: (error: Error) => void = () => undefined;
+  const providerPid = new Promise<number>((resolve, reject) => {
+    resolveProvider = resolve;
+    rejectProvider = reject;
+  });
+  void providerPid.catch(() => undefined);
 
   let timedOut = false;
   let stopped = false;
-  const kill = () => killTree(proc.pid);
+  let exited = false;
+  let inputFailure: Error | null = null;
+  const inputWaiters = new Set<(error: Error) => void>();
+  const failInput = (error: Error) => {
+    inputFailure ??= error;
+    if (!providerReady) rejectProvider(inputFailure);
+    for (const reject of inputWaiters) reject(inputFailure);
+    inputWaiters.clear();
+  };
+  const kill = () => {
+    failInput(new Error("Interactive stdin is closed."));
+    if (interactive && process.platform === "win32") guard.terminate?.();
+    else if (!interactive || !exited) killTree(proc.pid);
+  };
 
   const timer =
     options.timeoutMs !== undefined
@@ -200,22 +394,155 @@ export function supervise(options: SuperviseOptions): Supervised {
         }, options.timeoutMs)
       : undefined;
 
-  if (options.stdin !== undefined) proc.stdin.write(options.stdin);
-  proc.stdin.end();
+  if (!interactive) {
+    if (options.stdin !== undefined) proc.stdin.write(options.stdin);
+    proc.stdin.end();
+  }
 
-  const pumped = pumpLines(
-    proc.stdout,
-    options.onLine,
-    options.maxLineBytes,
-  ).catch(() => {
+  let inputQueue = Promise.resolve();
+  let inputBytes = 0;
+  let totalInputBytes = 0;
+  let inputFrames = 0;
+  let inputEnded = false;
+  let endPromise: Promise<void> | null = null;
+  const enqueueInput = (
+    bytes: number,
+    action: () => number | Promise<number>,
+  ): Promise<void> => {
+    if (inputFailure) return Promise.reject(inputFailure);
+    if (
+      inputFrames >= 256 ||
+      inputBytes + bytes > maxStdinBytes ||
+      totalInputBytes + bytes > maxStdinBytes
+    ) {
+      const error = new Error(
+        "Interactive stdin exceeded its queue bound or total byte bound.",
+      );
+      failInput(error);
+      kill();
+      return Promise.reject(error);
+    }
+    inputBytes += bytes;
+    totalInputBytes += bytes;
+    inputFrames++;
+    const written = inputQueue.then(async () => {
+      if (inputFailure) throw inputFailure;
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(deadline);
+          inputWaiters.delete(cancel);
+          if (error) reject(error);
+          else resolve();
+        };
+        const cancel = (error: Error) => finish(error);
+        const deadline = setTimeout(() => {
+          const error = new Error(
+            "Interactive stdin exceeded its write deadline.",
+          );
+          finish(error);
+          failInput(error);
+          kill();
+        }, stdinTimeoutMs);
+        inputWaiters.add(cancel);
+        try {
+          Promise.resolve(action()).then(
+            () => finish(),
+            () => {
+              const error = new Error("Interactive stdin pipe is closed.");
+              finish(error);
+              failInput(error);
+              kill();
+            },
+          );
+        } catch {
+          const error = new Error("Interactive stdin pipe is closed.");
+          finish(error);
+          failInput(error);
+          kill();
+        }
+      });
+    });
+    const tracked = written.finally(() => {
+      inputBytes -= bytes;
+      inputFrames--;
+    });
+    inputQueue = tracked.catch(() => undefined);
+    return tracked;
+  };
+
+  const outputFailure = () => {
     // A broken output protocol must not leave a producer blocked on its pipe.
     kill();
     options.onOutputError?.();
+  };
+  const beforeControl: string[] = [];
+  let beforeControlBytes = 0;
+  receiveControl = (message, senderPid) => {
+    if (inputFailure) return;
+    if (
+      !interactive ||
+      providerReady ||
+      senderPid !== proc.pid ||
+      typeof message !== "object" ||
+      message === null ||
+      Array.isArray(message) ||
+      Object.keys(message).length !== 2 ||
+      !("kind" in message) ||
+      message.kind !== INTERACTIVE_BOOTSTRAP_CONTROL ||
+      !("pid" in message) ||
+      typeof message.pid !== "number" ||
+      !Number.isSafeInteger(message.pid) ||
+      message.pid < 1 ||
+      message.pid === proc.pid
+    ) {
+      outputFailure();
+      return;
+    }
+    providerReady = true;
+    resolveProvider(message.pid);
+    try {
+      for (const line of beforeControl) options.onLine(line);
+      beforeControl.length = 0;
+      beforeControlBytes = 0;
+    } catch {
+      outputFailure();
+    }
+  };
+  if (prematureControl) outputFailure();
+  const pumped = pumpLines(
+    proc.stdout,
+    (line) => {
+      if (interactive && !providerReady) {
+        beforeControlBytes += Buffer.byteLength(line);
+        if (beforeControl.length >= 256 || beforeControlBytes > 1_048_576)
+          throw new Error("Interactive startup output exceeded its bound.");
+        beforeControl.push(line);
+      } else options.onLine(line);
+    },
+    options.maxLineBytes,
+    interactive ? 16_777_216 : undefined,
+  ).catch(outputFailure);
+  const stderrTail = readTail(
+    proc.stderr,
+    STDERR_TAIL_CHARS,
+    interactive ? 1_048_576 : undefined,
+  ).catch(() => {
+    if (interactive) outputFailure();
+    return "";
   });
-  const stderrTail = readTail(proc.stderr, STDERR_TAIL_CHARS).catch(() => "");
   const done = (async (): Promise<ChildExit> => {
     try {
       const exitCode = await proc.exited;
+      exited = true;
+      if (interactive) {
+        // Windows retains an owned job handle; POSIX descendants keep their process group alive.
+        if (process.platform === "win32") guard.terminate?.();
+        else killExitedProcessGroup(proc.pid);
+        failInput(new Error("Interactive stdin is closed."));
+      }
       await pumped.catch(() => undefined);
       const stderr = await stderrTail;
       return { exitCode, timedOut, stopped, stderr };
@@ -223,16 +550,52 @@ export function supervise(options: SuperviseOptions): Supervised {
       if (timer) clearTimeout(timer);
       guard.release();
       live.delete(proc.pid);
+      cleanupIsolated();
     }
   })();
 
-  return {
+  const handle: Supervised = {
     pid: proc.pid,
     done,
     async stop() {
       stopped = true;
       kill();
       await done;
+    },
+  };
+  if (!interactive) return handle;
+  const start = `${JSON.stringify({ version: 1, command: [target, ...options.command.slice(1)], cwd: options.cwd, env: options.env, timeoutMs: Math.min(options.timeoutMs ?? 30 * 60_000, 30 * 60_000) })}\n`;
+  if (Buffer.byteLength(start) > INTERACTIVE_START_MAX_BYTES) {
+    failInput(new Error("The private ownership grant exceeded its bound."));
+    kill();
+  }
+  // The one separately bounded control envelope is additional to the provider-input budget.
+  else
+    void enqueueInput(0, async () => {
+      await options.beforeStart?.();
+      await proc.stdin.write(start);
+      return proc.stdin.flush();
+    }).catch(() => undefined);
+  return {
+    ...handle,
+    providerPid,
+    write(input) {
+      if (inputEnded || inputFailure)
+        return Promise.reject(new Error("Interactive stdin is closed."));
+      return enqueueInput(Buffer.byteLength(input), async () => {
+        await providerPid;
+        await proc.stdin.write(input);
+        return proc.stdin.flush();
+      });
+    },
+    end() {
+      if (endPromise) return endPromise;
+      inputEnded = true;
+      endPromise = enqueueInput(0, async () => {
+        await providerPid;
+        return proc.stdin.end();
+      });
+      return endPromise;
     },
   };
 }
