@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
+import {
+  readState,
+  withStateLock,
+  writeComments,
+  writeState,
+} from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
 import { alpha, beta, seedProjects } from "./project-fixtures";
@@ -71,6 +76,17 @@ test.beforeEach(() => {
       }),
     });
     writeState(BD_STAND_IN_STATE, state);
+    writeComments(BD_STAND_IN_STATE, {
+      "alpha-blocked": [
+        {
+          id: "comment-1",
+          issueId: "alpha-blocked",
+          text: "worklog: tested isolated fixture",
+          author: "worker",
+          createdAt: alpha.createdAt,
+        },
+      ],
+    });
   });
 });
 test("Ready preserves P4 and claim semantics, combined filters and dependency inspector navigate stable bead routes", async ({

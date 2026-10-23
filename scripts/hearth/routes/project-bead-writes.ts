@@ -171,7 +171,11 @@ export function projectBeadWriteRoutes(options: {
             const id = answer.data["id"];
             try {
               const after = await current(projectId);
-              if (!after.members.some((item) => item.id === id))
+              if (
+                !after.members.some(
+                  (item) => item.id === id && item.parent === target,
+                )
+              )
                 throw Error("Unconfirmed ancestry");
             } catch {
               return {

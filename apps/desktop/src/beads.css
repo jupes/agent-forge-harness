@@ -4,6 +4,65 @@
   gap: 16px;
   min-width: 0;
 }
+.af-bead-dialog {
+  width: min(760px, calc(100vw - 32px));
+}
+.af-bead-form,
+.af-bead-form fieldset,
+.af-bead-write-actions,
+.af-bead-write-notices {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.af-bead-form fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.af-bead-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.af-bead-form input,
+.af-bead-form textarea,
+.af-bead-form select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  min-height: 36px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: var(--color-bg);
+  font: inherit;
+}
+.af-bead-form textarea {
+  resize: vertical;
+}
+.af-bead-form small {
+  color: var(--color-neutral-400);
+  line-height: 1.5;
+}
+.af-bead-form-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.af-bead-write-notices:empty {
+  display: none;
+}
+.af-bead-write-notices article {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.af-bead-write-notices :where(article p) {
+  flex-basis: 100%;
+  margin: 0;
+}
 .af-beads-heading {
   display: flex;
   align-items: flex-start;

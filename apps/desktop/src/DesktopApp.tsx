@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
+import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
@@ -22,6 +23,7 @@ import { ProjectsHome } from "./ProjectsHome";
 import { SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { sessionRows } from "./sessions-model";
+import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
@@ -55,6 +57,20 @@ export function DesktopApp(): JSX.Element {
     new URL(window.location.hash.slice(1), "http://127.0.0.1").searchParams.get(
       "view",
     ) === "full";
+  const beadWrites = useBeadWrites(writesAllowed && !project?.archived, () => {
+    beads.reload();
+    projects.reload();
+  });
+  const [newBeadOpen, setNewBeadOpen] = useState(false);
+  const beadOpener = useRef<HTMLElement>(null);
+  const openNewBead = () => {
+    if (!project || !beads.data || project.archived || !writesAllowed) return;
+    beadOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setNewBeadOpen(true);
+  };
   const selectedOwnedSession =
     route.destination === "sessions" &&
     route.selection?.kind === "session" &&
@@ -122,6 +138,7 @@ export function DesktopApp(): JSX.Element {
       document.getElementById("af-main")?.focus();
     if (previousProject.current !== route.projectId) setKeeperOpen(false);
     if (previousProject.current !== route.projectId) setComposerOpen(false);
+    if (previousProject.current !== route.projectId) setNewBeadOpen(false);
     previousProject.current = route.projectId;
   }, [route.projectId]);
   useEffect(() => {
@@ -221,6 +238,7 @@ export function DesktopApp(): JSX.Element {
               sessions={summary?.sessions ?? []}
               sessionsComplete={summary?.sessionsComplete ?? false}
               onAskKeeper={openKeeper}
+              writes={beadWrites}
               onStart={
                 writesAllowed && !project.archived ? openSession : undefined
               }
@@ -296,6 +314,12 @@ export function DesktopApp(): JSX.Element {
             )}
           </div>
         )}
+        {project && route.destination === "beads" && beads.data && (
+          <BeadWriteNotices
+            writes={beadWrites}
+            scope={{ projectId: project.id, workspace: beads.data.workspace }}
+          />
+        )}
         {route.destination === "projects" ? (
           <ProjectsHome
             keeper={keeper}
@@ -344,6 +368,7 @@ export function DesktopApp(): JSX.Element {
                 sessions={summary?.sessions ?? []}
                 sessionsComplete={summary?.sessionsComplete ?? false}
                 onAskKeeper={openKeeper}
+                writes={beadWrites}
                 onStart={
                   writesAllowed && !project.archived ? openSession : undefined
                 }
@@ -362,6 +387,9 @@ export function DesktopApp(): JSX.Element {
               }}
               selectedId={
                 route.selection?.kind === "bead" ? route.selection.id : null
+              }
+              onNew={
+                writesAllowed && !project.archived ? openNewBead : undefined
               }
               onSelect={(id) => {
                 setInspectorOpen(true);
@@ -406,6 +434,8 @@ export function DesktopApp(): JSX.Element {
               }
             />
           </>
+        ) : route.destination === "inbox" ? (
+          <BeadWriteNotices writes={beadWrites} inbox />
         ) : global ? (
           <EmptyState
             title={`${name} unavailable`}
@@ -426,6 +456,24 @@ export function DesktopApp(): JSX.Element {
           </EmptyState>
         )}
       </DesktopFrame>
+      <Dialog
+        open={newBeadOpen && !!project && !!beads.data}
+        title={`New bead · ${project?.name ?? ""}`}
+        titleId="af-new-bead-title"
+        onClose={() => setNewBeadOpen(false)}
+        returnFocusRef={beadOpener}
+        class="af-bead-dialog"
+        initialFocus="content"
+      >
+        {newBeadOpen && beads.data && (
+          <NewBeadForm
+            key={project?.id}
+            writes={beadWrites}
+            page={beads.data}
+            onCancel={() => setNewBeadOpen(false)}
+          />
+        )}
+      </Dialog>
       <Dialog
         open={composerOpen && Boolean(project)}
         title={`New session · ${project?.name ?? ""}`}

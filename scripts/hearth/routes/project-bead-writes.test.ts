@@ -212,3 +212,49 @@ test("a created child remains Open until its own explicit Proposed move, even un
   expect(h.bd.issues.get(id)?.metadata?.queue_state).toBe("proposed");
   expect(h.bd.issues.get(id)?.labels).not.toContain("queue:approved");
 });
+
+test("a new bead under a different scoped epic is unknown even when it remains in the project", async () => {
+  const h = await start();
+  const catalog = projectCatalogFixture(h.workspace);
+  catalog.projects[0]?.workspaces[0]?.epicIds.push("alpha-other");
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const original = h.bd.issues.get("alpha-epic");
+  if (!original) throw Error("Missing parent");
+  h.bd.issues.set("alpha-other", {
+    ...original,
+    id: "alpha-other",
+    title: "Other epic",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stderr: "",
+          stdout: [...h.bd.issues.values()]
+            .map((item) =>
+              JSON.stringify(
+                item.id === "alpha-epic.1"
+                  ? {
+                      ...item,
+                      dependencies: [
+                        {
+                          issue_id: item.id,
+                          depends_on_id: "alpha-other",
+                          type: "parent-child",
+                        },
+                      ],
+                    }
+                  : item,
+              ),
+            )
+            .join("\n"),
+        }
+      : undefined;
+  const answer = await post(h, "", {
+    title: "Keep the selected parent",
+    parent: "alpha-epic",
+  });
+  expect(answer.status).toBe(504);
+  expect(answer.body.error).toContain("alpha-epic.1");
+  expect(effects(h)).toHaveLength(1);
+});

@@ -36,6 +36,13 @@ test("live project bead read is operator protected, scoped and refuses unavailab
       status: "open",
       priority: 4,
       labels: ["project:alpha"],
+      comments: [
+        {
+          text: "Embedded evidence",
+          author: "smith",
+          created_at: "2026-10-22T00:00:00Z",
+        },
+      ],
     },
     {
       id: "private-beta",
@@ -46,14 +53,35 @@ test("live project bead read is operator protected, scoped and refuses unavailab
       labels: ["project:beta"],
     },
   ];
-  h.bd.answer = (args) =>
-    args[0] === "export"
-      ? {
-          status: 0,
-          stdout: rows.map((row) => JSON.stringify(row)).join("\n"),
-          stderr: "",
-        }
-      : undefined;
+  const commentReads: string[] = [];
+  let commentText = "worklog: confirmed in the tracker";
+  let commentOverride: unknown;
+  h.bd.answer = (args) => {
+    if (args[0] === "export")
+      return {
+        status: 0,
+        stdout: rows.map((row) => JSON.stringify(row)).join("\n"),
+        stderr: "",
+      };
+    if (args[0] === "--readonly" && args[1] === "comments") {
+      commentReads.push(args[2] ?? "");
+      return {
+        status: 0,
+        stdout: JSON.stringify(
+          commentOverride ?? [
+            {
+              issue_id: args[2],
+              text: commentText,
+              author: "smith",
+              created_at: "2026-10-22T00:00:00Z",
+            },
+          ],
+        ),
+        stderr: "",
+      };
+    }
+    return undefined;
+  };
   const path = `${h.api}/projects/${project.id}/beads`;
   expect((await fetch(path, { headers: h.headers() })).status).toBe(403);
   const response = await fetch(path, { headers: h.headers(h.hearth.token) });
@@ -74,10 +102,54 @@ test("live project bead read is operator protected, scoped and refuses unavailab
       })
     ).status,
   ).toBe(404);
+  expect(commentReads).toEqual([]);
   const detail = await fetch(`${path}?beadId=alpha-epic`, {
     headers: h.headers(h.hearth.token),
   });
-  expect((await detail.json()).data.beads[0].detailsLoaded).toBe(true);
+  const detailed = (await detail.json()).data.beads[0];
+  expect(detailed.detailsLoaded).toBe(true);
+  expect(detailed.comments).toEqual([
+    { body: commentText, author: "smith", createdAt: "2026-10-22T00:00:00Z" },
+  ]);
+  expect(detailed.commentsComplete).toBe(true);
+  expect(commentReads).toEqual(["alpha-epic"]);
+  commentText = "worklog: newly added evidence";
+  const refreshed = await fetch(`${path}?beadId=alpha-epic`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect((await refreshed.json()).data.beads[0].comments[0].body).toBe(
+    commentText,
+  );
+  for (const invalid of [
+    [
+      {
+        issue_id: "private-beta",
+        text: "FOREIGN-COMMENT",
+        author: "smith",
+        created_at: "now",
+      },
+    ],
+    { unexpected: "not a comment list" },
+    Array.from({ length: 101 }, () => ({
+      text: "too many",
+      author: "smith",
+      created_at: "now",
+    })),
+  ]) {
+    commentOverride = invalid;
+    const response = await fetch(`${path}?beadId=alpha-epic`, {
+      headers: h.headers(h.hearth.token),
+    });
+    const answer = await response.json();
+    expect(response.status).toBe(200);
+    expect(answer.data.beads[0].commentsComplete).toBe(false);
+    expect(answer.data.beads[0].comments[0].body).toBe("Embedded evidence");
+    expect(answer.data.problems.join(" ")).toContain(
+      "live comment history is unavailable",
+    );
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN-COMMENT");
+  }
+  commentOverride = undefined;
   h.append({
     kind: "reservation.acquired",
     beadId: "alpha-epic",

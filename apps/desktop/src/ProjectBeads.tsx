@@ -8,6 +8,7 @@ import type {
   ProjectBead,
   ProjectBeadsPage,
 } from "../../../types/project-beads";
+import { BeadWriteActions } from "./BeadWrites";
 import {
   BEAD_VIEWS,
   type BeadFilters,
@@ -19,6 +20,7 @@ import {
 } from "./beads-model";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { desktopHref } from "./navigation";
+import type { DesktopBeadWrites } from "./use-bead-writes";
 import "./beads.css";
 
 const tabsKeyDown: JSX.KeyboardEventHandler<HTMLDivElement> = (event) => {
@@ -63,6 +65,7 @@ export function ProjectBeads({
   selectedId,
   onSelect,
   onOpen,
+  onNew,
 }: {
   projectId: string;
   page: ProjectBeadsPage | null;
@@ -72,6 +75,7 @@ export function ProjectBeads({
   selectedId: string | null;
   onSelect(id: string): void;
   onOpen(id: string): void;
+  onNew?: (() => void) | undefined;
 }) {
   const [filters, setFilters] = useState(newBeadFilters),
     [copy, setCopy] = useState("");
@@ -130,9 +134,17 @@ export function ProjectBeads({
           <h1>Beads</h1>
           <p>Ready means open, unblocked and unclaimed.</p>
         </div>
-        <Button onClick={reload} disabled={loading}>
-          Refresh beads
-        </Button>
+        <div class="af-beads-actions">
+          <Button onClick={reload} disabled={loading}>
+            Refresh beads
+          </Button>
+          <Button
+            onClick={() => onNew?.()}
+            disabled={!onNew || loading || !!error || !page}
+          >
+            New bead
+          </Button>
+        </div>
       </header>
       <div
         class="af-beads-tabs"
@@ -401,6 +413,7 @@ export function BeadPanel({
   sessionsComplete = false,
   onAskKeeper,
   onStart,
+  writes,
 }: {
   projectId: string;
   id: string;
@@ -412,6 +425,7 @@ export function BeadPanel({
   sessionsComplete?: boolean;
   onAskKeeper(): void;
   onStart?: ((id: string) => void) | undefined;
+  writes?: DesktopBeadWrites | undefined;
 }) {
   const [tab, setTab] = useState("Details"),
     bead = page?.beads.find((item) => item.id === id);
@@ -480,6 +494,16 @@ export function BeadPanel({
         </Button>
         <Button onClick={onAskKeeper}>Ask the Keeper</Button>
       </div>
+      {writes && (
+        <BeadWriteActions
+          writes={writes}
+          page={page}
+          id={id}
+          disabled={
+            !writes.writesAllowed || !!error || loading || !bead.detailsLoaded
+          }
+        />
+      )}
       <div
         class="af-beads-tabs"
         role="tablist"
