@@ -9,6 +9,16 @@ import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
+import {
+  SessionActivity,
+  SessionOutcome,
+  SessionTurnUsage,
+} from "./SessionActivity";
+import {
+  ownedSessionLifecycle,
+  ownedSessionTurn,
+  unsupportedSessionStates,
+} from "./session-activity";
 import type { SessionsClient } from "./session-client";
 import {
   sessionAttachments,
@@ -37,6 +47,12 @@ export function SessionConversation({
     current = view.page?.turns.at(-1);
   const running =
     current && ["accepted", "running", "cancelling"].includes(current.phase);
+  const lifecycle = ownedSessionLifecycle(view.page, {
+    mode: record?.mode ?? null,
+    loaded: view.loaded,
+    live: view.live,
+    stopping: !!view.stopping,
+  });
   const observed = [...(view.page?.frames ?? [])]
     .reverse()
     .find((frame) => frame.event.kind === "model")?.event;
@@ -131,20 +147,8 @@ export function SessionConversation({
           {record?.worktree ?? "Working directory not reported"}
         </p>
         <div class="af-session-composer-row">
-          <span role="status">
-            {view.stopping
-              ? "Stopping… waiting for confirmation"
-              : current
-                ? current.phase === "completed"
-                  ? record?.mode === "chat"
-                    ? "Idle · ready for the next turn"
-                    : "Task ended"
-                  : current.phase === "cancelled"
-                    ? "Stopped"
-                    : current.phase === "unknown"
-                      ? "Outcome unknown"
-                      : current.phase
-                : "No admitted turn reported"}
+          <span role="status" data-session-state={lifecycle.state}>
+            {lifecycle.label}
           </span>
           <Button
             href={desktopHref({
@@ -171,6 +175,7 @@ export function SessionConversation({
             </Button>
           )}
         </div>
+        <p class="af-session-note">{lifecycle.detail}</p>
         <details>
           <summary>Session details</summary>
           <dl>
@@ -221,10 +226,20 @@ export function SessionConversation({
             </dl>
           )}
           <p class="af-session-note">
-            {record?.provider === "codex"
-              ? "Detailed tool activity and files changed are not yet shown in this view. Remaining allowance may be unavailable."
-              : "Detailed tool activity, files changed and detailed usage are not yet shown in this view."}
+            Reported activity and usage are grouped with each private turn.
+            Missing reports remain unavailable.
           </p>
+          <details class="af-session-state-support">
+            <summary>State support for this route</summary>
+            <dl>
+              {unsupportedSessionStates.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.reason}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         </details>
       </header>
       {view.notice && (
@@ -301,62 +316,81 @@ export function SessionConversation({
             trying another request.
           </p>
         )}
-        {rows.map((row) => (
-          <div class="af-owned-turn" key={row.id}>
-            <time dateTime={row.at}>{new Date(row.at).toLocaleString()}</time>
-            <article
-              class="af-owned-question"
-              aria-label="Your session message"
-            >
-              <p>{row.question}</p>
-              {view.page?.frames
-                .filter(
-                  (frame) =>
-                    frame.turnId === row.id && frame.event.kind === "user",
-                )
-                .map((frame) => {
-                  if (frame.event.kind !== "user") return null;
-                  const attachments =
-                    frame.event.codexTask?.launch.attachments ??
-                    frame.event.session?.launch.attachments;
-                  return attachments?.length ? (
-                    <p class="af-session-note" key={frame.seq}>
-                      Attachments:{" "}
-                      {attachments
-                        .map((item) => `${item.name} (${item.kind})`)
-                        .join(", ")}
-                    </p>
-                  ) : null;
-                })}
-            </article>
-            {row.reply && (
-              <article class="af-owned-reply" aria-label="Session reply">
-                <KeeperMarkdown text={row.reply} />
-                <Button
-                  onClick={() => {
-                    void navigator.clipboard
-                      .writeText(row.reply)
-                      .then(() => setNotice("Reply copied."))
-                      .catch(() => setNotice("The reply could not be copied."));
-                  }}
-                >
-                  Copy session reply
-                </Button>
+        {rows.map((row) => {
+          const activity = ownedSessionTurn(view.page, row.id);
+          const streaming =
+            row.id === current?.requestId && !!running && view.live;
+          return (
+            <div class="af-owned-turn" key={row.id}>
+              <time dateTime={row.at}>{new Date(row.at).toLocaleString()}</time>
+              <article
+                class="af-owned-question"
+                aria-label="Your session message"
+              >
+                <p>{row.question}</p>
+                {view.page?.frames
+                  .filter(
+                    (frame) =>
+                      frame.turnId === row.id && frame.event.kind === "user",
+                  )
+                  .map((frame) => {
+                    if (frame.event.kind !== "user") return null;
+                    const attachments =
+                      frame.event.codexTask?.launch.attachments ??
+                      frame.event.session?.launch.attachments;
+                    return attachments?.length ? (
+                      <p class="af-session-note" key={frame.seq}>
+                        Attachments:{" "}
+                        {attachments
+                          .map((item) => `${item.name} (${item.kind})`)
+                          .join(", ")}
+                      </p>
+                    ) : null;
+                  })}
               </article>
-            )}
-            {row.turn &&
-              ["failed", "unknown", "cancelled"].includes(row.turn.phase) && (
-                <p role="status" class="af-session-warning">
-                  {row.turn.phase === "unknown"
-                    ? "Delivery unknown. This request was not resent."
-                    : row.turn.phase === "cancelled"
-                      ? "Stop confirmed."
-                      : "The session could not finish."}{" "}
-                  {row.turn.reason}
-                </p>
+              <SessionActivity value={activity} />
+              {row.reply && (
+                <article class="af-owned-reply" aria-label="Session reply">
+                  <KeeperMarkdown text={row.reply} />
+                  {streaming && (
+                    <span
+                      class="af-session-streaming-caret"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <Button
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(row.reply)
+                        .then(() => setNotice("Reply copied."))
+                        .catch(() =>
+                          setNotice("The reply could not be copied."),
+                        );
+                    }}
+                  >
+                    Copy session reply
+                  </Button>
+                </article>
               )}
-          </div>
-        ))}
+              {row.turn &&
+                ["failed", "unknown", "cancelled"].includes(row.turn.phase) && (
+                  <p role="status" class="af-session-warning">
+                    {row.turn.phase === "unknown"
+                      ? "Delivery unknown. This request was not resent."
+                      : row.turn.phase === "cancelled"
+                        ? "Stop confirmed."
+                        : "The session could not finish."}{" "}
+                    {row.turn.reason}
+                  </p>
+                )}
+              <SessionOutcome value={activity.outcome} />
+              <SessionTurnUsage
+                value={activity}
+                requestedModel={activity.requestedModel}
+              />
+            </div>
+          );
+        })}
       </div>
       {away && (
         <Button
