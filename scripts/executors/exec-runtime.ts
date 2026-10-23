@@ -366,7 +366,19 @@ export async function runExec(
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
-  const result = await handle.done;
+  let result: Awaited<typeof handle.done>;
+  try {
+    result = await handle.done;
+  } catch (error) {
+    const result = failure(
+      error instanceof Error
+        ? error.message
+        : "The provider outcome is unknown.",
+    );
+    return error instanceof PrivateCaptureError
+      ? { ...result, privateCaptureFailed: true }
+      : result;
+  }
   const runError =
     result.stopped && signal?.aborted
       ? `stopped: ${abortReason(signal)}`
