@@ -92,9 +92,10 @@ export function createOwnedProjectShiftLauncher(options: {
     // No engine stdin payload exists. Identity is separate from the owned wrapper, then EOF follows.
     void owned.providerPid
       .then(() => owned.end())
-      .catch(() =>
-        owned.stop("The original shift child could not be verified."),
-      );
+      .catch(() => {
+        // The primary done promise retains an unknown cleanup refusal.
+        void owned.stop("The original shift child could not be verified.");
+      });
     return {
       pid: owned.pid,
       enginePid: owned.providerPid,
