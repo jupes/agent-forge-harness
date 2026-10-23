@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
@@ -1045,14 +1046,17 @@ test("a saved native timeout withdraws old choices before final metadata settles
   await expect(allow).toBeEnabled();
   let releaseRead = () => {},
     received = () => {},
+    rejectHeld = (_error: unknown) => {},
     consumed = () => {},
     heldOnce = false,
     decisions = 0;
+  let fixtureFailure: unknown = null;
   const gate = new Promise<void>((resolve) => {
     releaseRead = resolve;
   });
-  const held = new Promise<void>((resolve) => {
+  const held = new Promise<void>((resolve, reject) => {
     received = resolve;
+    rejectHeld = reject;
   });
   const releasedResponse = new Promise<void>((resolve) => {
     consumed = resolve;
@@ -1067,54 +1071,68 @@ test("a saved native timeout withdraws old choices before final metadata settles
   await page.route(
     `**/projects/${alpha.id}/sessions/${record.id}/approvals`,
     async (route) => {
-      if (heldOnce) {
-        await route.continue();
-        return;
-      }
-      heldOnce = true;
-      const response = await route.fetch({
-        headers: {
-          ...route.request().headers(),
-          origin: new URL(route.request().url()).origin,
-        },
-      });
-      if (response.status() !== 200)
-        throw Error(
-          `Protected approval fixture read refused: ${response.status()}`,
-        );
-      const body = await response.text();
-      let raw: unknown;
       try {
-        raw = JSON.parse(body);
-      } catch {
-        throw Error("Malformed protected approval fixture read");
+        if (heldOnce) {
+          await route.continue();
+          return;
+        }
+        heldOnce = true;
+        const response = await route.fetch({
+          headers: {
+            ...route.request().headers(),
+            origin: new URL(route.request().url()).origin,
+          },
+        });
+        if (response.status() !== 200)
+          throw Error(
+            `Protected approval fixture read refused: ${response.status()}`,
+          );
+        const body = await response.text();
+        let raw: unknown;
+        try {
+          raw = JSON.parse(body);
+        } catch {
+          throw Error("Malformed protected approval fixture read");
+        }
+        const originalOffer = z
+          .object({
+            ok: z.literal(true),
+            data: codexChatApprovalPageSchema,
+            error: z.null(),
+          })
+          .strict()
+          .parse(raw).data;
+        const offered = saved(record.id).frames.find(
+          (frame) =>
+            frame.turnId === record.requestId &&
+            frame.event.kind === "coding-chat" &&
+            frame.event.event.kind === "approval-request",
+        )?.event;
+        if (
+          offered?.kind !== "coding-chat" ||
+          offered.event.kind !== "approval-request"
+        )
+          throw Error("No original native approval witness");
+        expect(originalOffer.pending).toHaveLength(1);
+        expect(originalOffer.pending[0]).toMatchObject({
+          turnRequestId: record.requestId,
+          actionable: true,
+          approval: { id: offered.event.approval.id },
+        });
+        received();
+        await gate;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body,
+        });
+        consumed();
+      } catch (error) {
+        fixtureFailure = error;
+        rejectHeld(error);
+        consumed();
+        await route.abort().catch(() => {});
       }
-      const originalOffer = codexChatApprovalPageSchema.parse(raw);
-      const offered = saved(record.id).frames.find(
-        (frame) =>
-          frame.turnId === record.requestId &&
-          frame.event.kind === "coding-chat" &&
-          frame.event.event.kind === "approval-request",
-      )?.event;
-      if (
-        offered?.kind !== "coding-chat" ||
-        offered.event.kind !== "approval-request"
-      )
-        throw Error("No original native approval witness");
-      expect(originalOffer.pending).toHaveLength(1);
-      expect(originalOffer.pending[0]).toMatchObject({
-        turnRequestId: record.requestId,
-        actionable: true,
-        approval: { id: offered.event.approval.id },
-      });
-      received();
-      await gate;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body,
-      });
-      consumed();
     },
   );
   try {
@@ -1136,6 +1154,7 @@ test("a saved native timeout withdraws old choices before final metadata settles
     await expect(allow).toHaveCount(0);
     releaseRead();
     await releasedResponse;
+    if (fixtureFailure) throw fixtureFailure;
     // Wait through the fetch/body and Preact effect/render boundary before
     // asserting that this genuinely actionable old response cannot revive UI.
     await page.evaluate(
