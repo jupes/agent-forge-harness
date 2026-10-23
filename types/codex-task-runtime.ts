@@ -3,6 +3,7 @@ import type {
   CodexExecPrivateEvent,
   CodexTaskLaunch,
 } from "./codex-task";
+import type { CodingOutcomeEvent } from "./session-activity";
 
 /** Trusted private preparation, never a public wire request or an execution authorization. */
 export interface PreparedCodexTask {
@@ -18,6 +19,7 @@ export interface PreparedCodexTask {
 
 export type CodexTaskRuntimeEvent =
   | CodexExecPrivateEvent
+  | CodingOutcomeEvent
   | {
       kind: "process";
       pid: number;

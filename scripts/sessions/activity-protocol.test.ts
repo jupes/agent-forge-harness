@@ -103,6 +103,7 @@ test("UTF-8 clipping and nested JSON limits remain explicit and cannot emit a fo
     text: "hello�private",
     truncated: true,
   });
+  expect(reportedText("\uD800")).toEqual({ text: "�", truncated: true });
   const nested = { child: {} };
   let cursor: { child?: unknown } = nested;
   for (let index = 0; index < SESSION_ACTIVITY_LIMITS.jsonDepth + 1; index++) {

@@ -26,6 +26,8 @@ interface Options {
   command?: readonly string[];
   environment?: Record<string, string | undefined>;
   timeoutMs?: number;
+  /** Trusted private-writer deadline, never a public launch option. */
+  persistenceTimeoutMs?: number;
   operatorToken?: () => string | null;
   /** Exact-model provider evidence, separate from the installed CLI's flag help. */
   modelEfforts?: NonNullable<ClaudeLaunchCapabilities["modelEfforts"]>;
@@ -57,6 +59,13 @@ export function createClaudeSessionTransport(
 ): ConversationTransport & {
   prepare(input: PrepareInput): Promise<SessionTurnSnapshot>;
 } {
+  const persistenceTimeoutMs = options.persistenceTimeoutMs ?? 5000;
+  if (
+    !Number.isSafeInteger(persistenceTimeoutMs) ||
+    persistenceTimeoutMs < 1 ||
+    persistenceTimeoutMs > 30_000
+  )
+    throw refusal("The private persistence deadline is invalid.");
   const override = options.command ? [...options.command] : null;
   const runtime = (smithName?: string) => {
     let loaded: ReturnType<typeof loadConfig>;
@@ -233,6 +242,25 @@ export function createClaudeSessionTransport(
         pendingBytes = 0,
         pendingFrames = 0;
       let writes = Promise.resolve();
+      const boundedPersist = async (
+        event: Exclude<ConversationEvent, { kind: "user" }>,
+      ) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.resolve().then(() => persist(event)),
+            new Promise<void>((_resolve, reject) => {
+              timer = setTimeout(
+                () =>
+                  reject(new Error("Private persistence deadline exceeded")),
+                persistenceTimeoutMs,
+              );
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
       const fail = () => {
         failure ??=
           "The provider stream or private transcript write was interrupted. Completion is unknown; this turn was not resent.";
@@ -242,13 +270,14 @@ export function createClaudeSessionTransport(
         const bytes = Buffer.byteLength(JSON.stringify(event));
         pendingBytes += bytes;
         pendingFrames++;
-        if (pendingBytes > 1_048_576 || pendingFrames > 256) {
+        // Reserve one existing frame slot for the post-exit outcome.
+        if (pendingBytes > 1_048_576 || pendingFrames >= 256) {
           fail();
           return;
         }
         writes = writes
           .then(async () => {
-            if (!storageFailed) await persist(event);
+            if (!storageFailed) await boundedPersist(event);
           })
           .catch(() => {
             storageFailed = true;
@@ -293,6 +322,16 @@ export function createClaudeSessionTransport(
         if (signal.aborted) stop();
         const exit = await child.done;
         await writes;
+        if (!storageFailed) {
+          try {
+            await boundedPersist(
+              parser.outcome(exit, { protocolFailure: failure !== null }),
+            );
+          } catch {
+            storageFailed = true;
+            fail();
+          }
+        }
         if (failure !== null) return { phase: "unknown", reason: failure };
         return parser.finish(exit);
       } finally {

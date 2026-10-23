@@ -214,6 +214,51 @@ test("aggregate rich activity overflow retains bounded partial frames and refuse
   expect(parser.finish(exit).phase).toBe("unknown");
 });
 
+test("duplicate rich items compare complete native data before truncation while equivalent key order remains harmless", () => {
+  const parser = started();
+  const item = {
+    id: "tool",
+    type: "mcp_tool_call",
+    server: "s",
+    tool: "t",
+    status: "completed",
+    arguments: { b: 2, a: 1 },
+    result: {
+      content: [{ type: "text", text: "x".repeat(40_000) }],
+      structured_content: null,
+    },
+  };
+  expect(parser.line(line({ type: "item.completed", item }))).toHaveLength(1);
+  expect(
+    parser.line(
+      line({
+        type: "item.completed",
+        item: { ...item, arguments: { a: 1, b: 2 } },
+      }),
+    ),
+  ).toEqual([]);
+  expect(() =>
+    parser.line(
+      line({
+        type: "item.completed",
+        item: {
+          ...item,
+          result: {
+            ...item.result,
+            content: [
+              {
+                type: "text",
+                text: `${"x".repeat(40_000)}different beyond clipped prefix`,
+              },
+            ],
+          },
+        },
+      }),
+    ),
+  ).toThrow("protocol");
+  expect(parser.finish(exit).phase).toBe("unknown");
+});
+
 test("foreign identities, malformed packets and invalid lifecycle remain poisoned after process success", () => {
   const cases = [
     [line({ type: "thread.started", thread_id: "not-a-uuid" })],

@@ -6,6 +6,8 @@ import type {
 import type { ChildExit } from "../executors/types";
 import { createActivityBudget } from "./activity-protocol";
 import { codexActivity } from "./codex-activity";
+import { codingOutcome } from "./coding-outcome";
+import { privatePacketHash } from "./private-packet";
 
 export const CODEX_EXEC_STREAM_LIMITS = {
   lines: 4096,
@@ -60,6 +62,7 @@ export function createCodexExecParser(options: { version: string }) {
   let started = false;
   let terminal: "completed" | "failed" | null = null;
   let providerError = false;
+  let providerMessage: string | null = null;
   let broken = false;
   let finished = false;
   let lines = 0;
@@ -109,6 +112,7 @@ export function createCodexExecParser(options: { version: string }) {
     }
     if (value.type === "error") {
       providerError = true;
+      if (typeof value.message === "string") providerMessage = value.message;
       return [];
     }
     if (threadId === null) throw bad();
@@ -125,6 +129,8 @@ export function createCodexExecParser(options: { version: string }) {
     }
     if (value.type === "turn.failed") {
       terminal = "failed";
+      if (record(value.error) && typeof value.error.message === "string")
+        providerMessage = value.error.message;
       return [];
     }
     if (
@@ -152,7 +158,11 @@ export function createCodexExecParser(options: { version: string }) {
       (item.complete && value.type !== "item.completed")
     )
       throw bad();
-    if (value.item.type === "error") providerError = true;
+    if (value.item.type === "error") {
+      providerError = true;
+      if (typeof value.item.message === "string")
+        providerMessage = value.item.message;
+    }
     if (value.item.type !== "agent_message") {
       const activity = codexActivity({
         version,
@@ -164,7 +174,7 @@ export function createCodexExecParser(options: { version: string }) {
               : "codex.item.completed",
         item: value.item,
       });
-      const report = activity === null ? null : JSON.stringify(activity);
+      const report = `${value.type}:${privatePacketHash(value.item)}`;
       if (item.complete && item.report !== report) throw bad();
       if (value.type === "item.completed") item.complete = true;
       if (item.report === report) return [];
@@ -247,6 +257,29 @@ export function createCodexExecParser(options: { version: string }) {
           "The Codex Task did not confirm both a terminal result and successful process exit.",
         );
       return outcome("completed", null);
+    },
+    outcome(
+      exit: ChildExit,
+      failure: { protocolFailure?: boolean; storageFailure?: boolean } = {},
+    ) {
+      const phase =
+        broken || threadId === null || !started || terminal === null
+          ? "unknown"
+          : providerError || terminal === "failed"
+            ? "failed"
+            : exit.exitCode === 0
+              ? "completed"
+              : "unknown";
+      return codingOutcome({
+        provider: "codex",
+        version,
+        exit,
+        phase,
+        protocolFailure: broken || failure.protocolFailure === true,
+        storageFailure: failure.storageFailure === true,
+        providerFailure: providerError || terminal === "failed",
+        message: providerMessage,
+      });
     },
   };
 }

@@ -186,6 +186,47 @@ test("reader, identity and exit failures never turn a successful-looking stream 
     expect(result.threadId).toBe(threadId);
     expect(JSON.stringify(result)).not.toContain("SECRET");
     expect(events.filter((event) => event.kind === "identity")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({
+      kind: "coding-outcome",
+      provider: "codex",
+      code: mode === "exit-after-result" ? "cli-exit" : "protocol-error",
+    });
+  }
+});
+
+test("rich native exec activity precedes its final private outcome and failure to save that outcome cannot confirm completion", async () => {
+  for (const refuse of [false, true]) {
+    const f = fixture("rich"),
+      events: CodexTaskRuntimeEvent[] = [];
+    const snapshot = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    const result = await f.runtime.run(
+      snapshot,
+      async (event) => {
+        if (refuse && event.kind === "coding-outcome")
+          throw Error("Private outcome refused");
+        events.push(event);
+      },
+      new AbortController().signal,
+    );
+    expect(result.phase).toBe(refuse ? "unknown" : "completed");
+    expect(
+      events.filter((event) => event.kind === "coding-activity"),
+    ).toHaveLength(6);
+    expect(JSON.stringify(events)).toContain("Private command output");
+    if (!refuse)
+      expect(events.at(-1)).toMatchObject({
+        kind: "coding-outcome",
+        provider: "codex",
+        code: "completed",
+        exitCode: 0,
+      });
+    else
+      expect(events.some((event) => event.kind === "coding-outcome")).toBe(
+        false,
+      );
   }
 });
 

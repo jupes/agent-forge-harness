@@ -16,7 +16,11 @@ import { createClaudeSessionTransport } from "./claude-transport";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
-function fixture(mode = "normal", timeoutMs = 5000) {
+function fixture(
+  mode = "normal",
+  timeoutMs = 5000,
+  persistenceTimeoutMs = 5000,
+) {
   const root = scratch.make("coding-transport-");
   const home = join(root, "home"),
     configHome = join(root, "config");
@@ -46,6 +50,7 @@ function fixture(mode = "normal", timeoutMs = 5000) {
     ],
     environment,
     timeoutMs,
+    persistenceTimeoutMs,
     operatorToken: () => "synthetic-operator-token",
     modelEfforts: { "claude-sonnet-5-5": ["high"] },
   });
@@ -277,6 +282,12 @@ test("Stop and timeout settle only after the fake provider and its child are gon
       if (!timeout) controller.abort();
       const outcome = await job;
       expect(outcome.result.phase).toBe(timeout ? "unknown" : "failed");
+      expect(outcome.events.at(-1)).toMatchObject({
+        kind: "coding-outcome",
+        provider: "claude",
+        code: timeout ? "timed-out" : "stopped",
+        timedOut: timeout,
+      });
       const { pid, childPid } = f.recording();
       if (typeof pid !== "number" || typeof childPid !== "number")
         throw new Error("Missing fake process tree");
@@ -315,4 +326,71 @@ test("a private transcript failure retains the accepted partials and stops super
   expect(outcome.phase).toBe("unknown");
   expect(outcome.reason).not.toContain("synthetic private storage failure");
   expect(liveChildCount()).toBe(baseline);
+});
+
+test("completion requires the final outcome write and a stalled private writer is bounded without later writes", async () => {
+  for (const stalled of [false, true]) {
+    const f = fixture("normal", 5000, 40),
+      session = await f.prepare("Private write deadline");
+    const baseline = liveChildCount(),
+      stored: ConversationEvent[] = [];
+    let writes = 0,
+      release: (() => void) | undefined;
+    const result = await f.transport.run(
+      {
+        project: f.project,
+        root: f.root,
+        input: {
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          text: session.launch.prompt,
+          about: [],
+          session,
+        },
+        resume: null,
+      },
+      async (event) => {
+        writes++;
+        if (stalled)
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        else if (event.kind === "coding-outcome")
+          throw Error("Private outcome refused");
+        else stored.push(event);
+      },
+      new AbortController().signal,
+    );
+    expect(result.phase).toBe("unknown");
+    expect(liveChildCount()).toBe(baseline);
+    expect(stored.some((event) => event.kind === "coding-outcome")).toBe(false);
+    if (stalled) {
+      expect(writes).toBe(1);
+      release?.();
+      await Bun.sleep(60);
+      expect(writes).toBe(1);
+    } else expect(stored.some((event) => event.kind === "text")).toBe(true);
+  }
+}, 15_000);
+
+test("actual rich fake CLI reports private activity and account metadata before a confirmed final outcome", async () => {
+  const f = fixture("rich");
+  const { result, events } = await f.run(
+    await f.prepare("Private rich launch"),
+  );
+  expect(result.phase).toBe("completed");
+  expect(events.at(-1)).toMatchObject({
+    kind: "coding-outcome",
+    provider: "claude",
+    code: "completed",
+    exitCode: 0,
+  });
+  expect(
+    events.filter((event) => event.kind === "coding-activity").length,
+  ).toBeGreaterThan(8);
+  expect(
+    events.filter((event) => event.kind === "coding-account"),
+  ).toHaveLength(3);
+  expect(JSON.stringify(events)).toContain("Private structured result");
+  expect(JSON.stringify(events)).not.toContain("encrypted-never-retain");
 });

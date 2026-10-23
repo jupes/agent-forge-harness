@@ -42,6 +42,7 @@ export function codexActivity(input: {
       break;
     case "command_execution": {
       const status = state(item.status);
+      if (!partial && status === "running") throw bad();
       if (
         item.exit_code !== undefined &&
         (typeof item.exit_code !== "number" ||
@@ -89,6 +90,7 @@ export function codexActivity(input: {
     }
     case "mcp_tool_call": {
       const status = state(item.status);
+      if (!partial && status === "running") throw bad();
       if (!Object.hasOwn(item, "arguments")) throw bad();
       if (
         item.result !== undefined &&

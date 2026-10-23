@@ -27,6 +27,9 @@ const text = z
   .refine(
     (value) =>
       !value.includes("\0") &&
+      !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
+        value,
+      ) &&
       bytes(value) <= SESSION_ACTIVITY_LIMITS.textBytes,
   );
 const reported = z.object({ text, truncated: z.boolean() }).strict();
@@ -83,7 +86,12 @@ function clip(value: string, limit: number): string {
   return value.slice(0, end);
 }
 export function reportedText(value: string): ReportedText {
-  const safe = value.replaceAll("\0", "�");
+  const safe = value
+    .replaceAll("\0", "�")
+    .replace(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+      "�",
+    );
   return {
     text: clip(safe, SESSION_ACTIVITY_LIMITS.textBytes),
     truncated:
@@ -251,7 +259,10 @@ export const codingOutcomeSchema: z.ZodType<CodingOutcomeEvent> = z
   .strict()
   .refine((value) => {
     if (value.timedOut) return value.code === "timed-out";
-    if (value.stopped) return value.code === "stopped";
+    if (value.stopped)
+      return ["stopped", "protocol-error", "storage-error"].includes(
+        value.code,
+      );
     if (value.code === "timed-out" || value.code === "stopped") return false;
     if (value.code === "completed") return value.exitCode === 0;
     if (value.code === "auth-error")
@@ -284,11 +295,16 @@ export const claudeCodingUsageSchema: z.ZodType<ClaudeCodingUsageEvent> = z
 
 /** Per-turn accounting. A limit poisons completion rather than silently dropping activity. */
 export function createActivityBudget() {
+  const budget = createPrivateReportBudget();
+  return (event: CodingActivityEvent): CodingActivityEvent =>
+    budget(codingActivitySchema.parse(event));
+}
+/** Helpers validate their own schemas; this shared counter includes account and usage reports too. */
+export function createPrivateReportBudget() {
   let total = 0,
     count = 0;
-  return (event: CodingActivityEvent): CodingActivityEvent => {
-    const checked = codingActivitySchema.parse(event);
-    const size = bytes(JSON.stringify(checked));
+  return <T>(event: T): T => {
+    const size = bytes(JSON.stringify(event));
     if (
       ++count > SESSION_ACTIVITY_LIMITS.events ||
       (total += size) > SESSION_ACTIVITY_LIMITS.aggregateBytes
@@ -296,6 +312,6 @@ export function createActivityBudget() {
       throw new Error(
         "The private coding activity exceeded its bounded turn limit.",
       );
-    return checked;
+    return event;
   };
 }

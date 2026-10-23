@@ -45,7 +45,11 @@ export function createCodexOwnedTransport(
               version: snapshot.data.capabilities.version,
               usage: event.usage,
             });
-          else if (event.kind === "coding-activity") await persist(event);
+          else if (
+            event.kind === "coding-activity" ||
+            event.kind === "coding-outcome"
+          )
+            await persist(event);
           else {
             let text = "",
               part = 0;

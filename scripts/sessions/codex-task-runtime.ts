@@ -346,7 +346,8 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         ).byteLength;
         pendingBytes += bytes;
         pendingFrames++;
-        if (pendingBytes > 1_048_576 || pendingFrames > 256) {
+        // Reserve one existing frame slot for the post-exit outcome.
+        if (pendingBytes > 1_048_576 || pendingFrames >= 256) {
           fail();
           return;
         }
@@ -396,6 +397,16 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         const exit = await child.done;
         await writes;
         const result = parser.finish(exit);
+        if (!storageFailed) {
+          try {
+            await boundedPersist(
+              parser.outcome(exit, { protocolFailure: failure }),
+            );
+          } catch {
+            storageFailed = true;
+            failure = true;
+          }
+        }
         if (failure)
           return {
             ...result,

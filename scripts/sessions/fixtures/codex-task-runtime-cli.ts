@@ -1,8 +1,9 @@
 /** Native process fixture only: never reads provider credentials or requests a model. */
 import { appendFileSync } from "node:fs";
 import { isMain } from "../../is-main";
+import { codexReportedActivity } from "./reported-activity";
 
-if (isMain(import.meta)) {
+export async function runCodexTaskRuntimeFixture() {
   const argv = process.argv.slice(2);
   const kind = argv.includes("--version")
     ? "version"
@@ -77,6 +78,8 @@ if (isMain(import.meta)) {
       thread_id: "0199a213-81c0-7800-8aa1-bbab2a035a53",
     });
     emit({ type: "turn.started" });
+    if (mode === "rich")
+      for (const packet of codexReportedActivity) emit(packet);
     const reply = {
       type: "item.completed",
       item: {
@@ -118,3 +121,4 @@ if (isMain(import.meta)) {
     if (mode === "exit-after-result") process.exitCode = 7;
   }
 }
+if (isMain(import.meta)) await runCodexTaskRuntimeFixture();

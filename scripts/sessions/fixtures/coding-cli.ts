@@ -3,8 +3,9 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { isMain } from "../../is-main";
+import { claudeReportedActivity } from "./reported-activity";
 
-if (isMain(import.meta)) {
+export async function runCodingCliFixture() {
   const argv = process.argv.slice(2);
   const mode = process.env["CODING_FIXTURE_MODE"] ?? "normal";
   const flags =
@@ -48,7 +49,13 @@ if (isMain(import.meta)) {
       );
     const emit = (value: Record<string, unknown>) =>
       console.log(JSON.stringify({ session_id: id, ...value }));
-    emit({ type: "system", subtype: "init" });
+    emit({
+      type: "system",
+      subtype: "init",
+      ...(mode === "rich" ? { apiKeySource: "none" } : {}),
+    });
+    if (mode === "rich")
+      for (const packet of claudeReportedActivity) emit(packet);
     emit({
       type: "stream_event",
       event: {
@@ -104,7 +111,21 @@ if (isMain(import.meta)) {
           mode === "provider-error" ? "error_during_execution" : "success",
         is_error: mode === "provider-error",
         result: "Private fixture result",
+        ...(mode === "rich"
+          ? {
+              uuid: "final",
+              structured_output: { actual: "Private structured result" },
+              usage: {
+                input_tokens: 20,
+                output_tokens: 5,
+                cache_read_input_tokens: 12,
+                cache_creation_input_tokens: 3,
+              },
+              total_cost_usd: 0.5,
+            }
+          : {}),
       });
     if (mode === "exit-after-result") process.exitCode = 7;
   }
 }
+if (isMain(import.meta)) await runCodingCliFixture();
