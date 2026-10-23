@@ -191,7 +191,6 @@ export function createKeeperRecoveryClient(deps: {
       if (!selected?.smith.enabled || !selected.readiness.canStart) return;
       entry.pending = {
         ...input,
-        summary: input.summary.trim(),
         requestId: deps.requestId(),
         expectedRevision: deps.revision(id),
       };

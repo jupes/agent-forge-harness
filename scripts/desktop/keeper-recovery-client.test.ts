@@ -183,3 +183,28 @@ test("a read confirming the original change cannot be downgraded by its delayed 
   expect(client.get("alpha").notice).not.toContain("transport failure");
   expect(client.canStart("alpha")).toBe(true);
 });
+
+test("reviewed summary whitespace survives unknown delivery and an exact retry", async () => {
+  const sent: KeeperContinuationRequest[] = [];
+  const summary = "  Preserve this indentation.\n\nAnd this final newline.\n";
+  const client = createKeeperRecoveryClient({
+    read: async () => page(),
+    post: async (_id, input) => {
+      sent.push(structuredClone(input));
+      return { state: "unknown", message: "Lost answer" };
+    },
+    requestId: () => requestId,
+    canChange: () => true,
+    revision: () => 8,
+    changed() {},
+    confirmed() {},
+  });
+  await client.read("alpha");
+  await client.change("alpha", { mode: "fresh", smith: "new", summary });
+  expect(sent[0]?.summary).toBe(summary);
+  expect(client.get("alpha").pending?.summary).toBe(summary);
+  await client.retry("alpha");
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toEqual(sent[0]);
+  client.dispose();
+});

@@ -1,6 +1,28 @@
 import { useEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
+import type { KeeperReadiness } from "../../../types/keeper-recovery";
 import type { KeeperClient } from "./keeper-client";
+
+export function KeeperReadinessLabel({
+  readiness,
+}: {
+  readiness: KeeperReadiness | undefined;
+}) {
+  const label = !readiness
+    ? "Keeper smith not verified"
+    : readiness.connection === "signed-out"
+      ? "Provider signed out"
+      : readiness.connection === "adapter-missing"
+        ? "Keeper adapter missing"
+        : readiness.allowance === "exhausted"
+          ? "Provider allowance exhausted"
+          : !readiness.canStart
+            ? "Keeper unavailable"
+            : readiness.allowance === "unreported"
+              ? "Provider reporting unavailable"
+              : "Keeper ready";
+  return <strong>{label}</strong>;
+}
 
 export function KeeperRecovery({
   projectId,
@@ -29,24 +51,13 @@ export function KeeperRecovery({
   );
   const candidate = page?.choices.find((item) => item.smith.name === smith);
   const unavailable = selected && !selected.readiness.canStart;
-  const label = !selected
-    ? "Keeper smith not verified"
-    : selected.readiness.connection === "signed-out"
-      ? "Provider signed out"
-      : selected.readiness.connection === "adapter-missing"
-        ? "Keeper adapter missing"
-        : selected.readiness.allowance === "exhausted"
-          ? "Provider allowance exhausted"
-          : selected.readiness.allowance === "unreported"
-            ? "Provider reporting unavailable"
-            : "Keeper ready";
   return (
     <aside
       class={`af-keeper-recovery${unavailable ? " is-unavailable" : ""}`}
       aria-label="Keeper smith and retained context"
     >
       <div class="af-keeper-recovery-heading">
-        <strong>{label}</strong>
+        <KeeperReadinessLabel readiness={selected?.readiness} />
         <Button
           onClick={() => {
             void recovery.read(projectId);
