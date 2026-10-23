@@ -8,7 +8,10 @@ export function CodexChatTerminal({
 }) {
   if (!value) return null;
   return (
-    <section class="af-session-chat-outcome" aria-label="Native Chat outcome">
+    <section
+      class="af-session-outcome af-session-chat-outcome"
+      aria-label="Native Chat outcome"
+    >
       <h3>Native Chat outcome</h3>
       <p>
         {value.phase === "completed"

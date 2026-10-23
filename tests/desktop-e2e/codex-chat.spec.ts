@@ -1201,13 +1201,18 @@ test("a saved native timeout withdraws old choices before final metadata settles
   });
   await expect(outcome).toContainText("Time limit reached");
   await expect(outcome).toContainText("Supervisor stopped the process");
-  if (process.env.CODEX_CHAT_OUTCOME_SHOTS)
+  if (process.env.CODEX_CHAT_OUTCOME_SHOTS) {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await outcome.scrollIntoViewIfNeeded();
+    await expect(outcome).toBeInViewport({ ratio: 1 });
     await outcome.screenshot({
       path: join(
         process.env.CODEX_CHAT_OUTCOME_SHOTS,
         "native-chat-outcome.png",
       ),
     });
+    await page.setViewportSize({ width: 1100, height: 700 });
+  }
   const tree = calls()
     .filter((row) => row.kind === "process")
     .at(-1);
