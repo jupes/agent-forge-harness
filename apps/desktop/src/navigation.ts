@@ -85,6 +85,17 @@ export function desktopRoute(hash: string): DesktopRoute {
   }
 }
 
+/** Observe browser navigation independently of when the first UI frame paints. */
+export function observeDesktopRoute(
+  browser: { hash(): string; listen(changed: () => void): () => void },
+  update: (route: DesktopRoute) => void,
+): () => void {
+  const changed = () => update(desktopRoute(browser.hash()));
+  const stop = browser.listen(changed);
+  changed();
+  return stop;
+}
+
 export function desktopHref(route: DesktopRoute): string {
   const global = GLOBAL_DESTINATIONS.some(
     (entry) => entry.id === route.destination,
