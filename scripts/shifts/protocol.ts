@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { ProjectShiftOptions } from "../../types/project-shifts";
+import type {
+  ProjectShiftOptions,
+  ProjectShiftStartRequest,
+} from "../../types/project-shifts";
+import { SHIFT_LIMITS, SHIFT_MAX_USD } from "../config/defaults";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 export const ATTENDED_SHIFT_UNAVAILABLE =
@@ -14,6 +18,47 @@ const count = z.number().int().nonnegative();
 const range = z.tuple([count, count]);
 const sourced = <T extends z.ZodType>(value: T) =>
   z.object({ value, source: word }).strict();
+
+export const shiftRequestIdSchema = z
+  .uuid()
+  .refine((value) => value === value.toLowerCase());
+export const projectShiftStartSchema: z.ZodType<ProjectShiftStartRequest> = z
+  .object({
+    requestId: shiftRequestIdSchema,
+    expectedCatalogRevision: count,
+    options: z
+      .object({
+        for: word.max(20).regex(/^[1-9]\d{0,5}[smh]$/),
+        concurrency: z
+          .number()
+          .int()
+          .min(SHIFT_LIMITS.concurrency[0])
+          .max(SHIFT_LIMITS.concurrency[1]),
+        maxBeads: z
+          .number()
+          .int()
+          .min(SHIFT_LIMITS.maxBeads[0])
+          .max(SHIFT_LIMITS.maxBeads[1]),
+        maxUsd: z.number().finite().positive().max(SHIFT_MAX_USD),
+        repairs: z
+          .number()
+          .int()
+          .min(SHIFT_LIMITS.repairs[0])
+          .max(SHIFT_LIMITS.repairs[1]),
+        base: word.max(200),
+        epic: id.optional(),
+        smith: word
+          .max(64)
+          .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+          .optional(),
+        runTimeout: word
+          .max(20)
+          .regex(/^[1-9]\d{0,5}[smh]$/)
+          .optional(),
+      })
+      .strict(),
+  })
+  .strict();
 
 /** This module is renderer-safe; no private store or native runtime imports. */
 export const projectShiftOptionsSchema: z.ZodType<ProjectShiftOptions> = z
