@@ -20,6 +20,7 @@ import type {
 } from "../conversations/transport";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
+import { canonicalSessionInput, prepareReviewedSession } from "./preparation";
 import { createSessionRegistry } from "./registry";
 import { parseSessionStart } from "./request-protocol";
 
@@ -42,19 +43,6 @@ interface Options {
     launch?: ClaudeSessionLaunch,
   ): Promise<void>;
   onChange?(session: OwnedSessionRecord, update: ConversationUpdate): void;
-}
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    const fields = new Map(
-      Object.entries(value).filter(([, item]) => item !== undefined),
-    );
-    return `{${[...fields.keys()]
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(fields.get(key))}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
 }
 
 /** The registry fixes Start identity; only the private journal can authorize dispatch. */
@@ -149,21 +137,11 @@ export function createOwnedSessionService(options: Options) {
           input.about,
           launch,
         );
-        const prepared = await options.runtime.prepare({
+        return prepareReviewedSession(options.runtime, {
           smith: session.smith,
           cwd: session.worktree,
           launch,
         });
-        if (
-          prepared.smith !== session.smith ||
-          workspaceKey(prepared.cwd) !== workspaceKey(session.worktree) ||
-          canonical(prepared.launch) !== canonical(launch)
-        )
-          throw new ConversationError(
-            503,
-            "The prepared launch changed the reviewed session options. No turn was accepted.",
-          );
-        return prepared;
       },
       onChange: (update) => options.onChange?.(session, update),
     });
@@ -181,7 +159,7 @@ export function createOwnedSessionService(options: Options) {
           "This hearth is closing. No new session was accepted.",
         );
       const requestHash = createHash("sha256")
-        .update(canonical(request))
+        .update(canonicalSessionInput(request))
         .digest("hex");
       const session = await registry.reserve(
         projectId,

@@ -1,6 +1,10 @@
 import type { ConversationObject, ConversationReceipt } from "./conversation";
 import type { OwnedSessionRecord } from "./owned-session";
-import type { ClaudeSessionLaunch } from "./session-launch";
+import type {
+  ClaudeSessionLaunch,
+  SerializedClaudeLaunch,
+} from "./session-launch";
+import type { SessionTurnSnapshot } from "./session-turn";
 
 export interface SessionStartRequest {
   requestId: string;
@@ -15,4 +19,10 @@ export interface SessionStartRequest {
 export interface SessionStartReceipt {
   session: OwnedSessionRecord;
   receipt: ConversationReceipt;
+}
+export interface SessionPreviewReceipt {
+  projectId: string;
+  requestId: string;
+  snapshot: SessionTurnSnapshot;
+  serialized: SerializedClaudeLaunch;
 }

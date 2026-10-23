@@ -15,6 +15,7 @@ import {
   createOwnedSessionService,
   type SessionRuntime,
 } from "../../sessions/admission";
+import { createSessionPreview } from "../../sessions/preview";
 import { SessionRegistryError } from "../../sessions/registry";
 import { parseSessionStart } from "../../sessions/request-protocol";
 import type {
@@ -74,11 +75,17 @@ export function createOwnedSessionRoutes(
 ) {
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
+  const validateScope = createSessionScopeValidator(home, deps, load);
+  const preparePreview = createSessionPreview({
+    root: deps.root,
+    runtime,
+    validateScope,
+  });
   const service = createOwnedSessionService({
     home,
     root: deps.root,
     runtime,
-    validateScope: createSessionScopeValidator(home, deps, load),
+    validateScope,
     onChange: (session, update) => {
       feed.changed(session.id);
       recordMetadata(session, update);
@@ -273,6 +280,16 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, sessionId, input }) =>
       answer(202, () => service.send(projectId, sessionId, input)),
   };
+  const preview: ActionRoute<{
+    projectId: string;
+    input: SessionStartRequest;
+  }> = {
+    ...start,
+    path: "/projects/:id/sessions/preview",
+    action: "session.preview",
+    effect: ({ projectId, input }) =>
+      answer(200, () => preparePreview(projectId, input)),
+  };
   const stop: ActionRoute<Address & { requestId: string }> = {
     kind: "action",
     method: "POST",
@@ -299,6 +316,7 @@ export function createOwnedSessionRoutes(
     read,
     events,
     start,
+    preview,
     send,
     stop,
     close: async () => {
