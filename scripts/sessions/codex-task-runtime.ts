@@ -35,6 +35,8 @@ export interface CodexTaskRuntimeOptions {
   syncCommand?: readonly string[];
   environment?: Record<string, string | undefined>;
   timeoutMs?: number;
+  /** Trusted private-writer deadline; not a public launch option. Defaults to five seconds. */
+  persistenceTimeoutMs?: number;
   operatorToken?: () => string | null;
   modelEfforts?: readonly CodexModelEffortEvidence[];
 }
@@ -89,6 +91,7 @@ export const preparedCodexTaskSchema: z.ZodType<PreparedCodexTask> = z
         (value) => value.trim() === value && !/[\p{Cc}\p{Cs}]/u.test(value),
       ),
     cwd: z.string().max(1024),
+    canonicalCwd: z.string().min(1).max(1024).refine(isAbsolute),
     launch: privateLaunchSchema,
     capabilities: privateCapabilitiesSchema,
   })
@@ -131,12 +134,19 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
     ? structuredClone(options.modelEfforts)
     : undefined;
   const timeoutMs = options.timeoutMs ?? 15 * 60_000;
+  const persistenceTimeoutMs = options.persistenceTimeoutMs ?? 5000;
   if (
     !Number.isSafeInteger(timeoutMs) ||
     timeoutMs < 1 ||
     timeoutMs > 30 * 60_000
   )
     throw unavailable("The Task timeout is invalid.");
+  if (
+    !Number.isSafeInteger(persistenceTimeoutMs) ||
+    persistenceTimeoutMs < 1 ||
+    persistenceTimeoutMs > 30_000
+  )
+    throw unavailable("The private persistence deadline is invalid.");
   const native = (prefix: readonly string[]): string[] => {
     const resolved = prefix[0] ? Bun.which(prefix[0]) : null;
     if (
@@ -242,6 +252,10 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
   };
   const validate = (snapshot: PreparedCodexTask) => {
     const launch = snapshot.launch;
+    if (directory(snapshot.cwd) !== snapshot.canonicalCwd)
+      throw unavailable(
+        "The prepared Task directory changed after preparation.",
+      );
     if (
       directory(options.root) !== root ||
       snapshot.cwd !== launch.cwd ||
@@ -263,6 +277,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
       launch: PreparedCodexTask["launch"];
     }): Promise<PreparedCodexTask> {
       const launch = codexTaskLaunchSchema.parse(input.launch);
+      const canonicalCwd = directory(launch.cwd);
       const runtime = ready(input.smith);
       const capabilities = await inspect(runtime);
       const snapshot = preparedCodexTaskSchema.parse({
@@ -270,6 +285,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         provider: "codex",
         smith: input.smith,
         cwd: launch.cwd,
+        canonicalCwd,
         launch,
         capabilities,
       });
@@ -298,6 +314,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
       if (current.version !== snapshot.capabilities.version)
         throw unavailable("The installed Codex CLI changed after preparation.");
       serializeCodexTask(snapshot.launch, current);
+      validate(snapshot);
       const serialized = serializeCodexTask(
         snapshot.launch,
         snapshot.capabilities,
@@ -346,6 +363,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
       }
       if (signal.aborted)
         return outcome("failed", "The Task was stopped before dispatch.");
+      validate(snapshot);
       runtime.env["AGENT_FORGE_SMITH"] = snapshot.smith;
       if (snapshot.launch.context?.beadId)
         runtime.env["AGENT_FORGE_BEAD_ID"] = snapshot.launch.context.beadId;
@@ -356,6 +374,23 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         pendingBytes = 0,
         pendingFrames = 0;
       let writes = Promise.resolve();
+      const boundedPersist = async (event: CodexTaskRuntimeEvent) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.resolve().then(() => persist(event)),
+            new Promise<void>((_resolve, reject) => {
+              timer = setTimeout(
+                () =>
+                  reject(new Error("Private persistence deadline exceeded")),
+                persistenceTimeoutMs,
+              );
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
       const fail = () => {
         failure = true;
         void child?.stop("Task protocol or private storage failure");
@@ -372,7 +407,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         }
         writes = writes
           .then(async () => {
-            if (!storageFailed) await persist(event);
+            if (!storageFailed) await boundedPersist(event);
           })
           .catch(() => {
             storageFailed = true;

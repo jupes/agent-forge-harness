@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { CodexTaskLaunch } from "../../types/codex-task";
 import type { CodexTaskRuntimeEvent } from "../../types/codex-task-runtime";
@@ -17,7 +25,11 @@ const version = "0.163.0-alpha.10.2";
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
 const fake = join(import.meta.dir, "fixtures/codex-task-runtime-cli.ts");
 
-function fixture(mode = "normal", timeoutMs = 5000) {
+function fixture(
+  mode = "normal",
+  timeoutMs = 5000,
+  persistenceTimeoutMs = 5000,
+) {
   const root = scratch.make("codex-task-runtime-");
   const home = join(root, "home"),
     configHome = join(root, "config");
@@ -46,6 +58,7 @@ function fixture(mode = "normal", timeoutMs = 5000) {
     syncCommand: [process.execPath, fake, "--sync"],
     environment,
     timeoutMs,
+    persistenceTimeoutMs,
     operatorToken: () => "synthetic-operator-token",
     modelEfforts: [
       {
@@ -561,4 +574,94 @@ test("private persistence pressure is bounded and cannot report completion after
     release?.();
     await job;
   }
+});
+
+test("a never-settling private write has a deadline, suppresses subsequent writes and cannot restore completion later", async () => {
+  const f = fixture("normal", 5000, 200);
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let release: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  const result = await f.runtime.run(
+    snapshot,
+    async () => {
+      calls++;
+      await blocked;
+    },
+    new AbortController().signal,
+  );
+  expect(result.phase).toBe("unknown");
+  expect(calls).toBe(1);
+  release?.();
+  await Bun.sleep(30);
+  expect(result.phase).toBe("unknown");
+  expect(calls).toBe(1);
+});
+
+test("explicit Stop is bounded even when the private writer never settles and the Task has a descendant", async () => {
+  const f = fixture("hang-tree", 5000, 1000);
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  const controller = new AbortController();
+  let calls = 0;
+  const job = f.runtime.run(
+    snapshot,
+    async () => {
+      calls++;
+      await new Promise<void>(() => {});
+    },
+    controller.signal,
+  );
+  try {
+    await until(() => f.records().some((record) => record.kind === "task"));
+    controller.abort();
+    const result = await job;
+    expect(result.phase).toBe("unknown");
+    expect(calls).toBe(1);
+    const actual = f.records().find((record) => record.kind === "task");
+    if (typeof actual?.pid !== "number" || typeof actual.childPid !== "number")
+      throw new Error("Missing stopped private-write process tree");
+    expect(running(actual.pid) || running(actual.childPid)).toBe(false);
+  } finally {
+    controller.abort();
+  }
+});
+
+test("retargeting the selected directory link after prepare refuses before sync or Task dispatch", async () => {
+  const f = fixture();
+  const first = scratch.make("codex-cwd-original-"),
+    second = scratch.make("codex-cwd-foreign-");
+  const selected = join(f.root, "selected");
+  const kind = process.platform === "win32" ? "junction" : "dir";
+  symlinkSync(first, selected, kind);
+  const snapshot = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: {
+      ...f.launch,
+      cwd: selected,
+      context: {
+        projectId: "project-test",
+        repository: first,
+        worktree: selected,
+      },
+    },
+  });
+  if (process.platform === "win32") rmdirSync(selected);
+  else unlinkSync(selected);
+  symlinkSync(second, selected, kind);
+  await expect(
+    f.runtime.run(snapshot, async () => {}, new AbortController().signal),
+  ).rejects.toThrow("directory changed");
+  expect(
+    f
+      .records()
+      .some((record) => record.kind === "sync" || record.kind === "task"),
+  ).toBe(false);
 });

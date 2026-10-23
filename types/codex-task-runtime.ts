@@ -10,6 +10,8 @@ export interface PreparedCodexTask {
   readonly provider: "codex";
   readonly smith: string;
   readonly cwd: string;
+  /** Canonical physical directory observed before preparation probes. */
+  readonly canonicalCwd: string;
   readonly launch: CodexTaskLaunch;
   readonly capabilities: CodexExecCapabilities;
 }
