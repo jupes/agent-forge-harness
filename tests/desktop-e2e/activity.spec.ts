@@ -67,11 +67,19 @@ test("project Activity virtualizes scoped metadata and keyboard selection opens 
   await feed.focus();
   await page.keyboard.press("End");
   await expect(feed).toHaveCSS("outline-width", "2px");
+  await expect(
+    feed.getByRole("option", { name: /Activity tool 1200/ }),
+  ).toBeVisible();
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  });
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/activity-feed.png",
     mask: [page.getByLabel("Session filter")],
     maskColor: "#3f424d",
-    style: ".af-project-activity time { visibility: hidden !important; }",
   });
   await page.keyboard.press("Enter");
   await expect(
@@ -288,7 +296,8 @@ test("held and failed reads retain verified feed and selected metadata with expl
   mode = "okay";
   await refresh.click();
   await expect(activity.getByText("1 event", { exact: false })).toBeVisible();
-  await activity.getByRole("option").first().click();
+  const feed = activity.getByRole("listbox", { name: "Project activity" });
+  await feed.getByRole("option").first().click();
   const inspector = page.getByRole("region", { name: "Activity inspector" });
   await expect(
     inspector.getByRole("heading", { name: "Session started", exact: true }),
@@ -298,7 +307,7 @@ test("held and failed reads retain verified feed and selected metadata with expl
   await expect(activity.getByRole("alert")).toContainText(
     "The last verified events remain visible",
   );
-  await expect(activity.getByRole("option")).toHaveCount(1);
+  await expect(feed.getByRole("option")).toHaveCount(1);
   await expect(inspector).toContainText(
     "Activity was refreshed after this metadata was checked",
   );
