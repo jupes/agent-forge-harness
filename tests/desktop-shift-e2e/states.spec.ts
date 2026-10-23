@@ -145,6 +145,7 @@ test("held authenticated reads announce loading before verified empty and retain
       fullPage: true,
     });
     await page.setViewportSize({ width: 375, height: 812 });
+    await status.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: "apps/desktop/docs/screenshots/project-shift-loading-mobile.png",
       fullPage: true,
@@ -294,12 +295,17 @@ test("protected metadata renders Throttled and every canonical stopped reason wi
       await expect(row.locator("details")).toHaveAttribute("open", "");
     }
     await page.setViewportSize({ width: 1280, height: 900 });
-    await panel(page).scrollIntoViewIfNeeded();
+    await throttled
+      .getByText("Throttled · waiting for host capacity", { exact: true })
+      .scrollIntoViewIfNeeded();
     await page.screenshot({
       path: "apps/desktop/docs/screenshots/project-shift-states.png",
       fullPage: true,
     });
     await page.setViewportSize({ width: 375, height: 812 });
+    await throttled
+      .getByText("Throttled · waiting for host capacity", { exact: true })
+      .scrollIntoViewIfNeeded();
     await page.screenshot({
       path: "apps/desktop/docs/screenshots/project-shift-states-mobile.png",
       fullPage: true,
