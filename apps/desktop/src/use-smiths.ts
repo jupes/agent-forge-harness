@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { readHearth } from "../../../docs/js/hearth-read";
-import { operatorRead } from "../../../docs/js/operator";
-import { appStream, pageReads } from "../../../docs/js/use-stream";
+import { appStream } from "../../../docs/js/use-stream";
 import {
   createSmithsClient,
   type SmithsClient,
   type SmithsState,
 } from "./smiths-client";
-import { readSmithsResponse } from "./smiths-response";
+import { createSmithsReads } from "./smiths-read";
 
 /** One observer on the existing app ledger stream; this surface has no write dependency. */
 export function useSmiths(active: boolean, workspace: string | null) {
@@ -18,31 +16,7 @@ export function useSmiths(active: boolean, workspace: string | null) {
   );
   useEffect(() => {
     if (!active) return;
-    const read = (path: string, signal: AbortSignal) =>
-      readHearth(`/__agent-forge${path}`, readSmithsResponse, {
-        ...pageReads(),
-        fetch: (url, init) =>
-          operatorRead(url, {
-            ...init,
-            signal: init?.signal
-              ? AbortSignal.any([signal, init.signal])
-              : signal,
-          }),
-      });
-    const client = createSmithsClient({
-      configuration: async (signal) => {
-        const [smiths, config] = await Promise.all([
-          read("/smiths", signal),
-          read("/config", signal),
-        ]);
-        return { smiths, config };
-      },
-      scoreboard: (since, signal) =>
-        read(
-          `/scoreboard${since ? `?since=${encodeURIComponent(since)}` : ""}`,
-          signal,
-        ),
-    });
+    const client = createSmithsClient(createSmithsReads());
     held.current = { key, client };
     const changed = () => {
       const state = client.get();

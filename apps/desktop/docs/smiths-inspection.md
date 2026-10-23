@@ -36,6 +36,11 @@ never becomes a silently truncated successful result. A failed refresh
 retains explicitly last-verified data and the original range label. Range
 replacement, disposal and workspace-observer replacement fence late reads.
 The hook watches the existing app ledger stream and opens no second stream.
+`createSmithsReads` opts into the protected reader's receiving byte cap
+before its ordinary whole-body buffering. Overflow cancels reception;
+caller/deadline aborts cancel a pending body and cannot become an empty
+successful answer. The optional receiving cap does not change uncapped
+operator reads, writes, the shared token cache or live event streams.
 
 Creation and editing remain in the parent bead
 agent-forge-harness-cla5.7.6 (smith and bench management). The existing scalar
