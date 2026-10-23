@@ -239,6 +239,56 @@ test("Stop during a held scope check leaves no late registry reservation or priv
   expect(existsSync(join(f.home, "conversations"))).toBe(false);
 });
 
+test("Stop releases the shared registry lock even when scope validation never settles", async () => {
+  const f = fixture();
+  let enter = () => {},
+    release = () => {};
+  const entered = new Promise<void>((done) => {
+      enter = done;
+    }),
+    held = new Promise<void>((done) => {
+      release = done;
+    });
+  const pending = openShiftAttempt({
+    ...f.options,
+    validate: async () => {
+      enter();
+      await held;
+    },
+  });
+  const settled = pending.then(
+    () => "admitted",
+    () => "refused",
+  );
+  try {
+    await entered;
+    f.controller.abort();
+    expect(
+      await Promise.race([settled, Bun.sleep(500).then(() => "hung")]),
+    ).toBe("refused");
+    const independent = await openShiftAttempt({
+      ...f.options,
+      signal: new AbortController().signal,
+      attempt: 2,
+      validate: async () => {},
+    });
+    await independent.owner.finish({
+      phase: "failed",
+      reason: "No provider was dispatched.",
+    });
+    expect(
+      createSessionRegistry(f.home).listAll(f.intent.projectId),
+    ).toHaveLength(1);
+  } finally {
+    release();
+    await settled;
+  }
+  expect(
+    createSessionRegistry(f.home).listAll(f.intent.projectId)[0]?.origin
+      ?.attempt,
+  ).toBe(2);
+});
+
 test("failed scope validation creates no reservation and another admitted attempt gets independent identity", async () => {
   const f = fixture();
   await expect(

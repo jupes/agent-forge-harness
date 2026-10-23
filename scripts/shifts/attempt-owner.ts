@@ -15,6 +15,28 @@ import {
   shiftAttemptRequestId,
 } from "./attempt-identity";
 
+/** An abandoned read-only probe must not keep the shared durable admission lock. */
+function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(new PrivateCaptureError());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      () => {
+        signal.removeEventListener("abort", abort);
+        reject(new PrivateCaptureError());
+      },
+    );
+  });
+}
+
 /** Opens one fresh private attempt. A known reservation is recovery evidence, never dispatch authority. */
 export async function openShiftAttempt(options: {
   home: string;
@@ -42,7 +64,10 @@ export async function openShiftAttempt(options: {
       throw new PrivateCaptureError();
     if (input.provider !== "claude" && input.provider !== "codex")
       throw new PrivateCaptureError();
-    const prepared = await options.prepare(structuredClone(input));
+    const prepared = await untilAbort(
+      options.prepare(structuredClone(input)),
+      options.signal,
+    );
     active();
     const requestHash = shiftAttemptHash(
       intent,
@@ -65,7 +90,10 @@ export async function openShiftAttempt(options: {
     let created = false;
     const admit = async () => {
       active();
-      await options.validate(structuredClone(input));
+      await untilAbort(
+        options.validate(structuredClone(input)),
+        options.signal,
+      );
       active();
       created = true;
     };
