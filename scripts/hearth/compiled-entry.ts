@@ -23,7 +23,7 @@ else if (process.argv[2] === "--keeper-reader")
 else if (process.argv[2] === "--project-shift-run")
   await (
     await import("../shifts/execution-runtime")
-  ).runProjectShiftExecutionEntry(process.argv.slice(3));
+  ).runProjectShiftExecutionEntry(process.argv.slice(3), commands);
 else
   await (await import("./server")).runHearthServer(
     process.argv.slice(2),

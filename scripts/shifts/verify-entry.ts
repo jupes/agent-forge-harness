@@ -5,6 +5,7 @@ import { supervise } from "../executors/supervisor";
 import { ensurePrivateHome } from "../hearth/home-guard";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import { scratchDirs } from "../test-scratch";
+import { projectShiftReceiptSchema } from "./protocol";
 import {
   createProjectShiftRegistry,
   projectShiftRegistryFile,
@@ -44,7 +45,7 @@ export async function verifyProjectShiftEntry(
       saved.intent.requestHash,
     );
     const file = projectShiftRegistryFile(home),
-      before = readFileSync(file, "utf8");
+      authorized = registry.read(FIXTURE_PROJECT_ID, requestId);
     let stdout = "",
       valid = true;
     const child = supervise({
@@ -86,20 +87,71 @@ export async function verifyProjectShiftEntry(
     }
     if (
       !valid ||
-      result.exitCode !== 1 ||
+      result.exitCode !== 0 ||
       result.timedOut ||
       result.stopped ||
       !envelope ||
       typeof envelope !== "object" ||
       !("ok" in envelope) ||
-      envelope.ok !== false ||
+      envelope.ok !== true ||
       !("data" in envelope) ||
-      envelope.data !== null ||
-      readFileSync(file, "utf8") !== before ||
       existsSync(join(home, "shifts"))
     )
       throw Error(
-        "Packaged shift entry did not preserve its unavailable attended boundary.",
+        "Packaged shift entry did not preserve its closed original-id boundary.",
+      );
+    const original = registry.read(FIXTURE_PROJECT_ID, requestId),
+      receipt = projectShiftReceiptSchema.safeParse(envelope.data);
+    if (
+      !original.executionStartedAt ||
+      JSON.stringify({
+        ...original,
+        executionStartedAt: authorized.executionStartedAt,
+      }) !== JSON.stringify(authorized) ||
+      !receipt.success ||
+      JSON.stringify(receipt.data.intent) !== JSON.stringify(original) ||
+      receipt.data.observation.phase !== "unknown"
+    )
+      throw Error(
+        "The packaged original claim or unknown receipt could not be verified.",
+      );
+    // Claiming an already authorized original may consume its one engine entry.
+    // Its bounds stay immutable, and a repeated child command is observation only.
+    const after = readFileSync(file, "utf8");
+    const repeated = Bun.spawnSync(
+      [...command, "--project-shift-run", FIXTURE_PROJECT_ID, requestId],
+      {
+        cwd: root,
+        env: {
+          ...buildChildEnv(process.env, []),
+          HOME: root,
+          USERPROFILE: root,
+          AGENT_FORGE_HOME: home,
+        },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 10000,
+      },
+    );
+    let second: unknown;
+    try {
+      second = JSON.parse(repeated.stdout.toString());
+    } catch {
+      throw Error("The packaged observation did not return one receipt.");
+    }
+    if (
+      repeated.exitCode !== 0 ||
+      repeated.stderr.toString() !== "" ||
+      !second ||
+      typeof second !== "object" ||
+      !("ok" in second) ||
+      second.ok !== true ||
+      readFileSync(file, "utf8") !== after ||
+      existsSync(join(home, "shifts"))
+    )
+      throw Error(
+        "The packaged original was repeated or changed during observation.",
       );
   } finally {
     scratch.cleanup();

@@ -312,6 +312,6 @@ test("the same compiled production entry retains the sealed Keeper reader", asyn
   });
 }, 20_000);
 
-test("the same compiled production entry preserves the unavailable attended shift boundary", async () => {
+test("the same compiled production entry consumes only an authorized original and never repeats engine admission", async () => {
   await verifyProjectShiftEntry([executable]);
 }, 15_000);
