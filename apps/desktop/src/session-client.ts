@@ -73,6 +73,8 @@ export interface OwnedSessionView {
   page: ConversationPage | null;
   loaded: boolean;
   live: boolean;
+  feedInterrupted: boolean;
+  readError: string;
   draft: string;
   attachments: SessionAttachment[];
   about: ConversationObject[];
@@ -118,6 +120,7 @@ export function createSessionsClient(deps: {
   let selected: OwnedSessionView | null = null,
     connection: { close(): void } | null = null,
     timer: unknown = null,
+    cancelSavedRead: (() => void) | null = null,
     generation = 0,
     disposed = false;
   const project = (id: string): SessionProjectView => {
@@ -153,6 +156,8 @@ export function createSessionsClient(deps: {
         page: null,
         loaded: false,
         live: false,
+        feedInterrupted: false,
+        readError: "",
         draft: "",
         attachments: [],
         about: [],
@@ -278,9 +283,13 @@ export function createSessionsClient(deps: {
       parsed.data.conversationId !== entry.id
     ) {
       entry.live = false;
+      entry.feedInterrupted = true;
+      entry.readError =
+        "The saved session update could not be verified. Earlier private activity was kept. Reload to check it again.";
       entry.notice =
         "The session update could not be verified. Reload the saved conversation; partial text has been kept.";
       if (selected === entry) {
+        cancelSavedRead?.();
         generation++;
         disconnect();
       }
@@ -328,7 +337,11 @@ export function createSessionsClient(deps: {
       more: cursor < page.lastSequence,
     };
     entry.loaded = !entry.page.more;
-    if (live) entry.live = true;
+    entry.readError = "";
+    if (live) {
+      entry.live = true;
+      entry.feedInterrupted = false;
+    }
     for (const turn of [...page.turns, ...(page.request ? [page.request] : [])])
       confirm(entry, turn);
     tell();
@@ -720,11 +733,15 @@ export function createSessionsClient(deps: {
     activate(projectId: string | null, id: string | null) {
       if (selected?.projectId === projectId && selected?.id === id) return;
       generation++;
+      cancelSavedRead?.();
+      cancelSavedRead = null;
       disconnect();
       if (selected) {
         selected.page = null;
         selected.loaded = false;
         selected.live = false;
+        selected.feedInterrupted = false;
+        selected.readError = "";
       }
       selected = projectId && id ? session(projectId, id) : null;
       tell();
@@ -732,8 +749,60 @@ export function createSessionsClient(deps: {
       const entry = selected,
         epoch = generation;
       let failures = 0;
+      let fallbackUsed = false;
+      let savedRead: { cancelled: boolean; timer: unknown } | null = null;
       const current = () =>
         !disposed && generation === epoch && selected === entry;
+      cancelSavedRead = () => {
+        if (!savedRead) return;
+        savedRead.cancelled = true;
+        timers.clear(savedRead.timer);
+        savedRead = null;
+      };
+      const readSaved = () => {
+        if (!current() || entry.live || fallbackUsed) return;
+        fallbackUsed = true;
+        const attempt: { cancelled: boolean; timer: unknown } = {
+          cancelled: false,
+          timer: null,
+        };
+        savedRead = attempt;
+        const valid = () => current() && !attempt.cancelled && !entry.live;
+        attempt.timer = timers.set(() => {
+          if (!valid()) return;
+          attempt.cancelled = true;
+          entry.readError =
+            "The saved conversation read reached its time limit. Earlier private activity was kept. Reload to check it again.";
+          tell();
+        }, 5000);
+        void (async () => {
+          try {
+            for (let pages = 0; pages < 200 && valid(); pages++) {
+              const after = entry.page?.nextCursor ?? 0;
+              const original = entry.pending?.requestId ?? entry.stopping;
+              const raw = await deps.read(entry.projectId, entry.id, {
+                after,
+                ...(original ? { requestId: original } : {}),
+              });
+              if (!valid()) return;
+              if (!apply(entry, raw)) return;
+              if (!entry.page?.more) return;
+              if (entry.page.nextCursor <= after)
+                throw Error("Saved cursor did not advance");
+            }
+            if (valid()) throw Error("Saved page limit reached");
+          } catch {
+            if (valid()) {
+              entry.readError =
+                "The saved conversation could not be fully read within its safety limits. Earlier private activity was kept. Reload to check it again.";
+              tell();
+            }
+          } finally {
+            timers.clear(attempt.timer);
+            if (savedRead === attempt) savedRead = null;
+          }
+        })();
+      };
       const open = () => {
         if (!current()) return;
         const deadline = (ms: number) => {
@@ -763,7 +832,10 @@ export function createSessionsClient(deps: {
                 apply(entry, null);
                 return;
               }
-              apply(entry, value, true);
+              if (apply(entry, value, true)) {
+                fallbackUsed = false;
+                cancelSavedRead?.();
+              }
             },
             onEnd() {
               fail();
@@ -775,12 +847,14 @@ export function createSessionsClient(deps: {
         if (!current()) return;
         disconnect();
         entry.live = false;
+        entry.feedInterrupted = true;
         failures++;
         entry.notice =
           failures >= 6
             ? "Session updates are unavailable. Reload the saved conversation."
             : "Session updates were interrupted. Reconnecting to the saved cursor…";
         tell();
+        readSaved();
         if (failures < 6)
           timer = timers.set(open, Math.min(8_000, 500 * 2 ** (failures - 1)));
       };
@@ -793,6 +867,8 @@ export function createSessionsClient(deps: {
       }
     },
     dispose() {
+      cancelSavedRead?.();
+      cancelSavedRead = null;
       disposed = true;
       generation++;
       disconnect();

@@ -135,7 +135,15 @@ test("lifecycle uses actual outcomes and native resume support while partial fai
     loaded: true,
     live: true,
     stopping: false,
+    feedInterrupted: false,
+    readError: "",
   } as const;
+  expect(ownedSessionLifecycle(null, { ...options, loaded: false }).state).toBe(
+    "loading",
+  );
+  expect(
+    ownedSessionLifecycle(null, { ...options, readError: "Saved read failed" }),
+  ).toMatchObject({ state: "error", label: "Saved conversation unavailable" });
   expect(ownedSessionLifecycle(current, options).state).toBe("idle");
   expect(
     ownedSessionLifecycle(current, { ...options, mode: "task" }).state,
@@ -200,10 +208,16 @@ test("interrupted live observation is stale, saved ownership is explicit, and un
     loaded: true,
     live: true,
     stopping: false,
+    feedInterrupted: false,
+    readError: "",
   } as const;
   expect(ownedSessionLifecycle(current, options).state).toBe("running");
   expect(
-    ownedSessionLifecycle(current, { ...options, live: false }),
+    ownedSessionLifecycle(current, {
+      ...options,
+      live: false,
+      feedInterrupted: true,
+    }),
   ).toMatchObject({
     state: "stale",
     detail: expect.stringContaining("process failure is not confirmed"),
@@ -322,7 +336,7 @@ test("per-turn usage keeps Claude cache and cumulative cost vocabulary separate 
   });
   expect(textOf(usage)).toContain("Requested modelrequested");
   expect(textOf(usage)).toContain("Observed modelactually-served");
-  expect(textOf(usage)).toContain("Reported input tokens0");
+  expect(textOf(usage)).toContain("Turn input tokens0");
   expect(textOf(usage)).toContain("Cache read tokens3");
   expect(textOf(usage)).toContain("Cache creation tokens4");
   expect(textOf(usage)).toContain("Cumulative provider cost estimate (USD)0");

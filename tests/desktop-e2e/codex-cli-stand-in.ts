@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { codexReportedActivity } from "../../scripts/sessions/fixtures/reported-activity";
 
 export async function runCodexStandIn() {
   const argv = process.argv.slice(2);
@@ -36,7 +37,7 @@ export async function runCodexStandIn() {
   } catch {
     /* Explicit fixture mode is optional. */
   }
-  if (!["normal", "hang", "provider-error"].includes(String(mode)))
+  if (!["normal", "hang", "provider-error", "rich"].includes(String(mode)))
     throw Error("Unknown isolated Codex fixture mode.");
   const id = randomUUID();
   const childPid =
@@ -67,6 +68,8 @@ export async function runCodexStandIn() {
       console.log(JSON.stringify(value));
     emit({ type: "thread.started", thread_id: id });
     emit({ type: "turn.started" });
+    if (mode === "rich")
+      for (const packet of codexReportedActivity) emit(packet);
     const reply = {
       type: "item.completed",
       item: { id: "reply", type: "agent_message", text: "Codex Task reply 🌱" },

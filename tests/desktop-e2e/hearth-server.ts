@@ -1,8 +1,11 @@
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
+
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
 import { closeOnSignal, createHearth } from "../../scripts/hearth/server";
 import { isMain } from "../../scripts/is-main";
+import { createClaudeSessionTransport } from "../../scripts/sessions/claude-transport";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
 
 async function main() {
@@ -21,12 +24,46 @@ async function main() {
     process.platform === "win32" ? "codex.exe" : "codex",
   );
   let token: string | null = null;
+  const claudeOptions = {
+    root,
+    home,
+    configHome: home,
+    command: [
+      join(
+        home,
+        "bd-stand-in",
+        "bin",
+        process.platform === "win32" ? "claude.exe" : "claude",
+      ),
+    ],
+    operatorToken: () => token,
+  };
+  const claude = createClaudeSessionTransport(claudeOptions);
+  const timedClaude = createClaudeSessionTransport({
+    ...claudeOptions,
+    timeoutMs: 1500,
+  });
   const hearth = await createHearth({
     root,
     home,
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      sessionRuntime: {
+        provider: "claude",
+        prepare: (input) => claude.prepare(input),
+        run: (...args) => {
+          let mode: unknown = null;
+          try {
+            mode = JSON.parse(
+              readFileSync(join(home, "coding-fixture-mode.json"), "utf8"),
+            );
+          } catch {
+            /* Only an explicit fixture mode selects the bounded timeout. */
+          }
+          return (mode === "rich-timeout" ? timedClaude : claude).run(...args);
+        },
+      },
       codexTaskRuntime: createCodexTaskRuntime({
         root,
         home,

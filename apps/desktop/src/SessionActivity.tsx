@@ -13,7 +13,14 @@ function text(label: string, value: ReportedText) {
   return (
     <div class="af-session-report-body">
       <p class="af-session-report-label">{label}</p>
-      <pre>{value.text || "No text reported"}</pre>
+      <pre
+        role="region"
+        aria-label={`${label} report`}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: bounded output regions must support keyboard scrolling in the native WebView too.
+        tabIndex={0}
+      >
+        {value.text || "No text reported"}
+      </pre>
       {value.truncated && (
         <p class="af-session-note">
           {label} truncated. The saved report is incomplete.
@@ -27,7 +34,12 @@ function json(label: string, value: ReportedJson) {
   return (
     <div class="af-session-report-body">
       <p class="af-session-report-label">{label}</p>
-      <pre>
+      <pre
+        role="region"
+        aria-label={`${label} report`}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: bounded JSON regions must support keyboard scrolling in the native WebView too.
+        tabIndex={0}
+      >
         <code>{value.json}</code>
       </pre>
       {value.truncated && (
@@ -157,6 +169,34 @@ function content(activity: CodingActivity): {
       return {
         title: "Structured output",
         body: json("Reported JSON", activity.output),
+      };
+    case "permission-denials":
+      return {
+        title: `Reported permission denials · ${activity.denials.length}`,
+        body: (
+          <>
+            <p class="af-session-note">
+              These are past provider-reported denials, not live requests. They
+              do not identify a deciding rule or allow approval from this
+              record.
+            </p>
+            <ul>
+              {activity.denials.map((denial) => (
+                <li key={denial.toolId}>
+                  <p>
+                    {denial.name} · Tool id: {denial.toolId}
+                  </p>
+                  {json("Denied tool input", denial.input)}
+                </li>
+              ))}
+            </ul>
+            {activity.truncated && (
+              <p class="af-session-note">
+                Denial list truncated. More denials may have been reported.
+              </p>
+            )}
+          </>
+        ),
       };
   }
 }
@@ -288,9 +328,9 @@ export function SessionTurnUsage({
         <dd>{requestedModel ?? "Not reported"}</dd>
         <dt>Observed model</dt>
         <dd>{value.observedModel ?? "Not reported"}</dd>
-        <dt>Reported input tokens</dt>
+        <dt>Turn input tokens</dt>
         <dd>{count(usage?.usage.inputTokens)}</dd>
-        <dt>Reported output tokens</dt>
+        <dt>Turn output tokens</dt>
         <dd>{count(usage?.usage.outputTokens)}</dd>
         {usage?.provider === "codex" && (
           <>

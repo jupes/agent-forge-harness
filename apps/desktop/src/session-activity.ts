@@ -105,9 +105,17 @@ export function ownedSessionLifecycle(
     loaded: boolean;
     live: boolean;
     stopping: boolean;
+    feedInterrupted: boolean;
+    readError: string;
   },
 ): OwnedSessionLifecycle {
   const turn = page?.turns.at(-1);
+  if (!turn && view.readError)
+    return {
+      state: "error",
+      label: "Saved conversation unavailable",
+      detail: view.readError,
+    };
   if (!turn)
     return view.loaded
       ? {
@@ -177,7 +185,7 @@ export function ownedSessionLifecycle(
       label: "Stopping… waiting for confirmation",
       detail: "Stop was requested. The process is not confirmed stopped yet.",
     };
-  if (view.loaded && !view.live)
+  if (view.feedInterrupted && !view.live)
     return {
       state: "stale",
       label: "Stale · live updates interrupted",

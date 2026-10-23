@@ -1,12 +1,122 @@
 import { expect, test } from "bun:test";
 import { eventSchema } from "../conversations/protocol";
 import {
+  codingActivitySchema,
+  SESSION_ACTIVITY_LIMITS,
+} from "./activity-protocol";
+import {
   claudeBlockActivity,
   claudeResultReports,
   claudeToolResultActivity,
 } from "./claude-activity";
 
 const version = "2.1.296";
+
+test("typed result permission denials retain distinct native ids as bounded historical data without approval authority", () => {
+  const denial = {
+    tool_name: "Bash",
+    tool_use_id: "denial-one",
+    tool_input: { command: "<script>inert</script>" },
+  };
+  const events = claudeResultReports({
+    version,
+    value: {
+      type: "result",
+      permission_denials: [denial, { ...denial, tool_use_id: "denial-two" }],
+    },
+  });
+  expect(events).toMatchObject([
+    {
+      kind: "coding-activity",
+      provider: "claude",
+      version,
+      source: "claude.result",
+      partial: false,
+      activity: {
+        kind: "permission-denials",
+        truncated: false,
+        denials: [
+          {
+            toolId: "denial-one",
+            name: "Bash",
+            input: {
+              json: '{"command":"<script>inert</script>"}',
+              truncated: false,
+            },
+          },
+          { toolId: "denial-two", name: "Bash" },
+        ],
+      },
+    },
+  ]);
+  expect(eventSchema.safeParse(events[0]).success).toBe(false);
+  expect(
+    codingActivitySchema.safeParse({
+      ...events[0],
+      provider: "codex",
+      source: "codex.item.completed",
+    }).success,
+  ).toBe(false);
+  const many = claudeResultReports({
+    version,
+    value: {
+      permission_denials: Array.from(
+        { length: SESSION_ACTIVITY_LIMITS.items + 1 },
+        (_, index) => ({ ...denial, tool_use_id: `denial-${index}` }),
+      ),
+    },
+  });
+  const report = many[0];
+  if (
+    report?.kind !== "coding-activity" ||
+    report.activity.kind !== "permission-denials"
+  )
+    throw Error("Missing historical denial report");
+  expect(report.activity.denials).toHaveLength(SESSION_ACTIVITY_LIMITS.items);
+  expect(report.activity.truncated).toBe(true);
+  expect(() =>
+    claudeResultReports({
+      version,
+      value: { permission_denials: [{ ...denial, tool_input: null }] },
+    }),
+  ).toThrow();
+  expect(
+    claudeResultReports({ version, value: { permission_denials: [] } }),
+  ).toEqual([]);
+  expect(() =>
+    claudeResultReports({
+      version,
+      value: {
+        permission_denials: [
+          denial,
+          { ...denial, tool_input: { command: "conflicting" } },
+        ],
+      },
+    }),
+  ).toThrow();
+  const large = claudeResultReports({
+    version,
+    value: {
+      permission_denials: [
+        denial,
+        {
+          ...denial,
+          tool_use_id: "large-one",
+          tool_input: { text: "x".repeat(35_000) },
+        },
+        {
+          ...denial,
+          tool_use_id: "large-two",
+          tool_input: { text: "y".repeat(35_000) },
+        },
+      ],
+    },
+  });
+  expect(
+    new TextEncoder().encode(JSON.stringify(large[0])).byteLength,
+  ).toBeLessThanOrEqual(SESSION_ACTIVITY_LIMITS.eventBytes);
+  expect(large[0]).toMatchObject({ activity: { truncated: true } });
+});
 test("Claude thinking, redaction and tool input stay inert private activity", () => {
   const base = {
     version,

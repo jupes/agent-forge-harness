@@ -52,10 +52,15 @@ export function SessionConversation({
     loaded: view.loaded,
     live: view.live,
     stopping: !!view.stopping,
+    feedInterrupted: view.feedInterrupted,
+    readError: view.readError,
   });
   const observed = [...(view.page?.frames ?? [])]
     .reverse()
-    .find((frame) => frame.event.kind === "model")?.event;
+    .find(
+      (frame) =>
+        frame.turnId === current?.requestId && frame.event.kind === "model",
+    )?.event;
   const first = view.page?.frames.find(
     (frame) => frame.event.kind === "user" && frame.event.session,
   )?.event;
@@ -242,9 +247,10 @@ export function SessionConversation({
           </details>
         </details>
       </header>
-      {view.notice && (
+      {(view.notice || view.readError) && (
         <div class="af-session-warning" role="status">
           <p>{view.notice}</p>
+          {view.readError && <p role="alert">{view.readError}</p>}
           {view.pending && (
             <div class="af-session-composer-row">
               <Button
@@ -303,7 +309,7 @@ export function SessionConversation({
             node.scrollHeight - node.scrollTop - node.clientHeight < 80;
         }}
       >
-        {!view.loaded && (
+        {!view.loaded && !view.readError && (
           <p role="status">
             {view.page
               ? "Loading earlier session messages…"
