@@ -46,7 +46,7 @@ test("Overview shows three of four scoped needs-you items and linked sections", 
   ).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Reported project usage" }),
-  ).toContainText("no project usage reported");
+  ).toContainText("no project session totals were reported in this read");
   await expect(
     page.getByRole("region", { name: "Scoped bead counts" }),
   ).toContainText("5Open");
