@@ -26,6 +26,40 @@ export function projectHistoryStart(asOf: string): string {
   ).toISOString();
 }
 
+/** Latest reported session totals only; an absent provider field remains absent. */
+export function aggregateReportedSessionUsage(
+  events: readonly LedgerEvent[],
+  since: number,
+  through: number,
+) {
+  const usage = new Map<
+    string,
+    { provider: string; sessions: number; usage: ProviderUsage }
+  >();
+  const counted = new Set<string>();
+  for (const event of [...events].sort((a, b) => b.id - a.id)) {
+    if (
+      event.kind !== "session.ended" ||
+      !event.sessionId ||
+      !event.payload.usage ||
+      Date.parse(event.ts) < since ||
+      Date.parse(event.ts) > through ||
+      counted.has(event.sessionId)
+    )
+      continue;
+    counted.add(event.sessionId);
+    const provider = event.executor?.provider ?? "unknown";
+    const row = usage.get(provider) ?? { provider, sessions: 0, usage: {} };
+    row.sessions++;
+    for (const key of [...PROVIDER_USAGE_COUNTS, "costUsd"] as const) {
+      const value = event.payload.usage[key];
+      if (value !== undefined) row.usage[key] = (row.usage[key] ?? 0) + value;
+    }
+    usage.set(provider, row);
+  }
+  return [...usage.values()];
+}
+
 /** Every event must carry its own project bead binding. Session reuse grants no history access. */
 export function buildProjectOverview(
   project: ProjectRecord,
@@ -65,31 +99,8 @@ export function buildProjectOverview(
       event.beadId
     )
       days.get(event.ts.slice(0, 10))?.add(event.beadId);
-  const usage = new Map<
-    string,
-    { provider: string; sessions: number; usage: ProviderUsage }
-  >();
-  const counted = new Set<string>();
   const weekStart = end - 7 * DAY;
-  for (const event of [...events].sort((a, b) => b.id - a.id)) {
-    if (
-      event.kind !== "session.ended" ||
-      !event.sessionId ||
-      !event.payload.usage ||
-      Date.parse(event.ts) < weekStart ||
-      counted.has(event.sessionId)
-    )
-      continue;
-    counted.add(event.sessionId);
-    const provider = event.executor?.provider ?? "unknown";
-    const row = usage.get(provider) ?? { provider, sessions: 0, usage: {} };
-    row.sessions++;
-    for (const key of [...PROVIDER_USAGE_COUNTS, "costUsd"] as const) {
-      const value = event.payload.usage[key];
-      if (value !== undefined) row.usage[key] = (row.usage[key] ?? 0) + value;
-    }
-    usage.set(provider, row);
-  }
+  const usage = aggregateReportedSessionUsage(events, weekStart, end);
   const observation = <T>(
     data: T | null,
     source: string,
@@ -161,7 +172,7 @@ export function buildProjectOverview(
           : "Tracker changes made outside this hearth are not recorded here.",
     ),
     usage: observation(
-      historyAvailable ? [...usage.values()] : null,
+      historyAvailable ? usage : null,
       "Provider-reported session-end usage · last 7 days",
       false,
       "Reported usage only; live sessions, unpriced work and changes outside the hearth may be absent. No allowance or subscription total is inferred.",

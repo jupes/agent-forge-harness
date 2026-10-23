@@ -34,6 +34,8 @@ import { dlopen, FFIType, ptr } from "bun:ffi";
 export interface TreeGuard {
   /** Stand the guard down, ending nothing. Safe to call more than once. */
   release(): void;
+  /** Windows only: close the kill-on-close job without clearing its limit. */
+  terminate?(): void;
 }
 
 const UNGUARDED: TreeGuard = { release: () => undefined };
@@ -121,6 +123,11 @@ function jobGuard(pid: number): TreeGuard {
   }
   let held = true;
   return {
+    terminate() {
+      if (!held) return;
+      held = false;
+      api.CloseHandle(job);
+    },
     release() {
       if (!held) return;
       held = false;
@@ -175,4 +182,14 @@ function watchGuard(pid: number): TreeGuard {
  */
 export function guardTree(pid: number): TreeGuard {
   return process.platform === "win32" ? jobGuard(pid) : watchGuard(pid);
+}
+
+/** New native processes remain suspended until this mandatory ownership succeeds. */
+export function guardSuspendedWindowsProcess(
+  pid: number,
+): { release(): void; terminate(): void } | null {
+  if (process.platform !== "win32" || process.arch !== "x64") return null;
+  const guard = jobGuard(pid),
+    terminate = guard.terminate;
+  return terminate ? { release: () => guard.release(), terminate } : null;
 }

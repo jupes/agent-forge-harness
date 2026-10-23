@@ -258,3 +258,48 @@ test("a new bead under a different scoped epic is unknown even when it remains i
   expect(answer.body.error).toContain("alpha-epic.1");
   expect(effects(h)).toHaveLength(1);
 });
+
+test("scoped Workbench moves preserve explicit approval, legal resume, exact reassignment and foreign refusal", async () => {
+  const h = await start();
+  seedProjectBeadWriteFixture(h);
+  expect((await post(h, "/alpha-task/queue", {})).status).toBe(409);
+  expect((await post(h, "/alpha-task/propose", {})).status).toBe(200);
+  for (const [action, to] of [
+    ["approve", "approved"],
+    ["queue", "queued"],
+    ["pause", "paused"],
+    ["resume", "queued"],
+  ]) {
+    const answer = await post(h, `/alpha-task/${action}`, {});
+    expect(answer.status).toBe(200);
+    expect(answer.body.data).toMatchObject({
+      id: "alpha-task",
+      action,
+      to,
+      recorded: true,
+    });
+  }
+  const reassigned = await post(h, "/alpha-task/reassign", {
+    smith: "claude-master",
+  });
+  expect(reassigned.status).toBe(200);
+  expect(reassigned.body.data).toMatchObject({
+    id: "alpha-task",
+    state: "queued",
+    smith: "claude-master",
+    recorded: true,
+  });
+  const count = effects(h).length;
+  for (const action of ["approve", "queue", "pause", "resume", "reassign"]) {
+    expect(
+      (
+        await post(
+          h,
+          `/beta-epic/${action}`,
+          action === "reassign" ? { smith: "claude-master" } : {},
+        )
+      ).status,
+    ).toBe(404);
+  }
+  expect(effects(h).length).toBe(count);
+});

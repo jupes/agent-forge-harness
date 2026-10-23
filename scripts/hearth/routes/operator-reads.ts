@@ -716,7 +716,7 @@ export function workspaceReads(deps: ReadDeps) {
         : { status: 502, error: safeMessage(read.error) };
     },
   };
-  return { queue, smiths, config: whole, worktrees, eligibility };
+  return { queue, smiths, config: whole, worktrees, eligibility, readEligible };
 }
 
 /**

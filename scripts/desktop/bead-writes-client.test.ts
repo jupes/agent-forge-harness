@@ -78,6 +78,76 @@ const created = (recorded = true): ActionOutcome => ({
   data: { id: "alpha-1", action: "create", status: "open", recorded },
 });
 
+test("Workbench queue receipts require the canonical move and the exact requested smith", async () => {
+  const moves = [
+    { action: "approve", from: "proposed", to: "approved" },
+    { action: "queue", from: "approved", to: "queued" },
+    { action: "pause", from: "running", to: "paused" },
+    { action: "resume", from: "paused", to: "queued" },
+  ] as const;
+  for (const move of moves) {
+    const f = fixture(async () => ({
+      state: "done",
+      data: { id: "alpha-1", ...move, recorded: true },
+    }));
+    const answer = await f.client.act(scope, move.action, "alpha-1");
+    expect(answer?.phase).toBe("done");
+    expect(answer?.queueTo).toBe(move.to);
+  }
+  const f = fixture(async (action, body) => {
+    expect(action).toBe("reassign");
+    expect(body).toEqual({ smith: "fixture-smith" });
+    return {
+      state: "done",
+      data: {
+        id: "alpha-1",
+        state: "queued",
+        smith: "fixture-smith",
+        recorded: true,
+      },
+    };
+  });
+  expect(
+    (await f.client.act(scope, "reassign", "alpha-1", "fixture-smith"))?.phase,
+  ).toBe("done");
+});
+
+test("illegal queue receipts and mismatched reassignment stay held across reload without another effect", async () => {
+  for (const action of ["queue", "reassign"] as const) {
+    let calls = 0;
+    const f = fixture(async () => {
+      calls++;
+      return {
+        state: "done",
+        data:
+          action === "queue"
+            ? {
+                id: "alpha-1",
+                action,
+                from: "proposed",
+                to: "queued",
+                recorded: true,
+              }
+            : {
+                id: "alpha-1",
+                state: "queued",
+                smith: "other-smith",
+                recorded: true,
+              },
+      };
+    });
+    expect(
+      (await f.client.act(scope, action, "alpha-1", "fixture-smith"))?.phase,
+    ).toBe("unknown");
+    const reload = createDesktopBeadWrites(f.deps);
+    expect(reload.held(scope)).toBe(true);
+    await reload.act(scope, action, "alpha-1", "fixture-smith");
+    expect(calls).toBe(1);
+    if (action === "reassign")
+      expect(reload.notices()[0]?.targetSmith).toBe("fixture-smith");
+  }
+});
+
 test("a lost Proposed reply retains the created id before sending and cannot create again after reload", async () => {
   const calls: string[] = [];
   const f = fixture(async (action) => {

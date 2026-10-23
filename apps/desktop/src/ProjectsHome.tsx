@@ -8,10 +8,14 @@ import { type FrameProvider, ProviderMonogram } from "./DesktopFrame";
 import { desktopHref } from "./navigation";
 import { openProject, projectCards } from "./projects-model";
 import "./projects.css";
+import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { ProjectKeeperLine } from "./KeeperBrief";
 import type { KeeperClient } from "./keeper-client";
+import { ProviderUsageStrip } from "./Providers";
 
 export interface ProjectsHomeProps {
+  providers?: ProviderReadinessPage | null;
+  providerStale?: boolean;
   home: Home | null;
   error: string | null;
   loading: boolean;
@@ -51,6 +55,8 @@ export function ProjectsHomeView({
   search,
   onFilter,
   onSearch,
+  providers,
+  providerStale,
 }: ProjectsHomeProps & {
   filter: "active" | "archived" | "all";
   search: string;
@@ -329,13 +335,10 @@ export function ProjectsHomeView({
         </div>
       </section>
       <section aria-label="Subscriptions" class="af-projects-subscriptions">
-        {["Claude", "Codex", "Gemini", "Grok", "OpenRouter"].map((provider) => (
-          <p key={provider}>
-            <strong>{provider}</strong>
-            <br />
-            Usage — not reported
-          </p>
-        ))}
+        <ProviderUsageStrip
+          data={providers ?? null}
+          stale={providerStale ?? false}
+        />
       </section>
     </div>
   );

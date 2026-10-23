@@ -9,11 +9,13 @@ import type { WorktreeEntry } from "../../../types/beads";
 import type { ConversationObject } from "../../../types/conversation";
 import type { SmithsView } from "../../../types/hearth";
 import type { ProjectRecord } from "../../../types/projects";
+import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import type { SerializedClaudeLaunch } from "../../../types/session-launch";
 import type { SessionTurnSnapshot } from "../../../types/session-turn";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
+import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionsClient } from "./session-client";
 import {
   chooseSessionSmith,
@@ -25,6 +27,7 @@ import "./session.css";
 import { CodexTaskComposer } from "./CodexTaskComposer";
 
 export interface SessionComposerProps {
+  providers?: ProviderReadinessPage | null;
   project: ProjectRecord;
   client: SessionsClient;
   keeper: KeeperClient;
@@ -70,6 +73,7 @@ function ClaudeSessionComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  providers,
 }: {
   project: ProjectRecord;
   client: SessionsClient;
@@ -77,6 +81,7 @@ function ClaudeSessionComposer({
   writesAllowed: boolean;
   onCancel(): void;
   onStarted(id: string): void;
+  providers?: ProviderReadinessPage | null;
 }) {
   const view = client.project(project.id),
     draft = view.composer,
@@ -94,6 +99,12 @@ function ClaudeSessionComposer({
   const [caret, setCaret] = useState(0),
     [pickerVisible, setPickerVisible] = useState(false);
   const startAtOpen = useRef(view.lastStarted);
+  const claudeReadiness = providers?.providers.find(
+    (provider) => provider.provider === "claude",
+  );
+  const codexReadiness = providers?.providers.find(
+    (provider) => provider.provider === "codex",
+  );
   const edit = (change: Partial<typeof draft>) =>
     client.editComposer(project.id, change);
   useEffect(() => {
@@ -229,6 +240,7 @@ function ClaudeSessionComposer({
   }
   const busy = checking || attaching || view.starting;
   const canStart =
+    claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&
     !project.archived &&
     !busy &&
@@ -370,14 +382,27 @@ function ClaudeSessionComposer({
         aria-label="Provider"
       >
         <button type="button" aria-pressed="true">
-          Cl · Claude<small>CLI checked below · usage not reported</small>
+          Cl · Claude
+          <small>
+            {claudeReadiness
+              ? readinessLabel(claudeReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(claudeReadiness)}
+          </small>
         </button>
         <button
           type="button"
           aria-pressed="false"
           onClick={() => client.chooseComposerProvider(project.id, "codex")}
         >
-          Cx · Codex<small>Task · CLI checked below</small>
+          Cx · Codex
+          <small>
+            Task ·{" "}
+            {codexReadiness
+              ? readinessLabel(codexReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(codexReadiness)}
+          </small>
         </button>
         {["Gemini", "Grok", "OpenRouter"].map((name) => (
           <button
@@ -391,6 +416,12 @@ function ClaudeSessionComposer({
           </button>
         ))}
       </div>
+      {claudeReadiness?.authentication.mode === "signed-out" && (
+        <p role="status">
+          Claude reports signed out. Sign in with its own CLI, then recheck
+          provider readiness before starting.
+        </p>
+      )}
       <label>
         Prompt
         <textarea

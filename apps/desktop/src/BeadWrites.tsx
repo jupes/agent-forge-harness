@@ -48,6 +48,11 @@ export function BeadWriteNotices({
             · {n.message}
           </p>
           {n.title && <p>{n.title}</p>}
+          {n.targetSmith && (
+            <p>
+              Reassign {n.beadId} to smith {n.targetSmith}.
+            </p>
+          )}
           <Button
             href={
               (n.createdId ?? n.beadId)

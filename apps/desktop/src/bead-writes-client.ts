@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ActionOutcome } from "../../../docs/js/action-outcome";
 import { workspaceKey } from "../../../scripts/projects/scope";
+import { QUEUE_TABLE } from "../../../scripts/scheduler/queue-table";
 import { QUEUE_STATES } from "../../../types/hearth";
 
 export interface BeadWriteScope {
@@ -23,7 +24,12 @@ export type DesktopBeadAction =
   | "claim"
   | "comment"
   | "close"
-  | "propose";
+  | "propose"
+  | "approve"
+  | "queue"
+  | "pause"
+  | "resume"
+  | "reassign";
 const id = z
   .string()
   .min(1)
@@ -34,10 +40,23 @@ const noticeSchema = z
     key: id,
     projectId: z.string().min(1).max(100),
     workspace: z.string().min(1).max(1024),
-    action: z.enum(["create", "claim", "comment", "close", "propose"]),
+    action: z.enum([
+      "create",
+      "claim",
+      "comment",
+      "close",
+      "propose",
+      "approve",
+      "queue",
+      "pause",
+      "resume",
+      "reassign",
+    ]),
     beadId: id.nullable(),
     title: z.string().max(200).nullable(),
     createdId: id.nullable(),
+    targetSmith: z.string().min(1).max(200).optional(),
+    queueTo: z.enum(QUEUE_STATES).optional(),
     stage: z.enum(["write", "propose"]),
     phase: z.enum(["sending", "done", "refused", "unknown"]),
     message: z.string().max(1000),
@@ -70,12 +89,28 @@ const writeResult = z
     updatedAt: z.string().max(100).optional(),
   })
   .strict();
-const proposedResult = z
+const moveResult = z
   .object({
     ...recordFields,
-    action: z.literal("propose"),
+    action: z.enum(["propose", "approve", "queue", "pause", "resume"]),
     from: z.enum(QUEUE_STATES).nullable(),
-    to: z.literal("proposed"),
+    to: z.enum(QUEUE_STATES),
+  })
+  .strict()
+  .refine((receipt) =>
+    QUEUE_TABLE.some(
+      (rule) =>
+        rule.action === receipt.action &&
+        rule.from === receipt.from &&
+        rule.to === receipt.to &&
+        rule.by.includes("operator"),
+    ),
+  );
+const reassignResult = z
+  .object({
+    ...recordFields,
+    state: z.enum(QUEUE_STATES),
+    smith: z.string().min(1).max(200),
   })
   .strict();
 const KEY = "agent-forge.desktop-bead-writes.v1";
@@ -219,12 +254,20 @@ export function createDesktopBeadWrites(deps: Dependencies) {
       return null;
     }
     const parsed =
-      action === "propose"
-        ? proposedResult.safeParse(answer.data)
-        : writeResult.safeParse(answer.data);
+      action === "reassign"
+        ? reassignResult.safeParse(answer.data)
+        : ["propose", "approve", "queue", "pause", "resume"].includes(action)
+          ? moveResult.safeParse(answer.data)
+          : writeResult.safeParse(answer.data);
     if (
       !parsed.success ||
-      parsed.data.action !== action ||
+      (action === "reassign"
+        ? !("smith" in parsed.data) ||
+          !body ||
+          typeof body !== "object" ||
+          !("smith" in body) ||
+          parsed.data.smith !== body.smith
+        : !("action" in parsed.data) || parsed.data.action !== action) ||
       (beadId !== null && parsed.data.id !== beadId) ||
       (action === "create" &&
         (!("status" in parsed.data) || parsed.data.status !== "open")) ||
@@ -284,6 +327,12 @@ export function createDesktopBeadWrites(deps: Dependencies) {
           ? copied.title
           : null,
       createdId: null,
+      ...(action === "reassign" &&
+      copied &&
+      typeof copied === "object" &&
+      "smith" in copied
+        ? { targetSmith: copied.smith }
+        : {}),
       stage: "write",
       phase: "sending",
       message: "Sending…",
@@ -303,6 +352,7 @@ export function createDesktopBeadWrites(deps: Dependencies) {
     tell();
     const result = await invoke(notice, action, beadId, copied);
     if (!result) return notice;
+    if ("to" in result) notice.queueTo = result.to;
     if (action === "create") notice.createdId = result.id;
     const changed = () => {
       // A projection refresh cannot erase a confirmed external write.
@@ -416,7 +466,9 @@ export function createDesktopBeadWrites(deps: Dependencies) {
           ? { text }
           : action === "close"
             ? { reason: text }
-            : {},
+            : action === "reassign"
+              ? { smith: text }
+              : {},
       ),
     async checked(key: string) {
       const notice = entries.find((item) => item.key === key);

@@ -7,8 +7,10 @@ import type { ProjectOverview as Overview } from "../../../types/project-overvie
 import { desktopHref } from "./navigation";
 import { openProject } from "./projects-model";
 import "./overview.css";
+import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { KeeperBriefPanel } from "./KeeperBrief";
 import type { KeeperClient } from "./keeper-client";
+import { ProjectProviderUsage } from "./Providers";
 
 export const PROJECT_READ_KINDS: readonly LedgerEventKind[] = [
   "operator.action",
@@ -31,9 +33,13 @@ export const PROJECT_READ_KINDS: readonly LedgerEventKind[] = [
 export function ProjectOverview({
   projectId,
   keeper,
+  providers,
+  providerStale,
 }: {
   projectId: string;
   keeper?: KeeperClient;
+  providers?: ProviderReadinessPage | null;
+  providerStale?: boolean;
 }): JSX.Element {
   const state = useOperatorRead<Overview>(
     `/projects/${encodeURIComponent(projectId)}/overview`,
@@ -48,6 +54,8 @@ export function ProjectOverview({
       error={state.error}
       reload={state.reload}
       keeper={keeper}
+      providers={providers ?? null}
+      providerStale={providerStale ?? false}
     />
   );
 }
@@ -58,12 +66,16 @@ export function ProjectOverviewView({
   error,
   reload,
   keeper,
+  providers,
+  providerStale,
 }: {
   projectId: string;
   data: Overview | null;
   error: string | null;
   reload(): void;
   keeper?: KeeperClient | undefined;
+  providers?: ProviderReadinessPage | null;
+  providerStale?: boolean;
 }): JSX.Element {
   if (!data)
     return (
@@ -296,44 +308,11 @@ export function ProjectOverviewView({
         )}
         <p class="af-overview-muted">{data.throughput.reason}</p>
       </section>
-      <section class="af-overview-panel" aria-label="Reported project usage">
-        <h2>Reported project usage</h2>
-        <p>{data.usage.source}</p>
-        {data.usage.data?.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Input tokens</th>
-                <th>Output tokens</th>
-                <th>Reported USD</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.usage.data.map((row) => (
-                <tr key={row.provider}>
-                  <th>{row.provider}</th>
-                  <td>{row.usage.inputTokens?.toLocaleString() ?? "—"}</td>
-                  <td>{row.usage.outputTokens?.toLocaleString() ?? "—"}</td>
-                  <td>{row.usage.costUsd?.toFixed(2) ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p>Usage — no project usage reported in this read.</p>
-        )}
-        <p class="af-overview-muted">{data.usage.reason}</p>
-        <Button
-          href={desktopHref({
-            projectId,
-            destination: "providers",
-            selection: null,
-          })}
-        >
-          Providers &amp; usage
-        </Button>
-      </section>
+      <ProjectProviderUsage
+        projectId={projectId}
+        data={providers ?? null}
+        stale={providerStale ?? false}
+      />
     </div>
   );
 }

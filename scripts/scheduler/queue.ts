@@ -50,7 +50,11 @@ import {
   type QueueState,
 } from "../../types/hearth";
 import type { ForgeConfig } from "../config/load";
-import { type Resolution, resolveSmith } from "../config/resolve";
+import {
+  type Resolution,
+  resolveSmith,
+  type SmithSelectionConfig,
+} from "../config/resolve";
 import { safeMessage } from "../hearth/api";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import {
@@ -161,7 +165,7 @@ export function complexityOf(
  * arguments, and the same bead gets the same smith every time.
  */
 export function smithFor(
-  config: ForgeConfig,
+  config: SmithSelectionConfig,
   bead: { id: string; labels: readonly string[]; metadata?: unknown },
 ): Resolution {
   const complexity = complexityOf(bead.labels);
