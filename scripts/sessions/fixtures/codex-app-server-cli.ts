@@ -216,6 +216,17 @@ while (true) {
           reasoningEffort: "medium",
         },
       });
+      await send({
+        method: "thread/started",
+        params: {
+          thread: {
+            id: threadId,
+            sessionId: threadId,
+            forkedFromId: null,
+            parentThreadId: null,
+          },
+        },
+      });
     } else if (method === "turn/start") {
       await send({
         id,

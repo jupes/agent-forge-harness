@@ -165,6 +165,9 @@ test("foreign native identity and malformed or oversized frames refuse", () => {
       }),
     ),
   ).toThrow("identity");
+  expect(() =>
+    decoder.accept(notify("thread/started", { thread: { id: turnId } })),
+  ).toThrow("identity");
   expect(() => parseCodexAppServerFrame("{")).toThrow("malformed");
   expect(() => parseCodexAppServerFrame(" ".repeat(1_048_577))).toThrow(
     "bound",

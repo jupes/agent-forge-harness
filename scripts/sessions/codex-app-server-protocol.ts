@@ -483,6 +483,24 @@ export function createCodexChatStream(options: {
           });
         } else
           throw new Error("Codex requested an unsupported client operation.");
+      } else if (frame.method === "thread/started") {
+        const announced = z
+          .object({
+            id: codexNativeUuidSchema,
+            sessionId: codexNativeUuidSchema.optional(),
+            forkedFromId: z.null().optional(),
+            parentThreadId: z.null().optional(),
+          })
+          .parse(params.thread);
+        if (
+          !threadId ||
+          announced.id !== threadId ||
+          (announced.sessionId !== undefined &&
+            announced.sessionId !== threadId)
+        )
+          throw new Error(
+            "Codex announced a different native thread identity.",
+          );
       } else if (frame.method === "turn/started") {
         scoped(params, false);
         events.push(...bindTurn(params.turn));
