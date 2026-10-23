@@ -28,6 +28,7 @@ import { ledgerPath } from "../ledger/paths";
 import { resolveCheckout } from "../ledger/workspace";
 import { createProjectStore } from "../projects/store";
 import { verifyProjectShiftEntry } from "../shifts/verify-entry";
+import { verifyAttendedProjectShifts } from "./attended-shift-smoke";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");
@@ -109,6 +110,15 @@ async function main(): Promise<void> {
 
   await verifyKeeperReader([join(stage, "hearth.exe"), "--keeper-reader"]);
   await verifyProjectShiftEntry([join(stage, "hearth.exe")]);
+  await verifyAttendedProjectShifts(stage, {
+    availablePort,
+    waitForTarget,
+    openCdp,
+    enable: cdpEnable,
+    evaluate,
+    waitForPage,
+    screenshot: saveScreenshot,
+  });
 
   const temp = mkdtempSync(join(tmpdir(), "agent-forge-desktop-smoke-"));
   const desktopSmokeHome = resolve(temp, "home");
@@ -674,6 +684,9 @@ async function main(): Promise<void> {
           projectSessionsTested: true,
           trackerStandInTested: true,
           packagedKeeperReaderTested: true,
+          attendedProjectShiftsTested: true,
+          attendedCodexApprovalNeverTested: true,
+          interruptedShiftRecoveryTested: true,
           keeperConversationTested: true,
           keeperSelectionTested: true,
           keeperBriefTested: true,
@@ -1584,7 +1597,7 @@ async function availablePort(): Promise<number> {
 
 async function waitForTarget(
   port: number,
-  child: Bun.Subprocess,
+  child: Pick<Bun.Subprocess, "exitCode">,
 ): Promise<CdpTarget> {
   const deadline = Date.now() + waitLimitMs;
   while (Date.now() < deadline && child.exitCode === null) {

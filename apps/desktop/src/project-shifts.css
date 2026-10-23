@@ -76,6 +76,7 @@
 .af-shift-held {
   color: var(--color-neutral-400);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .af-shift-held {
   padding: 12px;
