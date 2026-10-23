@@ -15,6 +15,19 @@ afterEach(() => scratch.cleanup());
 const fake = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const fixedFailure =
   "The private provider transcript could not be verified. The shift must stop before another attempt.";
+function alive(pid: number) {
+  try {
+    if (
+      process.platform === "linux" &&
+      /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+    )
+      return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((yes) => {
@@ -295,7 +308,7 @@ test("Stop aborts an uncooperative private process write and settles after tree 
   }
 }, 10000);
 
-test("private capture finishes only after a normally exiting provider's held helper is gone", async () => {
+test("private capture finishes only after a normally exiting provider's held helper has stopped", async () => {
   const f = setup("orphan");
   let descendant = 0;
   const handle = await claudeAdapter.spawn({
@@ -321,7 +334,7 @@ test("private capture finishes only after a normally exiting provider's held hel
         },
         async finish() {
           expect(descendant).toBeGreaterThan(0);
-          expect(() => process.kill(descendant, 0)).toThrow();
+          expect(alive(descendant)).toBe(false);
         },
       }),
     },
@@ -329,7 +342,7 @@ test("private capture finishes only after a normally exiting provider's held hel
   try {
     expect(await handle.done).toMatchObject({ exitCode: 0, stopped: false });
     expect(descendant).toBeGreaterThan(0);
-    expect(() => process.kill(descendant, 0)).toThrow();
+    expect(alive(descendant)).toBe(false);
   } finally {
     await handle.stop("fixture cleanup");
     await handle.done;
@@ -393,8 +406,7 @@ test("private output failure stops and awaits the supervised tree and cannot bec
     expect(JSON.stringify(result)).not.toContain("private parse diagnostic");
     expect(descendant).toBeNumber();
     const descendantPid = descendant;
-    if (descendantPid !== null)
-      expect(() => process.kill(descendantPid, 0)).toThrow();
+    if (descendantPid !== null) expect(alive(descendantPid)).toBe(false);
   } finally {
     await handle.stop("fixture cleanup");
     await handle.done;
