@@ -34,8 +34,17 @@ verification against unavailable named dark boards.
 Focused presentation tests cover split Markdown, exact copy, HTML/link safety,
 empty/full/delta boundaries, interleaved tools/notices, separate turns,
 unchanged source frames and streaming/terminal caret behavior. The actual
-browser journey is authored in `tests/desktop-e2e/gemini-task.spec.ts`: a
+browser journey in `tests/desktop-e2e/gemini-task.spec.ts` ran successfully: a
 compiled inert Gemini process holds split text for keyboard copy, then emits
 tool-separated messages and completes. It verifies reload and the unchanged
-complete native export at 1100px with reduced motion. Browser execution and
-capture evidence are recorded separately when that coordinated gate runs.
+complete native export at 1100px with reduced motion. The single coordinated
+case passed in 6.9 seconds (14.7 seconds for the runner) at source checkpoint
+`41bb51466ba5b7a52edf503cecf89a187a4f3972`. The owned runner exited normally and
+both test listeners were absent afterward. The masked
+[capture](screenshots/gemini-task-markdown.png) was visually reviewed.
+
+The affected five-file unit matrix passed 35 tests with 319 assertions. An
+additional empty-complete-report caret regression then passed with all six
+presentation tests and 39 assertions. Type checking and the repository's
+1,016-file lint check passed. These focused checks do not claim a new full
+unit-suite or packaged native gate for this presentation-only checkpoint.
