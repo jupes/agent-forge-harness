@@ -34,6 +34,7 @@ export const geminiTaskPreviewReceiptSchema = z
       if (
         launch.context?.projectId !== value.projectId ||
         launch.context.worktree !== launch.cwd ||
+        launch.sandbox === false ||
         launch.policyFiles !== undefined ||
         launch.includeDirectories !== undefined ||
         new TextEncoder().encode(JSON.stringify(value)).byteLength >

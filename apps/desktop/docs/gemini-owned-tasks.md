@@ -12,4 +12,22 @@ The selected private viewer identifies Gemini explicitly, keeps native units and
 
 Focused verification uses an actual compiled inert Gemini provider behind the protected HTTP routes, including exact retry after service recreation, denial/error/malformed/incomplete outcomes, whole export/archive, and provider/helper tree Stop. The production compiled hearth is also copied into an isolated planted checkout with only inert Gemini/Git executables on PATH: no ambient Bun, source scripts, node modules or tracker is available. Browser journeys exercise the real private view, keyboard expansion and Stop, reload, export and archive at 1100 pixels with reduced motion.
 
-The parent Gemini bead retains public composer and ACP Chat integration. This Task branch changes no standing Keeper transport or unattended provider adapter. Existing Claude/Codex originals and saved private histories retain their previous codecs and hash order.
+## Compose a scoped Task
+
+Choose **Gm · Gemini** in New session or from a bead's Start session action. The shared prompt, explicit bead/About context, repository and checked worktree stay with the draft when switching providers. Gemini options have a separate draft from Claude and Codex Task/Chat options. A newly loaded Gemini smith leaves the model blank; explicitly selecting a smith preset copies its configured model. An empty model, approvals or sandbox selection omits the corresponding native option. The composer offers no effort control.
+
+**Check supported options** uses the protected native preview without starting a model. The browser verifies a bounded strict Gemini receipt, project/smith binding and the exact serializer result. A later edit hides the reviewed command and disables Start. Start also checks the fresh shared/provider draft synchronously before reserving its original identity, so an edit before the next paint cannot dispatch unreviewed input. The protected server independently owns current scope, native capabilities and execution validation.
+
+Only Gemini CLI Task is available here. Chat and ADK are disabled with a reason. Sandbox choices are CLI default or enabled; disabling sandbox and bypassing approvals remain visibly locked by harness policy. Model, approval and sandbox overrides require their actual advertised CLI flags. Text attachments travel on private stdin. Images, custom policy paths, extra directories and arbitrary flags are unavailable.
+
+Before the first Start POST, the existing origin-locked browser journal reserves bounded metadata containing the original UUID, project, provider and request hash. It stores no prompt or attachment bodies. An unknown response survives reload and holds replacement Starts across provider switches. A protected lookup may confirm the original; reload never reconstructs or automatically resends its private body. Only an in-memory original can offer an explicit retry.
+
+The selected boundary was a dedicated Gemini draft plus a strict native preview codec. A generic provider-union form would combine unrelated option and compatibility rules; a server-driven form protocol would add a larger producer interface. Both were deferred while the existing common context and execution producers remain authoritative.
+
+Focused composer verification covers public Gemini reservation/receipt parsing, unchanged legacy hash bytes, omitted defaults, provider switching, strict capability and scope refusal, and synchronous edit-before-Start. Actual browser journeys use the compiled inert provider for keyboard Start and Stop, private text attachments, completion/history, and a Start held before admission through reload. They also cover settings/preview loading and failure, missing optional flags, and a foreign bead refusal at 1100 pixels with reduced motion.
+
+The shared explicit-worktree producer already has actual temporary Git creation/preview/Start journeys. Gemini additionally checks the exact confirmed path, repository, base, branch and bead receipt before accepting the common new-worktree selection. The existing protected Gemini admission tests retain current project membership, foreign-bead and archived-project refusal before any provider starts.
+
+Reviewed masked captures: [prompt and shared context](screenshots/gemini-task-composer-prompt.png), [native defaults and checked command](screenshots/gemini-task-composer.png).
+
+The parent Gemini bead retains ACP Chat composer integration. This Task branch changes no standing Keeper transport or unattended provider adapter. Existing Claude/Codex originals and saved private histories retain their previous codecs and hash order.

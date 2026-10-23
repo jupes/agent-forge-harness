@@ -167,3 +167,70 @@ test("Gemini preview binds exact private input, scope and options; every edit re
       false,
     );
 });
+
+test("Gemini preview rejects unsupported capabilities, unscoped paths, forged modes and oversized private preparations", () => {
+  const { preview } = checked();
+  for (const launch of [
+    { ...preview.snapshot.launch, mode: "chat" },
+    { ...preview.snapshot.launch, route: "adk" },
+    { ...preview.snapshot.launch, effort: "high" },
+    { ...preview.snapshot.launch, approvalMode: "yolo" },
+    { ...preview.snapshot.launch, policyFiles: ["/repo/policy.toml"] },
+    { ...preview.snapshot.launch, includeDirectories: ["/repo/extra"] },
+    { ...preview.snapshot.launch, prompt: "x".repeat(2_097_153) },
+  ])
+    expect(
+      geminiTaskPreviewReceiptSchema.safeParse({
+        ...preview,
+        snapshot: { ...preview.snapshot, launch },
+      }).success,
+    ).toBe(false);
+});
+
+test("a correctly serialized sandbox-off preview remains locked at the Gemini composer boundary", () => {
+  const { preview } = checked();
+  const launch = { ...preview.snapshot.launch, sandbox: false };
+  expect(
+    geminiTaskPreviewReceiptSchema.safeParse({
+      ...preview,
+      snapshot: { ...preview.snapshot, launch },
+      serialized: serializeGeminiTask(launch, preview.snapshot.capabilities),
+    }).success,
+  ).toBe(false);
+});
+
+test("Gemini uses a new worktree only after the exact repository, branch, base and bead receipt is confirmed", () => {
+  const options = {
+    ...newGeminiTaskDraft(),
+    initialized: true,
+    smith: smith.name,
+  };
+  const draft = {
+    ...common(),
+    where: "new" as const,
+    baseRef: "HEAD",
+    branch: "feature/confirmed",
+    worktree: "/repo/trees/confirmed",
+    createdWorktree: {
+      path: "/repo/trees/confirmed",
+      repository: "/repo",
+      baseRef: "HEAD",
+      branch: "feature/confirmed",
+      beadId: "alpha-1",
+    },
+  };
+  expect(geminiTaskStartBody(draft, options).worktree).toBe(
+    draft.createdWorktree.path,
+  );
+  for (const changed of [
+    { createdWorktree: null },
+    { worktree: "/repo/trees/another" },
+    { repository: "/foreign" },
+    { baseRef: "other" },
+    { branch: "feature/another" },
+    { beadId: "alpha-2" },
+  ])
+    expect(() =>
+      geminiTaskStartBody({ ...draft, ...changed }, options),
+    ).toThrow("confirm");
+});

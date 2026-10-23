@@ -120,6 +120,8 @@ export function GeminiTaskComposer({
       onStarted(view.lastStarted);
   }, [view.lastStarted, onStarted]);
   const snapshot = preview?.snapshot;
+  const supports = (flag: string) =>
+    !snapshot || snapshot.capabilities.flags.includes(flag);
   const created =
     action.receipt?.state === "created" ? action.receipt.worktree : null;
   useEffect(() => {
@@ -638,12 +640,20 @@ export function GeminiTaskComposer({
             maxLength={200}
             placeholder="CLI default model"
             value={options.model}
-            disabled={!settings || !options.initialized}
+            disabled={!settings || !options.initialized || !supports("--model")}
             onInput={(event) =>
               editOptions({ model: event.currentTarget.value })
             }
           />
         </label>
+        {!supports("--model") && (
+          <p role="status">
+            This CLI did not advertise a model override.{" "}
+            <Button onClick={() => editOptions({ model: "" })}>
+              Use CLI default model
+            </Button>
+          </p>
+        )}
         <p class="af-session-note">
           Leave the model blank to use the native CLI default. Choosing a smith
           preset explicitly copies its configured model. Gemini CLI has no
@@ -668,11 +678,15 @@ export function GeminiTaskComposer({
               }}
             >
               <option value="">CLI default · leave approvals unset</option>
-              <option value="default">
+              <option value="default" disabled={!supports("--approval-mode")}>
                 Default · explicitly select native default
               </option>
-              <option value="plan">Plan · inspect before changes</option>
-              <option value="auto_edit">Auto edit · native edits policy</option>
+              <option value="plan" disabled={!supports("--approval-mode")}>
+                Plan · inspect before changes
+              </option>
+              <option value="auto_edit" disabled={!supports("--approval-mode")}>
+                Auto edit · native edits policy
+              </option>
               <option value="yolo" disabled>
                 Bypass approvals · locked by harness policy
               </option>
@@ -691,13 +705,21 @@ export function GeminiTaskComposer({
               }}
             >
               <option value="">CLI default · leave sandbox unset</option>
-              <option value="enabled">Enabled</option>
+              <option value="enabled" disabled={!supports("--sandbox")}>
+                Enabled
+              </option>
               <option value="disabled" disabled>
                 Disabled · locked by harness policy
               </option>
             </select>
           </label>
         </div>
+        {(!supports("--approval-mode") || !supports("--sandbox")) && (
+          <p role="status">
+            This native help report does not support every optional control.
+            Leave unavailable options at CLI default.
+          </p>
+        )}
         <label>
           Provider route
           <select aria-label="Session provider route" value="gemini-cli">
