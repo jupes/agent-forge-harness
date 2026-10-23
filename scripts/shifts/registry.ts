@@ -25,7 +25,10 @@ import {
   shiftRequestIdSchema,
 } from "./protocol";
 import { SHIFT_START_FIELDS } from "./start-fields";
-import { canonicalProjectShiftStart } from "./start-input";
+import {
+  canonicalProjectShiftStart,
+  sameProjectShiftOriginal,
+} from "./start-input";
 
 export const MAX_PROJECT_SHIFT_REQUESTS = 1000;
 export const MAX_PROJECT_SHIFT_BYTES = 2_097_152;
@@ -188,7 +191,12 @@ export function createProjectShiftRegistry(options: {
     projectId: string,
     requestId: string,
     requestHash: string,
-    field: "attemptedAt" | "executionStartedAt",
+    field:
+      | "attemptedAt"
+      | "executionStartedAt"
+      | "startupStopRequested"
+      | "startupStopCompleted",
+    expected?: ProjectShiftIntent,
   ): Promise<{ intent: ProjectShiftIntent; created: boolean }> {
     project(projectId);
     if (
@@ -217,13 +225,47 @@ export function createProjectShiftRegistry(options: {
           409,
           "The original reviewed shift bounds do not match.",
         );
-      if (field === "executionStartedAt" && intent.attemptedAt === null)
+      if (
+        (field === "startupStopRequested" ||
+          field === "startupStopCompleted") &&
+        (!expected || !sameProjectShiftOriginal(expected, intent))
+      )
+        throw new ConversationError(
+          409,
+          "The original startup Stop association changed. Check its current receipt.",
+        );
+      if (field !== "attemptedAt" && intent.attemptedAt === null)
         throw new ConversationError(
           409,
           "The original Start has no authorized launch attempt.",
         );
-      if ((intent[field] ?? null) !== null) return { intent, created: false };
-      intent[field] = new Date().toISOString();
+      if (field === "startupStopRequested") {
+        if (intent.startupStop) return { intent, created: false };
+        intent.startupStop = {
+          requestedAt: new Date().toISOString(),
+          completedAt: null,
+        };
+      } else if (field === "startupStopCompleted") {
+        if (
+          !intent.startupStop ||
+          intent.startupStop.requestedAt !== expected?.startupStop?.requestedAt
+        )
+          throw new ConversationError(
+            409,
+            "The original startup Stop does not match.",
+          );
+        if (intent.startupStop.completedAt !== null)
+          return { intent, created: false };
+        intent.startupStop.completedAt = new Date().toISOString();
+      } else {
+        if (intent.startupStop)
+          throw new ConversationError(
+            409,
+            "Stop was requested for this original Start. It cannot launch again.",
+          );
+        if ((intent[field] ?? null) !== null) return { intent, created: false };
+        intent[field] = new Date().toISOString();
+      }
       save(state);
       return { intent, created: true };
     });
@@ -242,6 +284,22 @@ export function createProjectShiftRegistry(options: {
       requestId: string,
       requestHash: string,
     ) => mark(projectId, requestId, requestHash, "executionStartedAt"),
+    requestStartupStop: (original: ProjectShiftIntent) =>
+      mark(
+        original.projectId,
+        original.request.requestId,
+        original.requestHash,
+        "startupStopRequested",
+        original,
+      ),
+    completeStartupStop: (original: ProjectShiftIntent) =>
+      mark(
+        original.projectId,
+        original.request.requestId,
+        original.requestHash,
+        "startupStopCompleted",
+        original,
+      ),
     read(projectId: string, requestId: string): ProjectShiftIntent {
       project(projectId);
       if (!shiftRequestIdSchema.safeParse(requestId).success)

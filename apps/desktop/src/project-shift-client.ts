@@ -401,7 +401,9 @@ export function createProjectShiftsClient(deps: {
         current.pendingControl ||
         !target ||
         !(kind === "stop"
-          ? ["running", "throttled"].includes(target.observation.phase)
+          ? ["starting", "running", "throttled"].includes(
+              target.observation.phase,
+            )
           : target.observation.phase === "needs-recovery")
       )
         return;

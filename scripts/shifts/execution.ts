@@ -54,6 +54,7 @@ export async function executeOriginalProjectShift(options: {
   // A repeated child command only observes the original. It cannot revalidate into another engine entry.
   if (
     intent.executionStartedAt ||
+    intent.startupStop ||
     shiftIdInUse(join(options.home, SHIFTS_DIR), intent.shiftId)
   )
     return current();

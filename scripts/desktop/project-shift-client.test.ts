@@ -284,6 +284,58 @@ test("Stop and Recover keep unknown outcomes until a protected original read and
   ]);
 });
 
+test("Starting Stop uses the exact original, retains a lost result across reload, and releases only a verified startup settlement", async () => {
+  const f = fixture(),
+    client = f.make();
+  await client.refresh(scope);
+  await client.loadOptions(scope);
+  await client.start(scope, input);
+  const starting = receipt();
+  starting.observation.phase = "starting";
+  f.setOriginal(starting);
+  await client.check(scope);
+  const pending = structuredClone(starting);
+  pending.intent.startupStop = {
+    requestedAt: new Date(now + 100).toISOString(),
+    completedAt: null,
+  };
+  pending.observation.phase = "stopping";
+  f.reply(async () => {
+    f.setOriginal(pending);
+    throw Error("Lost startup Stop response");
+  });
+  await client.control(scope, requestId, "stop");
+  expect(f.posts).toHaveLength(2);
+  expect(f.posts[1]).toEqual({
+    path: `/__agent-forge/projects/${scope.projectId}/shifts/${shiftId}/stop`,
+    body: {},
+  });
+  expect(client.get(scope).pendingControl?.kind).toBe("stop");
+  const reopened = f.make();
+  await reopened.refresh(scope);
+  expect(reopened.get(scope).identity?.requestId).toBe(requestId);
+  expect(reopened.get(scope).original?.observation.phase).toBe("stopping");
+  await reopened.control(scope, requestId, "stop");
+  await reopened.start(scope, input);
+  expect(f.posts).toHaveLength(2);
+  const falseCompletion = structuredClone(starting);
+  falseCompletion.observation.phase = "stopped";
+  f.setOriginal(falseCompletion);
+  await reopened.check(scope);
+  expect(reopened.get(scope).identity?.requestId).toBe(requestId);
+  expect(reopened.get(scope).original?.observation.phase).toBe("stopping");
+  const completed = structuredClone(pending);
+  if (!completed.intent.startupStop)
+    throw Error("Missing startup Stop fixture");
+  completed.intent.startupStop.completedAt = new Date(now + 200).toISOString();
+  completed.observation.phase = "stopped";
+  f.setOriginal(completed);
+  await reopened.check(scope);
+  expect(reopened.get(scope).identity).toBeNull();
+  expect(reopened.get(scope).original?.observation.actual).toBeNull();
+  expect(f.posts).toHaveLength(2);
+});
+
 test("stale or invalid reviewed options and unavailable identity storage refuse before POST, while foreign pages never replace scoped data", async () => {
   const f = fixture(),
     client = f.make();

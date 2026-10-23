@@ -30,6 +30,8 @@ export interface ProjectShiftIntent {
   attemptedAt: string | null;
   /** Additive v1 field: absent on older originals; a marker never proves a provider turn. */
   executionStartedAt?: string | null | undefined;
+  /** Additive v1 control receipt. Completion requires the original held tree to have settled before any shift record. */
+  startupStop?: { requestedAt: string; completedAt: string | null } | undefined;
 }
 
 export interface ProjectShiftReceipt {

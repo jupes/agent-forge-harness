@@ -271,3 +271,105 @@ test("failed Start audit refuses before current-scope reads, original persistenc
   expect(existsSync(projectShiftRegistryFile(h.home))).toBe(false);
   expect(h.shifts.launches).toEqual([]);
 });
+
+test("protected startup Stop is original-scoped and audited before cancelling its held child; cleanup survives archive without source reads", async () => {
+  const h = await startTestHearth({ api: { projectShiftRuntime: undefined } });
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace);
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  seedProjectBeadWriteFixture(h);
+  const path = `${h.api}/projects/${FIXTURE_PROJECT_ID}/shifts`,
+    post = (
+      url: string,
+      body: unknown = {},
+      token: string | null = h.hearth.token,
+    ) =>
+      fetch(url, {
+        method: "POST",
+        headers: { ...h.headers(token), "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+  const start = await post(path, FIXTURE_SHIFT_START);
+  expect(start.status).toBe(202);
+  const original = (await start.json()).data,
+    id = original.intent.shiftId,
+    child = h.shifts.launches[0],
+    file = projectShiftRegistryFile(h.home),
+    before = readFileSync(file, "utf8");
+  if (!child) throw Error("Expected one held fixture child");
+  expect(original.observation.phase).toBe("starting");
+  if (catalog.projects[0]) catalog.projects[0].archived = true;
+  catalog.revision++;
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  h.bd.calls.length = 0;
+  h.bd.answer = () => ({ status: 1, stdout: "", stderr: "UNAVAILABLE" });
+  const stop = `${path}/${id}/stop`;
+  expect((await post(stop, {}, null)).status).toBe(403);
+  expect((await post(stop, { pid: child.pid })).status).toBe(400);
+  expect(
+    (
+      await post(
+        stop.replace(
+          FIXTURE_PROJECT_ID,
+          "project-a38c579e-f311-481c-b84e-47e5110024a0",
+        ),
+      )
+    ).status,
+  ).toBe(404);
+  expect(readFileSync(file, "utf8")).toBe(before);
+  expect(child.stopped).toBe(false);
+  // The unscoped legacy route still has no startup control authority.
+  expect((await post(`${h.api}/shifts/${id}/stop`)).status).toBe(409);
+  expect(child.stopped).toBe(false);
+  const stopped = await post(stop);
+  expect(stopped.status).toBe(202);
+  const receipt = (await stopped.json()).data;
+  expect(receipt.observation.phase).toBe("stopped");
+  expect(receipt.observation.actual).toBeNull();
+  expect(receipt.intent.startupStop.completedAt).toBeString();
+  expect(receipt.intent.requestHash).toBe(original.intent.requestHash);
+  expect(child.stopped).toBe(true);
+  expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+    action: "shift.stop",
+    target: id,
+  });
+  expect((await post(stop)).status).toBe(202);
+  expect(h.shifts.launches).toHaveLength(1);
+  expect(h.bd.calls).toEqual([]);
+  expect(existsSync(join(h.home, "shifts", `${id}.json`))).toBe(false);
+  expect(existsSync(join(h.home, "shifts", `${id}.stop`))).toBe(false);
+});
+
+test("failed startup Stop audit preserves the exact original before any control receipt or held-tree effect", async () => {
+  const h = await startTestHearth({
+    api: {
+      appendEvent: () => ({ ok: false, error: "Stop audit unavailable" }),
+    },
+  });
+  opened.push(h);
+  await seedProjectShift(h);
+  const registry = createProjectShiftRegistry({ home: h.home, root: h.root }),
+    original = registry.read(FIXTURE_PROJECT_ID, FIXTURE_SHIFT_START.requestId);
+  await registry.markAttempted(
+    FIXTURE_PROJECT_ID,
+    FIXTURE_SHIFT_START.requestId,
+    original.requestHash,
+  );
+  const file = projectShiftRegistryFile(h.home),
+    before = readFileSync(file, "utf8");
+  const response = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/shifts/${FIXTURE_SHIFT_ID}/stop`,
+    {
+      method: "POST",
+      headers: {
+        ...h.headers(h.hearth.token),
+        "content-type": "application/json",
+      },
+      body: "{}",
+    },
+  );
+  expect(response.status).toBe(503);
+  expect(readFileSync(file, "utf8")).toBe(before);
+  expect(h.shifts.launches).toEqual([]);
+  expect(h.bd.calls).toEqual([]);
+});

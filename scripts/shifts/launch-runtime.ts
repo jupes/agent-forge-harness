@@ -4,7 +4,10 @@ import type { ProjectShiftRuntime } from "./service";
 
 /** The host supplies the fixed source/packaged attended child entry. Public callers supply only original ids. */
 export function createAttendedProjectShiftLauncher(
-  starts: Pick<ShiftStarts, "mint" | "startProject" | "unrecorded">,
+  starts: Pick<
+    ShiftStarts,
+    "mint" | "startProject" | "stopProject" | "unrecorded"
+  >,
 ): ProjectShiftRuntime {
   return {
     attended: true,
@@ -21,5 +24,6 @@ export function createAttendedProjectShiftLauncher(
         );
     },
     unrecorded: () => starts.unrecorded(),
+    stopStarting: (intent) => starts.stopProject(intent),
   };
 }

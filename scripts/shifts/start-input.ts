@@ -1,4 +1,7 @@
-import type { ProjectShiftStartRequest } from "../../types/project-shifts";
+import type {
+  ProjectShiftIntent,
+  ProjectShiftStartRequest,
+} from "../../types/project-shifts";
 import { workspaceKey } from "../projects/scope";
 
 /** Exact version-1 request hash bytes shared with protected browser receipt verification. No runtime authority. */
@@ -28,4 +31,19 @@ export function canonicalProjectShiftStart(
         : {}),
     },
   });
+}
+
+/** Control identity excludes mutable execution/control receipts, while retaining the exact original launch association. */
+export function sameProjectShiftOriginal(
+  a: ProjectShiftIntent,
+  b: ProjectShiftIntent,
+): boolean {
+  return (
+    a.shiftId === b.shiftId &&
+    a.createdAt === b.createdAt &&
+    a.attemptedAt === b.attemptedAt &&
+    a.requestHash === b.requestHash &&
+    canonicalProjectShiftStart(a.projectId, a.workspace, a.request) ===
+      canonicalProjectShiftStart(b.projectId, b.workspace, b.request)
+  );
 }

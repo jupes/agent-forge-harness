@@ -44,6 +44,7 @@ import {
 } from "../scheduler/shift-store";
 import { redactSecrets } from "../secret-patterns";
 import { createProjectShiftRegistry } from "../shifts/registry";
+import { sameProjectShiftOriginal } from "../shifts/start-input";
 import { safeMessage } from "./api";
 
 /** The script a hearth starts a shift with: `forge:shift`. */
@@ -264,6 +265,8 @@ export type StartOutcome =
 export interface ShiftStarts {
   /** Explicit current-admission call only; recreation and reads never invoke this method. */
   startProject(projectId: string, requestId: string): StartOutcome;
+  /** Only the matching held project tree can confirm settlement. Saved numeric PIDs grant no control. */
+  stopProject(original: ProjectShiftIntent): Promise<boolean>;
   /** A shift id that no record, stop request or launch of this hearth has. */
   mint(): string;
   /** A launch of this hearth that is still starting (its child runs, it has no record yet), or null. */
@@ -289,6 +292,8 @@ interface Launch {
   enginePid?: number;
   startedAt: string;
   requested: Record<string, unknown>;
+  project?: ProjectShiftIntent;
+  stopping?: Promise<boolean>;
   exit?: { exitCode: number | null; endedAt: string; error: string };
   /** Resolves once `exit` is set. */
   ended: Promise<void>;
@@ -447,6 +452,7 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
       child,
       startedAt: now().toISOString(),
       requested: { ...requested },
+      ...(project ? { project: structuredClone(project) } : {}),
       ended: new Promise<void>((done) => {
         settle = done;
       }),
@@ -527,6 +533,7 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
         }).read(projectId, requestId);
         if (
           intent.attemptedAt === null ||
+          intent.startupStop ||
           intent.executionStartedAt ||
           shiftIdInUse(deps.shiftsDir, intent.shiftId)
         )
@@ -563,6 +570,26 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
             "The original project shift Start could not be verified. Read its current outcome before trying anything else.",
         };
       }
+    },
+    async stopProject(original) {
+      const saved = createProjectShiftRegistry({
+        home: deps.home,
+        root: deps.root,
+      }).read(original.projectId, original.request.requestId);
+      const launch = launches.get(saved.shiftId),
+        held = launch?.project;
+      const matches = (value: ProjectShiftIntent) =>
+        sameProjectShiftOriginal(value, saved);
+      if (!saved.startupStop || !matches(original) || !held || !matches(held))
+        return false;
+      if (!launch.stopping)
+        launch.stopping = (async () => {
+          await launch.child.stop();
+          // This is held-tree cleanup/drain, never a kill(pid, 0) inference or wrapper-exit guess.
+          await launch.child.done;
+          return true;
+        })();
+      return launch.stopping;
     },
     unrecorded() {
       prune();
