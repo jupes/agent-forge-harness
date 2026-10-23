@@ -12,8 +12,11 @@ import { mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  INTERACTIVE_BOOTSTRAP_ACK,
   INTERACTIVE_BOOTSTRAP_CONTROL,
   INTERACTIVE_BOOTSTRAP_FLAG,
+  INTERACTIVE_BOOTSTRAP_TERMINAL,
+  INTERACTIVE_CONTROL_TIMEOUT_MS,
   INTERACTIVE_START_MAX_BYTES,
 } from "./interactive-bootstrap";
 import {
@@ -406,6 +409,16 @@ export function supervise(
   }
 
   let providerReady = false;
+  let providerIdentity: number | null = null;
+  let terminalReceived = false;
+  let controlFailure: Error | null = null;
+  let resolveTerminal: () => void = () => undefined;
+  let rejectTerminal: (error: Error) => void = () => undefined;
+  const terminal = new Promise<void>((resolve, reject) => {
+    resolveTerminal = resolve;
+    rejectTerminal = reject;
+  });
+  void terminal.catch(() => undefined);
   let resolveProvider: (pid: number) => void = () => undefined;
   let rejectProvider: (error: Error) => void = () => undefined;
   const providerPid = new Promise<number>((resolve, reject) => {
@@ -418,6 +431,7 @@ export function supervise(
   let stopped = false;
   let exited = false;
   let settled = false;
+  let interrupted = false;
   let inputFailure: Error | null = null;
   const inputWaiters = new Set<(error: Error) => void>();
   const failInput = (error: Error) => {
@@ -428,6 +442,7 @@ export function supervise(
   };
   const kill = () => {
     if (settled) return;
+    interrupted = true;
     failInput(new Error("Interactive stdin is closed."));
     if (interactive && process.platform === "win32") guard.terminate?.();
     else if (!exited) killTree(proc.pid);
@@ -529,27 +544,69 @@ export function supervise(
   const beforeControl: string[] = [];
   let beforeControlBytes = 0;
   receiveControl = (message, senderPid) => {
-    if (inputFailure) return;
+    if (settled || controlFailure) return;
+    const invalid = () => {
+      controlFailure = new Error(
+        "The private interactive terminal could not be confirmed.",
+      );
+      rejectTerminal(controlFailure);
+      outputFailure();
+    };
     if (
       !interactive ||
-      providerReady ||
       senderPid !== proc.pid ||
       typeof message !== "object" ||
       message === null ||
       Array.isArray(message) ||
-      Object.keys(message).length !== 2 ||
       !("kind" in message) ||
-      message.kind !== INTERACTIVE_BOOTSTRAP_CONTROL ||
+      !("version" in message) ||
+      message.version !== 1 ||
       !("pid" in message) ||
       typeof message.pid !== "number" ||
       !Number.isSafeInteger(message.pid) ||
       message.pid < 1 ||
       message.pid === proc.pid
     ) {
-      outputFailure();
+      invalid();
       return;
     }
+    if (message.kind === INTERACTIVE_BOOTSTRAP_TERMINAL) {
+      if (
+        !providerReady ||
+        terminalReceived ||
+        Object.keys(message).length !== 4 ||
+        message.pid !== providerIdentity ||
+        !("timedOut" in message) ||
+        typeof message.timedOut !== "boolean"
+      ) {
+        invalid();
+        return;
+      }
+      terminalReceived = true;
+      timedOut ||= message.timedOut;
+      resolveTerminal();
+      try {
+        proc.send({
+          kind: INTERACTIVE_BOOTSTRAP_ACK,
+          version: 1,
+          pid: providerIdentity,
+        });
+      } catch {
+        invalid();
+      }
+      return;
+    }
+    if (
+      message.kind !== INTERACTIVE_BOOTSTRAP_CONTROL ||
+      providerReady ||
+      Object.keys(message).length !== 3
+    ) {
+      invalid();
+      return;
+    }
+    if (inputFailure) return;
     providerReady = true;
+    providerIdentity = message.pid;
     resolveProvider(message.pid);
     try {
       for (const line of beforeControl) options.onLine(line);
@@ -588,6 +645,9 @@ export function supervise(
     try {
       const exitCode = await proc.exited;
       exited = true;
+      // A terminal witness, not time spent draining/confirming cleanup, owns
+      // attribution once the wrapper has exited.
+      if (interactive && timer) clearTimeout(timer);
       if (process.platform !== "win32") exitedGroups.add(proc.pid);
       if (interactive) {
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
@@ -608,6 +668,28 @@ export function supervise(
       }
       await pumped.catch(() => undefined);
       const stderr = await stderrTail;
+      if (interactive && !interrupted && !terminalReceived) {
+        let receiptDeadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            terminal,
+            new Promise<never>((_, reject) => {
+              receiptDeadline = setTimeout(
+                () =>
+                  reject(
+                    new Error(
+                      "The private interactive terminal could not be confirmed.",
+                    ),
+                  ),
+                INTERACTIVE_CONTROL_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        } finally {
+          if (receiptDeadline) clearTimeout(receiptDeadline);
+        }
+      }
+      if (controlFailure) throw controlFailure;
       return { exitCode, timedOut, stopped, stderr };
     } catch (error) {
       // An unverified live helper can retain inherited pipes. A failed bounded

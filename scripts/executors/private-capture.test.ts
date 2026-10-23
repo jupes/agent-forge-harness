@@ -665,7 +665,13 @@ test("a prepare deadline settles fatally and a late owner cannot dispatch", asyn
 
 test("a never-resolving finish cannot hold provider done or Stop after actual tree exit", async () => {
   const f = setup();
+  f.request.command = [
+    process.execPath,
+    join(import.meta.dir, "fixtures/delayed-fake-cli.ts"),
+    ...(f.request.command?.slice(2) ?? []),
+  ];
   let aborted = false;
+  const finishEntered = deferred<ChildExit | null>();
   const handle = await claudeAdapter.spawn({
     ...f.request,
     privateCapture: {
@@ -678,17 +684,65 @@ test("a never-resolving finish cannot hold provider done or Stop after actual tr
           holdTree() {},
           started() {},
           line() {},
-          finish: () => new Promise(() => {}),
+          finish: (exit: ChildExit | null) => {
+            finishEntered.resolve(exit);
+            return new Promise(() => {});
+          },
         };
       },
     },
   });
-  const result = await Promise.race([
-    handle.done,
-    Bun.sleep(1000).then(() => null),
-  ]);
-  expect(result).toMatchObject({ exitCode: 0, privateCaptureFailed: true });
-  expect(aborted).toBe(true);
-  expect(() => process.kill(handle.pid, 0)).toThrow();
-  await handle.stop("already exited");
+  try {
+    let entryTimer: ReturnType<typeof setTimeout> | undefined;
+    let exit: ChildExit | null;
+    try {
+      exit = await Promise.race([
+        finishEntered.promise,
+        new Promise<never>((_, reject) => {
+          entryTimer = setTimeout(
+            () =>
+              reject(
+                Error(
+                  "The closed fixture did not reach private finish after owned exit",
+                ),
+              ),
+            f.request.timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (entryTimer) clearTimeout(entryTimer);
+    }
+    expect(exit).toMatchObject({
+      exitCode: 0,
+      timedOut: false,
+      stopped: false,
+    });
+    expect(() => process.kill(handle.pid, 0)).toThrow();
+    let dump: unknown;
+    try {
+      dump = JSON.parse(readFileSync(f.dump, "utf8"));
+    } catch {
+      throw Error("Missing closed fixture process receipt");
+    }
+    if (
+      !dump ||
+      typeof dump !== "object" ||
+      !("pid" in dump) ||
+      typeof dump.pid !== "number"
+    )
+      throw Error("Invalid closed fixture process identity");
+    expect(alive(dump.pid)).toBe(false);
+    const result = await Promise.race([
+      handle.done,
+      Bun.sleep(1000).then(() => null),
+    ]);
+    expect(result).toMatchObject({ exitCode: 0, privateCaptureFailed: true });
+    expect(aborted).toBe(true);
+    expect(() => process.kill(handle.pid, 0)).toThrow();
+    await handle.stop("already exited");
+  } finally {
+    await handle.stop("closed finish oracle cleanup");
+    void handle.done.catch(() => {});
+  }
 });
