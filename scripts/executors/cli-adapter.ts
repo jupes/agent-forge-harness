@@ -23,9 +23,10 @@ import { ulid } from "../ledger/ulid";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
 import {
+  type BoundedPrivateExecCapture,
   PrivateCaptureError,
-  type PrivateExecCapture,
   type PrivateExecInput,
+  preparePrivateExecCapture,
 } from "./private-capture";
 import { type Supervised, supervise } from "./supervisor";
 import type {
@@ -308,21 +309,21 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // The model the stream's responses last named, handed on when it changes.
       let observedModel: string | undefined;
 
-      let capture: PrivateExecCapture | undefined,
+      let capture: BoundedPrivateExecCapture | undefined,
         child: Supervised | undefined,
         privateCaptureFailed = false;
       const captureFailed = () => {
         privateCaptureFailed = true;
+        capture?.abort();
         void child?.stop("Private transcript unavailable");
       };
       if (request.privateCapture) {
         try {
-          capture = await request.privateCapture.prepare(
+          capture = await preparePrivateExecCapture(
+            request.privateCapture,
             structuredClone(prepared),
-            {
-              fail: captureFailed,
-              ...(request.signal ? { signal: request.signal } : {}),
-            },
+            captureFailed,
+            request.signal,
           );
         } catch {
           throw new PrivateCaptureError();

@@ -7,6 +7,7 @@ import { hashText } from "../hash-text";
 import { scratchDirs } from "../test-scratch";
 import { claudeAdapter } from "./claude";
 import { runExec } from "./exec-cli";
+import type { PrivateExecCapture } from "./private-capture";
 import type { ChildExit, SpawnRequest } from "./types";
 
 const scratch = scratchDirs();
@@ -360,4 +361,116 @@ test("Stop during private preparation prevents provider spawn after the preparat
   expect(result.code).toBe(2);
   expect(abandoned).toBe(true);
   expect(existsSync(f.dump)).toBe(false);
+});
+
+test("Stop settles a never-resolving prepare and fences a late owner without launching", async () => {
+  const f = setup(),
+    entered = deferred<void>(),
+    late = deferred<PrivateExecCapture>(),
+    controller = new AbortController();
+  let aborted = false,
+    abandoned = 0;
+  const pending = claudeAdapter.spawn({
+    ...f.request,
+    signal: controller.signal,
+    privateCapture: {
+      async prepare(_input, control) {
+        control.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+        entered.resolve();
+        return late.promise;
+      },
+    },
+  });
+  await entered.promise;
+  controller.abort();
+  const result = await Promise.race([
+    pending.then(
+      () => "spawned",
+      () => "refused",
+    ),
+    Bun.sleep(500).then(() => "hung"),
+  ]);
+  late.resolve({
+    started() {
+      throw Error("Late owner started");
+    },
+    line() {},
+    async finish(exit) {
+      if (exit === null) abandoned++;
+    },
+  });
+  await pending.catch(() => {});
+  await Bun.sleep(0);
+  expect(result).toBe("refused");
+  expect(aborted).toBe(true);
+  expect(abandoned).toBe(1);
+  expect(existsSync(f.dump)).toBe(false);
+});
+
+test("a prepare deadline settles fatally and a late owner cannot dispatch", async () => {
+  const f = setup(),
+    late = deferred<PrivateExecCapture>();
+  let aborted = false,
+    abandoned = 0;
+  const pending = claudeAdapter.spawn({
+    ...f.request,
+    privateCapture: {
+      deadlineMs: 100,
+      async prepare(_input, control) {
+        control.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return late.promise;
+      },
+    },
+  });
+  const result = await Promise.race([
+    pending.then(
+      () => "spawned",
+      (error: unknown) => (error instanceof Error ? error.message : "refused"),
+    ),
+    Bun.sleep(600).then(() => "hung"),
+  ]);
+  late.resolve({
+    started() {
+      throw Error("Late owner started");
+    },
+    line() {},
+    async finish(exit) {
+      if (exit === null) abandoned++;
+    },
+  });
+  await pending.catch(() => {});
+  await Bun.sleep(0);
+  expect(result).toBe(fixedFailure);
+  expect(aborted).toBe(true);
+  expect(abandoned).toBe(1);
+  expect(existsSync(f.dump)).toBe(false);
+});
+
+test("a never-resolving finish cannot hold provider done or Stop after actual tree exit", async () => {
+  const f = setup();
+  let aborted = false;
+  const handle = await claudeAdapter.spawn({
+    ...f.request,
+    privateCapture: {
+      deadlineMs: 100,
+      async prepare(_input, control) {
+        control.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return { started() {}, line() {}, finish: () => new Promise(() => {}) };
+      },
+    },
+  });
+  const result = await Promise.race([
+    handle.done,
+    Bun.sleep(1000).then(() => null),
+  ]);
+  expect(result).toMatchObject({ exitCode: 0, privateCaptureFailed: true });
+  expect(aborted).toBe(true);
+  expect(() => process.kill(handle.pid, 0)).toThrow();
+  await handle.stop("already exited");
 });
