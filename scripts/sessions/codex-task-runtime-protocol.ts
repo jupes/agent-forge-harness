@@ -10,7 +10,7 @@ import {
   serializeCodexTask,
 } from "./codex-task";
 
-const privateLaunchSchema = codexTaskLaunchSchema.transform(
+export const preparedCodexLaunchSchema = codexTaskLaunchSchema.transform(
   (value): CodexTaskLaunch => ({
     mode: value.mode,
     cwd: value.cwd,
@@ -67,7 +67,7 @@ export const preparedCodexTaskSchema: z.ZodType<PreparedCodexTask> = z
       .min(1)
       .max(1024)
       .refine((value) => /^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(value)),
-    launch: privateLaunchSchema,
+    launch: preparedCodexLaunchSchema,
     capabilities: preparedCodexCapabilitiesSchema,
   })
   .strict()

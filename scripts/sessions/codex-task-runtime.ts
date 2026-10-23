@@ -18,9 +18,10 @@ import {
   CODEX_EXEC_STREAM_LIMITS,
   createCodexExecParser,
 } from "./codex-exec-stream";
-import { codexTaskLaunchSchema, serializeCodexTask } from "./codex-task";
+import { serializeCodexTask } from "./codex-task";
 import {
   preparedCodexCapabilitiesSchema,
+  preparedCodexLaunchSchema,
   preparedCodexTaskSchema,
 } from "./codex-task-runtime-protocol";
 
@@ -221,10 +222,13 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
       smith: string;
       launch: PreparedCodexTask["launch"];
     }): Promise<PreparedCodexTask> {
-      const launch = codexTaskLaunchSchema.parse(input.launch);
+      const launch = preparedCodexLaunchSchema.parse(input.launch);
       const canonicalCwd = directory(launch.cwd);
       const runtime = ready(input.smith);
       const capabilities = await inspect(runtime);
+      // Keep the native preparation's specific controlled capability refusal;
+      // the private wire codec intentionally reports only a bounded summary.
+      serializeCodexTask(launch, capabilities);
       const snapshot = preparedCodexTaskSchema.parse({
         version: 1,
         provider: "codex",
