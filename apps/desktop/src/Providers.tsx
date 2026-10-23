@@ -12,6 +12,7 @@ import type {
 import { ProviderMonogram } from "./DesktopFrame";
 import { desktopHref } from "./navigation";
 import "./providers.css";
+import type { ProviderLoginClient } from "./provider-login-client";
 import { providerUsageLabel, readinessLabel } from "./providers-model";
 
 function value(
@@ -139,6 +140,7 @@ export function Providers({
   checking,
   writesAllowed,
   stale,
+  logins,
 }: {
   data: ProviderReadinessPage | null;
   error: string | null;
@@ -148,6 +150,7 @@ export function Providers({
   checking: boolean;
   writesAllowed: boolean;
   stale: boolean;
+  logins: ProviderLoginClient | null;
 }): JSX.Element {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -389,12 +392,11 @@ export function Providers({
               >
                 Run doctor · {provider.name}
               </Button>
-              <Button
-                disabled
-                title="Use the vendor sign-in command below in your terminal, then refresh the report."
-              >
-                Sign in…
-              </Button>
+              <ProviderSignIn
+                provider={provider}
+                client={logins}
+                writesAllowed={writesAllowed}
+              />
             </div>
             <p class="af-provider-muted">
               {provider.signIn.command ? (
@@ -420,6 +422,85 @@ export function Providers({
           />
         )) ?? <p>Project usage attribution unavailable.</p>}
       </section>
+    </div>
+  );
+}
+
+function ProviderSignIn({
+  provider,
+  client,
+  writesAllowed,
+}: {
+  provider: ProviderReadiness;
+  client: ProviderLoginClient | null;
+  writesAllowed: boolean;
+}) {
+  const supported =
+    provider.provider === "claude" || provider.provider === "codex";
+  const view = supported
+    ? client?.get(provider.provider === "claude" ? "claude" : "codex")
+    : null;
+  const id = provider.provider === "claude" ? "claude" : "codex";
+  return (
+    <div
+      class="af-provider-login"
+      role="group"
+      aria-label={`${provider.name} sign-in controls`}
+    >
+      <Button
+        disabled={
+          !supported ||
+          !provider.signIn.nativeAvailable ||
+          !writesAllowed ||
+          !view?.ready ||
+          view.busy ||
+          !!view.identity
+        }
+        onClick={() => {
+          if (supported) void client?.start(id);
+        }}
+        title={
+          provider.signIn.reason ??
+          "Open the vendor's own sign-in terminal. Run doctor separately afterward."
+        }
+      >
+        Sign in… · {provider.name}
+      </Button>
+      {view?.identity && (
+        <>
+          <Button
+            disabled={view.busy}
+            onClick={() => {
+              void client?.check(id);
+            }}
+          >
+            Check original sign-in
+          </Button>
+          <Button
+            disabled={!writesAllowed || view.busy}
+            onClick={() => {
+              void client?.retry(id);
+            }}
+          >
+            Retry original sign-in
+          </Button>
+          <Button
+            disabled={!writesAllowed || view.busy}
+            onClick={() => {
+              void client?.stop(id);
+            }}
+          >
+            Close sign-in terminal
+          </Button>
+        </>
+      )}
+      {view?.notice && <p role="status">{view.notice}</p>}
+      {provider.signIn.nativeAvailable && !view?.ready && (
+        <p role="status">
+          Reading original sign-in attempts before another terminal can open.
+        </p>
+      )}
+      {provider.signIn.reason && <p>{provider.signIn.reason}</p>}
     </div>
   );
 }

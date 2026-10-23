@@ -25,6 +25,14 @@ import {
 } from "./native-console";
 
 const MAX_BYTES = 262144;
+const markerSchema = z
+  .object({
+    version: z.literal(1),
+    provider: loginProviderSchema,
+    requestId: loginRequestIdSchema,
+    startedAt: z.iso.datetime(),
+  })
+  .strict();
 const journal = z
   .object({
     version: z.literal(1),
@@ -93,6 +101,9 @@ export function createProviderLoginService(options: {
       [lock, false],
       ...["claude", "codex"].map(
         (provider) => [join(parent, `${provider}.lease.db`), false] as const,
+      ),
+      ...["claude", "codex"].map(
+        (provider) => [join(parent, `${provider}.latest.json`), false] as const,
       ),
     ] as const) {
       try {
@@ -231,8 +242,30 @@ export function createProviderLoginService(options: {
       write(value);
     });
   }
+  function latestAttempt(provider: LoginProvider) {
+    paths();
+    const found = readSessionTranscript(
+      options.home,
+      join(parent, `${provider}.latest.json`),
+    );
+    if (found.problem !== null) unavailable();
+    if (found.text === null) return null;
+    let raw: unknown;
+    try {
+      if (found.text.length > 1024) unavailable();
+      raw = JSON.parse(found.text);
+    } catch {
+      unavailable();
+    }
+    const parsed = markerSchema.safeParse(raw);
+    if (!parsed.success || parsed.data.provider !== provider) unavailable();
+    return parsed.data;
+  }
   return {
     read,
+    latestAttempt,
+    latestStartedAt: (provider: LoginProvider) =>
+      latestAttempt(provider)?.startedAt ?? null,
     list() {
       return state().records.map(receipt);
     },
@@ -281,6 +314,21 @@ export function createProviderLoginService(options: {
           value.records.push(row);
           // This immutable original/attempt marker must reach private storage before CreateProcessW.
           write(value);
+          try {
+            writeOwnerOnly(
+              join(parent, `${provider}.latest.json`),
+              JSON.stringify(
+                markerSchema.parse({
+                  version: 1,
+                  provider,
+                  requestId,
+                  startedAt: row.startedAt,
+                }),
+              ),
+            );
+          } catch {
+            unavailable();
+          }
           let child: NativeConsoleChild;
           try {
             child = (options.launch ?? launchWindowsConsole)(spec);

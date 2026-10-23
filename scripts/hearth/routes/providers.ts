@@ -11,6 +11,8 @@ import {
   buildProjectOverview,
 } from "../../projects/overview";
 import type { ProviderInspector } from "../../providers/inspect";
+import type { ProviderLoginService } from "../../providers/login";
+import { readOwnedClaudeUsage } from "../../providers/owned-usage";
 import { providerReadinessPageSchema } from "../../providers/protocol";
 import { buildProviderReadiness } from "../../providers/readiness";
 import type { ActionRoute, ReadRoute } from "../api";
@@ -24,13 +26,27 @@ import type { ProjectSnapshot } from "./project-summaries";
 
 /** One coalesced source for every desktop usage consumer. No provider task is run. */
 export function createProviderReadinessRoutes(
-  deps: ReadDeps,
+  deps: ReadDeps & { projectHome: string; providerLogin: ProviderLoginService },
   inspector: ProviderInspector,
   load: () => Promise<ProjectSnapshot>,
+  readUsage: typeof readOwnedClaudeUsage = readOwnedClaudeUsage,
 ) {
-  let pending: Promise<ProviderReadinessPage> | null = null;
+  let revision = 0;
+  type Marker = ReturnType<ProviderLoginService["latestAttempt"]> | undefined;
+  const marker = (): Marker => {
+    try {
+      return deps.providerLogin.latestAttempt("claude");
+    } catch {
+      return undefined;
+    }
+  };
+  const key = (value: Marker) =>
+    `${revision}:${value ? value.requestId : value === null ? "none" : "unavailable"}`;
+  let pending: { key: string; promise: Promise<ProviderReadinessPage> } | null =
+    null;
   let cached: ProviderReadinessPage | null = null;
-  const read = async (): Promise<ProviderReadinessPage> => {
+  let cachedKey: string | null = null;
+  const read = async (generation: Marker): Promise<ProviderReadinessPage> => {
     const asOf = new Date().toISOString(),
       through = Date.parse(asOf),
       since = new Date(through - 7 * 86_400_000).toISOString();
@@ -122,21 +138,42 @@ export function createProviderReadinessRoutes(
         "Local counts include only the newest 10,000 matching events.",
       );
     const providers = await Promise.all(
-      READINESS_PROVIDERS.map(async (provider) =>
-        buildProviderReadiness(
+      READINESS_PROVIDERS.map(async (provider) => {
+        const inspection = await inspector.inspect(
+          provider,
+          loaded.config.execution.envPass,
+        );
+        let native: ProviderUsageReport[] = [],
+          usageReason: string | null = null;
+        if (provider === "claude") {
+          try {
+            if (generation === undefined)
+              throw Error("Sign-in generation unavailable");
+            const found = await readUsage({
+              home: deps.projectHome,
+              workspace: deps.workspace,
+              version: inspection.installation.version,
+              after: generation?.startedAt ?? null,
+            });
+            native = found.reports;
+            usageReason = found.reason;
+          } catch {
+            usageReason =
+              "Private native account reports could not be verified. Earlier allowance is withheld; local counts are separate.";
+          }
+        }
+        const result = buildProviderReadiness(
           {
-            ...(await inspector.inspect(
-              provider,
-              loaded.config.execution.envPass,
-            )),
-            reports: reports(provider),
+            ...inspection,
+            reports: [...native, ...reports(provider)],
             smiths: Object.values(loaded.config.smiths)
               .filter((smith) => smith.provider === provider)
               .map(({ name, model, enabled }) => ({ name, model, enabled })),
           },
           through,
-        ),
-      ),
+        );
+        return usageReason ? { ...result, usageReason } : result;
+      }),
     );
     const result: ProviderReadinessPage = {
       workspace: deps.workspace,
@@ -166,15 +203,30 @@ export function createProviderReadinessRoutes(
     validate: noParameters,
     async read() {
       try {
-        if (!cached || Date.now() - Date.parse(cached.asOf) >= 15000) {
-          pending ??= read();
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const generation = marker(),
+            currentKey = key(generation);
+          if (
+            cached &&
+            cachedKey === currentKey &&
+            Date.now() - Date.parse(cached.asOf) < 15000
+          )
+            return { status: 200, data: cached };
+          if (!pending || pending.key !== currentKey)
+            pending = { key: currentKey, promise: read(generation) };
+          const owned = pending;
+          let result: ProviderReadinessPage;
           try {
-            cached = await pending;
+            result = await owned.promise;
           } finally {
-            pending = null;
+            if (pending === owned) pending = null;
           }
+          if (key(marker()) !== owned.key) continue;
+          cached = result;
+          cachedKey = owned.key;
+          return { status: 200, data: cached };
         }
-        return { status: 200, data: cached };
+        throw Error("Sign-in state changed while reporting");
       } catch {
         return {
           status: 503,
@@ -208,6 +260,7 @@ export function createProviderReadinessRoutes(
     },
     subject: (provider) => ({ target: provider }),
     async effect() {
+      revision++;
       cached = null;
       return route.read(undefined);
     },

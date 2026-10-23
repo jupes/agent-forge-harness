@@ -47,6 +47,22 @@ export default async function setup(): Promise<void> {
   );
   if (codexBuilt.status !== 0)
     throw Error(`Codex stand-in did not compile: ${codexBuilt.stderr}`);
+  const loginBuilt = spawnSync(
+    bunPath(),
+    [
+      "build",
+      "--compile",
+      resolve("tests/desktop-e2e/provider-login-cli.ts"),
+      "--outfile",
+      join(
+        BD_STAND_IN_BIN,
+        process.platform === "win32" ? "provider-login.exe" : "provider-login",
+      ),
+    ],
+    { encoding: "utf8", timeout: 60000 },
+  );
+  if (loginBuilt.status !== 0)
+    throw Error(`Provider login fixture did not compile: ${loginBuilt.stderr}`);
   const codexProbe = spawnSync(codex, ["--version"], {
     encoding: "utf8",
     timeout: 10_000,

@@ -14,6 +14,7 @@ import {
   chooseCodexTaskSmith,
   codexTaskStartBody,
 } from "./codex-session-composer";
+import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
 
@@ -24,7 +25,14 @@ export function CodexTaskComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  providers,
 }: SessionComposerProps) {
+  const codexReadiness = providers?.providers.find(
+      (provider) => provider.provider === "codex",
+    ),
+    claudeReadiness = providers?.providers.find(
+      (provider) => provider.provider === "claude",
+    );
   const view = client.project(project.id),
     draft = view.composer,
     options = view.codexComposer;
@@ -277,9 +285,22 @@ export function CodexTaskComposer({
           onClick={() => client.chooseComposerProvider(project.id, "claude")}
         >
           Cl · Claude
+          <small>
+            {claudeReadiness
+              ? readinessLabel(claudeReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(claudeReadiness)}
+          </small>
         </button>
         <button type="button" aria-pressed="true">
-          Cx · Codex<small>Task · CLI checked below</small>
+          Cx · Codex
+          <small>
+            Task ·{" "}
+            {codexReadiness
+              ? readinessLabel(codexReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(codexReadiness)}
+          </small>
         </button>
         {["Gemini", "Grok", "OpenRouter"].map((name) => (
           <button

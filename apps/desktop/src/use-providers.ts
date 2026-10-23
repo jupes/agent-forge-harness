@@ -13,6 +13,7 @@ import type {
   ReadinessProvider,
 } from "../../../types/provider-readiness";
 import { providerReportStale } from "./providers-model";
+import { useProviderLogins } from "./use-provider-logins";
 
 /** Mounted once at the app root; navigation and all meters share this exact read. */
 export function useProviders() {
@@ -24,6 +25,7 @@ export function useProviders() {
     error: string | null;
     loading: boolean;
   }>({ data: null, error: null, loading: true });
+  const logins = useProviderLogins(state.data?.workspace);
   const live = useRef<ReturnType<
     typeof startLiveRead<ProviderReadinessPage>
   > | null>(null);
@@ -74,6 +76,7 @@ export function useProviders() {
   }, []);
   return {
     ...state,
+    logins,
     stale:
       state.data !== null &&
       (Boolean(state.error) || providerReportStale(state.data, now)),

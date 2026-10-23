@@ -112,6 +112,7 @@ function checkedPaths(home: string) {
 
 /** A metadata-only index. Reservation never dispatches or replays a provider request. */
 interface SessionRegistry<Metadata, Record> {
+  listWorkspace(workspace: string): OwnedCodingSessionRecord[];
   list(projectId: string): Record[];
   listAll(projectId: string): OwnedCodingSessionRecord[];
   lookup(projectId: string, sessionId: string): OwnedCodingSessionRecord;
@@ -188,6 +189,12 @@ export function createSessionRegistry(
   };
   return {
     lookup,
+    listWorkspace(workspace: string) {
+      const key = comparableCheckout(resolve(workspace));
+      return readState().records.filter(
+        (record) => comparableCheckout(record.workspace) === key,
+      );
+    },
     listAll(projectId: string) {
       project(projectId);
       return readState().records.filter(

@@ -130,6 +130,17 @@
   min-width: 0;
   overflow-x: auto;
 }
+.af-provider-login {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.af-provider-login p {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 1200px) {
   .af-provider-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));

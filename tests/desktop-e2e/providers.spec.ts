@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { providerReadinessPageSchema } from "../../scripts/providers/protocol";
 import { providerReadinessFixture } from "../../scripts/providers/testing";
+import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
 
@@ -200,4 +202,186 @@ test("loading and failed refresh keep distinct states and preserve focused check
     page.getByText("Providers could not be read", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("article")).toHaveCount(0);
+});
+
+test("a pre-admission sign-in survives reload and404; explicit original retry opens only one owned inert CLI and Stop ends its tree", async ({
+  page,
+  context,
+}) => {
+  const data = providerReadinessFixture(workspace, alpha.id),
+    claudeReport = data.providers.find(
+      (provider) => provider.provider === "claude",
+    );
+  if (!claudeReport) throw Error("Missing fixture Claude");
+  claudeReport.signIn.nativeAvailable = true;
+  const source = "**/providers/readiness";
+  await context.route(source, (route) =>
+    route.fulfill({ json: { ok: true, data, error: null } }),
+  );
+  const log = join(HEARTH_HOME, "provider-login-starts.jsonl"),
+    recorded = () => {
+      if (!existsSync(log)) return [];
+      try {
+        return readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                provider: string;
+                pid: number;
+                childPid: number;
+              },
+          );
+      } catch {
+        throw Error("Invalid inert sign-in recording");
+      }
+    };
+  const before = recorded().length;
+  let release = () => {},
+    entered = () => {},
+    admitted = () => {},
+    original: string | null = null;
+  const held = new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+    intercepted = new Promise<void>((resolve) => {
+      entered = resolve;
+    }),
+    dispatched = new Promise<void>((resolve) => {
+      admitted = resolve;
+    });
+  await page.route("**/providers/claude/sign-in", async (route) => {
+    const body: unknown = route.request().postDataJSON();
+    if (
+      !body ||
+      typeof body !== "object" ||
+      !("requestId" in body) ||
+      typeof body.requestId !== "string"
+    )
+      throw Error("No original UUID before sign-in request");
+    original = body.requestId;
+    entered();
+    await held;
+    const response = await route.fetch({
+      headers: {
+        ...(await route.request().allHeaders()),
+        Origin: new URL(route.request().url()).origin,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    admitted();
+    try {
+      await route.fulfill({ response });
+    } catch {
+      /* Original page was deliberately reloaded; admission still happened. */
+    }
+  });
+  try {
+    await page.goto("/index.html#/desktop/providers");
+    let claude = page.getByRole("article", { name: "Claude", exact: true }),
+      signIn = claude.getByRole("button", {
+        name: "Sign in… · Claude",
+        exact: true,
+      });
+    await expect(signIn).toBeEnabled();
+    await signIn.click();
+    await intercepted;
+    expect(recorded()).toHaveLength(before);
+    await page.reload();
+    claude = page.getByRole("article", { name: "Claude", exact: true });
+    signIn = claude.getByRole("button", {
+      name: "Sign in… · Claude",
+      exact: true,
+    });
+    await expect(signIn).toBeDisabled();
+    await claude
+      .getByRole("button", { name: "Check original sign-in", exact: true })
+      .click();
+    await expect(
+      claude.getByText(
+        "The original sign-in outcome could not be verified. Check it before opening another terminal.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(signIn).toBeDisabled();
+    expect(recorded()).toHaveLength(before);
+    release();
+    await dispatched;
+    await page.unroute("**/providers/claude/sign-in");
+    await expect.poll(() => recorded().length).toBe(before + 1);
+    await claude
+      .getByRole("button", { name: "Check original sign-in", exact: true })
+      .click();
+    await expect(
+      claude.getByText(/Complete the vendor's own sign-in window/),
+    ).toBeVisible();
+    await claude
+      .getByRole("button", { name: "Close sign-in terminal", exact: true })
+      .scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: test.info().outputPath("provider-sign-in-controls.png"),
+    });
+    await claude
+      .getByRole("button", { name: "Retry original sign-in", exact: true })
+      .click();
+    await expect(
+      claude.getByRole("button", {
+        name: "Retry original sign-in",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    expect(recorded()).toHaveLength(before + 1);
+    const second = await context.newPage();
+    await second.goto("/index.html#/desktop/providers");
+    const other = second.getByRole("article", { name: "Claude", exact: true });
+    await expect(
+      other.getByRole("button", { name: "Sign in… · Claude", exact: true }),
+    ).toBeDisabled();
+    await other
+      .getByRole("button", { name: "Close sign-in terminal", exact: true })
+      .click();
+    await expect(
+      other.getByText(/Run doctor to check authentication/),
+    ).toBeVisible();
+    for (const pid of [recorded().at(-1)?.pid, recorded().at(-1)?.childPid]) {
+      if (typeof pid !== "number") throw Error("Missing inert process PID");
+      await expect
+        .poll(() => {
+          try {
+            process.kill(pid, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(false);
+    }
+    expect(recorded()).toHaveLength(before + 1);
+    await second.close();
+    await page.bringToFront();
+    await expect(signIn).toBeEnabled();
+    await expect(
+      claude.getByText(/Run doctor to check authentication/),
+    ).toBeVisible();
+  } finally {
+    release();
+    if (original && !page.isClosed()) {
+      const token = await pageToken(page);
+      await page.evaluate(
+        async ({ requestId, token, header }) => {
+          await fetch(
+            `/__agent-forge/providers/claude/sign-in/${requestId}/stop`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", [header]: token },
+              body: "{}",
+            },
+          );
+        },
+        { requestId: original, token, header: OPERATOR_HEADER },
+      );
+    }
+  }
 });

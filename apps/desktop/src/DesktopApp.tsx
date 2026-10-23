@@ -359,6 +359,7 @@ export function DesktopApp(): JSX.Element {
             reload={providers.reload}
             doctor={providers.doctor}
             checking={providers.checking}
+            logins={providers.logins}
             writesAllowed={writesAllowed}
           />
         ) : route.destination === "keeper" && project ? (

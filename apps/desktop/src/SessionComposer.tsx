@@ -102,6 +102,9 @@ function ClaudeSessionComposer({
   const claudeReadiness = providers?.providers.find(
     (provider) => provider.provider === "claude",
   );
+  const codexReadiness = providers?.providers.find(
+    (provider) => provider.provider === "codex",
+  );
   const edit = (change: Partial<typeof draft>) =>
     client.editComposer(project.id, change);
   useEffect(() => {
@@ -392,7 +395,14 @@ function ClaudeSessionComposer({
           aria-pressed="false"
           onClick={() => client.chooseComposerProvider(project.id, "codex")}
         >
-          Cx · Codex<small>Task · CLI checked below</small>
+          Cx · Codex
+          <small>
+            Task ·{" "}
+            {codexReadiness
+              ? readinessLabel(codexReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(codexReadiness)}
+          </small>
         </button>
         {["Gemini", "Grok", "OpenRouter"].map((name) => (
           <button
