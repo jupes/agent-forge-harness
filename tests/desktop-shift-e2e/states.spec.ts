@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { z } from "zod";
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
 import { projectShiftsPageSchema } from "../../scripts/shifts/protocol";
 import { SHIFT_STOP_REASONS, type ShiftStopReason } from "../../types/hearth";
@@ -12,6 +13,7 @@ import {
   fixtureCalls,
   HOME,
   holdStartup,
+  REPOSITORY,
   STATE,
 } from "./environment";
 
@@ -55,10 +57,42 @@ function seed(mode: "reset" | "corrupt" | "gallery", witnessPid = process.pid) {
   }
   expect(value).toEqual({ ok: true, data: { mode }, error: null });
 }
+const fixedVersionProbe = z
+  .object({
+    kind: z.literal("version"),
+    argv: z.tuple([z.literal("--version")]),
+    stdin: z.literal(""),
+    cwd: z.literal(REPOSITORY),
+    pid: z.number().int().positive(),
+    childPid: z.null(),
+    secretPresent: z.literal(false),
+    forged: z.literal(false),
+    adapter: z.literal("1").optional(),
+  })
+  .strict();
 const providerBytes = () =>
   ["claude.json", "codex.jsonl"].map((name) => {
     const file = join(STATE, name);
-    return existsSync(file) ? readFileSync(file, "utf8") : null;
+    if (!existsSync(file)) return null;
+    const bytes = readFileSync(file, "utf8");
+    if (name !== "codex.jsonl") return bytes;
+    // Readiness may inspect the fixed version while this page loads. Preserve
+    // every other byte/record, including malformed, unknown or task activity.
+    return (
+      bytes
+        .split("\n")
+        .filter((line) => {
+          if (!line) return false;
+          let record: unknown;
+          try {
+            record = JSON.parse(line);
+          } catch {
+            return true;
+          }
+          return !fixedVersionProbe.safeParse(record).success;
+        })
+        .join("\n") || null
+    );
   });
 const trackerWrites = () =>
   fixtureCalls().filter(
