@@ -381,3 +381,37 @@
     opacity: 0;
   }
 }
+
+.af-session-library-panel:focus-visible {
+  outline: 2px solid var(--color-accent-400);
+  outline-offset: 2px;
+}
+.af-session-library-panel {
+  max-height: min(60dvh, 520px);
+  overflow: auto;
+  font-size: 12px;
+}
+.af-session-library-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+.af-session-library-panel > p {
+  margin: 0 0 10px;
+}
+.af-session-control-support {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 6px 12px;
+}
+.af-session-control-support dt {
+  font-weight: 600;
+}
+.af-session-control-support dd {
+  margin: 0;
+  color: var(--color-neutral-400);
+}
+.af-session-archive-filter {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+}

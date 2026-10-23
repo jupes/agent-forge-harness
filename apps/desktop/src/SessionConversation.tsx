@@ -25,6 +25,8 @@ import {
   validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
+import { SessionLibraryControls } from "./SessionLibraryControls";
+import type { SessionLibraryClient } from "./session-library-client";
 
 export function SessionConversation({
   projectId,
@@ -32,12 +34,14 @@ export function SessionConversation({
   client,
   keeper,
   writesAllowed,
+  library,
 }: {
   projectId: string;
   sessionId: string;
   client: SessionsClient;
   keeper: KeeperClient;
   writesAllowed: boolean;
+  library?: SessionLibraryClient;
 }) {
   const view = client.session(projectId, sessionId),
     record = client
@@ -188,6 +192,15 @@ export function SessionConversation({
             >
               Stop session
             </Button>
+          )}
+          {record && library && (
+            <SessionLibraryControls
+              record={record}
+              session={view}
+              library={library}
+              writesAllowed={writesAllowed}
+              onContinue={() => prompt.current?.focus()}
+            />
           )}
         </div>
         {showLifecycleGuidance && (
