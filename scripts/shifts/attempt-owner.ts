@@ -44,8 +44,11 @@ export async function openShiftAttempt(options: {
   input: PrivateExecInput;
   attempt: number;
   signal: AbortSignal;
-  prepare(input: PrivateExecInput): Promise<{ version: string }>;
-  validate(input: PrivateExecInput): Promise<void>;
+  prepare(
+    input: PrivateExecInput,
+    signal: AbortSignal,
+  ): Promise<{ version: string }>;
+  validate(input: PrivateExecInput, signal: AbortSignal): Promise<void>;
 }) {
   const intent = structuredClone(options.intent),
     input = structuredClone(options.input),
@@ -65,7 +68,7 @@ export async function openShiftAttempt(options: {
     if (input.provider !== "claude" && input.provider !== "codex")
       throw new PrivateCaptureError();
     const prepared = await untilAbort(
-      options.prepare(structuredClone(input)),
+      options.prepare(structuredClone(input), options.signal),
       options.signal,
     );
     active();
@@ -91,7 +94,7 @@ export async function openShiftAttempt(options: {
     const admit = async () => {
       active();
       await untilAbort(
-        options.validate(structuredClone(input)),
+        options.validate(structuredClone(input), options.signal),
         options.signal,
       );
       active();
