@@ -86,9 +86,11 @@ export const codexChatCommandSchema = z
   .strict()
   .refine((value) => {
     const delta = value.source === "item/commandExecution/outputDelta";
-    const active = value.source === "item/started" || delta;
+    const active = value.status === "inProgress";
     return (
-      active === (value.status === "inProgress") &&
+      (value.source !== "item/started" || active) &&
+      (value.source !== "item/completed" || !active) &&
+      (!delta || active) &&
       value.partial === active &&
       (delta
         ? value.output !== null &&

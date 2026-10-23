@@ -365,7 +365,10 @@ export function createCodexChatStream(options: {
       throw new Error("Codex command item identity changed.");
     if (previous?.command && previous.command.identity !== identity)
       throw new Error("Codex command metadata changed its item identity.");
-    if ((source === "item/started") !== (current.status === "inProgress"))
+    if (
+      (source === "item/started" && current.status !== "inProgress") ||
+      (source === "item/completed" && current.status === "inProgress")
+    )
       throw new Error(
         "Codex command status conflicts with its lifecycle source.",
       );
@@ -407,7 +410,9 @@ export function createCodexChatStream(options: {
     items.set(current.id, {
       type: "commandExecution",
       text: "",
-      completed: current.status !== "inProgress",
+      // A final turn snapshot may retain an unfinished command. Its reported
+      // status stays partial, while the native final notification closes input.
+      completed: source !== "item/started",
       command: {
         identity,
         started: source === "item/started" ? signature : null,

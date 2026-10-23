@@ -247,6 +247,73 @@ test("actual native command history stays exact across protected partial reads, 
   expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registry);
 });
 
+test("an actual interrupted Chat retains an unfinished final command snapshot without reviving the ended turn", async () => {
+  const f = await fixture("command-interrupted"),
+    service = f.open();
+  const start = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, start.session.id);
+  const page = await service.read(f.project.id, start.session.id);
+  expect(page.turns[0]?.phase).toBe("failed");
+  const final = page.frames.find(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "command" &&
+      frame.event.event.source === "turn/completed",
+  );
+  expect(final?.event).toMatchObject({
+    event: {
+      source: "turn/completed",
+      status: "inProgress",
+      partial: true,
+      outputSource: "aggregate",
+      output: { text: "Partial aggregate at interruption", truncated: false },
+      exitCode: null,
+    },
+  });
+  expect(page.frames.at(-1)?.event).toMatchObject({
+    event: {
+      kind: "outcome",
+      outcome: { phase: "failed", stopped: false, timedOut: false },
+    },
+  });
+  if (
+    final?.event.kind !== "coding-chat" ||
+    final.event.event.kind !== "command"
+  )
+    throw Error("Missing actual final partial command");
+  const state = createConversationStore(f.home, undefined, {
+    kind: "session",
+    projectId: f.project.id,
+    sessionId: start.session.id,
+  }).read(f.project.id);
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  const finalIndex = state.frames.findIndex((frame) => frame.seq === final.seq);
+  const late = {
+    ...final,
+    seq: final.seq + 1,
+    event: {
+      ...final.event,
+      event: {
+        ...final.event.event,
+        source: "item/commandExecution/outputDelta",
+        outputSource: "delta",
+      },
+    },
+  };
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [...state.frames.slice(0, finalIndex + 1), late],
+    }).success,
+  ).toBe(false);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, start.session.id);
+  expect(exported.conversation.frames).toContainEqual(final);
+  await service.close();
+});
+
 test("owned Chat persists its private snapshot and resumes the exact native thread after service recreation", async () => {
   const f = await fixture();
   let service = f.open();

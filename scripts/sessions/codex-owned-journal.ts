@@ -318,6 +318,8 @@ function nativeChatHistory(value: {
     nativeTurn: string | undefined;
     terminal: boolean;
     commandBytes: number;
+    commandsEnded: boolean;
+    closedCommands: Set<string>;
     commands: Map<string, CodexChatCommand>;
     approvals: Map<string, CodexChatApproval>;
     intents: Map<string, CodexChatDecision>;
@@ -336,6 +338,8 @@ function nativeChatHistory(value: {
         nativeTurn: undefined,
         terminal: false,
         commandBytes: 0,
+        commandsEnded: false,
+        closedCommands: new Set(),
         commands: new Map(),
         approvals: new Map(),
         intents: new Map(),
@@ -404,7 +408,9 @@ function nativeChatHistory(value: {
       if (
         turn.pid === undefined ||
         native.threadId !== value.binding.sessionId ||
-        native.turnId !== turn.nativeTurn
+        native.turnId !== turn.nativeTurn ||
+        turn.closedCommands.has(native.itemId) ||
+        (turn.commandsEnded && native.source !== "turn/completed")
       )
         return false;
       turn.commandBytes += new TextEncoder().encode(
@@ -444,6 +450,12 @@ function nativeChatHistory(value: {
         if (!previous && turn.commands.size >= 256) return false;
         turn.commands.set(native.itemId, native);
       }
+      if (
+        native.source === "item/completed" ||
+        native.source === "turn/completed"
+      )
+        turn.closedCommands.add(native.itemId);
+      if (native.source === "turn/completed") turn.commandsEnded = true;
       continue;
     }
     if (native.kind === "turn" || native.kind === "identity") {

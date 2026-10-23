@@ -272,7 +272,11 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
-      } else if (mode === "command-activity") {
+      } else if (
+        mode === "command-activity" ||
+        mode === "command-interrupted" ||
+        mode === "command-activity-held"
+      ) {
         const scope = { threadId, turnId };
         const command = {
           type: "commandExecution",
@@ -301,21 +305,43 @@ while (true) {
             delta: "Reported line one\n",
           },
         });
-        await send({
-          method: "item/completed",
-          params: {
-            ...scope,
-            item: {
-              ...command,
-              status: "completed",
-              aggregatedOutput: "Reported line one\nReported line two\n",
-              exitCode: 0,
-              durationMs: 12,
+        if (mode === "command-activity-held") {
+          hangTree();
+        } else if (mode === "command-interrupted") {
+          await send({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: {
+                id: turnId,
+                status: "interrupted",
+                error: null,
+                items: [
+                  {
+                    ...command,
+                    aggregatedOutput: "Partial aggregate at interruption",
+                  },
+                ],
+              },
             },
-            completedAtMs: 13,
-          },
-        });
-        await finish();
+          });
+        } else {
+          await send({
+            method: "item/completed",
+            params: {
+              ...scope,
+              item: {
+                ...command,
+                status: "completed",
+                aggregatedOutput: "Reported line one\nReported line two\n",
+                exitCode: 0,
+                durationMs: 12,
+              },
+              completedAtMs: 13,
+            },
+          });
+          await finish();
+        }
       } else if (mode === "burst") {
         hangTree();
         for (let index = 0; index < 400; index++)

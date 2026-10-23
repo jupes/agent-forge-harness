@@ -193,6 +193,181 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
   return dialog;
 }
 
+test("native Chat command reports show inert streamed and aggregate output with exact completion after saved reload", async ({
+  page,
+}) => {
+  mode("command-activity");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const starts = calls().filter(
+    (row) => row.kind === "rpc" && row.method === "turn/start",
+  ).length;
+  const answers = calls().filter((row) => row.kind === "answer").length;
+  const { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  const activity = pane.getByRole("region", {
+    name: "Reported session activity",
+    exact: true,
+  });
+  const summary = activity.locator("summary", {
+    hasText: "Command · Reported completed",
+  });
+  await expect(summary).toBeVisible();
+  await summary.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(summary).toBeFocused();
+  await expect(summary).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect(
+    activity.getByRole("region", { name: "Command report", exact: true }),
+  ).toHaveText("inert command <script> stays text");
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed output report",
+      exact: true,
+    }),
+  ).toHaveText("Reported line one\n");
+  await expect(
+    activity.getByRole("region", {
+      name: "Reported aggregate output report",
+      exact: true,
+    }),
+  ).toHaveText("Reported line one\nReported line two\n");
+  await expect(activity).toContainText("Reported exit code: 0");
+  await expect(activity).toContainText("Reported duration: 12 ms");
+  await expect(activity).toContainText("app-server item/completed");
+  await expect(activity.locator("script, iframe, img, a, button")).toHaveCount(
+    0,
+  );
+  await expect(
+    pane.getByRole("article", { name: "Native command approval", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Tab");
+  await expect(
+    activity.getByRole("region", { name: "Command report", exact: true }),
+  ).toBeFocused();
+  await expect(
+    activity.getByRole("region", { name: "Command report", exact: true }),
+  ).toHaveCSS("outline-width", "2px");
+  if (process.env.CODEX_CHAT_COMMAND_SHOTS)
+    await activity.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_COMMAND_SHOTS,
+        "native-chat-command.png",
+      ),
+      maskColor: "#1c1d24",
+      mask: [
+        activity.locator(".af-session-note", {
+          hasText: "Reported working directory:",
+        }),
+      ],
+    });
+  const beforeReload = saved(record.id).frames;
+  await reloadSettled(page);
+  await activity
+    .locator("summary", { hasText: "Command · Reported completed" })
+    .click();
+  await expect(activity).toContainText("Reported exit code: 0");
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed output report",
+      exact: true,
+    }),
+  ).toHaveText("Reported line one\n");
+  expect(saved(record.id).frames).toEqual(beforeReload);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${beta.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  await expect(
+    page.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("inert command <script> stays text", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("actual Stop retains a partial native command stream without inventing completion or permission authority", async ({
+  page,
+}) => {
+  mode("command-activity-held");
+  const starts = calls().filter(
+    (row) => row.kind === "rpc" && row.method === "turn/start",
+  ).length;
+  const answers = calls().filter((row) => row.kind === "answer").length;
+  const { pane, record } = await startedChat(page);
+  const activity = pane.getByRole("region", {
+    name: "Reported session activity",
+    exact: true,
+  });
+  await activity
+    .locator("summary", {
+      hasText: "Command · Reported in progress · Partial report",
+    })
+    .click();
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed output report",
+      exact: true,
+    }),
+  ).toHaveText("Reported line one\n");
+  await expect(activity).toContainText("Exit code not reported");
+  await expect(activity).toContainText("Final aggregate output not reported");
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+  await pane.getByRole("button", { name: "Stop session", exact: true }).click();
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("cancelled");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  await expect(activity.locator("summary")).toContainText("Partial report");
+  const commands = saved(record.id).frames.filter(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "command",
+  );
+  expect(commands).toHaveLength(2);
+  expect(commands.at(-1)?.event).toMatchObject({
+    event: {
+      source: "item/commandExecution/outputDelta",
+      status: "inProgress",
+      partial: true,
+      exitCode: null,
+    },
+  });
+  await reloadSettled(page);
+  await activity
+    .locator("summary", {
+      hasText: "Command · Reported in progress · Partial report",
+    })
+    .click();
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed output report",
+      exact: true,
+    }),
+  ).toHaveText("Reported line one\n");
+  await expect(activity).toContainText("Exit code not reported");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+});
+
 test("Codex Chat reviews native options, allows one actual command and resumes its exact saved thread after reload", async ({
   page,
 }) => {

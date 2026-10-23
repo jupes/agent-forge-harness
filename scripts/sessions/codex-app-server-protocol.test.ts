@@ -197,6 +197,37 @@ test("native command reports retain streamed versus aggregate output, exact dupl
     output: null,
     partial: false,
   });
+  const interrupted = stream();
+  expect(
+    interrupted.accept(
+      notify("turn/completed", {
+        threadId,
+        turn: {
+          id: turnId,
+          status: "interrupted",
+          error: null,
+          items: [
+            commandItem({ aggregatedOutput: "Reported unfinished aggregate" }),
+          ],
+        },
+      }),
+    ).events[0],
+  ).toMatchObject({
+    source: "turn/completed",
+    status: "inProgress",
+    partial: true,
+    output: { text: "Reported unfinished aggregate", truncated: false },
+  });
+  expect(() =>
+    interrupted.accept(
+      notify("item/commandExecution/outputDelta", {
+        threadId,
+        turnId,
+        itemId: "native-command",
+        delta: "too late",
+      }),
+    ),
+  ).toThrow("terminal");
 });
 
 test("unknown, foreign, conflicting and post-completion command reports cannot gain a native item identity", () => {
