@@ -60,6 +60,7 @@ import {
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
+import { projectShiftOptionsRoute } from "./project-shifts";
 import {
   projectSnapshotReader,
   projectSummaryRoute,
@@ -431,6 +432,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
     projectBeadsRoute(deps, projectSnapshot),
+    projectShiftOptionsRoute(deps, projectSnapshot),
     projectWorkbenchRoute(deps, projectSnapshot, async () => {
       const result = await readEligible();
       return result.ok ? result.value : null;

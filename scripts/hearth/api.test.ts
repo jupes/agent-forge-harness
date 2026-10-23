@@ -1466,6 +1466,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 const READS: Record<string, string> = {
   "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
+  "GET /projects/:id/shifts/options": `/projects/${FIXTURE_PROJECT_ID}/shifts/options`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
@@ -2036,6 +2037,7 @@ describe("a read row or the stream while another connection holds the write lock
     });
     root = h.root;
     await seedOwnedSession(h);
+    seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -2985,6 +2987,7 @@ describe("every read row (iterating the table)", () => {
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
     await seedOwnedSession(h);
+    seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3011,6 +3014,7 @@ describe("every read row (iterating the table)", () => {
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
     await seedOwnedSession(h);
+    seedProjectBeadWriteFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
