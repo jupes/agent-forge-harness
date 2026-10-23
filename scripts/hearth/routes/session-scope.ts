@@ -83,7 +83,10 @@ export function createSessionScopeValidator(
   const repositoryScope = createSessionRepositoryScopeValidator(deps, load);
   return async (
     projectId: string,
-    metadata: OwnedSessionMetadata,
+    metadata: Pick<
+      OwnedSessionMetadata,
+      "workspace" | "repository" | "worktree" | "beadId"
+    >,
     about: ConversationObject[],
     launch?: ClaudeSessionLaunch,
   ): Promise<void> => {
@@ -138,7 +141,7 @@ export function createSessionScopeValidator(
     for (const reference of about) {
       if (reference.kind === "session") {
         const owned = createSessionRegistry(home)
-          .list(projectId)
+          .listAll(projectId)
           .find((record) => record.id === reference.id);
         if (
           owned &&

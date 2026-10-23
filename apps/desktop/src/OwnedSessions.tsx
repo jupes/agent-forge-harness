@@ -54,7 +54,8 @@ export function OwnedSessions({
                 {record.mode === "chat" ? "Chat" : "Task"} ·{" "}
                 {record.beadId ?? record.requestedModel}
               </a>{" "}
-              · {record.smith} ·{" "}
+              · {record.provider === "codex" ? "Codex" : "Claude"} ·{" "}
+              {record.smith} ·{" "}
               <time dateTime={record.createdAt}>
                 {new Date(record.createdAt).toLocaleString()}
               </time>

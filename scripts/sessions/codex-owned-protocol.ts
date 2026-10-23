@@ -9,14 +9,13 @@ import { canonicalSessionInput } from "./preparation";
 import { parseSessionStart, sessionStartSchema } from "./request-protocol";
 
 /** Explicit additive branch; never infer a provider from a smith name or reinterpret Claude options. */
-export const codexTaskStartSchema: z.ZodType<CodexTaskStartRequest> =
-  sessionStartSchema
-    .omit({ launch: true })
-    .extend({
-      provider: z.literal("codex"),
-      launch: codexTaskLaunchSchema.omit({ cwd: true, context: true }).strict(),
-    })
-    .strict();
+export const codexTaskStartSchema = sessionStartSchema
+  .omit({ launch: true })
+  .extend({
+    provider: z.literal("codex"),
+    launch: codexTaskLaunchSchema.omit({ cwd: true, context: true }).strict(),
+  })
+  .strict() satisfies z.ZodType<CodexTaskStartRequest>;
 
 export function parseOwnedSessionStart(
   input: unknown,

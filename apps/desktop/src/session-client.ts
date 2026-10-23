@@ -2,25 +2,30 @@ import { z } from "zod";
 import type { ActionOutcome } from "../../../docs/js/action-outcome";
 import { REAL_TIMERS, type Timers } from "../../../docs/js/hearth-read";
 import type { StreamTransport } from "../../../docs/js/use-stream";
+import { conversationReceiptSchema } from "../../../scripts/conversations/protocol";
+import { ownedCodingPageSchema } from "../../../scripts/sessions/codex-owned-journal";
 import {
-  conversationPageSchema,
-  conversationReceiptSchema,
-} from "../../../scripts/conversations/protocol";
-import {
-  ownedSessionSchema,
-  sessionStartReceiptSchema,
-} from "../../../scripts/sessions/protocol";
+  ownedCodingSessionSchema,
+  ownedCodingStartReceiptSchema,
+} from "../../../scripts/sessions/codex-owned-wire-protocol";
+import type {
+  OwnedCodingSessionRecord as OwnedSessionRecord,
+  OwnedSessionStartInput,
+  OwnedSessionStartRequest as SessionStartRequest,
+} from "../../../types/codex-owned-task";
 import type {
   ConversationObject,
   ConversationPage,
   ConversationReceipt,
   ConversationTurn,
 } from "../../../types/conversation";
-import type { OwnedSessionRecord } from "../../../types/owned-session";
 import type { SessionAttachment } from "../../../types/session-launch";
-import type { SessionStartRequest } from "../../../types/session-requests";
 import type { SessionMessage } from "../../../types/session-turn";
 import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
+import {
+  type CodexTaskComposerDraft,
+  newCodexTaskDraft,
+} from "./codex-session-composer";
 import {
   newSessionDraft,
   type SessionComposerDraft,
@@ -28,12 +33,13 @@ import {
 } from "./session-composer";
 import { createSessionWorktreeClient } from "./session-worktree-client";
 
-const listSchema = z.array(ownedSessionSchema).max(1000);
+const listSchema = z.array(ownedCodingSessionSchema).max(1000);
 const active = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
 const held = (turn: ConversationTurn) =>
   active(turn.phase) || turn.phase === "unknown";
 const sameStart = (record: OwnedSessionRecord, input: SessionStartRequest) =>
+  record.provider === ("provider" in input ? input.provider : "claude") &&
   record.requestId === input.requestId &&
   record.smith === input.smith &&
   record.repository === input.repository &&
@@ -48,6 +54,8 @@ export interface SessionProjectView {
   loading: boolean;
   error: string;
   composer: SessionComposerDraft;
+  composerProvider: "claude" | "codex";
+  codexComposer: CodexTaskComposerDraft;
   pendingStart: SessionStartRequest | null;
   starting: boolean;
   notice: string;
@@ -114,6 +122,8 @@ export function createSessionsClient(deps: {
         loading: false,
         error: "",
         composer: newSessionDraft(),
+        composerProvider: "claude",
+        codexComposer: newCodexTaskDraft(),
         pendingStart: null,
         starting: false,
         notice: "",
@@ -208,7 +218,7 @@ export function createSessionsClient(deps: {
     raw: unknown,
     live = false,
   ): boolean => {
-    const parsed = conversationPageSchema.safeParse(raw);
+    const parsed = ownedCodingPageSchema.safeParse(raw);
     if (
       !parsed.success ||
       parsed.data.projectId !== entry.projectId ||
@@ -368,7 +378,7 @@ export function createSessionsClient(deps: {
       outcome.state === "done" &&
       entry.pendingStart?.requestId === input.requestId
     ) {
-      const parsed = sessionStartReceiptSchema.safeParse(outcome.data);
+      const parsed = ownedCodingStartReceiptSchema.safeParse(outcome.data);
       if (
         parsed.success &&
         parsed.data.session.projectId === projectId &&
@@ -484,6 +494,20 @@ export function createSessionsClient(deps: {
       };
       tell();
     },
+    chooseComposerProvider(projectId: string, provider: "claude" | "codex") {
+      project(projectId).composerProvider = provider;
+      tell();
+    },
+    editCodexComposer(
+      projectId: string,
+      update: Partial<CodexTaskComposerDraft>,
+    ) {
+      project(projectId).codexComposer = {
+        ...project(projectId).codexComposer,
+        ...update,
+      };
+      tell();
+    },
     draft(projectId: string, id: string, text: string) {
       session(projectId, id).draft = text;
       tell();
@@ -500,10 +524,7 @@ export function createSessionsClient(deps: {
       Object.assign(session(projectId, id), structuredClone(update));
       tell();
     },
-    async start(
-      projectId: string,
-      input: Omit<SessionStartRequest, "requestId">,
-    ) {
+    async start(projectId: string, input: OwnedSessionStartInput) {
       const entry = project(projectId);
       if (disposed || entry.pendingStart || entry.starting || !deps.canWrite())
         return;

@@ -22,6 +22,23 @@ import {
   validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
+import { CodexTaskComposer } from "./CodexTaskComposer";
+
+export interface SessionComposerProps {
+  project: ProjectRecord;
+  client: SessionsClient;
+  keeper: KeeperClient;
+  writesAllowed: boolean;
+  onCancel(): void;
+  onStarted(id: string): void;
+}
+export function SessionComposer(props: SessionComposerProps) {
+  return props.client.project(props.project.id).composerProvider === "codex" ? (
+    <CodexTaskComposer {...props} />
+  ) : (
+    <ClaudeSessionComposer {...props} />
+  );
+}
 
 const templates = [
   [
@@ -46,7 +63,7 @@ const templates = [
   ],
 ] as const;
 
-export function SessionComposer({
+function ClaudeSessionComposer({
   project,
   client,
   keeper,
@@ -346,7 +363,14 @@ export function SessionComposer({
         <button type="button" aria-pressed="true">
           Cl · Claude<small>CLI checked below · usage not reported</small>
         </button>
-        {["Codex", "Gemini", "Grok", "OpenRouter"].map((name) => (
+        <button
+          type="button"
+          aria-pressed="false"
+          onClick={() => client.chooseComposerProvider(project.id, "codex")}
+        >
+          Cx · Codex<small>Task · CLI checked below</small>
+        </button>
+        {["Gemini", "Grok", "OpenRouter"].map((name) => (
           <button
             type="button"
             key={name}

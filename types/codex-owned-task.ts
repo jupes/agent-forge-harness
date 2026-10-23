@@ -1,7 +1,16 @@
-import type { CodexExecUsage, CodexTaskTextAttachment } from "./codex-task";
+import type {
+  CodexExecUsage,
+  CodexTaskTextAttachment,
+  SerializedCodexTask,
+} from "./codex-task";
+import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { ConversationReceipt } from "./conversation";
 import type { OwnedSessionMetadata, OwnedSessionRecord } from "./owned-session";
-import type { SessionStartRequest } from "./session-requests";
+import type {
+  SessionPreviewReceipt,
+  SessionStartReceipt,
+  SessionStartRequest,
+} from "./session-requests";
 
 /** Additive public Task intent. Scope/context/cwd and prepared authority are supplied by the server. */
 export interface CodexTaskStartRequest
@@ -22,6 +31,9 @@ export interface CodexTaskStartRequest
 export type OwnedSessionStartRequest =
   | SessionStartRequest
   | CodexTaskStartRequest;
+export type OwnedSessionStartInput =
+  | Omit<SessionStartRequest, "requestId">
+  | Omit<CodexTaskStartRequest, "requestId">;
 
 export interface CodexOwnedSessionMetadata
   extends Omit<OwnedSessionMetadata, "provider" | "mode" | "requestedEffort"> {
@@ -42,6 +54,19 @@ export interface CodexTaskStartReceipt {
   session: CodexOwnedSessionRecord;
   receipt: ConversationReceipt;
 }
+export type OwnedCodingSessionStartReceipt =
+  | SessionStartReceipt
+  | CodexTaskStartReceipt;
+export interface CodexTaskPreviewReceipt {
+  provider: "codex";
+  projectId: string;
+  requestId: string;
+  snapshot: PreparedCodexTask;
+  serialized: SerializedCodexTask;
+}
+export type OwnedCodingSessionPreviewReceipt =
+  | SessionPreviewReceipt
+  | CodexTaskPreviewReceipt;
 
 /** Reported counts in the owned coding journal only; no model, cost or allowance is inferred. */
 export interface CodexCodingUsageEvent {
