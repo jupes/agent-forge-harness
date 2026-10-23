@@ -1,6 +1,7 @@
 import { copyFileSync, cpSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { z } from "zod";
+import type { ProjectShiftObservation } from "../../types/project-shifts";
 import { buildChildEnv } from "../executors/env";
 import { type InteractiveSupervised, supervise } from "../executors/supervisor";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
@@ -188,6 +189,14 @@ export async function verifyAttendedProjectShifts(
     );
   };
   const review = async (current: WebSocket, smith: string) => {
+    const previous = z
+      .array(z.string())
+      .parse(
+        await tools.evaluate(
+          current,
+          "Array.from(document.querySelectorAll('.af-shift-row')).map(row=>row.getAttribute('data-shift'))",
+        ),
+      );
     await tools.waitForPage(
       current,
       "Array.from(document.querySelectorAll('.af-project-shifts button')).some(b=>b.textContent?.trim()==='Start shift'&&b.getAttribute('aria-disabled')!=='true')",
@@ -214,9 +223,22 @@ export async function verifyAttendedProjectShifts(
       "!document.querySelector('dialog[open]')",
       "The packaged explicit shift Start did not settle its receipt.",
     );
+    const fresh = `Array.from(document.querySelectorAll('.af-shift-row')).map(row=>row.getAttribute('data-shift')).find(id=>!${JSON.stringify(previous)}.includes(id))`;
+    await tools.waitForPage(
+      current,
+      `!!(${fresh})`,
+      "The packaged reviewed Start did not expose its original shift identity.",
+    );
+    return z
+      .string()
+      .regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/)
+      .parse(await tools.evaluate(current, fresh));
   };
-  const lastPhase = (phase: string) =>
-    `Array.from(document.querySelectorAll('.af-shift-row')).at(-1)?.getAttribute('data-phase')===${JSON.stringify(phase)}`;
+  const originalPhase = (
+    shiftId: string,
+    phase: ProjectShiftObservation["phase"],
+  ) =>
+    `Array.from(document.querySelectorAll('.af-shift-row')).find(row=>row.getAttribute('data-shift')===${JSON.stringify(shiftId)})?.getAttribute('data-phase')===${JSON.stringify(phase)}`;
   const gone = async (pid: number) => {
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
@@ -232,10 +254,10 @@ export async function verifyAttendedProjectShifts(
   };
   try {
     let current = await start();
-    await review(current, "codex-journeyman");
+    const codexShiftId = await review(current, "codex-journeyman");
     await tools.waitForPage(
       current,
-      lastPhase("stopped"),
+      originalPhase(codexShiftId, "stopped"),
       "The packaged attended Codex shift did not reach a verified terminal record.",
     );
     await tools.waitForPage(
@@ -284,7 +306,7 @@ export async function verifyAttendedProjectShifts(
       );
     fixture.resetTracker();
     fixture.fixtureMode("hang-tree");
-    await review(current, "claude-journeyman");
+    const claudeShiftId = await review(current, "claude-journeyman");
     await tools.waitForPage(
       current,
       "document.querySelector('.af-project-shift-attempts')?.textContent?.includes('Coding reply')",
@@ -302,13 +324,17 @@ export async function verifyAttendedProjectShifts(
     current = await start();
     await tools.waitForPage(
       current,
-      lastPhase("Needs explicit recovery"),
+      originalPhase(claudeShiftId, "needs-recovery"),
       "The packaged restarted host did not retain the original interrupted shift.",
     );
-    await click(current, "Recover original shift");
+    await click(
+      current,
+      "Recover original shift",
+      `.af-shift-row[data-shift="${claudeShiftId}"]`,
+    );
     await tools.waitForPage(
       current,
-      lastPhase("stopped"),
+      originalPhase(claudeShiftId, "stopped"),
       "Explicit packaged recovery did not settle the original owned work.",
     );
     const after = providerRecord.parse(

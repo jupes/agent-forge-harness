@@ -5,7 +5,40 @@ import {
   desktopRoute,
   navigateGlobal,
   navigateProject,
+  observeDesktopRoute,
 } from "../../apps/desktop/src/navigation";
+
+test("navigation changed before the effect subscribes is reconciled, and cleanup releases future hash changes", () => {
+  let hash = "#/desktop/projects";
+  const mounted = desktopRoute(hash);
+  const listener = { changed: () => {} };
+  const observed: DesktopRoute[] = [];
+  // The native renderer paints its first frame, then navigation arrives before
+  // its passive effect installs the listener. That earlier event is not replayed.
+  hash =
+    "#/desktop/project/project-native/workbench?selectionKind=bead&selectionId=alpha-1";
+  const stop = observeDesktopRoute(
+    {
+      hash: () => hash,
+      listen: (changed) => {
+        listener.changed = changed;
+        return () => {
+          listener.changed = () => {};
+        };
+      },
+    },
+    (route) => observed.push(route),
+  );
+  expect(mounted.destination).toBe("projects");
+  expect(observed).toEqual([desktopRoute(hash)]);
+  hash = "#/desktop/providers?project=project-native";
+  listener.changed();
+  expect(observed.at(-1)?.destination).toBe("providers");
+  stop();
+  hash = "#/desktop/projects";
+  listener.changed();
+  expect(observed).toHaveLength(2);
+});
 
 test("desktop destinations round-trip stable identifiers independently of display names", () => {
   const route: DesktopRoute = {
