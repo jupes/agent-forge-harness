@@ -6,13 +6,17 @@ import type {
   ConversationObject,
 } from "../../types/conversation";
 import type { ShiftTurnSnapshot } from "../../types/shift-turn";
-import { conversationFile } from "../conversations/paths";
+import {
+  conversationFile,
+  conversationWriteLockFile,
+} from "../conversations/paths";
 import {
   eventSchema,
   parsePreparedConversationSend,
 } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
 import { writeOwnerOnly } from "../hearth/token";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   ownedCodingEventSchema,
   ownedCodingStateSchema,
@@ -229,4 +233,53 @@ test("the private shift response codec compiles for the browser without Node or 
   expect(result.success).toBe(true);
   expect(result.logs).toEqual([]);
   expect(result.outputs.length).toBeGreaterThan(0);
+});
+
+test("a queued private append checks the live owner again inside the journal write lock", async () => {
+  const home = join(scratch.make("shift queued owner "), "home");
+  const address = {
+    kind: "session",
+    projectId,
+    sessionId: snapshot.conversationId,
+  } as const;
+  const store = createConversationStore(home, undefined, address);
+  const input = parseOwnedPreparedConversationSend({
+    requestId,
+    expectedRevision: 0,
+    text: snapshot.stdin,
+    about,
+    shift: snapshot,
+  });
+  const owner = "776002c5-fb80-422f-9949-612ff65c32ce";
+  await store.accept(projectId, input);
+  await store.start(projectId, requestId, owner);
+  let entered!: () => void,
+    release!: () => void,
+    current = true;
+  const acquired = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const held = withQueueLock(
+    conversationWriteLockFile(home, projectId, address),
+    async () => {
+      entered();
+      await released;
+    },
+  );
+  await acquired;
+  const queued = store.append(
+    projectId,
+    requestId,
+    owner,
+    { kind: "text", text: "late private output" },
+    () => current,
+  );
+  current = false;
+  release();
+  await held;
+  await expect(queued).rejects.toThrow("owner");
+  expect(store.read(projectId).frames).toHaveLength(1);
 });
