@@ -377,31 +377,42 @@ test("replaying an already resolved native approval refuses without another call
   expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
 });
 
-test("never-settling approval and initialize acknowledgements stop real native descendants", async () => {
-  for (const mode of ["approval-never", "hang-initialize"]) {
-    const f = fixture(mode),
-      runtime = createCodexChatRuntime({
-        ...f.options,
-        rpcTimeoutMs: 200,
-        approvalTimeoutMs: 100,
-      });
-    const snapshot = await runtime.prepare({
-      smith: "codex-journeyman",
-      launch: f.launch,
+test.each([
+  "approval-never",
+  "hang-initialize",
+] as const)("%s: an unanswered live protocol phase stops real native descendants", async (mode) => {
+  const f = fixture(mode),
+    runtime = createCodexChatRuntime({
+      ...f.options,
+      timeoutMs: 10000,
+      rpcTimeoutMs: 5000,
+      approvalTimeoutMs: 100,
     });
-    const result = await runtime.run(
-      { prepared: snapshot, resume: null },
-      async () => {},
-      new AbortController().signal,
-      { requestApproval: () => new Promise(() => {}) },
-    );
-    expect(result.phase).toBe("unknown");
-    const pids = treeRecord(f.records());
-    expect(pids).not.toBeNull();
-    if (pids) expect(await stoppedTree(pids)).toBe(true);
-    expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
-  }
-});
+  const snapshot = await runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let approvals = 0;
+  const result = await runtime.run(
+    { prepared: snapshot, resume: null },
+    async () => {},
+    new AbortController().signal,
+    {
+      requestApproval: () => {
+        approvals++;
+        return new Promise(() => {});
+      },
+    },
+  );
+  expect(result.phase).toBe("unknown");
+  expect(result.timedOut, JSON.stringify(result)).toBe(false);
+  expect(f.records().some((row) => row.method === "initialize")).toBe(true);
+  expect(approvals).toBe(mode === "approval-never" ? 1 : 0);
+  const pids = treeRecord(f.records());
+  expect(pids).not.toBeNull();
+  if (pids) expect(await stoppedTree(pids)).toBe(true);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
+}, 15000);
 
 test("explicit Stop confirms actual native tree cleanup while a private writer never settles", async () => {
   const f = fixture("hang-text"),
@@ -446,31 +457,48 @@ test("explicit Stop confirms actual native tree cleanup while a private writer n
   );
 });
 
-test("Task deadline and shutdown deadline stop native helpers instead of accepting terminal-plus-hang", async () => {
-  for (const mode of ["hang", "never-exit"]) {
-    const f = fixture(mode),
-      runtime = createCodexChatRuntime({
-        ...f.options,
-        timeoutMs: 2000,
-        rpcTimeoutMs: 200,
-      });
-    const snapshot = await runtime.prepare({
-      smith: "codex-journeyman",
-      launch: f.launch,
+test.each([
+  "hang",
+  "never-exit",
+] as const)("%s: the intended deadline stops native helpers instead of accepting terminal-plus-hang", async (mode) => {
+  const f = fixture(mode),
+    runtime = createCodexChatRuntime({
+      ...f.options,
+      // Establish which deadline wins; an initialization RPC timeout is
+      // not evidence of either a hung turn or terminal shutdown cleanup.
+      timeoutMs: mode === "hang" ? 5000 : 10000,
+      rpcTimeoutMs: mode === "hang" ? 10000 : 1000,
     });
-    const result = await runtime.run(
-      { prepared: snapshot, resume: null },
-      async () => {},
-      new AbortController().signal,
-      decline,
-    );
-    expect(result.phase).toBe("unknown");
-    if (mode === "hang") expect(result.timedOut).toBe(true);
-    const pids = treeRecord(f.records());
-    expect(pids).not.toBeNull();
-    if (pids) expect(await stoppedTree(pids)).toBe(true);
+  const snapshot = await runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  const events: CodexChatEvent[] = [];
+  const result = await runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    new AbortController().signal,
+    decline,
+  );
+  expect(result.phase).toBe("unknown");
+  expect(result.timedOut, JSON.stringify(result)).toBe(mode === "hang");
+  expect(f.records().some((row) => row.method === "turn/start")).toBe(true);
+  if (mode === "never-exit") {
+    expect(
+      f.records().filter((row) => row.kind === "terminal-published"),
+    ).toHaveLength(1);
+    expect(events.some((event) => event.kind === "usage")).toBe(true);
+    expect(result.usage).toMatchObject({
+      lastResponse: { inputTokens: 9, outputTokens: 6 },
+      threadTotal: { inputTokens: 19 },
+    });
   }
-});
+  const pids = treeRecord(f.records());
+  expect(pids).not.toBeNull();
+  if (pids) expect(await stoppedTree(pids)).toBe(true);
+}, 15000);
 
 test("a rejected private writer and queue pressure remain failures even with exit zero", async () => {
   for (const mode of ["normal", "burst"]) {
