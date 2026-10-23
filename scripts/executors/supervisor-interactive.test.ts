@@ -272,12 +272,14 @@ test("private PID controls reject malformed or duplicate messages independently 
       },
     });
     try {
-      await handle.done;
+      await expect(handle.done).rejects.toThrow("private interactive terminal");
       expect(errors).toBe(1);
       await expect(handle.write("late")).rejects.toThrow("closed");
       expect(await gone(handle.pid)).toBe(true);
     } finally {
-      await handle.stop("fixture cleanup");
+      await expect(handle.stop("fixture cleanup")).rejects.toThrow(
+        "private interactive terminal",
+      );
     }
   }
 });
