@@ -10,6 +10,7 @@ import {
 } from "./codex-owned-metadata";
 import { serializeCodexTask } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
+import { geminiOwnedSessionSchema } from "./gemini-owned-metadata";
 import {
   ownedSessionSchema,
   sessionProjectIdSchema,
@@ -21,6 +22,7 @@ export const ownedCodingSessionSchema = z.union([
   ownedSessionSchema,
   codexOwnedSessionSchema,
   codexChatOwnedSessionSchema,
+  geminiOwnedSessionSchema,
 ]);
 const codexStartReceiptSchema = z
   .object({

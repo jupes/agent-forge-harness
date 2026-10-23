@@ -76,6 +76,11 @@ export function createOwnedCodingSessionService(options: {
   });
   const selected = (projectId: string, sessionId: string) => {
     const record = registry.lookup(projectId, sessionId);
+    if (record.provider === "gemini")
+      throw new ConversationError(
+        503,
+        "Owned Gemini Task controls are not available yet. No other provider was selected.",
+      );
     return record.provider === "codex"
       ? record.mode === "chat"
         ? chat

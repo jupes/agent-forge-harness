@@ -13,6 +13,10 @@ import type {
   OwnedCodingSessionRecord,
 } from "../../types/codex-owned-task";
 import type {
+  GeminiOwnedSessionMetadata,
+  GeminiOwnedSessionRecord,
+} from "../../types/gemini-owned-task";
+import type {
   OwnedSessionMetadata,
   OwnedSessionRecord,
 } from "../../types/owned-session";
@@ -30,6 +34,10 @@ import {
   codexOwnedMetadataSchema,
   codexOwnedSessionSchema,
 } from "./codex-owned-metadata";
+import {
+  geminiOwnedMetadataSchema,
+  geminiOwnedSessionSchema,
+} from "./gemini-owned-metadata";
 import {
   ownedSessionIdSchema,
   ownedSessionMetadataSchema,
@@ -62,6 +70,7 @@ const metadataSchema = z
     ownedSessionMetadataSchema,
     codexOwnedMetadataSchema,
     codexChatOwnedMetadataSchema,
+    geminiOwnedMetadataSchema,
   ])
   .refine(canonicalPaths);
 const recordSchema = z
@@ -69,6 +78,7 @@ const recordSchema = z
     ownedSessionSchema,
     codexOwnedSessionSchema,
     codexChatOwnedSessionSchema,
+    geminiOwnedSessionSchema,
   ])
   .refine(canonicalPaths);
 const registrySchema = z
@@ -152,7 +162,11 @@ export function createSessionRegistry(
 ): SessionRegistry<CodexChatOwnedMetadata, CodexChatOwnedRecord>;
 export function createSessionRegistry(
   home: string,
-  provider: "claude" | "codex" = "claude",
+  provider: "gemini",
+): SessionRegistry<GeminiOwnedSessionMetadata, GeminiOwnedSessionRecord>;
+export function createSessionRegistry(
+  home: string,
+  provider: "claude" | "codex" | "gemini" = "claude",
   mode: "task" | "chat" = "task",
 ) {
   const readState = (): Registry => {
@@ -227,14 +241,14 @@ export function createSessionRegistry(
         (record) =>
           record.projectId === projectId &&
           record.provider === provider &&
-          (provider !== "codex" || record.mode === mode),
+          (provider === "claude" || record.mode === mode),
       );
     },
     read(projectId: string, sessionId: string) {
       const record = lookup(projectId, sessionId);
       if (
         record.provider !== provider ||
-        (provider === "codex" && record.mode !== mode)
+        (provider !== "claude" && record.mode !== mode)
       )
         throw new SessionRegistryError(
           409,
@@ -271,7 +285,7 @@ export function createSessionRegistry(
             existing.projectId !== projectId ||
             existing.requestHash !== requestHash ||
             existing.provider !== provider ||
-            (provider === "codex" && existing.mode !== mode)
+            (provider !== "claude" && existing.mode !== mode)
           )
             throw new SessionRegistryError(
               409,
@@ -288,7 +302,7 @@ export function createSessionRegistry(
         if (
           !parsed.success ||
           parsed.data.provider !== provider ||
-          (provider === "codex" && parsed.data.mode !== mode)
+          (provider !== "claude" && parsed.data.mode !== mode)
         )
           throw new SessionRegistryError(
             400,

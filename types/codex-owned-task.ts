@@ -11,7 +11,11 @@ import type {
 } from "./codex-task";
 import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { ConversationReceipt } from "./conversation";
-import type { GeminiTaskStartRequest } from "./gemini-owned-task";
+import type {
+  GeminiOwnedSessionMetadata,
+  GeminiOwnedSessionRecord,
+  GeminiTaskStartRequest,
+} from "./gemini-owned-task";
 import type { OwnedSessionMetadata, OwnedSessionRecord } from "./owned-session";
 import type {
   SessionPreviewReceipt,
@@ -58,11 +62,13 @@ export interface CodexOwnedSessionRecord
 export type OwnedCodingSessionRecord =
   | OwnedSessionRecord
   | CodexOwnedSessionRecord
-  | CodexChatOwnedRecord;
+  | CodexChatOwnedRecord
+  | GeminiOwnedSessionRecord;
 export type OwnedCodingSessionMetadata =
   | OwnedSessionMetadata
   | CodexOwnedSessionMetadata
-  | CodexChatOwnedMetadata;
+  | CodexChatOwnedMetadata
+  | GeminiOwnedSessionMetadata;
 export interface CodexTaskStartReceipt {
   session: CodexOwnedSessionRecord;
   receipt: ConversationReceipt;
