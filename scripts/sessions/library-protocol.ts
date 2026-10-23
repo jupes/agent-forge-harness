@@ -11,7 +11,10 @@ import type {
 } from "../../types/session-library";
 import { stateSchema } from "../conversations/protocol";
 import { ownedCodingStateSchema } from "./codex-owned-journal";
-import { codexOwnedSessionSchema } from "./codex-owned-metadata";
+import {
+  codexChatOwnedSessionSchema,
+  codexOwnedSessionSchema,
+} from "./codex-owned-metadata";
 import {
   ownedSessionIdSchema,
   ownedSessionSchema,
@@ -118,7 +121,8 @@ export function originalSessionLaunchMatches(
     state.turns[0]?.requestId !== session.requestId
   )
     return false;
-  const snapshot = first.event.session ?? first.event.codexTask;
+  const snapshot =
+    first.event.session ?? first.event.codexTask ?? first.event.codexChat;
   return (
     !!snapshot &&
     snapshot.provider === session.provider &&
@@ -129,7 +133,7 @@ export function originalSessionLaunchMatches(
     (snapshot.launch.effort ?? null) === session.requestedEffort &&
     state.frames.every(({ event }) => {
       if (event.kind !== "user") return true;
-      const saved = event.session ?? event.codexTask;
+      const saved = event.session ?? event.codexTask ?? event.codexChat;
       return (
         saved?.provider === session.provider &&
         saved.smith === session.smith &&
@@ -150,7 +154,11 @@ export const sessionTranscriptExportSchema: z.ZodType<SessionTranscriptExport> =
       version: z.literal(1),
       complete: z.literal(true),
       exportedAt: z.iso.datetime(),
-      session: z.union([ownedSessionSchema, codexOwnedSessionSchema]),
+      session: z.union([
+        ownedSessionSchema,
+        codexOwnedSessionSchema,
+        codexChatOwnedSessionSchema,
+      ]),
       lastSequence: z.number().int().nonnegative().max(20_000),
       conversation: z
         .object({
