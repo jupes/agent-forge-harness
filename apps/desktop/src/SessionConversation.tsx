@@ -9,12 +9,24 @@ import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
+import {
+  SessionActivity,
+  SessionOutcome,
+  SessionTurnUsage,
+} from "./SessionActivity";
+import {
+  ownedSessionLifecycle,
+  ownedSessionTurn,
+  unsupportedSessionStates,
+} from "./session-activity";
 import type { SessionsClient } from "./session-client";
 import {
   sessionAttachments,
   validateSessionAttachments,
 } from "./session-composer";
 import "./session.css";
+import { SessionLibraryControls } from "./SessionLibraryControls";
+import type { SessionLibraryClient } from "./session-library-client";
 
 export function SessionConversation({
   projectId,
@@ -22,12 +34,14 @@ export function SessionConversation({
   client,
   keeper,
   writesAllowed,
+  library,
 }: {
   projectId: string;
   sessionId: string;
   client: SessionsClient;
   keeper: KeeperClient;
   writesAllowed: boolean;
+  library?: SessionLibraryClient;
 }) {
   const view = client.session(projectId, sessionId),
     record = client
@@ -37,9 +51,26 @@ export function SessionConversation({
     current = view.page?.turns.at(-1);
   const running =
     current && ["accepted", "running", "cancelling"].includes(current.phase);
+  const providerName = record?.provider === "codex" ? "Codex" : "Claude";
+  const lifecycle = ownedSessionLifecycle(view.page, {
+    mode: record?.mode ?? null,
+    loaded: view.loaded,
+    live: view.live,
+    stopping: !!view.stopping,
+    feedInterrupted: view.feedInterrupted,
+    readError: view.readError,
+  });
+  const showLifecycleGuidance =
+    ["error", "unknown", "timed-out", "stale"].includes(lifecycle.state) ||
+    !!view.stopping ||
+    current?.phase === "cancelling" ||
+    (!!running && !view.page?.controllable);
   const observed = [...(view.page?.frames ?? [])]
     .reverse()
-    .find((frame) => frame.event.kind === "model")?.event;
+    .find(
+      (frame) =>
+        frame.turnId === current?.requestId && frame.event.kind === "model",
+    )?.event;
   const first = view.page?.frames.find(
     (frame) => frame.event.kind === "user" && frame.event.session,
   )?.event;
@@ -102,7 +133,11 @@ export function SessionConversation({
     else if (lastSequence) setAway(true);
   }, [lastSequence]);
   return (
-    <section class="af-owned-session" aria-label="Session conversation">
+    <section
+      class="af-owned-session"
+      aria-label="Session conversation"
+      data-session-mode={record?.mode ?? "unknown"}
+    >
       <header class="af-owned-session-header">
         <div>
           <span class="af-keeper-chip">
@@ -131,20 +166,8 @@ export function SessionConversation({
           {record?.worktree ?? "Working directory not reported"}
         </p>
         <div class="af-session-composer-row">
-          <span role="status">
-            {view.stopping
-              ? "Stopping… waiting for confirmation"
-              : current
-                ? current.phase === "completed"
-                  ? record?.mode === "chat"
-                    ? "Idle · ready for the next turn"
-                    : "Task ended"
-                  : current.phase === "cancelled"
-                    ? "Stopped"
-                    : current.phase === "unknown"
-                      ? "Outcome unknown"
-                      : current.phase
-                : "No admitted turn reported"}
+          <span role="status" data-session-state={lifecycle.state}>
+            {lifecycle.label}
           </span>
           <Button
             href={desktopHref({
@@ -170,9 +193,24 @@ export function SessionConversation({
               Stop session
             </Button>
           )}
+          {record && library && (
+            <SessionLibraryControls
+              record={record}
+              session={view}
+              library={library}
+              writesAllowed={writesAllowed}
+              onContinue={() => prompt.current?.focus()}
+            />
+          )}
         </div>
+        {showLifecycleGuidance && (
+          <p class="af-session-note">{lifecycle.detail}</p>
+        )}
         <details>
           <summary>Session details</summary>
+          {!showLifecycleGuidance && (
+            <p class="af-session-note">{lifecycle.detail}</p>
+          )}
           <dl>
             <dt>Local session</dt>
             <dd>{sessionId}</dd>
@@ -221,15 +259,26 @@ export function SessionConversation({
             </dl>
           )}
           <p class="af-session-note">
-            {record?.provider === "codex"
-              ? "Detailed tool activity and files changed are not yet shown in this view. Remaining allowance may be unavailable."
-              : "Detailed tool activity, files changed and detailed usage are not yet shown in this view."}
+            Reported activity and usage are grouped with each private turn.
+            Missing reports remain unavailable.
           </p>
+          <details class="af-session-state-support">
+            <summary>State support for this route</summary>
+            <dl>
+              {unsupportedSessionStates.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.reason}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         </details>
       </header>
-      {view.notice && (
+      {(view.notice || view.readError) && (
         <div class="af-session-warning" role="status">
           <p>{view.notice}</p>
+          {view.readError && <p role="alert">{view.readError}</p>}
           {view.pending && (
             <div class="af-session-composer-row">
               <Button
@@ -288,7 +337,7 @@ export function SessionConversation({
             node.scrollHeight - node.scrollTop - node.clientHeight < 80;
         }}
       >
-        {!view.loaded && (
+        {!view.loaded && !view.readError && (
           <p role="status">
             {view.page
               ? "Loading earlier session messages…"
@@ -301,62 +350,81 @@ export function SessionConversation({
             trying another request.
           </p>
         )}
-        {rows.map((row) => (
-          <div class="af-owned-turn" key={row.id}>
-            <time dateTime={row.at}>{new Date(row.at).toLocaleString()}</time>
-            <article
-              class="af-owned-question"
-              aria-label="Your session message"
-            >
-              <p>{row.question}</p>
-              {view.page?.frames
-                .filter(
-                  (frame) =>
-                    frame.turnId === row.id && frame.event.kind === "user",
-                )
-                .map((frame) => {
-                  if (frame.event.kind !== "user") return null;
-                  const attachments =
-                    frame.event.codexTask?.launch.attachments ??
-                    frame.event.session?.launch.attachments;
-                  return attachments?.length ? (
-                    <p class="af-session-note" key={frame.seq}>
-                      Attachments:{" "}
-                      {attachments
-                        .map((item) => `${item.name} (${item.kind})`)
-                        .join(", ")}
-                    </p>
-                  ) : null;
-                })}
-            </article>
-            {row.reply && (
-              <article class="af-owned-reply" aria-label="Session reply">
-                <KeeperMarkdown text={row.reply} />
-                <Button
-                  onClick={() => {
-                    void navigator.clipboard
-                      .writeText(row.reply)
-                      .then(() => setNotice("Reply copied."))
-                      .catch(() => setNotice("The reply could not be copied."));
-                  }}
-                >
-                  Copy session reply
-                </Button>
+        {rows.map((row) => {
+          const activity = ownedSessionTurn(view.page, row.id);
+          const streaming =
+            row.id === current?.requestId && !!running && view.live;
+          return (
+            <div class="af-owned-turn" key={row.id}>
+              <time dateTime={row.at}>{new Date(row.at).toLocaleString()}</time>
+              <article
+                class="af-owned-question"
+                aria-label="Your session message"
+              >
+                <p>{row.question}</p>
+                {view.page?.frames
+                  .filter(
+                    (frame) =>
+                      frame.turnId === row.id && frame.event.kind === "user",
+                  )
+                  .map((frame) => {
+                    if (frame.event.kind !== "user") return null;
+                    const attachments =
+                      frame.event.codexTask?.launch.attachments ??
+                      frame.event.session?.launch.attachments;
+                    return attachments?.length ? (
+                      <p class="af-session-note" key={frame.seq}>
+                        Attachments:{" "}
+                        {attachments
+                          .map((item) => `${item.name} (${item.kind})`)
+                          .join(", ")}
+                      </p>
+                    ) : null;
+                  })}
               </article>
-            )}
-            {row.turn &&
-              ["failed", "unknown", "cancelled"].includes(row.turn.phase) && (
-                <p role="status" class="af-session-warning">
-                  {row.turn.phase === "unknown"
-                    ? "Delivery unknown. This request was not resent."
-                    : row.turn.phase === "cancelled"
-                      ? "Stop confirmed."
-                      : "The session could not finish."}{" "}
-                  {row.turn.reason}
-                </p>
+              <SessionActivity value={activity} />
+              {row.reply && (
+                <article class="af-owned-reply" aria-label="Session reply">
+                  <KeeperMarkdown text={row.reply} />
+                  {streaming && (
+                    <span
+                      class="af-session-streaming-caret"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <Button
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(row.reply)
+                        .then(() => setNotice("Reply copied."))
+                        .catch(() =>
+                          setNotice("The reply could not be copied."),
+                        );
+                    }}
+                  >
+                    Copy session reply
+                  </Button>
+                </article>
               )}
-          </div>
-        ))}
+              {row.turn &&
+                ["failed", "unknown", "cancelled"].includes(row.turn.phase) && (
+                  <p role="status" class="af-session-warning">
+                    {row.turn.phase === "unknown"
+                      ? "Delivery unknown. This request was not resent."
+                      : row.turn.phase === "cancelled"
+                        ? "Stop confirmed."
+                        : "The session could not finish."}{" "}
+                    {row.turn.reason}
+                  </p>
+                )}
+              <SessionOutcome value={activity.outcome} />
+              <SessionTurnUsage
+                value={activity}
+                requestedModel={activity.requestedModel}
+              />
+            </div>
+          );
+        })}
       </div>
       {away && (
         <Button
@@ -382,7 +450,9 @@ export function SessionConversation({
                   : "Enter a follow-up for this same provider conversation.")}
         </p>
         <label>
-          Reply to {record?.provider === "codex" ? "Codex" : "Claude"}
+          {record?.mode === "task"
+            ? "Reply unavailable · Tasks accept one turn"
+            : `Reply to ${providerName}`}
           <textarea
             ref={prompt}
             aria-label="Session reply prompt"
@@ -522,10 +592,12 @@ export function SessionConversation({
           </>
         )}
         <div class="af-session-composer-actions">
-          <small>
-            Ctrl/Cmd+Enter sends · Enter adds a line · closing this view leaves
-            its process running
-          </small>
+          {record?.mode !== "task" && (
+            <small>
+              Ctrl/Cmd+Enter sends · Enter adds a line · closing this view
+              leaves its process running
+            </small>
+          )}
           <Button
             variant="primary"
             disabled={attaching || !client.canSend(projectId, sessionId)}

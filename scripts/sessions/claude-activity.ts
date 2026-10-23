@@ -235,6 +235,53 @@ export function claudeResultReports(input: {
 }): (CodingActivityEvent | ClaudeCodingUsageEvent)[] {
   const value = input.value,
     reports: (CodingActivityEvent | ClaudeCodingUsageEvent)[] = [];
+  if (Object.hasOwn(value, "permission_denials")) {
+    if (!Array.isArray(value.permission_denials)) throw bad();
+    const ids = new Set<string>();
+    const denials = value.permission_denials.map((denial) => {
+      if (!record(denial) || !record(denial.tool_input)) throw bad();
+      const toolId = string(denial.tool_use_id),
+        name = string(denial.tool_name);
+      if (
+        [toolId, name].some(
+          (value) => !value || value.length > 200 || value.includes("\0"),
+        )
+      )
+        throw bad();
+      if (ids.has(toolId)) throw bad();
+      ids.add(toolId);
+      return { toolId, name, input: reportedJson(denial.tool_input) };
+    });
+    if (denials.length) {
+      const base = {
+        version: input.version,
+        id: typeof value.uuid === "string" ? value.uuid : "result",
+        source: "claude.result",
+        partial: false,
+      } as const;
+      const activity: Extract<CodingActivity, { kind: "permission-denials" }> =
+        {
+          kind: "permission-denials",
+          denials: denials.slice(0, SESSION_ACTIVITY_LIMITS.items),
+          truncated: denials.length > SESSION_ACTIVITY_LIMITS.items,
+        };
+      while (
+        activity.denials.length &&
+        new TextEncoder().encode(
+          JSON.stringify({
+            kind: "coding-activity",
+            provider: "claude",
+            ...base,
+            activity,
+          }),
+        ).byteLength > SESSION_ACTIVITY_LIMITS.eventBytes
+      ) {
+        activity.denials.pop();
+        activity.truncated = true;
+      }
+      reports.push(event(base, activity));
+    }
+  }
   if (Object.hasOwn(value, "structured_output"))
     reports.push(
       event(

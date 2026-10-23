@@ -55,7 +55,12 @@ export type CodingActivity =
       }[];
       truncated: boolean;
     }
-  | { kind: "structured-output"; output: ReportedJson };
+  | { kind: "structured-output"; output: ReportedJson }
+  | {
+      kind: "permission-denials";
+      denials: { toolId: string; name: string; input: ReportedJson }[];
+      truncated: boolean;
+    };
 export interface CodingActivityEvent {
   kind: "coding-activity";
   provider: "claude" | "codex";

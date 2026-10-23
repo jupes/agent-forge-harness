@@ -463,6 +463,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ownedSessions.list,
     ownedSessions.read,
     ownedSessions.approvals,
+    ...ownedSessions.library.reads,
     sessionWorktrees.read,
   ];
 
@@ -513,6 +514,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.send,
       ownedSessions.stop,
       ownedSessions.decide,
+      ownedSessions.library.archive,
       sessionWorktrees.create,
       ...trackerWrites,
       ...queueWrites,

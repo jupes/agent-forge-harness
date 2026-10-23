@@ -31,6 +31,7 @@ import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
+import { useSessionLibrary } from "./use-session-library";
 import { useSessions } from "./use-sessions";
 import { useWorkbench } from "./use-workbench";
 
@@ -93,6 +94,15 @@ export function DesktopApp(): JSX.Element {
   const sessions = useSessions(
     project?.id ?? null,
     selectedOwnedSession,
+    writesAllowed,
+  );
+  const sessionLibrary = useSessionLibrary(
+    project?.id ?? null,
+    project && selectedOwnedSession
+      ? (sessions
+          .project(project.id)
+          .records.find((record) => record.id === selectedOwnedSession) ?? null)
+      : null,
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
@@ -469,6 +479,7 @@ export function DesktopApp(): JSX.Element {
             client={sessions}
             keeper={keeper}
             writesAllowed={writesAllowed}
+            library={sessionLibrary}
           />
         ) : route.destination === "sessions" && project ? (
           <>
@@ -476,6 +487,7 @@ export function DesktopApp(): JSX.Element {
               projectId={project.id}
               client={sessions}
               onNew={() => openSession()}
+              library={sessionLibrary}
             />
             <ProjectSessions
               keeper={keeper}
