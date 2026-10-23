@@ -47,6 +47,23 @@ function compile(root: string, name: string) {
     throw Error(
       `Could not compile the isolated fake CLI: ${result.stderr.toString()}`,
     );
+  const probe = Bun.spawnSync([output, "--version"], {
+    stdin: new Uint8Array(),
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 5000,
+    env: {
+      ...process.env,
+      CODEX_RUNTIME_LOG: join(root, `${name}-probe.jsonl`),
+    },
+  });
+  expect(probe.exitCode, probe.stderr.toString()).toBe(0);
+  // A compiled bundle has one process entry. Importing another source entry must not dispatch it twice.
+  expect(probe.stdout.toString().trim()).toBe(
+    name === "coding-cli"
+      ? "2.1.296 (Claude Code fixture)"
+      : "codex-cli 0.163.0-alpha.10.2",
+  );
   return output;
 }
 test("real hearth and compiled fake providers retain private activity through protected reads without ledger/list disclosure or duplicate dispatch", async () => {
