@@ -28,6 +28,7 @@ import {
 } from "./proposal-protocol";
 import { createKeeperProposalStore } from "./proposal-store";
 import { keeperProposals } from "./proposals";
+import type { createKeeperSessionStartService } from "./session-start-service";
 
 interface Options {
   home: string;
@@ -35,6 +36,9 @@ interface Options {
   configHome?: string | undefined;
   load(): Promise<ProjectSnapshot>;
   post?: KeeperOperatorPost | undefined;
+  sessionStarts?:
+    | Pick<ReturnType<typeof createKeeperSessionStartService>, "read">
+    | undefined;
   activity?:
     | ((id: number, target: string) => KeeperProposalActivity | null)
     | undefined;
@@ -198,6 +202,7 @@ export function createKeeperProposalService(options: Options) {
             409,
             "The reviewed repository is outside this project's scope.",
           );
+        if (options.sessionStarts && action.provider === "claude") return;
         throw new ConversationError(
           409,
           "The session review composer is not available yet. This card cannot start a session.",
@@ -395,8 +400,24 @@ export function createKeeperProposalService(options: Options) {
       scope = await snapshotFor(projectId);
     const proposals: KeeperProposalPage["proposals"] = [];
     for (const proposal of current.slice(-40)) {
-      const record =
+      let record =
         saved.records.find((item) => item.id === proposal.id) ?? null;
+      if (
+        record?.operation === "approve" &&
+        record.draft.action.kind === "start-session" &&
+        options.sessionStarts
+      )
+        try {
+          record = (
+            await options.sessionStarts.read(
+              projectId,
+              proposal.id,
+              record.requestId,
+            )
+          ).record;
+        } catch {
+          /* A failed private observation does not discard a recorded approval. */
+        }
       let available = false,
         reason: string | null = null;
       if (record) reason = "This card already has a recorded review.";
@@ -418,10 +439,13 @@ export function createKeeperProposalService(options: Options) {
           /* An unavailable audit read does not erase the private result. */
         }
       const destinationAvailable =
-        !!options.post &&
-        !["start-session", "start-shift", "send-to-council"].includes(
-          proposal.draft.action.kind,
-        );
+        (proposal.draft.action.kind === "start-session" &&
+          proposal.draft.action.provider === "claude" &&
+          !!options.sessionStarts) ||
+        (!!options.post &&
+          !["start-session", "start-shift", "send-to-council"].includes(
+            proposal.draft.action.kind,
+          ));
       proposals.push({
         proposal,
         record,
@@ -493,6 +517,11 @@ export function createKeeperProposalService(options: Options) {
     if (!reviewed.success)
       throw new ConversationError(400, "Expected a bounded reviewed proposal.");
     const draft = reviewed.data;
+    if (!dismiss && draft.action.kind === "start-session")
+      throw new ConversationError(
+        409,
+        "Review the complete session in the composer, then press Start. The small proposal approval cannot authorize a provider launch.",
+      );
     if (closed)
       throw new ConversationError(
         503,

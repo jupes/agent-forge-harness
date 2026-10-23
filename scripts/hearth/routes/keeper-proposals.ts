@@ -6,6 +6,7 @@ import {
   keeperProposalDismissalSchema,
 } from "../../keeper/proposal-protocol";
 import { createKeeperProposalService } from "../../keeper/proposal-service";
+import type { createKeeperSessionStartService } from "../../keeper/session-start-service";
 import { queryEventPage } from "../../ledger/query";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type { ActionRoute, ReadRoute, RouteReply, RouteRequest } from "../api";
@@ -24,6 +25,10 @@ export function keeperProposalRoutes(
   deps: ReadDeps,
   load: () => Promise<ProjectSnapshot>,
   post?: KeeperOperatorPost,
+  sessionStarts?: Pick<
+    ReturnType<typeof createKeeperSessionStartService>,
+    "read"
+  >,
 ) {
   const service = createKeeperProposalService({
     home,
@@ -31,6 +36,7 @@ export function keeperProposalRoutes(
     configHome: deps.configHome,
     load,
     post,
+    sessionStarts,
     activity: (id, target) => {
       const event = queryEventPage(
         {
@@ -46,9 +52,11 @@ export function keeperProposalRoutes(
         event.id !== id ||
         event.kind !== "operator.action" ||
         event.payload.target !== target ||
-        !["keeper.proposal.approve", "keeper.proposal.dismiss"].includes(
-          event.payload.action,
-        )
+        ![
+          "keeper.proposal.approve",
+          "keeper.proposal.dismiss",
+          "keeper.proposal.session.start",
+        ].includes(event.payload.action)
       )
         return null;
       return {
