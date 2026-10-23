@@ -24,6 +24,26 @@ export function activitySessionMembership(
   };
 }
 
+/** Exact bounded metadata proof for a requested address omitted by the candidate cap. */
+export function hasActivitySessionMembership(
+  workspace: string,
+  beadIds: readonly string[],
+  sessionId: string,
+  ledgerPath: string,
+): boolean {
+  if (!beadIds.length) return false;
+  if (beadIds.length > 5000)
+    throw Error("Project Activity membership exceeds its read limit.");
+  return (
+    openLedger(ledgerPath)
+      .query<{ found: number }, string[]>(
+        `SELECT 1 AS found FROM events WHERE workspace = ? AND session_id = ?
+     AND bead_id IN (${beadIds.map(() => "?").join(",")}) LIMIT 1`,
+      )
+      .get(comparableCheckout(workspace), sessionId, ...beadIds) !== null
+  );
+}
+
 /** Effective latest explicit assignment at each untagged row; bounded to one Activity page. */
 export function activityRowAssignments(
   workspace: string,

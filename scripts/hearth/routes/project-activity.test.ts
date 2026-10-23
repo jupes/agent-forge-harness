@@ -469,7 +469,7 @@ test("time filters include their actual boundary instants, and unknown roots do 
 });
 
 test("bounded historical candidate membership is explicitly incomplete rather than proving omitted sessions external", async () => {
-  const { h } = await fixture();
+  const { h, path } = await fixture();
   openLedger(h.ledger).transaction(() => {
     for (let i = 0; i < 1001; i++)
       h.append({
@@ -484,6 +484,16 @@ test("bounded historical candidate membership is explicitly incomplete rather th
   expect(read.sessions).toHaveLength(1000);
   expect(read.sessions).not.toContain("history-0");
   expect(read.sessions).toContain("history-1000");
+  const response = await fetch(`${path}?session=history-0`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.ok).toBe(true);
+  const page = projectActivityPageSchema.parse(body.data);
+  expect(page.events.map((event) => event.sessionId)).toEqual(["history-0"]);
+  expect(page.more).toBe(false);
+  expect(page.membershipComplete).toBe(false);
 });
 
 test("a scoped run does not turn an unassigned unowned session into project activity", async () => {
@@ -551,4 +561,52 @@ test("a scoped run does not turn an unassigned unowned session into project acti
   if (!("data" in result)) throw Error("Missing Activity page");
   const page = projectActivityPageSchema.parse(result.data);
   expect(page.events.map((event) => event.id)).toEqual([gate]);
+});
+
+test("absence from incomplete session or run membership stays unavailable rather than a false not-in-project claim", async () => {
+  const { h, project } = await fixture();
+  const deps = {
+    root: h.root,
+    workspace: h.workspace,
+    ledgerPath: h.ledger,
+    runBd: h.bd.run,
+  };
+  const load = projectSnapshotReader(h.home, deps);
+  let queries = 0;
+  const routes = createProjectActivityRoutes(
+    deps,
+    async () => {
+      const snapshot = await load();
+      const { runs: _runs, ...source } = snapshot.source;
+      return { ...snapshot, source: { ...source, sessionsComplete: false } };
+    },
+    () => {
+      queries++;
+      return { events: [], more: false };
+    },
+  );
+  for (const selected of [
+    { sessionId: "not-in-bounded-source" },
+    { runId: "not-in-available-source" },
+  ]) {
+    const result = await routes.list.read({
+      projectId: project.id,
+      after: 0,
+      limit: 100,
+      filters: {
+        kinds: [],
+        provider: null,
+        beadId: null,
+        sessionId: null,
+        runId: null,
+        shiftId: null,
+        since: null,
+        until: null,
+        ...selected,
+      },
+    });
+    expect(result.status).toBe(503);
+    expect("error" in result ? result.error : "").toContain("incomplete");
+  }
+  expect(queries).toBe(0);
 });

@@ -29,6 +29,10 @@ addresses, current bead IDs to 5,000, and effective assignment lookup to one pag
 of 200 rows. Candidate truncation is incomplete/unknown, never proof of external
 ownership. `membershipComplete` also reflects existing project source bounds and
 unavailable sources. Registry records remain metadata and do not prove dispatch.
+An explicitly requested older session gets a separate exact workspace/current-bead
+metadata lookup, so candidate truncation does not falsely refuse its earlier
+eligible events. Missing session/run filters return unavailable when the source
+cannot prove absence; they are not declared foreign from an incomplete index.
 
 The raw cursor and `more` advance over all queried rows, including suppressed
 foreign and filtered records. An empty visible page with `more:true` requires

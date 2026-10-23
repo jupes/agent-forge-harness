@@ -7,6 +7,7 @@ import { queryEventPage } from "../../ledger/query";
 import {
   activityRowAssignments,
   activitySessionMembership,
+  hasActivitySessionMembership,
 } from "../../projects/activity-membership";
 import {
   MAX_ACTIVITY_PAGE_EVENTS,
@@ -377,6 +378,7 @@ export function createProjectActivityRoutes(
       beads,
       sessions,
       runs,
+      runsComplete: snapshot.source.runs !== undefined && summary.complete,
       complete:
         summary.complete &&
         summary.sessionsComplete &&
@@ -393,22 +395,41 @@ export function createProjectActivityRoutes(
     read: ({ projectId, after, limit, filters }) =>
       answer(async () => {
         const scope = await membership(projectId);
-        for (const [value, set] of [
-          [filters.beadId, scope.beads],
-          [filters.sessionId, scope.sessions],
-          [filters.runId, scope.runs],
-        ] as const) {
-          if (value !== null && !set.has(value))
-            throw new ActivityReadError(
-              404,
-              "This Activity object is not in the current project membership.",
-            );
-        }
+        if (filters.beadId && !scope.beads.has(filters.beadId))
+          throw new ActivityReadError(
+            404,
+            "This bead is not in the current project membership.",
+          );
+        if (
+          filters.sessionId &&
+          !scope.sessions.has(filters.sessionId) &&
+          !hasActivitySessionMembership(
+            deps.workspace,
+            [...scope.beads],
+            filters.sessionId,
+            deps.ledgerPath,
+          )
+        )
+          throw new ActivityReadError(
+            scope.complete ? 404 : 503,
+            scope.complete
+              ? "This session is not in the current project membership."
+              : "Session membership is incomplete. This address could not be verified; refresh after its sources are available.",
+          );
+        if (filters.runId && !scope.runs.has(filters.runId))
+          throw new ActivityReadError(
+            scope.runsComplete ? 404 : 503,
+            scope.runsComplete
+              ? "This run is not in the current project membership."
+              : "Run membership is incomplete. This run could not be verified; refresh after its source is available.",
+          );
         const page = query(
           {
             workspace: deps.workspace,
             afterId: after,
             limit,
+            ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
+            ...(filters.runId ? { runId: filters.runId } : {}),
             ...(filters.kinds.length ? { kinds: filters.kinds } : {}),
             ...(filters.since ? { since: filters.since } : {}),
           },
