@@ -6,6 +6,7 @@ import {
   createSessionRegistry,
   sessionRegistryFile,
 } from "../sessions/registry";
+import { projectShiftAttemptOriginSchema } from "../sessions/shift-origin-protocol";
 import { scratchDirs } from "../test-scratch";
 
 const scratch = scratchDirs();
@@ -20,6 +21,28 @@ const origin = {
   beadId: "bounded-task-1",
   attempt: 1,
 } as const;
+
+test("shift metadata has a standalone strict browser codec without private or process imports", async () => {
+  expect(projectShiftAttemptOriginSchema.parse(origin)).toEqual(origin);
+  for (const changed of [
+    { ...origin, attempt: 12 },
+    { ...origin, originalRequestId: origin.originalRequestId.toUpperCase() },
+    { ...origin, prompt: "private input" },
+  ])
+    expect(projectShiftAttemptOriginSchema.safeParse(changed).success).toBe(
+      false,
+    );
+  const bundle = await Bun.build({
+    entrypoints: [`${import.meta.dir}/../sessions/shift-origin-protocol.ts`],
+    target: "browser",
+  });
+  expect(bundle.success).toBe(true);
+  expect(bundle.outputs).toHaveLength(1);
+  const source = await bundle.outputs[0]!.text();
+  expect(source).not.toContain("bun:sqlite");
+  expect(source).not.toContain("node:fs");
+  expect(source).not.toContain("shiftTurnSnapshotSchema");
+});
 function fixture() {
   const root = realpathSync.native(scratch.make("shift attempt registry "));
   return {

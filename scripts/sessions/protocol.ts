@@ -7,33 +7,27 @@ import type {
   SessionPreviewReceipt,
   SessionStartReceipt,
 } from "../../types/session-requests";
-import type { ProjectShiftAttemptOrigin } from "../../types/shift-turn";
-import { SHIFT_LIMITS } from "../config/defaults";
+import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
 import { conversationReceiptSchema } from "../conversations/protocol";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
 import { serializeClaudeLaunch } from "./claude-launch";
+import {
+  ownedSessionIdSchema,
+  sessionProjectIdSchema,
+  sessionRequestHashSchema,
+  sessionRequestIdSchema,
+} from "./identity-protocol";
+import { projectShiftAttemptOriginSchema } from "./shift-origin-protocol";
 import { sessionTurnSnapshotSchema } from "./turn-protocol";
 
-/** Browser-safe wire/storage shapes. Filesystem authority is checked by the server. */
-export const sessionProjectIdSchema = z
-  .string()
-  .regex(
-    /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
-export const sessionRequestIdSchema = z
-  .string()
-  .uuid()
-  .refine((value) => value === value.toLowerCase());
-export const ownedSessionIdSchema = z
-  .string()
-  .max(44)
-  .refine(
-    (value) =>
-      value.startsWith("session-") &&
-      sessionRequestIdSchema.safeParse(value.slice(8)).success,
-  );
-export const sessionRequestHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export {
+  ownedSessionIdSchema,
+  sessionProjectIdSchema,
+  sessionRequestHashSchema,
+  sessionRequestIdSchema,
+} from "./identity-protocol";
+
 const label = (max: number) =>
   z
     .string()
@@ -50,25 +44,6 @@ const path = label(1024).refine(
     value.startsWith("\\\\") ||
     /^[a-zA-Z]:[\\/]/.test(value),
 );
-const shiftOriginSchema = z
-  .object({
-    kind: z.literal("shift"),
-    projectId: sessionProjectIdSchema,
-    originalRequestId: sessionRequestIdSchema,
-    shiftId: label(64).regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/),
-    runId: label(200).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
-    beadId: label(200).refine(
-      (value) =>
-        parseBeadsIssueId(value) === value &&
-        redactSecrets(value).redactions.length === 0,
-    ),
-    attempt: z
-      .number()
-      .int()
-      .positive()
-      .max(SHIFT_LIMITS.repairs[1] + 1),
-  })
-  .strict();
 export function validOwnedSessionOrigin(value: {
   mode: string;
   beadId?: string | undefined;
@@ -104,7 +79,7 @@ export const ownedSessionMetadataFieldsSchema = z
     requestedEffort: z
       .enum(["low", "medium", "high", "xhigh", "max"])
       .nullable(),
-    origin: shiftOriginSchema.optional(),
+    origin: projectShiftAttemptOriginSchema.optional(),
   })
   .strict() satisfies z.ZodType<OwnedSessionMetadata>;
 export const ownedSessionMetadataSchema =

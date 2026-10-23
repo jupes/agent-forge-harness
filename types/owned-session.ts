@@ -1,5 +1,5 @@
 import type { ClaudeEffort } from "./session-launch";
-import type { ProjectShiftAttemptOrigin } from "./shift-turn";
+import type { ProjectShiftAttemptOrigin } from "./shift-origin";
 
 /** Trusted launch metadata only; private prompts and serialized requests stay in the journal. */
 export interface OwnedSessionMetadata {

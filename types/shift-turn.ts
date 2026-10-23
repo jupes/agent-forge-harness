@@ -1,13 +1,6 @@
-/** Metadata-only provenance, supplied exclusively by the trusted shift runtime. */
-export interface ProjectShiftAttemptOrigin {
-  kind: "shift";
-  projectId: string;
-  originalRequestId: string;
-  shiftId: string;
-  runId: string;
-  beadId: string;
-  attempt: number;
-}
+import type { ProjectShiftAttemptOrigin } from "./shift-origin";
+
+export type { ProjectShiftAttemptOrigin } from "./shift-origin";
 
 /** Private immutable input for one canonical provider attempt in a reviewed project shift. */
 export interface ShiftTurnSnapshot
