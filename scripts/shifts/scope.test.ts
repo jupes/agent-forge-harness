@@ -121,3 +121,20 @@ test("fresh preparation refuses removed selected epics, disabled smiths, unknown
   ).rejects.toMatchObject({ status: 409 });
   expect(request.options.for).toBe("2h");
 });
+
+test("private input preparation rechecks current membership and selected ancestry after canonical claim", async () => {
+  const f = fixture();
+  await expect(
+    f.validator.validateAttempt(FIXTURE_PROJECT_ID, request, "valid-task"),
+  ).resolves.toBeUndefined();
+  for (const id of ["sibling", "nested-epic.fake-prefix"])
+    await expect(
+      f.validator.validateAttempt(FIXTURE_PROJECT_ID, request, id),
+    ).rejects.toMatchObject({ status: 409 });
+  const row = f.source.issues?.find((item) => item.id === "valid-task");
+  if (!row) throw Error("No scope fixture");
+  row.labels = ["project:beta"];
+  await expect(
+    f.validator.validateAttempt(FIXTURE_PROJECT_ID, request, "valid-task"),
+  ).rejects.toMatchObject({ status: 409 });
+});

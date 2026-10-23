@@ -82,6 +82,25 @@ export function createProjectShiftScopeValidator(options: {
     return { project, source };
   };
   return {
+    async validateAttempt(
+      projectId: string,
+      request: ProjectShiftStartRequest,
+      beadId: string,
+    ): Promise<void> {
+      const { project, source } = await validate(projectId, request);
+      if (
+        !source.issues ||
+        !selectProjectBeads(project, options.workspace, source.issues).some(
+          (item) => item.id === beadId,
+        ) ||
+        (request.options.epic !== undefined &&
+          !withinEpic(beadId, request.options.epic, source.issues))
+      )
+        throw new ConversationError(
+          409,
+          "This attempt is no longer a member of the reviewed project and selected epic. No private input was delivered.",
+        );
+    },
     async validateStart(
       projectId: string,
       request: ProjectShiftStartRequest,
