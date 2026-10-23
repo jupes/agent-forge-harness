@@ -267,6 +267,7 @@ while (true) {
       } else if (mode === "never-exit") {
         hangTree();
         await finish();
+        record({ kind: "terminal-published", threadId, turnId });
       } else if (mode === "burst") {
         hangTree();
         for (let index = 0; index < 400; index++)
