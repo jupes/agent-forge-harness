@@ -1,4 +1,6 @@
 /** No model or network access: a stand-in for the coding CLI's actual pipes. */
+
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { isMain } from "../../is-main";
 
@@ -18,7 +20,7 @@ if (isMain(import.meta)) {
         ? "a02b7361-efc4-4fe0-88dc-9ca7f96fe277"
         : index >= 0
           ? argv[index + 1]
-          : "402b7361-efc4-4fe0-88dc-9ca7f96fe277";
+          : randomUUID();
     let childPid: number | null = null;
     if (mode === "hang-tree")
       childPid = Bun.spawn(
