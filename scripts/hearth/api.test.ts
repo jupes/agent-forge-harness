@@ -796,6 +796,26 @@ function ownedSessionFixture(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /providers/:provider/doctor": {
+    valid: {
+      path: "/providers/claude/doctor",
+      body: {},
+      status: 200,
+      target: "claude",
+    },
+    invalid: { path: "/providers/claude/doctor", body: { task: true } },
+    happened: async (h) => {
+      expect(
+        h
+          .events(["operator.action"])
+          .some(
+            (event) =>
+              event.kind === "operator.action" &&
+              event.payload.action === "provider.doctor",
+          ),
+      ).toBe(true);
+    },
+  },
   "POST /projects/:id/sessions/preview": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
@@ -1464,6 +1484,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /providers/readiness": "/providers/readiness",
   "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,

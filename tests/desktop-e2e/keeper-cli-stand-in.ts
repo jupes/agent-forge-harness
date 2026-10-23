@@ -35,7 +35,15 @@ if (
   throw new Error("Unknown Keeper browser fixture mode.");
 process.env["KEEPER_FIXTURE_MODE"] = mode;
 process.env["KEEPER_FIXTURE_RECORD"] = join(home, "keeper-fixture-record.json");
-if (process.argv.includes("--help") && mode !== "legacy") {
+if (process.argv.slice(-2).join(" ") === "auth status") {
+  process.stdout.write(
+    JSON.stringify({
+      authMethod: "api_key",
+      loggedIn: true,
+      apiKey: "inert-browser-fixture-not-a-key",
+    }),
+  );
+} else if (process.argv.includes("--help") && mode !== "legacy") {
   process.stdout.write(
     `${codingFlags} --tools --restricted --strict-mcp-config --mcp-config --setting-sources --settings --disable-slash-commands --no-chrome --append-system-prompt\n`,
   );

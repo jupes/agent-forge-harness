@@ -25,6 +25,7 @@ import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { ProviderInspector } from "../../providers/inspect";
 import type { SessionRuntime } from "../../sessions/admission";
 import {
   type ActionRoute,
@@ -66,6 +67,7 @@ import {
 } from "./project-summaries";
 import { projectWorkbenchRoute } from "./project-workbench";
 import { projectRoutes } from "./projects";
+import { createProviderReadinessRoutes } from "./providers";
 import { queueRoutes } from "./queue";
 import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
@@ -74,6 +76,7 @@ import { shiftRoutes } from "./shifts";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  providerInspector: ProviderInspector;
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
@@ -414,7 +417,13 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     routes: [...trackerWrites, ...queueWrites],
   });
   // In the order section 6 lists them.
+  const providers = createProviderReadinessRoutes(
+    deps,
+    deps.providerInspector,
+    projectSnapshot,
+  );
   const reads: ReadRoute[] = [
+    providers.read,
     sessions,
     runs,
     run,
@@ -478,6 +487,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       conversations.events,
       ownedSessions.events,
       ...actions(deps),
+      providers.doctor,
       preferences,
       conversations.send,
       conversations.refresh,

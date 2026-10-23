@@ -1,0 +1,41 @@
+# Provider readiness and usage boundary
+
+Bead: agent-forge-harness-cla5.6.1. Keep executable discovery, version response, authentication, adapter support and usage reporting as separate facts. `doctor().ok` proves only that a version command answered. The registry currently supplies Claude and Codex; five names in the design do not establish five working adapters.
+
+## Interface alternatives
+
+**One protected capability report.** A bounded server report collects independent typed observations, their source and read time. One desktop read store supplies Providers, title bar, home and composer consumers. Vendor probes remain behind fixed adapters and timeout/environment controls. Locally counted tokens/cost, provider allowance windows and API balances retain distinct units and provenance. Unknown facts remain unknown. This is the selected interface: it makes one authority and normalization boundary serve every consumer.
+
+**Independent per-card probes.** Each card and meter could call vendor status or existing session options directly. This makes simple cards quick to build, but duplicates probes, creates conflicting read times and tempts version success or an environment key to become sign-in evidence. It also lets the home meter disagree with the provider page.
+
+**One ranked availability number.** A server could collapse all observations into a headroom score or preferred provider. That hides units, subscription windows versus API balances and uncertainty, and would imply automatic routing that the brief forbids. Reject this shape.
+
+## Evidence and limits
+
+The report must identify executable discovery, version/doctor result, actual reported authentication route, adapter support and each supported usage measure separately. No credential value reaches the renderer. An API-key variable being present does not prove that it works. A configured smith is not an authenticated account. No paid doctor task, real account call, credential-file read or real provider execution is used as a test fixture.
+
+Reported-used and reported-remaining measurements normalize once at this boundary. The source basis stays explicit. Without a known total, the opposite quantity and percentage stay unknown. Local ledger counts never become provider allowance or a cross-provider headroom ranking. Missing reset times and costs remain absent; stale observations remain labelled. Rechecking data and opening a vendor sign-in flow are separate operations with their own authority and outcomes.
+
+OpenRouter's settled later OpenCode/ACP route remains deferred; readiness must show that limitation rather than introduce another provider route. Gemini and Grok capability comes from their actual adapter delivery, not their card's presence.
+
+## Delivered report and refresh
+
+`GET /providers/readiness` is operator protected, has no query arguments, and returns exactly five strict bounded cards plus local usage provenance. `POST /providers/:provider/doctor` accepts only an empty object and runs after its persisted operator audit. It refreshes the coalesced report using fixed non-generating checks; it cannot accept a task, arbitrary command, provider request, credential or file path. Neither route calls `forge:doctor --task`.
+
+`createProviderInspector` discovers the named CLI, checks `--version`, then uses only `claude auth status` or `codex login status` where the status interface is supported. Other adapters remain unavailable. Each process has a three-second bound, 64 KiB line bound and 128 KiB aggregate output bound, filtered configured environment and supervised tree cleanup. Account identities, raw stdout/stderr and credentials never enter the report. The operator token is stripped even when present inside a differently named passed environment value.
+
+The compatibility floor is the status interface this implementation targets (Claude2.1.293 and Codex0.163.0), not a claim about the earliest vendor release that could run a task. Below it, status compatibility is Degraded with the explicit reason. Session launch still has its own actual option/version checks. Version success never grants sign-in or execution proof. Claude's documented `authMethod` is a route reported by its CLI; Codex exit0 establishes saved credentials only, so its method/validity/allowance remain unverified. No paid request is used to check them.
+
+Sources inspected2026-10-23: [Claude CLI auth status](https://code.claude.com/docs/en/cli-reference) and [official OpenAI developer commands, login status](https://learn.chatgpt.com/docs/developer-commands?surface=cli). The latter documents exit0 as credentials present; a nonzero result can mean more than signed out and remains unknown. Unknown/malformed/future authentication methods remain unknown. The parser discards all other account fields.
+
+The server coalesces a complete read for15 seconds; a doctor forces a fresh report through the same boundary. The app mounts one `useProviders` store, sharing the window's existing stream, refreshing every15 seconds while visible. Providers, title-bar detail, home, composer and project usage consume that same report. Late older responses cannot replace a newer report. Failed refreshes retain labelled last-known data; initial failures have no invented cards. Missing reset times remain absent, expired reported subscription windows are stale, and a stale zero does not establish current exhaustion.
+
+Workspace and current ancestry-plus-label project totals reuse `aggregateReportedSessionUsage`, the Overview's existing latest-session-end aggregator. Counts cover the last7 days and at most10,000 matching local events. Missing token fields and prices remain unknown. The local source is always partial, records reported cost rather than estimating a price, and warns that overlapping project totals cannot be added together.
+
+## UI and verification boundary
+
+The inspected source includes provider-state panels in nested page `e0900b5a` (Signed out, Exhausted, Reporting unavailable and Degraded) and list states in `3d2dfd14` (Loading, Empty, Error and Filtered to nothing). The complete separately named Providers composition is absent from the eleven nested pages. The delivered cards use these actual panels, the brief and existing Nocturne frame; illustrative provider versions, sample balances and failure counts are not runtime facts.
+
+Focused browser journeys use a compiled inert Claude CLI, isolated hearth/tracker/home and explicit synthetic allowance reports. They verify five cards, audited doctor without any provider start, shared title/home/project values, remaining-to-used conversion, missing reset/price, filtering,1100×700 focus/targets/reduced motion and loading/failed refresh. The missing-screen mutant fails at the absent Claude card and source restoration is guaranteed by `finally`. Pure regressions also failed before fixes for expired-window false exhaustion and a partial USD balance being hidden as a dash. Supervised fake-process tests cover signed out, timeout, oversized output, environment filtering and child cleanup.
+
+Vendor terminal sign-in launch and extracting actual typed allowance reports from owned sessions remain separate unfinished producer/control work. Current status commands supply no account allowance; local counts do not substitute for it. Sign-in therefore shows the vendor command and an explicit unavailable native control. The bead remains open until these original requirements and the full unit, desktop, Windows native and CI gates have evidence.

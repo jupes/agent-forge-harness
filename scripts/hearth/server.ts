@@ -39,6 +39,10 @@ import {
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import {
+  createProviderInspector,
+  type ProviderInspector,
+} from "../providers/inspect";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
@@ -152,6 +156,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
+  providerInspector?: ProviderInspector;
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
@@ -354,6 +360,14 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     });
   const table = operatorRoutes({
     projectHome: home,
+    providerInspector:
+      options.api?.providerInspector ??
+      createProviderInspector({
+        root,
+        home,
+        environment: options.environment ?? process.env,
+        operatorToken: expectedToken,
+      }),
     sessionRuntime:
       options.api?.sessionRuntime ??
       createClaudeSessionTransport({

@@ -9,11 +9,13 @@ import type { WorktreeEntry } from "../../../types/beads";
 import type { ConversationObject } from "../../../types/conversation";
 import type { SmithsView } from "../../../types/hearth";
 import type { ProjectRecord } from "../../../types/projects";
+import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import type { SerializedClaudeLaunch } from "../../../types/session-launch";
 import type { SessionTurnSnapshot } from "../../../types/session-turn";
 import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
+import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionsClient } from "./session-client";
 import {
   chooseSessionSmith,
@@ -53,6 +55,7 @@ export function SessionComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  providers,
 }: {
   project: ProjectRecord;
   client: SessionsClient;
@@ -60,6 +63,7 @@ export function SessionComposer({
   writesAllowed: boolean;
   onCancel(): void;
   onStarted(id: string): void;
+  providers?: ProviderReadinessPage | null;
 }) {
   const view = client.project(project.id),
     draft = view.composer,
@@ -77,6 +81,9 @@ export function SessionComposer({
   const [caret, setCaret] = useState(0),
     [pickerVisible, setPickerVisible] = useState(false);
   const startAtOpen = useRef(view.lastStarted);
+  const claudeReadiness = providers?.providers.find(
+    (provider) => provider.provider === "claude",
+  );
   const edit = (change: Partial<typeof draft>) =>
     client.editComposer(project.id, change);
   useEffect(() => {
@@ -212,6 +219,7 @@ export function SessionComposer({
   }
   const busy = checking || attaching || view.starting;
   const canStart =
+    claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&
     !project.archived &&
     !busy &&
@@ -344,7 +352,13 @@ export function SessionComposer({
         aria-label="Provider"
       >
         <button type="button" aria-pressed="true">
-          Cl · Claude<small>CLI checked below · usage not reported</small>
+          Cl · Claude
+          <small>
+            {claudeReadiness
+              ? readinessLabel(claudeReadiness.state)
+              : "Readiness not reported"}{" "}
+            · {providerUsageLabel(claudeReadiness)}
+          </small>
         </button>
         {["Codex", "Gemini", "Grok", "OpenRouter"].map((name) => (
           <button
@@ -358,6 +372,12 @@ export function SessionComposer({
           </button>
         ))}
       </div>
+      {claudeReadiness?.authentication.mode === "signed-out" && (
+        <p role="status">
+          Claude reports signed out. Sign in with its own CLI, then recheck
+          provider readiness before starting.
+        </p>
+      )}
       <label>
         Prompt
         <textarea

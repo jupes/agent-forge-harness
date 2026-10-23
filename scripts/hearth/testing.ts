@@ -29,6 +29,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { createProviderInspector } from "../providers/inspect";
 import { childOf } from "../scheduler/queue-fixture";
 import { makeOwnerOnly } from "./acl-windows";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
@@ -507,6 +508,12 @@ export async function startTestHearth(
     ...(options.launchNow ? { launchNow: options.launchNow } : {}),
     api: {
       ledgerPath: ledger,
+      providerInspector: createProviderInspector({
+        root,
+        home,
+        environment: {},
+        which: () => null,
+      }),
       conversationTransport: fakeConversationTransport(),
       sessionRuntime: fakeSessionRuntime().runtime,
       runBd: (args, options) => bd.run(args, options),
