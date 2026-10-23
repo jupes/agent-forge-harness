@@ -29,6 +29,11 @@ function readRecord(log: string) {
 }
 function running(pid: number) {
   try {
+    if (
+      process.platform === "linux" &&
+      /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+    )
+      return false;
     process.kill(pid, 0);
     return true;
   } catch {
