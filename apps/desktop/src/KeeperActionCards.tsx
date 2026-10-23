@@ -492,6 +492,7 @@ export function KeeperActionCards({
       {state.error && <p role="alert">{state.error}</p>}
       <button
         type="button"
+        class="af-btn af-btn-secondary af-proposals-refresh"
         aria-disabled={state.loading}
         onClick={() => {
           if (!state.loading) void client.refresh(projectId, true);
