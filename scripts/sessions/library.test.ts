@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
 import { ConversationError } from "../conversations/error";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
@@ -436,4 +437,80 @@ test("archive rechecks current served-project authority under its write lease be
     }),
   ).rejects.toThrow("scope changed");
   expect(() => readFileSync(sessionLibraryFile(h.home))).toThrow();
+});
+
+test("managed shift attempts stay outside the generic library, including prior receipt recovery, without changing private history", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const managed = await seedOwnedSession(h),
+    ordinary = await seedOwnedSession(h, true);
+  const library = createSessionLibrary({ root: h.root, home: h.home });
+  const original = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    archived: true,
+  };
+  await library.archive(managed.projectId, managed.id, original);
+  const origin: ProjectShiftAttemptOrigin = {
+    kind: "shift",
+    projectId: managed.projectId,
+    originalRequestId: randomUUID(),
+    shiftId: "shift-20261023-123456-abcd",
+    runId: "fixture-managed-attempt-1",
+    beadId: "fixture-bead",
+    attempt: 1,
+  };
+  const registry = createSessionRegistry(h.home);
+  writeOwnerOnly(
+    sessionRegistryFile(h.home),
+    JSON.stringify({
+      version: 1,
+      records: registry
+        .listAll(managed.projectId)
+        .map((record) =>
+          record.id === managed.id
+            ? { ...record, mode: "task", beadId: origin.beadId, origin }
+            : record,
+        ),
+    }),
+  );
+  expect(registry.lookup(managed.projectId, managed.id).origin).toEqual(origin);
+  const historyPath = conversationFile(h.home, managed.projectId, {
+    kind: "session",
+    projectId: managed.projectId,
+    sessionId: managed.id,
+  });
+  const history = readFileSync(historyPath),
+    registrations = readFileSync(sessionRegistryFile(h.home)),
+    preferences = readFileSync(sessionLibraryFile(h.home));
+  expect(
+    library.list(managed.projectId).entries.map((entry) => entry.sessionId),
+  ).toEqual([ordinary.id]);
+  for (const access of [
+    () => library.read(managed.projectId, managed.id),
+    () => library.read(managed.projectId, managed.id, original.requestId),
+    () => library.exportTranscript(managed.projectId, managed.id),
+    () => library.archive(managed.projectId, managed.id, original),
+    () =>
+      library.archive(managed.projectId, managed.id, {
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        archived: false,
+      }),
+  ]) {
+    let caught: unknown;
+    try {
+      await access();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConversationError);
+    expect(caught).toMatchObject({
+      status: 409,
+      message: expect.stringContaining("managed project shift"),
+    });
+    expect(readFileSync(historyPath)).toEqual(history);
+    expect(readFileSync(sessionRegistryFile(h.home))).toEqual(registrations);
+    expect(readFileSync(sessionLibraryFile(h.home))).toEqual(preferences);
+  }
 });

@@ -14,6 +14,7 @@ import {
   sessionTranscriptExportSchema,
 } from "./library-protocol";
 import { createSessionLibraryStore } from "./library-store";
+import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
 
 export { sessionLibraryFile } from "./library-store";
@@ -37,6 +38,7 @@ export function createSessionLibrary(options: {
         409,
         "This owned session belongs to a different workspace. Open its hearth to read or change it.",
       );
+    requireOrdinarySession(session);
     return session;
   };
   const preferences = createSessionLibraryStore({
@@ -56,7 +58,11 @@ export function createSessionLibrary(options: {
         entries: preferences.list(
           registry
             .listAll(projectId)
-            .filter((session) => workspaceKey(session.workspace) === workspace),
+            .filter(
+              (session) =>
+                !session.origin &&
+                workspaceKey(session.workspace) === workspace,
+            ),
         ),
       };
     },
