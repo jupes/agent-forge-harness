@@ -79,12 +79,15 @@ const RERUN_WORKERS = Math.min(
 );
 
 /**
- * How long the whole re-run may take. On the 4-thread windows-latest CI
- * runner (2 workers) it took 333 s, past the 180 s that holds elsewhere
- * (ubuntu-latest: 79 s): the re-run is one `bun test` per file and the
- * processes those tests start, and a process starts slower on Windows.
+ * Only the aggregate coordinator budget, not an individual test or native
+ * process deadline. The suite grew to 360 files / 201 process-reaching files,
+ * including 17 actual compile fixtures. A smaller Linux tree took 171.69 s;
+ * the expanded Linux run exceeded 180 s without an individual failure, while
+ * Windows completed in 210.54 s under its established 600 s policy. Apply
+ * that bounded aggregate policy on every platform; keep the worker/exclusive
+ * schedule, all selected files and the per-test 15 s limit unchanged.
  */
-const RERUN_LIMIT_MS = process.platform === "win32" ? 600_000 : 180_000;
+const RERUN_LIMIT_MS = 600_000;
 
 /**
  * The per-test limit of each re-run file, the one CI gives the whole suite
@@ -117,6 +120,15 @@ async function rerunEach(
   files: string[],
   env: Record<string, string>,
 ): Promise<FailedRerun[]> {
+  console.error(
+    `[home-isolation] ${JSON.stringify({
+      event: "plan",
+      files: files.length,
+      workers: RERUN_WORKERS,
+      aggregateLimitMs: RERUN_LIMIT_MS,
+      perTestLimitMs: Number(RERUN_TEST_TIMEOUT),
+    })}`,
+  );
   const results = await settleIsolationReruns(
     files,
     RERUN_WORKERS,
@@ -144,6 +156,9 @@ async function rerunEach(
       return exitCode === 0
         ? null
         : { file, exitCode, ...rerunReport(`${stdout}${stderr}`) };
+    },
+    (progress) => {
+      console.error(`[home-isolation] ${JSON.stringify(progress)}`);
     },
   );
   const failed: FailedRerun[] = results.flatMap((result, index) =>
