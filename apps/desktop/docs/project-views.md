@@ -48,10 +48,26 @@ Unknown providers retain their own name and an unknown monogram; they never
 become Claude by default.
 
 The session inspector requires a matching row in the selected project's scoped
-summary. A foreign or missing session id produces an unavailable state. Bulk
-selection remains read-only until the session-control producer supplies actual
-eligibility and stop outcomes; the disabled control explains this. A row that
-leaves the read result also leaves bulk selection.
+summary. A foreign or missing session id produces an unavailable state. A row
+that leaves the read result also leaves bulk selection.
+
+The separate Owned Keeper session section consumes the standing conversation's
+existing controlled-process registry, through its protected replay. Eligibility
+requires this project's page, the current turn's actual CLI identity and the
+hearth's `controllable` proof. Ledger observations remain read-only; selecting
+them cannot turn an id into process authority. The current attended producer
+can own one Keeper turn per project. Later generic lifecycle controls extend
+that shared producer.
+
+Selection snapshots both the provider session id and immutable turn request id.
+`stopSession` rechecks that pair before using the existing audited Keeper Stop
+row. A resumed session's later turn cannot inherit an old selection. Bulk Stop
+targets only eligible selected work and reports how many other selections are
+ineligible. The root client retains pending and unknown outcomes across routes;
+Check and an explicit original Stop retry use the same turn. Only a recorded
+terminal phase confirms Stop. Independent overview-source failures leave owned
+controls available. These controls introduce no PID lookup, extra stream,
+provider start or new model authority.
 
 | Navigation | Behavior |
 | --- | --- |

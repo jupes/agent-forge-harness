@@ -459,6 +459,11 @@ async function main(): Promise<void> {
       `document.querySelector('.af-project-sessions')?.textContent?.includes('native-observed-session')`,
       "The native scoped session list did not load.",
     );
+    await waitForPage(
+      socket,
+      `document.querySelector('[aria-label="Owned Keeper session"]')?.textContent?.includes('No current Keeper session identity') && Array.from(document.querySelectorAll('[aria-label="Owned Keeper session"] button')).some(b => b.textContent?.trim() === 'Stop selected' && b.disabled)`,
+      "A native ledger observation incorrectly acquired session-control authority.",
+    );
     await evaluate(
       socket,
       `Array.from(document.querySelectorAll('.af-project-sessions a')).find(a => a.textContent?.trim() === 'Open native-observed-session')?.click()`,
@@ -669,6 +674,7 @@ async function main(): Promise<void> {
           keeperConversationTested: true,
           keeperSelectionTested: true,
           keeperBriefTested: true,
+          observedSessionIneligibleTested: true,
           focusOutline,
           childrenStopped: true,
         },

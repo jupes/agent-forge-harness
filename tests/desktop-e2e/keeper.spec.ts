@@ -50,6 +50,7 @@ test.beforeEach(() => {
   }
 });
 test.afterEach(async ({ page }) => {
+  await page.unroute("**/keeper/stop");
   if (!page.url().startsWith("http://127.0.0.1:")) return;
   for (const project of [alpha, beta]) {
     const turn = rawState(project.id).turns?.find((turn) =>
@@ -86,6 +87,132 @@ test.afterEach(async ({ page }) => {
       )
       .toBe(false);
   }
+});
+
+test("the session list stops only its selected owned Keeper turn and keeps observed sessions ineligible", async ({
+  page,
+}) => {
+  seedSessions();
+  const before = starts();
+  writeFileSync(
+    join(HEARTH_HOME, "keeper-fixture-mode.json"),
+    JSON.stringify("hang"),
+  );
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await page
+    .getByRole("textbox", { name: "Message the Keeper" })
+    .fill("Session-list owned Stop fixture");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Keeper reply", exact: true }),
+  ).toContainText("Scoped reply");
+  await page
+    .getByRole("link", { name: "Sessions", exact: true })
+    .first()
+    .click();
+  const owned = page.getByRole("region", {
+    name: "Owned Keeper session",
+    exact: true,
+  });
+  await expect(owned).toContainText("claude");
+  await expect(owned).toContainText("running");
+  await page
+    .getByRole("checkbox", { name: "Select e2e-alpha-parent", exact: true })
+    .check();
+  await owned.getByRole("checkbox").check();
+  await expect(owned).toContainText("1 eligible");
+  await expect(owned).toContainText("read-only");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const stop = owned.getByRole("button", {
+    name: "Stop selected",
+    exact: true,
+  });
+  await owned.getByRole("checkbox").focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(stop).toBeFocused();
+  expect(
+    await stop.evaluate((node) => getComputedStyle(node).outlineWidth),
+  ).toBe("2px");
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/keeper-session-controls.png",
+  });
+  await page.keyboard.press("Enter");
+  await expect(owned).toContainText("Stop confirmed");
+  await expect
+    .poll(() => rawState(alpha.id).turns?.[0]?.phase)
+    .toBe("cancelled");
+  await expect(
+    page.getByRole("checkbox", {
+      name: "Select e2e-alpha-parent",
+      exact: true,
+    }),
+  ).toBeChecked();
+  await expect(
+    page.getByRole("link", { name: "Open e2e-alpha-parent", exact: true }),
+  ).toBeVisible();
+  expect(starts()).toBe(before + 1);
+});
+
+test("a lost session-list Stop is held and retried against its original turn even when the independent overview source is unavailable", async ({
+  page,
+}) => {
+  const before = starts();
+  writeFileSync(
+    join(HEARTH_HOME, "keeper-fixture-mode.json"),
+    JSON.stringify("hang"),
+  );
+  const stops: string[] = [];
+  await page.route("**/keeper/stop", (route) => {
+    stops.push(route.request().postData() ?? "");
+    return stops.length === 1 ? route.abort("failed") : route.continue();
+  });
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await page
+    .getByRole("textbox", { name: "Message the Keeper" })
+    .fill("Owned Stop while observational metadata is unavailable");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Keeper reply", exact: true }),
+  ).toContainText("Scoped reply");
+  await page.route("**/overview", (route) =>
+    route.fulfill({
+      status: 503,
+      json: { ok: false, data: null, error: "Synthetic overview unavailable" },
+    }),
+  );
+  await page
+    .getByRole("link", { name: "Sessions", exact: true })
+    .first()
+    .click();
+  const owned = page.getByRole("region", {
+    name: "Owned Keeper session",
+    exact: true,
+  });
+  await expect(
+    page.getByText("Sessions unavailable", { exact: true }),
+  ).toBeVisible();
+  await owned.getByRole("checkbox").check();
+  const stop = owned.getByRole("button", {
+    name: "Stop selected",
+    exact: true,
+  });
+  await stop.click();
+  await expect(stop).toBeDisabled();
+  await expect(
+    owned.getByRole("button", { name: "Retry original Stop", exact: true }),
+  ).toBeVisible();
+  await owned
+    .getByRole("button", { name: "Check selected Stop", exact: true })
+    .click();
+  await owned
+    .getByRole("button", { name: "Retry original Stop", exact: true })
+    .click();
+  await expect(owned).toContainText("Stop confirmed");
+  expect(stops).toHaveLength(2);
+  expect(stops[1]).toBe(stops[0]);
+  expect(starts()).toBe(before + 1);
 });
 
 test("brief Refresh uses the real standing conversation, shares its source with Overview/home and supports earlier briefs and a quoted follow-up", async ({
@@ -162,6 +289,13 @@ test("brief Refresh uses the real standing conversation, shares its source with 
   await expect
     .poll(() => rawState(alpha.id).turns?.at(-1)?.phase)
     .toBe("completed");
+  // Keep the synthetic failure through the terminal stream update and its
+  // coalesced read; otherwise that queued read can heal before the retry click.
+  await expect(refresh).toBeEnabled();
+  await expect(panel).toHaveAttribute("aria-busy", "false");
+  await expect(
+    panel.getByRole("button", { name: "Retry brief read", exact: true }),
+  ).toBeVisible();
   await page.unroute("**/keeper/briefs");
   await panel
     .getByRole("button", { name: "Retry brief read", exact: true })

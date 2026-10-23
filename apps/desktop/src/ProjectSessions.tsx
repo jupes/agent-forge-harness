@@ -6,6 +6,8 @@ import { useOperatorRead } from "../../../docs/js/use-stream";
 import type { SessionSummary } from "../../../types/hearth";
 import type { ProjectOverview } from "../../../types/project-overview";
 import { ProviderMonogram } from "./DesktopFrame";
+import { KeeperSessionControl } from "./KeeperSessionControl";
+import type { KeeperClient } from "./keeper-client";
 import { desktopHref } from "./navigation";
 import { PROJECT_READ_KINDS } from "./ProjectOverview";
 import {
@@ -17,9 +19,13 @@ import {
 export function ProjectSessions({
   projectId,
   selectedId,
+  keeper,
+  writesAllowed,
 }: {
   projectId: string;
   selectedId: string | null;
+  keeper: KeeperClient;
+  writesAllowed: boolean;
 }): JSX.Element {
   const read = useOperatorRead<ProjectOverview>(
     `/projects/${encodeURIComponent(projectId)}/overview`,
@@ -38,14 +44,25 @@ export function ProjectSessions({
     });
   }, [read.data?.summary.sessions]);
   const data = read.data?.summary.projectId === projectId ? read.data : null;
+  const controls = (
+    <KeeperSessionControl
+      projectId={projectId}
+      client={keeper}
+      writesAllowed={writesAllowed}
+      observedSelected={selected.size}
+    />
+  );
   if (!data)
     return (
-      <EmptyState
-        title={read.error ? "Sessions unavailable" : "Loading sessions…"}
-        hint={read.error ?? "Reading this project's observations."}
-      >
-        <Button onClick={read.reload}>Refresh sessions</Button>
-      </EmptyState>
+      <div class="af-project-sessions">
+        {controls}
+        <EmptyState
+          title={read.error ? "Sessions unavailable" : "Loading sessions…"}
+          hint={read.error ?? "Reading this project's observations."}
+        >
+          <Button onClick={read.reload}>Refresh sessions</Button>
+        </EmptyState>
+      </div>
     );
   const sessions = data.summary.sessions;
   const rows = sessionRows(sessions, filters, data.summary.asOf);
@@ -133,12 +150,7 @@ export function ProjectSessions({
         Running, idle, permission and per-session usage are not reported by this
         source.
       </p>
-      <p>
-        <Button disabled title="Session control is not available in this build">
-          Stop selected
-        </Button>{" "}
-        {selected.size} selected. Observed sessions are read-only.
-      </p>
+      {controls}
       {!sessions.length ? (
         <EmptyState
           title="No scoped sessions observed"

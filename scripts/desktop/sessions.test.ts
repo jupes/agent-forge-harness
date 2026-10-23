@@ -1,8 +1,66 @@
 import { expect, test } from "bun:test";
+import { keeperSession } from "../../apps/desktop/src/keeper-session";
 import { sessionRows } from "../../apps/desktop/src/sessions-model";
+import type { ConversationPage } from "../../types/conversation";
 import type { SessionSummary } from "../../types/hearth";
 
 const asOf = "2026-10-22T12:00:00.000Z";
+
+test("only current-turn identity and this hearth's ownership make a Keeper session eligible", () => {
+  const binding = {
+    provider: "claude" as const,
+    sessionId: "actual",
+    version: "fixture",
+  };
+  const turn = {
+    requestId: "request",
+    hash: "0".repeat(64),
+    phase: "running" as const,
+    createdAt: asOf,
+    updatedAt: asOf,
+    reason: null,
+    owner: null,
+  };
+  const page: ConversationPage = {
+    version: 1,
+    projectId: "alpha",
+    conversationId: "keeper-alpha",
+    binding,
+    revision: 2,
+    turns: [turn],
+    frames: [
+      {
+        seq: 1,
+        turnId: turn.requestId,
+        at: asOf,
+        event: { kind: "identity", ...binding },
+      },
+    ],
+    controllable: true,
+    request: null,
+    more: false,
+    nextCursor: 1,
+    lastSequence: 1,
+  };
+  expect(keeperSession("alpha", page)?.canStop).toBe(true);
+  expect(keeperSession("beta", page)).toBeNull();
+  expect(keeperSession("alpha", { ...page, frames: [] })).toBeNull();
+  expect(
+    keeperSession("alpha", {
+      ...page,
+      turns: [{ ...turn, requestId: "later" }],
+    }),
+  ).toBeNull();
+  expect(
+    keeperSession("alpha", { ...page, controllable: false }),
+  ).toMatchObject({
+    canStop: false,
+    reason: "This hearth does not own the process.",
+  });
+  expect(
+    keeperSession("alpha", { ...page, turns: [{ ...turn, phase: "unknown" }] }),
+  ).toMatchObject({ canStop: false, phase: "unknown" });
+});
 const session = (
   sessionId: string,
   extra: Partial<SessionSummary> = {},

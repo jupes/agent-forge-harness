@@ -123,6 +123,79 @@ test("an unanswered brief refresh retains its action and UUID across draft edits
   f.client.dispose();
 });
 
+test("session-list Stop requires the exact owned provider session and turn, and an old selection cannot stop a later resumed turn", async () => {
+  const f = fixture();
+  f.client.activate(alpha);
+  const binding = {
+    provider: "claude" as const,
+    sessionId: "actual-owned-session",
+    version: "fixture",
+  };
+  const running = { ...turn, phase: "running" as const };
+  const owned = {
+    ...page(),
+    binding,
+    revision: 2,
+    controllable: true,
+    turns: [running],
+    frames: [
+      {
+        seq: 1,
+        turnId: requestId,
+        at,
+        event: { kind: "identity" as const, ...binding },
+      },
+    ],
+    nextCursor: 1,
+    lastSequence: 1,
+  };
+  f.deliver(owned);
+  await f.client.stopSession(alpha, {
+    sessionId: "foreign-observation",
+    requestId,
+  });
+  expect(f.posts).toHaveLength(0);
+  await f.client.stopSession(alpha, {
+    sessionId: binding.sessionId,
+    requestId,
+  });
+  expect(f.posts).toHaveLength(1);
+  expect(f.posts[0]).toMatchObject({ action: "stop", body: { requestId } });
+  f.deliver({
+    ...owned,
+    revision: 3,
+    turns: [{ ...running, phase: "cancelling" }],
+  });
+  await f.client.stopSession(
+    alpha,
+    { sessionId: binding.sessionId, requestId },
+    true,
+  );
+  expect(f.posts).toHaveLength(2);
+  expect(f.posts[1]?.body).toEqual(f.posts[0]?.body);
+  f.deliver({ ...owned, revision: 4, turns: [turn] });
+  const next = "1a5832fa-7a21-403b-8184-44892f0d8d87";
+  f.deliver({
+    ...owned,
+    revision: 5,
+    turns: [turn, { ...running, requestId: next }],
+    frames: [
+      ...owned.frames,
+      { seq: 2, turnId: next, at, event: { kind: "identity", ...binding } },
+    ],
+    nextCursor: 2,
+    lastSequence: 2,
+  });
+  await f.client.stopSession(
+    alpha,
+    { sessionId: binding.sessionId, requestId },
+    true,
+  );
+  expect(f.posts).toHaveLength(2);
+  expect(f.client.get(alpha).notice).toContain("original turn");
+  f.client.dispose();
+});
+
 test("brief reads coalesce, catch a completion during a read and preserve verified state after a foreign reply", async () => {
   const reads: Array<{ id: string; resolve(value: unknown): void }> = [];
   const client = createKeeperClient({

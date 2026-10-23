@@ -110,3 +110,14 @@
   width: 24px;
   height: 24px;
 }
+.af-owned-session label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  overflow-wrap: anywhere;
+}
+.af-owned-session :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}

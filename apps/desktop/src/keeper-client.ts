@@ -20,6 +20,7 @@ import type {
 import type { KeeperReadQuery } from "../../../types/keeper";
 import type { KeeperBriefs } from "../../../types/keeper-brief";
 import { type KeeperAbout, keeperObjects } from "./keeper-context";
+import { type KeeperSessionSelection, keeperSession } from "./keeper-session";
 
 export interface KeeperView {
   projectId: string;
@@ -433,7 +434,7 @@ export function createKeeperClient(deps: Deps) {
       entry.draft.trim().length <= 16_384
     );
   };
-  return {
+  const client = {
     get,
     canSend,
     loadBriefs,
@@ -633,6 +634,32 @@ export function createKeeperClient(deps: Deps) {
       }
       tell();
     },
+    async stopSession(
+      projectId: string,
+      selectedSession: KeeperSessionSelection,
+      retry = false,
+    ): Promise<void> {
+      const entry = get(projectId),
+        session = keeperSession(projectId, entry.page);
+      if (
+        !session ||
+        session.sessionId !== selectedSession.sessionId ||
+        session.requestId !== selectedSession.requestId ||
+        (!session.canStop &&
+          !(
+            retry &&
+            entry.stopUnknown &&
+            session.phase === "cancelling" &&
+            entry.page?.controllable
+          ))
+      ) {
+        entry.notice =
+          "The selected session no longer controls that original turn. Read the current session before stopping anything.";
+        tell();
+        return;
+      }
+      await client.stop(projectId, retry);
+    },
     dispose() {
       disposed = true;
       generation++;
@@ -640,6 +667,7 @@ export function createKeeperClient(deps: Deps) {
       listeners.clear();
     },
   };
+  return client;
 }
 
 // TextEncoder is available in the browser; this module imports no Node or ledger runtime.

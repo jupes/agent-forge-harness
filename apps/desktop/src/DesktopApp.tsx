@@ -233,6 +233,8 @@ export function DesktopApp(): JSX.Element {
           />
         ) : route.destination === "sessions" && project ? (
           <ProjectSessions
+            keeper={keeper}
+            writesAllowed={writesAllowed}
             key={project.id}
             projectId={project.id}
             selectedId={
