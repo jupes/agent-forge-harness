@@ -72,6 +72,7 @@ import { projectRoutes } from "./projects";
 import { createProviderLoginRoutes } from "./provider-logins";
 import { createProviderReadinessRoutes } from "./providers";
 import { queueRoutes } from "./queue";
+import { createSessionObservationRoutes } from "./session-observations";
 import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
@@ -429,6 +430,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSnapshot,
   );
   const providerLogins = createProviderLoginRoutes(deps.providerLogin);
+  const observations = createSessionObservationRoutes(deps, projectSnapshot);
   const reads: ReadRoute[] = [
     ...providerLogins.reads,
     providers.read,
@@ -447,6 +449,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
+    observations.list,
+    observations.detail,
     projectBeadsRoute(deps, projectSnapshot),
     projectWorkbenchRoute(deps, projectSnapshot, async () => {
       const result = await readEligible();

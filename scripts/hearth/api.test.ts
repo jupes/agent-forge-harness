@@ -1592,6 +1592,8 @@ const READS: Record<string, string> = {
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+  "GET /projects/:id/session-observations": `/projects/${FIXTURE_PROJECT_ID}/session-observations`,
+  "GET /projects/:id/session-observations/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/session-observations/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
   "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
@@ -2120,6 +2122,7 @@ describe("a read row or the stream while another connection holds the write lock
   const LEDGER_ROWS: ReadonlyArray<[string, number]> = [
     ["GET /eligibility", 502],
     ["GET /events", 500],
+    ["GET /projects/:id/session-observations/:sessionId", 503],
     ["GET /reservations", 500],
     ["GET /runs/:slug", 500],
     ["GET /scoreboard", 500],
