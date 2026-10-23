@@ -282,3 +282,45 @@ test("checked approvals, reviewed child creation and pause use the actual scoped
       );
   }
 });
+
+test("a pending action-card refresh stays in keyboard order and cannot queue duplicate reads", async ({
+  page,
+}) => {
+  await propose(page);
+  const refresh = cards(page).getByRole("button", {
+    name: "Refresh action cards",
+    exact: true,
+  });
+  let release = () => {},
+    entered = () => {},
+    reads = 0;
+  const held = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const pattern = `**/__agent-forge/projects/${alpha.id}/keeper/proposals*`;
+  await page.route(pattern, async (route) => {
+    reads++;
+    entered();
+    await released;
+    await route.continue();
+  });
+  try {
+    await refresh.click();
+    await held;
+    await expect(cards(page)).toHaveAttribute("aria-busy", "true");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await expect(refresh).toBeFocused();
+    await expect(refresh).toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    expect(reads).toBe(1);
+  } finally {
+    release();
+  }
+  await expect(cards(page)).toHaveAttribute("aria-busy", "false");
+  await page.unroute(pattern);
+});
