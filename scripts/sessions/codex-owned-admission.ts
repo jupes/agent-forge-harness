@@ -20,6 +20,7 @@ import {
 import { createCodexOwnedTransport } from "./codex-owned-transport";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
+import { requireOrdinarySession } from "./managed-origin";
 import { canonicalSessionInput } from "./preparation";
 import { createSessionRegistry } from "./registry";
 
@@ -50,6 +51,7 @@ export function createCodexOwnedTaskService(options: Options) {
   const initial = new Map<string, CodexTaskLaunch>();
   let closed = false;
   const serviceFor = (session: CodexOwnedSessionRecord) => {
+    requireOrdinarySession(session);
     if (workspaceKey(session.workspace) !== workspace)
       throw new ConversationError(
         409,
@@ -225,7 +227,7 @@ export function createCodexOwnedTaskService(options: Options) {
       }
     },
     async send(projectId: string, sessionId: string, _input: SessionMessage) {
-      registry.read(projectId, sessionId);
+      requireOrdinarySession(registry.read(projectId, sessionId));
       throw new ConversationError(
         409,
         "Codex Task sessions accept one turn. Start another Task explicitly.",
@@ -241,7 +243,10 @@ export function createCodexOwnedTaskService(options: Options) {
     list(projectId: string) {
       return registry
         .list(projectId)
-        .filter((session) => workspaceKey(session.workspace) === workspace);
+        .filter(
+          (session) =>
+            !session.origin && workspaceKey(session.workspace) === workspace,
+        );
     },
     stop(projectId: string, sessionId: string, requestId: string) {
       return forId(projectId, sessionId).stop(projectId, requestId);

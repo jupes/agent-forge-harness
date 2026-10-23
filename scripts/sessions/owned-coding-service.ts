@@ -11,6 +11,7 @@ import { createOwnedSessionService, type SessionRuntime } from "./admission";
 import { createCodexOwnedTaskService } from "./codex-owned-admission";
 import { parseOwnedSessionStart } from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
+import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
 
 export const unavailableCodexTaskRuntime: ReturnType<
@@ -52,8 +53,11 @@ export function createOwnedCodingSessionService(options: {
     runtime: options.codexTaskRuntime ?? unavailableCodexTaskRuntime,
   });
   const registry = createSessionRegistry(options.home);
-  const selected = (projectId: string, sessionId: string) =>
-    registry.lookup(projectId, sessionId).provider === "codex" ? codex : claude;
+  const selected = (projectId: string, sessionId: string) => {
+    const record = registry.lookup(projectId, sessionId);
+    requireOrdinarySession(record);
+    return record.provider === "codex" ? codex : claude;
+  };
   return {
     start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
@@ -75,7 +79,10 @@ export function createOwnedCodingSessionService(options: {
       const workspace = workspaceKey(resolveCheckout(options.root).workspace);
       return registry
         .listAll(projectId)
-        .filter((record) => workspaceKey(record.workspace) === workspace);
+        .filter(
+          (record) =>
+            !record.origin && workspaceKey(record.workspace) === workspace,
+        );
     },
     stop(projectId: string, sessionId: string, requestId: string) {
       return selected(projectId, sessionId).stop(
