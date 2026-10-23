@@ -196,7 +196,17 @@ test("private Claude activity reloads with collapsed reasoning, inert tool/diff/
   );
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/session-activity.png",
-    mask: [page.locator(".af-owned-turn > time")],
+    mask: [page.getByText(record.worktree, { exact: true })],
+    style: ".af-owned-turn > time { visibility: hidden !important; }",
+    maskColor: "#3f424d",
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await files.locator("summary").click();
+  await files.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "apps/desktop/docs/screenshots/session-activity-diff.png",
+    mask: [page.getByText(record.worktree, { exact: true })],
+    style: ".af-owned-turn > time { visibility: hidden !important; }",
     maskColor: "#3f424d",
   });
 });
@@ -411,7 +421,9 @@ test("a failed protected saved read leaves an actionable read error without clai
       exact: true,
     }),
   ).toBeVisible();
-  await expect.poll(() => journal(record.id).turns.at(-1)?.phase).toBe("running");
+  await expect
+    .poll(() => journal(record.id).turns.at(-1)?.phase)
+    .toBe("running");
   expect(
     journal(record.id).frames.some(
       (frame) => frame.event.kind === "coding-outcome",

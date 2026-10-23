@@ -351,6 +351,26 @@
   margin-left: 4px;
   background: var(--color-accent-400);
 }
+.af-owned-session[data-session-mode="task"] .af-owned-session-header p {
+  margin: 4px 0;
+}
+.af-owned-session[data-session-mode="task"] .af-owned-session-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: end;
+}
+.af-owned-session[data-session-mode="task"] .af-owned-session-composer > p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.af-owned-session[data-session-mode="task"]
+  .af-owned-session-composer
+  textarea {
+  height: 28px;
+  min-height: 28px;
+  resize: none;
+}
 @media (prefers-reduced-motion: no-preference) {
   .af-session-streaming-caret {
     animation: af-session-caret 1.2s steps(2, jump-none) infinite;

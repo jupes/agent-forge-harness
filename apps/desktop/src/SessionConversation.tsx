@@ -47,6 +47,7 @@ export function SessionConversation({
     current = view.page?.turns.at(-1);
   const running =
     current && ["accepted", "running", "cancelling"].includes(current.phase);
+  const providerName = record?.provider === "codex" ? "Codex" : "Claude";
   const lifecycle = ownedSessionLifecycle(view.page, {
     mode: record?.mode ?? null,
     loaded: view.loaded,
@@ -55,6 +56,11 @@ export function SessionConversation({
     feedInterrupted: view.feedInterrupted,
     readError: view.readError,
   });
+  const showLifecycleGuidance =
+    ["error", "unknown", "timed-out", "stale"].includes(lifecycle.state) ||
+    !!view.stopping ||
+    current?.phase === "cancelling" ||
+    (!!running && !view.page?.controllable);
   const observed = [...(view.page?.frames ?? [])]
     .reverse()
     .find(
@@ -123,7 +129,11 @@ export function SessionConversation({
     else if (lastSequence) setAway(true);
   }, [lastSequence]);
   return (
-    <section class="af-owned-session" aria-label="Session conversation">
+    <section
+      class="af-owned-session"
+      aria-label="Session conversation"
+      data-session-mode={record?.mode ?? "unknown"}
+    >
       <header class="af-owned-session-header">
         <div>
           <span class="af-keeper-chip">
@@ -180,9 +190,14 @@ export function SessionConversation({
             </Button>
           )}
         </div>
-        <p class="af-session-note">{lifecycle.detail}</p>
+        {showLifecycleGuidance && (
+          <p class="af-session-note">{lifecycle.detail}</p>
+        )}
         <details>
           <summary>Session details</summary>
+          {!showLifecycleGuidance && (
+            <p class="af-session-note">{lifecycle.detail}</p>
+          )}
           <dl>
             <dt>Local session</dt>
             <dd>{sessionId}</dd>
@@ -422,7 +437,9 @@ export function SessionConversation({
                   : "Enter a follow-up for this same provider conversation.")}
         </p>
         <label>
-          Reply to {record?.provider === "codex" ? "Codex" : "Claude"}
+          {record?.mode === "task"
+            ? "Reply unavailable · Tasks accept one turn"
+            : `Reply to ${providerName}`}
           <textarea
             ref={prompt}
             aria-label="Session reply prompt"
@@ -562,10 +579,12 @@ export function SessionConversation({
           </>
         )}
         <div class="af-session-composer-actions">
-          <small>
-            Ctrl/Cmd+Enter sends · Enter adds a line · closing this view leaves
-            its process running
-          </small>
+          {record?.mode !== "task" && (
+            <small>
+              Ctrl/Cmd+Enter sends · Enter adds a line · closing this view
+              leaves its process running
+            </small>
+          )}
           <Button
             variant="primary"
             disabled={attaching || !client.canSend(projectId, sessionId)}
