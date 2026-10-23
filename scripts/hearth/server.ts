@@ -110,6 +110,8 @@ export interface HearthOptions {
   harnessRoot?: string;
   /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
   keeperReaderCommand?: readonly string[];
+  /** Trusted packaged sync prefix; never read from an HTTP request or provider launch. */
+  codexSyncCommand?: readonly string[];
   /** 0 (default) lets the OS pick a free port. */
   port?: number;
   /** Environment handed to the council service; defaults to the dashboard's. */
@@ -395,6 +397,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       createCodexTaskRuntime({
         root,
         home,
+        ...(options.codexSyncCommand
+          ? { syncCommand: options.codexSyncCommand }
+          : {}),
         ...(options.api?.configHome
           ? { configHome: options.api.configHome }
           : {}),
@@ -650,6 +655,7 @@ function argValue(argv: string[], flag: string): string | undefined {
 async function main(
   argv: string[],
   keeperReaderCommand?: readonly string[],
+  codexSyncCommand?: readonly string[],
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const requested = process.env["HEARTH_PORT"];
@@ -659,6 +665,7 @@ async function main(
   const hearth = await createHearth({
     root,
     ...(keeperReaderCommand ? { keeperReaderCommand } : {}),
+    ...(codexSyncCommand ? { codexSyncCommand } : {}),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });
@@ -707,9 +714,10 @@ export function closeOnSignal(
 export async function runHearthServer(
   argv: string[],
   keeperReaderCommand?: readonly string[],
+  codexSyncCommand?: readonly string[],
 ): Promise<void> {
   try {
-    await main(argv, keeperReaderCommand);
+    await main(argv, keeperReaderCommand, codexSyncCommand);
   } catch (error: unknown) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,
