@@ -74,3 +74,34 @@ Cancellation sends `session/cancel` and waits a bounded interval for the pending
 prompt's `cancelled` result, then confirms owned tree cleanup. Missing or invalid
 acknowledgment triggers hard Stop and an unknown outcome; partial private output
 is kept and the prompt is never resent automatically.
+
+## Private process and persistence boundary
+
+`createGeminiChatRuntime` prepares a frozen selection using read-only native
+version/help checks. It rechecks those capabilities, the executable prefix and
+physical paths before starting an owned interactive process. Each run accepts
+one explicit prompt; a later run can load only its caller's exact stored native
+identity. The actual provider PID saves before initialize or private prompt
+bytes. This producer is not registered as a public desktop admission route.
+
+The caller supplies private persistence and permission authorization. Every
+permission offer includes the actual process/session and accepted original;
+its decision UUID and exact offered choice must save before one native answer.
+The caller must fence late storage completions against its durable original and
+lease. A persistence deadline cannot cancel an arbitrary caller promise, so the
+runtime prevents dependent native writes and never retries the prompt or answer.
+
+Private output has line, aggregate and pending-queue bounds. Storage faults,
+malformed output, missing results and missing cancellation acknowledgements keep
+an unknown outcome. Stop invalidates callbacks before native cancellation and
+skips queued nonessential output. A terminal response closes stdin and starts a
+separate short cleanup deadline: a native result alone does not prove the owned
+process or its inherited-pipe helpers exited. Completion requires a confirmed
+native result, successful private saves and drained owned process cleanup.
+
+Compiled inert process tests exercise fresh and recreated exact-session turns,
+delayed history, permission intent before reply, native settlement and Stop while
+callbacks wait, failed/late saves, cancellation and timeout, inherited-pipe
+helpers, protocol/output faults, queue saturation and changed native/path facts.
+The fixture uses its own temporary home/config and never reads real accounts,
+credentials or tracker state.

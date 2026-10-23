@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GeminiChatLaunch } from "../../types/gemini-chat-runtime";
 import type {
   GeminiTaskCapabilities,
   GeminiTaskLaunch,
@@ -85,22 +86,45 @@ export const geminiTaskLaunchSchema = z
   })
   .strict();
 
+export const geminiChatLaunchSchema = geminiTaskLaunchSchema
+  .omit({ mode: true })
+  .extend({ mode: z.literal("chat") })
+  .strict();
+
 export function serializeGeminiTask(
   input: GeminiTaskLaunch,
   available: GeminiTaskCapabilities,
 ): SerializedGeminiTask {
-  const parsed = geminiTaskLaunchSchema.safeParse(input);
+  return serializeGeminiLaunch(input, available, "task");
+}
+
+export function serializeGeminiChat(
+  input: GeminiChatLaunch,
+  available: GeminiTaskCapabilities,
+): SerializedGeminiTask {
+  return serializeGeminiLaunch(input, available, "chat");
+}
+
+function serializeGeminiLaunch(
+  input: GeminiTaskLaunch | GeminiChatLaunch,
+  available: GeminiTaskCapabilities,
+  mode: "task" | "chat",
+): SerializedGeminiTask {
+  const label = mode === "task" ? "Task" : "Chat";
+  const parsed = (
+    mode === "task" ? geminiTaskLaunchSchema : geminiChatLaunchSchema
+  ).safeParse(input);
   if (!parsed.success)
-    throw new Error("The private Gemini Task request is invalid.");
+    throw new Error(`The private Gemini ${label} request is invalid.`);
   const request = parsed.data;
   const evidence = geminiTaskCapabilitiesSchema.safeParse(available);
   if (!evidence.success)
     throw new Error(
-      "The installed Gemini CLI lacks the verified 0.65.0 Task protocol.",
+      `The installed Gemini CLI lacks the verified 0.65.0 ${label} protocol.`,
     );
   const capabilities = evidence.data;
-  const argv = ["--output-format", "stream-json"];
-  const requiredFlags = ["--output-format"];
+  const argv = mode === "task" ? ["--output-format", "stream-json"] : ["--acp"];
+  const requiredFlags = [mode === "task" ? "--output-format" : "--acp"];
   const option = (flag: string, value: string) => {
     argv.push(flag, value);
     if (!requiredFlags.includes(flag)) requiredFlags.push(flag);
@@ -124,7 +148,7 @@ export function serializeGeminiTask(
   const stdin =
     Object.keys(data).length === 0
       ? request.prompt
-      : `${request.prompt}\n\n<agent-forge-task-data>\n${JSON.stringify(data).replaceAll("@", "\\u0040")}\n</agent-forge-task-data>`;
+      : `${request.prompt}\n\n<agent-forge-${mode}-data>\n${JSON.stringify(data).replaceAll("@", "\\u0040")}\n</agent-forge-${mode}-data>`;
   if (encoder.encode(stdin).byteLength > GEMINI_TASK_MAX_STDIN_BYTES)
     throw new Error(
       "The complete private Gemini stdin exceeds its 2 MiB bound.",
