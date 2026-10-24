@@ -601,6 +601,15 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
   expect(exported.session).toMatchObject({ provider: "gemini", mode: "chat" });
   expect(exported.conversation.turns).toHaveLength(2);
   expect(
+    exported.conversation.frames.find(
+      (frame) =>
+        frame.turnId === record.requestId && frame.event.kind === "user",
+    )?.event,
+  ).toMatchObject({
+    kind: "user",
+    about: [{ kind: "bead", id: "alpha-epic" }],
+  });
+  expect(
     exported.conversation.frames.filter(
       (frame) => frame.event.kind === "coding-gemini-chat-decision",
     ),
