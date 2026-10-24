@@ -179,22 +179,20 @@ export async function seedNativeFileChangeSession(
   return record;
 }
 
-interface FileChangePageTools {
-  evaluate(socket: WebSocket, expression: string): Promise<unknown>;
-  waitForPage(
-    socket: WebSocket,
-    expression: string,
-    error: string,
-  ): Promise<void>;
-  pressTab(socket: WebSocket): Promise<void>;
+interface FileChangePageTools<Socket extends EventTarget> {
+  evaluate(socket: Socket, expression: string): Promise<unknown>;
+  waitForPage(socket: Socket, expression: string, error: string): Promise<void>;
+  pressTab(socket: Socket): Promise<void>;
+  enableRequests(socket: Socket): Promise<void>;
+  screenshot(socket: Socket, name: string): Promise<unknown>;
 }
 
 /** Inspect saved fixture bytes in the actual packaged WebView; never dispatch a provider or touch a reported path. */
-export async function verifyNativeFileChanges(
-  socket: WebSocket,
+export async function verifyNativeFileChanges<Socket extends EventTarget>(
+  socket: Socket,
   record: CodexChatOwnedRecord,
   home: string,
-  tools: FileChangePageTools,
+  tools: FileChangePageTools<Socket>,
 ) {
   const file = conversationFile(home, record.projectId, {
       kind: "session",
@@ -202,31 +200,76 @@ export async function verifyNativeFileChanges(
       sessionId: record.id,
     }),
     before = readFileSync(file),
-    report = `Array.from(document.querySelectorAll('.af-session-activity-item')).find(d=>d.querySelector('.af-session-report-source')?.textContent?.includes('Item: native-smoke-files'))`;
-  await tools.evaluate(
-    socket,
-    `location.hash=${JSON.stringify(`#/desktop/project/${record.projectId}/sessions?selectionKind=session&selectionId=${record.id}`)}`,
-  );
-  await tools.waitForPage(
-    socket,
-    `!!${report}`,
-    "The packaged native file snapshot did not appear in its owned conversation.",
-  );
-  await tools.evaluate(socket, `${report}.querySelector('summary').click()`);
-  await tools.waitForPage(
-    socket,
-    `(() => { const d=${report}; return d?.open && d.textContent.includes('File changes · Reported declined') && d.textContent.includes('Provider reported an empty diff') && d.textContent.includes('Native turn reported completed') && d.querySelector('pre')?.textContent === '-old\n+<script>native patch stays text</script>' && !d.querySelector('a,button,script,img,iframe,form'); })()`,
-    "The packaged native patch lost its literal text, status or read-only boundary.",
-  );
-  await tools.evaluate(socket, `${report}.querySelector('summary').focus()`);
-  await tools.pressTab(socket);
-  await tools.waitForPage(
-    socket,
-    `(() => { const p=${report}.querySelector('pre'); return document.activeElement===p && getComputedStyle(p).outlineWidth==='2px'; })()`,
-    "The packaged native patch region did not support visible keyboard focus.",
-  );
-  if (!readFileSync(file).equals(before))
-    throw Error(
-      "Inspecting the packaged file report changed its saved private bytes.",
+    report = `Array.from(document.querySelectorAll('.af-session-activity-item')).find(d=>d.querySelector('.af-session-report-source')?.textContent?.includes('Item: native-smoke-files'))`,
+    originalHash = await tools.evaluate(socket, "location.hash");
+  let posts = 0;
+  const observe = (event: Event) => {
+    if (!(event instanceof MessageEvent)) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("method" in value) ||
+      value.method !== "Network.requestWillBeSent" ||
+      !("params" in value)
+    )
+      return;
+    const params = value.params;
+    if (!params || typeof params !== "object" || !("request" in params)) return;
+    const request = params.request;
+    if (
+      request &&
+      typeof request === "object" &&
+      "method" in request &&
+      request.method === "POST"
+    )
+      posts = Math.min(posts + 1, 2);
+  };
+  await tools.enableRequests(socket);
+  socket.addEventListener("message", observe);
+  try {
+    await tools.evaluate(
+      socket,
+      `location.hash=${JSON.stringify(`#/desktop/project/${record.projectId}/sessions?selectionKind=session&selectionId=${record.id}`)}`,
     );
+    await tools.waitForPage(
+      socket,
+      `!!${report}`,
+      "The packaged native file snapshot did not appear in its owned conversation.",
+    );
+    await tools.evaluate(socket, `${report}.querySelector('summary').click()`);
+    await tools.waitForPage(
+      socket,
+      `(() => { const d=${report}; return d?.open && d.textContent.includes('File changes · Reported declined') && d.textContent.includes('Provider reported an empty diff') && d.textContent.includes('Native turn reported completed') && d.querySelector('pre')?.textContent === ${JSON.stringify("-old\n+<script>native patch stays text</script>")} && !d.querySelector('a,button,script,img,iframe,form'); })()`,
+      "The packaged native patch lost its literal text, status or read-only boundary.",
+    );
+    await tools.evaluate(socket, `${report}.querySelector('summary').focus()`);
+    await tools.pressTab(socket);
+    await tools.waitForPage(
+      socket,
+      `(() => { const p=${report}.querySelector('pre'); return document.activeElement===p && getComputedStyle(p).outlineWidth==='2px'; })()`,
+      "The packaged native patch region did not support visible keyboard focus.",
+    );
+    if (posts) throw Error("The native file inspection sent a POST.");
+    if (!readFileSync(file).equals(before))
+      throw Error(
+        "Inspecting the packaged file report changed its saved private bytes.",
+      );
+  } catch (error) {
+    await tools
+      .screenshot(socket, "native-chat-file-changes-failure.png")
+      .catch(() => undefined);
+    throw error;
+  } finally {
+    socket.removeEventListener("message", observe);
+    if (typeof originalHash === "string")
+      await tools
+        .evaluate(socket, `location.hash=${JSON.stringify(originalHash)}`)
+        .catch(() => undefined);
+  }
 }

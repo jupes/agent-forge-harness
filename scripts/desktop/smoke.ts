@@ -567,6 +567,10 @@ async function main(): Promise<void> {
     await verifyNativeFileChanges(socket, nativeFileSession, desktopSmokeHome, {
       evaluate,
       waitForPage,
+      async enableRequests(page) {
+        await cdp(page, "Network.enable", {});
+      },
+      screenshot: saveConnectionShot,
       async pressTab(page) {
         for (const type of ["keyDown", "keyUp"])
           await cdp(page, "Input.dispatchKeyEvent", {
