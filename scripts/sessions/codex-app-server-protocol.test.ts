@@ -233,6 +233,40 @@ test("explicit reasoning summaries preserve independent indexed streams and snap
   });
 });
 
+test("the native decoder shares its existing 256 item limit across messages, commands and summaries", () => {
+  const decoder = stream();
+  for (let index = 0; index < 255; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: {
+          type: "agentMessage",
+          id: `message-${index}`,
+          text: "Visible text",
+        },
+      }),
+    );
+  expect(
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: reasoningItem(),
+      }),
+    ).events,
+  ).toHaveLength(1);
+  expect(() =>
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem(),
+      }),
+    ),
+  ).toThrow("bound");
+});
+
 test("reasoning summaries refuse foreign or malformed parts and closed content while raw content cannot create summary facts", () => {
   const decoder = stream();
   expect(() =>

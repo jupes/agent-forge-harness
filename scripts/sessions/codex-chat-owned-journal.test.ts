@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import type { CodexChatEvent } from "../../types/codex-chat";
 import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
 import {
@@ -9,6 +10,7 @@ import {
 import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import {
+  codexChatCommandSchema,
   codexChatPrivateEventSchema,
   codexChatReasoningSummarySchema,
 } from "./codex-chat-owned-journal";
@@ -16,6 +18,97 @@ import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
+
+test("whole native Chat history keeps text, command and summary item kinds distinct while preserving legacy text fragments and the shared item bound", async () => {
+  const h = await startTestHearth();
+  try {
+    await seedChatDecision(h);
+    const state = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: FIXTURE_CHAT_SESSION,
+    }).read(FIXTURE_PROJECT_ID);
+    const turn = state.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" && frame.event.event.kind === "turn",
+    );
+    if (turn?.event.kind !== "coding-chat" || turn.event.event.kind !== "turn")
+      throw Error("Missing correlated native fixture");
+    const prefix = state.frames.filter((frame) => frame.seq <= turn.seq),
+      native = turn.event.event,
+      summary = codexChatReasoningSummarySchema.parse({
+        kind: "reasoning-summary",
+        source: "item/started",
+        threadId: native.threadId,
+        turnId: native.turnId,
+        itemId: "shared-item",
+        partial: true,
+        update: {
+          kind: "snapshot",
+          summary: [],
+          truncated: false,
+          closure: "open",
+          turnStatus: null,
+        },
+      }),
+      command = codexChatCommandSchema.parse({
+        kind: "command",
+        source: "item/started",
+        threadId: native.threadId,
+        turnId: native.turnId,
+        itemId: "shared-item",
+        command: { text: "inert", truncated: false },
+        cwd: h.workspace,
+        status: "inProgress",
+        output: null,
+        outputSource: null,
+        exitCode: null,
+        durationMs: null,
+        partial: true,
+      }),
+      text: CodexChatEvent = {
+        kind: "text",
+        itemId: "shared-item",
+        text: "Visible fragment",
+      };
+    const accepts = (events: CodexChatEvent[]) =>
+      ownedCodingStateSchema.safeParse({
+        ...state,
+        frames: [
+          ...prefix,
+          ...events.map((event, index) => ({
+            ...turn,
+            seq: prefix.length + index + 1,
+            event: {
+              kind: "coding-chat",
+              provider: "codex",
+              version: "0.163.0-alpha.10.2",
+              event,
+            },
+          })),
+        ],
+      }).success;
+    expect(accepts([text, text])).toBe(true);
+    for (const report of [summary, command]) {
+      expect(accepts([report])).toBe(true);
+      expect(accepts([text, report])).toBe(false);
+      expect(accepts([report, text])).toBe(false);
+      expect(accepts([{ ...text, itemId: "other-text" }, report])).toBe(true);
+    }
+    const texts = Array.from(
+      { length: 256 },
+      (_, index): CodexChatEvent => ({
+        ...text,
+        itemId: `text-${index}`,
+      }),
+    );
+    expect(accepts(texts)).toBe(true);
+    expect(accepts([...texts.slice(0, 255), summary])).toBe(true);
+    expect(accepts([...texts, summary])).toBe(false);
+  } finally {
+    await h.close();
+  }
+});
 
 test("explicit summary codecs refuse raw fields, source/index confusion, incoherent closure and unbounded snapshot text", () => {
   const summary = {

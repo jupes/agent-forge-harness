@@ -324,6 +324,7 @@ function nativeChatHistory(value: {
     richReportBytes: number;
     richTurnEnded: boolean;
     finalNativeStatus: "completed" | "failed" | "interrupted" | null;
+    itemKinds: Map<string, "text" | "command" | "reasoning-summary">;
     closedCommands: Set<string>;
     commands: Map<string, CodexChatCommand>;
     summaries: Map<
@@ -358,6 +359,7 @@ function nativeChatHistory(value: {
         richReportBytes: 0,
         richTurnEnded: false,
         finalNativeStatus: null,
+        itemKinds: new Map(),
         closedCommands: new Set(),
         commands: new Map(),
         summaries: new Map(),
@@ -427,6 +429,21 @@ function nativeChatHistory(value: {
       continue;
     }
     if (value.binding?.provider !== "codex") return false;
+    if (
+      native.kind === "text" ||
+      native.kind === "command" ||
+      native.kind === "reasoning-summary"
+    ) {
+      const previous = turn.itemKinds.get(native.itemId);
+      // The live decoder keeps one native item map across these kinds. Repeated
+      // text fragments keep the same identity; a different kind cannot borrow it.
+      if (
+        (previous !== undefined && previous !== native.kind) ||
+        (previous === undefined && turn.itemKinds.size >= 256)
+      )
+        return false;
+      turn.itemKinds.set(native.itemId, native.kind);
+    }
     if (native.kind === "command" || native.kind === "reasoning-summary") {
       if (
         turn.pid === undefined ||
