@@ -684,6 +684,8 @@ export async function stubRepos(
 const STREAM_PATH = "/__agent-forge/stream";
 const CONVERSATION_STREAM =
   /^\/__agent-forge\/projects\/[^/]+\/(?:keeper|sessions\/session-[0-9a-f-]{36})\/events$/;
+const SHIFT_ATTEMPT_STREAM =
+  /^\/__agent-forge\/projects\/[^/]+\/shifts\/requests\/[0-9a-f-]{36}\/attempts\/session-[0-9a-f-]{36}\/events$/;
 /** The quiet period the runner itself uses for "network idle". */
 const QUIET_MS = 500;
 const SETTLE_TIMEOUT_MS = 30_000;
@@ -720,7 +722,8 @@ async function settled(
     if (
       request.resourceType() !== "eventsource" &&
       new URL(request.url()).pathname !== STREAM_PATH &&
-      !CONVERSATION_STREAM.test(new URL(request.url()).pathname)
+      !CONVERSATION_STREAM.test(new URL(request.url()).pathname) &&
+      !SHIFT_ATTEMPT_STREAM.test(new URL(request.url()).pathname)
     )
       inFlight.add(request);
     changedAt = Date.now();
