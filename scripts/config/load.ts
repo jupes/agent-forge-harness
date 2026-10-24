@@ -245,7 +245,10 @@ export function readConfigText(file: string): string {
 }
 
 function readToml(file: string, content?: string): Table {
-  const text = content ?? readConfigText(file);
+  return parseTomlText(file, content ?? readConfigText(file));
+}
+
+function parseTomlText(file: string, text: string): Table {
   try {
     const parsed = Bun.TOML.parse(
       text.startsWith(BOM) ? text.slice(BOM.length) : text,
@@ -284,6 +287,60 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   const hasWorkspace =
     given.workspace !== undefined || existsSync(workspaceFile);
 
+  return mergeConfig(env, [
+    {
+      file: userFile,
+      secure: !hasWorkspace,
+      present: () => given.user !== undefined || existsSync(userFile),
+      read: () => readToml(userFile, given.user),
+    },
+    {
+      file: workspaceFile,
+      secure: true,
+      present: () => given.workspace !== undefined || existsSync(workspaceFile),
+      read: () => readToml(workspaceFile, given.workspace),
+    },
+  ]);
+}
+
+/** Captured text and its diagnostic/provenance label; null explicitly means no file. */
+export interface ConfigTextSource {
+  file: string;
+  text: string | null;
+}
+
+/** Pure counterpart to loadConfig: both layer presences and the environment are explicit. */
+export function loadConfigFromContents(input: {
+  sources: { user: ConfigTextSource; workspace: ConfigTextSource };
+  env: Readonly<Record<string, string | undefined>>;
+}): LoadedConfig {
+  const { user, workspace } = input.sources;
+  const layer = (source: ConfigTextSource, secure: boolean): ConfigLayer => {
+    const { file, text } = source;
+    return {
+      file,
+      secure,
+      present: () => text !== null,
+      read: () => parseTomlText(file, text ?? ""),
+    };
+  };
+  return mergeConfig(input.env, [
+    layer(user, workspace.text === null),
+    layer(workspace, true),
+  ]);
+}
+
+interface ConfigLayer {
+  file: string;
+  secure: boolean;
+  present(): boolean;
+  read(): Table;
+}
+
+function mergeConfig(
+  env: Readonly<Record<string, string | undefined>>,
+  layers: readonly ConfigLayer[],
+): LoadedConfig {
   const smiths: Record<string, Smith> = {};
   const provenance: Record<string, Provenance> = {};
   const files: string[] = [];
@@ -311,18 +368,10 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   for (const key of SHIFT_KEYS)
     set(`shift.${key}`, BUILTIN_SHIFT[key], "builtin");
 
-  const layers: Array<{
-    file: string;
-    secure: boolean;
-    content: string | undefined;
-  }> = [
-    { file: userFile, secure: !hasWorkspace, content: given.user },
-    { file: workspaceFile, secure: true, content: given.workspace },
-  ];
-  for (const { file, secure, content } of layers) {
-    if (content === undefined && !existsSync(file)) continue;
+  for (const { file, secure, present, read } of layers) {
+    if (!present()) continue;
     files.push(file);
-    const doc = readToml(file, content);
+    const doc = read();
 
     const workflow = doc.workflow;
     if (isTable(workflow) && typeof workflow.default_crew === "string") {

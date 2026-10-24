@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
+import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
+import type { KeeperSessionReview } from "./keeper-session-review";
 import { ManagedShiftSession } from "./ManagedShiftSession";
 import {
   managedShiftHref,
@@ -41,13 +43,14 @@ import {
   parseActivityFilters,
 } from "./project-activity-model";
 import { parseRunFilters, runsHref } from "./project-runs-model";
-import { SessionComposer } from "./SessionComposer";
+import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
+import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
@@ -194,6 +197,24 @@ export function DesktopApp(): JSX.Element {
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
+  const reviews = useKeeperSessionReviews(writesAllowed, sessions);
+  const [sessionReview, setSessionReview] =
+    useState<KeeperSessionReview | null>(null);
+  const reviewOpener = useRef<HTMLElement>(null);
+  const openSessionReview = (
+    source: KeeperProposal,
+    revision: number,
+    requestId?: string,
+  ) => {
+    if (!project || source.projectId !== project.id) return;
+    reviewOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const review = reviews.get(source, revision, requestId);
+    setSessionReview(review);
+    void reviews.open(review);
+  };
   const composerOpener = useRef<HTMLElement>(null);
   const openSession = (beadId?: string) => {
     if (!project || project.archived) return;
@@ -239,6 +260,7 @@ export function DesktopApp(): JSX.Element {
     if (previousProject.current !== route.projectId) setKeeperOpen(false);
     if (previousProject.current !== route.projectId) setComposerOpen(false);
     if (previousProject.current !== route.projectId) setNewBeadOpen(false);
+    if (previousProject.current !== route.projectId) setSessionReview(null);
     previousProject.current = route.projectId;
   }, [route.projectId]);
   useEffect(() => {
@@ -495,6 +517,7 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={writesAllowed}
             onScope={() => setInspectorOpen(true)}
             active={!keeperOpen}
+            onReviewSession={openSessionReview}
           />
         ) : route.destination === "beads" && project ? (
           fullBead && route.selection?.kind === "bead" ? (
@@ -817,9 +840,91 @@ export function DesktopApp(): JSX.Element {
               compact
               active={keeperOpen}
               onNavigate={() => setKeeperOpen(false)}
+              onReviewSession={openSessionReview}
             />
           </>
         )}
+      </Dialog>
+      <Dialog
+        open={!!sessionReview && sessionReview.source.projectId === project?.id}
+        title={`Review Keeper session · ${project?.name ?? ""}`}
+        titleId="af-keeper-session-review-title"
+        onClose={() => setSessionReview(null)}
+        returnFocusRef={reviewOpener}
+        class="af-session-dialog"
+        initialFocus="content"
+      >
+        {sessionReview &&
+          project &&
+          sessionReview.source.projectId === project.id && (
+            <>
+              <section
+                class="af-session-warning"
+                aria-label="Keeper proposal source"
+              >
+                <strong>{sessionReview.source.draft.title}</strong>
+                <p>{sessionReview.source.draft.detail}</p>
+                <p>
+                  Proposal {sessionReview.source.id}. {sessionReview.reason}
+                </p>
+                {sessionReview.original && (
+                  <p>
+                    Original Start {sessionReview.original.start.requestId}. The
+                    exact reviewed input is frozen; closing this review does not
+                    cancel it.
+                  </p>
+                )}
+                {!sessionReview.loaded && (
+                  <Button
+                    disabled={sessionReview.view.loading}
+                    onClick={() => {
+                      void reviews.open(sessionReview);
+                    }}
+                  >
+                    Check saved proposal Start
+                  </Button>
+                )}
+                {sessionReview.view.lastStarted && (
+                  <Button
+                    onClick={() => {
+                      const id = sessionReview.view.lastStarted;
+                      if (!id) return;
+                      setSessionReview(null);
+                      setKeeperOpen(false);
+                      window.location.hash = desktopHref({
+                        projectId: project.id,
+                        destination: "sessions",
+                        selection: { kind: "session", id },
+                      }).slice(1);
+                    }}
+                  >
+                    Open admitted session
+                  </Button>
+                )}
+              </section>
+              <ClaudeSessionComposer
+                key={`${sessionReview.source.id}:${sessionReview.source.sourceHash}`}
+                providers={providers.data}
+                project={project}
+                client={sessionReview.owner}
+                keeper={keeper}
+                writesAllowed={writesAllowed}
+                onCancel={() => {
+                  reviews.close(sessionReview);
+                  setSessionReview(null);
+                }}
+                onStarted={(id) => {
+                  setSessionReview(null);
+                  setKeeperOpen(false);
+                  window.location.hash = desktopHref({
+                    projectId: project.id,
+                    destination: "sessions",
+                    selection: { kind: "session", id },
+                  }).slice(1);
+                }}
+              />
+            </>
+          )}
       </Dialog>
     </>
   );
