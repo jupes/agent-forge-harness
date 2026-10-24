@@ -32,6 +32,7 @@ export interface ProjectSnapshot {
 export function projectSnapshotReader(
   home: string,
   deps: ReadDeps,
+  options: { membershipOnly?: true } = {},
 ): () => Promise<ProjectSnapshot> {
   const readTracker = coalesced(async () => {
     const timeoutMs = deps.bdTimeoutMs ?? 15_000;
@@ -56,7 +57,7 @@ export function projectSnapshotReader(
     if (catalog.projects.length) {
       // listRuns is the existing checkout-bound producer. Its empty result
       // is not a claim that all workspace worktrees were searched.
-      source.runs = listRuns(deps.root);
+      if (!options.membershipOnly) source.runs = listRuns(deps.root);
       try {
         const result = await readTracker();
         if (result.status !== 0) throw new Error("Tracker unavailable");
@@ -123,6 +124,7 @@ export function projectSnapshotReader(
           `Tracker read unavailable or incomplete: ${safeMessage(error)}. Refresh to check again.`,
         );
       }
+      if (options.membershipOnly) return { catalog, source };
       try {
         source.sessions = listSessions(
           { workspace: deps.workspace, limit: 500 },
