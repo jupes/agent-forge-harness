@@ -409,7 +409,6 @@ test("unsupported public Gemini authority and foreign scope refuse before native
     { command: ["gemini"] },
     { cwd: f.h.root },
     { route: "antigravity" },
-    { mode: "chat" },
     { token: "synthetic-private" },
   ])
     expect(

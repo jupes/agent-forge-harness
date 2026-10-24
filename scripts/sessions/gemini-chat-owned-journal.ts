@@ -8,7 +8,7 @@ import type {
 } from "../../types/gemini-owned-chat";
 import { reportedJsonSchema, reportedTextSchema } from "./activity-protocol";
 import { geminiChatDecisionReceiptSchema } from "./gemini-chat-owned-protocol";
-import { privatePacketHash } from "./private-packet";
+import { canonicalSessionInput } from "./preparation";
 import { sessionRequestHashSchema, sessionRequestIdSchema } from "./protocol";
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -214,27 +214,11 @@ export function validGeminiChatPage(value: {
   return value.frames.every((frame) => {
     const event = frame.event;
     if (event.kind === "coding-gemini-chat-decision") {
-      const {
-        projectId,
-        sessionId,
-        requestId,
-        turnRequestId,
-        approvalId,
-        optionId,
-      } = event.receipt;
+      const { projectId, sessionId, turnRequestId } = event.receipt;
       return (
         projectId === value.projectId &&
         sessionId === value.conversationId &&
-        turnRequestId === frame.turnId &&
-        event.requestHash ===
-          privatePacketHash({
-            projectId,
-            sessionId,
-            requestId,
-            turnRequestId,
-            approvalId,
-            optionId,
-          })
+        turnRequestId === frame.turnId
       );
     }
     if (event.kind !== "coding-gemini-chat") return true;
@@ -287,10 +271,36 @@ export function validGeminiChatHistory(value: {
     offerIds = new Set<string>(),
     decisionIds = new Set<string>();
   let identities = 0;
+  let originalSelection: string | undefined;
   for (const frame of value.frames) {
     const event = frame.event;
     if (event.kind === "user" && event.geminiChat) {
       if (turns.has(frame.turnId)) return false;
+      const snapshot = event.geminiChat,
+        {
+          prompt: _prompt,
+          attachments: _attachments,
+          context,
+          ...launch
+        } = snapshot.launch;
+      const immutable = canonicalSessionInput({
+        smith: snapshot.smith,
+        canonicalRoot: snapshot.canonicalRoot,
+        canonicalCwd: snapshot.canonicalCwd,
+        version: snapshot.capabilities.version,
+        launch,
+        context: context
+          ? {
+              projectId: context.projectId,
+              repository: context.repository,
+              worktree: context.worktree,
+              beadId: context.beadId,
+            }
+          : null,
+      });
+      if (originalSelection !== undefined && originalSelection !== immutable)
+        return false;
+      originalSelection = immutable;
       turns.set(frame.turnId, {
         snapshot: event.geminiChat,
         resumed: identities > 0,

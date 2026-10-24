@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
+import { join } from "node:path";
 import type { GeminiChatStartRequest } from "../../types/gemini-owned-chat";
 import {
   canonicalOwnedSessionStart,
   parseOwnedSessionStart,
 } from "./codex-owned-protocol";
+import { geminiTaskStartSchema } from "./gemini-owned-protocol";
 
 const chat = {
   provider: "gemini",
@@ -17,6 +19,7 @@ const chat = {
 
 test("explicit Gemini ACP Chat keeps CLI defaults omitted and refuses caller authority", () => {
   expect(parseOwnedSessionStart(chat)).toEqual(chat);
+  expect(geminiTaskStartSchema.safeParse(chat).success).toBe(false);
   expect(canonicalOwnedSessionStart(chat)).toContain('"mode":"chat"');
   for (const launch of [
     { ...chat.launch, cwd: "/foreign" },
@@ -29,4 +32,20 @@ test("explicit Gemini ACP Chat keeps CLI defaults omitted and refuses caller aut
     { ...chat.launch, attachments: [{ kind: "image", name: "a", data: "a" }] },
   ])
     expect(() => parseOwnedSessionStart({ ...chat, launch })).toThrow();
+});
+
+test("the strict owned private reader remains a browser-pure import graph", async () => {
+  const result = await Bun.build({
+    entrypoints: [join(import.meta.dir, "codex-owned-journal.ts")],
+    target: "browser",
+    external: ["node:*", "bun:*"],
+  });
+  expect(result.logs.map((item) => item.message)).toEqual([]);
+  expect(result.success).toBe(true);
+  for (const output of result.outputs)
+    expect(
+      (await output.text()).match(
+        /(?:from|import)\s*["'](?:node:|bun:)[^"']+/,
+      )?.[0] ?? null,
+    ).toBeNull();
 });

@@ -28,6 +28,9 @@ const request = {
 test("owned Gemini Task is an explicit closed native branch with stable exact original bytes", () => {
   expect(parseOwnedSessionStart(request)).toEqual(request);
   const original = canonicalOwnedSessionStart(request);
+  expect(createHash("sha256").update(original).digest("hex")).toBe(
+    "da391f032cbca1265b570b3740f97315821da6d8d74f3109e08977a74d9448cd",
+  );
   expect(original).toBe(canonicalOwnedSessionStart(structuredClone(request)));
   expect(original).toContain('"provider":"gemini"');
   expect(original).toContain('"route":"gemini-cli"');

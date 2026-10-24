@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { ownedSessionControls } from "../../apps/desktop/src/session-controls";
+import { ConversationError } from "../conversations/error";
+import { conversationFile } from "../conversations/paths";
 import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
 import { createProjectStore } from "../projects/store";
@@ -93,6 +95,8 @@ async function fixture(mode = "normal") {
     timeoutMs: 5000,
     cancellationTimeoutMs: 500,
   });
+  const scope: { allowed: boolean; gate: Promise<void> | null; calls: number } =
+    { allowed: true, gate: null, calls: 0 };
   const open = () => {
     const service = createOwnedCodingSessionService({
       root,
@@ -111,12 +115,15 @@ async function fixture(mode = "normal") {
         },
       },
       async validateScope(id, metadata) {
+        scope.calls++;
+        await scope.gate;
         if (
+          !scope.allowed ||
           id !== project.id ||
           metadata.repository !== root ||
           metadata.worktree !== root
         )
-          throw Error("Foreign planted scope");
+          throw new ConversationError(409, "Foreign or archived planted scope");
       },
     });
     closing.push(() => service.close());
@@ -136,6 +143,8 @@ async function fixture(mode = "normal") {
     project,
     open,
     records,
+    log,
+    scope,
     request: {
       provider: "gemini" as const,
       requestId: randomUUID(),
@@ -240,6 +249,17 @@ test("actual compiled ACP Start and recreated explicit second turn retain exact 
     }
     expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
   }
+  const changedSelection = structuredClone(state),
+    secondUser = changedSelection.frames.find(
+      (frame) =>
+        frame.turnId === second.requestId && frame.event.kind === "user",
+    );
+  if (secondUser?.event.kind !== "user" || !secondUser.event.geminiChat)
+    throw Error("Missing saved second selection");
+  secondUser.event.geminiChat.launch.sandbox = true;
+  expect(ownedCodingStateSchema.safeParse(changedSelection).success).toBe(
+    false,
+  );
   const archived = await library.archive(f.project.id, started.session.id, {
     requestId: randomUUID(),
     expectedRevision: 0,
@@ -250,6 +270,134 @@ test("actual compiled ACP Start and recreated explicit second turn retain exact 
     library.exportTranscript(f.project.id, started.session.id).conversation
       .turns,
   ).toHaveLength(2);
+});
+
+function alive(pid: number) {
+  try {
+    if (
+      process.platform === "linux" &&
+      /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+    )
+      return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("Stop withdraws a held permission read and confirms the actual native provider and helper have ended", async () => {
+  const f = await fixture("permission-tree"),
+    service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    id = started.session.id;
+  const offers = await until(
+    async () =>
+      geminiChatApprovalPageSchema.parse(
+        await service.approvals(f.project.id, id),
+      ),
+    (value) => value.pending.length > 0,
+  );
+  const provider = f.records().find((row) => row.kind === "start")?.pid,
+    helper = f.records().find((row) => row.kind === "helper")?.pid;
+  if (typeof provider !== "number" || typeof helper !== "number")
+    throw Error("Missing actual native helper witness");
+  expect(alive(provider)).toBe(true);
+  expect(alive(helper)).toBe(true);
+  let release: () => void = () => {};
+  f.scope.gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const before = f.scope.calls,
+    held = service.approvals(f.project.id, id);
+  try {
+    await until(
+      async () => f.scope.calls,
+      (value) => value > before,
+    );
+    await service.stop(f.project.id, id, f.request.requestId);
+    await service.settled(f.project.id, id);
+    expect(alive(provider)).toBe(false);
+    expect(alive(helper)).toBe(false);
+    release();
+    expect((await held).pending).toEqual([]);
+    const offered = offers.pending[0];
+    if (!offered) throw Error("Missing captured permission");
+    f.scope.gate = null;
+    await expect(
+      service.decide(f.project.id, id, {
+        requestId: randomUUID(),
+        turnRequestId: f.request.requestId,
+        approvalId: offered.approval.id,
+        optionId: "once",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    const page = await service.read(f.project.id, id);
+    expect(page.turns[0]?.phase).toBe("cancelled");
+    expect(
+      page.frames.some(
+        ({ event }) =>
+          event.kind === "coding-gemini-chat" &&
+          event.event.kind === "result" &&
+          event.event.stopReason === "cancelled",
+      ),
+    ).toBe(true);
+  } finally {
+    release();
+    f.scope.gate = null;
+    await held.catch(() => {});
+  }
+});
+
+test("a resumed native capability refusal cannot silently start a fresh session or replay the previous prompt", async () => {
+  const f = await fixture(),
+    service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    id = started.session.id;
+  await service.settled(f.project.id, id);
+  const first = await service.read(f.project.id, id);
+  writeFileSync(`${f.log}.control`, JSON.stringify({ mode: "no-load" }));
+  await service.send(f.project.id, id, {
+    requestId: randomUUID(),
+    expectedRevision: first.revision,
+    text: "Explicit second prompt",
+    about: [],
+  });
+  await service.settled(f.project.id, id);
+  const page = await service.read(f.project.id, id);
+  expect(page.turns[1]?.phase).toBe("unknown");
+  expect(page.binding).toEqual(first.binding);
+  expect(
+    f
+      .records()
+      .filter(
+        (row) =>
+          row.kind === "wire" &&
+          JSON.stringify(row).includes('"method":"session/prompt"'),
+      ),
+  ).toHaveLength(1);
+  const recorded = JSON.stringify(f.records());
+  expect((await service.start(f.project.id, f.request)).session.id).toBe(id);
+  expect(JSON.stringify(f.records())).toBe(recorded);
+  await expect(
+    service.send(f.project.id, id, {
+      requestId: randomUUID(),
+      expectedRevision: page.revision,
+      text: "Must stay held",
+      about: [],
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+  // A fresh explicit attempt may recheck read-only capability evidence, but cannot dispatch.
+  expect(f.records().filter((row) => row.kind === "start")).toHaveLength(2);
+  expect(
+    f
+      .records()
+      .filter(
+        (row) =>
+          row.kind === "wire" &&
+          JSON.stringify(row).includes('"method":"session/prompt"'),
+      ),
+  ).toHaveLength(1);
 });
 
 async function until<T>(
@@ -362,4 +510,30 @@ test("opaque native once permission persists original intent before one callback
       ),
     ).success,
   ).toBe(true);
+  const store = createConversationStore(f.home, undefined, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    }),
+    path = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    });
+  const original = readFileSync(path, "utf8"),
+    altered = store.read(f.project.id),
+    changed = altered.frames.find(
+      ({ event }) => event.kind === "coding-gemini-chat-decision",
+    );
+  if (changed?.event.kind !== "coding-gemini-chat-decision")
+    throw Error("Missing actual saved intent");
+  changed.event.requestHash = "f".repeat(64);
+  const corrupt = JSON.stringify(altered);
+  writeFileSync(path, corrupt);
+  try {
+    expect(() => store.read(f.project.id)).toThrow("invalid");
+    expect(readFileSync(path, "utf8")).toBe(corrupt);
+  } finally {
+    writeFileSync(path, original);
+  }
 });

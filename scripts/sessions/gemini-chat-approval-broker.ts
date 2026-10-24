@@ -57,6 +57,7 @@ export function createGeminiChatApprovalBroker(options: {
 }) {
   const live = new Map<string, Live>(),
     persistenceMs = options.persistenceTimeoutMs ?? 5000;
+  let publishing = 0;
   if (
     !Number.isSafeInteger(persistenceMs) ||
     persistenceMs <= 0 ||
@@ -142,7 +143,7 @@ export function createGeminiChatApprovalBroker(options: {
         input.signal.aborted ||
         native.requestId !== input.turnRequestId ||
         !sessionRequestIdSchema.safeParse(input.turnRequestId).success ||
-        live.size >= 128
+        live.size + publishing >= 128
       )
         throw new ConversationError(
           409,
@@ -155,20 +156,25 @@ export function createGeminiChatApprovalBroker(options: {
         options: native.options,
       });
       // Persist opaque identity before exposing any action. A late save cannot revive an aborted callback.
-      await bounded(() =>
-        input.persist({
-          kind: "coding-gemini-chat",
-          provider: "gemini",
-          version: "0.65.0",
-          event: {
-            kind: "approval-offer",
-            id: approval.id,
-            requestId: input.turnRequestId,
-            rpcId: native.rpcId,
-            toolCallId: native.toolCallId,
-          },
-        }),
-      );
+      publishing++;
+      try {
+        await bounded(() =>
+          input.persist({
+            kind: "coding-gemini-chat",
+            provider: "gemini",
+            version: "0.65.0",
+            event: {
+              kind: "approval-offer",
+              id: approval.id,
+              requestId: input.turnRequestId,
+              rpcId: native.rpcId,
+              toolCallId: native.toolCallId,
+            },
+          }),
+        );
+      } finally {
+        publishing--;
+      }
       if (input.signal.aborted)
         throw new ConversationError(
           409,

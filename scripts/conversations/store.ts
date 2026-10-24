@@ -20,6 +20,7 @@ import {
   ownedCodingStateSchema,
   parseOwnedPreparedConversationSend,
 } from "../sessions/codex-owned-journal";
+import { privatePacketHash } from "../sessions/private-packet";
 import { ConversationError } from "./error";
 import {
   conversationFile,
@@ -64,6 +65,32 @@ function validShiftInputs(state: ConversationState): boolean {
             }),
           )
           .digest("hex")
+    );
+  });
+}
+
+/** Hash verification belongs to the trusted reader/writer, not the browser's pure wire codec. */
+function validGeminiChatIntents(state: ConversationState): boolean {
+  return state.frames.every(({ event }) => {
+    if (event.kind !== "coding-gemini-chat-decision") return true;
+    const {
+      projectId,
+      sessionId,
+      requestId,
+      turnRequestId,
+      approvalId,
+      optionId,
+    } = event.receipt;
+    return (
+      event.requestHash ===
+      privatePacketHash({
+        projectId,
+        sessionId,
+        requestId,
+        turnRequestId,
+        approvalId,
+        optionId,
+      })
     );
   });
 }
@@ -169,6 +196,7 @@ export function createConversationStore(
       parsed.data.conversationId !== conversationId(projectId, address) ||
       !validKeeperRecovery(parsed.data) ||
       !validShiftInputs(parsed.data) ||
+      !validGeminiChatIntents(parsed.data) ||
       parsed.data.frames.some(
         (frame, index) =>
           frame.seq !== index + 1 ||
@@ -190,6 +218,7 @@ export function createConversationStore(
       !valid.success ||
       !validKeeperRecovery(state) ||
       !validShiftInputs(state) ||
+      !validGeminiChatIntents(state) ||
       Buffer.byteLength(content) > MAX_SESSION_TRANSCRIPT_BYTES
     )
       throw new ConversationError(
