@@ -1093,6 +1093,127 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     });
   });
 
+  test("a failed terminal publication retains the running original and exact stopped draft without reporting success", async () => {
+    const shiftId = "shift-20261024-011521-868a";
+    const stop = new AbortController();
+    let terminalDraft = "";
+    const r = rig([queued("t-1")], () => "hang", {
+      shiftId,
+      signal: stop.signal,
+      writeRecord(dir, record) {
+        if (record.state !== "stopped") return writeShiftRecord(dir, record);
+        terminalDraft = join(dir, `${record.shiftId}.json.${process.pid}.tmp`);
+        writeFileSync(terminalDraft, `${JSON.stringify(record, null, 2)}\n`);
+        throw Object.assign(new Error("terminal replacement refused"), {
+          code: "EPERM",
+          syscall: "rename",
+        });
+      },
+    });
+    const running = runShift(FAST, r.deps);
+    try {
+      await until(() => r.fake.runs.length === 1);
+    } finally {
+      stop.abort();
+    }
+    const outcome = await running;
+    const saved = readShiftRecord(r.deps.shiftsDir, shiftId);
+    expect(saved).toMatchObject({
+      shiftId,
+      state: "running",
+      beads: [{ beadId: "t-1", outcome: "released", attempts: 1 }],
+    });
+    let draft: unknown;
+    try {
+      draft = JSON.parse(readFileSync(terminalDraft, "utf8"));
+    } catch {
+      throw Error("The retained terminal draft must remain complete JSON.");
+    }
+    expect(draft).toEqual({
+      ...saved,
+      state: "stopped",
+      reason: "operator",
+      endedAt: expect.any(String),
+    });
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(r.fake.runs[0]?.endedAt).toBeNumber();
+    expect(outcome).toEqual({
+      ok: false,
+      error:
+        "the shift's terminal record could not be published (terminal replacement refused); its terminal state is unconfirmed; read the original shift before recovering",
+    });
+    expect(r.events().some((event) => event.kind === "shift.stopped")).toBe(
+      false,
+    );
+  });
+
+  test("an initial publication refusal starts nothing and does not announce a running shift", async () => {
+    const r = rig([queued("t-1")], undefined, {
+      writeRecord() {
+        throw Error("initial record refused");
+      },
+    });
+    expect(await runShift(FAST, r.deps)).toEqual({
+      ok: false,
+      error:
+        "the shift record could not be written (initial record refused); nothing was started",
+    });
+    expect(r.calls).toEqual([]);
+    expect(r.fake.runs).toEqual([]);
+    expect(r.events()).toEqual([]);
+    expect(existsSync(r.deps.shiftsDir)).toBe(false);
+  });
+
+  test("an intermediate publication refusal remains best effort and a confirmed final record retains the original identity", async () => {
+    const shiftId = "shift-20261024-011521-868b";
+    let refused = 0;
+    const r = rig([queued("t-1")], undefined, {
+      shiftId,
+      writeRecord(dir, record) {
+        if (record.state === "running" && record.beads.length > 0) {
+          refused++;
+          throw Error("intermediate record refused");
+        }
+        writeShiftRecord(dir, record);
+      },
+    });
+    const done = await shift(r);
+    expect(refused).toBeGreaterThan(0);
+    expect(r.fake.runs).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual(["queue:review"]);
+    expect(r.reservations()).toBe(0);
+    expect(done.recorded).toBe(true);
+    expect(done.record).toMatchObject({ shiftId, state: "stopped" });
+    expect(readShiftRecord(r.deps.shiftsDir, shiftId)).toEqual(done.record);
+    expect(r.events().at(-1)).toMatchObject({
+      kind: "shift.stopped",
+      payload: { shiftId, reason: "drained" },
+    });
+  });
+
+  test("a non-Error terminal publication refusal is reported once without a replacement attempt", async () => {
+    let terminalAttempts = 0;
+    const shiftId = "shift-20261024-011521-868c";
+    const r = rig([], undefined, {
+      shiftId,
+      writeRecord(dir, record) {
+        if (record.state !== "stopped") return writeShiftRecord(dir, record);
+        terminalAttempts++;
+        throw "terminal storage unavailable";
+      },
+    });
+    expect(await runShift(FAST, r.deps)).toEqual({
+      ok: false,
+      error:
+        "the shift's terminal record could not be published (terminal storage unavailable); its terminal state is unconfirmed; read the original shift before recovering",
+    });
+    expect(terminalAttempts).toBe(1);
+    expect(readShiftRecord(r.deps.shiftsDir, shiftId)?.state).toBe("running");
+    expect(r.events().map((event) => event.kind)).toEqual(["shift.started"]);
+    expect(r.fake.runs).toEqual([]);
+  });
+
   test("options that are not a shift's are refused before anything is written", async () => {
     const r = rig([queued("t-1")]);
     for (const [given, error] of [
