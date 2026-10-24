@@ -53,6 +53,7 @@ import { applyReview, localStateRoot } from "./dev-api";
 import { createKeeperBriefPreparer } from "./keeper-briefs-source";
 import { keeperProposalRoutes } from "./keeper-proposals";
 import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
+import { createKeeperSessionStartRoutes } from "./keeper-session-start";
 import {
   beadsReads,
   fail,
@@ -399,12 +400,6 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
   );
-  const proposals = keeperProposalRoutes(
-    deps.projectHome,
-    deps,
-    projectSnapshot,
-    deps.keeperOperatorPost,
-  );
   const ownedSessions = createOwnedSessionRoutes(
     deps.projectHome,
     deps,
@@ -416,6 +411,18 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       geminiTaskRuntime: deps.geminiTaskRuntime,
       geminiChatRuntime: deps.geminiChatRuntime,
     },
+  );
+  const keeperSessionStarts = createKeeperSessionStartRoutes(
+    deps.projectHome,
+    deps,
+    ownedSessions,
+  );
+  const proposals = keeperProposalRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+    deps.keeperOperatorPost,
+    keeperSessionStarts.service,
   );
   const sessionWorktrees = createSessionWorktreeRoutes(
     deps.projectHome,
@@ -488,6 +495,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     conversations.briefs,
     conversations.recovery,
     proposals.read,
+    keeperSessionStarts.read,
     ownedSessions.list,
     ownedSessions.read,
     ownedSessions.approvals,
@@ -536,6 +544,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       conversations.continuation,
       proposals.approve,
       proposals.dismiss,
+      keeperSessionStarts.start,
       conversations.stop,
       ownedSessions.start,
       ownedSessions.preview,
@@ -564,6 +573,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       scopedShifts.close();
       live.close();
       await providerLogins.close();
+      await keeperSessionStarts.close();
       await ownedSessions.close();
       await proposals.close();
       await conversations.close();

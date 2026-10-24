@@ -99,9 +99,16 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
     ).toBeDisabled();
     await card.getByRole("button", { name: "Edit", exact: true }).click();
     await expect(card.getByRole("textbox").first()).toBeEditable();
+    if (title === "Review a session")
+      await card
+        .getByRole("textbox", { name: "Prompt" })
+        .fill("Edited full session suggestion");
     await card
       .getByRole("button", { name: "Finish editing", exact: true })
       .click();
+    await expect(
+      card.getByRole("button", { name: "Approve", exact: true }),
+    ).toBeDisabled();
   }
   const decision = cards(page).getByRole("article", {
     name: "Record a scoped decision",

@@ -260,6 +260,7 @@ export const keeperProposalPageSchema: z.ZodType<KeeperProposalPage> = z
                 action: z.enum([
                   "keeper.proposal.approve",
                   "keeper.proposal.dismiss",
+                  "keeper.proposal.session.start",
                 ]),
                 surface: z.string().min(1).max(40),
                 target: z.string().max(100),
