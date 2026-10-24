@@ -55,6 +55,8 @@ import { type BdRunner, localStateRoot } from "./dev-api";
 
 /** What the read rows are built from. */
 export interface ReadDeps {
+  /** Trusted embedding-only gate log root; never a browser path. */
+  forgeGateLogRoot?: string | undefined;
   /** The checkout this hearth serves: run state and config are read from it. */
   root: string;
   /** The ledger's name for that checkout; every ledger read is scoped to it. */
