@@ -174,7 +174,7 @@ export function ProjectShifts({
           </Button>
         </div>
       )}
-      <div class="af-shift-list" aria-busy={view.loading}>
+      <div key="shift-list" class="af-shift-list" aria-busy={view.loading}>
         {view.page?.items.map((item) => (
           <ShiftRow
             key={item.intent.request.requestId}

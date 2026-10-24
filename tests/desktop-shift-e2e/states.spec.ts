@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { z } from "zod";
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
 import { projectShiftsPageSchema } from "../../scripts/shifts/protocol";
@@ -24,6 +24,70 @@ const route = `/index.html#/desktop/project/${FIXTURE_PROJECT_ID}/workbench`,
   endpoint = `**${path}`;
 const panel = (page: Page) =>
   page.getByRole("region", { name: "Bounded project shifts", exact: true });
+async function heldOriginalCheck(
+  page: Page,
+  check: Locator,
+  requestId: string,
+) {
+  const endpoint = `**${path}/requests/${requestId}`;
+  let release = () => {},
+    entered = () => {},
+    requests = 0;
+  const held = new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+    received = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+  await page.route(endpoint, async (intercept) => {
+    requests++;
+    const actual = await intercept.fetch({
+      headers: {
+        ...(await intercept.request().allHeaders()),
+        Origin: new URL(page.url()).origin,
+      },
+    });
+    expect(actual.status()).toBe(200);
+    entered();
+    await held;
+    await intercept.fulfill({ response: actual });
+  });
+  const list = panel(page).locator(".af-shift-list"),
+    listNode = await list.elementHandle(),
+    buttonNode = await check.elementHandle();
+  if (!listNode || !buttonNode)
+    throw Error("Missing focused Shift list witness.");
+  try {
+    await check.focus();
+    await expect(check).toBeFocused();
+    await page.keyboard.press("Enter");
+    await received;
+    await expect(list).toHaveAttribute("aria-busy", "true");
+    expect(await listNode.evaluate((element) => element.isConnected)).toBe(
+      true,
+    );
+    expect(await buttonNode.evaluate((element) => element.isConnected)).toBe(
+      true,
+    );
+    await expect(check).toBeFocused();
+  } finally {
+    release();
+  }
+  try {
+    await expect(list).toHaveAttribute("aria-busy", "false");
+    expect(await listNode.evaluate((element) => element.isConnected)).toBe(
+      true,
+    );
+    expect(await buttonNode.evaluate((element) => element.isConnected)).toBe(
+      true,
+    );
+    await expect(check).toBeFocused();
+    expect(requests).toBe(1);
+  } finally {
+    release();
+    await page.unroute(endpoint);
+  }
+}
 async function minimumDesktopFits(page: Page) {
   expect(
     await panel(page).evaluate((element) => {
@@ -328,9 +392,17 @@ test("protected metadata renders Throttled and every canonical stopped reason wi
         name: "Check original",
         exact: true,
       });
-      await check.focus();
-      await expect(check).toBeFocused();
-      await page.keyboard.press("Enter");
+      if (reason === "elapsed") {
+        const elapsed = observed.items.find(
+          (item) => item.observation.reason === reason,
+        );
+        if (!elapsed) throw Error("Missing verified duration-stop original.");
+        await heldOriginalCheck(page, check, elapsed.intent.request.requestId);
+      } else {
+        await check.focus();
+        await expect(check).toBeFocused();
+        await page.keyboard.press("Enter");
+      }
       await expect(check).toBeFocused();
       const bounds = row.getByText("Reviewed original bounds", { exact: true });
       await bounds.focus();
