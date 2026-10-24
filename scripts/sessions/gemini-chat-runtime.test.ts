@@ -561,21 +561,52 @@ test("abandoning held preparation aborts and joins its actual probe without a Ch
     (outcome) => outcome,
     (error: unknown) => error,
   );
-  let pid = 0;
+  let pid = 0,
+    phase = "waiting for held help",
+    bodyFailed = false;
   try {
     const entry = await heldHelpEntry(f.records, helpNonce, original);
     pid = entry.pid;
+    phase = "held help entered";
     expect(alive(pid)).toBe(true);
     expect(events).toEqual([]);
+    phase = "held help assertions passed";
+  } catch (error) {
+    bodyFailed = true;
+    throw error;
   } finally {
+    const abortedBeforeFinally = controller.signal.aborted;
     controller.abort();
     writeFileSync(`${f.log}.help-release`, helpNonce);
     const outcome = await pending;
-    expect(outcome).toMatchObject({
-      phase: "failed",
-      reason: "The Gemini Chat prompt was stopped before dispatch.",
-      sessionId: null,
-    });
+    process.stderr.write(
+      `${JSON.stringify({
+        fixture: "held-help cleanup diagnostic",
+        phase,
+        bodyFailed,
+        abortedBeforeFinally,
+        pid,
+        settlement: outcome instanceof Error ? "rejected" : "returned",
+        records: f
+          .records()
+          .slice(0, 20)
+          .map((row) => ({
+            kind: ["version", "help", "start", "wire", "helper"].includes(
+              String(row.kind),
+            )
+              ? row.kind
+              : "other",
+            pid: typeof row.pid === "number" ? row.pid : null,
+            exactNonce: row.nonce === helpNonce,
+          })),
+      })}\n`,
+    );
+    if (!bodyFailed)
+      expect(outcome).toMatchObject({
+        phase: "failed",
+        reason: "The Gemini Chat prompt was stopped before dispatch.",
+        sessionId: null,
+      });
     if (pid) expect(await gone(pid)).toBe(true);
   }
   expect(events).toEqual([]);
