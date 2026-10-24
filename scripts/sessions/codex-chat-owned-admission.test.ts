@@ -114,6 +114,116 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   return { root, home, project, request, open, records, runtime };
 }
 
+const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
+  {
+    kind: "snapshot",
+    summary: [],
+    truncated: false,
+    closure: "open",
+    turnStatus: null,
+  },
+  { kind: "part-added", summaryIndex: 0 },
+  {
+    kind: "delta",
+    summaryIndex: 0,
+    content: { text: "Visible ", truncated: false },
+    prefixMissing: false,
+  },
+  {
+    kind: "delta",
+    summaryIndex: 0,
+    content: { text: "summary one.", truncated: false },
+    prefixMissing: false,
+  },
+  { kind: "part-added", summaryIndex: 1 },
+  {
+    kind: "delta",
+    summaryIndex: 1,
+    content: { text: "Visible summary two.", truncated: false },
+    prefixMissing: false,
+  },
+];
+
+function nativeSummaries(
+  frames: readonly ConversationFrame[],
+): CodexChatReasoningSummary[] {
+  return frames.flatMap((frame) =>
+    frame.event.kind === "coding-chat" &&
+    frame.event.event.kind === "reasoning-summary"
+      ? [frame.event.event]
+      : [],
+  );
+}
+
+function heldSummaryFixtureReady(
+  reports: readonly CodexChatReasoningSummary[],
+): boolean {
+  const first = reports[0];
+  if (!first || reports.length !== heldSummaryUpdates.length) return false;
+  return reports.every((report, index) => {
+    const update = heldSummaryUpdates[index];
+    return (
+      update !== undefined &&
+      report.partial &&
+      report.threadId === first.threadId &&
+      report.turnId === first.turnId &&
+      report.itemId === first.itemId &&
+      report.source ===
+        (update.kind === "snapshot"
+          ? "item/started"
+          : update.kind === "part-added"
+            ? "item/reasoning/summaryPartAdded"
+            : "item/reasoning/summaryTextDelta") &&
+      Bun.deepEquals(report.update, update, true)
+    );
+  });
+}
+
+test("the native summary Stop fixture witness rejects every incomplete prefix and mismatched report", () => {
+  const reports: CodexChatReasoningSummary[] = heldSummaryUpdates.map(
+    (update) => ({
+      kind: "reasoning-summary",
+      threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      itemId: "reported-reasoning-a",
+      partial: true,
+      source:
+        update.kind === "snapshot"
+          ? "item/started"
+          : update.kind === "part-added"
+            ? "item/reasoning/summaryPartAdded"
+            : "item/reasoning/summaryTextDelta",
+      update: structuredClone(update),
+    }),
+  );
+  for (let length = 0; length < reports.length; length++)
+    expect(heldSummaryFixtureReady(reports.slice(0, length))).toBe(false);
+  expect(
+    reports.slice(0, 5).some((report) => report.update.kind === "delta"),
+  ).toBe(true);
+  expect(heldSummaryFixtureReady(reports)).toBe(true);
+  for (const change of [
+    { itemId: "foreign-item" },
+    { turnId: randomUUID() },
+    { threadId: randomUUID() },
+    { partial: false },
+  ]) {
+    const changed = structuredClone(reports);
+    Object.assign(changed[5] ?? {}, change);
+    expect(heldSummaryFixtureReady(changed)).toBe(false);
+  }
+  const third = reports[3],
+    fourth = reports[4];
+  if (!third || !fourth) throw Error("Missing ordered fixture reports");
+  const reordered = [
+    ...reports.slice(0, 3),
+    fourth,
+    third,
+    ...reports.slice(5),
+  ];
+  expect(heldSummaryFixtureReady(reordered)).toBe(false);
+});
+
 test("actual native mutable turn plans stay exact through private whole and partial reads, complete export, recreation and original retry", async () => {
   const f = await fixture("turn-plan");
   let service = f.open();
@@ -754,65 +864,110 @@ test.each([
   "deadline",
 ])("actual %s retains only partial native summaries and never resends them after reopening", async (action) => {
   const f = await fixture("reasoning-summary-held");
-  let service = f.open();
-  const started = await service.start(f.project.id, f.request),
-    sessionId = started.session.id;
-  const deadline = Date.now() + 4000;
-  while (
-    !(await service.read(f.project.id, sessionId)).frames.some(
+  const run = f.runtime.run.bind(f.runtime);
+  let releaseFinalSave = () => {},
+    heldFinalSave = false;
+  const finalSave = new Promise<void>((resolve) => {
+    releaseFinalSave = resolve;
+  });
+  const held =
+    action === "Stop"
+      ? spyOn(f.runtime, "run").mockImplementation(
+          (input, persist, signal, callbacks) =>
+            run(
+              input,
+              async (event) => {
+                if (
+                  event.kind === "reasoning-summary" &&
+                  event.update.kind === "delta" &&
+                  event.update.summaryIndex === 1
+                ) {
+                  heldFinalSave = true;
+                  await finalSave;
+                }
+                await persist(event);
+              },
+              signal,
+              callbacks,
+            ),
+        )
+      : null;
+  try {
+    let service = f.open();
+    const started = await service.start(f.project.id, f.request),
+      sessionId = started.session.id;
+    const deadline = Date.now() + 4000;
+    let observedHeldPrefix = false;
+    for (;;) {
+      const reports = nativeSummaries(
+        (await service.read(f.project.id, sessionId)).frames,
+      );
+      if (heldFinalSave && !observedHeldPrefix) {
+        // FIFO private persistence has saved all five earlier reports. An ANY-delta
+        // witness would allow Stop here while the sixth required report is absent.
+        expect(reports).toHaveLength(5);
+        expect(reports.some((report) => report.update.kind === "delta")).toBe(
+          true,
+        );
+        expect(heldSummaryFixtureReady(reports)).toBe(false);
+        observedHeldPrefix = true;
+        releaseFinalSave();
+      }
+      if (heldSummaryFixtureReady(reports)) break;
+      if (Date.now() > deadline)
+        throw Error(
+          "The complete native summary fixture did not reach its private journal",
+        );
+      await Bun.sleep(20);
+    }
+    if (action === "Stop") expect(observedHeldPrefix).toBe(true);
+    if (action === "Stop")
+      await service.stop(f.project.id, sessionId, f.request.requestId);
+    await service.settled(f.project.id, sessionId);
+    await service.close();
+    service = f.open();
+    const page = await service.read(f.project.id, sessionId);
+    const summaries = page.frames.filter(
       (frame) =>
         frame.event.kind === "coding-chat" &&
-        frame.event.event.kind === "reasoning-summary" &&
-        frame.event.event.update.kind === "delta",
-    )
-  ) {
-    if (Date.now() > deadline)
-      throw Error("Native partial summary did not reach its private journal");
-    await Bun.sleep(20);
+        frame.event.event.kind === "reasoning-summary",
+    );
+    expect(summaries).toHaveLength(6);
+    expect(
+      summaries.every(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "reasoning-summary" &&
+          frame.event.event.partial,
+      ),
+    ).toBe(true);
+    expect(
+      ownedSessionLifecycle(page, {
+        mode: "chat",
+        loaded: true,
+        live: false,
+        stopping: false,
+        feedInterrupted: false,
+        readError: "",
+      }).state,
+    ).toBe(action === "Stop" ? "stopped" : "timed-out");
+    const exported = createSessionLibrary({
+      root: f.root,
+      home: f.home,
+    }).exportTranscript(f.project.id, sessionId);
+    for (const frame of summaries)
+      expect(exported.conversation.frames).toContainEqual(frame);
+    expect(JSON.stringify(exported)).not.toContain(
+      "RAW_REASONING_MUST_NOT_PERSIST",
+    );
+    await service.start(f.project.id, f.request);
+    expect(
+      f.records().filter((row) => row.method === "turn/start"),
+    ).toHaveLength(1);
+  } finally {
+    releaseFinalSave();
+    held?.mockRestore();
   }
-  if (action === "Stop")
-    await service.stop(f.project.id, sessionId, f.request.requestId);
-  await service.settled(f.project.id, sessionId);
-  await service.close();
-  service = f.open();
-  const page = await service.read(f.project.id, sessionId);
-  const summaries = page.frames.filter(
-    (frame) =>
-      frame.event.kind === "coding-chat" &&
-      frame.event.event.kind === "reasoning-summary",
-  );
-  expect(summaries).toHaveLength(6);
-  expect(
-    summaries.every(
-      (frame) =>
-        frame.event.kind === "coding-chat" &&
-        frame.event.event.kind === "reasoning-summary" &&
-        frame.event.event.partial,
-    ),
-  ).toBe(true);
-  expect(
-    ownedSessionLifecycle(page, {
-      mode: "chat",
-      loaded: true,
-      live: false,
-      stopping: false,
-      feedInterrupted: false,
-      readError: "",
-    }).state,
-  ).toBe(action === "Stop" ? "stopped" : "timed-out");
-  const exported = createSessionLibrary({
-    root: f.root,
-    home: f.home,
-  }).exportTranscript(f.project.id, sessionId);
-  for (const frame of summaries)
-    expect(exported.conversation.frames).toContainEqual(frame);
-  expect(JSON.stringify(exported)).not.toContain(
-    "RAW_REASONING_MUST_NOT_PERSIST",
-  );
-  await service.start(f.project.id, f.request);
-  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
-    1,
-  );
 });
 
 test("actual native command history stays exact across protected partial reads, export and recreation without replay", async () => {
