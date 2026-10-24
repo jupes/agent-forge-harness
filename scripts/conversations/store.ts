@@ -515,6 +515,14 @@ export function createConversationStore(
           "The private Gemini Task does not belong to this owned session.",
         );
       if (
+        request.geminiChat &&
+        (!address || request.geminiChat.launch.context?.projectId !== projectId)
+      )
+        throw new ConversationError(
+          400,
+          "The private Gemini Chat does not belong to this owned session.",
+        );
+      if (
         request.shift &&
         (!address ||
           request.shift.projectId !== projectId ||
@@ -535,6 +543,7 @@ export function createConversationStore(
             ...(request.codexTask ? { codexTask: request.codexTask } : {}),
             ...(request.codexChat ? { codexChat: request.codexChat } : {}),
             ...(request.geminiTask ? { geminiTask: request.geminiTask } : {}),
+            ...(request.geminiChat ? { geminiChat: request.geminiChat } : {}),
             ...(request.shift ? { shift: request.shift } : {}),
           }),
         )
@@ -611,6 +620,7 @@ export function createConversationStore(
               ...(request.codexTask ? { codexTask: request.codexTask } : {}),
               ...(request.codexChat ? { codexChat: request.codexChat } : {}),
               ...(request.geminiTask ? { geminiTask: request.geminiTask } : {}),
+              ...(request.geminiChat ? { geminiChat: request.geminiChat } : {}),
               ...(request.shift ? { shift: request.shift } : {}),
             },
           });

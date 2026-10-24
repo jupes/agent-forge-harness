@@ -13,6 +13,10 @@ import type {
   OwnedCodingSessionRecord,
 } from "../../types/codex-owned-task";
 import type {
+  GeminiChatOwnedMetadata,
+  GeminiChatOwnedRecord,
+} from "../../types/gemini-owned-chat";
+import type {
   GeminiOwnedSessionMetadata,
   GeminiOwnedSessionRecord,
 } from "../../types/gemini-owned-task";
@@ -35,6 +39,8 @@ import {
   codexOwnedSessionSchema,
 } from "./codex-owned-metadata";
 import {
+  geminiChatOwnedMetadataSchema,
+  geminiChatOwnedSessionSchema,
   geminiOwnedMetadataSchema,
   geminiOwnedSessionSchema,
 } from "./gemini-owned-metadata";
@@ -71,6 +77,7 @@ const metadataSchema = z
     codexOwnedMetadataSchema,
     codexChatOwnedMetadataSchema,
     geminiOwnedMetadataSchema,
+    geminiChatOwnedMetadataSchema,
   ])
   .refine(canonicalPaths);
 const recordSchema = z
@@ -79,6 +86,7 @@ const recordSchema = z
     codexOwnedSessionSchema,
     codexChatOwnedSessionSchema,
     geminiOwnedSessionSchema,
+    geminiChatOwnedSessionSchema,
   ])
   .refine(canonicalPaths);
 const registrySchema = z
@@ -164,6 +172,11 @@ export function createSessionRegistry(
   home: string,
   provider: "gemini",
 ): SessionRegistry<GeminiOwnedSessionMetadata, GeminiOwnedSessionRecord>;
+export function createSessionRegistry(
+  home: string,
+  provider: "gemini",
+  mode: "chat",
+): SessionRegistry<GeminiChatOwnedMetadata, GeminiChatOwnedRecord>;
 export function createSessionRegistry(
   home: string,
   provider: "claude" | "codex" | "gemini" = "claude",

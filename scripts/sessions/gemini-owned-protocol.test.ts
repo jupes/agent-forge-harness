@@ -42,7 +42,6 @@ test("owned Gemini Task is an explicit closed native branch with stable exact or
       .digest("hex"),
   );
   for (const launch of [
-    { ...request.launch, mode: "chat" },
     { ...request.launch, route: "antigravity" },
     { ...request.launch, cwd: "/arbitrary" },
     { ...request.launch, context: { projectId: "forged" } },

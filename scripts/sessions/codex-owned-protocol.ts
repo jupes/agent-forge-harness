@@ -6,6 +6,7 @@ import type {
 import { ConversationError } from "../conversations/error";
 import { codexChatStartSchema } from "./codex-chat-owned-protocol";
 import { codexTaskLaunchSchema } from "./codex-task";
+import { geminiChatStartSchema } from "./gemini-chat-owned-protocol";
 import { geminiTaskStartSchema } from "./gemini-owned-protocol";
 import { canonicalSessionInput } from "./preparation";
 import { parseSessionStart, sessionStartSchema } from "./request-protocol";
@@ -32,6 +33,7 @@ export function parseOwnedSessionStart(
         codexTaskStartSchema,
         codexChatStartSchema,
         geminiTaskStartSchema,
+        geminiChatStartSchema,
       ])
       .safeParse(input);
     if (!parsed.success)

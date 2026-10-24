@@ -30,6 +30,7 @@ import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
+import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import type { ProjectShiftRuntime } from "../../shifts/service";
 import {
@@ -94,6 +95,7 @@ export interface OperatorDeps extends ReadDeps {
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
   codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
   geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+  geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
   keeperRuntime?: KeeperRuntime | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
@@ -411,6 +413,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       codexTaskRuntime: deps.codexTaskRuntime,
       codexChatRuntime: deps.codexChatRuntime,
       geminiTaskRuntime: deps.geminiTaskRuntime,
+      geminiChatRuntime: deps.geminiChatRuntime,
     },
   );
   const sessionWorktrees = createSessionWorktreeRoutes(

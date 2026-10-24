@@ -31,7 +31,11 @@ export function createGeminiTaskPreview(options: {
     raw: unknown,
   ): Promise<GeminiTaskPreviewReceipt> => {
     const request = parseOwnedSessionStart(raw);
-    if (!("provider" in request) || request.provider !== "gemini")
+    if (
+      !("provider" in request) ||
+      request.provider !== "gemini" ||
+      request.launch.mode !== "task"
+    )
       throw new ConversationError(
         400,
         "An explicit Gemini CLI Task request is required.",
@@ -45,7 +49,10 @@ export function createGeminiTaskPreview(options: {
     await options.validateScope(projectId, metadata, request.about ?? []);
     const snapshot = await prepareReviewedGeminiTask(options.runtime, {
       smith: request.smith,
-      launch: geminiTaskLaunchFromStart(projectId, request),
+      launch: geminiTaskLaunchFromStart(projectId, {
+        ...request,
+        launch: { ...request.launch, mode: "task" },
+      }),
     });
     await options.validateScope(projectId, metadata, request.about ?? []);
     return {
