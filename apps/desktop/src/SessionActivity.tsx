@@ -7,6 +7,7 @@ import type {
   ReportedJson,
   ReportedText,
 } from "../../../types/session-activity";
+import type { NativeChatFileChangeReport } from "./native-chat-file-changes";
 import type {
   NativeChatReasoningReport,
   NativeChatSummarySnapshot,
@@ -16,6 +17,108 @@ import type {
   NativeChatCommandReport,
   OwnedSessionTurn,
 } from "./session-activity";
+
+function nativeFiles(value: NativeChatFileChangeReport) {
+  const report = value.report;
+  return (
+    <details
+      class="af-session-activity-item"
+      key={`files:${report.threadId}:${report.turnId}:${report.itemId}`}
+    >
+      <summary>
+        File changes · Reported{" "}
+        {report.status === "inProgress" ? "in progress" : report.status}
+        {report.partial ? " · Partial report" : ""}
+      </summary>
+      <p class="af-session-report-label">Latest full snapshot in this view</p>
+      {report.source === "item/fileChange/patchUpdated" && (
+        <p class="af-session-note">
+          This patch update carries the last observed item status; the update
+          notification does not report a new status.
+        </p>
+      )}
+      {report.changes.length ? (
+        <ul class="af-session-reported-files">
+          {report.changes.map((change, index) => (
+            <li key={index}>
+              <p>
+                <code>{change.path.text || "Path text truncated"}</code> ·{" "}
+                {change.kind.type === "add"
+                  ? "Add"
+                  : change.kind.type === "delete"
+                    ? "Delete"
+                    : "Update"}
+              </p>
+              {change.path.truncated && (
+                <p class="af-session-note">Path text truncated</p>
+              )}
+              {change.kind.type === "update" && (
+                <p class="af-session-note">
+                  {change.kind.move_path === null ? (
+                    "Move destination not reported"
+                  ) : (
+                    <>
+                      Reported move destination:{" "}
+                      <code>{change.kind.move_path.text}</code>
+                      {change.kind.move_path.truncated &&
+                        " · Move destination text truncated"}
+                    </>
+                  )}
+                </p>
+              )}
+              {change.diff.text ? (
+                <>
+                  <pre
+                    role="region"
+                    aria-label="Reported native diff"
+                    // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users must be able to scroll the inert native patch.
+                    tabIndex={0}
+                  >
+                    {change.diff.text}
+                  </pre>
+                  {change.diff.truncated && (
+                    <p class="af-session-note">Diff text truncated</p>
+                  )}
+                </>
+              ) : (
+                <p class="af-session-note">
+                  {change.diff.truncated
+                    ? "Diff text truncated before any content was retained"
+                    : "Provider reported an empty diff"}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p class="af-session-note">
+          Provider reported no file changes in this snapshot.
+        </p>
+      )}
+      {report.truncated && (
+        <p class="af-session-note">
+          Snapshot truncated. The saved report is incomplete.
+        </p>
+      )}
+      <p class="af-session-note">
+        {report.closure === "turn-ended"
+          ? `Native turn reported ${report.turnStatus}. Item status is reported independently.`
+          : report.closure === "item-ended"
+            ? "Item report ended; native turn completion is not established by this report."
+            : "Item report is open; native turn completion is not established by this report."}
+      </p>
+      <p class="af-session-report-source">
+        Latest source: app-server {report.source} · codex {value.version} ·
+        Thread: {report.threadId} · Native turn: {report.turnId} · Item:{" "}
+        {report.itemId}
+      </p>
+      <p class="af-session-note">
+        This saved report does not authorize applying a patch or deciding a
+        permission. Reported paths are display text only.
+      </p>
+    </details>
+  );
+}
 
 function nativePlan(value: NativeChatTurnPlanReport) {
   const report = value.report;
@@ -441,6 +544,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
   const count =
     value.activities.length +
     value.nativeCommands.length +
+    value.nativeFileChanges.length +
     value.nativeSummaries.length +
     (value.nativePlan ? 1 : 0);
   if (!count) return null;
@@ -451,6 +555,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
       </h3>
       {value.activities.map(activity)}
       {value.nativeCommands.map(nativeCommand)}
+      {value.nativeFileChanges.map(nativeFiles)}
       {value.nativeSummaries.map(nativeSummary)}
       {value.nativePlan && nativePlan(value.nativePlan)}
     </section>

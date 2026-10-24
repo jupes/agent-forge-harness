@@ -116,6 +116,105 @@ const finish = async (extraItems: unknown[] = []) => {
   });
   if (mode === "bad-exit") process.exit(7);
 };
+const reportedFileChanges = [
+  {
+    path: "FILE_REPORT_MUST_NOT_CREATE.txt",
+    kind: { type: "update", move_path: "inert/<script>.ts" },
+    diff: "-old native line\n+<script>native patch stays text</script>",
+  },
+  { path: "empty-native.ts", kind: { type: "add" }, diff: "" },
+];
+const mainFileItem = (status = "inProgress") => ({
+  type: "fileChange",
+  id: "reported-files-a",
+  status,
+  changes: reportedFileChanges,
+});
+const fileChangePrefix = async () => {
+  const scope = { threadId, turnId },
+    item = mainFileItem();
+  await send({
+    method: "item/started",
+    params: { ...scope, item, startedAtMs: 1 },
+  });
+  for (const changes of [
+    [{ path: "superseded.ts", kind: { type: "delete" }, diff: "-superseded" }],
+    [],
+    reportedFileChanges,
+  ])
+    await send({
+      method: "item/fileChange/patchUpdated",
+      params: { ...scope, itemId: item.id, changes },
+    });
+  record({
+    kind: "file-prefix-published",
+    threadId,
+    turnId,
+    itemId: item.id,
+    count: 4,
+  });
+};
+const finishFileChanges = async (status = "completed") => {
+  const scope = { threadId, turnId },
+    main = mainFileItem(status),
+    others = [
+      {
+        type: "fileChange",
+        id: "reported-files-failed",
+        status: "failed",
+        changes: [
+          {
+            path: "failed.ts",
+            kind: { type: "delete" },
+            diff: "-reported failed patch",
+          },
+        ],
+      },
+      {
+        type: "fileChange",
+        id: "reported-files-declined",
+        status: "declined",
+        changes: [
+          {
+            path: "declined.ts",
+            kind: { type: "add" },
+            diff: "+reported declined patch",
+          },
+        ],
+      },
+      {
+        type: "fileChange",
+        id: "reported-files-clipped",
+        status: "completed",
+        changes: [
+          {
+            path: "clipped.ts",
+            kind: { type: "update", move_path: null },
+            diff: `+retained native prefix\n${"x".repeat(20_000)}`,
+          },
+        ],
+      },
+    ];
+  await send({
+    method: "item/completed",
+    params: { ...scope, item: main, completedAtMs: 2 },
+  });
+  for (const item of others) {
+    await send({
+      method: "item/started",
+      params: {
+        ...scope,
+        item: { ...item, status: "inProgress" },
+        startedAtMs: 1,
+      },
+    });
+    await send({
+      method: "item/completed",
+      params: { ...scope, item, completedAtMs: 2 },
+    });
+  }
+  await finish([main, ...others]);
+};
 const reader = Bun.stdin.stream().getReader(),
   decoder = new TextDecoder();
 let pending = "";
@@ -155,7 +254,9 @@ while (true) {
             turn: { id: turnId, status: "interrupted", items: [], error: null },
           },
         });
-      } else await finish();
+      } else if (mode === "file-changes-approval")
+        await finishFileChanges("declined");
+      else await finish();
       newline = pending.indexOf("\n");
       continue;
     }
@@ -285,6 +386,22 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
+      } else if (mode?.startsWith("file-changes")) {
+        await fileChangePrefix();
+        if (mode === "file-changes-held") hangTree();
+        else if (mode === "file-changes-approval")
+          await send({
+            id: "file-review-a",
+            method: "item/fileChange/requestApproval",
+            params: {
+              threadId,
+              turnId,
+              itemId: "reported-files-a",
+              reason: "Inert native file review",
+              grantRoot: null,
+            },
+          });
+        else await finishFileChanges();
       } else if (mode === "turn-plan" || mode === "turn-plan-held") {
         const scope = { threadId, turnId },
           firstPlan = {
