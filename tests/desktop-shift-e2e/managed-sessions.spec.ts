@@ -1,14 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import {
   managedShiftHref,
   managedShiftSelection,
 } from "../../apps/desktop/src/managed-shift-navigation";
-import { conversationFile } from "../../scripts/conversations/paths";
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
 import { seedObservationEvents } from "../desktop-e2e/observed-session-fixtures";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
+import { bunPath } from "../e2e/servers";
 import {
   checkedFixtureRoot,
   fixtureCalls,
@@ -27,6 +28,38 @@ const managed = (page: Page) =>
   page.getByRole("region", { name: "Managed Shift session", exact: true });
 const activity = (page: Page) =>
   page.getByRole("region", { name: "Private shift activity", exact: true });
+function privateJournal(sessionId: string): string {
+  checkedFixtureRoot();
+  const result = spawnSync(
+    bunPath(),
+    [
+      "-e",
+      `import {readFileSync} from "node:fs";import {conversationFile} from ${JSON.stringify(resolve("scripts/conversations/paths.ts").replaceAll("\\", "/"))};const [home,projectId,sessionId]=process.argv.slice(1);console.log(JSON.stringify({ok:true,data:readFileSync(conversationFile(home,projectId,{kind:"session",projectId,sessionId}),"utf8"),error:null}));`,
+      HOME,
+      FIXTURE_PROJECT_ID,
+      sessionId,
+    ],
+    { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
+  );
+  if (result.status !== 0)
+    throw Error("The isolated private journal could not be read.");
+  let reply: unknown;
+  try {
+    reply = JSON.parse(result.stdout);
+  } catch {
+    throw Error("The isolated private journal read was not verified.");
+  }
+  if (
+    reply === null ||
+    typeof reply !== "object" ||
+    !("ok" in reply) ||
+    reply.ok !== true ||
+    !("data" in reply) ||
+    typeof reply.data !== "string"
+  )
+    throw Error("The isolated private journal read was not verified.");
+  return reply.data;
+}
 async function start(page: Page) {
   await openSettled(page, workbench);
   await shifts(page)
@@ -107,12 +140,7 @@ test("an actual managed attempt survives direct reload and Back with its exact o
   await expect(activity(page)).toContainText("Verified saved turn: completed");
   const { href, selected } = await attemptLink(page),
     provider = readFileSync(join(STATE, "claude.json"), "utf8"),
-    journalPath = conversationFile(HOME, FIXTURE_PROJECT_ID, {
-      kind: "session",
-      projectId: FIXTURE_PROJECT_ID,
-      sessionId: selected.sessionId,
-    }),
-    journal = readFileSync(journalPath, "utf8"),
+    journal = privateJournal(selected.sessionId),
     configuration = readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
     writes = mutationCalls(),
     posts = watchInspectionPosts(page);
@@ -188,7 +216,7 @@ test("an actual managed attempt survives direct reload and Back with its exact o
   expect(new URL(page.url()).hash).toBe(href);
   expect(posts).toEqual([]);
   expect(readFileSync(join(STATE, "claude.json"), "utf8")).toBe(provider);
-  expect(readFileSync(journalPath, "utf8")).toBe(journal);
+  expect(privateJournal(selected.sessionId)).toBe(journal);
   expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toBe(
     configuration,
   );
