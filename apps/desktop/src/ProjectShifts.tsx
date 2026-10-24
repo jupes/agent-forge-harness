@@ -42,20 +42,50 @@ export function ProjectShifts({
   scope,
   writesAllowed,
   archived,
+  originalRequestId,
+  selectionError,
+  onOriginalSelect,
 }: {
   client: ProjectShiftsClient;
   scope: ProjectShiftScope;
   writesAllowed: boolean;
   archived: boolean;
+  originalRequestId?: string | null;
+  selectionError?: string;
+  onOriginalSelect?: (requestId: string | null) => void;
 }) {
   const view = client.get(scope);
   const [open, setOpen] = useState(false),
     [draft, setDraft] = useState<ProjectShiftDraft | null>(null),
     [formError, setFormError] = useState(""),
-    [attending, setAttending] = useState<string | null>(null),
+    [localAttending, setAttending] = useState<string | null>(null),
     [now, setNow] = useState(Date.now());
   const opener = useRef<HTMLElement>(null),
-    formOwner = useRef(0);
+    formOwner = useRef(0),
+    checkedOriginal = useRef<string | null>(null);
+  const attending =
+    originalRequestId === undefined ? localAttending : originalRequestId;
+  useEffect(() => {
+    if (!originalRequestId) {
+      checkedOriginal.current = null;
+      return;
+    }
+    if (view.loading) return;
+    const key = `${scope.projectId}:${scope.workspace}:${originalRequestId}`;
+    if (checkedOriginal.current === key) return;
+    checkedOriginal.current = key;
+    void client.check(scope, originalRequestId);
+  }, [
+    client,
+    scope.projectId,
+    scope.workspace,
+    originalRequestId,
+    view.loading,
+  ]);
+  const selectOriginal = (id: string | null) => {
+    if (onOriginalSelect) onOriginalSelect(id);
+    else setAttending(id);
+  };
   const closeForm = () => {
     formOwner.current++;
     setOpen(false);
@@ -112,7 +142,7 @@ export function ProjectShifts({
     await client.start(scope, reviewed.input);
     closeForm();
     const current = client.get(scope).original;
-    if (current) setAttending(current.intent.request.requestId);
+    if (current) selectOriginal(current.intent.request.requestId);
   };
   return (
     <section class="af-project-shifts" aria-label="Bounded project shifts">
@@ -150,6 +180,13 @@ export function ProjectShifts({
         <p>Write connection unavailable. Original reads remain available.</p>
       )}
       {view.identityError && <p role="alert">{view.identityError}</p>}
+      {selectionError && <p role="alert">{selectionError}</p>}
+      {originalRequestId && !view.loading && !receipt && (
+        <p role="alert">
+          The selected original Shift is unavailable. No different original or
+          private attempt was opened.
+        </p>
+      )}
       <ProjectShiftListStatus view={view} />
       {view.notice && (
         <p class="af-shift-notice" role="status">
@@ -190,7 +227,7 @@ export function ProjectShifts({
             }
             selected={attending === item.intent.request.requestId}
             onAttend={() =>
-              setAttending(
+              selectOriginal(
                 attending === item.intent.request.requestId
                   ? null
                   : item.intent.request.requestId,

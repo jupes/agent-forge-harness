@@ -8,11 +8,15 @@ import {
   readOperatorRoute,
 } from "../../../docs/js/use-stream";
 import type { ProjectShiftReceipt } from "../../../types/project-shifts";
+import type { ProjectShiftAttemptOrigin } from "../../../types/shift-origin";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { keeperTurns } from "./keeper-model";
+import { managedShiftHref } from "./managed-shift-navigation";
 import {
   createShiftAttemptObserver,
+  type ShiftAttemptAddress,
   type ShiftAttemptObserver,
+  shiftAttemptAddressKey,
 } from "./project-shift-attempt-client";
 import {
   SessionActivity,
@@ -25,19 +29,31 @@ import "./session.css";
 /** Reads only the dedicated original-shift feed. Generic session actions are intentionally absent. */
 export function ProjectShiftAttempts({
   receipt,
+  selectedSessionId,
+  onSelect,
+  expectedOrigin,
 }: {
   receipt: ProjectShiftReceipt;
+  selectedSessionId?: string;
+  onSelect?: (sessionId: string) => void;
+  expectedOrigin?: ProjectShiftAttemptOrigin;
 }) {
   const { intent } = receipt;
   const [, paint] = useState(0),
     held = useRef<ShiftAttemptObserver | null>(null);
+  const address: ShiftAttemptAddress = {
+    projectId: intent.projectId,
+    originalRequestId: intent.request.requestId,
+    shiftId: intent.shiftId,
+    workspace: intent.workspace,
+    ...(selectedSessionId !== undefined ? { selectedSessionId } : {}),
+    ...(expectedOrigin !== undefined ? { expectedOrigin } : {}),
+  };
+  const addressKey = shiftAttemptAddressKey(address);
   useEffect(() => {
     const base = `/projects/${encodeURIComponent(intent.projectId)}/shifts/requests/${encodeURIComponent(intent.request.requestId)}/attempts`;
     const observer = createShiftAttemptObserver({
-      projectId: intent.projectId,
-      originalRequestId: intent.request.requestId,
-      shiftId: intent.shiftId,
-      workspace: intent.workspace,
+      ...address,
       changed: () => paint((value) => value + 1),
       read: () =>
         readOperatorRoute(base, { ...pageReads(), fetch: operatorRead }),
@@ -63,14 +79,9 @@ export function ProjectShiftAttempts({
       window.clearInterval(timer);
       observer.close();
     };
-  }, [
-    intent.projectId,
-    intent.request.requestId,
-    intent.shiftId,
-    intent.workspace,
-  ]);
-  const observer = held.current,
-    view = observer?.get(),
+  }, [addressKey]);
+  const view = held.current?.forAddress(address),
+    observer = view ? held.current : null,
     page = view?.page;
   const current = page?.turns[0],
     first = page?.frames[0]?.event;
@@ -88,11 +99,12 @@ export function ProjectShiftAttempts({
         <div>
           <h3>Private shift activity</h3>
           <p>
-            Read-only attendance. Stop and recovery apply to the whole shift.
+            Read-only attendance. Whole-Shift Stop and recovery are available
+            only in the original Shift view.
           </p>
         </div>
         <Button
-          aria-disabled={view?.loading}
+          aria-disabled={!observer || view?.loading}
           onClick={() => {
             if (!view?.loading) void observer?.refresh();
           }}
@@ -107,7 +119,12 @@ export function ProjectShiftAttempts({
           <select
             aria-label="Select shift attempt"
             value={view?.selectedId ?? ""}
-            onChange={(event) => observer?.select(event.currentTarget.value)}
+            onChange={(event) => {
+              const id = event.currentTarget.value;
+              if (!id) return;
+              if (onSelect) onSelect(id);
+              else observer?.select(id);
+            }}
           >
             <option value="">
               {view?.index?.items.length
@@ -122,12 +139,14 @@ export function ProjectShiftAttempts({
             ))}
           </select>
         </label>
-        <Button
-          aria-pressed={view?.followLatest ?? true}
-          onClick={() => observer?.followLatest()}
-        >
-          Follow latest attempt
-        </Button>
+        {selectedSessionId === undefined && (
+          <Button
+            aria-pressed={view?.followLatest ?? true}
+            onClick={() => observer?.followLatest()}
+          >
+            Follow latest attempt
+          </Button>
+        )}
         {view?.selectedId && (
           <Button onClick={() => observer?.reload()}>
             Reload private history
@@ -141,6 +160,19 @@ export function ProjectShiftAttempts({
             {new Date(view.index.asOf).toLocaleString()}
           </time>
           . Index metadata does not prove a provider started or finished.
+        </p>
+      )}
+      {view?.selectedId && (
+        <p>
+          <a
+            href={managedShiftHref({
+              projectId: intent.projectId,
+              requestId: intent.request.requestId,
+              sessionId: view.selectedId,
+            })}
+          >
+            Open this attempt in Sessions
+          </a>
         </p>
       )}
       <p role="status">

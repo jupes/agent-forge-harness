@@ -54,7 +54,7 @@ export function sessionObservationRows(
         : !currentIds.has(owner.record.id)
           ? "Previously verified app-owned session; it is absent from the current registry read. Open it to check saved history."
           : owner.origin
-            ? "Started by a shift. Its conversation and controls are unavailable in this view."
+            ? "App-owned Shift attempt. Open read-only activity and its original Shift; whole-Shift controls remain in the original view."
             : "App-owned session. Open it to check saved status and available controls.",
       owner,
       observation:
