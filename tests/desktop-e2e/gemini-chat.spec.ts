@@ -344,7 +344,6 @@ async function capture(page: Page, name: string, dialog?: Locator) {
 
 test("Gemini ACP composer keyboard-starts two explicit native turns with once choices, exact resume, scoped replay and complete export", async ({
   page,
-  context,
 }) => {
   const before = promptCount(),
     answers = answerCount(),
@@ -421,13 +420,23 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
   await expect(
     approvals(page).getByRole("button", { name: "Always", exact: true }),
   ).toHaveCount(0);
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  // Check the exact API argument before the Windows clipboard converts LF to CRLF.
+  await page.evaluate(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          document.body.dataset.geminiAcpCopied = value;
+        },
+      },
+    }),
+  );
   await view
     .getByRole("button", { name: "Copy session reply", exact: true })
     .click();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-    markdown,
-  );
+  await expect
+    .poll(() => page.evaluate(() => document.body.dataset.geminiAcpCopied))
+    .toBe(markdown);
   await keyboardFocus(page, allow);
   const background = await page.waitForResponse(
     (answer) =>
