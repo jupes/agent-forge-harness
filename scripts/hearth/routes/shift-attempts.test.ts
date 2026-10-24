@@ -19,6 +19,10 @@ import {
   FIXTURE_SHIFT_START,
   seedProjectShiftAttempt,
 } from "./project-shift-fixture";
+import {
+  createShiftFeedCleanup,
+  shiftFeedPhase,
+} from "./shift-attempt-feed-fixture";
 
 const opened: TestHearth[] = [];
 afterEach(async () => {
@@ -151,56 +155,95 @@ test("an open private shift feed observes persisted frames without a local chang
     prepare: async () => ({ version: "2.1.296" }),
     validate: async () => {},
   });
-  const response = await fetch(`${h.api}${base}/${active.record.id}/events`, {
-    headers: h.headers(h.hearth.token),
-    signal: AbortSignal.timeout(8000),
+  const observer = new AbortController();
+  let cancelObserver = async () => {};
+  const cleanup = createShiftFeedCleanup({
+    abortObserver: () => observer.abort(),
+    cancelObserver: () => cancelObserver(),
+    finishOwner: () =>
+      active.owner.finish({
+        phase: "failed",
+        reason: "No provider was dispatched.",
+      }),
   });
-  const stream = response.body?.getReader();
-  if (!stream) throw Error("No private feed");
+  const deadline = performance.now() + 8000;
+  const remaining = () => Math.max(1, deadline - performance.now());
   try {
+    const response = await shiftFeedPhase(
+      "open",
+      () =>
+        fetch(`${h.api}${base}/${active.record.id}/events`, {
+          headers: h.headers(h.hearth.token),
+          signal: AbortSignal.any([observer.signal, AbortSignal.timeout(8000)]),
+        }),
+      remaining(),
+    );
+    const stream = response.body?.getReader();
+    if (!stream) throw Error("No private feed");
+    cancelObserver = async () => {
+      await stream.cancel();
+    };
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     expect(response.headers.get("cache-control")).toBe("no-store");
-    await stream.read();
-    await active.owner.append({
-      kind: "text",
-      text: "Private cross-process observed frame",
-    });
-    let seen = "";
-    while (!seen.includes("Private cross-process observed frame")) {
-      const next = await stream.read();
-      if (next.done) throw Error("Private feed ended before observation");
-      seen += new TextDecoder().decode(next.value);
-    }
-    expect(seen).toContain('"controllable":false');
-    const before = createConversationStore(
-      h.home,
-      undefined,
-      active.address,
-    ).read(FIXTURE_PROJECT_ID);
-    const stopped = await fetch(
-      `${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${active.record.id}/stop`,
-      {
-        method: "POST",
-        headers: {
-          ...h.headers(h.hearth.token),
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ requestId: active.record.requestId }),
+    await shiftFeedPhase("initial replay", () => stream.read(), remaining());
+    await shiftFeedPhase(
+      "private append",
+      () =>
+        active.owner.append({
+          kind: "text",
+          text: "Private cross-process observed frame",
+        }),
+      remaining(),
+    );
+    const seen = await shiftFeedPhase(
+      "persisted frame observation",
+      async () => {
+        let observed = "";
+        while (!observed.includes("Private cross-process observed frame")) {
+          const next = await stream.read();
+          if (next.done) throw Error("Private feed ended before observation");
+          observed += new TextDecoder().decode(next.value);
+        }
+        return observed;
       },
+      remaining(),
+    );
+    expect(seen).toContain('"controllable":false');
+    const store = createConversationStore(h.home, undefined, active.address),
+      before = store.read(FIXTURE_PROJECT_ID),
+      file = conversationFile(h.home, FIXTURE_PROJECT_ID, active.address),
+      bytes = readFileSync(file, "utf8");
+    expect(before.turns[0]?.phase).toBe("running");
+    const stopped = await shiftFeedPhase(
+      "generic Stop refusal while observer is open",
+      async () => {
+        const response = await fetch(
+          `${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${active.record.id}/stop`,
+          {
+            method: "POST",
+            headers: {
+              ...h.headers(h.hearth.token),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ requestId: active.record.requestId }),
+            signal: AbortSignal.timeout(2000),
+          },
+        );
+        await response.text();
+        return response;
+      },
+      2000,
     );
     expect(stopped.status).toBe(409);
-    expect(
-      createConversationStore(h.home, undefined, active.address).read(
-        FIXTURE_PROJECT_ID,
-      ),
-    ).toEqual(before);
+    expect(store.read(FIXTURE_PROJECT_ID)).toEqual(before);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
     expect(h.shifts.launches).toEqual([]);
+    await cleanup.closeObserver();
+    expect(store.read(FIXTURE_PROJECT_ID)).toEqual(before);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+    expect(store.read(FIXTURE_PROJECT_ID).turns[0]?.phase).toBe("running");
   } finally {
-    await stream.cancel();
-    await active.owner.finish({
-      phase: "failed",
-      reason: "No provider was dispatched.",
-    });
+    await cleanup.release();
   }
 }, 12000);
