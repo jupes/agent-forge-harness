@@ -1,7 +1,9 @@
 # Review Keeper session proposals
 
-The session card opens the same `SessionComposer` used by New session and bead
-launches. It keeps the source proposal visible while the operator edits the full
+The session card opens the same Claude form used by the provider-aware New
+session and bead launch composer. Keeper review currently accepts only Claude;
+Codex and Gemini Task/Chat remain available through ordinary New session. It
+keeps the source proposal visible while the operator edits the full
 launch: prompt, selected files/images, About context, repository/worktree, Task or
 Chat, smith, model, effort and supported options. Opening, editing, templates,
 preview and Cancel do not approve or start a session. Worktree creation remains a
@@ -39,7 +41,9 @@ private-journal turn receipt into the existing session client. Adoption sends no
 ordinary Start and leaves ordinary composer drafts and navigation state alone.
 Late malformed replies cannot undo confirmed admission. Full prompt, attachment
 and launch history remains in the private recovery route rather than public
-session-list rows or activity metadata.
+session-list rows or activity metadata. Protected reads recheck current project
+membership and the served workspace after the proposal journal and private
+session reads. Archiving a project preserves readable history.
 
 Source authority is commit `7e41bba140493849d9f9b2dd3b8ada6773e374a2`, design brief
 §6.5 and §6.7. The audited eleven HTML pages contain multiple boards. They include
@@ -56,3 +60,15 @@ The guarded temporary-Git journey holds an actual worktree creation reply across
 Cancel and a protected history read. Once that read finishes, the confirmed path
 is selected without another creation; Cancel retains the worktree and starts no
 provider.
+
+The packaged Windows probe runs after the existing empty Keeper checks. It
+plants a completed strict private proposal, reads its original through the
+compiled protected route, and checks prefill, a separate edited draft, keyboard
+Cancel, visible provider limits, unavailable Claude and unchanged private files.
+Its read-only Git stand-in answers only three metadata commands from the two
+planted smoke checkouts; no command is forwarded to a real Git or provider.
+
+The review screenshot shows the source and form at a capture-only 1280×1400
+viewport, with its repository masked. Functional keyboard, reduced-motion and
+no-write assertions run first at 1100×700; the command footer remains below the
+captured scroll area.
