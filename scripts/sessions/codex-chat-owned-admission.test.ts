@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
+import type {
+  CodexChatCommand,
+  CodexChatReasoningSummary,
+} from "../../types/codex-chat";
 import type { CodexChatStartRequest } from "../../types/codex-owned-chat";
+import type { ConversationFrame } from "../../types/conversation";
 import { conversationFile } from "../conversations/paths";
 import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
@@ -12,6 +17,7 @@ import { scratchDirs } from "../test-scratch";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
+  ownedCodingEventSchema,
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
@@ -106,6 +112,392 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   };
   return { root, home, project, request, open, records, runtime };
 }
+
+test("actual explicit native summaries preserve private indexed facts and a shared command budget across reads, export and recreation", async () => {
+  const f = await fixture("reasoning-summary");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id;
+  await service.settled(f.project.id, sessionId);
+  const page = await service.read(f.project.id, sessionId);
+  expect(page.turns[0]?.phase).toBe("completed");
+  const summaries = page.frames.filter(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "reasoning-summary",
+  );
+  expect(summaries).toHaveLength(8);
+  const first = summaries[0];
+  if (
+    first?.event.kind !== "coding-chat" ||
+    first.event.event.kind !== "reasoning-summary"
+  )
+    throw Error("Missing actual summary fixture");
+  const path = conversationFile(f.home, f.project.id, {
+    kind: "session",
+    projectId: f.project.id,
+    sessionId,
+  });
+  const before = readFileSync(path),
+    registry = readFileSync(sessionRegistryFile(f.home));
+  expect(before.toString()).not.toContain("RAW_REASONING_MUST_NOT_PERSIST");
+  const state = createConversationStore(f.home, undefined, {
+    kind: "session",
+    projectId: f.project.id,
+    sessionId,
+  }).read(f.project.id);
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  // Older saved turns have no additive summaries, or no final-turn summary.
+  // Their immutable user/command/outcome history remains valid unchanged.
+  for (const omitAll of [true, false])
+    expect(
+      ownedCodingStateSchema.safeParse({
+        ...state,
+        frames: state.frames.filter(
+          (frame) =>
+            frame.event.kind !== "coding-chat" ||
+            frame.event.event.kind !== "reasoning-summary" ||
+            (!omitAll && frame.event.event.source !== "turn/completed"),
+        ),
+      }).success,
+    ).toBe(true);
+  for (const conflict of [false, true]) {
+    const altered = structuredClone(state),
+      index = altered.frames.findIndex(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "reasoning-summary" &&
+          frame.event.event.source === "turn/completed",
+      ),
+      target = altered.frames[index];
+    if (
+      target?.event.kind !== "coding-chat" ||
+      target.event.event.kind !== "reasoning-summary" ||
+      target.event.event.update.kind !== "snapshot"
+    )
+      throw Error("Missing actual final summary");
+    if (conflict)
+      target.event.event.update.summary[0] = {
+        text: "Conflicting final summary",
+        truncated: false,
+      };
+    else {
+      altered.frames.splice(index + 1, 0, structuredClone(target));
+      for (const [position, frame] of altered.frames.entries())
+        frame.seq = position + 1;
+    }
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+  for (const change of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { itemId: "foreign-item" },
+    { source: "item/reasoning/textDelta" },
+    { partial: false },
+    { content: "RAW_REASONING_MUST_NOT_PERSIST" },
+  ]) {
+    const altered = structuredClone(state),
+      target = altered.frames.find((frame) => frame.seq === first.seq);
+    if (
+      target?.event.kind !== "coding-chat" ||
+      target.event.event.kind !== "reasoning-summary"
+    )
+      throw Error("Missing copied summary");
+    Object.assign(target.event.event, change);
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+  const delta = summaries.find(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "reasoning-summary" &&
+      frame.event.event.update.kind === "delta",
+  );
+  if (!delta) throw Error("Missing actual indexed delta");
+  const wrongIndex = structuredClone(state),
+    changed = wrongIndex.frames.find((frame) => frame.seq === delta.seq);
+  if (
+    changed?.event.kind !== "coding-chat" ||
+    changed.event.event.kind !== "reasoning-summary" ||
+    changed.event.event.update.kind !== "delta"
+  )
+    throw Error("Missing copied indexed delta");
+  changed.event.event.update.summaryIndex = 127;
+  expect(ownedCodingStateSchema.safeParse(wrongIndex).success).toBe(false);
+  for (const frame of summaries) {
+    const partial = await service.read(f.project.id, sessionId, {
+      after: frame.seq - 1,
+    });
+    expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+    expect(partial.frames).toContainEqual(frame);
+    expect(eventSchema.safeParse(frame.event).success).toBe(false);
+    for (const binding of [
+      null,
+      {
+        ...partial.binding,
+        provider: "codex",
+        sessionId: randomUUID(),
+        version: "0.163.0-alpha.10.2",
+      },
+      {
+        ...partial.binding,
+        provider: "codex",
+        sessionId: first.event.event.threadId,
+        version: "other",
+      },
+    ])
+      expect(
+        ownedCodingPageSchema.safeParse({ ...partial, binding }).success,
+      ).toBe(false);
+  }
+  const originalPrefix = state.frames.filter((frame) => frame.seq < first.seq);
+  const command: CodexChatCommand = {
+    kind: "command",
+    source: "item/started",
+    threadId: first.event.event.threadId,
+    turnId: first.event.event.turnId,
+    itemId: "budget",
+    command: { text: "x".repeat(16_384), truncated: false },
+    cwd: f.root,
+    status: "inProgress",
+    output: { text: "y".repeat(16_384), truncated: false },
+    outputSource: "aggregate",
+    exitCode: null,
+    durationMs: null,
+    partial: true,
+  };
+  const summary: CodexChatReasoningSummary = {
+    ...first.event.event,
+    source: "item/completed",
+    partial: false,
+    update: {
+      kind: "snapshot",
+      summary: [{ text: "z".repeat(16_384), truncated: false }],
+      truncated: false,
+      closure: "item-ended",
+      turnStatus: null,
+    },
+  };
+  const frame = (
+    event: CodexChatCommand | CodexChatReasoningSummary,
+    index: number,
+  ): ConversationFrame => ({
+    ...first,
+    seq: originalPrefix.length + index + 1,
+    event: ownedCodingEventSchema.parse({
+      kind: "coding-chat",
+      provider: "codex",
+      version: "0.163.0-alpha.10.2",
+      event,
+    }),
+  });
+  const commands = Array.from({ length: 40 }, (_, index) =>
+    frame({ ...command, itemId: `command-${index}` }, index),
+  );
+  const reports = Array.from({ length: 64 }, (_, index) =>
+    frame({ ...summary, itemId: `summary-${index}` }, index),
+  );
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [...originalPrefix, ...commands],
+    }).success,
+  ).toBe(true);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [...originalPrefix, ...reports],
+    }).success,
+  ).toBe(true);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [
+        ...originalPrefix,
+        ...commands,
+        ...reports.map((item, index) => ({
+          ...item,
+          seq: originalPrefix.length + commands.length + index + 1,
+        })),
+      ],
+    }).success,
+  ).toBe(false);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  expect(JSON.stringify(exported)).not.toContain(
+    "RAW_REASONING_MUST_NOT_PERSIST",
+  );
+  for (const frame of summaries)
+    expect(exported.conversation.frames).toContainEqual(frame);
+  await service.close();
+  service = f.open();
+  expect((await service.read(f.project.id, sessionId)).frames).toEqual(
+    page.frames,
+  );
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(readFileSync(path)).toEqual(before);
+  expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registry);
+});
+
+test.each([
+  "reasoning-summary-completed-only",
+  "reasoning-summary-interrupted",
+])("actual %s snapshots preserve native closure without inventing earlier reasoning history", async (mode) => {
+  const f = await fixture(mode),
+    service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id;
+  await service.settled(f.project.id, sessionId);
+  const page = await service.read(f.project.id, sessionId),
+    interrupted = mode.endsWith("interrupted");
+  expect(page.turns[0]?.phase).toBe(interrupted ? "failed" : "completed");
+  const summary = [...page.frames]
+    .reverse()
+    .find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "reasoning-summary",
+    );
+  expect(summary?.event).toMatchObject({
+    event: {
+      partial: interrupted,
+      update: {
+        kind: "snapshot",
+        closure: "turn-ended",
+        turnStatus: interrupted ? "interrupted" : "completed",
+      },
+    },
+  });
+  const state = createConversationStore(f.home, undefined, {
+    kind: "session",
+    projectId: f.project.id,
+    sessionId,
+  }).read(f.project.id);
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  if (interrupted) {
+    const falseSuccess = structuredClone(state),
+      outcome = falseSuccess.frames.find(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "outcome",
+      );
+    if (
+      outcome?.event.kind !== "coding-chat" ||
+      outcome.event.event.kind !== "outcome"
+    )
+      throw Error("Missing actual interrupted outcome");
+    outcome.event.event.outcome.phase = "completed";
+    outcome.event.event.outcome.reason = null;
+    expect(ownedCodingStateSchema.safeParse(falseSuccess).success).toBe(false);
+  }
+  if (
+    summary?.event.kind !== "coding-chat" ||
+    summary.event.event.kind !== "reasoning-summary"
+  )
+    throw Error("Missing final summary snapshot");
+  const prefix = state.frames.filter((frame) => frame.seq <= summary.seq),
+    late = {
+      ...summary,
+      seq: summary.seq + 1,
+      event: {
+        ...summary.event,
+        event: {
+          ...summary.event.event,
+          source: "item/reasoning/summaryTextDelta",
+          partial: true,
+          update: {
+            kind: "delta",
+            summaryIndex: 0,
+            content: { text: "late", truncated: false },
+            prefixMissing: true,
+          },
+        },
+      },
+    };
+  expect(
+    ownedCodingStateSchema.safeParse({ ...state, frames: [...prefix, late] })
+      .success,
+  ).toBe(false);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(exported.conversation.frames).toContainEqual(summary);
+  expect(JSON.stringify(exported)).not.toContain(
+    "RAW_REASONING_MUST_NOT_PERSIST",
+  );
+});
+
+test.each([
+  "Stop",
+  "deadline",
+])("actual %s retains only partial native summaries and never resends them after reopening", async (action) => {
+  const f = await fixture("reasoning-summary-held");
+  let service = f.open();
+  const started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id;
+  const deadline = Date.now() + 4000;
+  while (
+    !(await service.read(f.project.id, sessionId)).frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "reasoning-summary" &&
+        frame.event.event.update.kind === "delta",
+    )
+  ) {
+    if (Date.now() > deadline)
+      throw Error("Native partial summary did not reach its private journal");
+    await Bun.sleep(20);
+  }
+  if (action === "Stop")
+    await service.stop(f.project.id, sessionId, f.request.requestId);
+  await service.settled(f.project.id, sessionId);
+  await service.close();
+  service = f.open();
+  const page = await service.read(f.project.id, sessionId);
+  const summaries = page.frames.filter(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "reasoning-summary",
+  );
+  expect(summaries).toHaveLength(6);
+  expect(
+    summaries.every(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "reasoning-summary" &&
+        frame.event.event.partial,
+    ),
+  ).toBe(true);
+  expect(
+    ownedSessionLifecycle(page, {
+      mode: "chat",
+      loaded: true,
+      live: false,
+      stopping: false,
+      feedInterrupted: false,
+      readError: "",
+    }).state,
+  ).toBe(action === "Stop" ? "stopped" : "timed-out");
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  for (const frame of summaries)
+    expect(exported.conversation.frames).toContainEqual(frame);
+  expect(JSON.stringify(exported)).not.toContain(
+    "RAW_REASONING_MUST_NOT_PERSIST",
+  );
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+});
 
 test("actual native command history stays exact across protected partial reads, export and recreation without replay", async () => {
   const f = await fixture("command-activity");

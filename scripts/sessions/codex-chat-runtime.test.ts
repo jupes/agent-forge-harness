@@ -97,6 +97,76 @@ function fixture(mode = "normal") {
   };
   return { root, runtime, launch, records, options };
 }
+test("an actual native Chat exposes only explicit indexed reasoning summaries without requesting or retaining raw content", async () => {
+  const f = fixture("reasoning-summary"),
+    events: CodexChatEvent[] = [];
+  const prepared = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  const result = await f.runtime.run(
+    { prepared, resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    new AbortController().signal,
+    { requestApproval: async () => "decline" },
+  );
+  expect(result.phase).toBe("completed");
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      kind: "reasoning-summary",
+      source: "item/reasoning/summaryTextDelta",
+      threadId,
+      turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      itemId: "reported-reasoning-a",
+      partial: true,
+      update: {
+        kind: "delta",
+        summaryIndex: 0,
+        content: { text: "Visible ", truncated: false },
+        prefixMissing: false,
+      },
+    }),
+  );
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      kind: "reasoning-summary",
+      source: "item/completed",
+      partial: false,
+      update: {
+        kind: "snapshot",
+        summary: [
+          { text: "Visible summary one.", truncated: false },
+          { text: "Visible summary two.", truncated: false },
+        ],
+        truncated: false,
+        closure: "item-ended",
+        turnStatus: null,
+      },
+    }),
+  );
+  expect(JSON.stringify(events)).not.toContain(
+    "RAW_REASONING_MUST_NOT_PERSIST",
+  );
+  expect(events.filter((event) => event.kind === "text")).toEqual([
+    { kind: "text", itemId: "message-a", text: "Hello" },
+    { kind: "text", itemId: "message-a", text: " world" },
+  ]);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(f.records().find((row) => row.method === "initialize")).toMatchObject({
+    params: { capabilities: { experimentalApi: false } },
+  });
+  expect(
+    f.records().find((row) => row.method === "thread/start")?.params,
+  ).not.toHaveProperty("experimentalRawEvents");
+  expect(
+    f.records().find((row) => row.method === "turn/start")?.params,
+  ).not.toHaveProperty("summary");
+});
+
 test("an actual native Chat command preserves started, streamed and completed reports outside assistant text", async () => {
   const f = fixture("command-activity");
   const prepared = await f.runtime.prepare({

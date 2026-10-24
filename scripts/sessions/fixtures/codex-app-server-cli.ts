@@ -54,7 +54,7 @@ const hangTree = () => {
   record({ kind: "tree", pid: process.pid, childPid: child.pid });
   setInterval(() => {}, 1000);
 };
-const finish = async () => {
+const finish = async (extraItems: unknown[] = []) => {
   const scope = { threadId, turnId };
   await send({
     method: "item/agentMessage/delta",
@@ -106,7 +106,7 @@ const finish = async () => {
       turn: {
         id: turnId,
         status: mode === "provider-error" ? "failed" : "completed",
-        items: [item],
+        items: [...extraItems, item],
         error:
           mode === "provider-error"
             ? { message: "private-provider-error" }
@@ -285,6 +285,92 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
+      } else if (
+        [
+          "reasoning-summary",
+          "reasoning-summary-held",
+          "reasoning-summary-interrupted",
+          "reasoning-summary-completed-only",
+        ].includes(mode ?? "")
+      ) {
+        const scope = { threadId, turnId },
+          item = {
+            type: "reasoning",
+            id: "reported-reasoning-a",
+            summary: [],
+            content: ["RAW_REASONING_MUST_NOT_PERSIST"],
+          };
+        if (mode !== "reasoning-summary-completed-only") {
+          await send({
+            method: "item/started",
+            params: { ...scope, item, startedAtMs: 1 },
+          });
+          for (const [summaryIndex, deltas] of [
+            [0, ["Visible ", "summary one."]],
+            [1, ["Visible summary two."]],
+          ] as const) {
+            await send({
+              method: "item/reasoning/summaryPartAdded",
+              params: { ...scope, itemId: item.id, summaryIndex },
+            });
+            for (const delta of deltas)
+              await send({
+                method: "item/reasoning/summaryTextDelta",
+                params: { ...scope, itemId: item.id, summaryIndex, delta },
+              });
+          }
+          await send({
+            method: "item/reasoning/textDelta",
+            params: {
+              ...scope,
+              itemId: item.id,
+              contentIndex: 0,
+              delta: "RAW_REASONING_MUST_NOT_PERSIST",
+            },
+          });
+          await send({
+            method: "rawResponseItem/completed",
+            params: {
+              ...scope,
+              item: {
+                type: "reasoning",
+                id: item.id,
+                summary: [],
+                encrypted_content: "RAW_REASONING_MUST_NOT_PERSIST",
+              },
+            },
+          });
+        }
+        const finalItem = {
+          ...item,
+          summary: ["Visible summary one.", "Visible summary two."],
+        };
+        if (mode === "reasoning-summary-held") {
+          hangTree();
+        } else if (mode === "reasoning-summary-interrupted") {
+          await send({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: {
+                id: turnId,
+                status: "interrupted",
+                items: [finalItem],
+                error: null,
+              },
+            },
+          });
+        } else {
+          await send({
+            method: "item/completed",
+            params: {
+              ...scope,
+              item: finalItem,
+              completedAtMs: 2,
+            },
+          });
+          await finish([finalItem]);
+        }
       } else if (
         mode === "command-activity" ||
         mode === "command-interrupted" ||

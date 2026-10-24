@@ -8,11 +8,101 @@ import {
 } from "../hearth/routes/codex-chat-fixture";
 import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
-import { codexChatPrivateEventSchema } from "./codex-chat-owned-journal";
+import {
+  codexChatPrivateEventSchema,
+  codexChatReasoningSummarySchema,
+} from "./codex-chat-owned-journal";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
+
+test("explicit summary codecs refuse raw fields, source/index confusion, incoherent closure and unbounded snapshot text", () => {
+  const summary = {
+    kind: "reasoning-summary",
+    source: "item/started",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "reasoning",
+    partial: true,
+    update: {
+      kind: "snapshot",
+      summary: [],
+      truncated: false,
+      closure: "open",
+      turnStatus: null,
+    },
+  };
+  expect(codexChatReasoningSummarySchema.safeParse(summary).success).toBe(true);
+  const delta = {
+    ...summary,
+    source: "item/reasoning/summaryTextDelta",
+    update: {
+      kind: "delta",
+      summaryIndex: 0,
+      content: { text: "Visible summary", truncated: false },
+      prefixMissing: true,
+    },
+  };
+  expect(codexChatReasoningSummarySchema.safeParse(delta).success).toBe(true);
+  for (const change of [
+    { source: "item/reasoning/textDelta" },
+    { source: "codex.item.updated" },
+    { partial: false },
+    { content: "raw" },
+    { encrypted_content: "raw" },
+    { update: { ...delta.update, summaryIndex: 128 } },
+    { update: { ...delta.update, contentIndex: 0 } },
+    {
+      update: {
+        ...delta.update,
+        content: { text: "🌱".repeat(4097), truncated: false },
+      },
+    },
+    { update: { ...delta.update, content: { text: "\0", truncated: false } } },
+  ])
+    expect(
+      codexChatReasoningSummarySchema.safeParse({ ...delta, ...change })
+        .success,
+    ).toBe(false);
+  for (const update of [
+    { ...summary.update, closure: "turn-ended", turnStatus: "completed" },
+    { ...summary.update, summary: [{ text: "x", truncated: true }] },
+    {
+      ...summary.update,
+      summary: Array.from({ length: 129 }, () => ({
+        text: "",
+        truncated: false,
+      })),
+    },
+    {
+      ...summary.update,
+      summary: [
+        { text: "x".repeat(16_384), truncated: false },
+        { text: "y", truncated: false },
+      ],
+    },
+  ])
+    expect(
+      codexChatReasoningSummarySchema.safeParse({ ...summary, update }).success,
+    ).toBe(false);
+  expect(
+    codexChatPrivateEventSchema.safeParse({
+      kind: "coding-chat",
+      provider: "codex",
+      version: "0.163.0-alpha.10.2",
+      event: delta,
+    }).success,
+  ).toBe(true);
+  expect(
+    eventSchema.safeParse({
+      kind: "coding-chat",
+      provider: "codex",
+      version: "0.163.0-alpha.10.2",
+      event: delta,
+    }).success,
+  ).toBe(false);
+});
 
 test("private native approvals stay correlated with their exact Chat intent and native identity, and Keeper stays closed", async () => {
   const h = await startTestHearth();
