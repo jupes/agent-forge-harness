@@ -30,60 +30,81 @@ export function linuxProcessGroupState(
   return "inactive";
 }
 
-/** Read only the kernel's membership metadata; no command, environment or provider body is read. */
-export async function observeOwnedProcessGroup(
-  group: number,
-  signal: AbortSignal,
-): Promise<ProcessGroupState> {
-  if (!Number.isSafeInteger(group) || group < 1 || signal.aborted)
-    return "unknown";
-  if (process.platform !== "linux") {
+interface ProcessGroupHost {
+  platform: NodeJS.Platform;
+  probe(group: number): void;
+  entries(): Promise<readonly string[]>;
+  stat(pid: string, signal: AbortSignal): Promise<string>;
+}
+
+/** Only the kernel boundary is injected; callers still receive a membership fact, never process bodies. */
+export function createProcessGroupObserver(host: ProcessGroupHost) {
+  return async (
+    group: number,
+    signal: AbortSignal,
+  ): Promise<ProcessGroupState> => {
+    // -1 names every permitted process, not process group one.
+    if (!Number.isSafeInteger(group) || group < 2 || signal.aborted)
+      return "unknown";
+    // Signal zero sends nothing. ESRCH is a direct kernel absence witness;
+    // a present Linux group still needs zombie-aware membership verification.
     try {
-      process.kill(-group, 0);
-      return "active";
+      host.probe(group);
     } catch (error) {
+      if (signal.aborted) return "unknown";
       return error instanceof Error && "code" in error && error.code === "ESRCH"
         ? "inactive"
         : "unknown";
     }
-  }
-  try {
-    const entries = (await readdir("/proc")).filter((entry) =>
-      /^\d+$/.test(entry),
-    );
-    if (entries.length > MAX_PROC_ENTRIES) return "unknown";
-    for (let index = 0; index < entries.length; index += 64) {
-      if (signal.aborted) return "unknown";
-      const stats = await Promise.all(
-        entries.slice(index, index + 64).map(async (pid) => {
-          try {
-            return await readFile(`/proc/${pid}/stat`, {
-              encoding: "utf8",
-              signal,
-            });
-          } catch (error) {
-            // A process disappearing during the read is already inactive.
-            if (
-              error instanceof Error &&
-              "code" in error &&
-              (error.code === "ENOENT" || error.code === "ESRCH")
-            )
-              return null;
-            throw error;
-          }
-        }),
+    if (signal.aborted) return "unknown";
+    if (host.platform !== "linux") return "active";
+    try {
+      const entries = (await host.entries()).filter((entry) =>
+        /^\d+$/.test(entry),
       );
-      const state = linuxProcessGroupState(
-        group,
-        stats.filter((stat) => stat !== null),
-      );
-      if (state !== "inactive") return state;
+      if (signal.aborted || entries.length > MAX_PROC_ENTRIES) return "unknown";
+      for (let index = 0; index < entries.length; index += 64) {
+        if (signal.aborted) return "unknown";
+        const stats = await Promise.all(
+          entries.slice(index, index + 64).map(async (pid) => {
+            try {
+              return await host.stat(pid, signal);
+            } catch (error) {
+              // A process disappearing during the read is already inactive.
+              if (
+                error instanceof Error &&
+                "code" in error &&
+                (error.code === "ENOENT" || error.code === "ESRCH")
+              )
+                return null;
+              throw error;
+            }
+          }),
+        );
+        if (signal.aborted) return "unknown";
+        const state = linuxProcessGroupState(
+          group,
+          stats.filter((stat) => stat !== null),
+        );
+        if (state !== "inactive") return state;
+      }
+      return "inactive";
+    } catch {
+      return "unknown";
     }
-    return "inactive";
-  } catch {
-    return "unknown";
-  }
+  };
 }
+
+/** Read only kernel membership metadata; never commands, environment or provider bodies. */
+export const observeOwnedProcessGroup = createProcessGroupObserver({
+  platform: process.platform,
+  probe(group) {
+    process.kill(-group, 0);
+  },
+  entries: () => readdir("/proc"),
+  stat: (pid, signal) =>
+    readFile(`/proc/${pid}/stat`, { encoding: "utf8", signal }),
+});
 
 /**
  * A kill signal is a request, not an exit witness. The observer is read-only;

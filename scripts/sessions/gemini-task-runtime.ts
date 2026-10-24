@@ -15,6 +15,10 @@ import {
   serializeGeminiTask,
 } from "./gemini-task";
 import {
+  createGeminiTaskOutputQueue,
+  settleGeminiTaskCapture,
+} from "./gemini-task-output-queue";
+import {
   preparedGeminiLaunchSchema,
   preparedGeminiTaskSchema,
 } from "./gemini-task-runtime-protocol";
@@ -164,11 +168,9 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
         runtime.env["AGENT_FORGE_BEAD_ID"] = snapshot.launch.context.beadId;
       let child: InteractiveSupervised | undefined,
         failure = false,
-        storageFailed = false,
-        pendingBytes = 0,
-        pendingFrames = 0;
+        storageFailed = false;
       let releaseWrites: (() => void) | undefined;
-      let writes = new Promise<void>((resolve) => {
+      const readyForWrites = new Promise<void>((resolve) => {
         releaseWrites = resolve;
       });
       const boundedPersist = async (event: GeminiTaskRuntimeEvent) => {
@@ -194,35 +196,19 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
         failure = true;
         void child?.stop("Gemini protocol, input or private storage failure");
       };
-      const enqueue = (event: GeminiTaskRuntimeEvent) => {
-        const bytes = Buffer.byteLength(JSON.stringify(event));
-        pendingBytes += bytes;
-        pendingFrames++;
-        if (pendingBytes > 1_048_576 || pendingFrames >= 256) {
+      const output = createGeminiTaskOutputQueue({
+        ready: readyForWrites,
+        persist: boundedPersist,
+        mayPersist: () => !storageFailed && !failure && !signal.aborted,
+        onFailure(cause) {
+          if (cause === "skipped") {
+            failure = true;
+            return;
+          }
+          if (cause === "write") storageFailed = true;
           fail();
-          return;
-        }
-        writes = writes
-          .then(async () => {
-            if (storageFailed) return;
-            if (failure || signal.aborted) {
-              // Already accepted writes may finish, but Stop/protocol failure
-              // must not wait once per queued frame. Missing private frames
-              // keep this outcome unknown rather than confirming completion.
-              failure = true;
-              return;
-            }
-            await boundedPersist(event);
-          })
-          .catch(() => {
-            storageFailed = true;
-            fail();
-          })
-          .finally(() => {
-            pendingBytes -= bytes;
-            pendingFrames--;
-          });
-      };
+        },
+      });
       const stop = () => {
         void child?.stop("Gemini Task stopped");
       };
@@ -240,7 +226,7 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
           onLine: (line) => {
             if (!failure)
               try {
-                for (const event of parser.read(line)) enqueue(event);
+                for (const event of parser.read(line)) output.enqueue(event);
               } catch {
                 fail();
               }
@@ -269,15 +255,11 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
           releaseWrites?.();
         }
         const exit = await child.done;
-        await writes;
-        let result = parser.finish(exit);
-        if (failure)
-          result = {
-            ...result,
-            phase: "unknown",
-            reason:
-              "The Gemini stream, input or private persistence was interrupted. This Task was not resent.",
-          };
+        const capture = await output.drain();
+        let result = settleGeminiTaskCapture(
+          parser.finish(exit),
+          failure || capture.incomplete,
+        );
         if (!storageFailed)
           try {
             await boundedPersist({
@@ -301,7 +283,7 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
         signal.removeEventListener("abort", stop);
         releaseWrites?.();
         if (child) await child.done;
-        await writes;
+        await output.drain();
       }
     },
   };
