@@ -12,6 +12,41 @@ const failures = (error: unknown) => {
   );
 };
 
+test("a healthy reader closes before fetch abort can error its cancellation", async () => {
+  const observer = new AbortController();
+  const calls: string[] = [];
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      observer.signal.addEventListener("abort", () => {
+        calls.push("abort fetch");
+        controller.error(observer.signal.reason);
+      });
+    },
+    cancel() {
+      calls.push("cancel healthy reader");
+    },
+  });
+  const reader = source.getReader();
+  const cleanup = createShiftFeedCleanup({
+    abortObserver: () => observer.abort(),
+    cancelObserver: () => reader.cancel(),
+    async finishOwner() {
+      calls.push("finish owner");
+    },
+  });
+  const closed = cleanup.closeObserver();
+  const error: unknown = await cleanup
+    .release()
+    .catch((cause: unknown) => cause);
+  expect(error).toBeUndefined();
+  await closed;
+  expect(calls).toEqual([
+    "cancel healthy reader",
+    "abort fetch",
+    "finish owner",
+  ]);
+});
+
 test("a held observer cancellation cannot hold the private owner's release", async () => {
   const calls: string[] = [];
   let releaseCancel = () => {};
@@ -32,8 +67,8 @@ test("a held observer cancellation cannot hold the private owner's release", asy
   try {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(calls).toEqual([
-      "abort observer",
       "cancel observer",
+      "abort observer",
       "finish owner",
     ]);
   } finally {
@@ -96,12 +131,12 @@ test("normal observer closure and repeated cleanup close and finish exactly once
   const closed = cleanup.closeObserver();
   expect(cleanup.closeObserver()).toBe(closed);
   await closed;
-  expect(calls).toEqual(["abort", "cancel"]);
+  expect(calls).toEqual(["cancel", "abort"]);
   const released = cleanup.release();
   expect(cleanup.release()).toBe(released);
   await released;
   await cleanup.release();
-  expect(calls).toEqual(["abort", "cancel", "finish"]);
+  expect(calls).toEqual(["cancel", "abort", "finish"]);
 });
 
 test("an observer abort failure cannot skip owner release or retry cleanup", async () => {
@@ -128,9 +163,42 @@ test("an observer abort failure cannot skip owner release or retry cleanup", asy
   ]);
   expect({ aborted, cancelled, finished }).toEqual({
     aborted: 1,
-    cancelled: 0,
+    cancelled: 1,
     finished: 1,
   });
+});
+
+test("synchronous cancellation and abort refusals are both retained while owner release starts", async () => {
+  const cancelCause = new Error("fixture synchronous cancel refusal");
+  const abortCause = new Error("fixture abort refusal");
+  const calls: string[] = [];
+  const cleanup = createShiftFeedCleanup({
+    cancelObserver() {
+      calls.push("cancel");
+      throw cancelCause;
+    },
+    abortObserver() {
+      calls.push("abort");
+      throw abortCause;
+    },
+    async finishOwner() {
+      calls.push("finish");
+    },
+  });
+  const releasing = cleanup.release();
+  expect(calls).toEqual(["cancel", "abort", "finish"]);
+  const error: unknown = await releasing.catch((cause: unknown) => cause);
+  expect(failures(error)).toEqual([
+    "Private Shift feed observer cancellation failed",
+  ]);
+  if (!(error instanceof AggregateError)) throw error;
+  const closeFailure: unknown = error.errors[0];
+  if (
+    !(closeFailure instanceof Error) ||
+    !(closeFailure.cause instanceof AggregateError)
+  )
+    throw error;
+  expect(closeFailure.cause.errors).toEqual([cancelCause, abortCause]);
 });
 
 test("phase bounds name the blocked operation and preserve its original refusal", async () => {

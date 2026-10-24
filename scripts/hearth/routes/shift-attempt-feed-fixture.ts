@@ -39,8 +39,18 @@ export function createShiftFeedCleanup(options: {
     closing ??= shiftFeedPhase(
       "observer cancellation",
       async () => {
-        options.abortObserver();
-        await options.cancelObserver();
+        // Start cancellation while the reader is healthy; abort its fetch before awaiting it.
+        const cancelled = observe(options.cancelObserver);
+        const aborted = observe(options.abortObserver);
+        const results = await Promise.all([cancelled, aborted]);
+        const failures = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (failures.length)
+          throw new AggregateError(
+            failures,
+            "Observer cancellation/abort failed",
+          );
       },
       withinMs,
     );
@@ -65,4 +75,19 @@ export function createShiftFeedCleanup(options: {
       return releasing;
     },
   };
+}
+
+/** Calls now and observes rejection before the next cleanup operation can throw. */
+function observe(work: () => unknown): Promise<PromiseSettledResult<unknown>> {
+  try {
+    return Promise.resolve(work()).then<
+      PromiseSettledResult<unknown>,
+      PromiseSettledResult<unknown>
+    >(
+      (value) => ({ status: "fulfilled", value }),
+      (reason: unknown) => ({ status: "rejected", reason }),
+    );
+  } catch (reason) {
+    return Promise.resolve({ status: "rejected", reason });
+  }
 }
