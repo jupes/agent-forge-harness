@@ -215,12 +215,8 @@ test("an open private shift feed observes persisted frames without a local chang
       file = conversationFile(h.home, FIXTURE_PROJECT_ID, active.address),
       bytes = readFileSync(file, "utf8");
     expect(before.turns[0]?.phase).toBe("running");
-    await cleanup.closeObserver();
-    expect(store.read(FIXTURE_PROJECT_ID)).toEqual(before);
-    expect(readFileSync(file, "utf8")).toBe(bytes);
-    expect(store.read(FIXTURE_PROJECT_ID).turns[0]?.phase).toBe("running");
     const stopped = await shiftFeedPhase(
-      "generic Stop refusal",
+      "generic Stop refusal while observer is open",
       async () => {
         const response = await fetch(
           `${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${active.record.id}/stop`,
@@ -243,6 +239,10 @@ test("an open private shift feed observes persisted frames without a local chang
     expect(store.read(FIXTURE_PROJECT_ID)).toEqual(before);
     expect(readFileSync(file, "utf8")).toBe(bytes);
     expect(h.shifts.launches).toEqual([]);
+    await cleanup.closeObserver();
+    expect(store.read(FIXTURE_PROJECT_ID)).toEqual(before);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+    expect(store.read(FIXTURE_PROJECT_ID).turns[0]?.phase).toBe("running");
   } finally {
     await cleanup.release();
   }
