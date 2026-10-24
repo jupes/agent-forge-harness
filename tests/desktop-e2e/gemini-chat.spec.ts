@@ -274,6 +274,17 @@ async function accepted() {
   const record = records().find((item) => !previous.has(item.id));
   if (!record || record.provider !== "gemini" || record.mode !== "chat")
     throw Error("No exact accepted Gemini Chat original");
+  // Registry reservation precedes the private original. Retry only absence;
+  // malformed or foreign saved bytes still fail the strict reader below.
+  await expect
+    .poll(() =>
+      existsSync(join(HEARTH_HOME, "conversations", `${record.id}.json`)),
+    )
+    .toBe(true);
+  const state = saved(record.id);
+  expect(state.projectId).toBe(record.projectId);
+  expect(state.conversationId).toBe(record.id);
+  expect(state.turns[0]?.requestId).toBe(record.requestId);
   return record;
 }
 async function keyboardFocus(page: Page, target: Locator) {
@@ -315,7 +326,8 @@ async function capture(page: Page, name: string, dialog?: Locator) {
     name: "Hide inspector",
     exact: true,
   });
-  if (await hide.isVisible()) await hide.click();
+  // An open modal intentionally blocks the underlying inspector toggle.
+  if (!dialog && (await hide.isVisible())) await hide.click();
   await page.setViewportSize({ width: 1280, height: 1000 });
   if (dialog)
     await dialog
@@ -948,7 +960,40 @@ test("saved native deadline hides a genuinely actionable old offer before generi
     );
     await finished.promise;
   }
-  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("unknown");
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("failed");
+  const state = saved(record.id),
+    nativeOutcome = state.frames.flatMap((frame) =>
+      frame.event.kind === "coding-gemini-chat" &&
+      frame.event.event.kind === "outcome"
+        ? [frame.event.event]
+        : [],
+    );
+  expect(nativeOutcome).toHaveLength(1);
+  expect(nativeOutcome[0]).toMatchObject({
+    timedOut: true,
+    stopped: true,
+    outcome: {
+      phase: "failed",
+      reason: "The Gemini Chat prompt timed out.",
+      sessionId: nativeId,
+      stopReason: "cancelled",
+    },
+  });
+  expect(state.binding).toEqual({
+    provider: "gemini",
+    sessionId: nativeId,
+    version: "0.65.0",
+  });
+  const processCall = calls()
+      .filter((row) => row.kind === "start")
+      .at(-1),
+    helper = calls()
+      .filter((row) => row.kind === "helper")
+      .at(-1);
+  if (!processCall?.pid || !helper?.pid)
+    throw Error("No actual expired inert ACP tree witness");
+  expect(running(processCall.pid)).toBe(false);
+  expect(running(helper.pid)).toBe(false);
   await reloadSettled(page);
   await expect(allow).toHaveCount(0);
   const { exported } = await exportSaved(page);
