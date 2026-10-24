@@ -1,5 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { writeWhole } from "../../executors/fixtures/write-whole";
+import {
+  publishHelpEntry,
+  publishProbeFailure,
+} from "./gemini-chat-probe-witness";
 
 /** Inert native protocol stand-in. Never imports a provider SDK or forwards commands. */
 export async function runGeminiChatFixture() {
@@ -26,15 +30,33 @@ export async function runGeminiChatFixture() {
   const mode = control.mode ?? process.env.GEMINI_CHAT_MODE ?? "normal";
   const record = (value: unknown) => {
     if (!log) return;
-    let prior: unknown[] = [];
-    if (existsSync(log)) {
-      try {
-        prior = JSON.parse(readFileSync(log, "utf8"));
-      } catch {
-        throw Error("Invalid fixture recording");
+    try {
+      let prior: unknown[] = [];
+      if (existsSync(log)) {
+        const text = readFileSync(log, "utf8");
+        try {
+          prior = JSON.parse(text);
+        } catch {
+          throw Error("Invalid fixture recording");
+        }
       }
+      writeWhole(log, JSON.stringify([...prior, value]));
+    } catch (error) {
+      if (mode === "hold-help" && typeof control.helpNonce === "string") {
+        try {
+          if (argv.includes("--version") || argv.includes("--help"))
+            publishProbeFailure(
+              log,
+              control.helpNonce,
+              argv.includes("--version") ? "version" : "help",
+              error,
+            );
+        } catch {
+          // Preserve the actual recording error if its bounded diagnostic fails.
+        }
+      }
+      throw error;
     }
-    writeWhole(log, JSON.stringify([...prior, value]));
   };
   if (argv.includes("--version")) {
     record({ kind: "version" });
@@ -53,6 +75,7 @@ export async function runGeminiChatFixture() {
       )
         throw Error("Missing owned help-probe handshake");
       record({ kind: "help", nonce, pid: process.pid });
+      publishHelpEntry(log, nonce, process.pid);
       // The existing supervised five-second probe owns this wait and its tree.
       const release = `${log}.help-release`;
       while (!existsSync(release) || readFileSync(release, "utf8") !== nonce)
