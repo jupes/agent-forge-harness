@@ -143,6 +143,9 @@ export async function verifyKeeperSessionReview(
         key: name,
         code: name,
         windowsVirtualKeyCode: code,
+        ...(type === "keyDown" && name === "Enter"
+          ? { text: "\r", unmodifiedText: "\r" }
+          : {}),
       });
   };
   socket.addEventListener("message", observe);
