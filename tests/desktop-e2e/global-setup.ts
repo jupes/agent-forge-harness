@@ -40,6 +40,24 @@ export default async function setup(): Promise<void> {
   });
   if (geminiProbe.status !== 0 || geminiProbe.stdout.trim() !== "0.65.0")
     throw Error("The compiled Gemini fixture did not identify itself.");
+  const geminiChatBuilt = spawnSync(
+    bunPath(),
+    [
+      "build",
+      "--compile",
+      resolve("tests/desktop-e2e/gemini-chat-cli-stand-in.ts"),
+      "--outfile",
+      join(
+        BD_STAND_IN_BIN,
+        process.platform === "win32" ? "gemini-chat.exe" : "gemini-chat",
+      ),
+    ],
+    { encoding: "utf8", timeout: 60_000 },
+  );
+  if (geminiChatBuilt.status !== 0)
+    throw Error(
+      `Gemini ACP fixture did not compile: ${geminiChatBuilt.stderr}`,
+    );
   const program = join(
     BD_STAND_IN_BIN,
     process.platform === "win32" ? "claude.exe" : "claude",
