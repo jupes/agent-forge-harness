@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type {
   CodexChatCapabilities,
   CodexChatLaunch,
+  CodexChatTurnPlan,
 } from "../../types/codex-chat";
 import {
   codexChatLaunchSchema,
@@ -133,6 +134,180 @@ const reasoningItem = (overrides: Record<string, unknown> = {}) => ({
 });
 const summaryFrame = (method: string, extra: Record<string, unknown> = {}) =>
   notify(method, { threadId, turnId, itemId: "native-summary", ...extra });
+
+test("turn plans retain mutable and repeated native replacement snapshots without creating items or turn completion", () => {
+  const decoder = stream(),
+    first = {
+      threadId,
+      turnId,
+      explanation: null,
+      plan: [{ step: "Original step", status: "completed" }],
+    },
+    update = (value: unknown) =>
+      decoder.accept(notify("turn/plan/updated", value)).events;
+  const expected: CodexChatTurnPlan = {
+    kind: "turn-plan",
+    source: "turn/plan/updated",
+    threadId,
+    turnId,
+    explanation: null,
+    plan: [
+      {
+        step: { text: "Original step", truncated: false },
+        status: "completed",
+      },
+    ],
+    truncated: false,
+  };
+  expect(update(first)).toEqual([expected]);
+  expect(update(first)).toEqual([expected]);
+  expect(decoder.state().terminal).toBeNull();
+  const changed = update({
+    ...first,
+    explanation: "A revised plan",
+    plan: [
+      { step: "Changed step", status: "pending" },
+      { step: "Additional step", status: "inProgress" },
+    ],
+  });
+  expect(changed[0]).toMatchObject({
+    explanation: { text: "A revised plan" },
+    plan: [
+      { step: { text: "Changed step" }, status: "pending" },
+      { status: "inProgress" },
+    ],
+  });
+  expect(update({ ...first, explanation: "", plan: [] })).toEqual([
+    { ...expected, explanation: { text: "", truncated: false }, plan: [] },
+  ]);
+  expect(expected).not.toHaveProperty("itemId");
+  expect(
+    decoder.accept(
+      notify("item/plan/delta", {
+        threadId,
+        turnId,
+        itemId: "unreported-plan-item",
+        delta: "Experimental independent text",
+      }),
+    ).events,
+  ).toEqual([]);
+  expect(
+    decoder.accept(
+      notify("turn/diff/updated", {
+        threadId,
+        turnId,
+        diff: "Separate unreported diff",
+      }),
+    ).events,
+  ).toEqual([]);
+});
+
+test("turn plans refuse missing or foreign native scope, malformed statuses and post-terminal reports", () => {
+  const decoder = stream(),
+    valid = {
+      threadId,
+      turnId,
+      explanation: null,
+      plan: [{ step: "Supplied", status: "pending" }],
+    };
+  for (const change of [
+    { threadId: turnId },
+    { turnId: threadId },
+    { threadId: undefined },
+    { turnId: undefined },
+    { explanation: undefined },
+    { explanation: 3 },
+    { plan: null },
+    { plan: [{ step: "bad", status: "in-progress" }] },
+    { plan: [{ step: 7, status: "pending" }] },
+  ])
+    expect(() =>
+      decoder.accept(notify("turn/plan/updated", { ...valid, ...change })),
+    ).toThrow();
+  decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "completed", error: null, items: [] },
+    }),
+  );
+  expect(() => decoder.accept(notify("turn/plan/updated", valid))).toThrow(
+    "terminal",
+  );
+});
+
+test("turn plans clip combined UTF-8 explanation and steps and share the command and summary budget", () => {
+  const decoder = stream(),
+    report = decoder.accept(
+      notify("turn/plan/updated", {
+        threadId,
+        turnId,
+        explanation: "🌱".repeat(4095),
+        plan: [{ step: "🌱more", status: "completed" }],
+      }),
+    ).events[0];
+  expect(report).toMatchObject({
+    kind: "turn-plan",
+    explanation: { truncated: false },
+    plan: [{ step: { text: "🌱", truncated: true }, status: "completed" }],
+    truncated: true,
+  });
+  const list = decoder.accept(
+    notify("turn/plan/updated", {
+      threadId,
+      turnId,
+      explanation: null,
+      plan: Array.from({ length: 129 }, () => ({
+        step: "x",
+        status: "pending",
+      })),
+    }),
+  ).events[0];
+  if (list?.kind !== "turn-plan") throw Error("Missing bounded native plan");
+  expect(list.plan).toHaveLength(128);
+  expect(list.truncated).toBe(true);
+  const combined = stream();
+  for (let index = 0; index < 20; index++)
+    combined.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `budget-command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  for (let index = 0; index < 40; index++)
+    combined.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: reasoningItem({
+          id: `budget-summary-${index}`,
+          summary: ["z".repeat(16_384)],
+        }),
+      }),
+    );
+  let accepted = 0;
+  for (; accepted < 100; accepted++) {
+    try {
+      combined.accept(
+        notify("turn/plan/updated", {
+          threadId,
+          turnId,
+          explanation: null,
+          plan: [{ step: "p".repeat(16_384), status: "completed" }],
+        }),
+      );
+    } catch (cause) {
+      expect(String(cause)).toContain("private report bound");
+      break;
+    }
+  }
+  expect(accepted).toBeGreaterThan(0);
+  expect(accepted).toBeLessThan(100);
+});
 
 test("explicit reasoning summaries preserve independent indexed streams and snapshots without inventing an unannounced prefix", () => {
   const decoder = stream(),

@@ -234,7 +234,8 @@ function reportedTurn(
     if (
       event.kind === "coding-chat" &&
       (event.event.kind === "command" ||
-        event.event.kind === "reasoning-summary")
+        event.event.kind === "reasoning-summary" ||
+        event.event.kind === "turn-plan")
     ) {
       if (
         value.binding?.provider !== "codex" ||
@@ -444,7 +445,11 @@ function nativeChatHistory(value: {
         return false;
       turn.itemKinds.set(native.itemId, native.kind);
     }
-    if (native.kind === "command" || native.kind === "reasoning-summary") {
+    if (
+      native.kind === "command" ||
+      native.kind === "reasoning-summary" ||
+      native.kind === "turn-plan"
+    ) {
       if (
         turn.pid === undefined ||
         native.threadId !== value.binding.sessionId ||

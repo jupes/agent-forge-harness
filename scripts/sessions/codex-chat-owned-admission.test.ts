@@ -6,6 +6,7 @@ import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type {
   CodexChatCommand,
   CodexChatReasoningSummary,
+  CodexChatTurnPlan,
 } from "../../types/codex-chat";
 import type { CodexChatStartRequest } from "../../types/codex-owned-chat";
 import type { ConversationFrame } from "../../types/conversation";
@@ -112,6 +113,321 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   };
   return { root, home, project, request, open, records, runtime };
 }
+
+test("actual native mutable turn plans stay exact through private whole and partial reads, complete export, recreation and original retry", async () => {
+  const f = await fixture("turn-plan");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id;
+  await service.settled(f.project.id, sessionId);
+  const page = await service.read(f.project.id, sessionId),
+    plans = page.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "turn-plan",
+    ),
+    first = plans[0];
+  expect(plans).toHaveLength(3);
+  expect(plans[0]?.event).toEqual(plans[1]?.event);
+  expect(plans[2]?.event).not.toEqual(plans[0]?.event);
+  expect(page.turns[0]?.phase).toBe("completed");
+  if (
+    first?.event.kind !== "coding-chat" ||
+    first.event.event.kind !== "turn-plan"
+  )
+    throw Error("Missing actual native plan");
+  const store = createConversationStore(f.home, undefined, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    }),
+    state = store.read(f.project.id),
+    path = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    }),
+    before = readFileSync(path),
+    registry = readFileSync(sessionRegistryFile(f.home));
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  for (const missing of ["user", "process", "native-turn"])
+    expect(
+      ownedCodingStateSchema.safeParse({
+        ...state,
+        frames: state.frames.filter((frame) =>
+          missing === "native-turn"
+            ? frame.event.kind !== "coding-chat" ||
+              frame.event.event.kind !== "turn"
+            : frame.event.kind !== missing,
+        ),
+      }).success,
+    ).toBe(false);
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: state.frames.filter(
+        (frame) => !plans.some((plan) => plan.seq === frame.seq),
+      ),
+    }).success,
+  ).toBe(true); // Legacy turns did not capture additive plan reports.
+  for (const change of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { itemId: "invented-item" },
+    { source: "item/plan/delta" },
+    { phase: "completed" },
+  ]) {
+    const altered = structuredClone(state),
+      target = altered.frames.find((frame) => frame.seq === first.seq);
+    if (
+      target?.event.kind !== "coding-chat" ||
+      target.event.event.kind !== "turn-plan"
+    )
+      throw Error("Missing copied native plan");
+    Object.assign(target.event.event, change);
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+  for (const change of [{ version: "other" }, { turnId: randomUUID() }]) {
+    const altered = structuredClone(state),
+      target = altered.frames.find((frame) => frame.seq === first.seq);
+    if (!target) throw Error("Missing copied native plan");
+    if ("version" in change) Object.assign(target.event, change);
+    else Object.assign(target, change);
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+  for (const frame of plans) {
+    const partial = await service.read(f.project.id, sessionId, {
+      after: frame.seq - 1,
+    });
+    expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+    expect(partial.frames).toContainEqual(frame);
+    expect(eventSchema.safeParse(frame.event).success).toBe(false);
+    for (const binding of [
+      null,
+      {
+        provider: "codex",
+        sessionId: randomUUID(),
+        version: "0.163.0-alpha.10.2",
+      },
+      {
+        provider: "codex",
+        sessionId: first.event.event.threadId,
+        version: "other",
+      },
+    ])
+      expect(
+        ownedCodingPageSchema.safeParse({ ...partial, binding }).success,
+      ).toBe(false);
+  }
+  const outcome = state.frames.findIndex(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "outcome",
+  );
+  expect(outcome).toBeGreaterThan(first.seq);
+  const late = { ...first, seq: state.frames.length + 1 };
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [...state.frames, late],
+    }).success,
+  ).toBe(false);
+  await expect(
+    store.append(
+      f.project.id,
+      f.request.requestId,
+      "former-owner",
+      first.event,
+    ),
+  ).rejects.toThrow();
+  expect(readFileSync(path)).toEqual(before);
+
+  // Native final item snapshots close rich updates before the final runtime outcome.
+  const prefix = state.frames.filter((frame) => frame.seq < first.seq),
+    final: CodexChatReasoningSummary = {
+      kind: "reasoning-summary",
+      source: "turn/completed",
+      threadId: first.event.event.threadId,
+      turnId: first.event.event.turnId,
+      itemId: "final-summary",
+      partial: false,
+      update: {
+        kind: "snapshot",
+        summary: [],
+        truncated: false,
+        closure: "turn-ended",
+        turnStatus: "completed",
+      },
+    },
+    report = (
+      event: CodexChatCommand | CodexChatReasoningSummary | CodexChatTurnPlan,
+      index: number,
+    ): ConversationFrame => ({
+      ...first,
+      seq: prefix.length + index + 1,
+      event: ownedCodingEventSchema.parse({
+        kind: "coding-chat",
+        provider: "codex",
+        version: "0.163.0-alpha.10.2",
+        event,
+      }),
+    });
+  expect(
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [...prefix, report(final, 0), report(first.event.event, 1)],
+    }).success,
+  ).toBe(false);
+  const command: CodexChatCommand = {
+      kind: "command",
+      source: "item/completed",
+      threadId: final.threadId,
+      turnId: final.turnId,
+      itemId: "budget-command",
+      command: { text: "x".repeat(16_384), truncated: false },
+      cwd: f.root,
+      status: "completed",
+      output: { text: "y".repeat(16_384), truncated: false },
+      outputSource: "aggregate",
+      exitCode: 0,
+      durationMs: 0,
+      partial: false,
+    },
+    summary: CodexChatReasoningSummary = {
+      ...final,
+      source: "item/completed",
+      update: {
+        kind: "snapshot",
+        truncated: false,
+        summary: [{ text: "z".repeat(16_384), truncated: false }],
+        closure: "item-ended",
+        turnStatus: null,
+      },
+    },
+    plan: CodexChatTurnPlan = {
+      ...first.event.event,
+      explanation: { text: "p".repeat(16_384), truncated: false },
+      plan: [],
+    },
+    commands = Array.from({ length: 20 }, (_, index) => ({
+      ...command,
+      itemId: `command-${index}`,
+    })),
+    summaries = Array.from({ length: 40 }, (_, index) => ({
+      ...summary,
+      itemId: `summary-${index}`,
+    })),
+    updates = Array.from({ length: 55 }, () => plan);
+  const accepts = (
+    events: Array<
+      CodexChatCommand | CodexChatReasoningSummary | CodexChatTurnPlan
+    >,
+  ) =>
+    ownedCodingStateSchema.safeParse({
+      ...state,
+      frames: [...prefix, ...events.map(report)],
+    }).success;
+  expect(accepts(commands)).toBe(true);
+  expect(accepts(summaries)).toBe(true);
+  expect(accepts(updates)).toBe(true);
+  expect(accepts([...commands, ...summaries])).toBe(true);
+  expect(accepts([...commands, ...summaries, ...updates])).toBe(false);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  for (const frame of plans)
+    expect(exported.conversation.frames).toContainEqual(frame);
+  await service.close();
+  service = f.open();
+  expect((await service.read(f.project.id, sessionId)).frames).toEqual(
+    page.frames,
+  );
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(readFileSync(path)).toEqual(before);
+  expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registry);
+});
+
+test.each([
+  "Stop",
+  "deadline",
+])("actual %s retains a completed-step plan while deriving lifecycle only from the native runtime", async (action) => {
+  const f = await fixture("turn-plan-held");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id,
+    deadline = Date.now() + 4000;
+  let running = await service.read(f.project.id, sessionId);
+  while (
+    !running.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "turn-plan" &&
+        frame.event.event.plan.every((step) => step.status === "completed"),
+    )
+  ) {
+    if (Date.now() > deadline)
+      throw Error(
+        "Native completed-step plan did not reach its private journal",
+      );
+    await Bun.sleep(20);
+    running = await service.read(f.project.id, sessionId);
+  }
+  expect(running.turns[0]?.phase).toBe("running");
+  expect(
+    ownedSessionLifecycle(running, {
+      mode: "chat",
+      loaded: true,
+      live: true,
+      stopping: false,
+      feedInterrupted: false,
+      readError: "",
+    }).state,
+  ).toBe("running");
+  if (action === "Stop")
+    await service.stop(f.project.id, sessionId, f.request.requestId);
+  await service.settled(f.project.id, sessionId);
+  await service.close();
+  service = f.open();
+  const page = await service.read(f.project.id, sessionId),
+    plans = page.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "turn-plan",
+    );
+  expect(plans).toHaveLength(3);
+  expect(plans).toEqual(
+    running.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "turn-plan",
+    ),
+  );
+  expect(
+    ownedSessionLifecycle(page, {
+      mode: "chat",
+      loaded: true,
+      live: false,
+      stopping: false,
+      feedInterrupted: false,
+      readError: "",
+    }).state,
+  ).toBe(action === "Stop" ? "stopped" : "timed-out");
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  for (const frame of plans)
+    expect(exported.conversation.frames).toContainEqual(frame);
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+});
 
 test("actual explicit native summaries preserve private indexed facts and a shared command budget across reads, export and recreation", async () => {
   const f = await fixture("reasoning-summary");

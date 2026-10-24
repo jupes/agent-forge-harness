@@ -5,6 +5,7 @@ import type {
   CodexChatEvent,
   CodexChatOutcome,
   CodexChatReasoningSummary,
+  CodexChatTurnPlan,
 } from "../../types/codex-chat";
 import type {
   CodexChatDecisionIntent,
@@ -58,6 +59,41 @@ const usage = z
     }),
   );
 const decision = z.enum(["accept", "decline", "cancel"]);
+export const codexChatTurnPlanSchema = z
+  .object({
+    kind: z.literal("turn-plan"),
+    source: z.literal("turn/plan/updated"),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    explanation: reportedTextSchema.nullable(),
+    plan: z
+      .array(
+        z
+          .object({
+            step: reportedTextSchema,
+            status: z.enum(["pending", "inProgress", "completed"]),
+          })
+          .strict(),
+      )
+      .max(SESSION_ACTIVITY_LIMITS.items),
+    truncated: z.boolean(),
+  })
+  .strict()
+  .refine((value) => {
+    const values = [
+      ...(value.explanation ? [value.explanation] : []),
+      ...value.plan.map((part) => part.step),
+    ];
+    return (
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes &&
+      values.reduce(
+        (total, part) => total + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      (value.truncated || !values.some((part) => part.truncated))
+    );
+  }) satisfies z.ZodType<CodexChatTurnPlan>;
 const summaryIndex = z
   .number()
   .int()
@@ -233,6 +269,7 @@ export const codexChatApprovalSchema = z
 const nativeEvent = z.discriminatedUnion("kind", [
   codexChatCommandSchema,
   codexChatReasoningSummarySchema,
+  codexChatTurnPlanSchema,
   z
     .object({
       kind: z.literal("process"),

@@ -97,6 +97,76 @@ function fixture(mode = "normal") {
   };
   return { root, runtime, launch, records, options };
 }
+test("an actual native Chat retains mutable supplied turn plans without inventing an item, mode or completion from step status", async () => {
+  const f = fixture("turn-plan"),
+    events: CodexChatEvent[] = [];
+  const prepared = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  const result = await f.runtime.run(
+    { prepared, resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    new AbortController().signal,
+    { requestApproval: async () => "decline" },
+  );
+  expect(result.phase).toBe("completed");
+  const plans = events.filter((event) => event.kind === "turn-plan");
+  expect(plans).toHaveLength(3);
+  expect(plans[0]).toEqual(plans[1]);
+  expect(plans[0]).not.toHaveProperty("itemId");
+  expect(events).toContainEqual({
+    kind: "turn-plan",
+    source: "turn/plan/updated",
+    threadId,
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    explanation: null,
+    plan: [
+      {
+        step: { text: "Inspect the supplied context", truncated: false },
+        status: "inProgress",
+      },
+      {
+        step: { text: "Check the result", truncated: false },
+        status: "pending",
+      },
+    ],
+    truncated: false,
+  });
+  expect(events).toContainEqual({
+    kind: "turn-plan",
+    source: "turn/plan/updated",
+    threadId,
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    explanation: {
+      text: "The provider revised its supplied plan.",
+      truncated: false,
+    },
+    plan: [
+      {
+        step: { text: "Inspect the supplied context", truncated: false },
+        status: "completed",
+      },
+      {
+        step: { text: "Check the revised result", truncated: false },
+        status: "inProgress",
+      },
+    ],
+    truncated: false,
+  });
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(f.records().find((row) => row.method === "initialize")).toMatchObject({
+    params: { capabilities: { experimentalApi: false } },
+  });
+  expect(
+    f.records().find((row) => row.method === "turn/start")?.params,
+  ).not.toHaveProperty("plan");
+});
+
 test("an actual native Chat exposes only explicit indexed reasoning summaries without requesting or retaining raw content", async () => {
   const f = fixture("reasoning-summary"),
     events: CodexChatEvent[] = [];

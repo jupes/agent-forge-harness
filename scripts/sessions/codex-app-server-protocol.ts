@@ -7,6 +7,7 @@ import type {
   CodexChatEvent,
   CodexChatLaunch,
   CodexChatReasoningSummary,
+  CodexChatTurnPlan,
   CodexChatUsage,
   PreparedCodexChat,
 } from "../../types/codex-chat";
@@ -259,6 +260,17 @@ const nativeReasoning = z.object({
   id,
   summary: z.array(z.string().max(1_048_576)).max(4096),
 });
+const nativeTurnPlan = z.object({
+  explanation: z.string().max(1_048_576).nullable(),
+  plan: z
+    .array(
+      z.object({
+        step: z.string().max(1_048_576),
+        status: z.enum(["pending", "inProgress", "completed"]),
+      }),
+    )
+    .max(4096),
+});
 const summaryIndex = z
   .number()
   .int()
@@ -371,7 +383,7 @@ export function createCodexChatStream(options: {
     return suffix ? [{ kind: "text", itemId, text: suffix }] : [];
   };
   const richReport = (
-    report: CodexChatCommand | CodexChatReasoningSummary,
+    report: CodexChatCommand | CodexChatReasoningSummary | CodexChatTurnPlan,
   ): CodexChatEvent[] => {
     const bytes = encoder.encode(JSON.stringify(report)).byteLength;
     if (bytes > SESSION_ACTIVITY_LIMITS.eventBytes)
@@ -880,6 +892,45 @@ export function createCodexChatStream(options: {
             events.push(...reasoning(value, "turn/completed", finished.status));
         }
         terminal = finished.status;
+      } else if (frame.method === "turn/plan/updated") {
+        scoped(params);
+        if (terminal)
+          throw Error("Codex plan arrived after its terminal result.");
+        const supplied = nativeTurnPlan.parse(params);
+        let remaining = SESSION_ACTIVITY_LIMITS.textBytes,
+          truncated = supplied.plan.length > SESSION_ACTIVITY_LIMITS.items;
+        const retain = (value: string) => {
+          const normalized = reportedText(value),
+            retained = prefix(normalized.text, remaining);
+          remaining -= retained.bytes;
+          const text = {
+            text: retained.text,
+            truncated:
+              normalized.truncated ||
+              retained.text.length < normalized.text.length,
+          };
+          truncated ||= text.truncated;
+          return text;
+        };
+        const explanation =
+            supplied.explanation === null ? null : retain(supplied.explanation),
+          plan = supplied.plan
+            .slice(0, SESSION_ACTIVITY_LIMITS.items)
+            .map((value) => ({
+              step: retain(value.step),
+              status: value.status,
+            }));
+        events.push(
+          ...richReport({
+            kind: "turn-plan",
+            source: "turn/plan/updated",
+            threadId: codexNativeUuidSchema.parse(threadId),
+            turnId: codexNativeUuidSchema.parse(turnId),
+            explanation,
+            plan,
+            truncated,
+          }),
+        );
       } else if (frame.method === "serverRequest/resolved") {
         scoped(params, false);
         resolved.push(nativeRequestId.parse(params.requestId));

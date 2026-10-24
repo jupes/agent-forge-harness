@@ -13,11 +13,72 @@ import {
   codexChatCommandSchema,
   codexChatPrivateEventSchema,
   codexChatReasoningSummarySchema,
+  codexChatTurnPlanSchema,
 } from "./codex-chat-owned-journal";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
+
+test("private turn plans retain explicit nullable and empty reports but refuse invented item, lifecycle, source and unbounded text", () => {
+  const plan = {
+    kind: "turn-plan",
+    source: "turn/plan/updated",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    explanation: null,
+    plan: [],
+    truncated: false,
+  };
+  expect(codexChatTurnPlanSchema.safeParse(plan).success).toBe(true);
+  expect(
+    codexChatTurnPlanSchema.safeParse({
+      ...plan,
+      explanation: { text: "", truncated: false },
+      plan: [{ step: { text: "", truncated: false }, status: "pending" }],
+    }).success,
+  ).toBe(true);
+  for (const change of [
+    { source: "item/plan/delta" },
+    { threadId: "application-session-address" },
+    { turnId: "application-turn-address" },
+    { explanation: undefined },
+    { itemId: "invented-plan-item" },
+    { phase: "completed" },
+    { raw: "inert" },
+    { plan: [{ step: { text: "x", truncated: false }, status: "running" }] },
+    { plan: [{ step: { text: "x", truncated: true }, status: "pending" }] },
+    {
+      explanation: { text: "x".repeat(16_384), truncated: false },
+      plan: [{ step: { text: "x", truncated: false }, status: "pending" }],
+    },
+    {
+      plan: Array.from({ length: 129 }, () => ({
+        step: { text: "", truncated: false },
+        status: "completed",
+      })),
+    },
+    {
+      explanation: { text: "🌱".repeat(4097), truncated: true },
+      truncated: true,
+    },
+  ])
+    expect(
+      codexChatTurnPlanSchema.safeParse({ ...plan, ...change }).success,
+    ).toBe(false);
+  const event = {
+    kind: "coding-chat",
+    provider: "codex",
+    version: "0.163.0-alpha.10.2",
+    event: plan,
+  };
+  expect(codexChatPrivateEventSchema.safeParse(event).success).toBe(true);
+  expect(eventSchema.safeParse(event).success).toBe(false);
+  expect(
+    codexChatPrivateEventSchema.safeParse({ ...event, version: "other" })
+      .success,
+  ).toBe(false);
+});
 
 test("whole native Chat history keeps text, command and summary item kinds distinct while preserving legacy text fragments and the shared item bound", async () => {
   const h = await startTestHearth();

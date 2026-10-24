@@ -285,6 +285,35 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
+      } else if (mode === "turn-plan" || mode === "turn-plan-held") {
+        const scope = { threadId, turnId },
+          firstPlan = {
+            ...scope,
+            explanation: null,
+            plan: [
+              { step: "Inspect the supplied context", status: "inProgress" },
+              { step: "Check the result", status: "pending" },
+            ],
+          };
+        await send({ method: "turn/plan/updated", params: firstPlan });
+        // Repeated identical native snapshots are still legitimate reports.
+        await send({ method: "turn/plan/updated", params: firstPlan });
+        await send({
+          method: "turn/plan/updated",
+          params: {
+            ...scope,
+            explanation: "The provider revised its supplied plan.",
+            plan: [
+              { step: "Inspect the supplied context", status: "completed" },
+              {
+                step: "Check the revised result",
+                status: mode === "turn-plan-held" ? "completed" : "inProgress",
+              },
+            ],
+          },
+        });
+        if (mode === "turn-plan-held") hangTree();
+        else await finish();
       } else if (
         [
           "reasoning-summary",

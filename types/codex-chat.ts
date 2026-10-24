@@ -109,6 +109,20 @@ export interface CodexChatReasoningSummary {
       };
 }
 
+/** A mutable native turn snapshot; step status never establishes turn completion. */
+export interface CodexChatTurnPlan {
+  kind: "turn-plan";
+  source: "turn/plan/updated";
+  threadId: string;
+  turnId: string;
+  explanation: ReportedText | null;
+  plan: {
+    step: ReportedText;
+    status: "pending" | "inProgress" | "completed";
+  }[];
+  truncated: boolean;
+}
+
 export type CodexChatEvent =
   | {
       kind: "process";
@@ -130,6 +144,7 @@ export type CodexChatEvent =
   | { kind: "text"; itemId: string; text: string }
   | CodexChatCommand
   | CodexChatReasoningSummary
+  | CodexChatTurnPlan
   | { kind: "usage"; usage: CodexChatUsage }
   | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }
