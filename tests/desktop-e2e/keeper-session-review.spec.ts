@@ -102,6 +102,17 @@ test("Keeper review opens the shared composer; edits, Cancel, drawer navigation 
   await expect(prompt).toHaveValue("Investigate the proposed bead");
   await expect(prompt).toBeEditable();
   await expect(
+    dialog.getByRole("button", { name: /^Cx · Codex/ }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: /^Gm · Gemini/ }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByText("Keeper session reviews support Claude here.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
     dialog.getByRole("combobox", { name: "Where the session runs" }),
   ).toHaveValue("new");
   await expect(
@@ -111,15 +122,6 @@ test("Keeper review opens the shared composer; edits, Cancel, drawer navigation 
   await dialog
     .getByRole("combobox", { name: "Session mode" })
     .selectOption("chat");
-  if (process.env["SHOT_DIR"]) {
-    mkdirSync(process.env["SHOT_DIR"], { recursive: true });
-    await dialog.screenshot({
-      path: join(process.env["SHOT_DIR"], "keeper-session-review.png"),
-      animations: "disabled",
-      mask: [dialog.getByRole("combobox", { name: "Session repository" })],
-      maskColor: "#3f424d",
-    });
-  }
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(opener).toBeFocused();
   await page.keyboard.press("Tab");
@@ -152,6 +154,42 @@ test("Keeper review opens the shared composer; edits, Cancel, drawer navigation 
   await expect(
     drawer.getByRole("button", { name: "Review & start", exact: true }),
   ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const ordinary = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    ordinary.getByRole("button", { name: /^Cx · Codex/ }),
+  ).toBeEnabled();
+  await expect(
+    ordinary.getByRole("button", { name: /^Gm · Gemini/ }),
+  ).toBeEnabled();
+  await expect(
+    ordinary.getByRole("textbox", { name: "Session prompt", exact: true }),
+  ).toHaveValue("");
+  await ordinary.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(writes).toEqual([]);
   expect(count("coding-fixture-starts.jsonl")).toBe(before);
+  if (process.env["SHOT_DIR"]) {
+    // Capture only after the actual compact-viewport behavior and no-write facts.
+    await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
+    await drawer
+      .getByRole("button", { name: "Review & start", exact: true })
+      .click();
+    await expect(prompt).toHaveValue("Keep my separate reviewed draft");
+    mkdirSync(process.env["SHOT_DIR"], { recursive: true });
+    await page.setViewportSize({ width: 1280, height: 1400 });
+    try {
+      await dialog.screenshot({
+        path: join(process.env["SHOT_DIR"], "keeper-session-review.png"),
+        animations: "disabled",
+        mask: [dialog.getByRole("combobox", { name: "Session repository" })],
+        maskColor: "#3f424d",
+      });
+    } finally {
+      await page.setViewportSize({ width: 1100, height: 700 });
+    }
+  }
 });
