@@ -397,6 +397,7 @@ while (true) {
               threadId,
               turnId,
               itemId: "reported-files-a",
+              startedAtMs: 1,
               reason: "Inert native file review",
               grantRoot: null,
             },

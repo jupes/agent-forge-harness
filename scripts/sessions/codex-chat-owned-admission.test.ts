@@ -447,21 +447,6 @@ test.each([
     files = nativeFiles(page.frames);
   expect(heldFileFixtureReady(files)).toBe(true);
   expect(files).toEqual(nativeFiles(running.frames));
-  expect(
-    page.frames.find(
-      (frame) =>
-        frame.event.kind === "coding-chat" &&
-        frame.event.event.kind === "outcome",
-    )?.event,
-  ).toMatchObject({
-    event: {
-      outcome: {
-        phase: "failed",
-        timedOut: action === "deadline",
-        stopped: true,
-      },
-    },
-  });
   for (const pid of [tree.pid, tree.childPid]) {
     if (typeof pid !== "number")
       throw Error("Missing witnessed native fixture PID");
@@ -480,6 +465,29 @@ test.each([
     };
     expect(live()).toBe(false);
   }
+  expect(
+    page.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    )?.event,
+  ).toMatchObject({
+    event: {
+      outcome: {
+        // The native Chat runtime intentionally keeps a deadline uncertain;
+        // this is independent of its fully captured partial file reports.
+        phase: action === "deadline" ? "unknown" : "failed",
+        reason:
+          action === "deadline"
+            ? "The Codex Chat turn exceeded its deadline."
+            : "The Codex Chat turn was stopped.",
+        threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+        timedOut: action === "deadline",
+        stopped: true,
+      },
+    },
+  });
   expect(
     nativeFiles(
       createSessionLibrary({ root: f.root, home: f.home }).exportTranscript(
