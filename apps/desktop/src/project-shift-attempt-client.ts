@@ -7,6 +7,7 @@ import {
 } from "../../../scripts/shifts/attempt-read-protocol";
 import type { ConversationPage } from "../../../types/conversation";
 import type { ProjectShiftAttemptsPage } from "../../../types/shift-attempts";
+import type { ProjectShiftAttemptOrigin } from "../../../types/shift-origin";
 
 export interface ShiftAttemptView {
   index: ProjectShiftAttemptsPage | null;
@@ -25,6 +26,9 @@ export function createShiftAttemptObserver(deps: {
   originalRequestId: string;
   shiftId: string;
   workspace: string;
+  /** A direct link pins one address; absence retains the original follow-latest view. */
+  selectedSessionId?: string;
+  expectedOrigin?: ProjectShiftAttemptOrigin;
   read(): Promise<unknown>;
   stream(sessionId: string): StreamTransport;
   changed(): void;
@@ -37,7 +41,7 @@ export function createShiftAttemptObserver(deps: {
     loading: false,
     loaded: false,
     live: false,
-    followLatest: true,
+    followLatest: deps.selectedSessionId === undefined,
     error: null,
     notice: "",
   };
@@ -241,10 +245,15 @@ export function createShiftAttemptObserver(deps: {
     });
   };
   const choose = (id: string, followLatest: boolean) => {
-    if (disposed || !state.index?.items.some((row) => row.session.id === id))
+    if (
+      disposed ||
+      (deps.selectedSessionId !== undefined && id !== deps.selectedSessionId) ||
+      !state.index?.items.some((row) => row.session.id === id)
+    )
       return;
     state.followLatest = followLatest;
     if (state.selectedId === id) {
+      if (connection === null && timer === null) open();
       changed();
       return;
     }
@@ -286,6 +295,37 @@ export function createShiftAttemptObserver(deps: {
           throw Error("Foreign attempt index");
         state.index = checked.data;
         state.error = null;
+        if (deps.selectedSessionId !== undefined) {
+          const exact = checked.data.items.find(
+            (row) => row.session.id === deps.selectedSessionId,
+          );
+          if (
+            !exact ||
+            (deps.expectedOrigin &&
+              (
+                [
+                  "kind",
+                  "projectId",
+                  "originalRequestId",
+                  "shiftId",
+                  "runId",
+                  "beadId",
+                  "attempt",
+                ] as const
+              ).some(
+                (key) =>
+                  exact.session.origin?.[key] !== deps.expectedOrigin?.[key],
+              ))
+          ) {
+            epoch++;
+            disconnect();
+            state.error =
+              "The selected attempt is unavailable in this original Shift. No other attempt was opened.";
+            return;
+          }
+          choose(deps.selectedSessionId, false);
+          return;
+        }
         const latest = checked.data.items.at(-1)?.session.id;
         if (latest && (state.followLatest || state.selectedId === null))
           choose(latest, state.followLatest);
@@ -303,6 +343,7 @@ export function createShiftAttemptObserver(deps: {
     },
     select: (id: string) => choose(id, false),
     followLatest() {
+      if (deps.selectedSessionId !== undefined) return;
       const latest = state.index?.items.at(-1)?.session.id;
       if (latest) choose(latest, true);
     },

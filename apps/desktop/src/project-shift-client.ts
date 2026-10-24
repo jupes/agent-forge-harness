@@ -1,7 +1,6 @@
 import { workspaceKey } from "../../../scripts/projects/scope";
 import {
   projectShiftOptionsSchema,
-  projectShiftReceiptSchema,
   projectShiftStartSchema,
   projectShiftsPageSchema,
 } from "../../../scripts/shifts/protocol";
@@ -11,12 +10,12 @@ import type {
   ProjectShiftStartRequest,
   ProjectShiftsPage,
 } from "../../../types/project-shifts";
-import {
-  type ProjectShiftIdentities,
-  type ProjectShiftIdentity,
-  type ProjectShiftScope,
-  projectShiftInputHash,
+import type {
+  ProjectShiftIdentities,
+  ProjectShiftIdentity,
+  ProjectShiftScope,
 } from "./project-shift-identities";
+import { verifyProjectShiftReceipt } from "./project-shift-receipt";
 
 export interface ProjectShiftView {
   page: ProjectShiftsPage | null;
@@ -79,32 +78,7 @@ export function createProjectShiftsClient(deps: {
     return found;
   };
   const changed = () => deps.changed();
-  const verify = async (
-    scope: ProjectShiftScope,
-    raw: unknown,
-    expected?: { requestId: string; requestHash: string; shiftId?: string },
-  ): Promise<ProjectShiftReceipt> => {
-    const checked = projectShiftReceiptSchema.safeParse(raw);
-    if (
-      !checked.success ||
-      checked.data.intent.projectId !== scope.projectId ||
-      workspaceKey(checked.data.intent.workspace) !==
-        workspaceKey(scope.workspace)
-    )
-      throw Error("Foreign or invalid original");
-    const receipt = checked.data;
-    if (
-      receipt.intent.requestHash !==
-        (await projectShiftInputHash(scope, receipt.intent.request)) ||
-      (expected &&
-        (receipt.intent.request.requestId !== expected.requestId ||
-          receipt.intent.requestHash !== expected.requestHash ||
-          (expected.shiftId !== undefined &&
-            receipt.intent.shiftId !== expected.shiftId)))
-    )
-      throw Error("Changed original input");
-    return receipt;
-  };
+  const verify = verifyProjectShiftReceipt;
   const identity = async (scope: ProjectShiftScope) => {
     const current = view(scope);
     try {

@@ -103,8 +103,12 @@ function page(from = 0, to = 100): ConversationPage {
     controllable: false,
   };
 }
-function fixture() {
+function fixture(selection?: {
+  selectedSessionId: string;
+  expectedOrigin?: typeof record.origin;
+}) {
   const connections: {
+    sessionId: string;
     handlers: StreamHandlers;
     cursor: number | null;
     closed: boolean;
@@ -125,13 +129,14 @@ function fixture() {
     ],
   };
   const observer = createShiftAttemptObserver({
+    ...selection,
     projectId,
     originalRequestId,
     shiftId,
     workspace,
     read: async () => index,
-    stream: () => (cursor, handlers) => {
-      const connection = { cursor, handlers, closed: false };
+    stream: (sessionId) => (cursor, handlers) => {
+      const connection = { sessionId, cursor, handlers, closed: false };
       connections.push(connection);
       return {
         close: () => {
@@ -169,6 +174,95 @@ function fixture() {
     },
   };
 }
+
+test("a direct attempt selection never follows a newer attempt or substitutes for a missing address", async () => {
+  const f = fixture({ selectedSessionId: sessionId });
+  const newer = {
+    session: { ...record, id: "session-6ee84d5e-7727-479e-9182-b862eb904afa" },
+    phase: "unknown",
+    reason: SHIFT_ATTEMPT_METADATA_REASON,
+    controllable: false,
+  };
+  const source = {
+    projectId,
+    originalRequestId,
+    shiftId,
+    asOf: at,
+    items: [newer],
+  };
+  f.setIndex(source);
+  await f.observer.refresh();
+  expect(f.connections).toHaveLength(0);
+  expect(f.observer.get().selectedId).toBeNull();
+  expect(f.observer.get().error).toContain("selected attempt");
+  f.setIndex({
+    ...source,
+    items: [
+      {
+        session: record,
+        phase: "unknown",
+        reason: SHIFT_ATTEMPT_METADATA_REASON,
+        controllable: false,
+      },
+      newer,
+    ],
+  });
+  await f.observer.refresh();
+  expect(f.connections.map((connection) => connection.sessionId)).toEqual([
+    sessionId,
+  ]);
+  expect(f.observer.get().followLatest).toBe(false);
+  f.observer.followLatest();
+  expect(f.observer.get().selectedId).toBe(sessionId);
+  f.setIndex(source);
+  await f.observer.refresh();
+  expect(f.connections[0]?.closed).toBe(true);
+  f.setIndex({
+    ...source,
+    items: [
+      {
+        session: record,
+        phase: "unknown",
+        reason: SHIFT_ATTEMPT_METADATA_REASON,
+        controllable: false,
+      },
+    ],
+  });
+  await f.observer.refresh();
+  expect(f.connections.map((connection) => connection.sessionId)).toEqual([
+    sessionId,
+    sessionId,
+  ]);
+  f.observer.close();
+});
+
+test("a selected metadata origin cannot open a differently attributed private attempt", async () => {
+  const f = fixture({
+    selectedSessionId: sessionId,
+    expectedOrigin: record.origin,
+  });
+  f.setIndex({
+    projectId,
+    originalRequestId,
+    shiftId,
+    asOf: at,
+    items: [
+      {
+        session: {
+          ...record,
+          origin: { ...record.origin, runId: "run-other" },
+        },
+        phase: "unknown",
+        reason: SHIFT_ATTEMPT_METADATA_REASON,
+        controllable: false,
+      },
+    ],
+  });
+  await f.observer.refresh();
+  expect(f.connections).toHaveLength(0);
+  expect(f.observer.get().error).not.toBeNull();
+  f.observer.close();
+});
 
 test("the dedicated observer reads beyond100 private frames and never gains per-attempt control authority", async () => {
   const f = fixture();

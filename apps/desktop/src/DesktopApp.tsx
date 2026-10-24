@@ -8,6 +8,11 @@ import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
+import { ManagedShiftSession } from "./ManagedShiftSession";
+import {
+  managedShiftHref,
+  managedShiftSelection,
+} from "./managed-shift-navigation";
 import {
   desktopHref,
   desktopRoute,
@@ -54,6 +59,7 @@ import { useWorkbench } from "./use-workbench";
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
+  const managedSelection = managedShiftSelection(window.location.hash);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,
   );
@@ -108,7 +114,7 @@ export function DesktopApp(): JSX.Element {
     route.destination === "workbench" ? (project?.id ?? null) : null,
     workbench.data?.projectId === project?.id
       ? (workbench.data?.workspace ?? null)
-      : null,
+      : (summary?.workspace ?? null),
     writesAllowed,
   );
   const fullBead =
@@ -147,10 +153,18 @@ export function DesktopApp(): JSX.Element {
     project && selectedSession
       ? observationRows.find((row) => row.id === selectedSession)?.owner
       : null;
+  const managedSession =
+    !!selectedOwner?.origin ||
+    (managedSelection.selection?.sessionId !== undefined &&
+      managedSelection.selection.sessionId !== null) ||
+    !!managedSelection.error;
   // Historical registration proves the address belongs to this project. Its
   // spelling, ledger kind, worktree and process availability grant no authority.
   const selectedOwnedSession =
-    route.destination === "sessions" && selectedOwner && !selectedOwner.origin
+    route.destination === "sessions" &&
+    selectedOwner &&
+    !selectedOwner.origin &&
+    !managedSession
       ? selectedOwner.record.id
       : null;
   useEffect(() => {
@@ -543,6 +557,25 @@ export function DesktopApp(): JSX.Element {
                   scope={shifts.scope}
                   writesAllowed={writesAllowed}
                   archived={project.archived}
+                  originalRequestId={
+                    managedSelection.selection?.requestId ?? null
+                  }
+                  selectionError={managedSelection.error}
+                  onOriginalSelect={(requestId) => {
+                    window.location.hash = (
+                      requestId
+                        ? managedShiftHref({
+                            projectId: project.id,
+                            requestId,
+                            sessionId: null,
+                          })
+                        : desktopHref({
+                            projectId: project.id,
+                            destination: "workbench",
+                            selection: null,
+                          })
+                    ).slice(1);
+                  }}
                 />
               )
             }
@@ -587,6 +620,23 @@ export function DesktopApp(): JSX.Element {
             key={project.id}
             projectId={project.id}
             keeper={keeper}
+          />
+        ) : route.destination === "sessions" &&
+          project &&
+          selectedSession &&
+          managedSession ? (
+          <ManagedShiftSession
+            key={`${project.id}:${summary?.workspace}:${selectedSession}:${managedSelection.selection?.requestId}:${JSON.stringify(selectedOwner)}`}
+            projectId={project.id}
+            workspace={summary?.workspace ?? ""}
+            sessionId={selectedSession}
+            owner={managedSelection.error ? null : selectedOwner}
+            {...(managedSelection.selection
+              ? { expectedRequestId: managedSelection.selection.requestId }
+              : {})}
+            parent={
+              observations.detail(project.id, selectedSession).data?.parent
+            }
           />
         ) : route.destination === "sessions" &&
           project &&
