@@ -193,6 +193,232 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
   return dialog;
 }
 
+test("native Chat reasoning summaries remain explicit, inert and independently indexed through keyboard inspection, complete export and saved reload", async ({
+  page,
+}) => {
+  mode("reasoning-summary");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const starts = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "turn/start",
+    ).length,
+    answers = calls().filter((row) => row.kind === "answer").length;
+  const { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  const activity = pane.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+    disclosure = activity.locator("details"),
+    heading = disclosure.locator("summary");
+  await expect(disclosure).toHaveCount(1);
+  await expect(heading).toHaveText("Reported reasoning summary");
+  await expect(disclosure).not.toHaveAttribute("open");
+  await heading.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(heading).toBeFocused();
+  await expect(heading).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  const first = activity.getByRole("region", {
+    name: "Streamed summary · Native index 0 report",
+    exact: true,
+  });
+  await expect(first).toHaveText("Visible summary one.");
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed summary · Native index 1 report",
+      exact: true,
+    }),
+  ).toHaveText("Visible summary two.");
+  await expect(
+    activity.getByRole("region", {
+      name: "Final reported snapshot · Part 1 report",
+      exact: true,
+    }),
+  ).toHaveText("Visible summary one.");
+  await expect(
+    activity.getByRole("region", {
+      name: "Final reported snapshot · Part 2 report",
+      exact: true,
+    }),
+  ).toHaveText("Visible summary two.");
+  await expect(activity).toContainText(
+    "No summary text was reported in this snapshot",
+  );
+  await expect(activity).toContainText(
+    "Reported native turn status: completed",
+  );
+  await expect(activity).not.toContainText("RAW_REASONING_MUST_NOT_PERSIST");
+  await expect(activity.locator("a, button, script, iframe, img")).toHaveCount(
+    0,
+  );
+  await expect(
+    pane.getByRole("article", { name: "Native command approval", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Tab");
+  await expect(first).toBeFocused();
+  await expect(first).toHaveCSS("outline-width", "2px");
+  if (process.env.CODEX_CHAT_REASONING_SHOTS) {
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    await activity.evaluate((node) => node.scrollIntoView({ block: "center" }));
+    await expect
+      .poll(() =>
+        activity.evaluate((node) => {
+          const outer = node
+              .closest(".af-owned-transcript")
+              ?.getBoundingClientRect(),
+            inner = node.getBoundingClientRect();
+          return Boolean(
+            outer && inner.top >= outer.top && inner.bottom <= outer.bottom,
+          );
+        }),
+      )
+      .toBe(true);
+    await activity.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_REASONING_SHOTS,
+        "native-chat-reasoning-summary.png",
+      ),
+      maskColor: "#1c1d24",
+    });
+    await page.setViewportSize({ width: 1100, height: 700 });
+  }
+  const beforeReload = saved(record.id).frames;
+  expect(JSON.stringify(beforeReload)).not.toContain(
+    "RAW_REASONING_MUST_NOT_PERSIST",
+  );
+  await pane
+    .getByRole("button", { name: "Session actions", exact: true })
+    .click();
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("dialog", { name: "Session actions", exact: true })
+    .getByRole("button", { name: "Export saved transcript", exact: true })
+    .click();
+  const path = await (await download).path();
+  if (!path) throw Error("No complete private summary transcript download");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw Error("Invalid complete summary transcript");
+  }
+  const exported = sessionTranscriptExportSchema.parse(raw).conversation;
+  expect(exported.frames).toEqual(beforeReload);
+  expect(JSON.stringify(exported)).not.toContain(
+    "RAW_REASONING_MUST_NOT_PERSIST",
+  );
+  await reloadSettled(page);
+  await heading.click();
+  await expect(first).toHaveText("Visible summary one.");
+  await expect(activity).toContainText(
+    "Reported native turn status: completed",
+  );
+  expect(saved(record.id).frames).toEqual(beforeReload);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${beta.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  await expect(
+    page.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Visible summary one.", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("actual Stop preserves a partial native reasoning summary without inventing a final snapshot, reply or permission authority", async ({
+  page,
+}) => {
+  mode("reasoning-summary-held");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const starts = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "turn/start",
+    ).length,
+    answers = calls().filter((row) => row.kind === "answer").length;
+  const { pane, record } = await startedChat(page);
+  const activity = pane.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+    heading = activity.locator("summary", {
+      hasText: "Reported reasoning summary · Partial report",
+    });
+  await heading.click();
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed summary · Native index 0 report",
+      exact: true,
+    }),
+  ).toHaveText("Visible summary one.");
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed summary · Native index 1 report",
+      exact: true,
+    }),
+  ).toHaveText("Visible summary two.");
+  await expect(activity).not.toContainText("Final reported snapshot");
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+  await pane.getByRole("button", { name: "Stop session", exact: true }).click();
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("cancelled");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  const state = saved(record.id),
+    summaries = state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "reasoning-summary",
+    );
+  expect(summaries).toHaveLength(6);
+  expect(
+    summaries.every(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "reasoning-summary" &&
+        frame.event.event.partial,
+    ),
+  ).toBe(true);
+  expect(JSON.stringify(state)).not.toContain("RAW_REASONING_MUST_NOT_PERSIST");
+  const tree = calls()
+    .filter((row) => row.kind === "tree")
+    .at(-1);
+  if (typeof tree?.pid !== "number" || typeof tree.childPid !== "number")
+    throw Error("Missing actual stopped native fixture tree");
+  expect(() => process.kill(tree.pid!, 0)).toThrow();
+  expect(() => process.kill(tree.childPid!, 0)).toThrow();
+  await reloadSettled(page);
+  await heading.click();
+  await expect(
+    activity.getByRole("region", {
+      name: "Streamed summary · Native index 0 report",
+      exact: true,
+    }),
+  ).toHaveText("Visible summary one.");
+  await expect(activity).not.toContainText("Final reported snapshot");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  expect(saved(record.id).frames).toEqual(state.frames);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+});
+
 test("native Chat command reports show inert streamed and aggregate output with exact completion after saved reload", async ({
   page,
 }) => {
