@@ -57,6 +57,10 @@ test.beforeEach(() => {
 test("opening, editing and Cancel retain configured provenance and create no original, provider or tracker effect", async ({
   page,
 }) => {
+  const providerFile = join(STATE, "claude.json"),
+    providerBefore = existsSync(providerFile)
+      ? readFileSync(providerFile)
+      : null;
   await openSettled(page, route);
   const calls = fixtureCalls().filter(
     (row) =>
@@ -98,7 +102,9 @@ test("opening, editing and Cancel retain configured provenance and create no ori
     panel(page).getByRole("button", { name: "Start shift", exact: true }),
   ).toBeFocused();
   expect(starts).toBe(0);
-  expect(existsSync(join(STATE, "claude.json"))).toBe(false);
+  expect(existsSync(providerFile) ? readFileSync(providerFile) : null).toEqual(
+    providerBefore,
+  );
   expect(
     await page.evaluate(
       (key) => localStorage.getItem(key),
