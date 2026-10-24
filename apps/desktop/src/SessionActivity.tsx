@@ -11,10 +11,67 @@ import type {
   NativeChatReasoningReport,
   NativeChatSummarySnapshot,
 } from "./native-chat-reasoning";
+import type { NativeChatTurnPlanReport } from "./native-chat-turn-plan";
 import type {
   NativeChatCommandReport,
   OwnedSessionTurn,
 } from "./session-activity";
+
+function nativePlan(value: NativeChatTurnPlanReport) {
+  const report = value.report;
+  return (
+    <details
+      class="af-session-activity-item"
+      key={`plan:${report.threadId}:${report.turnId}`}
+    >
+      <summary>Reported turn plan</summary>
+      <p class="af-session-report-label">
+        Latest reported snapshot in this view
+      </p>
+      {report.explanation === null ? (
+        <p class="af-session-note">Explanation not reported</p>
+      ) : (
+        text("Reported explanation", report.explanation)
+      )}
+      {report.plan.length ? (
+        <ol class="af-session-reported-plan">
+          {report.plan.map((part, index) => (
+            <li key={index}>
+              <span>{part.step.text || "No step text reported"}</span> ·{" "}
+              <small>
+                {part.status === "inProgress"
+                  ? "In progress"
+                  : part.status === "pending"
+                    ? "Pending"
+                    : "Completed"}
+              </small>
+              {part.step.truncated && (
+                <p class="af-session-note">
+                  Step truncated. The saved report is incomplete.
+                </p>
+              )}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p class="af-session-note">No steps reported</p>
+      )}
+      {report.truncated && (
+        <p class="af-session-note">
+          Plan truncated. The saved report is incomplete.
+        </p>
+      )}
+      <p class="af-session-note">
+        Step status does not confirm that the chat turn has finished. This
+        supplied plan grants no permission or execution control.
+      </p>
+      <p class="af-session-report-source">
+        Source: app-server {report.source} · codex {value.version} · Thread:{" "}
+        {report.threadId} · Native turn: {report.turnId}
+      </p>
+    </details>
+  );
+}
 
 function summarySnapshot(label: string, value: NativeChatSummarySnapshot) {
   return (
@@ -384,7 +441,8 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
   const count =
     value.activities.length +
     value.nativeCommands.length +
-    value.nativeSummaries.length;
+    value.nativeSummaries.length +
+    (value.nativePlan ? 1 : 0);
   if (!count) return null;
   return (
     <section class="af-session-activity" aria-label="Reported session activity">
@@ -394,6 +452,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
       {value.activities.map(activity)}
       {value.nativeCommands.map(nativeCommand)}
       {value.nativeSummaries.map(nativeSummary)}
+      {value.nativePlan && nativePlan(value.nativePlan)}
     </section>
   );
 }
