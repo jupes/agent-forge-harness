@@ -8,6 +8,7 @@ import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
 } from "../../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionStartReceiptSchema } from "../../../scripts/sessions/protocol";
 import type {
   OwnedCodingSessionRecord as OwnedSessionRecord,
   OwnedSessionStartInput,
@@ -20,6 +21,7 @@ import type {
   ConversationTurn,
 } from "../../../types/conversation";
 import type { SessionAttachment } from "../../../types/session-launch";
+import type { SessionStartRequest as ClaudeSessionStartRequest } from "../../../types/session-requests";
 import type { SessionMessage } from "../../../types/session-turn";
 import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
 import {
@@ -598,6 +600,37 @@ export function createSessionsClient(deps: {
       tell();
     },
     check,
+    /** The proposal bridge already verified the full original body/hash; never dispatch here. */
+    adoptStartReceipt(
+      projectId: string,
+      input: ClaudeSessionStartRequest,
+      raw: unknown,
+    ) {
+      const parsed = sessionStartReceiptSchema.safeParse(raw);
+      if (
+        disposed ||
+        !parsed.success ||
+        parsed.data.session.origin !== undefined ||
+        parsed.data.session.projectId !== projectId ||
+        !sameStart(parsed.data.session, input) ||
+        parsed.data.receipt.conversationId !== parsed.data.session.id ||
+        parsed.data.receipt.turn.requestId !== input.requestId
+      )
+        return false;
+      const entry = project(projectId),
+        accepted = parsed.data;
+      entry.records = [
+        ...entry.records.filter((record) => record.id !== accepted.session.id),
+        accepted.session,
+      ];
+      const observed = session(projectId, accepted.session.id);
+      observed.receiptRevision = Math.max(
+        observed.receiptRevision,
+        accepted.receipt.revision,
+      );
+      tell();
+      return true;
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {

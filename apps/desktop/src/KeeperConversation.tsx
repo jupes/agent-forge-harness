@@ -8,6 +8,7 @@ import type {
   ConversationObject,
   ConversationPage,
 } from "../../../types/conversation";
+import type { KeeperProposal } from "../../../types/keeper-proposal";
 import type { ProjectRecord } from "../../../types/projects";
 import { KeeperActionCards } from "./KeeperActionCards";
 import { KeeperMarkdown } from "./KeeperMarkdown";
@@ -178,6 +179,7 @@ export function KeeperConversation({
   compact = false,
   onNavigate,
   onScope,
+  onReviewSession,
   active = true,
 }: {
   project: ProjectRecord;
@@ -187,6 +189,9 @@ export function KeeperConversation({
   compact?: boolean;
   onNavigate?: (() => void) | undefined;
   onScope?: () => void;
+  onReviewSession?:
+    | ((source: KeeperProposal, revision: number, requestId?: string) => void)
+    | undefined;
   active?: boolean;
 }): JSX.Element {
   const state = client.get(project.id);
@@ -525,6 +530,7 @@ export function KeeperConversation({
             client={proposals}
             writesAllowed={writesAllowed}
             onNavigate={onNavigate}
+            onReviewSession={onReviewSession}
           />
         )}
       </div>

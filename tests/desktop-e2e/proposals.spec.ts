@@ -2,6 +2,10 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
+  keeperProposalDismissalSchema,
+  keeperProposalRecordSchema,
+} from "../../scripts/keeper/proposal-protocol";
+import {
   readComments,
   readState,
   withStateLock,
@@ -87,8 +91,17 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
 }) => {
   await propose(page);
   expect(readComments(BD_STAND_IN_STATE)).toEqual({});
+  const session = cards(page).getByRole("article", {
+    name: "Review a session",
+    exact: true,
+  });
+  await expect(
+    session.getByRole("button", { name: "Review & start", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    session.getByRole("button", { name: "Approve", exact: true }),
+  ).toHaveCount(0);
   for (const [title, reason] of [
-    ["Review a session", "session review composer"],
     ["Review a shift", "attended project shift review"],
     ["Review council input", "project council review composer"],
   ] as const) {
@@ -102,6 +115,9 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
     await card
       .getByRole("button", { name: "Finish editing", exact: true })
       .click();
+    await expect(
+      card.getByRole("button", { name: "Approve", exact: true }),
+    ).toBeDisabled();
   }
   const decision = cards(page).getByRole("article", {
     name: "Record a scoped decision",
@@ -165,8 +181,96 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
     name: "Review council input",
     exact: true,
   });
-  await dismiss.getByRole("button", { name: "Dismiss", exact: true }).click();
+  const dismissalRequests: unknown[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/keeper/proposals/dismiss`
+    ) {
+      try {
+        dismissalRequests.push(JSON.parse(request.postData() ?? "null"));
+      } catch {
+        dismissalRequests.push(null);
+      }
+    }
+  });
+  const savedDismissals = () => {
+    try {
+      const saved: unknown = JSON.parse(
+        readFileSync(
+          join(
+            HEARTH_HOME,
+            "conversations",
+            `keeper-${alpha.id}-proposals.json`,
+          ),
+          "utf8",
+        ),
+      );
+      if (
+        !saved ||
+        typeof saved !== "object" ||
+        !("projectId" in saved) ||
+        saved.projectId !== alpha.id ||
+        !("records" in saved) ||
+        !Array.isArray(saved.records)
+      )
+        return [];
+      return saved.records.flatMap((raw: unknown) => {
+        const parsed = keeperProposalRecordSchema.safeParse(raw);
+        return parsed.success &&
+          parsed.data.projectId === alpha.id &&
+          parsed.data.operation === "dismiss" &&
+          parsed.data.phase === "dismissed" &&
+          !parsed.data.pending &&
+          parsed.data.draft.title === "Review council input" &&
+          parsed.data.draft.action.kind === "send-to-council"
+          ? [parsed.data]
+          : [];
+      });
+    } catch {
+      return [];
+    }
+  };
+  const priorDismissals = new Set(savedDismissals().map((record) => record.id));
+  const appliedDismissals = () =>
+    savedDismissals().filter((record) => !priorDismissals.has(record.id));
+  const dismissButton = dismiss.getByRole("button", {
+    name: "Dismiss",
+    exact: true,
+  });
+  const fence = createPostFencedGesture({
+    posts: () => dismissalRequests.length,
+    applied: () => appliedDismissals().length === 1,
+    async ready() {
+      expect(new URL(page.url()).hash).toContain(`/project/${alpha.id}/keeper`);
+      await expect(cards(page)).toHaveAttribute("aria-busy", "false", {
+        timeout: 250,
+      });
+      await expect(dismissButton).toBeEnabled({ timeout: 250 });
+    },
+    async gesture() {
+      await dismissButton.focus({ timeout: 250 });
+      await expect(dismissButton).toBeFocused({ timeout: 250 });
+      await page.keyboard.press("Enter");
+    },
+  });
+  // Repeat only an unsent gesture. Any request or exact saved effect seals
+  // the boundary, including when its response is still pending or lost.
+  await expect(async () => {
+    await fence.attempt();
+    expect(appliedDismissals()).toHaveLength(1);
+  }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
   await expect(dismiss).toContainText("Dismissed");
+  expect(dismissalRequests).toHaveLength(1);
+  const sentDismissal = keeperProposalDismissalSchema.parse(
+    dismissalRequests[0],
+  );
+  expect(appliedDismissals()[0]).toMatchObject({
+    id: sentDismissal.id,
+    requestId: sentDismissal.requestId,
+    sourceHash: sentDismissal.sourceHash,
+  });
   expect(readComments(BD_STAND_IN_STATE)["alpha-epic"]).toHaveLength(1);
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });

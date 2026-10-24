@@ -3,6 +3,7 @@ import type {
   CodexChatApproval,
   CodexChatCommand,
   CodexChatEvent,
+  CodexChatFileChange,
   CodexChatOutcome,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
@@ -59,6 +60,76 @@ const usage = z
     }),
   );
 const decision = z.enum(["accept", "decline", "cancel"]);
+export const codexChatFileChangeSchema = z
+  .object({
+    kind: z.literal("file-change"),
+    source: z.enum([
+      "item/started",
+      "item/fileChange/patchUpdated",
+      "item/completed",
+      "turn/completed",
+    ]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    status: z.enum(["inProgress", "completed", "failed", "declined"]),
+    changes: z
+      .array(
+        z
+          .object({
+            path: reportedTextSchema.refine(
+              (value) => value.text.length > 0 || value.truncated,
+            ),
+            kind: z.discriminatedUnion("type", [
+              z.object({ type: z.literal("add") }).strict(),
+              z.object({ type: z.literal("delete") }).strict(),
+              z
+                .object({
+                  type: z.literal("update"),
+                  move_path: reportedTextSchema.nullable(),
+                })
+                .strict(),
+            ]),
+            diff: reportedTextSchema,
+          })
+          .strict(),
+      )
+      .max(SESSION_ACTIVITY_LIMITS.items),
+    truncated: z.boolean(),
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed";
+    const values = value.changes.flatMap((change) => [
+      change.path,
+      ...(change.kind.type === "update" && change.kind.move_path !== null
+        ? [change.kind.move_path]
+        : []),
+      change.diff,
+    ]);
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && value.status !== "inProgress"
+            : value.closure === "open" && value.status === "inProgress")) &&
+      value.partial ===
+        (value.status === "inProgress" ||
+          (final && value.turnStatus !== "completed")) &&
+      (value.truncated || !values.some((part) => part.truncated)) &&
+      values.reduce(
+        (sum, part) => sum + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatFileChange>;
 export const codexChatTurnPlanSchema = z
   .object({
     kind: z.literal("turn-plan"),
@@ -267,6 +338,7 @@ export const codexChatApprovalSchema = z
     (value) => value.kind !== "command" || (!!value.command && !!value.cwd),
   ) satisfies z.ZodType<CodexChatApproval>;
 const nativeEvent = z.discriminatedUnion("kind", [
+  codexChatFileChangeSchema,
   codexChatCommandSchema,
   codexChatReasoningSummarySchema,
   codexChatTurnPlanSchema,

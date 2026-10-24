@@ -35,6 +35,11 @@ import { canonicalSessionInput } from "../sessions/preparation";
 import { createSessionRegistry } from "../sessions/registry";
 import { verifyProjectShiftEntry } from "../shifts/verify-entry";
 import { verifyAttendedProjectShifts } from "./attended-shift-smoke";
+import { verifyKeeperSessionReview } from "./keeper-review-smoke";
+import {
+  seedNativeFileChangeSession,
+  verifyNativeFileChanges,
+} from "./native-file-change-smoke";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");
@@ -147,6 +152,36 @@ async function main(): Promise<void> {
   const fakeBdSource = join(temp, "fake-bd.ts");
   const fakeBdExecutable = join(fakeBin, "bd.exe");
   const fakeBdCalls = join(temp, "fake-bd-calls.jsonl");
+  const fakeGitSource = join(temp, "fake-readonly-git.ts");
+  const fakeGitExecutable = join(fakeBin, "git.exe");
+  assertWithin(temp, fakeGitSource);
+  assertWithin(temp, fakeGitExecutable);
+  writeFileSync(
+    fakeGitSource,
+    `import {realpathSync,statSync} from "node:fs";import {join} from "node:path";
+const roots=${JSON.stringify([fixtureRoot, join(temp, "selected checkout")])};
+const normal=value=>value.replaceAll("\\\\","/").toLowerCase();
+const here=realpathSync.native(process.cwd());
+if(!roots.some(root=>{try{return normal(realpathSync.native(root))===normal(here)}catch{return false}})||!statSync(join(here,".git")).isDirectory())throw Error("Foreign native Git fixture cwd");
+const args=JSON.stringify(process.argv.slice(2)),answer=value=>{process.stdout.write(value);process.exit(0)};
+if(args===JSON.stringify(["rev-parse","--show-toplevel"]))answer(here+"\\n");
+if(args===JSON.stringify(["rev-parse","--path-format=absolute","--git-common-dir"]))answer(join(here,".git")+"\\n");
+if(args===JSON.stringify(["worktree","list","--porcelain","-z"]))answer("worktree "+here+"\\0HEAD "+"0".repeat(40)+"\\0detached\\0\\0");
+process.stderr.write("Native fixture Git is read-only and has no forwarding path.\\n");process.exit(1);`,
+    "utf8",
+  );
+  await runBounded(
+    [
+      process.execPath,
+      "build",
+      "--compile",
+      fakeGitSource,
+      "--outfile",
+      fakeGitExecutable,
+    ],
+    30_000,
+    "Could not prepare isolated read-only Git stub.",
+  );
   writeFileSync(
     fakeBdSource,
     `import {appendFileSync} from "node:fs";appendFileSync(${JSON.stringify(fakeBdCalls)},JSON.stringify(process.argv)+"\\n");const row={id:"fixture-epic",title:"Native fixture epic",issue_type:"epic",status:"open",labels:["project:native-fixture"],created_at:"2026-10-21T00:00:00Z",updated_at:"2026-10-21T00:00:00Z"};process.stdout.write(process.argv.includes("export")?JSON.stringify(row)+"\\n":"[]\\n");\n`,
@@ -253,6 +288,9 @@ async function main(): Promise<void> {
   let focusOutline:
     | { specifiedCssPx: number; computedCssPx: number }
     | undefined;
+  let keeperReviewFocus:
+    | Awaited<ReturnType<typeof verifyKeeperSessionReview>>
+    | undefined;
 
   try {
     await waitForMainWindow(
@@ -294,6 +332,11 @@ async function main(): Promise<void> {
     const project = catalog.projects[0];
     if (!project) throw new Error("The isolated native project was not saved.");
     const nativeSession = await seedNativeSession(
+      desktopSmokeHome,
+      resolveCheckout(selectedRoot).workspace,
+      project.id,
+    );
+    const nativeFileSession = await seedNativeFileChangeSession(
       desktopSmokeHome,
       resolveCheckout(selectedRoot).workspace,
       project.id,
@@ -555,6 +598,23 @@ async function main(): Promise<void> {
       desktopSmokeHome,
       downloadDirectory,
     );
+    await verifyNativeFileChanges(socket, nativeFileSession, desktopSmokeHome, {
+      evaluate,
+      waitForPage,
+      async enableRequests(page) {
+        await cdp(page, "Network.enable", {});
+      },
+      screenshot: saveConnectionShot,
+      async pressTab(page) {
+        for (const type of ["keyDown", "keyUp"])
+          await cdp(page, "Input.dispatchKeyEvent", {
+            type,
+            key: "Tab",
+            code: "Tab",
+            windowsVirtualKeyCode: 9,
+          });
+      },
+    });
     await evaluate(socket, `location.hash = '#/desktop/projects'`);
     await waitForPage(
       socket,
@@ -580,6 +640,21 @@ async function main(): Promise<void> {
     focusOutline = await verifyConnectionRecovery(socket);
     await verifyDesktopFrame(socket);
     await verifyKeeperConversation(socket);
+    keeperReviewFocus = await verifyKeeperSessionReview(
+      socket,
+      {
+        home: desktopSmokeHome,
+        workspace: resolveCheckout(selectedRoot).workspace,
+        projectId: project.id,
+      },
+      {
+        evaluate,
+        reload: reloadPage,
+        waitForPage,
+        command: cdp,
+        screenshot: saveConnectionShot,
+      },
+    );
     // Hearth recovery keeps the host and window, but replaces the child hearth.
     processTree = await captureProcessTree(appProcess.pid);
 
@@ -760,10 +835,13 @@ async function main(): Promise<void> {
           keeperSelectionTested: true,
           keeperBriefTested: true,
           keeperProposalsTested: true,
+          keeperSessionReviewTested: true,
+          keeperSessionReviewFocus: keeperReviewFocus,
           observedSessionIneligibleTested: true,
           scopedObservedSessionDetailsTested: true,
           scopedProjectActivityMetadataTested: true,
           completeOwnedTranscriptDownloadTested: true,
+          nativeCodexFileSnapshotsTested: true,
           reversibleOwnedArchiveTested: true,
           focusOutline,
           childrenStopped: true,
