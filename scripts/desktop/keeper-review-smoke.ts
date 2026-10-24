@@ -33,7 +33,7 @@ export async function verifyKeeperSessionReview(
   socket: WebSocket,
   fixture: { home: string; workspace: string; projectId: string },
   tools: PageTools,
-): Promise<void> {
+): Promise<{ beforeTraversal: unknown; focusRing: unknown }> {
   const store = createConversationStore(fixture.home);
   const before = store.read(fixture.projectId);
   if (before.turns.length || before.frames.length)
@@ -89,6 +89,7 @@ export async function verifyKeeperSessionReview(
     posts: string[] = [],
     statuses: number[] = [];
   let beforeTraversal: unknown = null;
+  let focusRing: unknown = null;
   const observe = (event: MessageEvent) => {
     let value: unknown;
     try {
@@ -198,7 +199,7 @@ export async function verifyKeeperSessionReview(
     );
     beforeTraversal = await tools.evaluate(
       socket,
-      `(() => {const button=${opener},style=getComputedStyle(button);return {focusVisible:button.matches(':focus-visible'),width:style.outlineWidth,style:style.outlineStyle};})()`,
+      `(() => {const button=${opener},style=getComputedStyle(button);return {focusVisible:button.matches(':focus-visible'),width:style.outlineWidth,style:style.outlineStyle,dpr:devicePixelRatio};})()`,
     );
     // Match the browser review proof: preserve immediate return focus, then
     // establish keyboard traversal before asserting the themed focus ring.
@@ -209,11 +210,15 @@ export async function verifyKeeperSessionReview(
       `document.activeElement===(${opener}) && (${opener}).matches(':focus-visible')`,
       "Native keyboard traversal did not return visible focus to its exact card.",
     );
+    focusRing = await tools.evaluate(
+      socket,
+      `(() => {const button=${opener},style=getComputedStyle(button),declared=[...document.styleSheets].flatMap(sheet=>[...sheet.cssRules]).filter(rule=>rule.selectorText===':focus-visible').map(rule=>Number.parseFloat(rule.style.getPropertyValue('outline-width')||rule.style.getPropertyValue('outline'))),specified=declared.at(-1)??null,computed=Number.parseFloat(style.outlineWidth),dpr=devicePixelRatio,visible=button.matches(':focus-visible');return {specifiedCssPx:specified,computedCssPx:computed,dpr,focusVisible:visible,style:style.outlineStyle,valid:visible&&style.outlineStyle==='solid'&&specified===2&&Number.isFinite(computed)&&computed>0&&Number.isFinite(dpr)&&dpr>0&&Math.abs(computed-specified)*dpr<1};})()`,
+    );
     if (
-      !(await tools.evaluate(
-        socket,
-        `getComputedStyle(${opener}).outlineWidth==='2px' && getComputedStyle(${opener}).outlineStyle==='solid'`,
-      ))
+      !focusRing ||
+      typeof focusRing !== "object" ||
+      !("valid" in focusRing) ||
+      focusRing.valid !== true
     )
       throw Error(
         "Native review keyboard traversal lost its visible 2px outline.",
@@ -242,6 +247,7 @@ export async function verifyKeeperSessionReview(
         throw Error(
           "The native review changed private history or session admission.",
         );
+    return { beforeTraversal, focusRing };
   } catch (error) {
     // Preserve the failing screen before finally restores the prior route.
     // These facts deliberately omit the prompt, private replies and source IDs.
@@ -258,7 +264,7 @@ export async function verifyKeeperSessionReview(
         () => false,
       );
     throw new Error(
-      `${error instanceof Error ? error.message : "Native review failed."} Probe facts: ${JSON.stringify({ beforeTraversal, state, protectedStatuses: statuses.slice(-8), screenshot })}`,
+      `${error instanceof Error ? error.message : "Native review failed."} Probe facts: ${JSON.stringify({ beforeTraversal, focusRing, state, protectedStatuses: statuses.slice(-8), screenshot })}`,
       { cause: error },
     );
   } finally {

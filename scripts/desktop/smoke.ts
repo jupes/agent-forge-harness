@@ -284,6 +284,9 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
   let focusOutline:
     | { specifiedCssPx: number; computedCssPx: number }
     | undefined;
+  let keeperReviewFocus:
+    | Awaited<ReturnType<typeof verifyKeeperSessionReview>>
+    | undefined;
 
   try {
     await waitForMainWindow(
@@ -611,7 +614,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
     focusOutline = await verifyConnectionRecovery(socket);
     await verifyDesktopFrame(socket);
     await verifyKeeperConversation(socket);
-    await verifyKeeperSessionReview(
+    keeperReviewFocus = await verifyKeeperSessionReview(
       socket,
       {
         home: desktopSmokeHome,
@@ -807,6 +810,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
           keeperBriefTested: true,
           keeperProposalsTested: true,
           keeperSessionReviewTested: true,
+          keeperSessionReviewFocus: keeperReviewFocus,
           observedSessionIneligibleTested: true,
           scopedObservedSessionDetailsTested: true,
           scopedProjectActivityMetadataTested: true,
