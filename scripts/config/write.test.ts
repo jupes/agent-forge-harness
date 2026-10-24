@@ -40,7 +40,10 @@ function set(
   raw: string,
   target: ConfigTarget = "workspace",
 ) {
-  return setConfigValue({ key, raw, target, options: box.options });
+  return setConfigValue(
+    { key, raw, target, options: box.options },
+    { coordinationRoot: join(box.harness, "..", "coordination") },
+  );
 }
 
 /** The file is as it was, and no temporary file was left beside it. */
@@ -54,7 +57,7 @@ function untouched(box: Box, file: string, before: string | null): void {
 }
 
 /** `set` is refused with `why` in its message; `file` (holding `text`, or absent) is left alone. */
-function refused(
+async function refused(
   box: Box,
   file: string,
   text: string | null,
@@ -62,26 +65,26 @@ function refused(
   raw: string,
   why: string,
   target: ConfigTarget = "workspace",
-): void {
+): Promise<void> {
   if (text !== null) {
     mkdirSync(join(file, ".."), { recursive: true });
     writeFileSync(file, text);
   }
-  const outcome = set(box, key, raw, target);
+  const outcome = await set(box, key, raw, target);
   expect(outcome.ok).toBe(false);
   if (!outcome.ok) expect(outcome.error).toContain(why);
   untouched(box, file, text);
 }
 
 describe("set: replacing a value keeps the rest of the file", () => {
-  test("the shipped example: comments, tables and order stay; only the value changes", () => {
+  test("the shipped example: comments, tables and order stay; only the value changes", async () => {
     const box = sandbox();
     const example = readFileSync(
       join(import.meta.dir, "..", "..", "agent-forge.toml.example"),
       "utf8",
     );
     writeFileSync(box.workspaceFile, example);
-    const outcome = set(box, "workflow.default_crew", "claude-master");
+    const outcome = await set(box, "workflow.default_crew", "claude-master");
     expect(outcome).toMatchObject({
       ok: true,
       file: box.workspaceFile,
@@ -97,49 +100,53 @@ describe("set: replacing a value keeps the rest of the file", () => {
     untouched(box, box.workspaceFile, after);
   });
 
-  test("a byte-order mark, CRLF line endings, indentation and a trailing comment are kept", () => {
+  test("a byte-order mark, CRLF line endings, indentation and a trailing comment are kept", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       `${BOM}# mine\r\n[workflow]\r\n  default_crew = "claude-journeyman" # was [x] "y"\r\n`,
     );
-    expect(set(box, "workflow.default_crew", "claude-master").ok).toBe(true);
+    expect((await set(box, "workflow.default_crew", "claude-master")).ok).toBe(
+      true,
+    );
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       `${BOM}# mine\r\n[workflow]\r\n  default_crew = "claude-master" # was [x] "y"\r\n`,
     );
   });
 
-  test("a value with escaped quotes, a # and a [ in it, and a literal string ending in a backslash, are read past", () => {
+  test("a value with escaped quotes, a # and a [ in it, and a literal string ending in a backslash, are read past", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[smiths.claude-master]\nmodel = "a \\"b\\" # [c]"\neffort = \'C:\\\'\n',
     );
-    expect(set(box, "smiths.claude-master.effort", "high").ok).toBe(true);
+    expect((await set(box, "smiths.claude-master.effort", "high")).ok).toBe(
+      true,
+    );
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[smiths.claude-master]\nmodel = "a \\"b\\" # [c]"\neffort = "high"\n',
     );
   });
 
-  test("an array written over several lines is replaced as a whole", () => {
+  test("an array written over several lines is replaced as a whole", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[benches]\nlow = [\n  "claude-apprentice:70", # most\n  "codex-journeyman:30",\n]\n# next\n',
     );
-    expect(set(box, "benches.low", "claude-master:1").ok).toBe(true);
+    expect((await set(box, "benches.low", "claude-master:1")).ok).toBe(true);
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[benches]\nlow = ["claude-master:1"]\n# next\n',
     );
   });
 
-  test("quoted, spaced and commented headers name the same table", () => {
+  test("quoted, spaced and commented headers name the same table", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[ smiths . "claude-master" ] # the big one\nmodel = "m"\n',
     );
-    expect(set(box, "smiths.claude-master.model", "n").ok).toBe(true);
+    expect((await set(box, "smiths.claude-master.model", "n")).ok).toBe(true);
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[ smiths . "claude-master" ] # the big one\nmodel = "n"\n',
     );
@@ -147,55 +154,66 @@ describe("set: replacing a value keeps the rest of the file", () => {
 });
 
 describe("set: adding a key or a table", () => {
-  test("a key missing from its table goes after the table's last key, before the comments that introduce the next table", () => {
+  test("a key missing from its table goes after the table's last key, before the comments that introduce the next table", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[benches]\nlow = ["claude-apprentice:70"]\n\n# The allowlist:\n[execution.env]\npass = []\n',
     );
-    expect(set(box, "benches.high", "claude-master:1").ok).toBe(true);
+    expect((await set(box, "benches.high", "claude-master:1")).ok).toBe(true);
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[benches]\nlow = ["claude-apprentice:70"]\nhigh = ["claude-master:1"]\n\n# The allowlist:\n[execution.env]\npass = []\n',
     );
   });
 
-  test("in a file with CRLF line endings, an added key and table use CRLF too", () => {
+  test("in a file with CRLF line endings, an added key and table use CRLF too", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[benches]\r\nlow = ["claude-apprentice:1"]\r\n',
     );
-    expect(set(box, "benches.high", "claude-master:1").ok).toBe(true);
-    expect(set(box, "workflow.default_crew", "claude-master").ok).toBe(true);
+    expect((await set(box, "benches.high", "claude-master:1")).ok).toBe(true);
+    expect((await set(box, "workflow.default_crew", "claude-master")).ok).toBe(
+      true,
+    );
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[benches]\r\nlow = [\"claude-apprentice:1\"]\r\nhigh = ["claude-master:1"]\r\n\r\n[workflow]\r\ndefault_crew = "claude-master"\r\n',
     );
   });
 
-  test("a table with no keys yet gets the key right under its header", () => {
+  test("a table with no keys yet gets the key right under its header", async () => {
     const box = sandbox();
     writeFileSync(box.workspaceFile, "[workflow]\n# nothing yet\n");
-    expect(set(box, "workflow.default_crew", "claude-master").ok).toBe(true);
+    expect((await set(box, "workflow.default_crew", "claude-master")).ok).toBe(
+      true,
+    );
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[workflow]\ndefault_crew = "claude-master"\n# nothing yet\n',
     );
   });
 
-  test("a missing table is added at the end, after a blank line", () => {
+  test("a missing table is added at the end, after a blank line", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[workflow]\ndefault_crew = "claude-master"\n',
     );
-    expect(set(box, "smiths.codex-journeyman.enabled", "false").ok).toBe(true);
+    expect(
+      (await set(box, "smiths.codex-journeyman.enabled", "false")).ok,
+    ).toBe(true);
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[workflow]\ndefault_crew = "claude-master"\n\n[smiths.codex-journeyman]\nenabled = false\n',
     );
   });
 
-  test("the user file and its directory are created", () => {
+  test("the user file and its directory are created", async () => {
     const box = sandbox();
-    const outcome = set(box, "smiths.claude-master.tags", "fast, big", "user");
+    const outcome = await set(
+      box,
+      "smiths.claude-master.tags",
+      "fast, big",
+      "user",
+    );
     expect(outcome).toMatchObject({
       ok: true,
       file: box.userFile,
@@ -227,9 +245,9 @@ describe("set: a layout the editor does not own is refused, and the file is left
     ["an array of tables", '[[smiths]]\nname = "x"\n', "an array of tables"],
   ];
   for (const [what, text, why] of cases)
-    test(what, () => {
+    test(what, async () => {
       const box = sandbox();
-      refused(
+      await refused(
         box,
         box.workspaceFile,
         text,
@@ -239,9 +257,9 @@ describe("set: a layout the editor does not own is refused, and the file is left
       );
     });
 
-  test("a key that the file holds as a table, not as a value", () => {
+  test("a key that the file holds as a table, not as a value", async () => {
     const box = sandbox();
-    refused(
+    await refused(
       box,
       box.workspaceFile,
       "[workflow.default_crew]\nname = 1\n",
@@ -251,13 +269,13 @@ describe("set: a layout the editor does not own is refused, and the file is left
     );
   });
 
-  test("a table that appears twice, whether the key is added or replaced", () => {
+  test("a table that appears twice, whether the key is added or replaced", async () => {
     for (const key of [
       "smiths.claude-master.tags",
       "smiths.claude-master.model",
     ]) {
       const box = sandbox();
-      refused(
+      await refused(
         box,
         box.workspaceFile,
         '[smiths.claude-master]\nmodel = "a"\n[smiths.claude-master]\neffort = "b"\n',
@@ -270,9 +288,9 @@ describe("set: a layout the editor does not own is refused, and the file is left
     }
   });
 
-  test("a key segment with an escape the editor does not decode", () => {
+  test("a key segment with an escape the editor does not decode", async () => {
     const box = sandbox();
-    refused(
+    await refused(
       box,
       box.workspaceFile,
       '[smiths."claude\\U0001F600"]\nmodel = "a"\n',
@@ -284,34 +302,36 @@ describe("set: a layout the editor does not own is refused, and the file is left
 });
 
 describe("set: strings in values are read past, not decoded", () => {
-  test("a tab and a \\U escape in another value do not stop an edit", () => {
+  test("a tab and a \\U escape in another value do not stop an edit", async () => {
     const box = sandbox();
     const text =
       '[smiths.claude-master]\nmodel = "a\tb \\U0001F600"\neffort = "low"\n';
     writeFileSync(box.workspaceFile, text);
-    const outcome = set(box, "smiths.claude-master.effort", "high");
+    const outcome = await set(box, "smiths.claude-master.effort", "high");
     expect(outcome.ok).toBe(true);
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       text.replace('effort = "low"', 'effort = "high"'),
     );
   });
 
-  test("a # and a [ inside the replaced value's old string; its trailing comment is kept", () => {
+  test("a # and a [ inside the replaced value's old string; its trailing comment is kept", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[smiths.claude-master]\nmodel = "a # [b]" # keep\n',
     );
-    expect(set(box, "smiths.claude-master.model", "c").ok).toBe(true);
+    expect((await set(box, "smiths.claude-master.model", "c")).ok).toBe(true);
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[smiths.claude-master]\nmodel = "c" # keep\n',
     );
   });
 
-  test("a key added after a last key line that has no line ending", () => {
+  test("a key added after a last key line that has no line ending", async () => {
     const box = sandbox();
     writeFileSync(box.workspaceFile, '[smiths.claude-master]\nmodel = "a"');
-    expect(set(box, "smiths.claude-master.effort", "high").ok).toBe(true);
+    expect((await set(box, "smiths.claude-master.effort", "high")).ok).toBe(
+      true,
+    );
     expect(readFileSync(box.workspaceFile, "utf8")).toBe(
       '[smiths.claude-master]\nmodel = "a"\neffort = "high"\n',
     );
@@ -328,14 +348,14 @@ describe("set: values are typed by key, and the result must load", () => {
     ["smiths.claude-master.tags", "a,,b", "empty item"],
   ];
   for (const [key, raw, why] of cases)
-    test(`${key} = "${raw}" is refused`, () => {
+    test(`${key} = "${raw}" is refused`, async () => {
       const box = sandbox();
-      refused(box, box.workspaceFile, null, key, raw, why);
+      await refused(box, box.workspaceFile, null, key, raw, why);
     });
 
-  test("an empty list is a valid value for a list", () => {
+  test("an empty list is a valid value for a list", async () => {
     const box = sandbox();
-    expect(set(box, "smiths.claude-master.tags", "")).toMatchObject({
+    expect(await set(box, "smiths.claude-master.tags", "")).toMatchObject({
       ok: true,
       value: [],
     });
@@ -343,22 +363,22 @@ describe("set: values are typed by key, and the result must load", () => {
 });
 
 describe("set: [shift] keys", () => {
-  test("a number is written bare and the duration quoted, under one [shift] table, and the loader reads them back from that file", () => {
+  test("a number is written bare and the duration quoted, under one [shift] table, and the loader reads them back from that file", async () => {
     const box = sandbox();
-    expect(set(box, "shift.max_usd", "5")).toMatchObject({
+    expect(await set(box, "shift.max_usd", "5")).toMatchObject({
       ok: true,
       value: 5,
       created: true,
     });
-    expect(set(box, "shift.for", "90m")).toMatchObject({
+    expect(await set(box, "shift.for", "90m")).toMatchObject({
       ok: true,
       value: "90m",
     });
-    expect(set(box, "shift.throttle", "0.5")).toMatchObject({
+    expect(await set(box, "shift.throttle", "0.5")).toMatchObject({
       ok: true,
       value: 0.5,
     });
-    expect(set(box, "shift.max_usd", "7.25")).toMatchObject({
+    expect(await set(box, "shift.max_usd", "7.25")).toMatchObject({
       ok: true,
       value: 7.25,
     });
@@ -377,9 +397,9 @@ describe("set: [shift] keys", () => {
     });
   });
 
-  test("the user file takes [shift] keys too", () => {
+  test("the user file takes [shift] keys too", async () => {
     const box = sandbox();
-    expect(set(box, "shift.concurrency", "3", "user")).toMatchObject({
+    expect(await set(box, "shift.concurrency", "3", "user")).toMatchObject({
       ok: true,
       file: box.userFile,
     });
@@ -425,9 +445,9 @@ describe("set: [shift] keys", () => {
     ["shift.constructor", "1", 'unknown shift key "constructor"'],
   ];
   for (const [key, raw, why] of cases)
-    test(`${key} = "${raw}" is refused, and nothing is written`, () => {
+    test(`${key} = "${raw}" is refused, and nothing is written`, async () => {
       const box = sandbox();
-      refused(box, box.workspaceFile, null, key, raw, why);
+      await refused(box, box.workspaceFile, null, key, raw, why);
     });
 });
 
@@ -443,18 +463,18 @@ describe("set: keys it does not write", () => {
     ["nothing", "not a key"],
   ];
   for (const [key, why] of cases)
-    test(key, () => {
+    test(key, async () => {
       const box = sandbox();
-      refused(box, box.workspaceFile, null, key, "x", why);
+      await refused(box, box.workspaceFile, null, key, "x", why);
     });
 
-  test("a smith defined only in the workspace file is refused for --user, and settable with --workspace", () => {
+  test("a smith defined only in the workspace file is refused for --user, and settable with --workspace", async () => {
     const box = sandbox();
     writeFileSync(
       box.workspaceFile,
       '[smiths.my-codex]\nprovider = "codex"\nmodel = "m"\neffort = "high"\n',
     );
-    refused(
+    await refused(
       box,
       box.userFile,
       null,
@@ -463,10 +483,10 @@ describe("set: keys it does not write", () => {
       "set it with --workspace",
       "user",
     );
-    expect(set(box, "smiths.my-codex.model", "n").ok).toBe(true);
+    expect((await set(box, "smiths.my-codex.model", "n")).ok).toBe(true);
   });
 
-  test("a smith the user file names after a key every object has is refused for --workspace with that reason; the file is left alone and Object.prototype gains no field", () => {
+  test("a smith the user file names after a key every object has is refused for --workspace with that reason; the file is left alone and Object.prototype gains no field", async () => {
     for (const name of ["constructor", "__proto__", "toString"]) {
       const box = sandbox();
       mkdirSync(box.userDir, { recursive: true });
@@ -478,7 +498,7 @@ describe("set: keys it does not write", () => {
       const before = '[smiths.claude-master]\nmodel = "x"\n';
       writeFileSync(box.workspaceFile, before);
       try {
-        const outcome = set(box, `smiths.${name}.model`, "n");
+        const outcome = await set(box, `smiths.${name}.model`, "n");
         expect(Object.hasOwn(Object.prototype, "model")).toBe(false);
         expect(outcome.ok).toBe(false);
         if (!outcome.ok)
@@ -495,11 +515,11 @@ describe("set: keys it does not write", () => {
 });
 
 describe("set: a workspace file never inherits execution.env.pass", () => {
-  test("creating the workspace file for another key is refused while the user file has a pass list", () => {
+  test("creating the workspace file for another key is refused while the user file has a pass list", async () => {
     const box = sandbox();
     mkdirSync(box.userDir, { recursive: true });
     writeFileSync(box.userFile, '[execution.env]\npass = ["A", "B"]\n');
-    refused(
+    await refused(
       box,
       box.workspaceFile,
       null,
@@ -509,11 +529,11 @@ describe("set: a workspace file never inherits execution.env.pass", () => {
     );
   });
 
-  test("setting execution.env.pass there is allowed, and says which user values it replaces", () => {
+  test("setting execution.env.pass there is allowed, and says which user values it replaces", async () => {
     const box = sandbox();
     mkdirSync(box.userDir, { recursive: true });
     writeFileSync(box.userFile, '[execution.env]\npass = ["A", "B"]\n');
-    expect(set(box, "execution.env.pass", "A")).toMatchObject({
+    expect(await set(box, "execution.env.pass", "A")).toMatchObject({
       ok: true,
       created: true,
       replacedUserPass: ["A", "B"],
@@ -521,10 +541,10 @@ describe("set: a workspace file never inherits execution.env.pass", () => {
     expect(loadConfig(box.options).config.execution.envPass).toEqual(["A"]);
   });
 
-  test("execution.env.pass --user is refused while a workspace file exists", () => {
+  test("execution.env.pass --user is refused while a workspace file exists", async () => {
     const box = sandbox();
     writeFileSync(box.workspaceFile, "");
-    refused(
+    await refused(
       box,
       box.userFile,
       null,
@@ -537,7 +557,7 @@ describe("set: a workspace file never inherits execution.env.pass", () => {
 });
 
 describe("set: a file saved as UTF-16", () => {
-  test("is refused, and left alone", () => {
+  test("is refused, and left alone", async () => {
     const box = sandbox();
     const bytes = Buffer.from(
       `${BOM}[workflow]
@@ -546,7 +566,7 @@ default_crew = "claude-journeyman"
       "utf16le",
     );
     writeFileSync(box.workspaceFile, bytes);
-    const outcome = set(box, "workflow.default_crew", "claude-master");
+    const outcome = await set(box, "workflow.default_crew", "claude-master");
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.error).toContain("is saved as UTF-16");
     expect(readFileSync(box.workspaceFile).equals(bytes)).toBe(true);

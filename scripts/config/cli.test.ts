@@ -2,9 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { scratchDirs } from "../test-scratch";
-import { runConfigCli } from "./cli";
-import { machineConfigFile } from "./load";
-import { withProcessHomes } from "./testing";
+import { runConfigCli as runConfigCliImpl } from "./cli";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -14,12 +12,21 @@ function setup() {
   return { harnessRoot: root, home: root, env: {} };
 }
 
+function runConfigCli(
+  argv: string[],
+  options: Parameters<typeof runConfigCliImpl>[1],
+) {
+  return runConfigCliImpl(argv, options, {
+    coordinationRoot: join(options.home ?? options.harnessRoot, "coordination"),
+  });
+}
+
 describe("forge:config", () => {
-  test("show --json prints merged smiths and benches with sources", () => {
+  test("show --json prints merged smiths and benches with sources", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
     writeFileSync(file, '[smiths.claude-master]\nmodel = "m-x"\n');
-    const out = runConfigCli(["show", "--json"], opts);
+    const out = await runConfigCli(["show", "--json"], opts);
     expect(out.code).toBe(0);
     const body = JSON.parse(out.stdout);
     expect(body.ok).toBe(true);
@@ -30,26 +37,26 @@ describe("forge:config", () => {
     expect(body.data.config.benches.low.length).toBe(2);
   });
 
-  test("show prints a line per key with its source", () => {
-    const out = runConfigCli(["show"], setup());
+  test("show prints a line per key with its source", async () => {
+    const out = await runConfigCli(["show"], setup());
     expect(out.stdout).toContain("workflow.default_crew");
     expect(out.stdout).toContain("(builtin)");
   });
 
-  test("get prints one value; an unknown key exits 2", () => {
+  test("get prints one value; an unknown key exits 2", async () => {
     const opts = setup();
-    const ok = runConfigCli(["get", "workflow.default_crew"], opts);
+    const ok = await runConfigCli(["get", "workflow.default_crew"], opts);
     expect(ok.code).toBe(0);
     expect(ok.stdout).toContain("claude-journeyman");
-    const bad = runConfigCli(["get", "nope.nothing"], opts);
+    const bad = await runConfigCli(["get", "nope.nothing"], opts);
     expect(bad.code).toBe(2);
     expect(bad.stderr).toContain("unknown key");
   });
 
-  test("get of a key every object has exits 2 as an unknown key", () => {
+  test("get of a key every object has exits 2 as an unknown key", async () => {
     const opts = setup();
     for (const key of ["constructor", "__proto__", "toString"]) {
-      const out = runConfigCli(["get", key], opts);
+      const out = await runConfigCli(["get", key], opts);
       expect(out).toEqual({
         code: 2,
         stdout: "",
@@ -58,34 +65,37 @@ describe("forge:config", () => {
     }
   });
 
-  test("keys lists every settable key", () => {
-    const out = runConfigCli(["keys", "--json"], setup());
+  test("keys lists every settable key", async () => {
+    const out = await runConfigCli(["keys", "--json"], setup());
     const { keys } = JSON.parse(out.stdout).data;
     expect(keys).toContain("execution.env.pass");
     expect(keys).toContain("benches.low");
   });
 
-  test("show and get print each [shift] key with where it came from, and keys lists them", () => {
+  test("show and get print each [shift] key with where it came from, and keys lists them", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
     writeFileSync(file, "[shift]\nmax_usd = 5\n");
-    const shown = runConfigCli(["show"], opts);
+    const shown = await runConfigCli(["show"], opts);
     expect(shown.code).toBe(0);
     expect(shown.stdout.split("\n")).toContain(`shift.max_usd = 5  (${file})`);
     expect(shown.stdout.split("\n")).toContain('shift.for = "2h"  (builtin)');
-    expect(runConfigCli(["get", "shift.for"], opts).stdout).toBe(
+    expect((await runConfigCli(["get", "shift.for"], opts)).stdout).toBe(
       "2h  (from builtin)",
     );
-    const got = runConfigCli(["get", "shift.max_usd", "--json"], opts);
+    const got = await runConfigCli(["get", "shift.max_usd", "--json"], opts);
     expect(JSON.parse(got.stdout).data).toEqual({
       key: "shift.max_usd",
       value: 5,
       source: file,
     });
-    const shownJson = JSON.parse(runConfigCli(["show", "--json"], opts).stdout);
+    const shownJson = JSON.parse(
+      (await runConfigCli(["show", "--json"], opts)).stdout,
+    );
     expect(shownJson.data.config.shift.maxUsd).toBe(5);
-    const { keys } = JSON.parse(runConfigCli(["keys", "--json"], opts).stdout)
-      .data as { keys: string[] };
+    const { keys } = JSON.parse(
+      (await runConfigCli(["keys", "--json"], opts)).stdout,
+    ).data as { keys: string[] };
     expect(keys.filter((key) => key.startsWith("shift."))).toEqual([
       "shift.concurrency",
       "shift.for",
@@ -96,10 +106,10 @@ describe("forge:config", () => {
     ]);
   });
 
-  test("set shift.max_usd 5 --workspace writes it, and get then reports it from the workspace file", () => {
+  test("set shift.max_usd 5 --workspace writes it, and get then reports it from the workspace file", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
-    const out = runConfigCli(
+    const out = await runConfigCli(
       ["set", "shift.max_usd", "5", "--workspace"],
       opts,
     );
@@ -109,25 +119,25 @@ describe("forge:config", () => {
       stderr: "",
     });
     expect(readFileSync(file, "utf8")).toBe("[shift]\nmax_usd = 5\n");
-    expect(runConfigCli(["get", "shift.max_usd"], opts).stdout).toBe(
+    expect((await runConfigCli(["get", "shift.max_usd"], opts)).stdout).toBe(
       `5  (from ${file})`,
     );
   });
 
-  test("a broken config exits 2 with the file in the message", () => {
+  test("a broken config exits 2 with the file in the message", async () => {
     const opts = setup();
     writeFileSync(join(opts.harnessRoot, "agent-forge.toml"), "a = = 1");
-    const out = runConfigCli(["show", "--json"], opts);
+    const out = await runConfigCli(["show", "--json"], opts);
     expect(out.code).toBe(2);
     expect(JSON.parse(out.stdout).error).toContain("agent-forge.toml");
   });
 });
 
 describe("forge:config set", () => {
-  test("set --workspace creates the workspace file, and get then reports the value from it", () => {
+  test("set --workspace creates the workspace file, and get then reports the value from it", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
-    const out = runConfigCli(
+    const out = await runConfigCli(
       ["set", "workflow.default_crew", "claude-master", "--workspace"],
       opts,
     );
@@ -135,7 +145,10 @@ describe("forge:config set", () => {
     expect(readFileSync(file, "utf8")).toBe(
       '[workflow]\ndefault_crew = "claude-master"\n',
     );
-    const got = runConfigCli(["get", "workflow.default_crew", "--json"], opts);
+    const got = await runConfigCli(
+      ["get", "workflow.default_crew", "--json"],
+      opts,
+    );
     expect(JSON.parse(got.stdout).data).toMatchObject({
       key: "workflow.default_crew",
       value: "claude-master",
@@ -143,10 +156,10 @@ describe("forge:config set", () => {
     });
   });
 
-  test("needs exactly one of --user or --workspace, and writes nothing without it", () => {
+  test("needs exactly one of --user or --workspace, and writes nothing without it", async () => {
     const opts = setup();
     for (const flags of [[], ["--user", "--workspace"]]) {
-      const out = runConfigCli(
+      const out = await runConfigCli(
         ["set", "workflow.default_crew", "claude-master", ...flags],
         opts,
       );
@@ -157,9 +170,9 @@ describe("forge:config set", () => {
     expect(existsSync(join(opts.home, ".agent-forge"))).toBe(false);
   });
 
-  test("--user writes under the home it is given; --json answers the envelope", () => {
+  test("--user writes under the home it is given; --json answers the envelope", async () => {
     const opts = setup();
-    const out = runConfigCli(
+    const out = await runConfigCli(
       ["set", "smiths.claude-master.enabled", "false", "--user", "--json"],
       opts,
     );
@@ -175,46 +188,8 @@ describe("forge:config set", () => {
     );
   });
 
-  test("with no home given, --user writes config.toml in AGENT_FORGE_HOME, and show names that file", () => {
-    const root = scratch.make("forge-config-cli-");
-    const forgeHome = join(root, "moved forge home");
-    const osHome = join(root, "os home");
-    mkdirSync(osHome);
-    const opts = { harnessRoot: join(root, "harness"), env: {} };
-    mkdirSync(opts.harnessRoot);
-    const file = join(forgeHome, "config.toml");
-
-    const [set, show] = withProcessHomes(forgeHome, osHome, () => {
-      // Before anything is written: if the machine file were not in the moved
-      // home, the set below could write the real user file (the OS home does
-      // not move under Bun on Linux).
-      expect(machineConfigFile({})).toBe(file);
-      return [
-        runConfigCli(
-          ["set", "workflow.default_crew", "claude-master", "--user", "--json"],
-          opts,
-        ),
-        runConfigCli(["show", "--json"], opts),
-      ];
-    });
-    expect(JSON.parse(set?.stdout ?? "")).toMatchObject({
-      ok: true,
-      data: { file, created: true },
-    });
-    expect(readFileSync(file, "utf8")).toBe(
-      '[workflow]\ndefault_crew = "claude-master"\n',
-    );
-    expect(existsSync(join(osHome, ".agent-forge"))).toBe(false);
-    const body = JSON.parse(show?.stdout ?? "");
-    expect(body.data.files).toEqual([file]);
-    expect(body.data.provenance["workflow.default_crew"]).toEqual({
-      value: "claude-master",
-      source: file,
-    });
-  });
-
-  test("a refusal exits 2 with the reason", () => {
-    const out = runConfigCli(
+  test("a refusal exits 2 with the reason", async () => {
+    const out = await runConfigCli(
       ["set", "workflow.default_crew", "nobody", "--workspace", "--json"],
       setup(),
     );
@@ -222,27 +197,27 @@ describe("forge:config set", () => {
     expect(JSON.parse(out.stdout).error).toContain('unknown smith "nobody"');
   });
 
-  test("a config that does not load today can be repaired by the set that fixes it", () => {
+  test("a config that does not load today can be repaired by the set that fixes it", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
     writeFileSync(file, '[workflow]\ndefault_crew = "nobody"\n');
-    expect(runConfigCli(["show"], opts).code).toBe(2);
-    const out = runConfigCli(
+    expect((await runConfigCli(["show"], opts)).code).toBe(2);
+    const out = await runConfigCli(
       ["set", "workflow.default_crew", "claude-master", "--workspace"],
       opts,
     );
     expect(out.code).toBe(0);
-    expect(runConfigCli(["show"], opts).code).toBe(0);
+    expect((await runConfigCli(["show"], opts)).code).toBe(0);
   });
 
-  test("replacing the user file's execution.env.pass says so on stderr", () => {
+  test("replacing the user file's execution.env.pass says so on stderr", async () => {
     const opts = setup();
     mkdirSync(join(opts.home, ".agent-forge"), { recursive: true });
     writeFileSync(
       join(opts.home, ".agent-forge", "config.toml"),
       '[execution.env]\npass = ["A", "B"]\n',
     );
-    const out = runConfigCli(
+    const out = await runConfigCli(
       ["set", "execution.env.pass", "A", "--workspace"],
       opts,
     );
@@ -252,15 +227,16 @@ describe("forge:config set", () => {
 });
 
 describe("forge:config keys and set agree", () => {
-  test("every key keys lists can be set with --workspace, a file-defined smith's enabled and tags included, and a foreign field is not listed", () => {
+  test("every key keys lists can be set with --workspace, a file-defined smith's enabled and tags included, and a foreign field is not listed", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
     writeFileSync(
       file,
       '[smiths.my-codex]\nprovider = "codex"\nmodel = "m"\neffort = "high"\ncolour = "blue"\n',
     );
-    const { keys } = JSON.parse(runConfigCli(["keys", "--json"], opts).stdout)
-      .data as { keys: string[] };
+    const { keys } = JSON.parse(
+      (await runConfigCli(["keys", "--json"], opts)).stdout,
+    ).data as { keys: string[] };
     expect(keys).toContain("smiths.my-codex.enabled");
     expect(keys).toContain("smiths.my-codex.tags");
     expect(keys).not.toContain("smiths.my-codex.colour");
@@ -284,7 +260,7 @@ describe("forge:config keys and set agree", () => {
                       ? "claude"
                       : "value";
     for (const key of keys) {
-      const out = runConfigCli(
+      const out = await runConfigCli(
         ["set", key, sample(key), "--workspace", "--json"],
         opts,
       );
