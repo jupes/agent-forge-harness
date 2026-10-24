@@ -88,6 +88,7 @@ export function createKeeperSessionStartService(options: Options) {
   ): Promise<KeeperSessionStartReceipt> => {
     readable(projectId);
     const saved = await journal.readSessionStart(projectId, proposalId);
+    readable(projectId);
     if (!saved)
       throw new ConversationError(
         404,
@@ -124,6 +125,10 @@ export function createKeeperSessionStartService(options: Options) {
           limit: 1,
         })
       : null;
+    // The protected original must still belong to this served project after
+    // either awaited source returns, including an already captured page.
+    readable(projectId);
+    assertWorkspace(saved.intent.workspace);
     if (session && page?.request) {
       const input = saved.intent.original.start;
       const first = page.frames[0];
