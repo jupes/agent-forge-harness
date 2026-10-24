@@ -32,6 +32,8 @@
  */
 
 import { resolve } from "node:path";
+import type { ProjectShiftIntent } from "../../types/project-shifts";
+import { buildChildEnv } from "../executors/env";
 import { killTree, STDERR_TAIL_CHARS } from "../executors/supervisor";
 import { guardTree, type TreeGuard } from "../executors/tree-guard";
 import {
@@ -41,6 +43,8 @@ import {
   shiftIdInUse,
 } from "../scheduler/shift-store";
 import { redactSecrets } from "../secret-patterns";
+import { createProjectShiftRegistry } from "../shifts/registry";
+import { sameProjectShiftOriginal } from "../shifts/start-input";
 import { safeMessage } from "./api";
 
 /** The script a hearth starts a shift with: `forge:shift`. */
@@ -49,6 +53,12 @@ export const SHIFT_CLI = resolve(
   "..",
   "scheduler",
   "shift-cli.ts",
+);
+export const PROJECT_SHIFT_ENTRY = resolve(
+  import.meta.dir,
+  "..",
+  "shifts",
+  "execution-entry.ts",
 );
 
 /** How long `close()` waits for the shifts it asked to stop before it ends them. */
@@ -89,6 +99,8 @@ export interface ShiftChildExit {
 /** A started shift's process. */
 export interface LaunchedShiftChild {
   pid: number;
+  /** Attended launches expose the separately confirmed engine identity; pid remains the owned wrapper root. */
+  enginePid?: Promise<number>;
   /** Resolves once it has exited. */
   done: Promise<ShiftChildExit>;
   /** End it and its process tree; resolves once it has exited. */
@@ -204,6 +216,8 @@ export interface ShiftLaunchEntry {
   state: "starting" | "failed";
   /** The child the hearth started. */
   pid: number;
+  wrapperPid?: number;
+  enginePid?: number | null;
   /** Whether that child is still running. */
   alive: boolean;
   workspace: string;
@@ -219,6 +233,8 @@ export interface ShiftLaunchEntry {
 }
 
 export interface ShiftStartsDeps {
+  /** Trusted source/packaged command; original project/UUID are the only appended arguments. */
+  projectCommand?: readonly string[] | undefined;
   /** The hearth's root: the child's working directory. */
   root: string;
   /** The hearth's home: the child's `AGENT_FORGE_HOME`. */
@@ -229,6 +245,13 @@ export interface ShiftStartsDeps {
   /** The hearth's environment, handed to the child with `AGENT_FORGE_HOME` set to `home`. */
   environment: Readonly<Record<string, string | undefined>>;
   launch: ShiftLauncher;
+  /** Attended project children have a mandatory grant before engine code; ordinary global shifts keep launch. */
+  projectLaunch?:
+    | ((
+        spec: ShiftLaunchSpec,
+        original: ProjectShiftIntent,
+      ) => LaunchedShiftChild)
+    | undefined;
   /** A new shift id; `mintShiftId` at the current second by default. */
   mintShiftId?: (() => string) | undefined;
   stopGraceMs?: number | undefined;
@@ -240,6 +263,10 @@ export type StartOutcome =
   | { ok: false; kind: "closing" | "duplicate" | "failed"; error: string };
 
 export interface ShiftStarts {
+  /** Explicit current-admission call only; recreation and reads never invoke this method. */
+  startProject(projectId: string, requestId: string): StartOutcome;
+  /** Only the matching held project tree can confirm settlement. Saved numeric PIDs grant no control. */
+  stopProject(original: ProjectShiftIntent): Promise<boolean>;
   /** A shift id that no record, stop request or launch of this hearth has. */
   mint(): string;
   /** A launch of this hearth that is still starting (its child runs, it has no record yet), or null. */
@@ -262,8 +289,11 @@ interface Launch {
   /** This hearth's count of launches when it was started: breaks a tie between equal `startedAt`. */
   seq: number;
   child: LaunchedShiftChild;
+  enginePid?: number;
   startedAt: string;
   requested: Record<string, unknown>;
+  project?: ProjectShiftIntent;
+  stopping?: Promise<boolean>;
   exit?: { exitCode: number | null; endedAt: string; error: string };
   /** Resolves once `exit` is set. */
   ended: Promise<void>;
@@ -349,7 +379,10 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
     return {
       shiftId: launch.shiftId,
       state: launch.exit === undefined ? "starting" : "failed",
-      pid: launch.child.pid,
+      pid: launch.enginePid ?? launch.child.pid,
+      ...(launch.child.enginePid
+        ? { wrapperPid: launch.child.pid, enginePid: launch.enginePid ?? null }
+        : {}),
       alive: launch.exit === undefined,
       workspace: deps.workspace,
       startedAt: launch.startedAt,
@@ -362,6 +395,87 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
           }
         : {}),
     };
+  }
+
+  function startLaunch(
+    shiftId: string,
+    argv: string[],
+    requested: Record<string, unknown>,
+    project?: ProjectShiftIntent,
+  ): StartOutcome {
+    if (closing)
+      return {
+        ok: false,
+        kind: "closing",
+        error: "The control plane is closing; no shift was started",
+      };
+    // Two starts under one id would leave the first out of `close()`.
+    if (launches.has(shiftId))
+      return {
+        ok: false,
+        kind: "duplicate",
+        error: `${shiftId} was started by this control plane already; no shift was started`,
+      };
+    minted.delete(shiftId);
+    // The hearth's home replaces any other, in any letter case (Windows
+    // names are case-insensitive, and two spellings would both be passed).
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(
+      project ? buildChildEnv(deps.environment, []) : deps.environment,
+    ))
+      if (value !== undefined && name.toUpperCase() !== "AGENT_FORGE_HOME")
+        env[name] = value;
+    env["AGENT_FORGE_HOME"] = deps.home;
+    let child: LaunchedShiftChild;
+    try {
+      const spec = {
+        argv,
+        cwd: deps.root,
+        env,
+      };
+      child =
+        project && deps.projectLaunch
+          ? deps.projectLaunch(spec, project)
+          : deps.launch(spec);
+    } catch (error) {
+      return {
+        ok: false,
+        kind: "failed",
+        error: `The shift could not be started: ${safeMessage(error)}`,
+      };
+    }
+    let settle = (): void => undefined;
+    launched += 1;
+    const launch: Launch = {
+      shiftId,
+      seq: launched,
+      child,
+      startedAt: now().toISOString(),
+      requested: { ...requested },
+      ...(project ? { project: structuredClone(project) } : {}),
+      ended: new Promise<void>((done) => {
+        settle = done;
+      }),
+    };
+    launches.set(shiftId, launch);
+    void child.enginePid
+      ?.then((pid) => {
+        if (!launch.exit) launch.enginePid = pid;
+      })
+      .catch(() => {});
+    const exited = (exit: ShiftChildExit): void => {
+      launch.exit = {
+        exitCode: exit.exitCode,
+        endedAt: now().toISOString(),
+        error: launchFailure(exit),
+      };
+      settle();
+      prune();
+    };
+    child.done.then(exited, (error: unknown) =>
+      exited({ exitCode: null, stdout: "", stderr: safeMessage(error) }),
+    );
+    return { ok: true, value: entry(launch) };
   }
 
   return {
@@ -399,69 +513,84 @@ export function createShiftStarts(deps: ShiftStartsDeps): ShiftStarts {
     },
 
     start(shiftId, flags, requested) {
+      return startLaunch(
+        shiftId,
+        [process.execPath, SHIFT_CLI, "run", "--id", shiftId, ...flags],
+        requested,
+      );
+    },
+    startProject(projectId, requestId) {
       if (closing)
         return {
           ok: false,
           kind: "closing",
-          error: "The control plane is closing; no shift was started",
+          error: "The shift launcher is closing. Check the original request.",
         };
-      // Two starts under one id would leave the first out of `close()`.
-      if (launches.has(shiftId))
-        return {
-          ok: false,
-          kind: "duplicate",
-          error: `${shiftId} was started by this control plane already; no shift was started`,
-        };
-      minted.delete(shiftId);
-      // The hearth's home replaces any other, in any letter case (Windows
-      // names are case-insensitive, and two spellings would both be passed).
-      const env: Record<string, string> = {};
-      for (const [name, value] of Object.entries(deps.environment))
-        if (value !== undefined && name.toUpperCase() !== "AGENT_FORGE_HOME")
-          env[name] = value;
-      env["AGENT_FORGE_HOME"] = deps.home;
-      let child: LaunchedShiftChild;
       try {
-        child = deps.launch({
-          argv: [process.execPath, SHIFT_CLI, "run", "--id", shiftId, ...flags],
-          cwd: deps.root,
-          env,
-        });
-      } catch (error) {
+        const intent = createProjectShiftRegistry({
+          home: deps.home,
+          root: deps.root,
+        }).read(projectId, requestId);
+        if (
+          intent.attemptedAt === null ||
+          intent.startupStop ||
+          intent.executionStartedAt ||
+          shiftIdInUse(deps.shiftsDir, intent.shiftId)
+        )
+          return {
+            ok: false,
+            kind: "duplicate",
+            error:
+              "The original Start is not eligible for another child launch. Read its current outcome.",
+          };
+        const command = deps.projectCommand ?? [
+          process.execPath,
+          PROJECT_SHIFT_ENTRY,
+        ];
+        if (
+          !command.length ||
+          command.some((part) => !part || part.includes("\0"))
+        )
+          return {
+            ok: false,
+            kind: "failed",
+            error: "The trusted shift child command is unavailable.",
+          };
+        return startLaunch(
+          intent.shiftId,
+          [...command, projectId, requestId],
+          { ...intent.request.options },
+          intent,
+        );
+      } catch {
         return {
           ok: false,
           kind: "failed",
-          error: `The shift could not be started: ${safeMessage(error)}`,
+          error:
+            "The original project shift Start could not be verified. Read its current outcome before trying anything else.",
         };
       }
-      let settle = (): void => undefined;
-      launched += 1;
-      const launch: Launch = {
-        shiftId,
-        seq: launched,
-        child,
-        startedAt: now().toISOString(),
-        requested: { ...requested },
-        ended: new Promise<void>((done) => {
-          settle = done;
-        }),
-      };
-      launches.set(shiftId, launch);
-      const exited = (exit: ShiftChildExit): void => {
-        launch.exit = {
-          exitCode: exit.exitCode,
-          endedAt: now().toISOString(),
-          error: launchFailure(exit),
-        };
-        settle();
-        prune();
-      };
-      child.done.then(exited, (error: unknown) =>
-        exited({ exitCode: null, stdout: "", stderr: safeMessage(error) }),
-      );
-      return { ok: true, value: entry(launch) };
     },
-
+    async stopProject(original) {
+      const saved = createProjectShiftRegistry({
+        home: deps.home,
+        root: deps.root,
+      }).read(original.projectId, original.request.requestId);
+      const launch = launches.get(saved.shiftId),
+        held = launch?.project;
+      const matches = (value: ProjectShiftIntent) =>
+        sameProjectShiftOriginal(value, saved);
+      if (!saved.startupStop || !matches(original) || !held || !matches(held))
+        return false;
+      if (!launch.stopping)
+        launch.stopping = (async () => {
+          await launch.child.stop();
+          // This is held-tree cleanup/drain, never a kill(pid, 0) inference or wrapper-exit guess.
+          await launch.child.done;
+          return true;
+        })();
+      return launch.stopping;
+    },
     unrecorded() {
       prune();
       // Newest first: by start time, and for an equal time (two starts in

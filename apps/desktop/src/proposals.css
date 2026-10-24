@@ -1,0 +1,86 @@
+.af-proposals {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+.af-proposals > h2,
+.af-proposals > p {
+  margin: 0;
+}
+.af-proposals-refresh {
+  justify-self: start;
+}
+.af-proposal-card {
+  border: 1px solid var(--color-divider);
+  border-radius: 10px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.af-proposal-card h3,
+.af-proposal-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.af-proposal-heading,
+.af-proposal-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.af-proposal-heading {
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+.af-proposal-state {
+  color: var(--color-accent);
+}
+.af-proposal-field {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  min-width: 0;
+}
+.af-proposal-field input,
+.af-proposal-field select,
+.af-proposal-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 32px;
+  color: inherit;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.af-proposal-field textarea {
+  resize: vertical;
+}
+.af-proposal-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.af-proposal-check input {
+  width: 24px;
+  height: 24px;
+}
+.af-proposals button,
+.af-proposals summary,
+.af-proposal-card a {
+  min-height: 28px;
+}
+.af-proposals :is(button, input, select, textarea, summary, a):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.af-proposals fieldset {
+  min-width: 0;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  margin: 10px 0;
+}

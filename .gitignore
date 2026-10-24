@@ -75,6 +75,7 @@ node_modules/
 
 # Playwright output
 test-results/
+test-results-desktop-worktrees/
 playwright-report/
 
 # Local executor config (copy agent-forge.toml.example)

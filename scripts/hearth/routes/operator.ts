@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LedgerEventInput, OperatorEnvelope } from "../../../types/hearth";
+import type { ConversationTransport } from "../../conversations/transport";
 import { assertCouncilRunId } from "../../council/artifacts";
 import {
   assertCouncilInput,
@@ -20,8 +21,17 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { KeeperOperatorPost } from "../../keeper/operator-post";
+import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { ProviderInspector } from "../../providers/inspect";
+import type { ProviderLoginService } from "../../providers/login";
+import type { SessionRuntime } from "../../sessions/admission";
+import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
+import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
+import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
+import type { ProjectShiftRuntime } from "../../shifts/service";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -36,8 +46,12 @@ import { createLedgerStream } from "../stream";
 import { isBeadId } from "../tracker-write";
 import type { ValidationResult } from "../validate";
 import { beadRoutes } from "./beads";
+import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
+import { createKeeperBriefPreparer } from "./keeper-briefs-source";
+import { keeperProposalRoutes } from "./keeper-proposals";
+import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
 import {
   beadsReads,
   fail,
@@ -49,12 +63,39 @@ import {
   type ReadDeps,
   workspaceReads,
 } from "./operator-reads";
+import { createProjectActivityRoutes } from "./project-activity";
+import { projectBeadWriteRoutes } from "./project-bead-writes";
+import { projectBeadsRoute } from "./project-beads";
+import { projectOverviewRoute } from "./project-overview";
+import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
+import {
+  projectSnapshotReader,
+  projectSummaryRoute,
+} from "./project-summaries";
+import { projectWorkbenchRoute } from "./project-workbench";
+import { projectRoutes } from "./projects";
+import { createProviderLoginRoutes } from "./provider-logins";
+import { createProviderReadinessRoutes } from "./providers";
 import { queueRoutes } from "./queue";
+import { createSessionObservationRoutes } from "./session-observations";
+import { createSessionWorktreeRoutes } from "./session-worktrees";
+import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  providerInspector: ProviderInspector;
+  providerLogin: ProviderLoginService;
+  /** Machine-private home; the project catalog is shared above workspaces. */
+  projectHome: string;
+  conversationTransport?: ConversationTransport | undefined;
+  sessionRuntime: SessionRuntime;
+  codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
+  codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
+  geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+  keeperRuntime?: KeeperRuntime | undefined;
+  keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
   appendEvent(event: LedgerEventInput): AppendResult;
@@ -64,6 +105,8 @@ export interface OperatorDeps extends ReadDeps {
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
   shiftStarts: ShiftStarts;
+  /** Trusted attended launcher only; null holds Start while retaining original reads and controls. */
+  projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** How often an open stream looks for new events, and how often it sends a keepalive. */
   streamPollMs?: number | undefined;
   streamKeepaliveMs?: number | undefined;
@@ -332,18 +375,80 @@ async function collectionEnvelope(row: ReadRoute): Promise<OperatorEnvelope> {
 
 export interface OperatorTable {
   routes: ApiRoute[];
-  /** End what the table holds open (the event streams). */
-  close(): void;
+  /** End event streams and stop the conversation processes this hearth owns. */
+  close(): Promise<void>;
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { sessions, runs, run, events, reservations, scoreboard } =
     ledgerReads(deps);
-  const { queue, smiths, config, worktrees, eligibility } =
+  const { queue, smiths, config, worktrees, eligibility, readEligible } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
+  const { projects, preferences } = projectRoutes(deps.projectHome);
+  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
+  const conversations = conversationRoutes(
+    deps.projectHome,
+    deps.root,
+    deps.conversationTransport,
+    keeperAboutValidator(deps, projectSnapshot),
+    createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
+    deps.keeperRuntime,
+  );
+  const proposals = keeperProposalRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+    deps.keeperOperatorPost,
+  );
+  const ownedSessions = createOwnedSessionRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+    deps.sessionRuntime,
+    {
+      codexTaskRuntime: deps.codexTaskRuntime,
+      codexChatRuntime: deps.codexChatRuntime,
+      geminiTaskRuntime: deps.geminiTaskRuntime,
+    },
+  );
+  const sessionWorktrees = createSessionWorktreeRoutes(
+    deps.projectHome,
+    deps,
+    projectSnapshot,
+  );
+  const trackerWrites = beadRoutes({
+    workspace: deps.workspace,
+    runBd: deps.runBd,
+    appendEvent: deps.appendEvent,
+  });
+  const queueWrites = queueRoutes({
+    root: deps.root,
+    workspace: deps.workspace,
+    runBd: deps.runBd,
+    appendEvent: deps.appendEvent,
+    lockFile: deps.queueLockFile,
+    configHome: deps.configHome,
+  });
+  const projectWrites = projectBeadWriteRoutes({
+    home: deps.projectHome,
+    workspace: deps.workspace,
+    load: projectSnapshot,
+    routes: [...trackerWrites, ...queueWrites],
+  });
   // In the order section 6 lists them.
+  const providers = createProviderReadinessRoutes(
+    deps,
+    deps.providerInspector,
+    projectSnapshot,
+  );
+  const providerLogins = createProviderLoginRoutes(deps.providerLogin);
+  const observations = createSessionObservationRoutes(deps, projectSnapshot);
+  const activity = createProjectActivityRoutes(deps, projectSnapshot);
   const reads: ReadRoute[] = [
+    ...providerLogins.reads,
+    providers.read,
     sessions,
     runs,
     run,
@@ -356,6 +461,33 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     eligibility,
     counts,
     scoreboard,
+    projects,
+    projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
+    projectOverviewRoute(deps, projectSnapshot),
+    observations.list,
+    observations.detail,
+    activity.list,
+    activity.detail,
+    projectBeadsRoute(deps, projectSnapshot),
+    projectShiftOptionsRoute(
+      deps,
+      projectSnapshot,
+      deps.projectShiftRuntime?.attended === true,
+    ),
+    projectWorkbenchRoute(deps, projectSnapshot, async () => {
+      const result = await readEligible();
+      return result.ok ? result.value : null;
+    }),
+    keeperReadRoute(deps, projectSnapshot),
+    conversations.read,
+    conversations.briefs,
+    conversations.recovery,
+    proposals.read,
+    ownedSessions.list,
+    ownedSessions.read,
+    ownedSessions.approvals,
+    ...ownedSessions.library.reads,
+    sessionWorktrees.read,
   ];
 
   // Opened with the hearth's first-open wait, as the read rows are.
@@ -388,20 +520,29 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     routes: [
       ...reads,
       stream,
+      conversations.events,
+      ownedSessions.events,
       ...actions(deps),
-      ...beadRoutes({
-        workspace,
-        runBd: deps.runBd,
-        appendEvent: deps.appendEvent,
-      }),
-      ...queueRoutes({
-        root: deps.root,
-        workspace,
-        runBd: deps.runBd,
-        appendEvent: deps.appendEvent,
-        lockFile: deps.queueLockFile,
-        configHome: deps.configHome,
-      }),
+      providers.doctor,
+      ...providerLogins.actions,
+      preferences,
+      conversations.send,
+      conversations.refresh,
+      conversations.continuation,
+      proposals.approve,
+      proposals.dismiss,
+      conversations.stop,
+      ownedSessions.start,
+      ownedSessions.preview,
+      ownedSessions.send,
+      ownedSessions.stop,
+      ownedSessions.decide,
+      ownedSessions.library.archive,
+      sessionWorktrees.create,
+      ...trackerWrites,
+      ...queueWrites,
+      ...projectWrites,
+      ...scopedShifts.routes,
       ...shiftRoutes({
         workspace,
         shiftsDir: deps.shiftsDir,
@@ -414,6 +555,13 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
         starts: deps.shiftStarts,
       }),
     ],
-    close: () => live.close(),
+    close: async () => {
+      scopedShifts.close();
+      live.close();
+      await providerLogins.close();
+      await ownedSessions.close();
+      await proposals.close();
+      await conversations.close();
+    },
   };
 }

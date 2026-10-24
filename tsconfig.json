@@ -21,6 +21,8 @@
     }
   },
   "include": [
+    "apps/desktop/src/**/*.ts",
+    "apps/desktop/src/**/*.tsx",
     "tests/**/*.ts",
     "scripts/**/*.ts",
     ".claude/hooks/**/*.ts",

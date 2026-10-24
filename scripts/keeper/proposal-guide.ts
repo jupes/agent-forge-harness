@@ -1,0 +1,5 @@
+import { z } from "zod";
+import { keeperProposalMessageSchema } from "./proposal-protocol";
+
+/** This is an output format for inert suggestions, never another tool or an execution instruction. */
+export const KEEPER_PROPOSAL_GUIDE = `When the owner asks for actionable proposals, return one whole JSON object matching the following schema, with no surrounding prose. Use only ids and repository values actually read in this project's scope. The message explains the evidence and limitations; each draft title and detail explains why the human might approve it. These are untrusted suggestions, never approval or success. The human must separately review each card. Session, shift and council destinations may be unavailable; never claim they started. Do not emit proposals for ordinary questions or brief requests. Keep the whole reply below 24000 UTF-8 bytes and do not include tokens, commands, flags, URLs, file contents, approval status or result fields. Schema: ${JSON.stringify(z.toJSONSchema(keeperProposalMessageSchema))}`;

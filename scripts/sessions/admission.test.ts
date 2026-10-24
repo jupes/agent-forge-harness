@@ -1,0 +1,362 @@
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { LedgerEventInput } from "../../types/hearth";
+import { createOwnedSessionLedger } from "../hearth/routes/session-ledger";
+import { createProjectStore } from "../projects/store";
+import type { SessionRuntime } from "./admission";
+import { createOwnedSessionService } from "./admission";
+import { serializeClaudeLaunch } from "./claude-launch";
+import { createSessionRegistry } from "./registry";
+
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+});
+
+async function closingFixture(
+  validateScope: () => Promise<void> = async () => {},
+) {
+  const base = mkdtempSync(join(tmpdir(), "forge closing session "));
+  cleanup.push(() => rmSync(base, { recursive: true, force: true }));
+  const home = join(base, "home"),
+    root = join(base, "repo");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  const project = (
+    await createProjectStore(home).create(
+      {
+        slug: "alpha",
+        name: "Alpha",
+        description: "",
+        icon: "A",
+        workspaces: [{ root, repositories: [root], epicIds: ["alpha-1"] }],
+      },
+      0,
+    )
+  ).projects[0]!;
+  const counts = { prepared: 0, runs: 0 };
+  const runtime: SessionRuntime = {
+    provider: "claude",
+    async prepare({ smith, cwd, launch }) {
+      counts.prepared++;
+      return {
+        version: 1,
+        provider: "claude",
+        smith,
+        cwd,
+        launch,
+        capabilities: {
+          version: "2.1.296",
+          flags: [
+            "--print",
+            "--input-format",
+            "--output-format",
+            "--verbose",
+            "--include-partial-messages",
+            "--model",
+            "--permission-mode",
+            "--permission-prompts",
+            "--allowedTools",
+            "--resume",
+            "--json-schema",
+          ],
+        },
+      };
+    },
+    async run(request, persist) {
+      counts.runs++;
+      await persist({
+        kind: "identity",
+        provider: "claude",
+        sessionId:
+          request.resume?.sessionId ?? "e1a3d9df-94fe-41b0-869b-e421f1a3ddca",
+        version: "2.1.296",
+      });
+      return { phase: "completed", reason: null };
+    },
+  };
+  const make = () => {
+    const service = createOwnedSessionService({
+      home,
+      root,
+      runtime,
+      validateScope,
+    });
+    cleanup.push(() => service.close());
+    return service;
+  };
+  const request = {
+    requestId: randomUUID(),
+    smith: "coding",
+    repository: root,
+    worktree: root,
+    launch: {
+      mode: "chat" as const,
+      model: "sonnet",
+      prompt: "Private closing fixture",
+    },
+  };
+  return { project, make, request, counts };
+}
+
+test("a Start whose registry validation finishes after close cannot create a provider-owning service", async () => {
+  let entered = () => {},
+    release = () => {};
+  const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    }),
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const f = await closingFixture(async () => {
+      entered();
+      await gate;
+    }),
+    service = f.make();
+  const pending = service.start(f.project.id, f.request);
+  await started;
+  await service.close();
+  release();
+  await expect(pending).rejects.toThrow("closing");
+  expect(f.counts).toEqual({ prepared: 0, runs: 0 });
+});
+
+test("a closed wrapper cannot send through a session it has not loaded, while existing receipts remain readable", async () => {
+  const f = await closingFixture(),
+    owner = f.make();
+  const started = await owner.start(f.project.id, f.request);
+  await owner.settled(f.project.id, started.session.id);
+  const page = await owner.read(f.project.id, started.session.id);
+  await owner.close();
+  expect((await owner.read(f.project.id, started.session.id)).turns).toEqual(
+    page.turns,
+  );
+  const observer = f.make();
+  await observer.close();
+  await expect(
+    observer.send(f.project.id, started.session.id, {
+      requestId: randomUUID(),
+      expectedRevision: page.revision,
+      text: "Do not dispatch after close",
+      about: [],
+    }),
+  ).rejects.toThrow("closing");
+  expect(f.counts).toEqual({ prepared: 1, runs: 1 });
+});
+
+test("a durable Start retry hashes object keys independently of locale collation", async () => {
+  const f = await closingFixture(),
+    service = f.make();
+  const request = {
+    ...f.request,
+    launch: {
+      ...f.request.launch,
+      mode: "task" as const,
+      outputSchema: {
+        type: "object",
+        properties: { Z: { type: "string" }, a: { type: "number" } },
+      },
+    },
+  };
+  const first = await service.start(f.project.id, request);
+  await service.settled(f.project.id, first.session.id);
+  const compare = String.prototype.localeCompare;
+  const changedCollation = spyOn(
+    String.prototype,
+    "localeCompare",
+  ).mockImplementation(function (this: string, other: string) {
+    return -compare.call(this, other);
+  });
+  try {
+    const retry = await service.start(f.project.id, request);
+    expect(retry.session.id).toBe(first.session.id);
+    expect(f.counts).toEqual({ prepared: 1, runs: 1 });
+  } finally {
+    changedCollation.mockRestore();
+  }
+});
+
+test("concurrent explicit Start and a lost-response retry resolve to one private session and one provider turn", async () => {
+  const base = mkdtempSync(join(tmpdir(), "forge session admission "));
+  cleanup.push(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, "repo"),
+    home = join(base, "home");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  const project = (
+    await createProjectStore(home).create(
+      {
+        slug: "alpha",
+        name: "Alpha",
+        description: "",
+        icon: "A",
+        workspaces: [{ root, repositories: [root], epicIds: ["alpha-1"] }],
+      },
+      0,
+    )
+  ).projects[0]!;
+  let runs = 0,
+    checks = 0,
+    valid = true,
+    mutatePreparation = false;
+  const events: LedgerEventInput[] = [];
+  const recordMetadata = createOwnedSessionLedger(home, {
+    appendEvent(event) {
+      events.push(event);
+      return { ok: true, id: events.length, ulid: "fixture" };
+    },
+  });
+  const flags = [
+    "--print",
+    "--input-format",
+    "--output-format",
+    "--verbose",
+    "--include-partial-messages",
+    "--model",
+    "--permission-mode",
+    "--permission-prompts",
+    "--allowedTools",
+    "--resume",
+  ];
+  const service = createOwnedSessionService({
+    root,
+    home,
+    onChange: recordMetadata,
+    async validateScope() {
+      checks++;
+      if (!valid) throw Error("Current scope unavailable");
+    },
+    runtime: {
+      provider: "claude",
+      async prepare({ smith, cwd, launch }) {
+        return {
+          version: 1,
+          provider: "claude",
+          smith,
+          cwd,
+          launch: mutatePreparation
+            ? { ...launch, model: "unreviewed" }
+            : launch,
+          capabilities: { version: "2.1.296", flags },
+        };
+      },
+      async run(request, persist) {
+        runs++;
+        await persist({
+          kind: "process",
+          pid: 4242,
+          smith: "coding",
+          requestedModel: "sonnet",
+          requestedEffort: "default",
+        });
+        await persist({
+          kind: "model",
+          model: "actual-observed-model",
+        });
+        await persist({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "6427faae-19c8-454d-84ce-c4ea55288cc9",
+          version: "2.1.296",
+        });
+        await persist({ kind: "text", text: `Reply ${request.input.text}` });
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const request = {
+    requestId: randomUUID(),
+    smith: "coding",
+    repository: root,
+    worktree: root,
+    about: [{ kind: "bead" as const, id: "alpha-1" }],
+    launch: {
+      mode: "chat" as const,
+      model: "sonnet",
+      prompt: "  Private first turn\n",
+      attachments: [
+        {
+          kind: "text" as const,
+          name: "context.txt",
+          text: "Private attachment body",
+        },
+      ],
+    },
+  };
+  const [a, b] = await Promise.all([
+    service.start(project.id, request),
+    service.start(project.id, request),
+  ]);
+  expect(a.session.id).toBe(b.session.id);
+  await service.settled(project.id, a.session.id);
+  expect(runs).toBe(1);
+  valid = false;
+  const before = checks;
+  const retry = await service.start(project.id, request);
+  expect(retry.receipt.turn.phase).toBe("completed");
+  expect(checks).toBe(before);
+  expect(runs).toBe(1);
+  await expect(
+    service.start(project.id, {
+      ...request,
+      launch: { ...request.launch, prompt: "changed" },
+    }),
+  ).rejects.toThrow("different content");
+  const page = await service.read(project.id, a.session.id);
+  expect(page.frames[0]?.event).toMatchObject({
+    kind: "user",
+    text: request.launch.prompt,
+    session: { launch: { prompt: request.launch.prompt } },
+  });
+  const user = page.frames[0]?.event;
+  if (user?.kind !== "user" || !user.session)
+    throw Error("Missing private launch");
+  const stdin = serializeClaudeLaunch(
+    user.session.launch,
+    user.session.capabilities,
+  ).stdin;
+  const promptEvent = events.find((event) => event.kind === "prompt.submitted");
+  expect(promptEvent?.payload).toEqual({
+    hash: createHash("sha256").update(stdin).digest("hex"),
+    length: stdin.length,
+  });
+  expect(events.map((event) => event.kind)).toEqual([
+    "session.started",
+    "prompt.submitted",
+    "session.ended",
+  ]);
+  expect(events.every((event) => event.sessionId === a.session.id)).toBe(true);
+  expect(events.at(-1)?.executor?.sessionId).toBe(
+    "6427faae-19c8-454d-84ce-c4ea55288cc9",
+  );
+  expect(JSON.stringify(events)).not.toContain("Private first turn");
+  expect(JSON.stringify(events)).not.toContain("Private attachment body");
+  valid = true;
+  mutatePreparation = true;
+  await expect(
+    service.start(project.id, { ...request, requestId: randomUUID() }),
+  ).rejects.toThrow("reviewed session options");
+  expect(runs).toBe(1);
+  const foreignRoot = join(base, "foreign-repo");
+  const foreign = await createSessionRegistry(home).reserve(
+    project.id,
+    randomUUID(),
+    "f".repeat(64),
+    () => ({
+      mode: "chat",
+      provider: "claude",
+      workspace: foreignRoot,
+      repository: foreignRoot,
+      worktree: foreignRoot,
+      smith: "coding",
+      requestedModel: "sonnet",
+      requestedEffort: null,
+    }),
+  );
+  expect(
+    service.list(project.id).some((session) => session.id === foreign.id),
+  ).toBe(false);
+  expect(() => service.read(project.id, foreign.id)).toThrow("workspace");
+});

@@ -27,6 +27,9 @@ import {
   SHIFT_MAX_USD,
   SHIFT_THROTTLE,
 } from "./defaults";
+import { parseDuration, DURATION_UNIT_MS as UNIT_MS } from "./duration";
+
+export { parseDuration } from "./duration";
 
 export interface Provenance {
   value: unknown;
@@ -75,16 +78,6 @@ export type ShiftKey = keyof typeof SHIFT_FIELDS;
 
 /** The keys `[shift]` takes, in the order they are listed. */
 export const SHIFT_KEYS = Object.keys(SHIFT_FIELDS) as ShiftKey[];
-
-const DURATION = /^([1-9]\d{0,5})(s|m|h)$/;
-const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000 } as const;
-
-/** `90s`, `30m`, `2h` in ms; null for anything else. `forge:shift run --for` and `[shift] for` take these. */
-export function parseDuration(text: string): number | null {
-  const match = DURATION.exec(text);
-  if (match === null) return null;
-  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
-}
 
 /** Why `value` is not a whole number from `low` to `high`, or null. */
 export function wholeNumberError(

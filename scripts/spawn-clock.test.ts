@@ -1,15 +1,42 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { resetSpawnClock } from "./spawn-clock";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "spawn-clock-compiled.ts");
 
 const scratch = mkdtempSync(join(tmpdir(), "spawn-clock-"));
-afterAll(() => {
+afterAll(async () => {
   // The executable can stay locked for a moment on Windows after it exits.
-  rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
+  // Bun can return EBUSY immediately despite rm's maxRetries option. Explicitly
+  // yield between bounded attempts so process handles and scanner locks close.
+  const target = realpathSync.native(scratch);
+  if (
+    dirname(target) !== realpathSync.native(tmpdir()) ||
+    !basename(target).startsWith("spawn-clock-")
+  )
+    throw Error(
+      "Refusing cleanup outside this fixture's own temporary directory",
+    );
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? error.code
+          : null;
+      if (
+        attempt >= 10 ||
+        !["EBUSY", "EPERM", "ENOTEMPTY"].includes(String(code))
+      )
+        throw error;
+      await Bun.sleep(100);
+    }
+  }
 });
 
 describe("resetSpawnClock", () => {

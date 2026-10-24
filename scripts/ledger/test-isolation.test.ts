@@ -50,6 +50,7 @@ import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
 import { importGraph } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
+import { settleIsolationReruns } from "./isolation-reruns";
 import { ledgerHome, ledgerPath } from "./paths";
 import { rerunReport } from "./rerun-output";
 
@@ -78,12 +79,15 @@ const RERUN_WORKERS = Math.min(
 );
 
 /**
- * How long the whole re-run may take. On the 4-thread windows-latest CI
- * runner (2 workers) it took 333 s, past the 180 s that holds elsewhere
- * (ubuntu-latest: 79 s): the re-run is one `bun test` per file and the
- * processes those tests start, and a process starts slower on Windows.
+ * Only the aggregate coordinator budget, not an individual test or native
+ * process deadline. The suite grew to 360 files / 201 process-reaching files,
+ * including 17 actual compile fixtures. A smaller Linux tree took 171.69 s;
+ * the expanded Linux run exceeded 180 s without an individual failure, while
+ * Windows completed in 210.54 s under its established 600 s policy. Apply
+ * that bounded aggregate policy on every platform; keep the worker/exclusive
+ * schedule, all selected files and the per-test 15 s limit unchanged.
  */
-const RERUN_LIMIT_MS = process.platform === "win32" ? 600_000 : 180_000;
+const RERUN_LIMIT_MS = 600_000;
 
 /**
  * The per-test limit of each re-run file, the one CI gives the whole suite
@@ -106,6 +110,8 @@ interface FailedRerun {
 
 /**
  * Run each file in its own `bun test` with `env`, `RERUN_WORKERS` at a time.
+ * The timed append file gets an exclusive phase first: Windows CI stored all
+ * 10,000 rows but exceeded its unchanged 60s bound under concurrent disk work.
  * Every file still runs with the scratch home, so a default home written by
  * any of them is still found; running them apart also names the file that
  * failed. The `./` makes bun take the path as a file, not a name filter.
@@ -114,10 +120,19 @@ async function rerunEach(
   files: string[],
   env: Record<string, string>,
 ): Promise<FailedRerun[]> {
-  const queue = [...files];
-  const failed: FailedRerun[] = [];
-  const worker = async (): Promise<void> => {
-    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+  console.error(
+    `[home-isolation] ${JSON.stringify({
+      event: "plan",
+      files: files.length,
+      workers: RERUN_WORKERS,
+      aggregateLimitMs: RERUN_LIMIT_MS,
+      perTestLimitMs: Number(RERUN_TEST_TIMEOUT),
+    })}`,
+  );
+  const results = await settleIsolationReruns(
+    files,
+    RERUN_WORKERS,
+    async (file): Promise<FailedRerun | null> => {
       const child = Bun.spawn(
         [
           process.execPath,
@@ -138,11 +153,31 @@ async function rerunEach(
         new Response(child.stderr).text(),
       ]);
       const exitCode = await child.exited;
-      if (exitCode !== 0)
-        failed.push({ file, exitCode, ...rerunReport(`${stdout}${stderr}`) });
-    }
-  };
-  await Promise.all(Array.from({ length: RERUN_WORKERS }, worker));
+      return exitCode === 0
+        ? null
+        : { file, exitCode, ...rerunReport(`${stdout}${stderr}`) };
+    },
+    (progress) => {
+      console.error(`[home-isolation] ${JSON.stringify(progress)}`);
+    },
+  );
+  const failed: FailedRerun[] = results.flatMap((result, index) =>
+    result.status === "fulfilled"
+      ? result.value === null
+        ? []
+        : [result.value]
+      : [
+          {
+            file: files[index] ?? "unknown file",
+            exitCode: -1,
+            failures:
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason),
+            tail: "",
+          },
+        ],
+  );
   return failed.sort((a, b) => a.file.localeCompare(b.file));
 }
 

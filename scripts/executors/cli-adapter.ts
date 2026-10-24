@@ -4,6 +4,7 @@
  * hearth events. A provider supplies only its flags and its line parser.
  */
 
+import { realpathSync } from "node:fs";
 import type {
   Executor,
   LedgerEventBase,
@@ -21,7 +22,13 @@ import {
 import { ulid } from "../ledger/ulid";
 import { resolveCheckout } from "../ledger/workspace";
 import { childEnv } from "./env";
-import { supervise } from "./supervisor";
+import {
+  type BoundedPrivateExecCapture,
+  PrivateCaptureError,
+  type PrivateExecInput,
+  preparePrivateExecCapture,
+} from "./private-capture";
+import { type Supervised, supervise } from "./supervisor";
 import type {
   DoctorResult,
   ExecResult,
@@ -217,12 +224,31 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // it), and the checkout the executor runs in.
       const { workspace } = resolveCheckout(request.workspace);
       const { worktree } = resolveCheckout(request.worktree);
+      // Resolve once before private preparation can await. The saved input,
+      // child and metadata never diverge if a caller changes its request.
+      const prepared: PrivateExecInput = {
+        provider: spec.provider,
+        beadId: request.beadId,
+        runId: request.runId ?? null,
+        workspace,
+        cwd: request.privateCapture
+          ? realpathSync.native(request.worktree)
+          : request.worktree,
+        smith: structuredClone(request.smith),
+        command: [...resolved.command, ...spec.buildArgs(request)],
+        stdin: request.prompt,
+        timeoutMs: request.timeoutMs ?? null,
+      };
+      const env = childEnv(request);
+      const parentSessionId = request.parentSessionId;
       const queue = eventQueue();
       const startedAt = Date.now();
       // The session's id is the provider's, from the first line that reports
       // it. A ULID, as the protocol mints, only when an event must be written
       // before any line has.
       const mintedId = ulid();
+      let inputReady = !request.privateCapture,
+        privateProviderStarted = false;
       let session:
         | { id: string; base: EventBase; unmirror: () => void }
         | undefined;
@@ -237,15 +263,15 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       const begin = (sessionId: string) => {
         const executor: Executor = {
           provider: spec.provider,
-          model: request.smith.model,
-          effort: request.smith.effort,
-          smith: request.smith.name,
+          model: prepared.smith.model,
+          effort: prepared.smith.effort,
+          smith: prepared.smith.name,
           sessionId,
         };
         const base: EventBase = {
           workspace,
-          beadId: request.beadId,
-          ...(request.runId ? { runId: request.runId } : {}),
+          beadId: prepared.beadId,
+          ...(prepared.runId ? { runId: prepared.runId } : {}),
           sessionId,
           executor,
         };
@@ -262,22 +288,20 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
             source: `headless:${spec.provider}`,
             kind: "headless",
             worktree,
-            ...(request.parentSessionId
-              ? { parentSessionId: request.parentSessionId }
-              : {}),
+            ...(parentSessionId ? { parentSessionId } : {}),
           },
         });
-        // The prompt went to the child on stdin at spawn: its hash and
-        // length, as the prompt hook records them, never the text.
-        queue.push({
-          ...base,
-          ts: new Date().toISOString(),
-          kind: "prompt.submitted",
-          payload: {
-            hash: hashText(request.prompt),
-            length: request.prompt.length,
-          },
-        });
+        // Private attended input is announced only after its ordered write and EOF.
+        if (inputReady)
+          queue.push({
+            ...base,
+            ts: new Date().toISOString(),
+            kind: "prompt.submitted",
+            payload: {
+              hash: hashText(prepared.stdin),
+              length: prepared.stdin.length,
+            },
+          });
         return session;
       };
       const current = () => session ?? begin(mintedId);
@@ -287,80 +311,235 @@ export function createCliAdapter(spec: CliAdapterSpec): ExecutorAdapter {
       // The model the stream's responses last named, handed on when it changes.
       let observedModel: string | undefined;
 
-      const child = supervise({
-        command: [...resolved.command, ...spec.buildArgs(request)],
-        cwd: request.worktree,
-        env: childEnv(request),
-        stdin: request.prompt,
-        timeoutMs: request.timeoutMs,
-        onLine: (line) => {
-          const reported = spec.parseError(line);
-          if (reported !== undefined) providerErrors.add(reported);
-          const parsed = spec.parseLine(line);
-          if (!session && parsed.sessionId) begin(parsed.sessionId);
-          if (parsed.usage) usage = parsed.usage;
-          if (parsed.model !== undefined && parsed.model !== observedModel) {
-            observedModel = parsed.model;
-            try {
-              request.onModel?.({
-                sessionId: current().id,
-                provider: spec.provider,
-                model: parsed.model,
-              });
-            } catch {
-              // What the run was observed to be is not worth stopping it for.
-            }
+      let capture: BoundedPrivateExecCapture | undefined,
+        child: Supervised | undefined,
+        privateCaptureFailed = false;
+      const captureFailed = () => {
+        privateCaptureFailed = true;
+        capture?.abort();
+        void child?.stop("Private transcript unavailable");
+      };
+      if (request.privateCapture) {
+        try {
+          capture = await preparePrivateExecCapture(
+            request.privateCapture,
+            structuredClone(prepared),
+            captureFailed,
+            request.signal,
+          );
+        } catch {
+          throw new PrivateCaptureError();
+        }
+        if (privateCaptureFailed || request.signal?.aborted) {
+          try {
+            await capture.finish(null);
+          } catch {
+            privateCaptureFailed = true;
           }
-          for (const tool of parsed.tools) {
-            queue.push({
-              ...current().base,
-              ts: new Date().toISOString(),
-              kind: "tool.called",
-              payload: toolPayload(tool),
+          if (privateCaptureFailed) throw new PrivateCaptureError();
+          throw new Error(
+            "The turn was stopped before the provider was started.",
+          );
+        }
+      }
+
+      const consumeLine = (line: string, metadata = true) => {
+        if (capture && !privateCaptureFailed) {
+          try {
+            capture.line(line);
+          } catch {
+            captureFailed();
+          }
+        }
+        if (!metadata) return;
+        const reported = spec.parseError(line);
+        if (reported !== undefined) providerErrors.add(reported);
+        const parsed = spec.parseLine(line);
+        if (!session && parsed.sessionId) begin(parsed.sessionId);
+        if (parsed.usage) usage = parsed.usage;
+        if (parsed.model !== undefined && parsed.model !== observedModel) {
+          observedModel = parsed.model;
+          try {
+            request.onModel?.({
+              sessionId: current().id,
+              provider: spec.provider,
+              model: parsed.model,
             });
+          } catch {
+            // What the run was observed to be is not worth stopping it for.
           }
-        },
-      });
+        }
+        for (const tool of parsed.tools) {
+          queue.push({
+            ...current().base,
+            ts: new Date().toISOString(),
+            kind: "tool.called",
+            payload: toolPayload(tool),
+          });
+        }
+      };
+      let pendingBytes = 0;
+      const pendingLines: string[] = [];
+      const flush = (metadata: boolean) => {
+        for (const line of pendingLines) consumeLine(line, metadata);
+        pendingLines.length = 0;
+        pendingBytes = 0;
+      };
+      let startup = Promise.resolve();
+      try {
+        const common = {
+          command: prepared.command,
+          cwd: prepared.cwd,
+          env,
+          timeoutMs: prepared.timeoutMs ?? undefined,
+          ...(capture
+            ? { maxLineBytes: 1_048_576, onOutputError: captureFailed }
+            : {}),
+          onLine: (line: string) => {
+            if (!inputReady) {
+              pendingBytes += Buffer.byteLength(line);
+              if (pendingLines.length >= 256 || pendingBytes > 1_048_576) {
+                captureFailed();
+                return;
+              }
+              pendingLines.push(line);
+              return;
+            }
+            consumeLine(line);
+          },
+        };
+        if (capture) {
+          const privateOwner = capture;
+          const owned = supervise({
+            ...common,
+            stdinMode: "interactive",
+            ...(request.privateCapture?.lifetime
+              ? { lifetime: request.privateCapture.lifetime }
+              : {}),
+            maxStdinBytes: Math.max(1, Buffer.byteLength(prepared.stdin)),
+            ...(request.privateBootstrapCommand
+              ? { bootstrapCommand: request.privateBootstrapCommand }
+              : {}),
+            beforeStart: async () => privateOwner.holdTree(),
+          });
+          child = owned;
+          startup = (async () => {
+            let processRecorded = false;
+            try {
+              const pid = await owned.providerPid;
+              privateProviderStarted = true;
+              await privateOwner.started(pid);
+              processRecorded = true;
+              if (privateCaptureFailed || request.signal?.aborted)
+                throw new PrivateCaptureError();
+              await owned.write(prepared.stdin);
+              await owned.end();
+              inputReady = true;
+              flush(true);
+            } catch {
+              if (processRecorded) flush(false);
+              captureFailed();
+            }
+          })();
+        } else child = supervise({ ...common, stdin: prepared.stdin });
+      } catch (error) {
+        if (capture) {
+          try {
+            await capture.finish(null);
+          } catch {
+            /* retain the original private identity */
+          }
+        }
+        throw error;
+      }
+      const supervised = child;
+      const aborted = () => {
+        capture?.abort();
+        void supervised.stop("Operator stopped attended execution");
+      };
+      if (capture) {
+        request.signal?.addEventListener("abort", aborted, { once: true });
+        if (request.signal?.aborted) aborted();
+      }
 
       let stopReason: string | undefined;
-      const done = child.done.then((exit): ExecResult => {
-        const result = { ...exit, providerErrors: [...providerErrors] };
-        // Fixed wording only: the provider's own text stays out of the ledger.
-        const reason = result.timedOut
-          ? "timeout"
-          : result.stopped
-            ? `stopped: ${stopReason ?? "operator"}`
-            : result.exitCode !== 0
-              ? `failed: exit ${result.exitCode}`
-              : result.providerErrors.length > 0
-                ? "failed: exit 0, provider reported an error"
-                : "completed";
-        const { base, unmirror } = current();
-        queue.push({
-          ...base,
-          ts: new Date().toISOString(),
-          kind: "session.ended",
-          payload: {
-            reason,
-            durationMs: Date.now() - startedAt,
-            ...(usage ? { usage } : {}),
-          },
+      const done = supervised.done
+        .then(async (exit): Promise<ExecResult> => {
+          await startup;
+          request.signal?.removeEventListener("abort", aborted);
+          if (capture) {
+            try {
+              await capture.finish(exit);
+            } catch {
+              captureFailed();
+            }
+          }
+          const result: ExecResult = {
+            ...exit,
+            providerErrors: [...providerErrors],
+            ...(privateCaptureFailed ? { privateCaptureFailed: true } : {}),
+          };
+          // Fixed wording only: the provider's own text stays out of the ledger.
+          const reason = result.privateCaptureFailed
+            ? "failed: private transcript unavailable"
+            : result.timedOut
+              ? "timeout"
+              : result.stopped
+                ? `stopped: ${stopReason ?? "operator"}`
+                : result.exitCode !== 0
+                  ? `failed: exit ${result.exitCode}`
+                  : result.providerErrors.length > 0
+                    ? "failed: exit 0, provider reported an error"
+                    : "completed";
+          if (!capture || privateProviderStarted) {
+            const { base, unmirror } = current();
+            queue.push({
+              ...base,
+              ts: new Date().toISOString(),
+              kind: "session.ended",
+              payload: {
+                reason,
+                durationMs: Date.now() - startedAt,
+                ...(usage ? { usage } : {}),
+              },
+            });
+            unmirror();
+          }
+          queue.close();
+          return result;
+        })
+        .catch(async (error: unknown) => {
+          // A cleanup refusal is not provider completion. Close consumers and
+          // retain an unknown private original rather than hanging the event loop.
+          capture?.abort();
+          request.signal?.removeEventListener("abort", aborted);
+          await startup;
+          if (capture) {
+            try {
+              await capture.finish(null);
+            } catch {
+              // The exact original remains unconfirmed; never fabricate an exit.
+            }
+          }
+          session?.unmirror();
+          queue.close();
+          throw capture ? new PrivateCaptureError() : error;
         });
-        unmirror();
-        queue.close();
-        return result;
-      });
+      void done.catch(() => undefined);
 
       return {
         get sessionId() {
           return session?.id ?? mintedId;
         },
-        pid: child.pid,
+        pid: supervised.pid,
         events: queue.iterate(),
         done,
-        async stop(reason) {
+        stop(reason) {
           stopReason = reason;
-          await child.stop(reason);
+          capture?.abort();
+          const stopping = supervised.stop(reason);
+          void stopping.catch(() => undefined);
+          return stopping;
         },
       };
     },

@@ -34,6 +34,8 @@ import { dlopen, FFIType, ptr } from "bun:ffi";
 export interface TreeGuard {
   /** Stand the guard down, ending nothing. Safe to call more than once. */
   release(): void;
+  /** Windows only: close the kill-on-close job without clearing its limit. */
+  terminate?(): void;
 }
 
 const UNGUARDED: TreeGuard = { release: () => undefined };
@@ -121,6 +123,11 @@ function jobGuard(pid: number): TreeGuard {
   }
   let held = true;
   return {
+    terminate() {
+      if (!held) return;
+      held = false;
+      api.CloseHandle(job);
+    },
     release() {
       if (!held) return;
       held = false;
@@ -139,10 +146,10 @@ function jobGuard(pid: number): TreeGuard {
  */
 const WATCH = 'read -r _; kill -s KILL -- "-$1" 2>/dev/null';
 
-function watchGuard(pid: number): TreeGuard {
+function watchGuard(pid: number, program = "sh"): TreeGuard {
   let watcher: Bun.Subprocess<"pipe", "ignore", "ignore">;
   try {
-    watcher = Bun.spawn(["sh", "-c", WATCH, "parent-watch", String(pid)], {
+    watcher = Bun.spawn([program, "-c", WATCH, "parent-watch", String(pid)], {
       stdin: "pipe",
       stdout: "ignore",
       stderr: "ignore",
@@ -175,4 +182,21 @@ function watchGuard(pid: number): TreeGuard {
  */
 export function guardTree(pid: number): TreeGuard {
   return process.platform === "win32" ? jobGuard(pid) : watchGuard(pid);
+}
+
+/** A held bootstrap cannot receive its grant unless abrupt-parent-death ownership exists. */
+export function guardRequiredTree(pid: number): TreeGuard | null {
+  const guarded =
+    process.platform === "win32" ? jobGuard(pid) : watchGuard(pid, "/bin/sh");
+  return guarded === UNGUARDED ? null : guarded;
+}
+
+/** New native processes remain suspended until this mandatory ownership succeeds. */
+export function guardSuspendedWindowsProcess(
+  pid: number,
+): { release(): void; terminate(): void } | null {
+  if (process.platform !== "win32" || process.arch !== "x64") return null;
+  const guard = jobGuard(pid),
+    terminate = guard.terminate;
+  return terminate ? { release: () => guard.release(), terminate } : null;
 }

@@ -803,6 +803,9 @@ describe("the stand-in's comments, and its create under a parent", () => {
     expect(JSON.parse(created.stdout)).not.toHaveProperty("metadata");
     const kept = readState(dir)["e2e-1.1"];
     expect(kept?.labels).toEqual(["area", "queue:queued"]);
+    expect(kept?.dependencies).toEqual([
+      { issue_id: "e2e-1.1", depends_on_id: "e2e-1", type: "parent-child" },
+    ]);
     expect(kept).not.toHaveProperty("metadata");
 
     // A parent with no labels gives a child with none.

@@ -975,6 +975,8 @@ test("the hearth's sessions are read with the check: a sessions file in a folder
 
 // ── A home the hearth creates ──────────────────────────────────────────────
 
+// The independent DACL oracle may start PowerShell for a domain SDDL alias.
+// Its bounded 30s child must finish before this test's deadline.
 test("a home that does not exist is created by the hearth for this user only, under a folder others may write (Windows: protected, this user and SYSTEM, through icacls; POSIX: 0700)", async () => {
   const parent = writableHome();
   const home = join(parent, "home");
@@ -1004,7 +1006,7 @@ test("a home that does not exist is created by the hearth for this user only, un
   }
   // Nothing was left beside it.
   expect(readdirSync(parent)).toEqual(["home"]);
-});
+}, 45_000);
 
 test("ensurePrivateHome leaves an existing home as it is: it refuses one others may write and changes nothing in it", () => {
   const home = writableHome();

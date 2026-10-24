@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import {
   type AddressInfo,
   createServer as createNetServer,
@@ -21,11 +27,20 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-function fixture() {
-  const home = mkdtempSync(join(tmpdir(), "af-sup-home-"));
-  const root = mkdtempSync(join(tmpdir(), "af-sup-root-"));
-  const make = (id: string) => {
-    const supervisor = createSupervisor({ root, home, id });
+function fixture(pathsWithSpaces = false) {
+  const home = mkdtempSync(
+    join(tmpdir(), pathsWithSpaces ? "af sup home-" : "af-sup-home-"),
+  );
+  const root = mkdtempSync(
+    join(tmpdir(), pathsWithSpaces ? "af sup root-" : "af-sup-root-"),
+  );
+  const make = (id: string, command?: readonly string[]) => {
+    const supervisor = createSupervisor({
+      root,
+      home,
+      id,
+      ...(command === undefined ? {} : { command }),
+    });
     cleanup.push(() => supervisor.stopIfOwner());
     return supervisor;
   };
@@ -38,6 +53,147 @@ function fixture() {
   });
   return { home, root, make, lock: () => readLock(lockPath(home, root)) };
 }
+
+const FAKE_LAUNCHER = `
+const { createHash } = require("node:crypto");
+const { appendFileSync, mkdirSync, writeFileSync } = require("node:fs");
+const { createServer } = require("node:http");
+const { join, resolve } = require("node:path");
+const rootIndex = process.argv.indexOf("--root");
+const root = resolve(process.argv[rootIndex + 1]);
+const home = process.env.AGENT_FORGE_HOME;
+appendFileSync(join(home, "launcher-starts.txt"), process.pid + "\\n");
+writeFileSync(join(home, "launcher-argv.json"), JSON.stringify(process.argv.slice(1)));
+const normalized = root.replaceAll("\\\\", "/");
+const key = createHash("sha256")
+  .update(process.platform === "win32" ? normalized.toLowerCase() : normalized)
+  .digest("hex")
+  .slice(0, 12);
+const server = createServer((req, res) => {
+  const body = JSON.stringify({
+    ok: true,
+    data: { pid: process.pid, root },
+    error: null,
+  });
+  res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+  res.end(body);
+});
+mkdirSync(home, { recursive: true });
+server.listen(0, "127.0.0.1", () => {
+  const port = server.address().port;
+  writeFileSync(join(home, "hearth-" + key + ".lock"), JSON.stringify({
+    pid: process.pid,
+    port,
+    root,
+    startedAt: new Date().toISOString(),
+    tokenFile: join(home, "tokens", key + ".token"),
+  }));
+});
+`;
+
+test("uses a configured executable and preserves spaced paths as argv values", async () => {
+  const { home, root, make, lock } = fixture(true);
+  const launcher = join(
+    home,
+    `native launcher with spaces${process.platform === "win32" ? ".exe" : ""}`,
+  );
+  linkSync(process.execPath, launcher);
+  const supervisor = make("desktop", [
+    launcher,
+    "-e",
+    FAKE_LAUNCHER,
+    "marker argument with spaces",
+  ]);
+  const port = await supervisor.ensure();
+  expect(lock()?.port).toBe(port);
+  expect(lock()?.root).toBe(root);
+  expect(lock()?.supervisor).toBe("desktop");
+  const argv = JSON.parse(
+    readFileSync(join(home, "launcher-argv.json"), "utf8"),
+  ) as string[];
+  expect(argv[0]).toBe("marker argument with spaces");
+  expect(argv.slice(-2)).toEqual(["--root", root]);
+  expect(
+    readFileSync(join(home, "launcher-starts.txt"), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(1);
+});
+
+test("rejects empty and blank configured executables before creating a lock", () => {
+  for (const command of [[], [" "]]) {
+    const home = join(tmpdir(), "missing supervisor home");
+    const root = join(tmpdir(), "missing supervisor root");
+    expect(() =>
+      createSupervisor({ root, home, id: "bad", command }),
+    ).toThrow();
+    expect(readLock(lockPath(home, root))).toBeNull();
+  }
+});
+
+test("concurrent ensure calls share one configured launcher startup", async () => {
+  const { home, make, lock } = fixture(true);
+  const supervisor = make("desktop", [
+    process.execPath,
+    "-e",
+    FAKE_LAUNCHER,
+    "one startup marker.txt",
+  ]);
+  const ports = await Promise.all([
+    supervisor.ensure(),
+    supervisor.ensure(),
+    supervisor.ensure(),
+  ]);
+  expect(new Set(ports).size).toBe(1);
+  expect(lock()?.port).toBe(ports[0]);
+  expect(
+    readFileSync(join(home, "launcher-starts.txt"), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(1);
+});
+
+test("explicit restart replaces only the owned hearth and concurrent reads join it", async () => {
+  const { home, make, lock } = fixture();
+  const supervisor = make("desktop", [
+    process.execPath,
+    "-e",
+    FAKE_LAUNCHER,
+    "restart-fixture",
+  ]);
+  await supervisor.ensure();
+  const previous = lock()?.pid ?? 0;
+  const restart = supervisor.restartIfOwner!();
+  const [result, port] = await Promise.all([restart, supervisor.ensure()]);
+  expect(result).toEqual({ ok: true, port });
+  expect(lock()?.pid).not.toBe(previous);
+  expect(isPidAlive(previous)).toBe(false);
+  expect(lock()?.supervisor).toBe("desktop");
+  expect(
+    readFileSync(join(home, "launcher-starts.txt"), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(2);
+});
+
+test("restart refuses a hearth adopted by another supervisor without stopping or claiming it", async () => {
+  const { home, make, lock } = fixture();
+  const command = [process.execPath, "-e", FAKE_LAUNCHER, "restart-fixture"];
+  const first = make("first", command);
+  await first.ensure();
+  const second = make("second", command);
+  await second.ensure();
+  const previous = lock();
+  const result = await first.restartIfOwner!();
+  expect(result.ok).toBe(false);
+  expect(lock()).toEqual(previous);
+  expect(isPidAlive(previous?.pid ?? 0)).toBe(true);
+  expect(
+    readFileSync(join(home, "launcher-starts.txt"), "utf8")
+      .trim()
+      .split(/\r?\n/),
+  ).toHaveLength(1);
+});
 
 test("starts a hearth, records itself as supervisor, and stops it on close", async () => {
   const { make, lock } = fixture();
@@ -65,6 +221,30 @@ test("a second supervisor adopts the live hearth, and the old one then leaves it
   await first.stopIfOwner();
   expect(isPidAlive(pid)).toBe(true);
   await second.stopIfOwner();
+}, 30_000);
+
+test("a hearth survives its launching supervisor process exiting so another window can adopt it", async () => {
+  const { home, root, make, lock } = fixture();
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  await printedBy(
+    `
+    import { createSupervisor } from ${SUPERVISOR};
+    const supervisor = createSupervisor({root:${JSON.stringify(root)},home:${JSON.stringify(home)},id:'departing-window',command:[process.execPath,'-e',${JSON.stringify(FAKE_LAUNCHER)},'handoff-fixture']});
+    const port=await supervisor.ensure();
+    process.stdout.write(JSON.stringify({port}));
+  `,
+    env,
+  );
+  const pid = lock()?.pid ?? 0;
+  expect(isPidAlive(pid)).toBe(true);
+  const remaining = make("remaining-window");
+  await remaining.ensure();
+  expect(lock()?.pid).toBe(pid);
+  expect(lock()?.supervisor).toBe("remaining-window");
 }, 30_000);
 
 test("respawns on the same port when the hearth was stopped underneath it", async () => {

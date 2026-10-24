@@ -22,13 +22,22 @@ import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
+import { fakeConversationTransport } from "../conversations/testing";
 import { operatorCouncilLedger } from "../council/ledger-wiring";
 import type { CommandRunner } from "../council/pr-source";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { createProviderInspector } from "../providers/inspect";
+import { createProviderLoginService } from "../providers/login";
+import type { NativeConsoleExit } from "../providers/native-console";
 import { childOf } from "../scheduler/queue-fixture";
+import {
+  unavailableCodexChatRuntime,
+  unavailableCodexTaskRuntime,
+  unavailableGeminiTaskRuntime,
+} from "../sessions/owned-coding-service";
 import { makeOwnerOnly } from "./acl-windows";
 import { type BdIssue, bdAnswers, bdTime, readWrite } from "./bd-answers";
 import {
@@ -40,6 +49,7 @@ import {
   SURFACE_HEADER,
 } from "./paths";
 import type { BdResult } from "./routes/dev-api";
+import { fakeSessionRuntime } from "./routes/session-fixture";
 import {
   createHearth,
   type OperatorApiOverrides,
@@ -99,7 +109,7 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
     const parent =
       write.parent === undefined ? undefined : bd.issues.get(write.parent);
     const inherited =
-      parent === undefined
+      parent === undefined || write.noInheritLabels
         ? undefined
         : childOf(
             {
@@ -120,7 +130,27 @@ function answerWrite(bd: FakeBd, args: string[]): BdResult | null {
       ...(write.description !== undefined
         ? { description: write.description }
         : {}),
-      ...(inherited !== undefined ? { labels: [...inherited].sort() } : {}),
+      ...(write.acceptance !== undefined
+        ? { acceptance_criteria: write.acceptance }
+        : {}),
+      ...(inherited !== undefined || write.labels !== undefined
+        ? {
+            labels: [
+              ...new Set([...(inherited ?? []), ...(write.labels ?? [])]),
+            ].sort(),
+          }
+        : {}),
+      ...(write.parent !== undefined
+        ? {
+            dependencies: [
+              {
+                issue_id: id,
+                depends_on_id: write.parent,
+                type: "parent-child",
+              },
+            ],
+          }
+        : {}),
       created_at: now,
       updated_at: now,
     };
@@ -355,6 +385,7 @@ export function system32(program: string, args: string[]): string {
   const result = Bun.spawnSync([join(SYSTEM32, program), ...args], {
     stdout: "pipe",
     stderr: "pipe",
+    timeout: 30_000,
   });
   if (result.exitCode !== 0)
     throw new Error(
@@ -484,9 +515,45 @@ export async function startTestHearth(
     ...(options.launchNow ? { launchNow: options.launchNow } : {}),
     api: {
       ledgerPath: ledger,
+      providerInspector: createProviderInspector({
+        root,
+        home,
+        environment: {},
+        which: () => null,
+      }),
+      providerLogin: createProviderLoginService({
+        root,
+        home,
+        prepare: async () => ({
+          command: ["C:\\inert-fixture.exe"],
+          cwd: root,
+          env: {},
+          timeoutMs: 5000,
+        }),
+        launch: () => {
+          let finish: (value: NativeConsoleExit) => void = () => {};
+          const done = new Promise<NativeConsoleExit>((resolve) => {
+            finish = resolve;
+          });
+          return {
+            pid: 0,
+            done,
+            stop: async () => {
+              finish({ exitCode: 1, stopped: true, timedOut: false });
+              return done;
+            },
+          };
+        },
+      }),
+      conversationTransport: fakeConversationTransport(),
+      sessionRuntime: fakeSessionRuntime().runtime,
+      codexTaskRuntime: unavailableCodexTaskRuntime,
+      codexChatRuntime: unavailableCodexChatRuntime,
+      geminiTaskRuntime: unavailableGeminiTaskRuntime,
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,
+      projectShiftRuntime: null,
       mintShiftId: () => shifts.mint(),
       // Its children never stop on their own; a test that waits on a close sets its own.
       shiftStopGraceMs: 200,

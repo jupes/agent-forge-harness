@@ -17,14 +17,20 @@ import type {
   SessionSummary,
   SmithsView,
 } from "../../types/hearth";
+import type { OwnedSessionRecord } from "../../types/owned-session";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
 import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
+import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { createProjectStore, projectCatalogPath } from "../projects/store";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import { providerLoginFile } from "../providers/login";
 import { queueTracker } from "../scheduler/queue-fixture";
 import {
   readShiftRecord,
@@ -32,7 +38,11 @@ import {
   writeShiftRecord,
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
-import type { ActionRoute, ApiRoute } from "./api";
+import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { sessionLibraryReadSchema } from "../sessions/library-protocol";
+import { sessionPreviewReceiptSchema } from "../sessions/protocol";
+import { createSessionRegistry } from "../sessions/registry";
+import type { ActionContext, ActionRoute, ApiRoute } from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
 import {
@@ -41,13 +51,49 @@ import {
   SESSION_KEY_HEADER,
   SURFACE_HEADER,
 } from "./paths";
+import {
+  FIXTURE_CHAT_DECISION,
+  FIXTURE_CHAT_SESSION,
+  seedChatDecision,
+} from "./routes/codex-chat-fixture";
+import { desktopControlRoutes } from "./routes/desktop-control";
 import type { BdResult } from "./routes/dev-api";
+import {
+  FIXTURE_KEEPER_DECISION,
+  FIXTURE_KEEPER_PROPOSAL_SOURCE,
+  seedKeeperProposalSource,
+} from "./routes/keeper-proposal-fixture";
+import { seedProjectBeadWriteFixture } from "./routes/project-bead-write-fixture";
+import {
+  FIXTURE_SHIFT_ATTEMPT_SESSION_ID,
+  FIXTURE_SHIFT_ID,
+  FIXTURE_SHIFT_START,
+  seedProjectShift,
+  seedProjectShiftAttempt,
+} from "./routes/project-shift-fixture";
+import {
+  FIXTURE_OWNED_SESSION_ID,
+  FIXTURE_OWNED_STOP_ID,
+  FIXTURE_SESSION_PROMPT,
+  FIXTURE_SESSION_SEND,
+  FIXTURE_SESSION_START,
+  FIXTURE_SESSION_STOP,
+  fixtureSessionGit,
+  seedOwnedSession,
+  sessionStartFixture,
+  waitOwnedTurn,
+} from "./routes/session-fixture";
+import {
+  FIXTURE_WORKTREE_REQUEST,
+  seedSessionWorktreeFixture,
+  sessionWorktreeFixtureRequest,
+} from "./routes/session-worktree-fixture";
 import {
   startTestHearth,
   type TestHearth,
   type TestHearthOptions,
 } from "./testing";
-import { readToken } from "./token";
+import { readToken, writeOwnerOnly } from "./token";
 import { validateOperatorEnvelope } from "./validate";
 
 const open: TestHearth[] = [];
@@ -58,6 +104,29 @@ afterEach(async () => {
 async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
   const hearth = await startTestHearth(options);
   open.push(hearth);
+  writeOwnerOnly(
+    projectCatalogPath(hearth.home),
+    JSON.stringify(projectCatalogFixture(hearth.workspace)),
+  );
+  seedSessionWorktreeFixture(hearth);
+  writeOwnerOnly(
+    providerLoginFile(hearth.home, hearth.root),
+    JSON.stringify({
+      version: 1,
+      records: [
+        {
+          provider: "claude",
+          requestId: "7b5b2b32-4bcc-4a1c-92c8-61dd39234d82",
+          phase: "closed",
+          startedAt: "2026-10-23T00:00:00Z",
+          endedAt: "2026-10-23T00:00:01Z",
+          exitCode: 0,
+          stopped: false,
+          timedOut: false,
+        },
+      ],
+    }),
+  );
   return hearth;
 }
 
@@ -83,6 +152,71 @@ const RUN_STATE = JSON.stringify({
 });
 
 const key = (route: ApiRoute): string => `${route.method} ${route.path}`;
+
+test("an effect receives its actual persisted operator audit id; HTTP input cannot choose that trace", async () => {
+  let calls = 0;
+  const row: ActionRoute<null> = {
+    kind: "action",
+    method: "POST",
+    path: "/audit-trace-fixture",
+    action: "fixture.audit.trace",
+    validate: () => ({ ok: true, value: null }),
+    subject: () => ({ target: "trace-fixture" }),
+    effect: (_input, context?: { auditEventId: number }) => {
+      calls++;
+      return {
+        status: 200,
+        data: { auditEventId: context?.auditEventId ?? null },
+      };
+    },
+  };
+  const h = await start({ api: { decorate: (routes) => [...routes, row] } });
+  const response = await post(h, row.path, { auditEventId: 999_999 });
+  expect(response.status).toBe(200);
+  const result = await envelope<{ auditEventId: number | null }>(response);
+  const audit = h.events(["operator.action"]).at(-1);
+  expect(audit?.payload).toMatchObject({
+    action: row.action,
+    target: "trace-fixture",
+  });
+  expect(result.data?.auditEventId).toBe(audit?.id);
+  expect(calls).toBe(1);
+  expect((await post(h, row.path, {}, h.headers(null))).status).toBe(403);
+  expect(calls).toBe(1);
+});
+
+test("desktop recovery's action row refuses invalid input and failed audits before restart", async () => {
+  let effects = 0;
+  const decorate = (routes: readonly ApiRoute[]) => [
+    ...routes,
+    ...desktopControlRoutes(async () => {
+      effects++;
+      return { status: 200, data: { restarted: true } };
+    }),
+  ];
+  const h = await start({ api: { decorate } });
+  for (const body of [{ command: "anything" }, [], null]) {
+    const response = await post(h, "/desktop/restart", body);
+    expect(response.status).toBe(400);
+  }
+  expect((await post(h, "/desktop/restart?root=elsewhere", {})).status).toBe(
+    400,
+  );
+  expect(effects).toBe(0);
+  expect((await post(h, "/desktop/restart", {})).status).toBe(200);
+  expect(effects).toBe(1);
+  expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+    action: "desktop.hearth.restart",
+  });
+  const blocked = await start({
+    api: {
+      decorate,
+      appendEvent: () => ({ ok: false, error: "read-only ledger" }),
+    },
+  });
+  expect((await post(blocked, "/desktop/restart", {})).status).toBe(503);
+  expect(effects).toBe(1);
+});
 
 /** The table's action rows. An empty table must fail a test that iterates it, not pass it. */
 function actionRows(h: TestHearth): ActionRoute[] {
@@ -158,11 +292,151 @@ interface ActionFixture {
    * row records once its effect succeeded. Declared here, on the test's side,
    * so a row that starts recording something else fails the suite.
    */
-  outcome?: Array<Pick<LedgerEvent, "kind" | "payload">>;
+  outcome?:
+    | Array<Pick<LedgerEvent, "kind" | "payload">>
+    | ((h: TestHearth) => Array<Pick<LedgerEvent, "kind" | "payload">>);
+  /** Await a background fixture's terminal metadata before comparing its exact event sequence. */
+  settled?(h: TestHearth): Promise<void>;
+  /** Additional existing operator rows intentionally reached through a reviewed dispatch. */
+  effects?: string[];
   /** What the valid request needs to exist first. */
   prepare?(h: TestHearth): Promise<void>;
   /** The effect itself, not its status: what the valid request must have changed. */
   happened(h: TestHearth, answer: unknown): Promise<void>;
+}
+
+function projectBeadFixture(
+  action: "create" | "claim" | "comment" | "close" | "propose",
+): ActionFixture {
+  const id =
+    action === "create"
+      ? "alpha-epic"
+      : action === "propose"
+        ? "alpha-propose"
+        : "alpha-task";
+  const path = `/projects/${FIXTURE_PROJECT_ID}/beads${action === "create" ? "" : `/${id}/${action}`}`;
+  const body =
+    action === "create"
+      ? { title: "Fixture project bead", parent: id }
+      : action === "comment"
+        ? { text: COMMENT }
+        : action === "close"
+          ? { reason: CLOSE_REASON }
+          : {};
+  const carried =
+    action === "create"
+      ? "Fixture project bead"
+      : action === "comment"
+        ? COMMENT
+        : action === "close"
+          ? CLOSE_REASON
+          : null;
+  return {
+    valid: {
+      path,
+      body,
+      status: action === "create" || action === "comment" ? 201 : 200,
+      target: id,
+    },
+    invalid: { path, body: { unexpected: true } },
+    prepare: async (h) => {
+      seedProjectBeadWriteFixture(h);
+    },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload:
+          action === "propose"
+            ? { from: null, to: "proposed", reason: "propose:operator" }
+            : {
+                action,
+                ...(carried !== null
+                  ? { hash: hashText(carried), length: carried.length }
+                  : {}),
+              },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        id: action === "create" ? "alpha-epic.1" : id,
+        action,
+        recorded: true,
+      });
+      const calls = h.bd.calls.filter((args) =>
+        ["create", "update", "comments", "close"].includes(args[0] ?? ""),
+      );
+      expect(calls.at(-1)?.[0]).toBe(
+        action === "create"
+          ? "create"
+          : action === "comment"
+            ? "comments"
+            : action === "close"
+              ? "close"
+              : "update",
+      );
+    },
+  };
+}
+
+function projectQueueFixture(
+  action: "approve" | "queue" | "pause" | "resume" | "reassign",
+): ActionFixture {
+  const id = "alpha-task";
+  const path = `/projects/${FIXTURE_PROJECT_ID}/beads/${id}/${action}`;
+  const from =
+    action === "approve"
+      ? "proposed"
+      : action === "queue"
+        ? "approved"
+        : action === "resume"
+          ? "paused"
+          : "queued";
+  const to =
+    action === "approve"
+      ? "approved"
+      : action === "pause"
+        ? "paused"
+        : "queued";
+  return {
+    valid: {
+      path,
+      body: action === "reassign" ? { smith: "claude-master" } : {},
+      status: 200,
+      target: action === "reassign" ? "claude-master" : id,
+    },
+    invalid: { path, body: { unexpected: true } },
+    prepare: async (h) => {
+      seedProjectBeadWriteFixture(h);
+      const bead = h.bd.issues.get(id);
+      if (!bead) throw Error("Missing scoped queue fixture");
+      bead.labels?.push(`queue:${from}`);
+      bead.metadata = {
+        queue_state: from,
+        ...(action === "resume" ? { queue_resume: "running" } : {}),
+      };
+    },
+    outcome: [
+      {
+        kind: "bead.transitioned",
+        payload:
+          action === "reassign"
+            ? { action, smith: "claude-master" }
+            : { from, to, reason: `${action}:operator` },
+      },
+    ],
+    happened: async (h, data) => {
+      expect(data).toEqual(
+        action === "reassign"
+          ? { id, state: from, smith: "claude-master", recorded: true }
+          : { id, action, from, to, recorded: true },
+      );
+      expect(
+        h.bd.issues.get(id)?.metadata?.[
+          action === "reassign" ? "smith" : "queue_state"
+        ],
+      ).toBe(action === "reassign" ? "claude-master" : to);
+    },
+  };
 }
 
 interface Job {
@@ -350,8 +624,553 @@ function queueMove(
   };
 }
 
+function keeperProposalFixture(dismiss: boolean): ActionFixture {
+  const suffix = dismiss ? "dismiss" : "approve",
+    proposalId = `proposal-${FIXTURE_KEEPER_PROPOSAL_SOURCE}-${dismiss ? 1 : 0}`;
+  const valid: ActionFixture["valid"] = {
+    path: `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${suffix}`,
+    body: {},
+    status: 200,
+    target: proposalId,
+  };
+  const text = `design: ${FIXTURE_KEEPER_DECISION}`;
+  return {
+    valid,
+    invalid: {
+      path: valid.path,
+      body: {
+        id: proposalId,
+        sourceHash: "a".repeat(64),
+        requestId: "invalid",
+        expectedRevision: 0,
+      },
+    },
+    prepare: async (h) => {
+      const sources = await seedKeeperProposalSource(h),
+        source = sources[dismiss ? 1 : 0];
+      if (!source) throw new Error("Missing proposal fixture source");
+      valid.body = {
+        id: source.id,
+        sourceHash: source.sourceHash,
+        requestId: `8b77d65d-18f9-4a15-ab82-8f48dfab6b0${dismiss ? 2 : 1}`,
+        expectedRevision: (
+          await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID)
+        ).revision,
+        ...(dismiss ? {} : { draft: source.draft }),
+      };
+    },
+    effects: dismiss ? [] : ["POST /beads/:id/comment"],
+    outcome: dismiss
+      ? []
+      : [
+          {
+            kind: "operator.action",
+            payload: {
+              action: "bead.comment",
+              surface: "api",
+              target: "alpha-epic",
+            },
+          },
+          {
+            kind: "bead.transitioned",
+            payload: {
+              action: "comment",
+              hash: hashText(text),
+              length: text.length,
+            },
+          },
+        ],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        projectId: FIXTURE_PROJECT_ID,
+        record: {
+          id: proposalId,
+          phase: dismiss ? "dismissed" : "done",
+          pending: false,
+        },
+      });
+      expect(
+        (
+          await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID)
+        ).records.some((record) => record.id === proposalId),
+      ).toBe(true);
+    },
+  };
+}
+
+function ownedSessionFixture(
+  operation: "start" | "send" | "stop",
+): ActionFixture {
+  const projectPath = `/projects/${FIXTURE_PROJECT_ID}/sessions`;
+  const id =
+    operation === "stop" ? FIXTURE_OWNED_STOP_ID : FIXTURE_OWNED_SESSION_ID;
+  const requestId =
+    operation === "start"
+      ? FIXTURE_SESSION_START
+      : operation === "stop"
+        ? FIXTURE_SESSION_STOP
+        : FIXTURE_SESSION_SEND;
+  const path =
+    operation === "start"
+      ? projectPath
+      : `${projectPath}/${id}/${operation === "stop" ? "stop" : "turns"}`;
+  const valid: ActionFixture["valid"] = {
+    path,
+    body:
+      operation === "stop"
+        ? { requestId }
+        : operation === "send"
+          ? {
+              requestId,
+              expectedRevision: 0,
+              text: FIXTURE_SESSION_PROMPT,
+              about: [],
+            }
+          : {
+              requestId,
+              smith: "claude-journeyman",
+              repository: "/fixture",
+              worktree: "/fixture",
+              launch: {
+                mode: "chat",
+                model: "sonnet",
+                prompt: FIXTURE_SESSION_PROMPT,
+              },
+            },
+    status: operation === "stop" ? 200 : 202,
+    target: operation === "start" ? FIXTURE_PROJECT_ID : id,
+  };
+  const selected = (h: TestHearth): OwnedSessionRecord => {
+    const record = createSessionRegistry(h.home)
+      .list(FIXTURE_PROJECT_ID)
+      .find((item) =>
+        operation === "start" ? item.requestId === requestId : item.id === id,
+      );
+    if (!record) throw new Error("Missing owned session fixture");
+    return record;
+  };
+  const state = (h: TestHearth) => {
+    const session = selected(h);
+    return createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: session.id,
+    }).read(FIXTURE_PROJECT_ID);
+  };
+  return {
+    valid,
+    invalid: { path, body: { requestId: "invalid" } },
+    prepare: async (h) => {
+      if (operation === "start") valid.body = sessionStartFixture(h);
+      else {
+        await seedOwnedSession(h, operation === "stop");
+        if (operation === "send")
+          valid.body = {
+            requestId,
+            expectedRevision: state(h).revision,
+            text: FIXTURE_SESSION_PROMPT,
+            about: [],
+          };
+      }
+    },
+    settled: async (h) => {
+      await waitOwnedTurn(h, selected(h), requestId);
+      await Bun.sleep(0);
+    },
+    outcome: (h) => {
+      const saved = state(h),
+        turn = saved.turns.find((item) => item.requestId === requestId);
+      if (!turn) throw new Error("Missing owned fixture turn");
+      const events: Array<Pick<LedgerEvent, "kind" | "payload">> = [];
+      if (operation === "start")
+        events.push({
+          kind: "session.started",
+          payload: {
+            source: "desktop",
+            kind: "headless",
+            worktree: h.workspace,
+          },
+        });
+      if (operation !== "stop") {
+        const user = saved.frames.find(
+          (frame) => frame.turnId === requestId && frame.event.kind === "user",
+        )?.event;
+        if (user?.kind !== "user" || !user.session)
+          throw new Error("Missing prepared fixture launch");
+        const stdin = serializeClaudeLaunch(
+          user.session.launch,
+          user.session.capabilities,
+        ).stdin;
+        events.push({
+          kind: "prompt.submitted",
+          payload: { hash: hashText(stdin), length: stdin.length },
+        });
+      }
+      events.push({
+        kind: "session.ended",
+        payload: {
+          reason: turn.phase,
+          durationMs: Math.max(
+            0,
+            Date.parse(turn.updatedAt) - Date.parse(turn.createdAt),
+          ),
+        },
+      });
+      return events;
+    },
+    happened: async (h) => {
+      expect(
+        state(h).turns.find((item) => item.requestId === requestId)?.phase,
+      ).toBe(operation === "stop" ? "cancelled" : "completed");
+    },
+  };
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /providers/:provider/sign-in": {
+    valid: {
+      path: "/providers/claude/sign-in",
+      body: { requestId: "f43b9a50-c1c9-441c-86ab-a150ad1775d8" },
+      status: 200,
+      target: "claude",
+    },
+    invalid: {
+      path: "/providers/claude/sign-in",
+      body: {
+        requestId: "f43b9a50-c1c9-441c-86ab-a150ad1775d8",
+        command: "arbitrary",
+      },
+    },
+    happened: async (h) => {
+      const response = await get(
+        h,
+        "/providers/claude/sign-in/f43b9a50-c1c9-441c-86ab-a150ad1775d8",
+        h.headers(h.hearth.token),
+      );
+      expect((await envelope<{ phase: string }>(response)).data?.phase).toBe(
+        "running",
+      );
+    },
+  },
+  "POST /providers/:provider/sign-in/:requestId/stop": {
+    valid: {
+      path: "/providers/codex/sign-in/b6d6d91f-670f-425f-880a-ce511ff55cfa/stop",
+      body: {},
+      status: 200,
+      target: "codex",
+    },
+    invalid: {
+      path: "/providers/codex/sign-in/b6d6d91f-670f-425f-880a-ce511ff55cfa/stop",
+      body: { command: "arbitrary" },
+    },
+    prepare: async (h) => {
+      const response = await post(h, "/providers/codex/sign-in", {
+        requestId: "b6d6d91f-670f-425f-880a-ce511ff55cfa",
+      });
+      expect(response.status).toBe(200);
+    },
+    happened: async (h) => {
+      const response = await get(
+        h,
+        "/providers/codex/sign-in/b6d6d91f-670f-425f-880a-ce511ff55cfa",
+        h.headers(h.hearth.token),
+      );
+      expect(
+        (await envelope<{ phase: string; stopped: boolean }>(response)).data,
+      ).toMatchObject({ phase: "closed", stopped: true });
+    },
+  },
+  "POST /providers/:provider/doctor": {
+    valid: {
+      path: "/providers/claude/doctor",
+      body: {},
+      status: 200,
+      target: "claude",
+    },
+    invalid: { path: "/providers/claude/doctor", body: { task: true } },
+    happened: async (h) => {
+      expect(
+        h
+          .events(["operator.action"])
+          .some(
+            (event) =>
+              event.kind === "operator.action" &&
+              event.payload.action === "provider.doctor",
+          ),
+      ).toBe(true);
+    },
+  },
+  "POST /projects/:id/sessions/preview": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
+      body: {},
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      ACTIONS["POST /projects/:id/sessions/preview"]!.valid.body =
+        sessionStartFixture(h);
+    },
+    happened: async (h, answer) => {
+      const parsed = sessionPreviewReceiptSchema.parse(answer);
+      expect(parsed.snapshot.cwd).toBe(h.workspace);
+      expect(parsed.snapshot.launch.prompt).toBe(FIXTURE_SESSION_PROMPT);
+    },
+  },
+  "POST /projects/:id/session-worktrees": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-worktrees`,
+      body: {
+        requestId: FIXTURE_WORKTREE_REQUEST,
+        repository: "/fixture",
+        baseRef: "HEAD",
+        branch: "feat/worktree-fixture",
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-worktrees`,
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      const fixture = ACTIONS["POST /projects/:id/session-worktrees"];
+      if (fixture) fixture.valid.body = sessionWorktreeFixtureRequest(h);
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        projectId: FIXTURE_PROJECT_ID,
+        requestId: FIXTURE_WORKTREE_REQUEST,
+        state: "created",
+        branch: "feat/worktree-fixture",
+      });
+    },
+  },
+  "POST /projects/:id/sessions": ownedSessionFixture("start"),
+  "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
+  "POST /projects/:id/sessions/:sessionId/approval-decisions": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approval-decisions`,
+      body: FIXTURE_CHAT_DECISION,
+      status: 200,
+      target: FIXTURE_CHAT_SESSION,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approval-decisions`,
+      body: { ...FIXTURE_CHAT_DECISION, nativeRequestId: 1 },
+    },
+    prepare: async (h) => {
+      await seedChatDecision(h);
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        ...FIXTURE_CHAT_DECISION,
+        state: "recorded",
+      });
+    },
+  },
+  "POST /projects/:id/sessions/:sessionId/archive": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+      body: {
+        requestId: "28641f36-7cfe-4d6d-b1aa-f8102d6f4a0d",
+        expectedRevision: 0,
+        archived: true,
+      },
+      status: 200,
+      target: FIXTURE_OWNED_SESSION_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+      body: { requestId: "invalid", archived: true },
+    },
+    prepare: async (h) => {
+      await seedOwnedSession(h);
+    },
+    happened: async (_h, answer) => {
+      const parsed = sessionLibraryReadSchema.safeParse(answer);
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.entry.archived).toBe(true);
+        expect(parsed.data.receipt?.outcome).toBe("applied");
+      }
+    },
+  },
+  "POST /projects/:id/keeper/continuations": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
+      body: {
+        requestId: "8b77d65d-18f9-4a15-ab82-8f48dfab6b09",
+        expectedRevision: 0,
+        mode: "switch",
+        smith: "claude-master",
+        summary: "",
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/continuations`,
+      body: {
+        requestId: "invalid",
+        mode: "switch",
+        smith: "claude-master",
+        summary: "",
+      },
+    },
+    prepare: async (h) => {
+      const fixture = ACTIONS["POST /projects/:id/keeper/continuations"];
+      if (fixture)
+        fixture.valid.body = {
+          requestId: "8b77d65d-18f9-4a15-ab82-8f48dfab6b09",
+          expectedRevision: createConversationStore(h.home).read(
+            FIXTURE_PROJECT_ID,
+          ).revision,
+          mode: "switch",
+          smith: "claude-master",
+          summary: "Reviewed fixture context",
+        };
+    },
+    effects: [],
+    happened: async (h) => {
+      expect(
+        createConversationStore(h.home).read(FIXTURE_PROJECT_ID).keeperRecovery
+          ?.smith,
+      ).toBe("claude-master");
+    },
+  },
+  "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
+  "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
+  "POST /projects/:id/keeper/briefs": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+        expectedRevision: 0,
+      },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+      body: { requestId: "not-a-request", expectedRevision: 0 },
+    },
+    prepare: async (h) => {
+      const fixture = ACTIONS["POST /projects/:id/keeper/briefs"];
+      if (fixture)
+        fixture.valid.body = {
+          requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+          expectedRevision: createConversationStore(h.home).read(
+            FIXTURE_PROJECT_ID,
+          ).revision,
+        };
+    },
+    happened: async (h) => {
+      const state = createConversationStore(h.home).read(FIXTURE_PROJECT_ID);
+      expect(
+        state.frames.some(
+          (frame) =>
+            frame.event.kind === "user" &&
+            frame.event.brief?.projectId === FIXTURE_PROJECT_ID,
+        ),
+      ).toBe(true);
+    },
+  },
+  "POST /projects/:id/keeper/turns": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/turns`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b01",
+        expectedRevision: 0,
+        text: "Fixture question",
+        about: [],
+      },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/turns`,
+      body: {
+        requestId: "not-a-request",
+        expectedRevision: 0,
+        text: "Question",
+        about: [],
+      },
+    },
+    happened: async (h) => {
+      const store = createConversationStore(h.home);
+      for (
+        let attempt = 0;
+        attempt < 100 &&
+        store.read(FIXTURE_PROJECT_ID).turns[0]?.phase === "running";
+        attempt++
+      )
+        await Bun.sleep(5);
+      expect(store.read(FIXTURE_PROJECT_ID).turns[0]?.phase).toBe("completed");
+      expect(
+        store
+          .read(FIXTURE_PROJECT_ID)
+          .frames.filter((frame) => frame.event.kind === "user"),
+      ).toHaveLength(1);
+    },
+  },
+  "POST /projects/:id/keeper/stop": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/stop`,
+      body: { requestId: "3a533435-5025-43d5-8c6d-7e90482c8ed8" },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/stop`,
+      body: { requestId: "not-a-request" },
+    },
+    prepare: async (h) => {
+      const store = createConversationStore(h.home);
+      await store.accept(FIXTURE_PROJECT_ID, {
+        requestId: "3a533435-5025-43d5-8c6d-7e90482c8ed8",
+        expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+        text: "Unissued fixture turn",
+        about: [],
+      });
+    },
+    happened: async (h) => {
+      expect(
+        createConversationStore(h.home).read(FIXTURE_PROJECT_ID).turns.at(-1)
+          ?.phase,
+      ).toBe("cancelled");
+    },
+  },
+  "POST /projects/:id/preferences": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/preferences`,
+      body: { revision: 1, pinned: true },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/preferences`,
+      body: { revision: 1, pinned: "yes" },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [{ id: FIXTURE_PROJECT_ID, pinned: true }],
+      });
+    },
+  },
   // A child that inherited its parent's label: in no state, so propose takes it in.
   "POST /queue/:id/propose": {
     valid: {
@@ -491,6 +1310,77 @@ const ACTIONS: Record<string, ActionFixture> = {
       ]);
     },
   },
+  "POST /projects/:id/shifts": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts`,
+      body: FIXTURE_SHIFT_START,
+      status: 202,
+      target: FIXTURE_SHIFT_START.requestId,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts`,
+      body: { ...FIXTURE_SHIFT_START, workspace: "/other" },
+    },
+    prepare: (h) => seedProjectShift(h),
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        intent: { shiftId: FIXTURE_SHIFT_ID, request: FIXTURE_SHIFT_START },
+        observation: { phase: "reserved", actual: null },
+      });
+      expect(
+        h.shifts.launches.filter((launch) =>
+          launch.spec.argv.includes(FIXTURE_SHIFT_ID),
+        ),
+      ).toEqual([]);
+    },
+  },
+  "POST /projects/:id/shifts/:shiftId/stop": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/${FIXTURE_SHIFT_ID}/stop`,
+      body: {},
+      status: 200,
+      target: FIXTURE_SHIFT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/shift-1/stop`,
+      body: {},
+    },
+    prepare: (h) => seedProjectShift(h, "live"),
+    outcome: [],
+    happened: async (h, data) => {
+      expect(data).toMatchObject({
+        observation: { shiftId: FIXTURE_SHIFT_ID, phase: "stopping" },
+      });
+      expect(
+        existsSync(join(h.home, SHIFTS_DIR, `${FIXTURE_SHIFT_ID}.stop`)),
+      ).toBe(true);
+    },
+  },
+  "POST /projects/:id/shifts/:shiftId/recover": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/${FIXTURE_SHIFT_ID}/recover`,
+      body: {},
+      status: 200,
+      target: FIXTURE_SHIFT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/shifts/shift-1/recover`,
+      body: {},
+    },
+    prepare: (h) => seedProjectShift(h, "dead"),
+    outcome: [
+      {
+        kind: "shift.stopped",
+        payload: { shiftId: FIXTURE_SHIFT_ID, reason: "recovered" },
+      },
+    ],
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        observation: { shiftId: FIXTURE_SHIFT_ID, phase: "stopped" },
+      });
+    },
+  },
   "POST /shifts/:id/stop": {
     valid: {
       path: "/shifts/shift-20261014-120000-f1a0/stop",
@@ -611,6 +1501,16 @@ const ACTIONS: Record<string, ActionFixture> = {
       ]);
     },
   },
+  "POST /projects/:id/beads": projectBeadFixture("create"),
+  "POST /projects/:id/beads/:beadId/claim": projectBeadFixture("claim"),
+  "POST /projects/:id/beads/:beadId/comment": projectBeadFixture("comment"),
+  "POST /projects/:id/beads/:beadId/close": projectBeadFixture("close"),
+  "POST /projects/:id/beads/:beadId/propose": projectBeadFixture("propose"),
+  "POST /projects/:id/beads/:beadId/approve": projectQueueFixture("approve"),
+  "POST /projects/:id/beads/:beadId/queue": projectQueueFixture("queue"),
+  "POST /projects/:id/beads/:beadId/pause": projectQueueFixture("pause"),
+  "POST /projects/:id/beads/:beadId/resume": projectQueueFixture("resume"),
+  "POST /projects/:id/beads/:beadId/reassign": projectQueueFixture("reassign"),
   "POST /beads/:id/claim": {
     valid: {
       path: "/beads/demo-task/claim",
@@ -788,6 +1688,37 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
+  "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
+  "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,
+  "GET /projects/:id/shifts/requests/:requestId/attempts/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts/${FIXTURE_SHIFT_ATTEMPT_SESSION_ID}`,
+  "GET /providers/sign-in": "/providers/sign-in",
+  "GET /providers/:provider/sign-in/:requestId":
+    "/providers/claude/sign-in/7b5b2b32-4bcc-4a1c-92c8-61dd39234d82",
+  "GET /providers/readiness": "/providers/readiness",
+  "GET /projects/:id/beads": `/projects/${FIXTURE_PROJECT_ID}/beads`,
+  "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
+  "GET /projects/:id/shifts/options": `/projects/${FIXTURE_PROJECT_ID}/shifts/options`,
+  "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
+  "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+  "GET /projects/:id/session-observations": `/projects/${FIXTURE_PROJECT_ID}/session-observations`,
+  "GET /projects/:id/session-observations/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/session-observations/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
+  "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
+  "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
+  "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
+  "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
+  "GET /projects/:id/sessions/:sessionId/export": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/export`,
+  "GET /projects": "/projects",
+  "GET /projects/summary": "/projects/summary",
+  "GET /projects/:id/overview":
+    "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
+  "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
+  "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+  "GET /projects/:id/keeper/recovery": `/projects/${FIXTURE_PROJECT_ID}/keeper/recovery`,
+  "GET /projects/:id/keeper/proposals": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`,
+  "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,
   "GET /sessions": "/sessions",
   "GET /runs": "/runs",
   "GET /runs/:slug": "/runs/demo",
@@ -833,15 +1764,16 @@ async function probed(
     ...options,
     api: {
       ...options.api,
+      git: options.api?.git ?? fixtureSessionGit,
       decorate: (routes) =>
         routes.map((route) =>
           route.kind !== "action"
             ? route
             : {
                 ...route,
-                effect: (input: unknown) => {
+                effect: (input: unknown, context?: ActionContext) => {
                   probes.push({ row: key(route), input, audit: audit() });
-                  return route.effect(input);
+                  return route.effect(input, context);
                 },
               },
         ),
@@ -852,6 +1784,38 @@ async function probed(
 
 function snapshot(h: TestHearth): number[] {
   return h.events().map((event) => event.id);
+}
+
+function activityReadMembership(h: TestHearth): void {
+  const previous = h.bd.answer;
+  h.bd.answer = (args) =>
+    previous?.(args) ??
+    (args[0] === "export"
+      ? {
+          status: 0,
+          stdout: JSON.stringify({
+            id: "alpha-epic",
+            title: "Activity fixture",
+            status: "open",
+            issue_type: "epic",
+            labels: ["project:alpha"],
+          }),
+          stderr: "",
+        }
+      : undefined);
+}
+
+/** A real metadata row for the selected-event read, never synthesized by the handler. */
+function seedActivityReadFixture(h: TestHearth): LedgerEvent[] {
+  activityReadMembership(h);
+  expect(
+    h.append({
+      kind: "tool.called",
+      sessionId: FIXTURE_OWNED_SESSION_ID,
+      payload: { tool: "Read", argsHash: "fixture-activity-hash" },
+    }),
+  ).toBe(1);
+  return h.events();
 }
 
 describe("the operator API on a hearth", () => {
@@ -936,12 +1900,15 @@ describe("the route table", () => {
         .map(key)
         .sort(),
     ).toEqual(Object.keys(READS).sort());
-    // One stream, and nothing in the table of a kind this suite does not cover.
+    // One ledger feed and a separate private conversation body feed.
     expect(rows.filter((route) => route.kind === "stream").map(key)).toEqual([
       "GET /stream",
+      "GET /projects/:id/keeper/events",
+      "GET /projects/:id/sessions/:sessionId/events",
+      "GET /projects/:id/shifts/requests/:requestId/attempts/:sessionId/events",
     ]);
     expect(rows.length).toBe(
-      Object.keys(ACTIONS).length + Object.keys(READS).length + 1,
+      Object.keys(ACTIONS).length + Object.keys(READS).length + 4,
     );
   });
 });
@@ -950,13 +1917,21 @@ describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
     for (const row of actionRows(h)) {
-      const { valid, prepare, happened, outcome = [] } = fixture(row);
+      const {
+        valid,
+        prepare,
+        happened,
+        outcome = [],
+        effects = [],
+        settled,
+      } = fixture(row);
       await prepare?.(h);
       const before = snapshot(h);
       const seen = probes.length;
 
       const response = await post(h, valid.path, valid.body);
       const body = await envelope(response);
+      await settled?.(h);
       expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
         row: key(row),
         status: valid.status,
@@ -978,12 +1953,14 @@ describe("every action row (iterating the table)", () => {
           kind: "operator.action",
           payload: { action: row.action, surface: "api", target: valid.target },
         },
-        ...outcome.map((event) => ({ row: key(row), ...event })),
+        ...(typeof outcome === "function" ? outcome(h) : outcome).map(
+          (event) => ({ row: key(row), ...event }),
+        ),
       ]);
 
       // The effect ran once, and that row was already stored when it started.
       const calls = probes.slice(seen);
-      expect(calls.map((call) => call.row)).toEqual([key(row)]);
+      expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
       expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
       await happened(h, body.data);
@@ -1290,6 +2267,9 @@ describe("a read row or the stream while another connection holds the write lock
   const LEDGER_ROWS: ReadonlyArray<[string, number]> = [
     ["GET /eligibility", 502],
     ["GET /events", 500],
+    ["GET /projects/:id/activity", 503],
+    ["GET /projects/:id/activity/:eventId", 503],
+    ["GET /projects/:id/session-observations/:sessionId", 503],
     ["GET /reservations", 500],
     ["GET /runs/:slug", 500],
     ["GET /scoreboard", 500],
@@ -1332,11 +2312,26 @@ describe("a read row or the stream while another connection holds the write lock
       api: { git },
     });
     root = h.root;
+    await seedOwnedSession(h);
+    await seedChatDecision(h);
+    await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
+    seedProjectBeadWriteFixture(h);
+    activityReadMembership(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
     const pathOf = (row: ApiRoute): string => {
-      if (row.kind === "stream") return row.path;
+      if (row.kind === "stream")
+        return row.path
+          .replace(":id", FIXTURE_PROJECT_ID)
+          .replace(":requestId", FIXTURE_SHIFT_START.requestId)
+          .replace(
+            ":sessionId",
+            row.path.includes("/shifts/")
+              ? FIXTURE_SHIFT_ATTEMPT_SESSION_ID
+              : FIXTURE_OWNED_SESSION_ID,
+          );
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
@@ -1357,7 +2352,11 @@ describe("a read row or the stream while another connection holds the write lock
       const sent = performance.now();
       for (const row of rows) {
         const [response, health] = await Promise.all([
-          get(h, pathOf(row)).then(answered),
+          get(
+            h,
+            pathOf(row),
+            h.headers(row.operatorOnly ? h.hearth.token : undefined),
+          ).then(answered),
           fetch(`${h.hearth.url}${HEALTH_ROUTE}`),
         ]);
         expect({ row: key(row), health: health.status }).toEqual({
@@ -1386,7 +2385,17 @@ describe("a read row or the stream while another connection holds the write lock
 
     // Released, the next read opens the file and every row answers.
     for (const row of rows) {
-      const response = await answered(await get(h, pathOf(row)));
+      // Earlier served ledger reads retain the cold-open oracle; only this
+      // selected-event row needs an existing metadata fixture.
+      if (key(row) === "GET /projects/:id/activity/:eventId")
+        seedActivityReadFixture(h);
+      const response = await answered(
+        await get(
+          h,
+          pathOf(row),
+          h.headers(row.operatorOnly ? h.hearth.token : undefined),
+        ),
+      );
       expect({ row: key(row), status: response.status }).toEqual({
         row: key(row),
         status: 200,
@@ -2230,6 +3239,23 @@ function get(
   return fetch(`${h.api}${path}`, { headers });
 }
 
+test("worktree receipt lookup requires operator authority and never writes an audit or repeats creation", async () => {
+  const h = await start();
+  const path = `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`;
+  for (const token of [null, "wrong-token"])
+    expect((await get(h, path, h.headers(token))).status).toBe(403);
+  const response = await get(h, path, h.headers(h.hearth.token));
+  expect(response.status).toBe(200);
+  expect((await envelope(response)).data).toMatchObject({
+    state: "created",
+    requestId: FIXTURE_WORKTREE_REQUEST,
+  });
+  expect(
+    (await get(h, `${path}?retry=true`, h.headers(h.hearth.token))).status,
+  ).toBe(400);
+  expect(h.events()).toEqual([]);
+});
+
 /** Append to the hearth's ledger under another workspace: what a second checkout on this machine would write. */
 function appendElsewhere(
   h: TestHearth,
@@ -2250,13 +3276,23 @@ describe("every read row (iterating the table)", () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
+    await seedOwnedSession(h);
+    await seedChatDecision(h);
+    await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
+    seedProjectBeadWriteFixture(h);
+    seedActivityReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
       const path = READS[key(row)];
       if (path === undefined)
         throw new Error(`no fixture for read row ${key(row)}`);
-      const response = await get(h, path);
+      const response = await get(
+        h,
+        path,
+        h.headers(row.operatorOnly ? h.hearth.token : undefined),
+      );
       const body = await envelope(response);
       expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
         row: key(row),
@@ -2271,6 +3307,12 @@ describe("every read row (iterating the table)", () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
     });
+    await seedOwnedSession(h);
+    await seedChatDecision(h);
+    await seedProjectShift(h);
+    await seedProjectShiftAttempt(h);
+    seedProjectBeadWriteFixture(h);
+    const before = seedActivityReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
@@ -2292,13 +3334,16 @@ describe("every read row (iterating the table)", () => {
         expect((await envelope(response)).ok).toBe(false);
       }
       // A browser on the same origin sends no Origin on a GET; its fetch metadata is the declaration.
-      const browser = await get(h, path, { "Sec-Fetch-Site": "same-origin" });
+      const browser = await get(h, path, {
+        "Sec-Fetch-Site": "same-origin",
+        ...(row.operatorOnly ? { [OPERATOR_HEADER]: h.hearth.token } : {}),
+      });
       expect({ row: key(row), status: browser.status }).toEqual({
         row: key(row),
         status: 200,
       });
     }
-    expect(h.events()).toEqual([]);
+    expect(h.events()).toEqual(before);
     // The read rows run `bd list` (the queue, eligibility) and `bd export` (the Beads counts), and nothing that writes.
     expect(
       h.bd.calls.every((args) => args[0] === "list" || args[0] === "export"),

@@ -170,27 +170,45 @@ export interface CodexOptions {
    * `codexSyncDirectory` says, and nowhere when it names no directory.
    */
   prepare?: (request: SpawnRequest) => Promise<void> | void;
+  /** Trusted attended execution only. Absence preserves ordinary executor argv exactly. */
+  approvalPolicy?: "never";
+}
+
+export function codexArgs(
+  request: Pick<SpawnRequest, "smith" | "worktree">,
+): string[] {
+  return [
+    "exec",
+    "--json",
+    "--sandbox",
+    "workspace-write",
+    "--model",
+    request.smith.model,
+    "-c",
+    `model_reasoning_effort=${request.smith.effort}`,
+    "--cd",
+    request.worktree,
+    "-",
+  ];
 }
 
 export function createCodexAdapter(options: CodexOptions = {}) {
+  if (
+    options.approvalPolicy !== undefined &&
+    options.approvalPolicy !== "never"
+  )
+    throw new Error("The trusted attended approval policy is unsupported.");
   return createCliAdapter({
     provider: "codex",
     binary: "codex",
     versionArgs: ["--version"],
     prepare: options.prepare ?? syncSkills,
-    buildArgs: (request) => [
-      "exec",
-      "--json",
-      "--sandbox",
-      "workspace-write",
-      "--model",
-      request.smith.model,
-      "-c",
-      `model_reasoning_effort=${request.smith.effort}`,
-      "--cd",
-      request.worktree,
-      "-",
-    ],
+    buildArgs: (request) => {
+      const args = codexArgs(request);
+      return options.approvalPolicy === "never"
+        ? [...args.slice(0, -1), "--config", 'approval_policy="never"', "-"]
+        : args;
+    },
     parseLine: parseCodexLine,
     parseError: parseCodexError,
   });

@@ -15,15 +15,17 @@
  * row, the envelope) is in `../api.ts`.
  */
 
-import type {
-  BeadOptions,
-  BeadPriorityOption,
-  BeadWrite,
-  BeadWriteResult,
-  LedgerEventInput,
+import {
+  BENCH_NAMES,
+  type BeadOptions,
+  type BeadPriorityOption,
+  type BeadWrite,
+  type BeadWriteResult,
+  type LedgerEventInput,
 } from "../../../types/hearth";
 import { hashText } from "../../hash-text";
 import type { AppendResult } from "../../ledger/append";
+import { parseFileMap } from "../../scheduler/filemap";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -108,6 +110,9 @@ export const BEAD_TEXT_LIMITS = {
   acceptance: 2000,
   comment: 4000,
   reason: 1000,
+  labels: 30,
+  label: 100,
+  fileMap: 100,
 } as const;
 
 /** Half of a surrogate pair: it cannot reach `bd` as it was sent. */
@@ -182,6 +187,9 @@ interface CreateInput {
   parent?: string;
   description?: string;
   acceptance?: string;
+  /** Present means an explicit label set, without implicit parent labels. */
+  labels?: string[];
+  rich: boolean;
 }
 
 const CREATE_FIELDS = [
@@ -191,6 +199,9 @@ const CREATE_FIELDS = [
   "parent",
   "description",
   "acceptance",
+  "labels",
+  "complexity",
+  "fileMap",
 ];
 
 function createInput(request: RouteRequest): ValidationResult<CreateInput> {
@@ -212,7 +223,7 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
   const parent = body["parent"];
   if (parent !== undefined && !beadId(parent))
     return fail("parent: expected a Beads issue id");
-  const description = textOf(
+  let description = textOf(
     "description",
     body["description"],
     BEAD_TEXT_LIMITS.description,
@@ -231,12 +242,72 @@ function createInput(request: RouteRequest): ValidationResult<CreateInput> {
     BEAD_TEXT_LIMITS.acceptance,
   );
   if (!acceptance.ok) return acceptance;
+  const rich = ["labels", "complexity", "fileMap"].some((key) => key in body);
+  let labels: string[] | undefined;
+  if (body["labels"] !== undefined) {
+    const raw = body["labels"];
+    if (
+      !Array.isArray(raw) ||
+      raw.length > BEAD_TEXT_LIMITS.labels ||
+      !raw.every(
+        (label) =>
+          typeof label === "string" &&
+          /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/.test(label) &&
+          !label.startsWith("queue:") &&
+          !label.startsWith("complexity:"),
+      )
+    )
+      return fail(
+        "labels: at most30 bounded labels; queue and complexity use their own controls",
+      );
+    labels = [...new Set(raw)];
+  }
+  const complexity = body["complexity"];
+  if (complexity !== undefined) {
+    const known = BENCH_NAMES.find((item) => item === complexity);
+    if (!known) return fail(`complexity: expected ${BENCH_NAMES.join(", ")}`);
+    labels = [...(labels ?? []), `complexity:${known}`];
+  }
+  const fileMap = body["fileMap"];
+  if (fileMap !== undefined) {
+    if (
+      !Array.isArray(fileMap) ||
+      fileMap.length > BEAD_TEXT_LIMITS.fileMap ||
+      !fileMap.every(
+        (line) =>
+          typeof line === "string" &&
+          line.length > 0 &&
+          line.length <= 200 &&
+          !/[\r\n]/.test(line),
+      )
+    )
+      return fail(
+        "fileMap: at most100 relative globs, one per line and at most200 characters each",
+      );
+    if (fileMap.length) {
+      const current = parseFileMap(description.value ?? "");
+      if (current.ok || current.reason !== "missing")
+        return fail(
+          "fileMap: the description already contains a Files section; edit it in one place",
+        );
+      const declared = parseFileMap(`## Files\n${fileMap.join("\n")}`);
+      if (!declared.ok) return fail(`fileMap: ${declared.error}`);
+      description = textOf(
+        "description with fileMap",
+        `${description.value ? `${description.value}\n\n` : ""}## Files\n${declared.globs.join("\n")}`,
+        BEAD_TEXT_LIMITS.description,
+      );
+      if (!description.ok) return description;
+    }
+  }
   return {
     ok: true,
     value: {
       title: title.value,
       type: String(type),
       priority: String(priority).slice(1),
+      rich,
+      ...(labels !== undefined ? { labels } : {}),
       ...(parent !== undefined ? { parent } : {}),
       ...(description.value !== undefined
         ? { description: description.value }
@@ -306,14 +377,31 @@ function strings(value: unknown): string[] | undefined {
  * exists, so it is named, and the create is not confirmed.
  */
 const created =
-  (description: string | undefined) =>
+  (input: CreateInput) =>
   (stdout: string): Confirmed | Unconfirmed | null => {
     const issue = parsed(stdout);
     if (!isRecord(issue) || !beadId(issue["id"])) return null;
-    if (issue["description"] !== description)
+    if (issue["description"] !== input.description)
       return {
         unconfirmed: `made ${issue["id"]}, but the description it printed is not the one that was sent. Check with \`bd show ${issue["id"]}\` before trying again.`,
       };
+    if (input.rich) {
+      const printedLabels = issue["labels"] ?? [];
+      const expectedLabels = [...(input.labels ?? [])].sort();
+      if (
+        issue["title"] !== input.title ||
+        issue["issue_type"] !== input.type ||
+        issue["priority"] !== Number(input.priority) ||
+        issue["acceptance_criteria"] !== input.acceptance ||
+        (input.labels !== undefined &&
+          (!Array.isArray(printedLabels) ||
+            JSON.stringify([...printedLabels].sort()) !==
+              JSON.stringify(expectedLabels)))
+      )
+        return {
+          unconfirmed: `made ${issue["id"]}, but its printed fields do not match the reviewed create. Check with \`bd show ${issue["id"]}\` before trying again.`,
+        };
+    }
     const labels = strings(issue["labels"]);
     return {
       id: issue["id"],
@@ -601,13 +689,21 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
           ...(input.acceptance !== undefined
             ? [`--acceptance=${input.acceptance}`]
             : []),
+          ...(input.labels !== undefined
+            ? [
+                "--no-inherit-labels",
+                ...(input.labels.length
+                  ? [`--labels=${input.labels.join(",")}`]
+                  : []),
+              ]
+            : []),
           "--json",
         ],
         text: input.title,
         status: 201,
         // A create that did not answer left no id to look up.
         check: "bd list",
-        confirm: created(input.description),
+        confirm: created(input),
       }),
   };
 
@@ -673,6 +769,7 @@ export function beadRoutes(deps: BeadDeps): ApiRoute[] {
         priorities: [...BEAD_PRIORITIES],
         defaultPriority: DEFAULT_BEAD_PRIORITY,
         limits: { ...BEAD_TEXT_LIMITS },
+        complexities: [...BENCH_NAMES],
       };
       return { status: 200, data };
     },

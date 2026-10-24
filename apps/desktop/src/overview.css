@@ -1,0 +1,123 @@
+.af-project-overview {
+  display: grid;
+  gap: 18px;
+}
+.af-overview-toolbar,
+.af-overview-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+.af-overview-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  padding: 18px;
+  border-radius: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.af-overview-panel h2 {
+  font-size: 17px;
+  font-weight: 500;
+  margin-top: 0;
+}
+.af-overview-panel a,
+.af-overview-counts a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  min-width: 28px;
+}
+.af-overview-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.af-overview-counts a {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  color: inherit;
+}
+.af-overview-counts strong {
+  font-size: 24px;
+  font-weight: 500;
+}
+.af-overview-muted {
+  color: var(--color-neutral-400, #b3b6cb);
+  font-size: 12px;
+}
+.af-overview-problem {
+  color: #ffb7ad;
+}
+.af-overview-brief {
+  border-left: 2px solid var(--color-accent-300);
+}
+.af-throughput-chart {
+  display: flex;
+  align-items: end;
+  height: 100px;
+  gap: 3px;
+}
+.af-throughput-chart span {
+  flex: 1;
+  background: var(--color-accent-300);
+  min-width: 1px;
+}
+.af-project-overview table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.af-project-overview th,
+.af-project-overview td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid var(--color-divider);
+  overflow-wrap: anywhere;
+}
+.af-session-table-wrap {
+  overflow-x: auto;
+}
+.af-project-sessions table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.af-project-sessions th,
+.af-project-sessions td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid var(--color-divider);
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+.af-project-sessions small {
+  display: block;
+  color: var(--color-neutral-400);
+  margin-top: 6px;
+}
+.af-project-sessions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  min-width: 28px;
+}
+.af-project-sessions input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+}
+.af-owned-session label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  overflow-wrap: anywhere;
+}
+.af-owned-session :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}

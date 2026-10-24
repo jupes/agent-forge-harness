@@ -30,7 +30,7 @@ import {
 import { type LoadedConfig, loadConfig } from "../../config/load";
 import { isValidSlug, summarizeRun } from "../../forge/runs";
 import { listRuns, readRunState } from "../../forge/runs-store";
-import { parseAuditArgs } from "../../ledger/audit-cli";
+import { parseAuditArgs } from "../../ledger/audit-core";
 import { openLedger } from "../../ledger/db";
 import {
   activeReservations,
@@ -449,7 +449,7 @@ export const QUEUE_LIST_ARGS: readonly string[] = [
  * call is running shares the next call, so it never receives an answer that
  * was read before it asked.
  */
-function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
+export function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
   let running: Promise<T> | null = null;
   let next: Promise<T> | null = null;
   const launch = (): Promise<T> => {
@@ -474,7 +474,7 @@ function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
   };
 }
 
-function withTimeout<T>(
+export function withTimeout<T>(
   work: Promise<T>,
   ms: number,
   refusal: string,
@@ -716,7 +716,7 @@ export function workspaceReads(deps: ReadDeps) {
         : { status: 502, error: safeMessage(read.error) };
     },
   };
-  return { queue, smiths, config: whole, worktrees, eligibility };
+  return { queue, smiths, config: whole, worktrees, eligibility, readEligible };
 }
 
 /**

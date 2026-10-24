@@ -59,6 +59,7 @@ import { activeRuns, type RunSummary } from "../forge/runs";
 import { API_PREFIX, OPERATOR_HEADER } from "../hearth/paths";
 import { STREAM_KEEPALIVE_MS } from "../hearth/stream";
 import { startTestHearth } from "../hearth/testing";
+import { openLedger } from "../ledger/db";
 import { attrs, findAll, tag, textOf } from "./ds/vnode";
 
 /** The longest wait before a retry: the ceiling after five failures in a row (the jitter only shortens it). */
@@ -787,6 +788,87 @@ function harness(random: () => number = () => 0.5) {
   });
   return { clock, wire, reads, client };
 }
+
+test("explicit recovery pauses retries, retains data, ignores retired callbacks and resumes one fresh stream", () => {
+  const { client, wire, clock } = harness(() => 0);
+  const leave = client.subscribe(() => {});
+  const previous = wire.current;
+  previous.open();
+  previous.snapshot({ sessions: ok([session("retained")]) });
+  const sessions = client.getState().sessions;
+  previous.end("failed");
+  client.suspend();
+  clock.advance(100_000);
+  expect(wire.connections).toHaveLength(1);
+  expect(previous.closed).toBe(true);
+  expect(client.getState().sessions).toBe(sessions);
+  previous.snapshot({ sessions: ok([]) });
+  expect(client.getState().sessions).toBe(sessions);
+  client.resumeFresh();
+  client.resumeFresh();
+  expect(wire.connections).toHaveLength(2);
+  expect(wire.current.lastEventId).toBeNull();
+  expect(client.getState().sessions).toBe(sessions);
+  wire.current.open();
+  wire.current.snapshot({ cursor: 22, sessions: ok([session("replacement")]) });
+  expect(client.getState().cursor).toBe(22);
+  expect(client.getDiagnostics().consecutiveFailures).toBe(0);
+  leave();
+});
+
+test("connection diagnostics count real retries and retain the last accepted stream data time", () => {
+  const { client, wire, clock } = harness(() => 0);
+  expect(client.getDiagnostics()).toEqual({
+    consecutiveFailures: 0,
+    retryLimit: MAX_FAILURES - 1,
+    lastDataAt: null,
+  });
+  const observed: number[] = [];
+  const leave = client.subscribe(() =>
+    observed.push(client.getDiagnostics().consecutiveFailures),
+  );
+  clock.advance(100);
+  wire.current.open();
+  wire.current.snapshot();
+  expect(client.getDiagnostics().lastDataAt).toBe(100);
+  wire.current.end("failed");
+  clock.advance(250);
+  wire.current.end("failed");
+  expect(observed.slice(-2)).toEqual([1, 2]);
+  expect(client.getDiagnostics()).toEqual({
+    consecutiveFailures: 2,
+    retryLimit: MAX_FAILURES - 1,
+    lastDataAt: 100,
+  });
+  expect(client.getState().cursor).toBe(10);
+  leave();
+});
+
+test("stable keepalives reset failure diagnostics without making retained data look newly read", () => {
+  const { client, wire, clock } = harness(() => 0);
+  const observed: number[] = [];
+  const leave = client.subscribe(() =>
+    observed.push(client.getDiagnostics().consecutiveFailures),
+  );
+  wire.current.open();
+  clock.advance(100);
+  wire.current.snapshot();
+  wire.current.end("failed");
+  clock.advance(250);
+  wire.current.open();
+  clock.advance(STABLE_MS);
+  wire.current.keepalive();
+  expect(observed.at(-1)).toBe(0);
+  expect(client.getDiagnostics().lastDataAt).toBe(100);
+  wire.current.delta(gate(11));
+  clock.advance(BATCH_MS);
+  const acceptedAt = client.getDiagnostics().lastDataAt;
+  expect(acceptedAt).toBe(clock.now());
+  wire.current.delta(gate(11));
+  clock.advance(BATCH_MS);
+  expect(client.getDiagnostics().lastDataAt).toBe(acceptedAt);
+  leave();
+});
 
 const gate = (id: number): LedgerEvent =>
   event(id, { kind: "gate.ran", payload: { gate: "tsc", passed: true } });
@@ -2426,13 +2508,18 @@ describe("client against a real hearth", () => {
     const newest = (from: number, count: number) =>
       Array.from({ length: count }, (_, n) => `s-${from - n}`);
 
-    for (let n = 1; n <= 600; n++) start(n);
     const client = createStreamClient({
       transport: fetchTransport(`${hearth.api}/stream`, { headers }),
       read: route,
     });
-    const leave = client.subscribe(() => undefined);
+    let leave = () => {};
     try {
+      // Keep every real append, but build this read/stream fixture with one
+      // disk commit per batch so nested disk work cannot starve its own HTTP.
+      openLedger(hearth.ledger).transaction(() => {
+        for (let n = 1; n <= 600; n++) start(n);
+      })();
+      leave = client.subscribe(() => undefined);
       await eventually(() => client.getState().status === "live");
       // The snapshot carries what the route answers without parameters: the newest 100.
       const first = await route("/sessions");
@@ -2443,16 +2530,22 @@ describe("client against a real hearth", () => {
       expect(names(client.getState().sessions.data)).toEqual(newest(600, 100));
 
       // Each held session speaks again or ends, and 450 new ones start.
-      hearth.append({
-        kind: "tool.called",
-        sessionId: "s-520",
-        beadId: "b-1",
-        runId: "run-1",
-        payload: { tool: "Read", argsHash: "h" },
-      });
-      hearth.append({ kind: "session.ended", sessionId: "s-510", payload: {} });
       let last = 0;
-      for (let n = 601; n <= 1050; n++) last = start(n);
+      openLedger(hearth.ledger).transaction(() => {
+        hearth.append({
+          kind: "tool.called",
+          sessionId: "s-520",
+          beadId: "b-1",
+          runId: "run-1",
+          payload: { tool: "Read", argsHash: "h" },
+        });
+        hearth.append({
+          kind: "session.ended",
+          sessionId: "s-510",
+          payload: {},
+        });
+        for (let n = 601; n <= 1050; n++) last = start(n);
+      })();
       await eventually(() => client.getState().cursor === last, 15_000);
 
       const held = client.getState().sessions.data;
@@ -2888,6 +2981,43 @@ describe("the notice and the live stat cards", () => {
 });
 
 describe("a view that reads an operator route, and reloads after its own change", () => {
+  test("a last-known view retains data and reports a failed refresh, then clears the error on recovery", async () => {
+    const { wire, client, clock } = harness();
+    let state: DevApiState<string> = { data: null, error: null, loading: true };
+    let failed = false;
+    const read = startLiveRead<string>({
+      client,
+      kinds: [],
+      timers: clock.timers,
+      now: clock.now,
+      reportRefreshError: true,
+      load: async () => {
+        if (failed) throw new Error("unavailable");
+        return "known";
+      },
+      onChange: (update) => {
+        state = update(state);
+      },
+    });
+    wire.current.open();
+    wire.current.snapshot({ cursor: 1 });
+    await settle();
+    failed = true;
+    read.reload();
+    clock.advance(REFETCH_WINDOW_MS);
+    await settle();
+    expect(state).toEqual({
+      data: "known",
+      error: "unavailable",
+      loading: false,
+    });
+    failed = false;
+    read.reload();
+    clock.advance(REFETCH_WINDOW_MS);
+    await settle();
+    expect(state).toEqual({ data: "known", error: null, loading: false });
+    read();
+  });
   test("reload during a read in flight reads again once that read ends, and the later answer is what is shown", async () => {
     const { wire, client, clock } = harness();
     let state: DevApiState<string> = { data: null, error: null, loading: true };
@@ -2998,6 +3128,13 @@ function watchedOnly(): { client: StreamClient; tell(): void } {
   return {
     client: {
       getState: () => INITIAL_LIVE_STATE,
+      suspend: () => {},
+      resumeFresh: () => {},
+      getDiagnostics: () => ({
+        consecutiveFailures: 0,
+        retryLimit: MAX_FAILURES - 1,
+        lastDataAt: null,
+      }),
       subscribe: () => () => undefined,
       watch: (_kinds, callback) => {
         callbacks.push(callback);

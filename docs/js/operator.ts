@@ -47,20 +47,80 @@ import {
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** Only opt-in finite reads use this path; ordinary reads/posts and live streams keep their existing behavior. */
+async function limitedBody(
+  response: Response,
+  limit: number,
+  signal: AbortSignal | null,
+): Promise<ArrayBuffer | null> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const bytes = new Uint8Array(limit);
+  let size = 0,
+    failAbort: ((error: Error) => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    failAbort = reject;
+  });
+  const cancel = () => {
+    failAbort?.(Error("The protected read was cancelled."));
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  try {
+    for (;;) {
+      const part = await Promise.race([reader.read(), aborted]);
+      if (signal?.aborted) throw Error("The protected read was cancelled.");
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > limit) {
+        void reader.cancel().catch(() => undefined);
+        throw Error(
+          "The protected read exceeds its byte limit. Earlier verified values are kept.",
+        );
+      }
+      bytes.set(part.value, size - part.value.byteLength);
+    }
+    return bytes.buffer.slice(0, size);
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
+}
+
 /** Bound ordinary answers including their bodies; streams retain their caller's lifetime. */
-function boundedFetch(fetchImpl: Fetch, options: HearthReadOptions): Fetch {
-  return (url, init = {}) =>
-    readHearth(
+function boundedFetch(
+  fetchImpl: Fetch,
+  options: HearthReadOptions,
+  maxBodyBytes?: number,
+): Fetch {
+  if (
+    maxBodyBytes !== undefined &&
+    (!Number.isSafeInteger(maxBodyBytes) ||
+      maxBodyBytes < 1 ||
+      maxBodyBytes > 64 * 1024 * 1024)
+  )
+    throw Error("Expected a protected read byte limit from 1 byte to 64 MiB.");
+  return (url, init = {}) => {
+    let receivingSignal: AbortSignal | null = init.signal ?? null;
+    return readHearth(
       url,
       async (response) => {
         if (
           new Headers(init.headers).get("accept") === "text/event-stream" &&
           response.ok &&
-          response.headers.get("content-type")?.startsWith("text/event-stream")
+          response.headers
+            .get("content-type")
+            ?.startsWith("text/event-stream") &&
+          maxBodyBytes === undefined
         )
           return response;
         const body =
-          response.body === null ? null : await response.arrayBuffer();
+          maxBodyBytes === undefined
+            ? response.body === null
+              ? null
+              : await response.arrayBuffer()
+            : await limitedBody(response, maxBodyBytes, receivingSignal);
         return new Response(body, {
           status: response.status,
           statusText: response.statusText,
@@ -69,16 +129,19 @@ function boundedFetch(fetchImpl: Fetch, options: HearthReadOptions): Fetch {
       },
       {
         ...options,
-        fetch: (input, bounded) =>
-          fetchImpl(input, {
+        fetch: (input, bounded) => {
+          receivingSignal =
+            init.signal && bounded?.signal
+              ? AbortSignal.any([init.signal, bounded.signal])
+              : (bounded?.signal ?? null);
+          return fetchImpl(input, {
             ...init,
-            signal:
-              init.signal && bounded?.signal
-                ? AbortSignal.any([init.signal, bounded.signal])
-                : (bounded?.signal ?? null),
-          }),
+            signal: receivingSignal,
+          });
+        },
       },
     );
+  };
 }
 
 // ── The session key ─────────────────────────────────────────────────────────
@@ -311,11 +374,14 @@ export type OperatorPost = (url: string, body: unknown) => Promise<Response>;
 export type OperatorRead = (
   url: string,
   init?: RequestInit,
+  /** Opt-in receiving cap, before whole-body buffering; omitted by existing callers/streams. */
+  limits?: { maxBodyBytes: number },
 ) => Promise<Response>;
 
 export interface OperatorClient {
   post: OperatorPost;
   read: OperatorRead;
+  invalidateToken(): void;
 }
 
 /**
@@ -367,6 +433,8 @@ export interface OperatorClientOptions
   ready?: () => Promise<unknown>;
   /** Where the session key is read from, for each token request; `pageSessionKeys` by default. */
   sessionKeys?: SessionKeyStore;
+  /** A desktop connection can refuse workspace writes before any request leaves. */
+  postProblem?: (url: string) => string | null;
 }
 
 /** A poster and a reader with one token cache of their own; `fetchImpl` is replaced in tests. */
@@ -374,7 +442,8 @@ export function createOperatorClient(
   fetchImpl: Fetch = (input, init) => fetch(input, init),
   options: OperatorClientOptions = {},
 ): OperatorClient {
-  fetchImpl = boundedFetch(fetchImpl, options);
+  const originalFetch = fetchImpl;
+  fetchImpl = boundedFetch(originalFetch, options);
   let token: Promise<string> | null = null;
 
   const currentToken = (): Promise<string> => {
@@ -402,7 +471,13 @@ export function createOperatorClient(
   };
 
   const send = async (url: string, body: unknown): Promise<Response> => {
+    const check = (): void => {
+      const problem = options.postProblem?.(url);
+      if (problem) throw new NotSent(problem);
+    };
+    check();
     const held = await heldToken();
+    check();
     return fetchImpl(url, {
       method: "POST",
       headers: {
@@ -414,11 +489,18 @@ export function createOperatorClient(
     });
   };
 
-  const get = async (url: string, init: RequestInit): Promise<Response> => {
+  const get = async (
+    url: string,
+    init: RequestInit,
+    limits?: { maxBodyBytes: number },
+  ): Promise<Response> => {
     const held = await heldToken();
     const headers = new Headers(init.headers);
     headers.set(OPERATOR_HEADER, held);
-    return fetchImpl(url, {
+    const read = limits
+      ? boundedFetch(originalFetch, options, limits.maxBodyBytes)
+      : fetchImpl;
+    return read(url, {
       ...init,
       headers: Object.fromEntries(headers.entries()),
     });
@@ -436,7 +518,16 @@ export function createOperatorClient(
 
   return {
     post: again(send),
-    read: again((url: string, init: RequestInit = {}) => get(url, init)),
+    read: again(
+      (
+        url: string,
+        init: RequestInit = {},
+        limits?: { maxBodyBytes: number },
+      ) => get(url, init, limits),
+    ),
+    invalidateToken: () => {
+      token = null;
+    },
   };
 }
 
@@ -452,9 +543,45 @@ export function createOperatorPost(
  * On a static copy it asks for nothing: no hearth is behind it. It asks for
  * the token only once the page's launch has settled.
  */
+let pagePostProblem: ((url: string) => string | null) | null = null;
+export function setPagePostProblem(
+  check: (url: string) => string | null,
+): void {
+  pagePostProblem = check;
+}
+
 const pageClient = createOperatorClient(undefined, {
   staticCopy: servedStatically(),
   ready: launchSettled,
+  postProblem: (url) => pagePostProblem?.(url) ?? null,
 });
+
+/** Consume an explicit restart's launch in place, keeping page data and pending writes. */
+export function refreshPageSession(
+  link: string,
+  origin: string = window.location.origin,
+): Promise<LaunchOutcome> {
+  const url = new URL(link);
+  if (
+    url.origin !== origin ||
+    url.protocol !== "http:" ||
+    url.hostname !== "127.0.0.1" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    !/^#launch=[0-9a-f]{64}$/.test(url.hash)
+  )
+    throw new Error(
+      "The restarted hearth returned an invalid desktop launch link",
+    );
+  pageClient.invalidateToken();
+  launched = exchangeLaunch(
+    url.hash.slice("#launch=".length),
+    boundedFetch((input, init) => fetch(input, init), {}),
+    pageSessionKeys,
+  );
+  return launched;
+}
 export const operatorPost: OperatorPost = pageClient.post;
 export const operatorRead: OperatorRead = pageClient.read;

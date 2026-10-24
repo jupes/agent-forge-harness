@@ -4,6 +4,7 @@
  * `session.ended` reasons `cli-adapter.ts` writes.
  */
 
+import { PRIVATE_CAPTURE_FAILURE } from "./private-capture";
 import type { ExecResult } from "./types";
 
 function lastLine(text: string): string | undefined {
@@ -21,6 +22,7 @@ function lastLine(text: string): string | undefined {
  * stderr. An exit 0 after a reported error is not a success.
  */
 export function runFailure(result: ExecResult): string | null {
+  if (result.privateCaptureFailed) return PRIVATE_CAPTURE_FAILURE;
   if (result.timedOut) return "timed out";
   const [reported] = result.providerErrors;
   if (result.exitCode !== 0) {

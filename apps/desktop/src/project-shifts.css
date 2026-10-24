@@ -1,0 +1,214 @@
+.af-project-shifts {
+  border: 1px solid var(--color-divider);
+  border-radius: 12px;
+  background: var(--color-surface);
+  padding: 20px;
+  margin: 20px 0;
+}
+.af-shift-section-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.af-shift-section-heading h2,
+.af-shift-section-heading h3 {
+  margin: 0 0 6px;
+}
+.af-shift-section-heading p {
+  margin: 4px 0 10px;
+}
+.af-shift-actions,
+.af-shift-attempt-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+.af-shift-row {
+  border-top: 1px solid var(--color-divider);
+  padding: 20px 0;
+}
+.af-shift-skeleton {
+  display: grid;
+  gap: 10px;
+}
+.af-shift-skeleton i {
+  display: block;
+  height: 16px;
+  border-radius: 5px;
+  background: var(--color-divider);
+}
+.af-shift-skeleton i:last-child {
+  width: 60%;
+}
+.af-shift-row h3,
+.af-shift-held code {
+  overflow-wrap: anywhere;
+}
+.af-shift-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 12px 20px;
+  margin: 16px 0;
+}
+.af-shift-metrics dt {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+}
+.af-shift-metrics dd {
+  margin: 4px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.af-shift-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+.af-shift-fields label,
+.af-shift-attempt-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.af-shift-fields input,
+.af-shift-fields select,
+.af-shift-attempt-toolbar select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+}
+.af-shift-fields small,
+.af-shift-notice,
+.af-shift-held {
+  color: var(--color-neutral-400);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.af-shift-held {
+  padding: 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  margin: 12px 0;
+}
+.af-project-shift-attempts {
+  padding-top: 20px;
+  border-top: 1px solid var(--color-divider);
+}
+.af-shift-private-input {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}
+.af-shift-private-reply {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .af-shift-section-heading {
+    flex-direction: column;
+  }
+  .af-shift-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.af-session-activity {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+}
+.af-session-activity h3 {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.af-session-activity h3 span {
+  color: var(--color-neutral-400);
+}
+.af-session-activity-item,
+.af-session-outcome,
+.af-session-turn-usage {
+  min-width: 0;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: 12px;
+  margin: 4px 0;
+}
+.af-owned-session
+  :is(.af-session-activity-item, .af-session-outcome, .af-session-turn-usage)
+  > summary {
+  padding: 7px 10px;
+  min-height: 32px;
+  overflow-wrap: anywhere;
+}
+.af-owned-session
+  :is(.af-session-activity-item, .af-session-outcome, .af-session-turn-usage)
+  > :not(summary) {
+  margin: 8px 10px;
+}
+.af-session-report-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.af-session-report-label {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-neutral-400);
+}
+.af-session-report-body pre {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.af-session-report-source {
+  color: var(--color-neutral-400);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.af-session-reported-files,
+.af-session-reported-plan {
+  padding-left: 20px;
+}
+.af-session-reported-files li,
+.af-session-reported-plan li {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.af-session-reported-files p {
+  margin: 4px 0;
+}
+.af-session-turn-usage dl,
+.af-session-outcome dl,
+.af-session-state-support dl > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(100px, 2fr);
+  gap: 5px 12px;
+}
+.af-session-turn-usage dt,
+.af-session-outcome dt,
+.af-session-state-support dt {
+  color: var(--color-neutral-400);
+}
+.af-session-turn-usage dd,
+.af-session-outcome dd,
+.af-session-state-support dd {
+  margin: 0;
+  min-width: 0;
+}

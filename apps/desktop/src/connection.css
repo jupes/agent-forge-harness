@@ -1,0 +1,24 @@
+.af-desktop-connection-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.af-desktop-connection-copy {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  flex: 1 1 28rem;
+}
+
+.af-desktop-connection-copy time {
+  color: var(--color-neutral-300);
+  font-size: 0.875em;
+}
+
+.af-desktop-recovery-message {
+  margin: var(--space-3) 0;
+}

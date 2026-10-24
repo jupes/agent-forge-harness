@@ -141,11 +141,14 @@ function run(): Printed {
       const { blockedBy, ...printed } = issue;
       return `${JSON.stringify({
         ...printed,
-        dependencies: (blockedBy ?? []).map((blocker) => ({
-          issue_id: issue.id,
-          depends_on_id: blocker,
-          type: "blocks",
-        })),
+        dependencies: [
+          ...(printed.dependencies ?? []),
+          ...(blockedBy ?? []).map((blocker) => ({
+            issue_id: issue.id,
+            depends_on_id: blocker,
+            type: "blocks",
+          })),
+        ],
       })}\n`;
     });
     return { status: 0, stdout: lines.join(""), stderr: "" };
@@ -206,7 +209,7 @@ function run(): Printed {
       const id = `${prefix}${siblings + 1}`;
       // bd create --parent copies every label of the parent, and none of its metadata.
       const labels =
-        parent === undefined
+        parent === undefined || write.noInheritLabels
           ? undefined
           : childOf(asTracked(parent), id).labels;
       return bdAnswers.created(
@@ -219,7 +222,27 @@ function run(): Printed {
           ...(write.description !== undefined
             ? { description: write.description }
             : {}),
-          ...(labels !== undefined ? { labels: [...labels].sort() } : {}),
+          ...(write.acceptance !== undefined
+            ? { acceptance_criteria: write.acceptance }
+            : {}),
+          ...(labels !== undefined || write.labels !== undefined
+            ? {
+                labels: [
+                  ...new Set([...(labels ?? []), ...(write.labels ?? [])]),
+                ].sort(),
+              }
+            : {}),
+          ...(write.parent !== undefined
+            ? {
+                dependencies: [
+                  {
+                    issue_id: id,
+                    depends_on_id: write.parent,
+                    type: "parent-child",
+                  },
+                ],
+              }
+            : {}),
           created_at: now,
           updated_at: now,
         }),

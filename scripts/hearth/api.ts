@@ -45,6 +45,8 @@ export type RouteReply =
   | { status: number; error: string };
 
 interface RouteCommon<Input> {
+  /** Private read/stream content needs operator authority; actions always require it. */
+  operatorOnly?: true;
   /** Relative to `/__agent-forge`; a `:name` segment is a parameter. */
   path: string;
   validate(request: RouteRequest): ValidationResult<Input>;
@@ -78,6 +80,11 @@ export interface ActionSubject {
 }
 
 /** A POST that changes something. */
+export interface ActionContext {
+  /** The numeric row confirmed by the common runner, never an input capability. */
+  auditEventId: number;
+}
+
 export interface ActionRoute<Input = unknown> extends RouteCommon<Input> {
   kind: "action";
   method: "POST";
@@ -86,7 +93,10 @@ export interface ActionRoute<Input = unknown> extends RouteCommon<Input> {
   /** Largest request body accepted; defaults to 16 kB. */
   maxBodyBytes?: number;
   subject(input: Input): ActionSubject;
-  effect(input: Input): RouteReply | Promise<RouteReply>;
+  effect(
+    input: Input,
+    context?: ActionContext,
+  ): RouteReply | Promise<RouteReply>;
 }
 
 export type ApiRoute = ReadRoute | StreamRoute | ActionRoute;
@@ -397,10 +407,11 @@ export function createOperatorApi(
   }
 
   /**
-   * Store the audit row. Null when the ledger returned the row's id; otherwise
-   * why it did not: a refusal, a duplicate (nothing stored) or a throw.
+   * Store the audit row and retain its confirmed id for the effect's trace.
    */
-  async function audited(event: LedgerEventInput): Promise<string | null> {
+  async function audited(
+    event: LedgerEventInput,
+  ): Promise<{ id: number } | { error: string }> {
     for (let attempt = 1; ; attempt++) {
       // The appender is trusted for nothing but a row id: whatever else it
       // answers, or throws, the action stops here.
@@ -408,10 +419,10 @@ export function createOperatorApi(
       try {
         result = deps.appendEvent(event);
       } catch (error) {
-        return safeMessage(error);
+        return { error: safeMessage(error) };
       }
       if (typeof result !== "object" || result === null)
-        return "the ledger did not answer";
+        return { error: "the ledger did not answer" };
       const { ok, id, error } = result as {
         ok?: unknown;
         id?: unknown;
@@ -420,11 +431,12 @@ export function createOperatorApi(
       // A row id is a positive whole number; nothing else counts as stored.
       if (ok === true)
         return typeof id === "number" && Number.isSafeInteger(id) && id > 0
-          ? null
-          : "the ledger stored no row";
+          ? { id }
+          : { error: "the ledger stored no row" };
       const reason = typeof error === "string" ? error : "the ledger refused";
       const busy = /busy|locked/i.test(reason);
-      if (!busy || attempt >= AUDIT_ATTEMPTS) return safeMessage(reason);
+      if (!busy || attempt >= AUDIT_ATTEMPTS)
+        return { error: safeMessage(reason) };
       await sleep(AUDIT_RETRY_MS);
     }
   }
@@ -464,7 +476,7 @@ export function createOperatorApi(
     if (!input.ok) return refuse(400, input.error);
 
     const subject = route.subject(input.value);
-    const failure = await audited({
+    const audit = await audited({
       kind: "operator.action",
       workspace: deps.workspace,
       ...(subject.beadId !== undefined ? { beadId: subject.beadId } : {}),
@@ -474,12 +486,12 @@ export function createOperatorApi(
         ...(subject.target !== undefined ? { target: subject.target } : {}),
       },
     });
-    if (failure !== null)
+    if ("error" in audit)
       return refuse(
         503,
-        `The action could not be recorded in the audit ledger, so nothing was done (${failure}). It is safe to try again.`,
+        `The action could not be recorded in the audit ledger, so nothing was done (${audit.error}). It is safe to try again.`,
       );
-    return route.effect(input.value);
+    return route.effect(input.value, { auditEventId: audit.id });
   }
 
   /**
@@ -547,6 +559,17 @@ export function createOperatorApi(
     if (route.kind === "action") return serveAction(route, pending, req, res);
     if (repeatsSingleHeader(req) || !isDeclaredSameOrigin(req))
       return send(res, refuse(403, NOT_THIS_ORIGIN));
+    if (
+      route.operatorOnly &&
+      !tokenMatches(deps.expectedToken(), req.headers[OPERATOR_HEADER])
+    )
+      return send(
+        res,
+        refuse(
+          403,
+          "This private read needs the operator token of this control plane",
+        ),
+      );
 
     const params = decode(pending.params);
     if (!params.ok) return send(res, refuse(400, params.error));

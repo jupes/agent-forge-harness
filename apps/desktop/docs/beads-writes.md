@@ -1,0 +1,33 @@
+# Project Beads write contract
+
+This increment implements cla5.5.2 on the project browser from PR284. Existing global Beads routes remain the canonical write implementation. Their new create fields are optional, so existing dashboard and Keeper approval callers retain their prior behavior.
+
+## Create fields and scope
+
+`GET /__agent-forge/beads/options` supplies types, priority hints, limits and the supported complexity benches. Create additionally accepts `labels` (at most30 bounded ASCII labels), `complexity` (`low`, `medium`, `high`) and `fileMap` (at most100 relative globs). Queue labels and raw complexity labels cannot be submitted as ordinary labels. The existing file-map parser validates globs; a supplied map becomes the canonical `## Files` section of the description. An existing Files section and a separate map are refused rather than silently shadowing one another. The final description still has its original4,000-character limit.
+
+Explicit labels disable parent-label inheritance. Complexity becomes its existing `complexity:<bench>` label. This prevents inheriting an approved queue label or conflicting complexity from a parent. Ordinary callers that do not supply labels or complexity keep their original inheritance behavior. A rich create confirms the title, type, priority, description, acceptance criteria and explicit label set printed by `bd`; missing or different fields produce an unknown outcome naming the created bead, never a retry.
+
+The desktop uses `POST /projects/:id/beads` and `/projects/:id/beads/:beadId/{claim,comment,close,propose}`. These are action rows in the existing operator table. Origin, token, bounded validation and persisted audit precede the effect. The scope wrapper checks the current catalog revision, served workspace, archive state and exact ancestry-plus-project-label membership. Create requires a current parent epic and adds the current project's label; another project's label is refused. After a create, a fresh read verifies actual project ancestry and membership before reporting Done. A failed post-create read remains unknown and never creates again.
+
+Proposed is an explicit existing queue transition after a confirmed create. Creating under an approved parent grants no approval. A lost or refused proposal transition must preserve the confirmed created identity and report that transition separately; it cannot invite a second create. Claim, comment and close reuse their original single-call confirmation, with exact returned-identity checks. Close requires readable evidence in its reason.
+
+## Contract evidence
+
+The create arguments and JSON fields were measured with installed `bd1.1.0` in a newly generated OS-temp Git repository and embedded tracker with no Git or Dolt remotes. Explicit `--no-inherit-labels` plus project/UI/low-complexity labels omitted the parent's queue approval and high complexity. The printed description, acceptance criteria, priority and labels matched. The generated fixture was removed after verification; the real tracker was never a test fixture.
+
+The shared hearth and browser stand-ins now model acceptance criteria, explicit labels and suppressed inheritance. The repository's real-tracker queue contract comparison passed all5 cases/64 assertions against that disposable tracker. Focused route tests cover the rich field contract, invalid maps/labels, unknown readback, foreign/archived scope, operator authority, evidence, post-create read failure, and separate Proposed transition. Table fixtures exercise all five protected project actions through the ordinary audit/refusal matrix.
+
+## Desktop writes and recovery
+
+The New bead dialog uses the server's advertised types, P0–P4 hints, complexity benches and text limits. It captures all brief6.9 fields, turns one acceptance criterion per line into checklist entries, and requires a current project epic. Open is the ordinary default; the existing Keeper create proposal remains Proposed through its dedicated reviewed queue transition. Claim and Comment use their original effects; Close requires evidence before submission. The inspector refreshes selected comments through a bounded read-only tracker call after membership is established. Foreign, malformed, oversized or failed comment reads retain the embedded history and explicitly mark it incomplete.
+
+Sending precedes any network effect and must first persist a bounded metadata notice. Request descriptions, acceptance criteria, comment text and closing evidence are never saved in browser storage. Lost or malformed responses remain Outcome unknown, keep the project held and never retry automatically. A confirmed create records its id before the separate Proposed request; a failed transition cannot invite creation of the same draft again. Notices survive navigation and reload, appear in the Inbox, link to the bead or scoped list, and require an explicit operator acknowledgment to dismiss.
+
+An origin-wide Web Lock covers the entire bounded write and its metadata updates. Each window rereads current history inside that lock before deciding whether it can send. A synchronous local guard also covers the asynchronous lock-acquisition gap. This prevents a stale second window from erasing an unknown result or clearing another window's active Sending operation. Missing lock support or unavailable storage refuses before a write; unreadable saved history is preserved. Storage events refresh the other windows without dispatching anything.
+
+Focused coverage includes the canonical write and complete operator authorization/audit matrix, strict result identity, private-body exclusion, lost create/Proposed replies, corrupt/unwritable history, cross-window preservation, connection changes between phases, and explicit evidence. Real-hearth browser journeys cover all rich create fields, the separate Proposed move, Claim, immediate live Comment, evidence Close, modal Cancel/Escape/focus at1100×700 with reduced motion, and lost applied replies retained across project navigation, Inbox and reload. Whole-bead gates and PR readiness are recorded separately in the Beads worklog when complete.
+
+## Design source
+
+The eleven supplied design pages were recursively inspected. States-lists3aea77ca contains the New bead toolbar action; the shared Light Session frame and States-write-keeper outcome treatments are available. The exact Beads-new composition is absent. This dialog follows the authoritative brief6.9 at7e41bba and existing Nocturne frame/Dialog controls; no comparison with an unavailable composition is claimed. The reviewed New bead captures include the upper fields and scrolled options at the minimum window size.

@@ -35,7 +35,13 @@ export interface HearthSupervisor {
   ensure(): Promise<number>;
   /** Stop the hearth if this supervisor is still the one named in the lock. */
   stopIfOwner(): Promise<void>;
+  /** Explicit desktop recovery; refuses another supervisor's live hearth. */
+  restartIfOwner?(): Promise<RestartResult>;
 }
+
+export type RestartResult =
+  | { ok: true; port: number }
+  | { ok: false; error: string };
 
 export interface SupervisorOptions {
   root: string;
@@ -44,6 +50,8 @@ export interface SupervisorOptions {
   id: string;
   /** Wait this long for a freshly spawned hearth to publish its lock. */
   startTimeoutMs?: number;
+  /** Trusted executable and fixed argv for a packaged hearth launcher. */
+  command?: readonly string[];
 }
 
 /**
@@ -66,6 +74,18 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((done) => setTimeout(done, ms));
 
 export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
+  const command = options.command;
+  if (
+    command !== undefined &&
+    (command.length === 0 ||
+      typeof command[0] !== "string" ||
+      command[0].trim() === "")
+  )
+    throw new Error(
+      "A configured hearth command requires a nonblank executable",
+    );
+  const executable = command?.[0] ?? "bun";
+  const args = command === undefined ? [SERVER_SCRIPT] : command.slice(1);
   const root = resolve(options.root);
   const file = lockPath(options.home, root);
   const timeout = options.startTimeoutMs ?? 20_000;
@@ -73,6 +93,7 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
   /** The lock this supervisor attached to, as it was read with the check. */
   let attached: HearthLock | null = null;
   let inflight: Promise<number> | null = null;
+  let restarting: Promise<RestartResult> | null = null;
 
   /**
    * The lock, read as it is checked (`readHomeLock`). Refuses a home, or a
@@ -92,8 +113,17 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     return read.lock;
   }
 
-  async function attachOrStart(): Promise<number> {
+  async function attachOrStart(recovering = false): Promise<number> {
     const current = trustedLock();
+    if (
+      recovering &&
+      current &&
+      isPidAlive(current.pid) &&
+      current.supervisor !== options.id
+    )
+      throw new Error(
+        "Another desktop published a live hearth during recovery. Check the connection before trying again.",
+      );
     if (
       current &&
       resolve(current.root) === root &&
@@ -108,7 +138,7 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
     // A lock whose process is gone (or was reused by something else) is stale.
     if (current) releaseLock(file, current.pid);
 
-    const child = spawn("bun", [SERVER_SCRIPT, "--root", root], {
+    const child = spawn(executable, [...args, "--root", root], {
       env: {
         ...process.env,
         AGENT_FORGE_HOME: options.home,
@@ -118,6 +148,9 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
       },
       stdio: "ignore",
       windowsHide: true,
+      // Ownership can move to another window. On Windows unref alone still
+      // ends this child with its launching host; detach its OS lifetime too.
+      detached: true,
     });
     let failed: Error | null = null;
     child.once("error", (error) => {
@@ -143,6 +176,14 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
         // the lock read as it is checked is that same lock.
         const lock = trustedLock();
         if (lock !== null && sameLock(lock, seen)) {
+          if (
+            recovering &&
+            lock.pid !== child.pid &&
+            lock.supervisor !== options.id
+          )
+            throw new Error(
+              "Another desktop started the hearth during recovery. Check the connection before trying again.",
+            );
           updateLock(file, lock, { supervisor: options.id });
           attached = lock;
           preferredPort = lock.port;
@@ -156,6 +197,11 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
 
   return {
     ensure() {
+      if (restarting !== null)
+        return restarting.then((result) => {
+          if (!result.ok) throw new Error(result.error);
+          return result.port;
+        });
       // Fast path once attached: a cheap pid check per request, no HTTP probe.
       // Only while the lock at the path is still the one checked at attach,
       // and that hearth's own pid is alive: a lock put there since, naming
@@ -176,7 +222,52 @@ export function createSupervisor(options: SupervisorOptions): HearthSupervisor {
       });
       return inflight;
     },
+    restartIfOwner() {
+      restarting ??= (async (): Promise<RestartResult> => {
+        if (inflight !== null) await inflight;
+        const lock = trustedLock();
+        if (lock !== null) {
+          if (lock.supervisor !== options.id || resolve(lock.root) !== root)
+            return {
+              ok: false,
+              error:
+                "Another desktop owns this hearth. Close its connection before restarting here. Nothing was stopped.",
+            };
+          if (isPidAlive(lock.pid)) {
+            const report = await healthReport(lock);
+            if (report.problem !== null)
+              return {
+                ok: false,
+                error:
+                  "The hearth's process identity could not be verified. Nothing was stopped.",
+              };
+            const checked = trustedLock();
+            if (!sameLock(checked, lock) || checked?.supervisor !== options.id)
+              return {
+                ok: false,
+                error: "The hearth owner changed. Nothing was stopped.",
+              };
+            process.kill(lock.pid);
+            const deadline = Date.now() + 5_000;
+            while (isPidAlive(lock.pid) && Date.now() < deadline)
+              await sleep(50);
+            if (isPidAlive(lock.pid))
+              throw new Error(
+                "The hearth has not stopped. Check its status before trying again.",
+              );
+          }
+          releaseLock(file, lock.pid);
+        }
+        attached = null;
+        return { ok: true, port: await attachOrStart(true) };
+      })().finally(() => {
+        restarting = null;
+      });
+      return restarting;
+    },
     async stopIfOwner() {
+      // Closing the host while recovery is starting must also stop its replacement.
+      if (restarting !== null) await restarting.catch(() => undefined);
       // It ends the pid the lock names: read as it is checked, and never from a home others can write.
       let lock: HearthLock | null;
       try {

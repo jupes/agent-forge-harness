@@ -46,6 +46,9 @@ export const MANIFEST = [
   "books",
   "file-text",
   "users-three",
+  "squares-four",
+  "tray",
+  "gear",
   // actions
   "arrows-clockwise",
   "magnifying-glass",
