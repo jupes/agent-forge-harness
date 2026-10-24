@@ -35,6 +35,7 @@ import { canonicalSessionInput } from "../sessions/preparation";
 import { createSessionRegistry } from "../sessions/registry";
 import { verifyProjectShiftEntry } from "../shifts/verify-entry";
 import { verifyAttendedProjectShifts } from "./attended-shift-smoke";
+import { verifyKeeperSessionReview } from "./keeper-review-smoke";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");
@@ -580,6 +581,21 @@ async function main(): Promise<void> {
     focusOutline = await verifyConnectionRecovery(socket);
     await verifyDesktopFrame(socket);
     await verifyKeeperConversation(socket);
+    await verifyKeeperSessionReview(
+      socket,
+      {
+        home: desktopSmokeHome,
+        workspace: resolveCheckout(selectedRoot).workspace,
+        projectId: project.id,
+      },
+      {
+        evaluate,
+        reload: reloadPage,
+        waitForPage,
+        command: cdp,
+        screenshot: saveConnectionShot,
+      },
+    );
     // Hearth recovery keeps the host and window, but replaces the child hearth.
     processTree = await captureProcessTree(appProcess.pid);
 
@@ -760,6 +776,7 @@ async function main(): Promise<void> {
           keeperSelectionTested: true,
           keeperBriefTested: true,
           keeperProposalsTested: true,
+          keeperSessionReviewTested: true,
           observedSessionIneligibleTested: true,
           scopedObservedSessionDetailsTested: true,
           scopedProjectActivityMetadataTested: true,
