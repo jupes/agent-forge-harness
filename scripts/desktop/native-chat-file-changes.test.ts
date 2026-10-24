@@ -178,6 +178,18 @@ test("explicit native empty diff is distinct from a truncated empty diff, and tr
   expect(textOf(clipped)).toContain("Move destination text truncated");
   expect(textOf(clipped)).toContain("Snapshot truncated");
   expect(textOf(clipped)).not.toContain("Provider reported an empty diff");
+  const omittedList = SessionActivity({
+    value: ownedSessionTurn(
+      page([event({ ...report, changes: [], truncated: true })]),
+      appTurn,
+    ),
+  });
+  expect(textOf(omittedList)).toContain(
+    "No file changes were retained in this truncated snapshot",
+  );
+  expect(textOf(omittedList)).not.toContain(
+    "Provider reported no file changes",
+  );
 });
 
 test("native file statuses and item versus turn closure remain independent, including failed and declined reports", () => {

@@ -92,7 +92,9 @@ function nativeFiles(value: NativeChatFileChangeReport) {
         </ul>
       ) : (
         <p class="af-session-note">
-          Provider reported no file changes in this snapshot.
+          {report.truncated
+            ? "No file changes were retained in this truncated snapshot."
+            : "Provider reported no file changes in this snapshot."}
         </p>
       )}
       {report.truncated && (
