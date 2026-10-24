@@ -242,10 +242,23 @@ async function openComposer(page: Page, fill = true, fromBead = false) {
     name: "New session · Alpha",
     exact: true,
   });
+  if (fromBead) {
+    // Bead prefill and explicit About selection are separate shared draft facts.
+    await dialog
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .fill("@bead:alpha-epic");
+    await dialog
+      .getByRole("group", { name: "Mention suggestions", exact: true })
+      .getByRole("button", { name: /bead alpha-epic/ })
+      .click();
+    await expect(dialog.getByText("About bead alpha-epic")).toBeVisible();
+  }
   await dialog.getByRole("button", { name: /Gm · Gemini/ }).click();
   await dialog
     .getByRole("combobox", { name: "Session mode", exact: true })
     .selectOption("chat");
+  if (fromBead)
+    await expect(dialog.getByText("About bead alpha-epic")).toBeVisible();
   await expect(
     dialog.getByRole("combobox", { name: "Session smith", exact: true }),
   ).toHaveValue("gemini-example");
