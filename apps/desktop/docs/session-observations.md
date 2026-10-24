@@ -19,3 +19,7 @@ The renderer checks the immutable target and observer address synchronously befo
 The ordinary private coding routes remain sealed. No composer, per-attempt Stop, Task-to-Chat conversion, adoption or resume producer is added. Ended managed attempts remain read-only here. External metadata does not provide a verified provider-native binding; external adoption or native continuation needs a separate audited provider-supported handoff.
 
 The source reference is the authoritative design brief at `7e41bba140493849d9f9b2dd3b8ada6773e374a2`, with the supplied nested Observed template `0bbda0cf` and Light Session reading surface `95744122`. The full eleven-page audit found no exact Shift or teammate-plan session board; this implementation does not claim verification against those missing variants. The existing Nocturne tokens, keyboard focus and reduced-motion behavior are shared with the completed owned-session surfaces.
+
+![Managed Shift session with keyboard focus on its owning original](screenshots/managed-shift-session.png)
+
+This capture uses only the isolated browser fixture. At `471b6da64dd0816610754ea7a45cba748fba2511`, all four Windows managed-navigation and Cancel cases passed, including direct reload, Back, stable keyboard focus, read-only private attendance, canonical whole-Shift Stop, held/mismatched original refusal and no-effect Cancel. Complete combined suites and packaged Windows verification remain separate gates.
