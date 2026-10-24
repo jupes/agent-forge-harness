@@ -1,5 +1,5 @@
 /**
- * write.ts — `forge:config set`: one value written into one config file.
+ * write.ts — `forge:config set` and pure complete-Smith create candidates.
  *
  * The file is edited, not regenerated: comments, order, a byte-order mark and
  * line endings stay as they were. The editor only edits a file whose every
@@ -12,6 +12,7 @@
  * The write is a temporary file renamed over the target.
  */
 
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -21,12 +22,15 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, join } from "path";
-import { BENCH_NAMES } from "../../types/hearth";
+import { BENCH_NAMES, type Smith } from "../../types/hearth";
+import { validateSmith } from "../hearth/validate";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
   type ForgeConfig,
+  type LoadedConfig,
   type LoadOptions,
   loadConfig,
+  loadConfigFromContents,
   machineConfigFile,
   readConfigText,
   SHIFT_KEYS,
@@ -34,6 +38,35 @@ import {
 } from "./load";
 
 export type ConfigTarget = "user" | "workspace";
+
+/** Captured raw UTF-8; null means absent, including when its parent does not exist. */
+export interface ConfigByteSource {
+  /** Trusted diagnostic/provenance label; the candidate never dereferences it. */
+  file: string;
+  bytes: Uint8Array | null;
+}
+
+export interface ConfigSourceFingerprint {
+  file: string;
+  sha256: string | null;
+  byteLength: number | null;
+}
+
+export interface SmithCreateCandidate {
+  target: ConfigTarget;
+  file: string;
+  created: boolean;
+  smith: Smith;
+  /** Owned candidate copy, including any original BOM; no file has been written. */
+  bytes: Uint8Array;
+  sha256: string;
+  sources: Record<ConfigTarget, ConfigSourceFingerprint>;
+  effective: LoadedConfig;
+}
+
+export type SmithCreateCandidateOutcome =
+  | { ok: true; value: SmithCreateCandidate }
+  | { ok: false; error: string };
 
 export type SetOutcome =
   | {
@@ -430,6 +463,171 @@ function edited(
   return `${text}${lead}[${shape.table.map(segment).join(".")}]${eol}${line}${eol}`;
 }
 
+/**
+ * Build one new Smith table from two explicit byte snapshots and an explicit env.
+ * Only the selected layer must fit the editor's scanner dialect. Both snapshots
+ * must be strict UTF-8 and the complete effective config must load. The result
+ * is a proposal, not a write/lock receipt or certification of executor support.
+ */
+export function buildSmithCreateCandidate(request: {
+  target: ConfigTarget;
+  smith: unknown;
+  sources: Record<ConfigTarget, ConfigByteSource>;
+  env: Readonly<Record<string, string | undefined>>;
+}): SmithCreateCandidateOutcome {
+  if (request.target !== "user" && request.target !== "workspace")
+    return { ok: false, error: "expected user or workspace target" };
+  const smithFields = ["name", ...Object.keys(SMITH_FIELDS)];
+  if (
+    !isTable(request.smith) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(request.smith)) ||
+    Reflect.ownKeys(request.smith).length !== smithFields.length ||
+    smithFields.some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(request.smith, key);
+      return descriptor === undefined || !("value" in descriptor);
+    })
+  )
+    return {
+      ok: false,
+      error: `a complete Smith needs exactly ${smithFields.join(", ")}`,
+    };
+  const checked = validateSmith(request.smith);
+  if (!checked.ok) return checked;
+  const { name, provider, model, effort, enabled, tags } = checked.value;
+  if (name in Object.prototype)
+    return {
+      ok: false,
+      error: `smiths.${name}: "${name}" is a key every object has; name the smith something else`,
+    };
+  const smith: Smith = {
+    name,
+    provider,
+    model,
+    effort,
+    enabled,
+    tags: [...tags],
+  };
+  try {
+    const user = capturedSource(request.sources.user);
+    const workspace = capturedSource(request.sources.workspace);
+    const texts = { user: user.source, workspace: workspace.source };
+    const docs = { user: user.doc, workspace: workspace.doc };
+    if (
+      [
+        ...Object.keys(BUILTIN_SMITHS),
+        ...smithsOf(docs.user),
+        ...smithsOf(docs.workspace),
+      ].includes(name)
+    )
+      throw new Refusal(
+        `smith "${name}" already exists in builtin, user or workspace config; create cannot override it`,
+      );
+    const userPass = at(docs.user, ["execution", "env", "pass"]);
+    if (
+      request.target === "workspace" &&
+      texts.workspace.text === null &&
+      Array.isArray(userPass) &&
+      userPass.length > 0
+    )
+      throw new Refusal(
+        firstWorkspacePassRefusal(
+          texts.user.file,
+          texts.workspace.file,
+          userPass.map(String),
+        ),
+      );
+    const source = texts[request.target];
+    const original = source.text ?? "";
+    const bom = original.startsWith(BOM) ? BOM : "";
+    const body = original.slice(bom.length);
+    const old = docs[request.target];
+    if (old.smiths !== undefined && !isTable(old.smiths))
+      throw new Refusal(
+        `${source.file}: smiths holds a value, not a table; change it by hand`,
+      );
+    scan(body);
+    const fields = { provider, model, effort, enabled, tags: smith.tags };
+    const eol = body.includes("\r\n") ? "\r\n" : "\n";
+    const lead = body === "" ? "" : body.endsWith("\n") ? eol : `${eol}${eol}`;
+    const block = [
+      `[${["smiths", name].map(segment).join(".")}]`,
+      ...Object.entries(fields).map(
+        ([field, value]) => `${segment(field)} = ${literal(value)}`,
+      ),
+    ].join(eol);
+    const next = `${body}${lead}${block}${eol}`;
+    if (
+      !Bun.deepEquals(
+        parse(next),
+        withValue(old, ["smiths", name], fields),
+        true,
+      )
+    )
+      throw new Refusal(
+        `${source.file}: the candidate would change more than smiths.${name}`,
+      );
+    const text = bom + next;
+    const effective = loadConfigFromContents({
+      sources: { ...texts, [request.target]: { file: source.file, text } },
+      env: request.env,
+    });
+    const bytes = Buffer.from(text);
+    return {
+      ok: true,
+      value: {
+        target: request.target,
+        file: source.file,
+        created: source.text === null,
+        smith,
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        sources: { user: user.fingerprint, workspace: workspace.fingerprint },
+        effective,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function capturedSource({ file, bytes }: ConfigByteSource) {
+  const copy = bytes === null ? null : Buffer.from(bytes);
+  const text = copy?.toString("utf8") ?? null;
+  if (copy !== null && !Buffer.from(text ?? "", "utf8").equals(copy))
+    throw new Refusal(
+      `${file}: expected strict UTF-8 bytes; encoding repair is not a config edit`,
+    );
+  let doc: Table;
+  try {
+    doc = parse(text ?? "");
+  } catch (error) {
+    throw new Refusal(
+      `${file} does not parse (${error instanceof Error ? error.message : String(error)}); change it by hand`,
+    );
+  }
+  return {
+    source: { file, text },
+    doc,
+    fingerprint: {
+      file,
+      sha256:
+        copy === null ? null : createHash("sha256").update(copy).digest("hex"),
+      byteLength: copy?.length ?? null,
+    },
+  };
+}
+
+function firstWorkspacePassRefusal(
+  userFile: string,
+  workspaceFile: string,
+  userPassList: string[],
+): string {
+  return `creating ${workspaceFile} would stop execution.env.pass from ${userFile} (${userPassList.join(", ")}) applying: a workspace file never inherits it. Keep it there first: bun run forge:config set execution.env.pass "${userPassList.join(",")}" --workspace`;
+}
+
 /** Write one value into the user or the workspace config file. Nothing is written on a refusal. */
 export function setConfigValue(request: {
   key: string;
@@ -477,7 +675,7 @@ export function setConfigValue(request: {
   if (target === "workspace" && !workspaceExists && userPassList.length > 0) {
     if (key !== "execution.env.pass")
       return fail(
-        `creating ${workspaceFile} would stop execution.env.pass from ${userFile} (${userPassList.join(", ")}) applying: a workspace file never inherits it. Keep it there first: bun run forge:config set execution.env.pass "${userPassList.join(",")}" --workspace`,
+        firstWorkspacePassRefusal(userFile, workspaceFile, userPassList),
       );
     replacedUserPass = userPassList;
   }
