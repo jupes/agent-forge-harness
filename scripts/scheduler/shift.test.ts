@@ -1,12 +1,11 @@
 import { Database } from "bun:sqlite";
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +24,7 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations, queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { removeDirectory } from "../remove-directory";
 import { readEligibility } from "./eligibility";
 import { createQueue } from "./queue";
 import {
@@ -48,6 +48,7 @@ import {
   requestStop,
   writeShiftRecord,
 } from "./shift-store";
+import { createShiftTestLifecycle } from "./shift-test-lifecycle-fixture";
 
 /**
  * The shift loop, hermetic: `bd` is the queue's in-memory tracker, the
@@ -67,12 +68,17 @@ const FAKE = join(
   "fake-cli.ts",
 );
 
-const roots: string[] = [];
-const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
-  for (const root of roots)
-    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+const fixtures = createShiftTestLifecycle({
+  closeLedger,
+  removeRoot: removeDirectory,
+  report(phase) {
+    if (process.env["AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE"] === "1")
+      process.stderr.write(`[shift-test-cleanup] ${JSON.stringify(phase)}\n`);
+  },
+});
+// A separate Bun hook retains a primary test failure if teardown fails too.
+afterEach(() => {
+  fixtures.cleanup();
 });
 
 /** A queued bead, by the queue's own writing, with a file map of its own. */
@@ -297,12 +303,12 @@ function rig(
   more: Partial<ShiftDeps> = {},
 ): Rig {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "af shift ")));
-  roots.push(root);
+  fixtures.root(root);
   mkdirSync(join(root, ".git"));
   const home = join(root, "forge home");
   mkdirSync(home);
   const ledger = join(home, "ledger.db");
-  ledgers.push(ledger);
+  fixtures.ledger(ledger);
   const { workspace } = resolveCheckout(root);
   const tracker = queueTracker(beads);
   const reservations = () =>
@@ -1342,7 +1348,7 @@ describe("forge:shift — the config's [shift]", () => {
       expect(option.error).toStartWith(`${field}: expected`);
       const words = option.error.slice(`${field}: `.length);
       const root = realpathSync.native(mkdtempSync(join(tmpdir(), "af cfg ")));
-      roots.push(root);
+      fixtures.root(root);
       const file = join(root, "agent-forge.toml");
       writeFileSync(file, `[shift]\n${key} = ${value}\n`);
       expect(() =>
@@ -2663,30 +2669,68 @@ describe("forge:shift — stopping kills what it started (Claude adapter, fake b
       ],
     };
     const running = shift(r);
-    await until(() => existsSync(dump));
-    const { pid, argv } = JSON.parse(readFileSync(dump, "utf8")) as {
-      pid: number;
-      argv: string[];
-    };
-    // The fake ran, with the adapter's own flags after the test's.
-    expect(argv.slice(0, 4)).toEqual([
-      "--fake-provider",
-      "claude",
-      "--fake-mode",
-      "hang",
-    ]);
-    expect(argv).toContain("--permission-mode");
-    expect(processAlive(pid)).toBe(true);
-    controller.abort();
-    const done = await running;
-    expect(done.reason).toBe("operator");
-    expect(processAlive(pid)).toBe(false);
-    expect(liveChildCount()).toBe(0);
-    expect(r.labels("t-1")).toEqual(["queue:queued"]);
-    expect(r.reservations()).toBe(0);
-    const ended = r.events().filter((event) => event.kind === "session.ended");
-    expect(ended.map((event) => event.payload)).toMatchObject([
-      { reason: "stopped: shift operator" },
-    ]);
+    let bodyFailure: { error: unknown } | undefined;
+    const failures: unknown[] = [];
+    try {
+      await until(() => existsSync(dump));
+      const { pid, argv } = JSON.parse(readFileSync(dump, "utf8")) as {
+        pid: number;
+        argv: string[];
+      };
+      // The fake ran, with the adapter's own flags after the test's.
+      expect(argv.slice(0, 4)).toEqual([
+        "--fake-provider",
+        "claude",
+        "--fake-mode",
+        "hang",
+      ]);
+      expect(argv).toContain("--permission-mode");
+      expect(processAlive(pid)).toBe(true);
+      controller.abort();
+      const done = await running;
+      expect(done.reason).toBe("operator");
+      expect(processAlive(pid)).toBe(false);
+      expect(liveChildCount()).toBe(0);
+      expect(r.labels("t-1")).toEqual(["queue:queued"]);
+      expect(r.reservations()).toBe(0);
+      const ended = r
+        .events()
+        .filter((event) => event.kind === "session.ended");
+      expect(ended.map((event) => event.payload)).toMatchObject([
+        { reason: "stopped: shift operator" },
+      ]);
+    } catch (error) {
+      bodyFailure = { error };
+    } finally {
+      const began = performance.now();
+      try {
+        controller.abort();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await running;
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (process.env["AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE"] === "1")
+          process.stderr.write(
+            `[shift-test-settle] ${JSON.stringify({
+              phase: "provider-settle",
+              elapsedMs: performance.now() - began,
+              ok: failures.length === 0,
+            })}\n`,
+          );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(
+        [...(bodyFailure ? [bodyFailure.error] : []), ...failures],
+        "Owned Shift test run cleanup failed.",
+      );
+    if (bodyFailure) throw bodyFailure.error;
   }, 15_000);
 });
