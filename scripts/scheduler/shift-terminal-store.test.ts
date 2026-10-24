@@ -9,6 +9,7 @@ import {
   statSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -291,9 +292,28 @@ for (const target of ["original", "draft"] as const)
           const path = target === "original" ? f.path : retained;
           const before = readFileSync(path);
           if (mutation === "changed bytes") writeFileSync(path, "changed");
-          else if (mutation === "same bytes rewritten")
+          else if (mutation === "same bytes rewritten") {
+            const identity = statSync(path, { bigint: true });
+            expect(identity.isFile()).toBe(true);
+            expect(identity.nlink).toBe(1n);
+            expect(identity.ino).not.toBe(0n);
             writeFileSync(path, before);
-          else if (mutation === "missing") unlinkSync(path);
+            // A same-byte write can share the prior timestamp bucket. Make
+            // this adversarial rewrite observably different without waiting.
+            utimesSync(
+              path,
+              new Date(Number(identity.atimeMs)),
+              new Date(Number(identity.mtimeMs) + 1_000),
+            );
+            const rewritten = statSync(path, { bigint: true });
+            expect(rewritten.dev).toBe(identity.dev);
+            expect(rewritten.ino).toBe(identity.ino);
+            expect(rewritten.nlink).toBe(identity.nlink);
+            expect(rewritten.size).toBe(identity.size);
+            expect(readFileSync(path)).toEqual(before);
+            expect(rewritten.mtimeNs).not.toBe(identity.mtimeNs);
+            expect(attempts).toBe(1);
+          } else if (mutation === "missing") unlinkSync(path);
           else if (mutation === "hard link") linkSync(path, `${path}.hard`);
           else {
             renameSync(path, `${path}.before`);
